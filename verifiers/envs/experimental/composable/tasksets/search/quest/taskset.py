@@ -41,6 +41,7 @@ from verifiers.utils.client_utils import setup_openai_client
 
 from .obj_task_eval.utils.cache_filesys import CacheFileSys
 from .obj_task_eval.utils.load_eval_script import load_eval_script
+from .open_ended import score_open_ended_answer
 
 logger = logging.getLogger(__name__)
 
@@ -228,13 +229,42 @@ def _usage_dict(response: Any) -> dict[str, int]:
     }
 
 
+def _parse_ast_literal(node: ast.AST) -> Any:
+    if isinstance(node, ast.Expression):
+        return _parse_ast_literal(node.body)
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.List):
+        return [_parse_ast_literal(item) for item in node.elts]
+    if isinstance(node, ast.Tuple):
+        return tuple(_parse_ast_literal(item) for item in node.elts)
+    if isinstance(node, ast.Dict):
+        return {
+            _parse_ast_literal(key): _parse_ast_literal(value)
+            for key, value in zip(node.keys, node.values)
+        }
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        operand = _parse_ast_literal(node.operand)
+        if isinstance(operand, int | float):
+            return -operand
+    if isinstance(node, ast.Name) and node.id == "object":
+        return object
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        if node.func.id == "array" and len(node.args) == 1:
+            return _parse_ast_literal(node.args[0])
+    raise ValueError(f"Unsupported QUEST literal syntax: {ast.dump(node)}")
+
+
 def _parse_literal(value: Any) -> Any:
     if not isinstance(value, str):
         return value
     try:
         return ast.literal_eval(value)
     except Exception:
-        return value
+        try:
+            return _parse_ast_literal(ast.parse(value, mode="eval"))
+        except Exception:
+            return value
 
 
 def _extract_question(prompt: Any, extra_info: Any) -> str:
@@ -345,7 +375,7 @@ def _resolve_eval_scripts_root(
 
 
 class QuestTaskSet(SandboxTaskSet):
-    """QUEST objective search/research taskset."""
+    """QUEST search/research taskset."""
 
     default_workdir = DEFAULT_WORKDIR
 
@@ -375,10 +405,6 @@ class QuestTaskSet(SandboxTaskSet):
             raise ValueError(
                 "category must be one of 'objective', 'open-ended', or 'all'"
             )
-        if category != "objective":
-            raise NotImplementedError(
-                "Initial QUEST taskset implementation supports category='objective' only"
-            )
         self.dataset_name = dataset_name
         self.split = split
         self.category = category
@@ -397,9 +423,13 @@ class QuestTaskSet(SandboxTaskSet):
         self._judge_api_key_var = judge_api_key_var
         self._judge_sampling_args = dict(judge_sampling_args or {})
         self._quest_cache_dir = quest_cache_dir
-        self._quest_eval_scripts_root = _resolve_eval_scripts_root(
-            dataset_name=dataset_name,
-            eval_scripts_dir=quest_eval_scripts_dir,
+        self._quest_eval_scripts_root = (
+            None
+            if category == "open-ended" and quest_eval_scripts_dir is None
+            else _resolve_eval_scripts_root(
+                dataset_name=dataset_name,
+                eval_scripts_dir=quest_eval_scripts_dir,
+            )
         )
         self._quest_eval_concurrency = quest_eval_concurrency
         super().__init__(
@@ -479,7 +509,11 @@ class QuestTaskSet(SandboxTaskSet):
         return QuestRubric(
             answer_file=self.answer_file,
             dataset_name=self.dataset_name,
-            eval_scripts_dir=str(self._quest_eval_scripts_root),
+            eval_scripts_dir=(
+                str(self._quest_eval_scripts_root)
+                if self._quest_eval_scripts_root is not None
+                else None
+            ),
             cache_dir=self._quest_cache_dir,
             judge_model=self._judge_model,
             judge_base_url=self._judge_base_url,
@@ -490,7 +524,7 @@ class QuestTaskSet(SandboxTaskSet):
 
 
 class QuestRubric(vf.Rubric):
-    """Scores QUEST objective tasks using their generated eval scripts."""
+    """Scores QUEST objective and open-ended tasks."""
 
     def __init__(
         self,
@@ -524,22 +558,28 @@ class QuestRubric(vf.Rubric):
         self._client: QuestOpenAIClient | None = None
         self._semaphore = asyncio.Semaphore(eval_concurrency)
         self._scripts_root: Path | None = None
-        self.add_reward_func(self.objective_reward, weight=1.0)
+        self.add_reward_func(self.quest_reward, weight=1.0)
 
-    async def _objective_score_for_state(self, state: vf.State) -> float:
+    async def _quest_score_for_state(self, state: vf.State) -> float:
         if state.get("error") is not None:
             return 0.0
         try:
-            return await self.objective_reward(state)
+            return await self.quest_reward(state)
         except vf.Error as exc:
             state["error"] = exc
             return 0.0
 
+    def _metric_name(self, state: vf.State) -> str:
+        info = state.get("info") or {}
+        if info.get("rl_task_category") == "open-ended":
+            return "open_ended_reward"
+        return "objective_reward"
+
     async def score_rollout(self, state: vf.State) -> None:
         """Score one rollout and preserve QUEST infrastructure failures as ``vf.Error`` values."""
-        score = await self._objective_score_for_state(state)
+        score = await self._quest_score_for_state(state)
         state["reward"] = score
-        state["metrics"] = {"objective_reward": score}
+        state["metrics"] = {"quest_reward": score, self._metric_name(state): score}
 
     async def score_group(self, states: list[vf.State]) -> None:
         """Score rollouts while preserving QUEST infrastructure failures as ``vf.Error`` values."""
@@ -547,7 +587,7 @@ class QuestRubric(vf.Rubric):
             logger.warning("No states to score")
             return
         scores = await asyncio.gather(
-            *(self._objective_score_for_state(state) for state in states)
+            *(self._quest_score_for_state(state) for state in states)
         )
         avg_score = sum(scores) / len(scores)
         for state, score in zip(states, scores):
@@ -559,9 +599,15 @@ class QuestRubric(vf.Rubric):
                         turn["advantage"] = state["advantage"]
                     if turn.get("reward") is None:
                         turn["reward"] = state["reward"]
-            state["metrics"] = {"objective_reward": score}
+            state["metrics"] = {"quest_reward": score, self._metric_name(state): score}
 
-    async def objective_reward(self, state: vf.State, **_: Any) -> float:
+    async def quest_reward(self, state: vf.State, **_: Any) -> float:
+        info = state.get("info") or {}
+        if info.get("rl_task_category") == "open-ended":
+            return await self.open_ended_reward(state)
+        return await self.objective_reward(state)
+
+    async def _read_answer(self, state: vf.State) -> tuple[str, str]:
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
         if not sandbox_client or not sandbox_id:
@@ -583,6 +629,10 @@ class QuestRubric(vf.Rubric):
             answer_source = "completion_fallback" if answer else "missing"
         state["quest_answer"] = answer
         state["quest_answer_source"] = answer_source
+        return answer, answer_source
+
+    async def objective_reward(self, state: vf.State, **_: Any) -> float:
+        answer, _ = await self._read_answer(state)
         if not answer:
             state["quest_eval_error"] = "empty_answer"
             return 0.0
@@ -611,6 +661,38 @@ class QuestRubric(vf.Rubric):
             final_score = 0.0
         final_score = max(0.0, min(1.0, final_score))
         state["quest_final_score"] = final_score
+        return final_score
+
+    async def open_ended_reward(self, state: vf.State, **_: Any) -> float:
+        answer, _ = await self._read_answer(state)
+        if not answer:
+            state["quest_eval_error"] = "empty_answer"
+            return 0.0
+        info = state.get("info") or {}
+        task_id = info.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            raise ValueError("QUEST open-ended task is missing task_id metadata")
+        reward_model = info.get("reward_model")
+        if not isinstance(reward_model, dict):
+            raise ValueError("QUEST open-ended task is missing reward_model metadata")
+        question = str(info.get("question") or "")
+        state["quest_task_id"] = task_id
+        client = self._get_client()
+        summary = await score_open_ended_answer(
+            client=client,
+            model=self.judge_model,
+            semaphore=self._semaphore,
+            answer=answer,
+            question=question,
+            reward_model=reward_model,
+        )
+        state["quest_eval_summary"] = summary
+        final_score = float(summary.get("final_score", 0.0) or 0.0)
+        if not math.isfinite(final_score):
+            final_score = 0.0
+        final_score = max(0.0, min(1.0, final_score))
+        state["quest_final_score"] = final_score
+        state["quest_upstream_pairwise_score"] = summary.get("upstream_pairwise_score")
         return final_score
 
     def _get_client(self) -> QuestOpenAIClient:
