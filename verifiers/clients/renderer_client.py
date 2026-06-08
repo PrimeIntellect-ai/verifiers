@@ -99,10 +99,11 @@ def reset_bridge_metrics() -> None:
             _bridge_metrics[k] = 0
 
 
-# Text tokenization is fine with one slot, but multimodal prompts process image
-# pixels per turn. Hosted training does not expose OrchestratorConfig.pool_size;
-# ClientConfig.renderer_pool_size still overrides this default.
-_DEFAULT_POOL_SIZE = 4
+# Default to a single slot. Multimodal prompts process image pixels per turn and
+# can benefit from a larger pool, but each extra slot multiplies renderer/tokenizer
+# memory per env-worker process, so keep the pool opt-in: image-heavy, high-inflight
+# runs set ClientConfig.renderer_pool_size (or orchestrator.pool_size) explicitly.
+_DEFAULT_POOL_SIZE = 1
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
