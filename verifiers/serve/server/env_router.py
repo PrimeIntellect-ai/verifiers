@@ -408,13 +408,16 @@ class EnvRouter:
                         os.remove(_fp)
                 except Exception as _e:
                     fault_info = f"read-err:{_e!r}"
-                msg = (
+                self.logger.warning(
                     f"Worker {worker_id} (pid={worker.process.pid}) died "
                     f"(exitcode={exitcode}), restarting [crashfile={fault_info}]"
                 )
+                # The log transport truncates a message at its first newline, so
+                # emit the multi-line crash dump as SEPARATE single-line records.
                 if fault:
-                    msg += f" | CRASHDUMP:\n{fault[-6000:]}"
-                self.logger.warning(msg)
+                    for _ln in fault.splitlines()[-80:]:
+                        if _ln.strip():
+                            self.logger.warning(f"CRASHDUMP w{worker_id}| {_ln}")
                 await self.restart_worker(worker_id)
             elif (
                 now - worker.last_heartbeat > self.worker_heartbeat_timeout
