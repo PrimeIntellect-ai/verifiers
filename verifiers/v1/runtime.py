@@ -25,6 +25,7 @@ from verifiers.types import Messages, Response, ResponseMessage, Tool
 from verifiers.types import ClientConfig, ClientType, SamplingArgs
 from verifiers.utils.async_utils import maybe_call_with_named_args
 from verifiers.utils.client_utils import resolve_client_config
+from verifiers.utils.loop_debug import looptime
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from verifiers.utils.tool_utils import convert_func_to_tool_def
@@ -883,40 +884,45 @@ class Runtime:
             return self._completed_model_response(state)
         released = False
         try:
-            prompt = await self._prepare_prompt(prompt, state)
+            with looptime("prepare_prompt"):
+                prompt = await self._prepare_prompt(prompt, state)
             client = self.model_client(state)
             request_start = time.time()
-            response = await client.get_response(
-                prompt=prompt,
-                model=self.model(state),
-                tools=tool_defs,
-                sampling_args=self.sampling_args(state),
-                state=state,
-            )
+            with looptime("get_response"):
+                response = await client.get_response(
+                    prompt=prompt,
+                    model=self.model(state),
+                    tools=tool_defs,
+                    sampling_args=self.sampling_args(state),
+                    state=state,
+                )
             request_end = time.time()
             state.record_model_timing(request_start, request_end)
             record_response_usage(state, response)
-            completion = await parse_response_message(response)
-            tokens = await parse_response_tokens(response)
+            with looptime("parse_response"):
+                completion = await parse_response_message(response)
+                tokens = await parse_response_tokens(response)
             is_truncated = response.message.is_truncated or (
                 tokens is not None and bool(tokens.get("is_truncated"))
             )
-            step = {
-                "prompt": serializable(prompt),
-                "completion": serializable(completion),
-                "response": serializable(response),
-                "tokens": serializable(tokens),
-                "reward": None,
-                "advantage": None,
-                "is_truncated": bool(is_truncated),
-                "trajectory_id": str(state["trajectory_id"]),
-                "extras": context.extras(),
-            }
+            with looptime("serialize_step"):
+                step = {
+                    "prompt": serializable(prompt),
+                    "completion": serializable(completion),
+                    "response": serializable(response),
+                    "tokens": serializable(tokens),
+                    "reward": None,
+                    "advantage": None,
+                    "is_truncated": bool(is_truncated),
+                    "trajectory_id": str(state["trajectory_id"]),
+                    "extras": context.extras(),
+                }
             if context.trajectory_visibility == "append":
-                state["trajectory"].append(step)
-                self._release_model_request(state, context)
-                released = True
-                await self.is_completed(task, state)
+                with looptime("record_append"):
+                    state["trajectory"].append(step)
+                    self._release_model_request(state, context)
+                    released = True
+                    await self.is_completed(task, state)
             elif context.trajectory_visibility != "hidden":
                 raise AssertionError(
                     f"Unknown trajectory visibility: {context.trajectory_visibility!r}"

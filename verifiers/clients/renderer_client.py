@@ -50,6 +50,7 @@ from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
 from verifiers.errors import EmptyModelResponseError, OverlongPromptError
+from verifiers.utils.loop_debug import looptime
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -499,7 +500,8 @@ async def _generate_with_mm_fallback(
 
     start_rss = _rss_mb()
     try:
-        return await generate(force_full_pixels=False, **kwargs)
+        with looptime("engine_generate"):
+            return await generate(force_full_pixels=False, **kwargs)
     except Exception as exc:
         mm_error_type = _retryable_mm_error_type(exc)
         retryable = mm_error_type in _RETRYABLE_MM_ERROR_TYPES and (
@@ -517,9 +519,11 @@ async def _generate_with_mm_fallback(
             _format_context(ctx),
         )
         built_full = True
-        return await generate(force_full_pixels=True, **kwargs)
+        with looptime("engine_generate_repair"):
+            return await generate(force_full_pixels=True, **kwargs)
     finally:
-        _maybe_cleanup_mm_request(req_id, built_full, start_rss, ctx)
+        with looptime("mm_cleanup"):
+            _maybe_cleanup_mm_request(req_id, built_full, start_rss, ctx)
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -796,7 +800,8 @@ async def _get_incremental_prompt_ids(
                 tail,
                 tools=tools,
             )
-        bridged = await _maybe_offload(renderer, bridge)
+        with looptime("render_bridge"):
+            bridged = await _maybe_offload(renderer, bridge)
         with _bridge_metrics_lock:
             _bridge_metrics["attempts"] += 1
             _bridge_metrics["successes" if bridged is not None else "failures"] += 1
