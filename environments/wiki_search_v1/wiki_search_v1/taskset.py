@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import asyncio
-import os
-from typing import TYPE_CHECKING, cast
+import re
+from typing import cast
 
 from datasets import load_dataset
 
@@ -10,22 +9,17 @@ import verifiers.v1 as vf
 
 from .servers.wiki import WikiToolsetConfig
 
-if TYPE_CHECKING:
-    from chromadb.api.models.Collection import Collection
-
 SYSTEM_PROMPT = "Use the provided Wikipedia search tools to help answer questions."
-_chroma_semaphore: asyncio.Semaphore | None = None
+TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
 class WikiIndex:
     def __init__(
         self,
         *,
-        collection: Collection,
         page_id_to_title: dict[str, str],
         page_id_to_content: dict[str, str],
     ):
-        self.collection = collection
         self.page_id_to_title = page_id_to_title
         self.page_id_to_content = page_id_to_content
 
@@ -69,18 +63,7 @@ class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
         return float(task.answer.lower() in response.lower())
 
 
-def get_chroma_semaphore() -> asyncio.Semaphore:
-    global _chroma_semaphore
-    if _chroma_semaphore is None:
-        _chroma_semaphore = asyncio.Semaphore(100)
-    return _chroma_semaphore
-
-
 def load_wiki(config: WikiToolsetConfig) -> WikiIndex:
-    import chromadb
-    from chromadb.api.types import Embeddable, EmbeddingFunction
-    from chromadb.utils import embedding_functions
-
     page_id_to_title: dict[str, str] = {}
     page_id_to_content: dict[str, str] = {}
     corpus = load_dataset(config.corpus_dataset, split=config.corpus_split)
@@ -89,73 +72,38 @@ def load_wiki(config: WikiToolsetConfig) -> WikiIndex:
         page_id = str(record["id"])
         page_id_to_title[page_id] = str(record["title"])
         page_id_to_content[page_id] = str(record["content"])
-
-    openai_ef = embedding_functions.OpenAIEmbeddingFunction(
-        model_name=config.embed_model,
-        api_base=config.embed_base_url,
-        api_key=os.getenv(config.embed_api_key_var, "EMPTY"),
-    )
-    client = chromadb.PersistentClient(path=config.chroma_db_dir)
-    collection = client.get_or_create_collection(
-        name="wiki_titles",
-        embedding_function=cast(EmbeddingFunction[Embeddable], openai_ef),
-    )
-    init_chroma(collection, page_id_to_title)
     return WikiIndex(
-        collection=collection,
         page_id_to_title=page_id_to_title,
         page_id_to_content=page_id_to_content,
     )
-
-
-def init_chroma(collection: Collection, page_id_to_title: dict[str, str]) -> None:
-    all_ids = list(page_id_to_title)
-    existing: set[str] = set()
-    for index in range(0, len(all_ids), 500):
-        batch = all_ids[index : index + 500]
-        got = collection.get(ids=batch)
-        existing.update(got.get("ids", []))
-    missing = [page_id for page_id in all_ids if page_id not in existing]
-    if not missing:
-        return
-    documents = []
-    metadatas = []
-    for page_id in missing:
-        title = page_id_to_title[page_id].strip()
-        if not title:
-            raise ValueError(f"Empty title for page_id {page_id}")
-        documents.append(title)
-        metadatas.append({"title": title})
-    for index in range(0, len(missing), 100):
-        collection.upsert(
-            ids=missing[index : index + 100],
-            documents=documents[index : index + 100],
-            metadatas=metadatas[index : index + 100],
-        )
 
 
 def normalize_id(text: str) -> str:
     return text.strip().lower().replace(" ", "_")
 
 
+def tokenize(text: str) -> set[str]:
+    return set(TOKEN_RE.findall(text.lower()))
+
+
 async def search_pages(query: str, wiki: WikiIndex) -> list[dict[str, str]]:
-    async with get_chroma_semaphore():
-        results = await asyncio.to_thread(
-            wiki.collection.query,
-            query_texts=[query],
-            n_results=10,
-        )
-    if not results or not results["metadatas"]:
-        raise ValueError(f"No results found for query: {query}")
-    output: list[dict[str, str]] = []
-    for index in range(len(results["ids"][0])):
-        output.append(
-            {
-                "page_id": str(results["ids"][0][index]),
-                "title": str(results["metadatas"][0][index]["title"]),
-            }
-        )
-    return output
+    query_tokens = tokenize(query)
+    if not query_tokens:
+        raise ValueError("Search query must contain at least one alphanumeric token.")
+    ranked: list[tuple[int, str, str]] = []
+    for page_id, title in wiki.page_id_to_title.items():
+        title_score = len(query_tokens & tokenize(title))
+        content_score = len(query_tokens & tokenize(wiki.page_id_to_content[page_id]))
+        score = 5 * title_score + content_score
+        ranked.append((-score, title.lower(), page_id))
+    ranked.sort()
+    return [
+        {
+            "page_id": page_id,
+            "title": wiki.page_id_to_title[page_id],
+        }
+        for _, _, page_id in ranked[:10]
+    ]
 
 
 async def view_sections(page_id: str, wiki: WikiIndex) -> list[dict[str, str]]:

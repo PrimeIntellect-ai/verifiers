@@ -4,7 +4,7 @@ import time
 from collections.abc import Sequence
 from typing import cast
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 import verifiers.v1 as vf
 from verifiers.types import (
@@ -35,6 +35,13 @@ class BFCLTask(vf.Task):
     missed_function: vf.JsonData = Field(default_factory=dict)
     missed_function_with_hints: vf.JsonData = Field(default_factory=dict)
     max_steps_per_turn: int | None = None
+
+    @field_validator("function", "function_with_hints", "ground_truth", mode="before")
+    @classmethod
+    def parse_json_blob(cls, value: object) -> object:
+        if isinstance(value, str):
+            return json.loads(value)
+        return value
 
 
 class BFCLTasksetConfig(vf.TasksetConfig):
@@ -197,8 +204,8 @@ def bfcl_row(
             first_turn_prompt,
             *[normalize_turn(turn) for turn in question[1:]],
         ],
-        "function": entry["function"],
-        "function_with_hints": hinted_entry["function"],
+        "function": json.dumps(entry["function"]),
+        "function_with_hints": json.dumps(hinted_entry["function"]),
     }
     if first_turn_system_prompt:
         row["system_prompt"] = first_turn_system_prompt
@@ -212,6 +219,8 @@ def bfcl_row(
     if ground_truth is not None:
         row.update(ground_truth)
         row.pop("id", None)
+        if "ground_truth" in row:
+            row["ground_truth"] = json.dumps(row["ground_truth"])
     return row
 
 

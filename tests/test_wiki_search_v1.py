@@ -111,8 +111,6 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
                         "wiki": {
                             "corpus_dataset": "test/corpus",
                             "corpus_split": "validation",
-                            "chroma_db_dir": "/tmp/wiki",
-                            "embed_model": "test-embed",
                         }
                     }
                 }
@@ -167,6 +165,37 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
     )
 
     assert configured_env.harness.config.max_turns == 7
+
+
+@pytest.mark.asyncio
+async def test_wiki_search_v1_lexical_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, module = load_wiki_v1(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "load_dataset",
+        lambda *args, **kwargs: [
+            {
+                "id": "earth",
+                "title": "Earth",
+                "content": "# Overview\nEarth is the third planet from the Sun.",
+            },
+            {
+                "id": "mars",
+                "title": "Mars",
+                "content": "# Overview\nMars is a cold desert world.",
+            },
+        ],
+    )
+
+    wiki = module.load_wiki(module.WikiToolsetConfig())
+    results = await module.search_pages("third planet", wiki)
+    assert results[0] == {"page_id": "earth", "title": "Earth"}
+
+    sections = await module.view_sections("earth", wiki)
+    assert sections == [{"section_id": "earth:overview", "section_name": "Overview"}]
+    assert await module.read_section("earth:overview", wiki) == (
+        "# Overview\nEarth is the third planet from the Sun."
+    )
 
 
 def test_wiki_search_v0_is_v0_only(
