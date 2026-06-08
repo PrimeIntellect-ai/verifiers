@@ -1100,7 +1100,9 @@ class RendererClient(
             chat_template_kwargs,
             renderer_model=renderer_model,
         )
+        print("PROBE PHASE pool_build_start", flush=True)
         renderer = self._get_renderer_or_pool(model, renderer_config=effective_cfg)
+        print("PROBE PHASE pool_build_ok", flush=True)
 
         for key in (
             "temperature",
@@ -1187,6 +1189,7 @@ class RendererClient(
         # 4xx → vf.OverlongPromptError) for engines whose ``/v1/models``
         # doesn't expose ``max_model_len``.
         try:
+            print("PROBE PHASE generate_start", flush=True)
             return await _generate_with_mm_fallback(
                 client=self.client,
                 renderer=renderer,
