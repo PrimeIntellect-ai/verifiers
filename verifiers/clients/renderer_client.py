@@ -173,6 +173,23 @@ try:
     except Exception as _e:
         logging.getLogger("vf.looptime").warning("transformers BC wrap: %r", _e)
 
+    # USE-TIME LOCALIZATION: cold-build loaders all completed (BC START==OK),
+    # so the -11 is in the *using* path on real data, not the load. Wrap the
+    # qwen35 renderer's native use-time calls: image preprocessing
+    # (proc.image_processor on a real screenshot), the Rust fast-tokenizer
+    # encode (trajectory text grows to 41-90MB), the full render, and the
+    # next-turn bridge. The unmatched 'START' names the crashing using call.
+    try:
+        import renderers.qwen35 as _q35
+        _qcls = getattr(_q35, "Qwen35Renderer", None)
+        if _qcls is not None:
+            _vf_bc_wrap(_qcls, "_process_image", "q35._process_image")
+            _vf_bc_wrap(_qcls, "_encode", "q35._encode")
+            _vf_bc_wrap(_qcls, "render", "q35.render")
+            _vf_bc_wrap(_qcls, "bridge_to_next_turn", "q35.bridge_to_next_turn")
+    except Exception as _e:
+        logging.getLogger("vf.looptime").warning("qwen35 use-time BC wrap: %r", _e)
+
 except Exception as _exc:  # pragma: no cover - never break import
     logging.getLogger("vf.looptime").warning(
         "renderers looptime monkeypatch skipped: %r", _exc
