@@ -35,13 +35,12 @@ Notes:
 
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `source` | `"hub" \| "local" \| "package"` | `"package"` in this environment | Dataset source resolver. |
-| `dataset` | str | `"opencode_harbor_v1"` in this environment | Hub id, local tasks path, or Python package name. |
-| `task_names` | list[str] | `null` | Explicit Harbor task names to run. |
-| `cache_dir` | str | `null` | Optional Hub cache root override. |
-| `refresh` | bool | `false` | Refresh Hub cache before loading. |
+| `source` | `"harbor" \| "package"` | `"package"` in this environment | Dataset source resolver. |
+| `dataset` | str | `"opencode_harbor_v1"` in this environment | Harbor dataset id or Python package name. |
+| `tasks` | list[str] | `null` | Explicit Harbor task names to run. |
+| `cache_dir` | str | `null` | Optional Harbor cache root override. |
+| `refresh` | bool | `false` | Refresh Harbor cache before loading. |
 | `require_image` | bool | `false` | Require every task to declare `[environment].docker_image`. |
-| `verifier_timeout_seconds` | float | `900.0` | Default timeout for Harbor verifier scripts. |
 
 ### Harness Config
 
@@ -68,7 +67,7 @@ The harness also accepts the packaged `OpenCodeConfig` fields for `system_prompt
 
 ## How It Works
 
-1. `HarborTaskset` resolves Hub, local, or package task directories, maps
+1. `HarborTaskset` resolves Harbor or package task directories, maps
    `[environment].docker_image` and resource hints onto generic v1 `Task`
    fields, and owns the Harbor reward.
 2. `OpenCode` contributes the reusable OpenCode CLI program, install/setup,

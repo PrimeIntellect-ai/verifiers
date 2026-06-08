@@ -24,8 +24,8 @@ def bundle_tasks_root(module_name: str) -> Path:
         return Path(module_file).resolve().parent / TASKS_SUBDIR
 
 
-def harbor_task_dirs(root: Path, task_names: Iterable[str] | None = None) -> list[Path]:
-    selected = set(task_names or [])
+def harbor_task_dirs(root: Path, tasks: Iterable[str] | None = None) -> list[Path]:
+    selected = set(tasks or [])
     if not root.exists():
         raise FileNotFoundError(f"Harbor tasks path not found: {root}")
     tasks: list[Path] = []
@@ -84,9 +84,9 @@ def download_harbor_dataset(
     if harbor_bin is None and uvx_bin is None:
         raise FileNotFoundError(
             f"Harbor dataset {dataset_id!r} requires the Harbor CLI or uvx. "
-            "Install Harbor or uvx before using Harbor Hub datasets."
+            "Install Harbor or uvx before using Harbor datasets."
         )
-    root = cache_dir or Path.home() / ".cache" / "verifiers" / "harbor" / "hub"
+    root = cache_dir or Path.home() / ".cache" / "verifiers" / "harbor"
     dataset_dir = root / (
         re.sub(r"[^A-Za-z0-9_.-]+", "_", dataset_id).strip("_") or "dataset"
     )

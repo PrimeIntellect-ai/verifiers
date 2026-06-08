@@ -37,32 +37,21 @@ def test_harbor_v1_loads_thin_taskset_harness_package(monkeypatch: Any) -> None:
     assert Path(task.task_dir).parent == Path(module.__file__).parent / "tasks"
 
 
-def test_harbor_v1_allows_local_dataset_override(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
+def test_harbor_v1_allows_package_dataset_override(monkeypatch: Any) -> None:
     package, _ = _load_harbor_modules(monkeypatch)
-    task_dir = tmp_path / "tasks" / "local-task"
-    task_dir.mkdir(parents=True)
-    (task_dir / "instruction.md").write_text("write ok\n")
-    (task_dir / "task.toml").write_text(
-        "[environment]\n"
-        'docker_image = "python:3.11-slim"\n'
-        "[verifier]\n"
-        "timeout_sec = 5\n"
-    )
 
     env = load_environment_from_components(
         package,
         {
             "config": {
                 "taskset": {
-                    "source": "local",
-                    "dataset": str(tmp_path / "tasks"),
+                    "source": "package",
+                    "dataset": "harbor_v1",
                 }
             }
         },
     )
 
     task = next(iter(env.taskset))
-    assert task.task_name == "local-task"
-    assert task.task_dir == str(task_dir.resolve())
+    assert task.task_name == "hello-world"
+    assert Path(task.task_dir).name == "hello-world"

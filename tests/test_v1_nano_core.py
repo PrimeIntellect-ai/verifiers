@@ -1300,13 +1300,28 @@ def test_parse_anthropic_user_messages_preserves_structured_content() -> None:
 def test_harbor_taskset_maps_task_image_and_resources(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tasksets.harbor import HarborTaskset, HarborTasksetConfig
+    from tasksets.harbor import HarborTask, HarborTaskset, HarborTasksetConfig
 
     root = tmp_path / "tasks"
     task_dir = root / "image-task"
     task_dir.mkdir(parents=True)
     (task_dir / "instruction.md").write_text("fix it\n")
     (task_dir / "task.toml").write_text(
+        "[task]\n"
+        'name = "Image task"\n'
+        'description = "Check resource parsing."\n'
+        'keywords = ["image", "resources"]\n'
+        "[[task.authors]]\n"
+        'name = "Ada"\n'
+        'email = "ada@example.com"\n'
+        "[metadata]\n"
+        'difficulty = "easy"\n'
+        'category = "smoke"\n'
+        'tags = ["typed"]\n'
+        "[agent]\n"
+        "timeout_sec = 7\n"
+        "[verifier]\n"
+        "timeout_sec = 11\n"
         "[environment]\n"
         'docker_image = "owner/task:latest"\n'
         "cpus = 2\n"
@@ -1314,15 +1329,21 @@ def test_harbor_taskset_maps_task_image_and_resources(
         "storage_mb = 10240\n"
         "gpus = 1\n"
     )
-    taskset = HarborTaskset(
-        config=HarborTasksetConfig(source="local", dataset=str(root))
-    )
+    taskset = HarborTaskset(config=HarborTasksetConfig())
 
-    assert taskset.task_root() == root.resolve()
-
-    task = taskset.task_from_dir(task_dir)
+    task = HarborTask.from_dir(task_dir, require_image=False)
 
     assert task.image == "owner/task:latest"
+    assert task.name == "Image task"
+    assert task.description == "Check resource parsing."
+    assert task.agent_timeout == 7.0
+    assert task.scoring_timeout == 11.0
+    assert task.keywords == ["image", "resources"]
+    assert task.authors[0].name == "Ada"
+    assert task.authors[0].email == "ada@example.com"
+    assert task.difficulty == "easy"
+    assert task.category == "smoke"
+    assert task.tags == ["typed"]
     assert task.resources == vf.Resources(
         cpu_cores=2.0,
         memory_gb=4.0,
@@ -1343,25 +1364,20 @@ def test_harbor_taskset_maps_task_image_and_resources(
 
 
 def test_harbor_taskset_rejects_dockerfile_only_tasks(tmp_path) -> None:
-    from tasksets.harbor import HarborTaskset, HarborTasksetConfig
+    from tasksets.harbor import HarborTask
 
     task_dir = tmp_path / "dockerfile-only"
     (task_dir / "environment").mkdir(parents=True)
     (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.11\n")
     (task_dir / "instruction.md").write_text("fix it\n")
     (task_dir / "task.toml").write_text("[environment]\n")
-    taskset = HarborTaskset(
-        config=HarborTasksetConfig(source="local", dataset=str(tmp_path))
-    )
-
     with pytest.raises(ValueError, match="Dockerfile"):
-        taskset.task_from_dir(task_dir)
+        HarborTask.from_dir(task_dir, require_image=False)
 
 
 @pytest.mark.asyncio
 async def test_harbor_reward_runs_verifier_in_live_runtime(tmp_path) -> None:
     from tasksets.harbor import (
-        HarborSpec,
         HarborTask,
         HarborTaskset,
         HarborTasksetConfig,
@@ -1377,10 +1393,7 @@ async def test_harbor_reward_runs_verifier_in_live_runtime(tmp_path) -> None:
         task_dir=str(task_dir),
         prompt=[vf.UserMessage(content="do it")],
         image="python:3.11",
-        harbor=HarborSpec(
-            task_name="task",
-            test_timeout=12.0,
-        ),
+        scoring_timeout=12.0,
     )
 
     class FakeRuntime(vf.Runtime):

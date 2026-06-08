@@ -171,10 +171,10 @@ matches:
   framework concern. The taskset maps declared images/resources onto generic
   task fields, the harness runs normally, and the reward stages only `tests/`
   into the live runtime for verification.
-- v1 Harbor tasksets resolve `hub`, `local`, and `package` sources into the
-  same materialized task-root contract. Hub downloads cache under
-  `~/.cache/verifiers/harbor/hub` by default; local and package sources read
-  already-materialized task roots in place.
+- v1 Harbor tasksets resolve `harbor` and `package` sources into the same
+  materialized task-root contract. Harbor downloads cache under
+  `~/.cache/verifiers/harbor` by default; package sources read self-contained
+  task roots from installed environment packages.
 
 Nano also strengthened `run_uv_script(...)` for bare task images. v1 does not
 mirror that helper as a runtime contract. Script execution is just one caller

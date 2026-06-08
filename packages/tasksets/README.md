@@ -50,7 +50,7 @@ the intended config from Python/TOML.
 
 | Taskset | Purpose |
 | --- | --- |
-| `HarborTaskset` | Harbor task directories and Harbor Hub datasets. |
+| `HarborTaskset` | Harbor task directories and Harbor datasets. |
 | `OpenEnvTaskset` | Upstream OpenEnv projects with rollout-local user simulation. |
 | `OpenRewardTaskset` | Upstream OpenReward environments with rollout-local user simulation. |
 | `ReplayTaskset` | HF datasets or explicit local JSONL chat transcripts for replay data. |
