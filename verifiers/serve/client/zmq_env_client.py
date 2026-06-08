@@ -152,10 +152,18 @@ class ZMQEnvClient(EnvClient):
             # propagate (they are not `Exception` subclasses).
             pass
 
+    async def send_ack(self, request_id: str) -> None:
+        """Acknowledge receipt so the server can drop cached responses."""
+        try:
+            await self.socket.send_multipart([request_id.encode(), b"ack"])
+        except Exception:
+            pass
+
     async def cancel_all_pending(
         self,
         reason: str = "Request cancelled",
         use_cancelled: bool = False,
+        notify_server: bool = True,
     ) -> list[PendingRequest]:
         """Cancel all pending requests and return their metadata.
 
@@ -184,9 +192,9 @@ class ZMQEnvClient(EnvClient):
             # Clear tracking dict
             self.pending_requests.clear()
 
-        # Best-effort: notify server to cancel these requests
-        for pending_req in cancelled_requests:
-            await self.send_cancel(pending_req.request_id)
+        if notify_server:
+            for pending_req in cancelled_requests:
+                await self.send_cancel(pending_req.request_id)
 
         return cancelled_requests
 
@@ -205,6 +213,7 @@ class ZMQEnvClient(EnvClient):
 
                 request_id_bytes, response_data = msg[0], msg[1]
                 request_id = request_id_bytes.decode()
+                await self.send_ack(request_id)
 
                 # Pop pending request atomically
                 async with self.pending_lock:
@@ -279,10 +288,9 @@ class ZMQEnvClient(EnvClient):
                 use_bin_type=True,
             ),
         )
+        request_id = uuid.uuid4().hex[:8]
 
         while True:
-            request_id = uuid.uuid4().hex
-
             # Create future and pending request atomically
             future: Future = asyncio.Future()
             pending_req = PendingRequest(
@@ -422,5 +430,5 @@ class ZMQEnvClient(EnvClient):
         self.server_state = ServerState.UNHEALTHY
         self.healthy_event.clear()
         msg = f"Env server {self.name} became unhealthy ({failed_checks} consecutive health check failures)"
-        asyncio.ensure_future(self.cancel_all_pending(msg))
+        asyncio.ensure_future(self.cancel_all_pending(msg, notify_server=False))
         self.logger.warning(msg)

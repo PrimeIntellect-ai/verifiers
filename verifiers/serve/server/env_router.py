@@ -45,6 +45,7 @@ class ActiveRequestInfo:
 @dataclass
 class WorkerHandle:
     worker_id: int
+    incarnation: str
     process: BaseProcess
     address: str
     socket: zmq.asyncio.Socket
@@ -142,6 +143,8 @@ class EnvRouter:
         # setup state
         self.workers: dict[int, WorkerHandle] = {}
         self.request_to_worker: dict[bytes, int] = {}  # request_id → worker_id
+        self.completed_responses: dict[bytes, bytes] = {}
+        self.on_response: OnResponseCallback | None = None
         self.lag_monitor = EventLoopLagMonitor()
 
         self.ipc_paths: list[str] = [
@@ -173,6 +176,7 @@ class EnvRouter:
 
         worker_name = self.get_worker_name(worker_id)
         worker_addr = self.get_worker_address(worker_id)
+        incarnation = uuid.uuid4().hex[:8]
         self.ipc_paths.append(worker_addr.replace("ipc://", ""))
 
         ctx = mp.get_context("spawn")
@@ -189,6 +193,7 @@ class EnvRouter:
             ),
             kwargs=dict(
                 worker_id=worker_id,
+                incarnation=incarnation,
                 worker_name=worker_name,
                 request_address=worker_addr,
                 response_address=self.response_address,
@@ -206,11 +211,12 @@ class EnvRouter:
         socket.connect(worker_addr)
 
         self.logger.info(
-            f"Started worker (id={worker_id}, name={worker_name}, address={worker_addr}, pid={process.pid})"
+            f"Started worker (id={worker_id}, incarnation={incarnation}, name={worker_name}, address={worker_addr}, pid={process.pid})"
         )
 
         return WorkerHandle(
             worker_id=worker_id,
+            incarnation=incarnation,
             process=process,
             socket=socket,
             address=worker_addr,
@@ -235,6 +241,7 @@ class EnvRouter:
             stop_event: Set to signal shutdown.
         """
         self.start_workers()
+        self.on_response = on_response
 
         poller = zmq.asyncio.Poller()
         poller.register(self.response_pull, zmq.POLLIN)
@@ -256,10 +263,23 @@ class EnvRouter:
                             )
                         except zmq.Again:
                             break
-                        if len(frames) != 3:
+                        if len(frames) != 5:
                             continue
-                        client_id, request_id, response_bytes = frames
-                        self.complete_request(request_id)
+                        (
+                            worker_id_bytes,
+                            incarnation_bytes,
+                            client_id,
+                            request_id,
+                            response_bytes,
+                        ) = frames
+                        worker_id = int(worker_id_bytes.decode())
+                        incarnation = incarnation_bytes.decode()
+                        if not self.is_current_worker(worker_id, incarnation):
+                            continue
+                        info = self.complete_request(request_id)
+                        if info is not None:
+                            client_id = info.client_id
+                        self.completed_responses[request_id] = response_bytes
                         await on_response(client_id, request_id, response_bytes)
 
                 # ── worker stats ───────────────────────────────────
@@ -283,6 +303,7 @@ class EnvRouter:
         except asyncio.CancelledError:
             pass
         finally:
+            self.on_response = None
             poller.unregister(self.response_pull)
             poller.unregister(self.stats_pull)
 
@@ -330,6 +351,19 @@ class EnvRouter:
         self, client_id: bytes, request_id: bytes, payload: bytes
     ) -> None:
         """Send a request to the least-busy worker."""
+        response_bytes = self.completed_responses.get(request_id)
+        if response_bytes is not None:
+            if self.on_response is not None:
+                await self.on_response(client_id, request_id, response_bytes)
+            return
+
+        active_worker_id = self.request_to_worker.get(request_id)
+        if active_worker_id is not None:
+            worker = self.workers.get(active_worker_id)
+            if worker is not None and request_id in worker.active_requests:
+                worker.active_requests[request_id].client_id = client_id
+                return
+
         worker_id = self.select_worker()
         worker = self.workers[worker_id]
         await worker.socket.send_multipart([client_id, request_id, payload])
@@ -363,13 +397,22 @@ class EnvRouter:
             return worker.active_requests.pop(request_id, None)
         return None
 
+    def ack_request(self, request_id: bytes) -> None:
+        """Forget a completed response once the client confirms receipt."""
+        self.completed_responses.pop(request_id, None)
+
+    def is_current_worker(self, worker_id: int, incarnation: str) -> bool:
+        """Check whether a worker message came from the current process."""
+        worker = self.workers.get(worker_id)
+        return worker is not None and worker.incarnation == incarnation
+
     def handle_stats_message(self, data: bytes) -> None:
         """Parse a stats message and update the worker handle."""
         try:
             raw = msgpack.unpackb(data, raw=False)
             stats = EnvWorkerStats.model_validate(raw)
             worker = self.workers.get(stats.worker_id)
-            if worker is not None:
+            if worker is not None and worker.incarnation == stats.incarnation:
                 worker.stats = stats
                 worker.last_heartbeat = stats.timestamp
         except Exception:
@@ -414,6 +457,7 @@ class EnvRouter:
 
         self.workers.clear()
         self.request_to_worker.clear()
+        self.completed_responses.clear()
 
         self.response_pull.close()
         self.stats_pull.close()
