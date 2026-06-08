@@ -883,6 +883,7 @@ class Runtime:
             return self._completed_model_response(state)
         released = False
         try:
+            prompt = await self._transform_prompt(prompt, state)
             client = self.model_client(state)
             request_start = time.time()
             response = await client.get_response(
@@ -924,6 +925,21 @@ class Runtime:
         finally:
             if not released:
                 self._release_model_request(state, context)
+
+    async def _transform_prompt(self, prompt: Messages, state: State) -> Messages:
+        """Apply the harness ``transform_prompt`` hook (default identity).
+
+        The single point every model request passes through, so a subclass's
+        prompt transform applies uniformly across base-program, fn-mode, and
+        host-loop rollouts. Tolerates sync or async hooks.
+        """
+        harness = self.harness
+        if harness is None:
+            return prompt
+        result = harness.transform_prompt(prompt, state)
+        if inspect.isawaitable(result):
+            result = await result
+        return result if result is not None else prompt
 
     async def _reserve_model_request(
         self, task: Task, state: State, context: ModelRequestContext
