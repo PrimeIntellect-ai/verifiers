@@ -718,9 +718,14 @@ class EnvWorker:
 
         global _FAULTHANDLER_FILE
         try:
-            _FAULTHANDLER_FILE = open(f"/tmp/vf_crash_{os.getpid()}.txt", "w", buffering=1)
-            os.dup2(_FAULTHANDLER_FILE.fileno(), 2)  # fd 2 = stderr -> file
-            faulthandler.enable(all_threads=True)     # default target = stderr = file
+            # REPRO CAPTURE: route stderr (fd 2) -> STDOUT (fd 1) instead of a
+            # pod-local file. torch's c10 fatal handler + faulthandler write the
+            # native C++ backtrace to fd 2; on the raw stdout channel those
+            # plain-text frames survive `prime train logs` intact, whereas the
+            # file-relay got truncated by the log transport. (Cost: stderr INFO
+            # logs now also flood stdout — acceptable for a capture run.)
+            os.dup2(1, 2)  # fd 2 = stderr -> stdout (captured raw)
+            faulthandler.enable(all_threads=True)  # target = stderr = stdout now
         except Exception as exc:  # never block worker startup on diagnostics
             logging.getLogger("vf.loopdbg").warning("stderr-redirect/faulthandler failed: %r", exc)
 
