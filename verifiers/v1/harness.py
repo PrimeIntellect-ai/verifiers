@@ -220,6 +220,18 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
     def load_system_prompt(self, config: ConfigT) -> SystemPrompt:
         return config.system_prompt
 
+    def transform_prompt(self, prompt: Messages, state: State) -> Messages:
+        """Hook to transform the prompt before each model request.
+
+        Default identity — vf applies no transform of its own. Override in a
+        subclass to return a modified prompt. Applied at the single point every
+        model request passes through (``Runtime.submit_model_request``), so it
+        covers base-program, fn-mode, and host-loop rollouts uniformly. May be
+        sync or async. The returned messages are what the host tokenizes, sends
+        to the model, and records as the trajectory step.
+        """
+        return prompt
+
     def load_program_config(self, config: ConfigT) -> ProgramConfig:
         return config.program.resolve()
 
