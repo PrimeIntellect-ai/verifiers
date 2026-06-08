@@ -957,10 +957,17 @@ class RendererClient(
     ):
         super().__init__(config)
         self._renderer = renderer
-        # ClientConfig.renderer_pool_size wins over the constructor default so
-        # callers can tune pool size via config without subclassing.
+        # Resolution order: VF_RENDERER_POOL_SIZE env (wins over everything, for
+        # ad-hoc experiments without an orchestrator redeploy) > ClientConfig.
+        # renderer_pool_size (callers tune via config) > constructor default.
+        env_size = os.environ.get("VF_RENDERER_POOL_SIZE")
         cfg_size = getattr(config, "renderer_pool_size", None)
-        self._pool_size = cfg_size if cfg_size is not None else pool_size
+        if env_size:
+            self._pool_size = max(1, int(env_size))
+        elif cfg_size is not None:
+            self._pool_size = cfg_size
+        else:
+            self._pool_size = pool_size
 
     def setup_client(self, config: ClientConfig) -> AsyncOpenAI:
         return setup_openai_client(config)
