@@ -586,6 +586,16 @@ class EnvWorker:
 
     @classmethod
     def run_worker(cls, *args, **kwargs) -> None:
+        # Workers have died with exitcode=-11 (SIGSEGV): a native crash with no
+        # Python traceback. Register faulthandler for fatal signals writing to
+        # STDOUT (the captured channel; stderr is not captured by the log
+        # pipeline) so the next crash dumps every thread's Python stack and
+        # points at the native call site. faulthandler re-raises the signal, so
+        # the process still dies with -11 — we just learn where.
+        try:
+            faulthandler.enable(file=sys.stdout, all_threads=True)
+        except Exception as exc:  # never block worker startup on diagnostics
+            logging.getLogger("vf.loopdbg").warning("faulthandler.enable failed: %r", exc)
         try:
             import uvloop
 
