@@ -1,5 +1,6 @@
 __version__ = "0.1.2"
 
+from .codex_cli import CodexCLI, CodexCLIConfig, CodexCLIProgramConfig
 from .mini_swe_agent import MiniSWEAgent, MiniSWEAgentConfig, MiniSWEAgentProgramConfig
 from .opencode import OpenCode, OpenCodeConfig, OpenCodeProgramConfig
 from .pi import Pi, PiConfig, PiProgramConfig
@@ -13,6 +14,9 @@ LAZY_EXPORTS = {
 }
 
 __all__ = [
+    "CodexCLI",
+    "CodexCLIConfig",
+    "CodexCLIProgramConfig",
     "MiniSWEAgent",
     "MiniSWEAgentConfig",
     "MiniSWEAgentProgramConfig",

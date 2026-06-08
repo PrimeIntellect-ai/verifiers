@@ -10,6 +10,9 @@ import pytest
 
 import verifiers as vf
 from harnesses import (
+    CodexCLI,
+    CodexCLIConfig,
+    CodexCLIProgramConfig,
     MiniSWEAgent,
     MiniSWEAgentConfig,
     MiniSWEAgentProgramConfig,
@@ -250,6 +253,8 @@ async def test_harbor_reward_uses_background_job_for_tests(
 
 
 def test_packaged_harbor_and_opencode_imports_are_available_from_packages() -> None:
+    assert CodexCLI
+    assert CodexCLIConfig
     assert OpenCode
     assert OpenCodeConfig
     assert Pi
@@ -324,6 +329,7 @@ def test_opencode_custom_version_uses_versioned_release() -> None:
 @pytest.mark.parametrize(
     ("harness_cls", "config_cls", "program_cls"),
     [
+        (CodexCLI, CodexCLIConfig, CodexCLIProgramConfig),
         (OpenCode, OpenCodeConfig, OpenCodeProgramConfig),
         (MiniSWEAgent, MiniSWEAgentConfig, MiniSWEAgentProgramConfig),
         (Pi, PiConfig, PiProgramConfig),

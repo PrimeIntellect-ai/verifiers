@@ -5,6 +5,8 @@ import verifiers
 
 
 PACKAGE_SYMBOLS = {
+    "CodexCLI",
+    "CodexCLIConfig",
     "HarborTaskset",
     "HarborTasksetConfig",
     "MiniSWEAgent",
