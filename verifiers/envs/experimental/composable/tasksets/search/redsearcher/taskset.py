@@ -101,6 +101,14 @@ _REDSEARCHER_JUDGE_ERROR_TYPES = (
     UnprocessableEntityError,
 )
 
+_REDSEARCHER_TRANSIENT_JUDGE_ERROR_TYPES = (
+    APIConnectionError,
+    APITimeoutError,
+    ConflictError,
+    InternalServerError,
+    RateLimitError,
+)
+
 
 def _is_context_length_error(exc: BadRequestError) -> bool:
     response = getattr(exc, "response", None)
@@ -198,11 +206,16 @@ def _parse_judge_choice(content: str) -> float | None:
     text = content.strip()
     if not text:
         return None
-    upper = text.upper()
-    if upper.startswith("A") or "[CORRECT]" in upper or "CORRECT" == upper:
-        return 1.0
-    if upper.startswith("B") or "[INCORRECT]" in upper or "INCORRECT" == upper:
+    first_line = text.splitlines()[0].strip("`*_ \t")
+    upper = first_line.upper()
+    if re.match(r"^\[?INCORRECT\]?(?:[\s.):\]-]|$)", upper) or re.match(
+        r"^B(?:[\s.):\]-]|$)", upper
+    ):
         return 0.0
+    if re.match(r"^\[?CORRECT\]?(?:[\s.):\]-]|$)", upper) or re.match(
+        r"^A(?:[\s.):\]-]|$)", upper
+    ):
+        return 1.0
     return None
 
 
@@ -473,7 +486,8 @@ class RedSearcherRubric(vf.Rubric):
         client = self._get_client()
         request_kwargs = dict(self.judge_sampling_args)
         last_content = ""
-        for attempt in range(max(1, self.judge_max_retries)):
+        max_attempts = max(1, self.judge_max_retries)
+        for attempt in range(max_attempts):
             try:
                 judge_response = await client.chat.completions.create(
                     model=self.judge_model,
@@ -481,6 +495,16 @@ class RedSearcherRubric(vf.Rubric):
                     **request_kwargs,
                 )
             except _REDSEARCHER_JUDGE_ERROR_TYPES as exc:
+                if isinstance(exc, _REDSEARCHER_TRANSIENT_JUDGE_ERROR_TYPES) and (
+                    attempt + 1 < max_attempts
+                ):
+                    logger.warning(
+                        "REDSearcher judge transient request failed on attempt %s/%s: %r",
+                        attempt + 1,
+                        max_attempts,
+                        exc,
+                    )
+                    continue
                 _raise_redsearcher_judge_error(exc, model=self.judge_model)
             choices = getattr(judge_response, "choices", None)
             if choices is None or len(choices) != 1:
