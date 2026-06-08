@@ -306,11 +306,13 @@ class SubprocessRuntime(Runtime):
         )
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
-        except TimeoutError:
+        except asyncio.TimeoutError as exc:
             with contextlib.suppress(ProcessLookupError):
                 process.kill()
             await process.wait()
-            raise
+            raise TimeoutError(
+                f"Runtime command timed out after {timeout} seconds."
+            ) from exc
         return CommandResult(
             returncode=int(process.returncode or 0),
             stdout=stdout.decode(errors="replace"),
@@ -620,7 +622,14 @@ class PrimeRuntime(Runtime):
             working_dir=cwd or self.config.workdir,
             env=env or {},
         )
-        result = await (asyncio.wait_for(run, timeout) if timeout is not None else run)
+        try:
+            result = await (
+                asyncio.wait_for(run, timeout) if timeout is not None else run
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"Runtime command timed out after {timeout} seconds."
+            ) from exc
         return CommandResult(
             returncode=int(result.exit_code or 0),
             stdout=result.stdout or "",
@@ -754,11 +763,13 @@ async def docker(*args: str, timeout: float | None = None) -> CommandResult:
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
-    except TimeoutError:
+    except asyncio.TimeoutError as exc:
         with contextlib.suppress(ProcessLookupError):
             process.kill()
         await process.wait()
-        raise
+        raise TimeoutError(
+            f"Docker command timed out after {timeout} seconds."
+        ) from exc
     return CommandResult(
         returncode=int(process.returncode or 0),
         stdout=stdout.decode(errors="replace"),
