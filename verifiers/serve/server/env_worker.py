@@ -37,6 +37,7 @@ from verifiers.serve.types import (
 from verifiers.types import ClientConfig
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.client_utils import resolve_client_config
+from verifiers.utils.loop_debug import looptime
 from verifiers.utils.process_utils import monitor_death_pipe, set_proc_title
 from verifiers.utils.serve_utils import msgpack_encoder
 
@@ -261,15 +262,22 @@ class EnvWorker:
                 pass
 
         try:
-            raw = await asyncio.to_thread(msgpack.unpackb, payload_bytes, raw=False)
+            with looptime("req_msgpack_unpack"):
+                raw = await asyncio.to_thread(msgpack.unpackb, payload_bytes, raw=False)
             request_type = raw.get("request_type")
             request_id = raw.get("request_id", request_id)
 
             if request_type == "run_rollout":
-                request = await asyncio.to_thread(RunRolloutRequest.model_validate, raw)
+                with looptime("req_model_validate"):
+                    request = await asyncio.to_thread(
+                        RunRolloutRequest.model_validate, raw
+                    )
                 response = await self.handle_run_rollout(request)
             elif request_type == "run_group":
-                request = await asyncio.to_thread(RunGroupRequest.model_validate, raw)
+                with looptime("req_model_validate"):
+                    request = await asyncio.to_thread(
+                        RunGroupRequest.model_validate, raw
+                    )
                 response = await self.handle_run_group(request)
             else:
                 self.logger.warning(f"Unknown request type: {request_type}")
@@ -292,16 +300,17 @@ class EnvWorker:
             return
 
         try:
-            response_bytes = await asyncio.to_thread(
-                lambda: cast(
-                    bytes,
-                    msgpack.packb(
-                        response.model_dump(mode="python", warnings=False),
-                        default=msgpack_encoder,
-                        use_bin_type=True,
-                    ),
+            with looptime("req_response_serialize"):
+                response_bytes = await asyncio.to_thread(
+                    lambda: cast(
+                        bytes,
+                        msgpack.packb(
+                            response.model_dump(mode="python", warnings=False),
+                            default=msgpack_encoder,
+                            use_bin_type=True,
+                        ),
+                    )
                 )
-            )
         except Exception as e:
             self.logger.error(
                 f"Failed to serialize response for {request_id}: {e}",
@@ -361,10 +370,10 @@ class EnvWorker:
                 loop.set_debug(True)
                 try:
                     loop.slow_callback_duration = float(
-                        os.getenv("VF_LOOP_DEBUG_SLOW_S", "0.5") or 0.5
+                        os.getenv("VF_LOOP_DEBUG_SLOW_S", "0.25") or 0.25
                     )
                 except ValueError:
-                    loop.slow_callback_duration = 0.5
+                    loop.slow_callback_duration = 0.25
             watchdog_task = asyncio.create_task(self._loop_watchdog())
             self.logger.info(
                 f"VF_LOOP_DEBUG on for {self.worker_name}: lag-dump>="

@@ -51,6 +51,35 @@ from verifiers.clients.openai_chat_completions_client import (
 )
 from verifiers.errors import EmptyModelResponseError, OverlongPromptError
 from verifiers.utils.loop_debug import looptime
+
+# Instrument the sync-on-loop multimodal feature build inside renderers.generate
+# (``_build_mm_features`` base64-encodes pixel kwargs and is NOT offloaded — it
+# runs on the event loop per request, a prime on-loop-block suspect). Monkeypatch
+# it here (module-level fn, looked up by name in generate) so its per-request loop
+# time shows up as ``looptime rdr_build_mm_features`` without editing renderers.
+# Fully defensive: any failure (renderers version drift / rename) is swallowed so
+# it can NEVER break the env-worker import.
+try:
+    import renderers.client as _renderers_client
+
+    if not getattr(_renderers_client, "_vf_looptime_patched", False):
+        _vf_orig_build_mm = getattr(_renderers_client, "_build_mm_features", None)
+        if callable(_vf_orig_build_mm):
+            def _vf_timed_build_mm(*args, _orig=_vf_orig_build_mm, **kwargs):
+                with looptime("rdr_build_mm_features"):
+                    return _orig(*args, **kwargs)
+
+            _renderers_client._build_mm_features = _vf_timed_build_mm
+        _renderers_client._vf_looptime_patched = True
+        logging.getLogger("vf.looptime").info(
+            "renderers._build_mm_features looptime patch: %s",
+            "applied" if callable(_vf_orig_build_mm) else "skipped (fn not found)",
+        )
+except Exception as _exc:  # pragma: no cover - never break import
+    logging.getLogger("vf.looptime").warning(
+        "renderers looptime monkeypatch skipped: %r", _exc
+    )
+
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,

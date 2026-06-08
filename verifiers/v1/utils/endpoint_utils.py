@@ -11,6 +11,7 @@ from anthropic import Anthropic, AsyncAnthropic
 from openai import AsyncOpenAI, OpenAI
 
 from verifiers.errors import Error, OverlongPromptError, TunnelError
+from verifiers.utils.loop_debug import looptime
 from verifiers.types import (
     AssistantMessage,
     ClientType,
@@ -328,13 +329,16 @@ async def run_intercepted_program(
     state: State,
 ) -> State | JsonData | None:
     async def call_tool(name: str, arguments: ToolParameters) -> object:
-        return await runtime.call_tool(name, task, state, **dict(arguments))
+        with looptime("h_call_tool"):
+            return await runtime.call_tool(name, task, state, **dict(arguments))
 
     async def call_user(transcript: list[PromptMessage]) -> list[JsonData]:
-        return await runtime.user_messages(task, state, transcript=transcript)
+        with looptime("h_call_user"):
+            return await runtime.user_messages(task, state, transcript=transcript)
 
     async def check_stop() -> JsonData:
-        done = await runtime.is_completed(task, state)
+        with looptime("h_check_stop"):
+            done = await runtime.is_completed(task, state)
         stop_condition = state.get("stop_condition")
         return {
             "done": done,
