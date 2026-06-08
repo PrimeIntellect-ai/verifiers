@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import tempfile
 import time
 from collections import Counter
 from collections.abc import Mapping
@@ -709,30 +711,72 @@ def load_outputs(results_path: Path) -> list[RolloutOutput]:
     outputs_path = results_path / "results.jsonl"
     outputs: list[RolloutOutput] = []
 
-    with open(outputs_path, "r") as f:
-        lines = f.readlines()
-
-    for line_idx, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-
-        try:
-            outputs.append(RolloutOutput(**json.loads(line)))
-        except json.JSONDecodeError:
-            # A crash during append can leave the final JSONL line partially written.
-            # Recover completed records, but keep raising for malformed non-trailing rows.
-            has_nonempty_lines_after = any(
-                remaining.strip() for remaining in lines[line_idx:]
-            )
-            if has_nonempty_lines_after:
-                raise
-
-            logger.warning(
-                f"Ignoring malformed trailing line in {outputs_path} at line {line_idx}"
-            )
-            break
+    with open(outputs_path, "rb") as f:
+        for line_idx, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                output = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                logger.warning(
+                    "Ignoring malformed JSONL row in %s at line %s",
+                    outputs_path,
+                    line_idx,
+                )
+                continue
+            if not isinstance(output, dict):
+                logger.warning(
+                    "Ignoring non-object JSONL row in %s at line %s",
+                    outputs_path,
+                    line_idx,
+                )
+                continue
+            if "example_id" not in output:
+                logger.warning(
+                    "Ignoring JSONL row without example_id in %s at line %s",
+                    outputs_path,
+                    line_idx,
+                )
+                continue
+            outputs.append(RolloutOutput(**output))
 
     return outputs
+
+
+def _append_prefix(outputs_path: Path) -> str:
+    """Add a newline if the existing file is missing one."""
+    if not outputs_path.exists() or outputs_path.stat().st_size == 0:
+        return ""
+
+    with open(outputs_path, "rb") as f:
+        f.seek(-1, 2)
+        if f.read(1) == b"\n":
+            return ""
+    return "\n"
+
+
+def save_outputs(
+    outputs: list[RolloutOutput], results_path: Path, mode: str = "a"
+) -> None:
+    """Save outputs to disk."""
+    serialized_rows: list[str] = []
+    for idx, output in enumerate(outputs):
+        example_id = output.get("example_id", "unknown")
+        try:
+            serialized_rows.append(json.dumps(output, default=make_serializable) + "\n")
+        except Exception as e:
+            logger.error(f"Failed to save result with index {idx} ({example_id=}): {e}")
+
+    serialized = "".join(serialized_rows)
+
+    results_path.mkdir(parents=True, exist_ok=True)
+    outputs_path = results_path / "results.jsonl"
+    prefix = ""
+    if "a" in mode and serialized:
+        prefix = _append_prefix(outputs_path)
+
+    with open(outputs_path, mode) as f:
+        f.write(prefix + serialized)
 
 
 def validate_resume_metadata(
@@ -807,77 +851,9 @@ def validate_resume_metadata(
         )
 
 
-def save_outputs(outputs: list[RolloutOutput], results_path: Path, mode: str = "w"):
-    """Save outputs to disk."""
-    results_path.mkdir(parents=True, exist_ok=True)
-    outputs_path = results_path / "results.jsonl"
-    with open(outputs_path, mode) as f:
-        for idx, output in enumerate(outputs):
-            example_id = output.get("example_id") or "unknown"
-            try:
-                json.dump(output, f, default=make_serializable)
-                f.write("\n")
-            except Exception as e:
-                logger.error(
-                    f"Failed to save result with index {idx} ({example_id=}): {e}"
-                )
-
-
-def _get_last_nonempty_line_bounds(file_obj: Any) -> tuple[int, bytes] | None:
-    """Return byte offset + contents for the last non-empty line in a file."""
-    file_obj.seek(0, 2)
-    file_size = file_obj.tell()
-    if file_size == 0:
-        return None
-
-    cursor = file_size
-
-    # Skip trailing whitespace/newlines to locate the real end of the last row.
-    while cursor > 0:
-        cursor -= 1
-        file_obj.seek(cursor)
-        if file_obj.read(1) not in b" \t\r\n":
-            break
-    else:
-        return None
-
-    line_end = cursor + 1
-    line_start = cursor
-    while line_start > 0:
-        file_obj.seek(line_start - 1)
-        if file_obj.read(1) == b"\n":
-            break
-        line_start -= 1
-
-    file_obj.seek(line_start)
-    return line_start, file_obj.read(line_end - line_start)
-
-
-def truncate_malformed_trailing_line(outputs_path: Path) -> None:
-    """Drop a malformed trailing JSONL row so future appends stay valid."""
-    if not outputs_path.exists() or not outputs_path.is_file():
-        return
-
-    with open(outputs_path, "rb+") as f:
-        last_line_info = _get_last_nonempty_line_bounds(f)
-        if last_line_info is None:
-            return
-
-        line_start, line_bytes = last_line_info
-        try:
-            json.loads(line_bytes.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            logger.warning(
-                "Removing malformed trailing line in %s at byte offset %s",
-                outputs_path,
-                line_start,
-            )
-            f.truncate(line_start)
-
-
 def save_new_outputs(new_outputs: list[RolloutOutput], results_path: Path):
     """Saves new rollout outputs to disk (in append mode)."""
-    save_outputs(new_outputs, results_path, mode="a")
+    save_outputs(new_outputs, results_path)
 
 
 def save_metadata(metadata: GenerateMetadata, result_path: Path):
@@ -888,11 +864,16 @@ def save_metadata(metadata: GenerateMetadata, result_path: Path):
     metadata_dict = dict(metadata)
     metadata_dict.pop("path_to_save")
     metadata_dict.pop("date")
-    with open(metadata_path, "w") as f:
-        try:
-            json.dump(metadata_dict, f, default=make_serializable)
-        except Exception as e:
-            logger.error(f"Failed to save metadata: {e}")
+    serialized = json.dumps(metadata_dict, default=make_serializable)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=result_path, delete=False) as f:
+            temp_path = f.name
+            f.write(serialized)
+        os.replace(temp_path, metadata_path)
+    finally:
+        if temp_path is not None and os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 
 def make_dataset(results: GenerateOutputs) -> Dataset:

@@ -33,7 +33,6 @@ from verifiers.utils.save_utils import (
     save_new_outputs,
     save_metadata,
     states_to_outputs,
-    truncate_malformed_trailing_line,
     validate_resume_metadata,
 )
 from verifiers.utils.usage_utils import StateUsageTracker, response_usage_tokens
@@ -475,7 +474,7 @@ class TestSavingResults:
 
 
 class TestLoadOutputs:
-    def test_ignores_malformed_trailing_line(self, tmp_path: Path):
+    def test_ignores_malformed_trailing_line(self, tmp_path: Path, monkeypatch):
         results_path = tmp_path / "results"
         results_path.mkdir()
         outputs_path = results_path / "results.jsonl"
@@ -489,50 +488,68 @@ class TestLoadOutputs:
         outputs_path.write_text(
             "\n".join(lines + [partial_trailing_line]) + "\n", encoding="utf-8"
         )
+        warnings = []
+        monkeypatch.setattr(
+            "verifiers.utils.save_utils.logger.warning",
+            lambda *args, **kwargs: warnings.append(args),
+        )
 
         outputs = load_outputs(results_path)
 
-        assert len(outputs) == 2
-        assert outputs[0]["example_id"] == 0
-        assert outputs[1]["example_id"] == 1
+        assert [output["example_id"] for output in outputs] == [0, 1]
+        assert warnings
 
-    def test_raises_for_malformed_non_trailing_line(self, tmp_path: Path):
+    def test_ignores_malformed_non_trailing_line(self, tmp_path: Path, monkeypatch):
         results_path = tmp_path / "results"
         results_path.mkdir()
         outputs_path = results_path / "results.jsonl"
 
         malformed_non_trailing_line = '{"example_id": 0, "label": "broken"'
+        missing_example_id_line = json.dumps({"label": "missing"})
         valid_line = json.dumps({"example_id": 1, "label": "row-1"})
         outputs_path.write_text(
-            "\n".join([malformed_non_trailing_line, valid_line]) + "\n",
+            "\n".join(
+                [malformed_non_trailing_line, missing_example_id_line, valid_line]
+            )
+            + "\n",
             encoding="utf-8",
         )
+        warnings = []
+        monkeypatch.setattr(
+            "verifiers.utils.save_utils.logger.warning",
+            lambda *args, **kwargs: warnings.append(args),
+        )
 
-        with pytest.raises(json.JSONDecodeError):
-            load_outputs(results_path)
+        outputs = load_outputs(results_path)
+
+        assert [output["example_id"] for output in outputs] == [1]
+        assert warnings
 
 
 class TestSaveNewOutputs:
-    def test_truncates_malformed_trailing_line_before_append(self, tmp_path: Path):
+    def test_appends_after_malformed_rows_without_rewriting(self, tmp_path: Path):
         results_path = tmp_path / "results"
         results_path.mkdir()
         outputs_path = results_path / "results.jsonl"
 
-        existing_outputs = [
-            {"example_id": 0, "label": "row-0"},
-            {"example_id": 1, "label": "row-1"},
-        ]
+        malformed_middle_line = '{"example_id": 99, "label": "broken"'
         malformed_trailing_line = '{"example_id": 2, "label": "row-2"'
-        lines = [json.dumps(output) for output in existing_outputs]
         outputs_path.write_text(
-            "\n".join(lines + [malformed_trailing_line]), encoding="utf-8"
+            "\n".join(
+                [
+                    json.dumps({"example_id": 0, "label": "row-0"}),
+                    malformed_middle_line,
+                    json.dumps({"example_id": 1, "label": "row-1"}),
+                    malformed_trailing_line,
+                ]
+            ),
+            encoding="utf-8",
         )
 
-        # Caller drops the partial trailing row before appending so the new
-        # row lands on a valid JSONL boundary.
-        truncate_malformed_trailing_line(outputs_path)
+        circular_output = {"example_id": 4}
+        circular_output["self"] = circular_output
         save_new_outputs(
-            [{"example_id": 3, "label": "row-3"}],
+            [circular_output, {"example_id": 3, "label": "row-3"}],
             results_path,
         )
 
@@ -541,14 +558,12 @@ class TestSaveNewOutputs:
             for line in outputs_path.read_text(encoding="utf-8").splitlines()
             if line
         ]
-        parsed_outputs = [json.loads(line) for line in persisted_lines]
 
-        assert [output["example_id"] for output in parsed_outputs] == [0, 1, 3]
-        assert [output["example_id"] for output in load_outputs(results_path)] == [
-            0,
-            1,
-            3,
-        ]
+        assert persisted_lines[1] == malformed_middle_line
+        assert persisted_lines[3] == malformed_trailing_line
+        assert [
+            json.loads(persisted_lines[idx])["example_id"] for idx in [0, 2, 4]
+        ] == [0, 1, 3]
 
 
 class TestResumeMetadataValidation:
