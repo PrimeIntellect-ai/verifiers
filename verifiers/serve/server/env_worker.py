@@ -52,6 +52,68 @@ _loopdbg_log = logging.getLogger("vf.loopdbg")
 
 # Kept alive so faulthandler's fatal-signal file isn't GC-closed (set in run_worker).
 _FAULTHANDLER_FILE = None
+# Kept alive so the ctypes native SIGSEGV callback isn't GC'd.
+_NATIVE_FAULT_CB = None
+
+
+def _enable_native_cpp_fault_dump(probe=lambda m: None) -> str | None:
+    """Make the next fatal signal ALSO emit a NATIVE (C/C++) backtrace.
+
+    faulthandler prints only PYTHON frames; the exitcode=-11 faults in native
+    code (image_processor / torchvision) with NO Python frame on the faulting
+    thread, so the Python dump can't name the killer. This adds a native stack:
+
+    1) torch's c10 fatal-signal handler (preferred): prints a symbolized C++
+       backtrace. Installed AFTER faulthandler so it chains
+       (C++ bt -> faulthandler Python dump -> die). Writes to fd 2 (already
+       redirected to the crash file the router relays).
+    2) ctypes libc ``backtrace_symbols_fd`` fallback: writes native frames
+       (lib + symbol/addr) to fd 2 on SIGSEGV/SIGABRT/SIGBUS/SIGFPE.
+
+    Idempotent; call again after any faulthandler re-arm to stay on top.
+    """
+    try:
+        os.environ.setdefault("TORCH_SHOW_CPP_STACKTRACES", "1")
+        import torch  # noqa: F401
+        fn = getattr(torch._C, "_set_print_stack_traces_on_fatal_signal", None)
+        if callable(fn):
+            fn(True)
+            probe("NATIVE_DUMP torch c10 fatal handler enabled")
+            return "torch"
+        probe("NATIVE_DUMP torch api missing -> ctypes fallback")
+    except Exception as e:
+        probe(f"NATIVE_DUMP torch enable failed: {e!r}")
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+        _BTN = 128
+        _buf = (ctypes.c_void_p * _BTN)()
+        _HND = ctypes.CFUNCTYPE(None, ctypes.c_int)
+
+        def _h(sig, _buf=_buf, _libc=libc):
+            try:
+                os.write(2, b"\n=== NATIVE BACKTRACE (sig=" + str(sig).encode() + b") ===\n")
+                n = _libc.backtrace(_buf, _BTN)
+                _libc.backtrace_symbols_fd(_buf, n, 2)
+                os.write(2, b"=== END NATIVE BACKTRACE ===\n")
+            except Exception:
+                pass
+            # restore default + re-raise so the process still dies with the signal
+            signal.signal(sig, signal.SIG_DFL)
+            os.kill(os.getpid(), sig)
+
+        global _NATIVE_FAULT_CB
+        _NATIVE_FAULT_CB = _HND(_h)
+        _cbp = ctypes.cast(_NATIVE_FAULT_CB, ctypes.c_void_p)
+        for _s in (signal.SIGSEGV, signal.SIGABRT, signal.SIGBUS, signal.SIGFPE):
+            libc.signal(_s, _cbp)
+        probe("NATIVE_DUMP ctypes libc backtrace handler installed")
+        return "ctypes"
+    except Exception as e:
+        probe(f"NATIVE_DUMP ctypes fallback failed: {e!r}")
+    return None
 
 
 def _loopdbg_on() -> bool:
@@ -342,6 +404,9 @@ class EnvWorker:
             try:
                 faulthandler.disable()
                 faulthandler.enable(all_threads=True)
+                # Re-chain the native C/C++ backtrace recorder on TOP of the
+                # freshly re-armed faulthandler (else the re-arm clobbers it).
+                _enable_native_cpp_fault_dump()
             except Exception:
                 pass
 
@@ -685,6 +750,10 @@ class EnvWorker:
             _probe("SELFTEST vllm.multimodal OK")
         except Exception as _e:
             _probe(f"SELFTEST exception {_e!r}")
+
+        # NATIVE CRASH RECORDER: add a C/C++ backtrace to the next fatal signal
+        # (faulthandler alone only shows Python frames; the -11 is native).
+        _enable_native_cpp_fault_dump(_probe)
 
         try:
             import uvloop
