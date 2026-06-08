@@ -398,20 +398,22 @@ class EnvRouter:
                 # the all-thread crash stack to a pod-local file (same container,
                 # shared /tmp). Read+relay it via the router logger (captured).
                 fault = ""
+                fault_info = "no-file"
                 try:
-                    _fp = f"/tmp/vf_faulthandler_{worker.process.pid}.txt"
+                    _fp = f"/tmp/vf_crash_{worker.process.pid}.txt"
                     if os.path.exists(_fp):
                         with open(_fp) as _f:
                             fault = _f.read().strip()
+                        fault_info = f"{len(fault)}B"
                         os.remove(_fp)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    fault_info = f"read-err:{_e!r}"
                 msg = (
                     f"Worker {worker_id} (pid={worker.process.pid}) died "
-                    f"(exitcode={exitcode}), restarting"
+                    f"(exitcode={exitcode}), restarting [crashfile={fault_info}]"
                 )
                 if fault:
-                    msg += f" | FAULTHANDLER:\n{fault[-4000:]}"
+                    msg += f" | CRASHDUMP:\n{fault[-6000:]}"
                 self.logger.warning(msg)
                 await self.restart_worker(worker_id)
             elif (

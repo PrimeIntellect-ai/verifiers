@@ -599,12 +599,19 @@ class EnvWorker:
         # so write the fatal dump to a pod-local FILE the router reads after the
         # worker dies (same container → shared /tmp). Keep the file object alive
         # (module global) so it isn't GC-closed out from under faulthandler.
+        # The prior faulthandler->file produced empty dumps (torch/vLLM install
+        # their own fatal handler on lazy import, overriding ours, and write to
+        # stderr which isn't captured). So REDIRECT the process stderr fd (2) to a
+        # pod-local file: then EVERY crash writer — faulthandler, torch/c10's C++
+        # backtrace, glibc abort, vLLM — lands in that file, which the router
+        # reads after death. Robust to whichever handler wins.
         global _FAULTHANDLER_FILE
         try:
-            _FAULTHANDLER_FILE = open(f"/tmp/vf_faulthandler_{os.getpid()}.txt", "w")
-            faulthandler.enable(file=_FAULTHANDLER_FILE, all_threads=True)
+            _FAULTHANDLER_FILE = open(f"/tmp/vf_crash_{os.getpid()}.txt", "w", buffering=1)
+            os.dup2(_FAULTHANDLER_FILE.fileno(), 2)  # fd 2 = stderr -> file
+            faulthandler.enable(all_threads=True)     # default target = stderr = file
         except Exception as exc:  # never block worker startup on diagnostics
-            logging.getLogger("vf.loopdbg").warning("faulthandler.enable failed: %r", exc)
+            logging.getLogger("vf.loopdbg").warning("stderr-redirect/faulthandler failed: %r", exc)
         try:
             import uvloop
 
