@@ -623,6 +623,31 @@ class EnvWorker:
             faulthandler.enable(all_threads=True)     # default target = stderr = file
         except Exception as exc:  # never block worker startup on diagnostics
             logging.getLogger("vf.loopdbg").warning("stderr-redirect/faulthandler failed: %r", exc)
+
+        # ROOT-CAUSE PROBE: the -11 stack shows the worker SIGSEGVs importing
+        # scipy.stats (pulled by vllm.multimodal on first render) — a native ABI
+        # crash. Log the actual image versions of the ABI-coupled packages, then
+        # do a guarded `import scipy.stats` self-test. If the worker dies between
+        # SELFTEST START and OK, scipy import segfaults deterministically at
+        # startup (and we have the version skew to pin).
+        try:
+            import importlib.metadata as _md
+            _vlog = logging.getLogger("vf.loopdbg")
+            for _p in ("numpy", "scipy", "scikit-image", "torch", "vllm",
+                       "transformers", "pillow"):
+                try:
+                    _vlog.warning("VERSIONS %s==%s", _p, _md.version(_p))
+                except Exception as _e:
+                    _vlog.warning("VERSIONS %s=missing(%r)", _p, _e)
+            _vlog.warning("SELFTEST import scipy.stats START")
+            import scipy.stats as _scipy_stats  # noqa: F401
+            _vlog.warning("SELFTEST import scipy.stats OK")
+            _vlog.warning("SELFTEST import vllm.multimodal START")
+            import vllm.multimodal as _vmm  # noqa: F401
+            _vlog.warning("SELFTEST import vllm.multimodal OK")
+        except Exception as _e:
+            logging.getLogger("vf.loopdbg").warning("SELFTEST exception %r", _e)
+
         try:
             import uvloop
 
