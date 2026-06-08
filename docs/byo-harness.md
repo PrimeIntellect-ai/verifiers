@@ -429,6 +429,21 @@ class PythonHarnessConfig(vf.HarnessConfig):
 Put sandbox overrides on tasks only when the taskset owns per-task images,
 files, resource sizing, or setup.
 
+### Prompt Preparation Hook
+
+Harnesses can reshape the prompt right before each model request using `prepare_prompt(prompt, state)`. The default implementation is identity; override it to compact context, redact content, or inject reminders. The prepared messages are what the runtime sends to the model and records in the trajectory, and the base-program loop uses the prepared prompt on subsequent turns.
+
+```python
+class MyHarness(vf.Harness[MyHarnessConfig]):
+    def prepare_prompt(self, prompt: vf.Messages, state: vf.State) -> vf.Messages:
+        # Example: prepend a brief reminder to the first system message
+        messages = vf.normalize_messages(prompt)
+        if messages and messages[0].role == "system":
+            content = str(messages[0].content or "")
+            messages[0].content = "Answer concisely. " + content
+        return messages
+```
+
 ## Lifecycle And Scoring
 
 Lifecycle decorators attach behavior to the owning class:
