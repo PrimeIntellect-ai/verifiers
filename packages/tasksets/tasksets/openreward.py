@@ -11,8 +11,9 @@ from openreward.api.environments.types import (
     TextBlock as OpenRewardTextBlock,
     ToolOutput as OpenRewardToolOutput,
 )
-import verifiers as vf
-from verifiers.v1.utils.serialization_utils import serializable
+
+import verifiers.v1 as vf
+from verifiers.v1.utils.json_utils import json_data, json_value
 
 
 class OpenRewardSplit(Protocol):
@@ -33,14 +34,24 @@ class OpenRewardEnvironment(Protocol):
     ) -> Iterable[OpenRewardTask]: ...
 
 
+class OpenRewardTool(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def description(self) -> str | None: ...
+
+    @property
+    def input_schema(self) -> vf.JsonValue | None: ...
+
+
+class OpenRewardUserConfig(vf.UserConfig):
+    pass
+
+
 class OpenRewardTasksetConfig(vf.TasksetConfig):
-    taskset_id: str | None = "openreward"
-    bindings: vf.BindingsConfig = vf.BindingsConfig.model_validate(
-        {"session.task": "task"}
-    )
-    objects: vf.ObjectsConfig = vf.ObjectsConfig.model_validate(
-        {"session": "tasksets.openreward:OpenRewardSession"}
-    )
+    id: str | None = "openreward"
+    user: vf.UserConfig | None = OpenRewardUserConfig()
     environment: str
     variant: str | None = None
     base_url: str | None = None
@@ -49,8 +60,12 @@ class OpenRewardTasksetConfig(vf.TasksetConfig):
     num_eval_examples: int = 0
 
 
+class OpenRewardVFTask(vf.Task, frozen=True):
+    openreward: vf.JsonData
+
+
 class OpenRewardSession:
-    def __init__(self, task: vf.Task):
+    def __init__(self, task: vf.JsonData):
         self.task = task
         self.client: OpenReward | None = None
         self.session_context: OpenRewardAPISession | None = None
@@ -60,24 +75,37 @@ class OpenRewardSession:
         if self.session is not None:
             return self.session
         spec = self.task["openreward"]
-        assert isinstance(spec, dict)
-        task_data = spec["task"]
-        assert isinstance(task_data, dict)
-        task_spec = task_data["task_spec"]
-        assert isinstance(task_spec, dict)
+        if not isinstance(spec, dict):
+            raise TypeError("OpenReward task requires openreward config.")
+        spec_data = spec
+        task_data = spec_data.get("task")
+        if not isinstance(task_data, dict):
+            raise TypeError("OpenReward task requires task data.")
+        task_spec = task_data.get("task_spec")
+        if not isinstance(task_spec, dict):
+            raise TypeError("OpenReward task_spec must be a mapping.")
+        variant = spec_data.get("variant")
+        if variant is not None and not isinstance(variant, str):
+            raise TypeError("OpenReward variant must be a string or null.")
+        base_url = spec_data.get("base_url")
+        if base_url is not None and not isinstance(base_url, str):
+            raise TypeError("OpenReward base_url must be a string or null.")
+        namespace = task_data.get("namespace")
+        if namespace is not None and not isinstance(namespace, str):
+            raise TypeError("OpenReward namespace must be a string or null.")
         client = OpenReward()
         self.client = client
         environment = await asyncio.to_thread(
             client.environments.get,
-            name=str(spec["environment"]),
-            variant=cast(str | None, spec["variant"]),
-            base_url=cast(str | None, spec["base_url"]),
+            name=str(spec_data["environment"]),
+            variant=variant,
+            base_url=base_url,
         )
         self.session_context = environment.session(
             task=OpenRewardTask(
                 server_name=str(task_data["server_name"]),
                 environment_name=str(task_data["environment_name"]),
-                namespace=cast(str | None, task_data["namespace"]),
+                namespace=namespace,
                 task_spec=cast(
                     OpenRewardJSONObject,
                     {str(key): value for key, value in task_spec.items()},
@@ -91,20 +119,17 @@ class OpenRewardSession:
         session = await self.start()
         return await asyncio.to_thread(session.get_prompt)
 
-    async def tool_specs(self) -> Iterable[object]:
+    async def call_tool(self, name: str, input: vf.JsonData) -> OpenRewardToolOutput:
         session = await self.start()
         return cast(
-            Iterable[object], await asyncio.to_thread(session.list_tools, "openai")
+            OpenRewardToolOutput,
+            await asyncio.to_thread(session.call_tool, name, input),
         )
 
-    async def call_tool(
-        self, name: str, arguments: vf.JsonData
-    ) -> OpenRewardToolOutput:
+    async def tool_defs(self) -> list[vf.JsonData]:
         session = await self.start()
-        result = await asyncio.to_thread(
-            session.call_tool, name, cast(OpenRewardJSONObject, dict(arguments))
-        )
-        return cast(OpenRewardToolOutput, result)
+        tools = await asyncio.to_thread(session.list_tools)
+        return openreward_tool_defs(tools)
 
     def content(self, blocks: object) -> vf.MessageContent:
         block_list = (
@@ -113,8 +138,9 @@ class OpenRewardSession:
             else [blocks]
         )
         if all(isinstance(block, OpenRewardTextBlock) for block in block_list):
-            text_blocks = cast(list[OpenRewardTextBlock], block_list)
-            return "\n".join(block.text for block in text_blocks)
+            return "\n".join(
+                block.text for block in cast(list[OpenRewardTextBlock], block_list)
+            )
         content: list[vf.JsonData] = []
         for block in block_list:
             if isinstance(block, OpenRewardTextBlock):
@@ -129,7 +155,7 @@ class OpenRewardSession:
                     }
                 )
             else:
-                assert False, f"Unexpected OpenReward block: {block!r}"
+                raise TypeError(f"Unexpected OpenReward block: {block!r}")
         return cast(vf.MessageContent, content)
 
     async def close(self) -> None:
@@ -142,16 +168,51 @@ class OpenRewardSession:
         self.client = None
 
 
+def openreward_tool_defs(
+    tools: Iterable[OpenRewardTool | vf.JsonData],
+) -> list[vf.JsonData]:
+    tool_defs: list[vf.JsonData] = []
+    for tool in tools:
+        if isinstance(tool, dict):
+            tool_data = cast(vf.JsonData, tool)
+            name = tool_data.get("name")
+            description = tool_data.get("description", "")
+            schema = tool_data.get("input_schema")
+        else:
+            tool_spec = cast(OpenRewardTool, tool)
+            name = tool_spec.name
+            description = tool_spec.description
+            schema = tool_spec.input_schema
+        if not isinstance(name, str) or not name:
+            raise TypeError("OpenReward tools must have non-empty names.")
+        description = description or ""
+        parameters = (
+            json_data(schema, context=f"OpenReward tool {name} schema")
+            if isinstance(schema, dict)
+            else {"type": "object", "properties": {}}
+        )
+        tool_defs.append(
+            json_data(
+                {
+                    "name": name,
+                    "description": str(description),
+                    "parameters": parameters,
+                },
+                context=f"OpenReward tool {name}",
+            )
+        )
+    return tool_defs
+
+
 class OpenRewardTaskset(vf.Taskset[OpenRewardTasksetConfig]):
-    def load_toolsets(self, config: OpenRewardTasksetConfig) -> vf.Toolsets:
-        return {"openreward": vf.Toolset(scope="rollout", handler=self.call_tool)}
+    task_type = OpenRewardVFTask
 
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         if split == "eval":
             if self.config.num_eval_examples <= 0:
                 return []
             return self.openreward_test_tasks(
-                num_examples=self.config.num_eval_examples,
+                num_examples=self.config.num_eval_examples
             )
         return self.openreward_tasks(
             task_split=self.config.split,
@@ -208,11 +269,7 @@ class OpenRewardTaskset(vf.Taskset[OpenRewardTasksetConfig]):
     ) -> Iterable[OpenRewardTask]:
         if num_examples is None:
             return environment.list_tasks(split=task_split)
-        return environment.get_task_range(
-            split=task_split,
-            start=0,
-            stop=num_examples,
-        )
+        return environment.get_task_range(split=task_split, start=0, stop=num_examples)
 
     def openreward_task_records(
         self,
@@ -222,96 +279,121 @@ class OpenRewardTaskset(vf.Taskset[OpenRewardTasksetConfig]):
         config = self.config
         data: list[vf.JsonData] = []
         for task in tasks:
-            task_spec = serializable(task.task_spec)
-            assert isinstance(task_spec, dict)
+            task_spec = json_value(task.task_spec)
+            if not isinstance(task_spec, dict):
+                raise TypeError("OpenReward task_spec must serialize to a mapping.")
             data.append(
-                {
-                    "prompt": [
-                        {
-                            "role": "user",
-                            "content": "OpenReward rollout is initializing.",
-                        }
-                    ],
-                    "openreward": {
-                        "environment": config.environment,
-                        "variant": config.variant,
-                        "base_url": config.base_url,
-                        "split": task_split,
-                        "task": {
-                            "server_name": task.server_name,
-                            "environment_name": task.environment_name,
-                            "namespace": task.namespace,
-                            "task_spec": {
-                                str(key): value for key, value in task_spec.items()
+                json_data(
+                    {
+                        "prompt": [],
+                        "openreward": {
+                            "environment": config.environment,
+                            "variant": config.variant,
+                            "base_url": config.base_url,
+                            "split": task_split,
+                            "task": {
+                                "server_name": task.server_name,
+                                "environment_name": task.environment_name,
+                                "namespace": task.namespace,
+                                "task_spec": {
+                                    str(key): value for key, value in task_spec.items()
+                                },
                             },
                         },
                     },
-                }
+                    context="OpenReward task record",
+                )
             )
         return data
 
-    @vf.setup
-    async def setup_openreward(self, task: vf.Task, state: vf.State) -> None:
-        session = await self.get_object("session", task, state)
-        assert isinstance(session, OpenRewardSession)
-        prompt = await session.prompt()
-        state["prompt"] = [vf.UserMessage(content=session.content(prompt))]
-        for tool_spec in await session.tool_specs():
-            tool_value = serializable(tool_spec)
-            assert isinstance(tool_value, dict)
-            tool_data = cast(vf.ConfigData, tool_value)
-            function_data = tool_data.get("function")
-            data = (
-                cast(vf.ConfigData, function_data)
-                if isinstance(function_data, dict)
-                else tool_data
-            )
-            name = data["name"]
-            assert isinstance(name, str)
-            parameters = (
-                data.get("parameters")
-                or data.get("input_schema")
-                or data.get("inputSchema")
-                or {"type": "object", "properties": {}}
-            )
-            assert isinstance(parameters, dict)
-            state.add_tool(
-                "openreward",
-                vf.Tool(
-                    name=name,
-                    description=str(data.get("description") or ""),
-                    parameters={str(key): value for key, value in parameters.items()},
-                ),
-            )
-
-    @vf.stop
-    async def openreward_done(self, state: vf.State) -> bool:
-        return bool(state.get("openreward_finished"))
-
     @vf.reward(weight=1.0)
     async def openreward_reward(self, state: vf.State) -> float:
-        return state.total_step_reward()
+        return sum(float(turn.reward or 0.0) for turn in state.transcript)
 
-    async def call_tool(
-        self, task: vf.Task, state: vf.State, tool: vf.Tool, arguments: vf.JsonData
-    ) -> vf.MessageContent:
-        session = await self.get_object("session", task, state)
-        assert isinstance(session, OpenRewardSession)
-        tool_arguments = serializable(arguments)
-        assert isinstance(tool_arguments, dict)
-        result = await session.call_tool(
-            tool.name,
-            cast(
-                vf.JsonData, {str(key): value for key, value in tool_arguments.items()}
-            ),
+
+class OpenRewardUser(vf.User[OpenRewardUserConfig]):
+    session: OpenRewardSession | None
+
+    def start(self) -> None:
+        self.session = None
+
+    def stop(self) -> None:
+        if self.session is not None:
+            asyncio.run(self.session.close())
+        self.session = None
+
+    @vf.tool(
+        hidden=True,
+        args={"task": "task"},
+        sets={
+            "prompt": "state.extras.openreward.prompt",
+        },
+    )
+    async def setup(self, task: vf.JsonData) -> vf.JsonData:
+        self.session = OpenRewardSession(task)
+        prompt = await self.session.prompt()
+        return json_data(
+            {
+                "prompt": json_value(self.session.content(prompt)),
+                "tools": await self.session.tool_defs(),
+            }
         )
-        state.add_step_reward(result.reward)
-        state["openreward_finished"] = result.finished
-        if result.finished:
-            state.stop("openreward_done")
-        if result.metadata is not None:
-            state["openreward_metadata"] = serializable(result.metadata)
-        return session.content(result.blocks)
+
+    @vf.user(
+        args={
+            "prompt": "state.extras.openreward.prompt",
+            "completion": "state.completion",
+        },
+        sets={
+            "stop_condition": "state.stop_condition",
+        },
+    )
+    async def respond(
+        self,
+        prompt: vf.JsonValue,
+        completion: list[vf.JsonData],
+    ) -> vf.JsonData:
+        if self.session is None:
+            raise RuntimeError("OpenReward setup has not started.")
+        if completion:
+            return json_data(
+                {"messages": [], "stop_condition": "openreward_waiting_for_tools"}
+            )
+        return json_data(
+            {
+                "messages": [
+                    json_data(
+                        vf.UserMessage(
+                            content=cast(vf.MessageContent, prompt)
+                        ).model_dump(mode="json")
+                    )
+                ],
+            }
+        )
+
+    @vf.tool(
+        hidden=True,
+        sets={
+            "reward": "state.transcript.last.reward",
+            "finished": "state.is_completed",
+            "stop_condition": "state.stop_condition",
+        },
+    )
+    async def call_tool(self, name: str, input: vf.JsonData) -> vf.JsonData:
+        """Call an OpenReward task tool by name with JSON input."""
+        if self.session is None:
+            raise RuntimeError("OpenReward session has not started.")
+        output = await self.session.call_tool(name, input)
+        content = self.session.content(output.blocks)
+        payload: dict[str, object] = {
+            "content": content,
+        }
+        if output.reward is not None:
+            payload["reward"] = float(output.reward)
+        if output.finished:
+            payload["finished"] = True
+            payload["stop_condition"] = "openreward_finished"
+        return json_data(payload)
 
 
 def load_taskset(config: OpenRewardTasksetConfig) -> OpenRewardTaskset:

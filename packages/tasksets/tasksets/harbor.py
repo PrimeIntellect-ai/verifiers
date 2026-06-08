@@ -1,203 +1,286 @@
+import io
+import tarfile
 from pathlib import Path
-from typing import cast
+from typing import Literal
 
-import verifiers as vf
+from pydantic import BaseModel, Field
+
+import verifiers.v1 as vf
+from verifiers.v1.utils.json_utils import json_data
 from verifiers.utils.import_utils import load_toml
-from verifiers.v1.utils.sandbox_utils import SandboxClient
-
 from tasksets.utils.harbor_utils import (
     TASKS_SUBDIR,
     bundle_tasks_root,
     download_harbor_dataset,
-    harbor_sandbox,
     harbor_task_dirs,
     parse_gb,
     parse_number,
     parse_reward_text,
-    upload_harbor_tests,
 )
 
-HARBOR_DEFAULT_SANDBOX = vf.SandboxConfig(
-    image="python:3.11-slim",
-    cpu_cores=2.0,
-    memory_gb=4.0,
-    disk_size_gb=10.0,
-    timeout_minutes=120,
-    workdir="/app",
-    command_timeout=900,
-)
+HarborSource = Literal["harbor", "package"]
 
 
 class HarborTasksetConfig(vf.TasksetConfig):
-    taskset_id: str | None = "harbor"
-    dataset: str | None = None
-    bundle_package: str | None = None
-    task_names: list[str] | None = None
+    id: str | None = "harbor"
+    source: HarborSource = "harbor"
+    dataset: str = "hello-world"
+    tasks: list[str] | None = None
     cache_dir: str | None = None
     refresh: bool = False
-    sandbox: vf.SandboxConfig = HARBOR_DEFAULT_SANDBOX
-    verifier_timeout_seconds: float = 900.0
-    task_dir: str = "/task"
-    env: dict[str, str] = {}
+    require_image: bool = False
+
+
+class Author(BaseModel, extra="forbid", frozen=True):
+    name: str | None = None
+    email: str | None = None
+
+
+class HarborTask(vf.Task, frozen=True):
+    task_name: str
+    instruction: str
+    agent_timeout: float | None = None
+    scoring_timeout: float | None = None
+    keywords: list[str] = Field(default_factory=list)
+    authors: list[Author] = Field(default_factory=list)
+    difficulty: str | None = None
+    category: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    task_dir: str = Field(default="", exclude=True)
+
+    @classmethod
+    def from_dir(cls, task_dir: Path, *, require_image: bool) -> "HarborTask":
+        task_toml_path = task_dir / "task.toml"
+        instruction_path = task_dir / "instruction.md"
+        with task_toml_path.open("rb") as f:
+            task_config = load_toml(f)
+        sections: dict[str, vf.JsonData] = {}
+        for name in ("environment", "task", "metadata", "agent", "verifier"):
+            section = task_config.get(name)
+            if section is None:
+                section = {}
+            if not isinstance(section, dict):
+                raise TypeError(f"Harbor task [{name}] must be a mapping.")
+            sections[name] = json_data(
+                {str(key): value for key, value in section.items()}
+            )
+
+        environment = sections["environment"]
+        task_meta = sections["task"]
+        metadata = sections["metadata"]
+        agent_config = sections["agent"]
+        verifier_config = sections["verifier"]
+
+        raw_authors = task_meta.get("authors", [])
+        if raw_authors is None:
+            raw_authors = []
+        if not isinstance(raw_authors, list):
+            raise TypeError("Harbor task [task].authors must be a list.")
+        authors_data: list[object] = list(raw_authors)
+        if not authors_data and isinstance(metadata.get("author_name"), str):
+            authors_data = [
+                {
+                    "name": metadata["author_name"],
+                    "email": metadata.get("author_email"),
+                }
+            ]
+        authors = [Author.model_validate(author) for author in authors_data]
+
+        raw_docker_image = environment.get("docker_image")
+        if raw_docker_image is not None and not isinstance(raw_docker_image, str):
+            raise TypeError("Harbor task [environment].docker_image must be a string.")
+        if (
+            raw_docker_image is None
+            and (task_dir / "environment" / "Dockerfile").exists()
+        ):
+            raise ValueError(
+                f"Harbor task {task_dir.name!r} declares environment/Dockerfile "
+                "but no pullable [environment].docker_image. Building Harbor "
+                "Dockerfiles is not supported."
+            )
+        if raw_docker_image is None and require_image:
+            raise ValueError(
+                f"Harbor task {task_dir.name!r} has no pullable "
+                "[environment].docker_image."
+            )
+
+        raw_agent_timeout = agent_config.get("timeout_sec")
+        raw_scoring_timeout = verifier_config.get("timeout_sec")
+        instruction = instruction_path.read_text().strip()
+        raw_name = task_meta.get("name")
+        if raw_name is not None and not isinstance(raw_name, str):
+            raise TypeError("Harbor task [task].name must be a string.")
+        raw_description = task_meta.get("description")
+        if raw_description is not None and not isinstance(raw_description, str):
+            raise TypeError("Harbor task [task].description must be a string.")
+        raw_difficulty = metadata.get("difficulty")
+        if raw_difficulty is not None and not isinstance(raw_difficulty, str):
+            raise TypeError("Harbor task [metadata].difficulty must be a string.")
+        raw_category = metadata.get("category")
+        if raw_category is not None and not isinstance(raw_category, str):
+            raise TypeError("Harbor task [metadata].category must be a string.")
+        raw_keywords = task_meta.get("keywords", [])
+        if raw_keywords is None:
+            raw_keywords = []
+        if not isinstance(raw_keywords, list):
+            raise TypeError("Harbor task [task].keywords must be a list.")
+        keywords: list[str] = []
+        for keyword in raw_keywords:
+            if not isinstance(keyword, str):
+                raise TypeError("Harbor task [task].keywords must contain strings.")
+            keywords.append(keyword)
+        raw_tags = metadata.get("tags", [])
+        if raw_tags is None:
+            raw_tags = []
+        if not isinstance(raw_tags, list):
+            raise TypeError("Harbor task [metadata].tags must be a list.")
+        tags: list[str] = []
+        for tag in raw_tags:
+            if not isinstance(tag, str):
+                raise TypeError("Harbor task [metadata].tags must contain strings.")
+            tags.append(tag)
+        return cls(
+            task_name=task_dir.name,
+            instruction=instruction,
+            task_dir=str(task_dir),
+            prompt=[vf.UserMessage(content=instruction)],
+            name=raw_name or task_dir.name,
+            description=raw_description,
+            image=raw_docker_image,
+            resources=cls.resources_from_environment(environment),
+            agent_timeout=(
+                None
+                if raw_agent_timeout is None
+                else parse_number(raw_agent_timeout, 0.0)
+            ),
+            scoring_timeout=(
+                None
+                if raw_scoring_timeout is None
+                else parse_number(raw_scoring_timeout, 0.0)
+            ),
+            keywords=keywords,
+            authors=authors,
+            difficulty=raw_difficulty,
+            category=raw_category,
+            tags=tags,
+        )
+
+    @staticmethod
+    def resources_from_environment(environment: vf.JsonData) -> vf.Resources:
+        cpu_cores = (
+            None
+            if environment.get("cpus") is None
+            else parse_number(environment.get("cpus"), 0.0)
+        )
+        memory_value = environment.get("memory_gb")
+        if memory_value is None and environment.get("memory_mb") is not None:
+            memory_gb = parse_number(environment.get("memory_mb"), 0.0) / 1024
+        elif memory_value is None and environment.get("memory") is not None:
+            memory_gb = parse_gb(environment.get("memory"), 0.0)
+        else:
+            memory_gb = None if memory_value is None else parse_gb(memory_value, 0.0)
+        disk_value = environment.get("storage_gb")
+        if disk_value is None and environment.get("storage_mb") is not None:
+            disk_gb = parse_number(environment.get("storage_mb"), 0.0) / 1024
+        elif disk_value is None and environment.get("storage") is not None:
+            disk_gb = parse_gb(environment.get("storage"), 0.0)
+        else:
+            disk_gb = None if disk_value is None else parse_gb(disk_value, 0.0)
+        gpu_count = (
+            None
+            if environment.get("gpus") is None
+            else int(parse_number(environment.get("gpus"), 0.0))
+        )
+        return vf.Resources(
+            cpu_cores=cpu_cores,
+            memory_gb=memory_gb,
+            gpu_count=gpu_count,
+            disk_gb=disk_gb,
+        )
 
 
 class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
+    task_type = HarborTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         if split == "eval":
             return []
-        config = self.config
-        if config.dataset is not None:
-            cache_dir_path = (
-                Path(str(config.cache_dir)).expanduser() if config.cache_dir else None
-            )
-            root = download_harbor_dataset(
-                config.dataset,
-                cache_dir=cache_dir_path,
-                refresh=config.refresh,
-            )
-        else:
-            bundle_package = config.bundle_package
-            if bundle_package is None:
-                raise RuntimeError(
-                    "HarborTaskset() without a dataset requires bundle_package. "
-                    "Pass dataset='...' to fetch from Harbor Hub, or set "
-                    "bundle_package=__name__ from the package that owns tasks/."
-                )
-            root = bundle_tasks_root(bundle_package)
-            if not root.exists():
-                raise FileNotFoundError(
-                    "HarborTaskset() without a dataset requires "
-                    f"{bundle_package}/{TASKS_SUBDIR}/ to contain Harbor task "
-                    f"directories. Not found: {root}"
-                )
-        task_dirs = harbor_task_dirs(root, list(config.task_names or []))
-        tasks: list[vf.JsonData] = []
-        for task_dir in task_dirs:
-            task_toml_path = task_dir / "task.toml"
-            instruction_path = task_dir / "instruction.md"
-            with task_toml_path.open("rb") as f:
-                task_config = load_toml(f)
-            environment = task_config.get("environment", {}) or {}
-            assert isinstance(environment, dict)
-            agent_config = task_config.get("agent", {}) or {}
-            verifier_config = task_config.get("verifier", {}) or {}
-            if not isinstance(agent_config, dict):
-                raise TypeError(f"{task_toml_path} [agent] must be a mapping.")
-            if not isinstance(verifier_config, dict):
-                raise TypeError(f"{task_toml_path} [verifier] must be a mapping.")
-            instruction = instruction_path.read_text().strip()
-            task_remote_dir = config.task_dir.rstrip("/") or "/task"
-            sandbox = harbor_sandbox(HARBOR_DEFAULT_SANDBOX, config.sandbox)
-            sandbox = sandbox.model_copy(
-                update={
-                    "image": environment.get("docker_image") or sandbox.image,
-                    "cpu_cores": parse_number(
-                        environment.get("cpus"), sandbox.cpu_cores
-                    ),
-                    "memory_gb": parse_gb(environment.get("memory"), sandbox.memory_gb),
-                    "disk_size_gb": parse_gb(
-                        environment.get("storage"), sandbox.disk_size_gb
-                    ),
-                    "command_timeout": int(
-                        parse_number(
-                            agent_config.get("timeout_sec"),
-                            sandbox.command_timeout or 900,
-                        )
-                    ),
-                    **(
-                        {"network_access": bool(environment["allow_internet"])}
-                        if "allow_internet" in environment
-                        else {}
-                    ),
-                }
-            )
-            sandbox_data = sandbox.data(fill_defaults=False)
-            workdir = sandbox.workdir or "/app"
-            tasks.append(
-                {
-                    "task_name": task_dir.name,
-                    "instruction": instruction,
-                    "task_toml": task_toml_path.read_text(),
-                    "task_dir": str(task_dir),
-                    "prompt": [{"role": "user", "content": instruction}],
-                    "sandbox": sandbox_data,
-                    "program": {
-                        "files": {
-                            f"{task_remote_dir}/instruction.md": {
-                                "task": "instruction"
-                            },
-                            f"{task_remote_dir}/task.toml": {"task": "task_toml"},
-                        },
-                        "env": {
-                            "HARBOR_TASK_NAME": task_dir.name,
-                            "HARBOR_TASK_DIR": task_remote_dir,
-                            "HARBOR_INSTRUCTION_PATH": f"{task_remote_dir}/instruction.md",
-                            "AGENT_WORKDIR": workdir,
-                            **config.env,
-                        },
-                    },
-                    "harbor": {
-                        "task_dir": str(task_dir),
-                        "task_name": task_dir.name,
-                        "config": task_config,
-                        "docker_image": environment.get("docker_image"),
-                        "test_timeout": parse_number(
-                            verifier_config.get("timeout_sec"),
-                            config.verifier_timeout_seconds,
-                        ),
-                    },
-                    "info": {
-                        "harbor": {
-                            "task_name": task_dir.name,
-                            "docker_image": environment.get("docker_image"),
-                        }
-                    },
-                }
-            )
-        assert tasks, f"No valid Harbor tasks found in {root}."
+        root = self.task_root()
+        task_dirs = harbor_task_dirs(root, self.config.tasks)
+        tasks = [
+            HarborTask.from_dir(task_dir, require_image=self.config.require_image)
+            for task_dir in task_dirs
+        ]
+        if not tasks:
+            raise ValueError(f"No valid Harbor tasks found in {root}.")
         return tasks
 
-    @vf.reward(weight=1.0)
-    async def harbor_reward(self, task: vf.Task, state: vf.State) -> float:
-        if state.get("error") is not None:
-            return 0.0
-        sandbox_id = state["sandbox_id"]
-        assert isinstance(sandbox_id, str)
-        harbor = task["harbor"]
-        assert isinstance(harbor, dict)
-        task_dir = Path(str(harbor["task_dir"]))
-        from prime_sandboxes import AsyncSandboxClient
+    def to_task(self, task: vf.Task | vf.JsonData) -> vf.Task:
+        harbor_task = super().to_task(task)
+        if not isinstance(harbor_task, HarborTask):
+            raise TypeError("HarborTaskset expected a HarborTask.")
+        if harbor_task.task_dir:
+            return harbor_task
+        return HarborTask.from_dir(
+            self.task_root() / harbor_task.task_name,
+            require_image=self.config.require_image,
+        )
 
-        client = cast(SandboxClient, AsyncSandboxClient())
+    def task_root(self) -> Path:
+        config = self.config
+        if config.source == "harbor":
+            cache_dir = (
+                Path(config.cache_dir).expanduser() if config.cache_dir else None
+            )
+            return download_harbor_dataset(
+                config.dataset,
+                cache_dir=cache_dir,
+                refresh=config.refresh,
+            )
+        if config.source == "package":
+            root = bundle_tasks_root(config.dataset)
+            if not root.exists():
+                raise FileNotFoundError(
+                    "HarborTaskset package source must contain "
+                    f"{TASKS_SUBDIR}/. Not found: {root}"
+                )
+            return root
+        raise ValueError(f"Unknown Harbor source: {config.source!r}")
+
+    @vf.reward(weight=1.0)
+    async def harbor_reward(self, task: HarborTask, runtime: vf.Runtime) -> float:
+        tests_dir = Path(task.task_dir) / "tests"
         try:
-            await upload_harbor_tests(client, sandbox_id, task_dir)
-            test_timeout = int(parse_number(harbor.get("test_timeout"), 900))
-            result = await client.run_background_job(
-                sandbox_id=sandbox_id,
-                command="bash test.sh",
-                working_dir="/tests",
-                timeout=test_timeout,
-            )
-            state["harbor_tests"] = {
-                "returncode": result.exit_code,
-                "stdout": result.stdout or "",
-                "stderr": result.stderr or "",
-            }
-            reward_result = await client.execute_command(
-                sandbox_id=sandbox_id,
-                command=(
-                    "if [ -s /logs/verifier/reward.txt ]; then "
-                    "cat /logs/verifier/reward.txt; "
-                    "elif [ -s /logs/verifier/reward.json ]; then "
-                    "cat /logs/verifier/reward.json; fi"
-                ),
-            )
-        except Exception as e:
-            state["harbor_error"] = str(e)
+            tests_archive = self.make_tar(tests_dir)
+            await runtime.write("/tmp/tests.tgz", tests_archive)
+        except OSError:
             return 0.0
-        finally:
-            await client.aclose()
-        return parse_reward_text(str(reward_result.stdout or "").strip())
+        extract = await runtime.run(
+            [
+                "sh",
+                "-c",
+                "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests",
+            ]
+        )
+        if extract.returncode != 0:
+            return 0.0
+        await runtime.run(
+            ["sh", "-c", "cd /tests && bash test.sh"],
+            timeout=task.scoring_timeout,
+        )
+        try:
+            reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
+        except (OSError, RuntimeError, ValueError):
+            return 0.0
+        return parse_reward_text(reward)
+
+    @staticmethod
+    def make_tar(directory: Path) -> bytes:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            for item in sorted(directory.iterdir()):
+                tar.add(item, arcname=item.name)
+        return buffer.getvalue()
 
 
 def load_taskset(config: HarborTasksetConfig) -> HarborTaskset:

@@ -26,6 +26,7 @@ from pydantic import (
     Field,
     computed_field,
     field_validator,
+    model_validator,
 )
 
 from verifiers.errors import Error
@@ -164,6 +165,24 @@ class ToolCall(CustomBaseModel):
     id: str
     name: str
     arguments: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_openai_tool_call(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        data = dict(value)
+        function = data.get("function")
+        if not isinstance(function, Mapping):
+            return data
+        if "name" not in data:
+            data["name"] = function.get("name")
+        if "arguments" not in data and "arguments" in function:
+            arguments = function["arguments"]
+            data["arguments"] = (
+                arguments if isinstance(arguments, str) else json.dumps(arguments)
+            )
+        return data
 
 
 ThinkingBlock: TypeAlias = AnthropicThinkingBlock | RedactedThinkingBlock

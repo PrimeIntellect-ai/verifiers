@@ -68,7 +68,8 @@ class PrimeSandboxOpenEnvProvider(ContainerProvider):
                 sandbox_id,
                 max_attempts=self.spec.wait_for_creation_max_attempts,
             )
-            exposure = client.expose(
+            exposure = self._retry(
+                client.expose,
                 sandbox_id,
                 port=container_port,
                 name="openenv-env",
@@ -161,7 +162,7 @@ class PrimeSandboxOpenEnvProvider(ContainerProvider):
 
         return self._retry(request_schema)
 
-    def _retry(self, fn: Callable[..., T], *args: object) -> T:
+    def _retry(self, fn: Callable[..., T], *args: object, **kwargs: object) -> T:
         retrying = tc.Retrying(
             stop=tc.stop_after_attempt(self.spec.max_retries),
             wait=tc.wait_exponential_jitter(
@@ -172,7 +173,7 @@ class PrimeSandboxOpenEnvProvider(ContainerProvider):
             ),
             reraise=True,
         )
-        return retrying(fn, *args)
+        return retrying(fn, *args, **kwargs)
 
     def _failure_details(
         self, client: "PrimeSandboxClient", sandbox_id: str, port: int | None

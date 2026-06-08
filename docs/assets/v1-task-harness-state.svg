@@ -37,7 +37,7 @@
     <text x="484" y="255" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">model/client endpoint</text>
     <text x="484" y="279" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">toolsets and MCP</text>
     <text x="484" y="303" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">sandbox leases</text>
-    <text x="484" y="327" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">trajectory capture</text>
+    <text x="484" y="327" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">transcript capture</text>
     <text x="464" y="356" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#64748b">Base loop, Python entrypoint, or CLI program</text>
   </g>
 
@@ -46,7 +46,7 @@
     <rect x="824" y="142" width="240" height="52" rx="12" fill="#f0fdfa"/>
     <text x="848" y="176" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="700" fill="#0f766e">State</text>
     <text x="848" y="222" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" fill="#334155">Mutable rollout record</text>
-    <text x="848" y="250" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">trajectory</text>
+    <text x="848" y="250" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">transcript</text>
     <text x="848" y="274" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">completion</text>
     <text x="848" y="298" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">metrics / reward</text>
     <text x="848" y="322" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">artifacts / errors</text>

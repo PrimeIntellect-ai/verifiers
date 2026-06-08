@@ -15,8 +15,8 @@ Find correctness risks and regressions first, then assess maintainability and ec
 
 ## Review Workflow
 1. Identify environment contract:
-- `load_environment(...)`
-- base class and rollout behavior (`SingleTurnEnv`, `MultiTurnEnv`, `ToolEnv`/`MCPEnv`/`StatefulToolEnv`, `SandboxEnv`/`PythonEnv`, V1 `vf.Env` with explicit `vf.Taskset`/`vf.Harness` objects for framework programs, `CliAgentEnv` for sandboxed agents)
+- v0 `load_environment(...)` or v1 discovered `taskset.py` / optional `harness.py` components
+- base class and rollout behavior (`SingleTurnEnv`, `MultiTurnEnv`, `ToolEnv`/`MCPEnv`/`StatefulToolEnv`, `SandboxEnv`/`PythonEnv`, v1 `vf.Env` with explicit `vf.Taskset`/`vf.Harness` objects for framework programs, `CliAgentEnv` for sandboxed agents)
 - rubric and metrics
 2. Verify installability and runtime entrypoint with the canonical eval path. Do not add `--skip-upload` unless the user explicitly requests that deviation; standard runs save automatically for the private Evaluations tab and `prime eval view`:
 ```bash
@@ -39,21 +39,21 @@ prime eval run <env> -m openai/gpt-4.1-mini -n 5
 - Flag best-effort keyword or style heuristics unless explicitly approved.
 - Verify the scoring semantics from code before treating a low reward as an implementation failure. Some environments intentionally complete with `0.0` reward when the model fails the task.
 2. Environment self-containment:
-- Flag any requirement for user-managed background services before `load_environment()`.
+- Flag any requirement for user-managed background services before environment loading.
 - Require environment-managed lifecycle for sandboxes/sessions.
 3. v1 taskset/harness contracts:
-- Expect new taskset/harness environments to use the v1 `vf.Env` / `vf.Taskset` / `vf.Harness` boundary, with `load_taskset(config: MyTasksetConfig)` and optional `load_harness(config: MyHarnessConfig)` defining child config types, plus the canonical `load_environment(config: vf.EnvConfig)` shim delegating through `vf.load_taskset(config=config.taskset)` and `vf.load_harness(config=config.harness)`.
+- Expect new taskset/harness environments to use the v1 `vf.Env` / `vf.Taskset` / `vf.Harness` boundary, with `taskset.py` exposing `load_taskset(config: MyTasksetConfig)` and optional `harness.py` exposing `load_harness(config: MyHarnessConfig)` to define child config types. The package loader assembles `vf.Env`.
 - Expect tasksets to own task data, task-owned tools, user behavior, metrics, rewards, and task-specific config. Flag one-off harness classes that only wrap task behavior.
-- Review v1 implementations against the generated `prime env init my-env --v1` shape: task settings in `TasksetConfig`, tasks in `load_tasks`, task-owned tools in `load_toolsets`, user behavior in `User` subclasses, lifecycle/metrics/rewards as `@vf.*` methods, and typed component entrypoints through `load_taskset`, optional `load_harness`, and `load_environment`.
+- Review v1 implementations against the generated `prime env init my-env --v1` shape: task settings and `ToolsetConfig` / `UserConfig` entries in `TasksetConfig`, tasks in `load_tasks`, task-owned tools in `servers/toolset.py`, user behavior in `servers/user.py`, lifecycle/metrics/rewards/advantages as `@vf.*` methods, and typed component entrypoints through `load_taskset` and optional `load_harness`.
 - Require environment packages and READMEs to preserve the generated `prime env init` structure. Flag hand-scaffolded environments and freeform environment READMEs; authors should fill in the CLI-generated template sections instead of inventing a new shape.
-- Expect shared dependencies to use bindings owned by the taskset, toolset, user, program, or harness that needs them. Flag pre-initialized resource objects passed through environment loaders; object entries should be serializable loader paths or no-arg loader callables.
+- Expect shared dependencies to live behind the taskset, harness, toolset, user, or runtime that owns them. Flag pre-initialized resource objects passed through environment loaders; config entries should be serializable.
 - Verify `Task` data is serializable, `state` remains serializable at rollout boundaries, and model/client controls flow through runtime state rather than top-level dataset columns.
-- For V1 harness programs, verify framework clients consume `state.get_endpoint_config(api="chat")` rather than hardcoding an upstream LLM endpoint. For `CliAgentEnv` agents, verify sandboxed agent code consumes the injected interception endpoint; the proxy is what makes rollouts visible to the rubric.
+- For v1 harness programs, verify framework clients consume the injected interception endpoint rather than hardcoding an upstream LLM endpoint. For `CliAgentEnv` agents, verify sandboxed agent code consumes the injected interception endpoint; the proxy is what makes rollouts visible to the rubric.
 4. Migration fidelity:
 - For ports, verify one-to-one equivalence of prompts, tool traces, and scoring logic.
 - Flag any assumptions made without user decision.
 5. Secrets handling:
-- Ensure required keys are validated in `load_environment()` with `vf.ensure_keys(...)`.
+- Ensure required keys are validated at the owning loader or config boundary so failures are explicit and early.
 6. Performance and scaling:
 - Identify obvious bottlenecks in dataset loading, rubric calls, or tool execution.
 7. Packaging and repo hygiene:

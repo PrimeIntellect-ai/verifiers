@@ -1,0 +1,21 @@
+[project]
+name = "wiki-search-v1"
+description = "Agentic RAG over Wikipedia pages for trivia Q&A"
+tags = ["wikipedia", "multi-turn", "agentic-search", "rag", "train", "eval", "llm-judge"]
+requires-python = ">=3.11"
+version = "0.1.23"
+dependencies = [
+    "verifiers>=0.1.9",
+    "datasets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["wiki_search_v1/**/*", "README.md", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3

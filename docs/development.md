@@ -181,7 +181,7 @@ def test_with_mock(mock_client):
 ### Code Style
 
 - Strict `ruff` enforcement via pre-commit hooks
-- `ty` runs in the pre-push hook via `uv run --python 3.13 ty check verifiers`
+- `ty` runs in the pre-push hook via `uv run --python 3.13 ty check verifiers/v1 packages/tasksets/tasksets packages/harnesses/harnesses`
 - Use type hints for function parameters and returns
 - Write docstrings for public functions/classes
 - Keep functions focused and modular
@@ -314,7 +314,7 @@ uv run pytest tests/test_envs.py -k math_python   # Specific environment
 # Linting
 uv run ruff check --fix .             # Fix lint errors
 uv run ruff format --check verifiers tests  # Verify Python formatting
-uv run ty check verifiers             # Type check (matches CI Ty target)
+uv run ty check verifiers/v1 packages/tasksets/tasksets packages/harnesses/harnesses  # Type check (matches CI Ty target)
 
 # Environment tools
 prime env init new-env                       # Create v0 environment stub

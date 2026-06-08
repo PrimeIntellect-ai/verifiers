@@ -23,7 +23,7 @@ prime env list --starred
    - Prefer environments published by `primeintellect` first.
    - Keep only candidates with passing latest action/CI status from `--show-actions` or `prime env status`.
    - Prefer candidates updated in roughly the last 2 months.
-   - Prefer candidates on version `v0.1.8` or newer.
+   - Prefer candidates whose latest published version matches current Verifiers docs and package metadata.
 4. Inspect details for shortlisted candidates:
 ```bash
 prime env info owner/name
@@ -61,7 +61,7 @@ prime eval run name -m openai/gpt-4.1-mini -n 5
 ```bash
 prime env install reverse-text --from-repo
 ```
-4. For v1 Taskset + Harness examples, inspect the environment package for `Taskset` / optional `Harness` classes plus `load_taskset(config: MyTasksetConfig)`, optional `load_harness(config: MyHarnessConfig)`, and the canonical `load_environment(config: vf.EnvConfig) -> vf.Env` shim delegating through `vf.load_taskset(config=config.taskset)` and `vf.load_harness(config=config.harness)`.
+4. For v1 Taskset + Harness examples, inspect the environment package for `Taskset` / optional `Harness` classes plus `taskset.py` `load_taskset(config: MyTasksetConfig)` and optional `harness.py` `load_harness(config: MyHarnessConfig)`. The package loader assembles `vf.Env`.
 
 ## Anti-Patterns
 1. Do not recommend building from scratch if a strong ecosystem option exists.

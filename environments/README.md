@@ -1,6 +1,6 @@
 # Environments
 
-This folder contains installable example environments that showcase common usage patterns in Verifiers. Each module exposes a `load_environment(...)` function that returns a ready-to-use `vf.Environment` object.
+This folder contains installable example environments that showcase common usage patterns in Verifiers. v0 packages expose `load_environment(...)`; v1 packages expose `taskset.py` and optional `harness.py` components and are assembled by the library loader.
 
 ## Quick start
 
@@ -23,8 +23,8 @@ This folder contains installable example environments that showcase common usage
 - **sentence_repeater**: Multi-turn Q/A over a paragraph; rewards compare assistant messages to expected answers.
 - **wordle**: Game-style interaction via `TextArenaEnv`; multiple rewards (correctness, partial credit, few-turn bonus) and XML formatting.
 - **wordle_v1**: Wordle on the reusable v1 `TextArenaTaskset`, with Wordle-specific prompt, feedback, and rewards kept in the environment package.
-- **openenv_echo**: OpenEnv MCP integration example using upstream `echo_env`.
-- **openenv_textarena**: OpenEnv gym integration example using upstream `textarena_env` (default `Wordle-v0`).
+- **openenv_echo_v1**: OpenEnv MCP integration example using upstream `echo_env`.
+- **openenv_textarena_v1**: OpenEnv gym integration example using upstream `textarena_env` (default `Wordle-v0`).
 
 ### Tool use
 - **ToolEnv (native function-calling)**
@@ -40,27 +40,27 @@ This folder contains installable example environments that showcase common usage
 
 ### Experimental environments
 - **MCPEnv (MCP server integration)**
-  - **mcp_search_env**: Example environment demonstrating `vf.MCPEnv` for Model Context Protocol server integration.
+  - **mcp_search_env_v1**: Example environment demonstrating `vf.MCPEnv` for Model Context Protocol server integration.
 
 - **RLM (Recursive Language Model)**
   - **hello_rlm_v1**: v1 packaged `RLM` harness example with endpoint interception and metrics collection.
 
 - **V1 Taskset/Harness**
-  - **dspy_rlm**: DSPy RLM harness on GSM8K through `vf.Env`; DSPy uses the V1 interception endpoint from rollout state.
-  - **openai_agents_env**: OpenAI Agents SDK harness with a calculator tool on GSM8K through `vf.Env`.
-  - **langchain_deep_agents_wikispeedia**: LangChain Deep Agents harness on Wikispeedia navigation, where tool use is load-bearing.
+  - **dspy_rlm_v1**: DSPy RLM harness on GSM8K through `vf.Env`; DSPy uses the V1 interception endpoint from rollout state.
+  - **openai_agents_env_v1**: OpenAI Agents SDK harness with a calculator tool on GSM8K through `vf.Env`.
+  - **langchain_deep_agents_wikispeedia_v1**: LangChain Deep Agents harness on Wikispeedia navigation, where tool use is load-bearing.
 
 - **HarborEnv / CliAgentEnv (agent sandboxes)**
-  - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
+  - **opencode_harbor_v1**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
   - **hello_mcp_harbor**: Smallest runnable `HarborEnv` exercising framework-managed MCP server lifecycle (FastMCP `get_secret` server + OpenCode agent).
 
 - **Taskset/Harness v1**
-  - **bfcl_v3**: BFCL v3 function-calling eval using task-local dynamic tool schemas and v1 rewards.
-  - **dspy_flights**: Sandboxed DSPy flight-support `program.fn` entrypoint installed from its package `pyproject.toml` and configured against the v1 interception endpoint.
+  - **bfcl_v3_v1**: BFCL v3 function-calling eval using task-local dynamic tool schemas and v1 rewards.
+  - **dspy_flights_v1**: Sandboxed DSPy flight-support `program.fn` entrypoint installed from its package `pyproject.toml` and configured against the v1 interception endpoint.
   - **hello_group_reward_v1**: Deterministic v1 reference for group updates, metrics, rewards, advantages, and cleanup.
-  - **nemo_gym_env**: Minimal v1 example that wraps a packaged NeMo Gym task with `NeMoGymTaskset` and `NeMoGymHarness`.
-  - **sft-replay**: Thin v1 replay environment using `ReplayTaskset` and `ReplayHarness` to turn stored transcripts into trajectory steps without model calls.
+  - **nemo_gym_env_v1**: Minimal v1 example that wraps a packaged NeMo Gym task with `NeMoGymTaskset` and `NeMoGymHarness`.
+  - **sft_replay_v1**: Thin v1 replay environment using `ReplayTaskset` and `ReplayHarness` to turn stored transcripts into rollout `Turn`s without model calls.
   - **tau2_bench_v1**: `tau2-bench-v1` τ²-bench taskset/user/tool pattern on the v1 harness runtime.
   - **wordle_v1**: TextArena Wordle through the packaged v1 `TextArenaTaskset` boundary.
 
@@ -71,7 +71,7 @@ This folder contains installable example environments that showcase common usage
 - **Nested harnesses**
   - **hello_subagent_v1**: Minimal parent/child harness hand-off through a tool.
   - **nested_harness_v1**: v1 example showing a tool that calls a child `Harness` as its own rollout scope.
-  - **hello_self_judge_v1**: v1 example where a judge harness shares model, endpoint, trajectory, and sandbox evidence from the answer rollout.
+  - **hello_self_judge_v1**: v1 example where a judge harness shares model, endpoint, transcript, and sandbox evidence from the answer rollout.
   - **hello_parallel_sandbox_v1**: v1 example where parallel child harnesses share a sandbox-backed tool across update and reward stages.
 
 - **RubricGroup**
@@ -87,22 +87,22 @@ This folder contains installable example environments that showcase common usage
 - **mmmu**: Demonstrates passing images via chat `content` items with `{type: "image_url", image_url: {url: ...}}` and standard answer parsing.
 
 ## What to look at for each pattern
-- **Minimal SingleTurnEnv**: `reverse_text`, `gsm8k`
+- **Minimal SingleTurnEnv**: `reverse_text_v1`, `gsm8k`
 - **JudgeRubric end-to-end**: `continuation_quality`, `toxicity_explanation`, `self_reward`
-- **ToolEnv with real tools**: `wiki_search`, `math_python`
-- **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
+- **ToolEnv with real tools**: `wiki_search_v1`, `math_python_v1`
+- **Custom MultiTurnEnv**: `alphabet_sort_v1`, `doublecheck`, `sentence_repeater`, `wordle`
 - **GymEnv integration**: `gem_wordle`
-- **OpenEnv integration (gym + MCP)**: `openenv_textarena`, `openenv_echo`
-- **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
-- **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
-- **Taskset/Harness v1**: use this pattern for new environments that need reusable tasksets, reusable harnesses, framework programs, endpoint interception, or sandboxed Python/command programs. Examples include `dspy_rlm`, `openai_agents_env`, `langchain_deep_agents_wikispeedia`, `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, `opencode_harbor`, `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, `tau2-bench-v1`, and `wordle-v1`.
-  - `opencode_harbor` uses the packaged `HarborTaskset` + `OpenCode` boundary from `tasksets` and `harnesses`.
-- **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
+- **OpenEnv integration (gym + MCP)**: `openenv_textarena_v1`, `openenv_echo_v1`
+- **CLI agent sandboxes**: `opencode_harbor_v1`, `terminus_harbor`, `hello_mcp_harbor`
+- **MCP integration**: `mcp_search_env_v1`, `hello_mcp_harbor`
+- **Taskset/Harness v1**: use this pattern for new environments that need reusable tasksets, reusable harnesses, framework programs, endpoint interception, or sandboxed Python/command programs. Examples include `dspy_rlm_v1`, `openai_agents_env_v1`, `langchain_deep_agents_wikispeedia_v1`, `reverse_text_v1`, `alphabet_sort_v1`, `wiki_search_v1`, `math_python_v1`, `mcp_search_env_v1`, `opencode_harbor_v1`, `bfcl_v3_v1`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights_v1`, `tau2-bench-v1`, and `wordle-v1`.
+  - `opencode_harbor_v1` uses the packaged `HarborTaskset` + `OpenCode` boundary from `tasksets` and `harnesses`.
+- **Environment and rubric composition**: `math_group`, `math_python_v1`, `wiki_search_v1`
 - **Procedural datasets**: `reasoning_gym_env`
 - **Multimodal**: `mmmu`
 
 ## Running examples
-All environments export `load_environment(...)`. 
+All examples are loadable through `vf.load_environment(...)`. v0 packages do this with a package `load_environment(...)`; v1 packages do it through discovered taskset/harness components.
 
 In-line usage:
 ```python

@@ -10,18 +10,19 @@ from typing import Any, Callable, Iterable, cast
 import requests
 import tenacity as tc
 from datasets import Dataset
+from pydantic import TypeAdapter
 
 import verifiers as vf
 from verifiers.types import (
     AssistantMessage,
-    Message,
     Messages,
     Tool,
     ToolMessage,
     UserMessage,
 )
-from verifiers.utils.message_utils import from_raw_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
+
+_MESSAGES_ADAPTER = TypeAdapter(Messages)
 
 
 def _optional_openenv_type(module_name: str, attr: str) -> type[Any] | None:
@@ -853,18 +854,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 f"OpenEnv prompt_renderer returned invalid output for {context}: "
                 "expected a non-empty chat messages list."
             )
-        messages: Messages = []
-        for raw_message in cast(list[Any], rendered):
-            if isinstance(raw_message, dict):
-                messages.append(from_raw_message(raw_message))
-                continue
-            if hasattr(raw_message, "role") and hasattr(raw_message, "content"):
-                messages.append(cast(Message, raw_message))
-                continue
-            raise RuntimeError(
-                f"OpenEnv prompt_renderer returned unsupported message type for {context}: "
-                f"{type(raw_message).__name__}."
-            )
+        messages = _MESSAGES_ADAPTER.validate_python(cast(list[Any], rendered))
         if not messages:
             raise RuntimeError(
                 f"OpenEnv prompt_renderer returned an empty messages list for {context}."

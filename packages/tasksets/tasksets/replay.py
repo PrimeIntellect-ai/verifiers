@@ -1,13 +1,16 @@
 import json
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import ClassVar
 
 from datasets import load_dataset
+from pydantic import TypeAdapter
 
-import verifiers as vf
+import verifiers.v1 as vf
+from verifiers.v1.utils.json_utils import json_data
 
 DATA_DIR_FIELD = "data_dir"
 DATA_FILE_SUFFIX = ".jsonl"
+_MESSAGES_ADAPTER = TypeAdapter(vf.Messages)
 
 
 class ReplayTasksetConfig(vf.TasksetConfig):
@@ -15,7 +18,12 @@ class ReplayTasksetConfig(vf.TasksetConfig):
     data_dir: str | None = None
 
 
+class ReplayTask(vf.Task, frozen=True):
+    messages: vf.Messages
+
+
 class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
+    task_type = ReplayTask
     data_dir: ClassVar[str | None] = None
 
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
@@ -31,7 +39,7 @@ class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
 
     def hf_tasks(self, dataset: str) -> list[vf.JsonData]:
         rows = load_dataset(dataset, split="train")
-        return [replay_task_record(dict(row)) for row in rows]
+        return [self.task_record(json_data(dict(row))) for row in rows]
 
     def local_tasks(self) -> list[vf.JsonData]:
         data_dir = self.load_data_dir()
@@ -55,7 +63,7 @@ class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
                         raise TypeError(
                             f"{item.name}:{line_number} must contain one JSON object."
                         )
-                    tasks.append(replay_task_record(record))
+                    tasks.append(self.task_record(json_data(record)))
         if not tasks:
             raise FileNotFoundError(
                 f"{DATA_DIR_FIELD} must contain at least one JSONL record."
@@ -66,29 +74,27 @@ class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
         data_dir = self.config.data_dir or self.data_dir
         return Path(data_dir).expanduser() if data_dir is not None else None
 
+    def task_record(self, record: vf.JsonData) -> vf.JsonData:
+        messages = self.messages(record)
+        if not any(message.role == "assistant" for message in messages):
+            raise ValueError("Replay task messages must contain an assistant message.")
+        data = dict(record)
+        data["messages"] = [
+            json_data(message.model_dump(mode="json", exclude_none=True))
+            for message in messages
+        ]
+        return json_data(data)
 
-def replay_task_record(record: dict[str, object]) -> vf.JsonData:
-    messages = replay_messages(record)
-    if not any(message.role == "assistant" for message in messages):
-        raise ValueError("Replay task messages must contain an assistant message.")
-    data = dict(record)
-    data["messages"] = [
-        cast(vf.JsonData, message.model_dump(mode="json", exclude_none=True))
-        for message in messages
-    ]
-    return cast(vf.JsonData, data)
-
-
-def replay_messages(record: dict[str, object]) -> vf.Messages:
-    messages = record.get("messages")
-    if not isinstance(messages, list):
-        raise TypeError("Replay task messages must be a list.")
-    raw_messages: list[dict[str, object]] = []
-    for message in messages:
-        if not isinstance(message, dict):
-            raise TypeError("Replay task messages must contain JSON objects.")
-        raw_messages.append(cast(dict[str, object], message))
-    return vf.get_messages(raw_messages)
+    def messages(self, record: vf.JsonData) -> vf.Messages:
+        messages = record.get("messages")
+        if not isinstance(messages, list):
+            raise TypeError("Replay task messages must be a list.")
+        raw_messages: list[vf.JsonData] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                raise TypeError("Replay task messages must contain JSON objects.")
+            raw_messages.append(json_data(message))
+        return _MESSAGES_ADAPTER.validate_python(raw_messages)
 
 
 def load_taskset(config: ReplayTasksetConfig) -> ReplayTaskset:

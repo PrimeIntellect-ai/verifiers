@@ -248,7 +248,7 @@ async def test_parsed_prompt_attribution_survives_v1_assert_serializable():
     """
     from renderers.base import RenderedTokens
 
-    from verifiers.v1.utils.serialization_utils import serializable
+    from verifiers.v1.utils.json_utils import jsonable
 
     response = Response(
         id="t",
@@ -278,7 +278,7 @@ async def test_parsed_prompt_attribution_survives_v1_assert_serializable():
         ),
     )
     parsed = await parse_response_tokens(response)
-    step = {"tokens": serializable(parsed), "response": serializable(response)}
+    step = {"tokens": jsonable(parsed), "response": jsonable(response)}
     State({"trajectory": [step]}).assert_serializable()
 
 

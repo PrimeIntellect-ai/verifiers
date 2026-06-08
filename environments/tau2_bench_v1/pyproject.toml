@@ -16,7 +16,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["tau2_bench_v1.py", "pyproject.toml"]
+include = ["tau2_bench_v1/**/*", "README.md", "pyproject.toml"]
 
 [tool.hatch.metadata]
 allow-direct-references = true

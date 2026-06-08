@@ -1,6 +1,6 @@
 import importlib
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TypeVar, cast, get_args, get_origin, get_type_hints
@@ -8,19 +8,13 @@ from typing import TypeVar, cast, get_args, get_origin, get_type_hints
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 
-from ..types import ConfigData, ConfigValue
-
 ConfigT = TypeVar("ConfigT", bound=BaseModel)
 ConfigOwner = type[object]
 config_type_registry: dict[ConfigOwner, type[BaseModel]] = {}
 FRAMEWORK_CONFIG_MODULES = {
     "verifiers.v1.config",
     "verifiers.v1.env",
-    "verifiers.v1.artifact",
     "verifiers.v1.harness",
-    "verifiers.v1.model",
-    "verifiers.v1.program",
-    "verifiers.v1.sandbox",
     "verifiers.v1.taskset",
     "verifiers.v1.toolset",
     "verifiers.v1.user",
@@ -31,17 +25,18 @@ _CONFIG_REF_MODULE: ContextVar[str | None] = ContextVar(
 
 
 def explicit_config_data(
-    value: BaseModel | ConfigData | None, target: type[BaseModel] | None = None
-) -> ConfigData:
+    value: BaseModel | Mapping[str, object] | None,
+    target: type[BaseModel] | None = None,
+) -> dict[str, object]:
     if value is None:
-        data: ConfigData = {}
+        data: dict[str, object] = {}
     elif isinstance(value, BaseModel):
         data = explicit_model_config_data(value)
         if target is not None:
             data = {
                 key: item for key, item in data.items() if key in target.model_fields
             }
-    elif isinstance(value, dict):
+    elif isinstance(value, Mapping):
         data = string_mapping(value)
     else:
         raise TypeError("Config must be a mapping or config object.")
@@ -49,7 +44,8 @@ def explicit_config_data(
 
 
 def coerce_config(
-    config_cls: type[ConfigT], value: BaseModel | ConfigData | None = None
+    config_cls: type[ConfigT],
+    value: BaseModel | Mapping[str, object] | None = None,
 ) -> ConfigT:
     if value is None:
         return config_cls()
@@ -170,25 +166,26 @@ def resolve_config_annotation(owner_type: ConfigOwner, annotation: object) -> ob
 
 
 def resolved_config_data(
-    value: BaseModel | ConfigData | None, target: type[BaseModel] | None = None
-) -> ConfigData:
+    value: BaseModel | Mapping[str, object] | None,
+    target: type[BaseModel] | None = None,
+) -> dict[str, object]:
     if value is None:
-        data: ConfigData = {}
+        data: dict[str, object] = {}
     elif isinstance(value, BaseModel):
-        data = cast(ConfigData, value.model_dump(exclude_none=True))
+        data = dict(value.model_dump(exclude_none=True))
         if target is not None:
             data = {
                 key: item for key, item in data.items() if key in target.model_fields
             }
-    elif isinstance(value, dict):
+    elif isinstance(value, Mapping):
         data = string_mapping(value)
     else:
         raise TypeError("Config must be a mapping or config object.")
     return data
 
 
-def explicit_model_config_data(value: BaseModel) -> ConfigData:
-    data: ConfigData = {}
+def explicit_model_config_data(value: BaseModel) -> dict[str, object]:
+    data: dict[str, object] = {}
     for key in value.model_fields_set:
         item = getattr(value, key)
         data[key] = config_dump_value(item)
@@ -199,16 +196,17 @@ def explicit_model_config_data(value: BaseModel) -> ConfigData:
     return data
 
 
-def config_dump_value(value: object) -> ConfigValue:
+def config_dump_value(value: object) -> object:
     if isinstance(value, BaseModel):
         return explicit_model_config_data(value)
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {
-            key: config_dump_value(item) for key, item in string_mapping(value).items()
+            key: config_dump_value(item)
+            for key, item in string_mapping(cast(Mapping[str, object], value)).items()
         }
     if isinstance(value, list | tuple):
         return [config_dump_value(item) for item in value]
-    return cast(ConfigValue, value)
+    return value
 
 
 def resolve_config_object(value: object) -> object:
@@ -250,7 +248,9 @@ def config_ref_parts(ref: str) -> tuple[str, str]:
 
 
 @contextmanager
-def config_ref_context(config: BaseModel | ConfigData | None) -> Iterator[None]:
+def config_ref_context(
+    config: BaseModel | Mapping[str, object] | None,
+) -> Iterator[None]:
     module_name = config_ref_module(config)
     if module_name is None:
         yield
@@ -262,7 +262,7 @@ def config_ref_context(config: BaseModel | ConfigData | None) -> Iterator[None]:
         _CONFIG_REF_MODULE.reset(token)
 
 
-def config_ref_module(config: BaseModel | ConfigData | None) -> str | None:
+def config_ref_module(config: BaseModel | Mapping[str, object] | None) -> str | None:
     if isinstance(config, BaseModel):
         module_name = type(config).__module__
         if module_name not in FRAMEWORK_CONFIG_MODULES:
@@ -270,12 +270,12 @@ def config_ref_module(config: BaseModel | ConfigData | None) -> str | None:
     return None
 
 
-def string_mapping(value: dict) -> ConfigData:
-    result: ConfigData = {}
+def string_mapping(value: Mapping[str, object]) -> dict[str, object]:
+    result: dict[str, object] = {}
     for key, item in value.items():
         if not isinstance(key, str):
             raise TypeError("Config mappings require string keys.")
-        result[key] = cast(ConfigValue, item)
+        result[key] = item
     return result
 
 

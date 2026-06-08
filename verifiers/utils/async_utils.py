@@ -178,7 +178,12 @@ def maybe_retry(
             reraise_one(result.get("error"), error_types)
         elif isinstance(result, list):
             for state in result:
-                reraise_one(state.get("error"), error_types)
+                if isinstance(state, dict):
+                    reraise_one(state.get("error"), error_types)
+                else:
+                    reraise_one(getattr(state, "error", None), error_types)
+        else:
+            reraise_one(getattr(result, "error", None), error_types)
 
     def log_retry(retry_state: tc.RetryCallState) -> None:
         """Log a warning with the exception and the number of attempts."""

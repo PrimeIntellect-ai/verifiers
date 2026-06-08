@@ -1,11 +1,10 @@
 # harnesses
 
-Reusable v1 `vf.Harness` implementations for Verifiers.
+Reusable `verifiers.v1` harness implementations.
 
-Harnesses own rollout execution: programs, command agents, framework adapters,
-endpoint interception, primary sandbox placement, execution setup, and execution
-artifacts. Task data, task-owned tools, users, rewards, and task-specific config
-belong to tasksets.
+Harnesses own reusable execution mechanisms: command agents, framework adapters,
+runtime calls, and execution artifacts. Task data, task tools, users, rewards,
+and task-specific config belong to tasksets.
 
 ## Install
 
@@ -26,24 +25,16 @@ Environment packages should expose a typed child loader and let Verifiers coerce
 the `[env.harness]` config through that annotation:
 
 ```python
-import verifiers as vf
+import verifiers.v1 as vf
 from harnesses import OpenCode, OpenCodeConfig
 
 
 def load_harness(config: OpenCodeConfig) -> OpenCode:
     return OpenCode(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
 ```
 
-Use `vf.load_harness(config=config.harness)` when the environment does not
-own a reusable execution mechanism.
+Omit `harness.py` when the environment does not own a reusable execution
+mechanism; the component loader will use the base harness.
 
 ## Included Harnesses
 
@@ -54,22 +45,22 @@ own a reusable execution mechanism.
 | `MiniSWEAgent` | mini-swe-agent. |
 | `Terminus2` | Harbor Terminus agent. |
 | `RLM` | Recursive language model command harness. |
-| `ReplayHarness` | Replays stored assistant messages into trajectory steps without model calls. |
+| `ReplayHarness` | Replays stored assistant messages into transcript turns without model calls. |
 | `NeMoGymHarness` | NeMo Gym rollout collection. |
 
-Harness implementations resolve to one `ProgramConfig` shape. Command harness
-configs may expose task-relevant execution knobs, but the harness owns command
-construction, channel wiring, sandbox placement, and artifacts.
+Command harness configs may expose task-relevant execution knobs, but the
+harness owns command construction and records command output in
+`state.artifacts`.
 
 ## Replay Stored Transcripts
 
 Use `ReplayHarness` when each task row already contains a top-level `messages`
-chat transcript and each assistant message should become one trajectory step:
+chat transcript and each assistant message should become one transcript turn:
 
 ```python
 from pathlib import Path
 
-import verifiers as vf
+import verifiers.v1 as vf
 from harnesses import ReplayHarness
 from tasksets import ReplayTaskset, ReplayTasksetConfig
 
@@ -91,7 +82,7 @@ Non-assistant messages may appear before, between, or after assistant messages.
 `vf.HarnessConfig` defaults to replaying every assistant message; set
 `max_turns` only when the replay should be capped.
 
-The replayed trajectory keeps `tokens=None`; token IDs and logprobs remain the
+The replayed transcript keeps `tokens=None`; token IDs and logprobs remain the
 responsibility of the trainer or renderer that consumes the final transcript.
 
 ## Agent Versions

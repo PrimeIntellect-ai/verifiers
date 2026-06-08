@@ -15,10 +15,6 @@ from verifiers.types import (
     TimeSpan,
     TrajectoryStep,
 )
-from verifiers.utils.message_utils import (
-    concat_messages,
-    maybe_normalize_messages,
-)
 from verifiers.utils.response_utils import (
     parse_response_message,
     parse_response_tokens,
@@ -104,10 +100,10 @@ class MultiTurnEnv(vf.Environment):
             return state["prompt"]
         prev_turn_prompt = state["trajectory"][-1]["prompt"]
         prev_turn_completion = state["trajectory"][-1]["completion"]
-        messages = concat_messages([prev_turn_prompt, prev_turn_completion])
+        messages = [*prev_turn_prompt, *prev_turn_completion]
         env_response = await self.env_response(messages, state)
-        env_response = maybe_normalize_messages(env_response, field_name="env_response")
-        return concat_messages([messages, env_response])
+        env_response = self._coerce_messages(env_response)
+        return [*messages, *env_response]
 
     async def render_completion(self, state: State):
         """Override for rollouts with non-linear message sequences."""
@@ -116,13 +112,11 @@ class MultiTurnEnv(vf.Environment):
             return
         last_prompt = state["trajectory"][-1]["prompt"]
         last_completion = state["trajectory"][-1]["completion"]
-        full_conversation = concat_messages([last_prompt, last_completion])
+        full_conversation = [*last_prompt, *last_completion]
         if state.get("final_env_response"):
             final_resp = state["final_env_response"]
-            final_resp = maybe_normalize_messages(
-                final_resp, field_name="final_env_response"
-            )
-            full_conversation = concat_messages([full_conversation, final_resp])
+            final_resp = self._coerce_messages(final_resp)
+            full_conversation = [*full_conversation, *final_resp]
         prompt_messages = state["prompt"]
         state["completion"] = full_conversation[len(prompt_messages) :]
 
@@ -195,9 +189,7 @@ class MultiTurnEnv(vf.Environment):
                             TimeSpan(start=start_time, end=end_time)
                         )
 
-                    prompt_messages = maybe_normalize_messages(
-                        prompt_messages, field_name="prompt_messages"
-                    )
+                    prompt_messages = self._coerce_messages(prompt_messages)
                     if state.get("final_env_response") is not None:
                         continue
 

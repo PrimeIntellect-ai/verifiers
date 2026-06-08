@@ -294,13 +294,11 @@ async def my_reward_func(completion, my_helper) -> float:
     return await my_helper.score(completion)
 ```
 
-For taskset/harness environments, keep shared dependencies behind the taskset or
-harness that owns them. Bindings are the canonical way to inject shared
-resources into rewards, updates, tools, and programs. Configured binding
-objects should use serializable loader paths when they cross a TOML or CLI
-boundary; Python-only construction may use factory callables directly when a
-resource cannot be serialized. Required Taskset and Toolset factory parameters
-must be supplied through bindings.
+For taskset/harness environments, keep shared dependencies behind the taskset,
+harness, toolset, user, or runtime that owns them. v1 toolsets and users receive
+shared rollout data through `@vf.tool(args=...)` and write serializable rollout
+data through `sets` and `extends`. Configured objects use serializable loader
+paths across TOML and CLI boundaries.
 
 Judges are used for tasks where deterministic evaluation is impractical, and an
 LLM is used to score responses. **JudgeRubric** stores an LLM client inside the
@@ -703,23 +701,23 @@ environments/my_env/
 
 ### v1 Env Shape
 
-The v1 template teaches the standard object layout: one taskset class, one
-typed `load_taskset(config: MyTasksetConfig)` child factory, and a tiny
-`load_environment(config: vf.EnvConfig)` root loader that delegates through
-`vf.load_taskset(config=config.taskset)` and
-`vf.load_harness(config=config.harness)`. The child factory annotation defines
-the taskset config type for TOML, CLI, eval, GEPA, RL, and Hosted Training.
+v1 is component-first, under active development, and intentionally separate
+from v0. v1 environment code imports `verifiers.v1 as vf`. Packages expose
+`taskset.py` and, only when they own reusable execution behavior, `harness.py`.
+They do not define a root `load_environment`; the library loader assembles
+`vf.Env` from discovered components. Factory annotations define config types
+for TOML, CLI, eval, GEPA, RL, and Hosted Training.
 
 After `prime env init my-env --v1`, edit the generated taskset class:
 
 1. Add task settings to `TasksetConfig`.
 2. Return task records from `load_tasks(split=...)`.
-3. Return task-owned tools from `load_toolsets` when needed.
+3. Add task-owned toolsets or a user when needed.
 4. Add lifecycle, metric, reward, and advantage methods with `@vf.*`.
 
 Add a harness config, harness class, and `load_harness(config:
 MyHarnessConfig)` when the environment owns reusable rollout behavior.
-Otherwise the generated root loader uses the base harness.
+Otherwise the component loader uses the base harness.
 
 `EnvConfig` is the lightweight envelope for the two child configs. Put
 environment knobs on `TasksetConfig` or `HarnessConfig`.
@@ -727,14 +725,20 @@ environment knobs on `TasksetConfig` or `HarnessConfig`.
 The taskset-only shape is:
 
 ```python
-import verifiers as vf
+import verifiers.v1 as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
     system_prompt: vf.SystemPrompt = "Answer exactly."
 
 
+class MyTask(vf.Task):
+    answer: str
+
+
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    task_type = MyTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         """Return serializable task records as a list, generator, or Dataset."""
         if split == "eval":
@@ -748,24 +752,15 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
         ]
 
     @vf.reward(weight=1.0)
-    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
-        messages = vf.get_messages(state.get("completion") or [], role="assistant")
-        if not messages:
+    async def correct_answer(self, task: MyTask, state: vf.State) -> float:
+        if not state.completion:
             return 0.0
-        response = str(messages[-1].content or "").strip()
-        return float(response == task["answer"])
+        response = str(state.completion[-1].content or "").strip()
+        return float(response == task.answer)
 
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
     return MyTaskset(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
 ```
 
 With a reusable harness, keep the same explicit object boundary:
@@ -785,43 +780,17 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 def load_harness(config: MyHarnessConfig) -> MyHarness:
     return MyHarness(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
 ```
 
-Keep v1 dependencies behind the owning taskset or harness. Do not pass
-already-instantiated resource objects through environment loaders. Bindings are
-allowed wherever the owning taskset, toolset, user, program, or harness wires
-callables. `objects` entries should be loader specs: prefer serializable import
-paths in config, and use factory callables directly only for Python-only
-construction when the dependency cannot be serialized. Required Taskset and
-Toolset factory parameters must be supplied through bindings.
-
-Judge-style rewards should read endpoint details from the rollout state:
-
-```python
-@vf.reward(weight=1.0)
-async def judge_reward(task, state) -> float:
-    endpoint = state.get_endpoint_config(api="chat")
-    client = state.get_client(api="chat")
-    model = str(task.get("judge_model") or endpoint.model)
-    ...
-```
-
-Expose at most `judge_model: str | None = None` on the taskset config. Do not
-add judge endpoint URL/API-key fields or read `os.environ` inside reward/update
-handlers.
+Keep v1 dependencies behind the owning taskset, harness, toolset, user, or runtime
+provider. Config, task rows, state, tool specs, and user specs must stay
+serializable. Live clients, runtimes, functions, and file handles do not
+cross those boundaries. Custom mutable rollout data belongs in `state.extras`.
 
 For reusable tasksets and harnesses, [BYO Harness](byo-harness.md) is the
 canonical v1 implementation guide. It covers ownership, configs, task controls,
-system prompts, users, toolsets, programs, sandboxes, artifacts, nested
-harnesses, package adapters, and TOML/CLI overrides.
+system prompts, users, toolsets, runtimes, artifacts, nested harnesses, package
+adapters, and TOML/CLI overrides.
 
 ### pyproject.toml
 

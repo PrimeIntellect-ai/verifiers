@@ -199,7 +199,7 @@ def test_cli_v1_env_config_overrides_preserve_env_args_config(
     module_name = f"cli_override_env_{time.time_ns()}"
     (tmp_path / f"{module_name}.py").write_text(
         """
-import verifiers as vf
+import verifiers.v1 as vf
 
 
 class DemoTasksetConfig(vf.TasksetConfig):
@@ -216,10 +216,6 @@ def load_taskset(config: DemoTasksetConfig):
 
 
 def load_harness(config: DemoHarnessConfig):
-    raise RuntimeError("not used")
-
-
-def load_environment(config: vf.EnvConfig):
     raise RuntimeError("not used")
 """,
         encoding="utf-8",
@@ -247,11 +243,11 @@ def load_environment(config: vf.EnvConfig):
     assert captured["configs"][0].env_args == {
         "config": {
             "taskset": {
-                "taskset_id": "override-id",
+                "id": "override-id",
                 "count": 2,
                 "enabled": False,
             },
-            "harness": {"harness_id": "demo-harness", "max_turns": 4},
+            "harness": {"id": "demo-harness", "max_turns": 4},
         }
     }
 
@@ -1010,7 +1006,7 @@ def test_load_toml_config_with_args_taskset_harness():
     assert "harness" not in result[0]
 
 
-def test_load_toml_config_allows_taskset_id_without_env_id():
+def test_load_toml_config_allows_taskset_without_env_id():
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
             "[[eval]]\n"

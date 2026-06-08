@@ -29,7 +29,7 @@ Run evaluations directly against a local or Hub environment:
 prime eval run my-env -m openai/gpt-4.1-mini -n 10
 ```
 
-`prime eval` resolves and installs the environment when needed, imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
+`prime eval` resolves and installs the environment when needed, imports the environment module using Python's import system, loads the environment, runs 5 examples with 3 rollouts each (the default), scores them, and prints aggregate metrics. v0 packages load through `load_environment(...)`; v1 packages load through discovered `taskset.py` and `harness.py` components.
 
 ## Hosted Evaluations
 
@@ -68,9 +68,9 @@ The positional argument accepts two formats:
 
 Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported after `prime eval run` resolves the environment package.
 
-For v1 `load_environment(config: vf.EnvConfig)` loaders, prefer typed
-taskset/harness overrides. These flags are parsed against the concrete child
-config types from `load_taskset(config: ...)` and `load_harness(config: ...)`:
+For v1 packages, prefer typed taskset/harness overrides. These flags are parsed
+against the concrete child config types from `load_taskset(config: ...)` and
+`load_harness(config: ...)`:
 
 ```bash
 prime eval run my-v1-env --taskset.id my-taskset --harness.id my-harness --harness.max-turns 4
@@ -81,8 +81,8 @@ harness flags are fields on the typed child configs. If the loaded package does
 not provide a local child loader, `--taskset.id` and `--harness.id` select the
 taskset and harness loader packages.
 
-For legacy or direct-constructor environments, the `--env-args` flag passes
-arguments to your `load_environment()` function:
+For v0 or direct-constructor environments, the `--env-args` flag passes
+arguments to the package `load_environment()` function:
 
 ```bash
 prime eval run my-env -a '{"difficulty": "hard", "num_examples": 100}'
@@ -136,7 +136,7 @@ env.set_concurrency(256)
 | `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_completions`, `openai_chat_completions`, `openai_chat_completions_token`, `openai_responses`, `renderer`, `anthropic_messages`, or `nemorl_chat_completions` |
 | `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to TOML endpoints registry |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
-| `--header-from-state` | — | framework session id | Per-request header whose value is read from rollout state (`Name: state_key`), repeatable |
+| `--header-from-state` | — | framework session id | Per-request header whose value is read from the serialized client state (`Name: state_key`), repeatable |
 
 The `renderer` client type requires the optional renderer package. Install it with `uv add "verifiers[renderers]"` before running evals with `--api-client-type renderer`.
 
@@ -178,7 +178,7 @@ headers = { "X-Custom-Header" = "value" }
 
 In `[[eval]]` TOML configs you can set extra headers as `headers = { ... }` and/or as a list `header = ["Name: Value", ...]` (same form as repeated `--header`). Merge order is: registry row, then the `headers` table, then each `header` / `--header` line, with later entries overriding the same name.
 
-For per-request headers that need to vary per rollout, use `headers_from_state = { "X-Name" = "state_key" }` and/or `header_from_state = ["X-Name: state_key", ...]` (same form as repeated `--header-from-state`). The value for each request is resolved at send time as `state[state_key]`. If unset, Verifiers supplies a framework-managed `X-Session-ID`.
+For per-request headers that need to vary per rollout, use `headers_from_state = { "X-Name" = "state_key" }` and/or `header_from_state = ["X-Name: state_key", ...]` (same form as repeated `--header-from-state`). The value for each request is resolved at send time from the serialized client state. If unset, Verifiers supplies a framework-managed `X-Session-ID`.
 
 To define equivalent replicas, add multiple `[[endpoint]]` entries with the same `endpoint_id`.
 

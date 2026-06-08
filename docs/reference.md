@@ -123,6 +123,9 @@ Selects which `Client` implementation to use. Set via `ClientConfig.client_type`
 
 ## Data Types
 
+This section documents the top-level v0 data types. v1 data types live under
+`verifiers.v1` and are documented in [v1 Taskset/Harness Classes](#v1-tasksetharness-classes).
+
 ### State
 
 ```python
@@ -365,6 +368,9 @@ class RolloutScores(TypedDict):
 
 ### Environment Classes
 
+Top-level environment classes are v0. v1 code should import `verifiers.v1 as vf`
+and use the taskset/harness classes below.
+
 #### Environment
 
 ```python
@@ -605,202 +611,138 @@ state, or output field.
 
 ### v1 Taskset/Harness Classes
 
-The v1 API is exposed from the top-level `verifiers` namespace and documented
-in [BYO Harness](byo-harness.md). Its core unit is:
+v1 is under active development and is exposed from `verifiers.v1`, not the
+top-level `verifiers` namespace:
 
 ```python
-state = await harness.run(task, state=None)
+import verifiers.v1 as vf
 ```
 
-`Taskset` and `Env` package that runner for datasets, evals, and training.
+The core direct runner is:
+
+```python
+state = await harness.run(
+    task="hello world",
+    model="openai/gpt-5",
+    score=False,
+)
+```
+
+`Harness.run(...)` is generation-only by default. `Env.run_rollout(...)` calls
+it with `score=True`; nested judge/self-check calls should pass a parent
+`context` and keep `score=False`.
 
 #### Task
 
 ```python
-class Task(dict):
-    def freeze(self) -> Task: ...
+class Task(BaseModel, extra="forbid", frozen=True):
+    task_id: str
+    row_id: int
+    prompt: Messages
+    name: str | None
+    description: str | None
+    image: str | None
+    max_turns: int | None
 ```
 
-Immutable, JSON-serializable input data. A task is usually created by a
-`Taskset`, but can be run directly through a standalone `Harness`.
-
-Common top-level fields:
-
-| Field | Description |
-|-------|-------------|
-| `prompt` | User/developer/tool messages for the rollout. Must not contain system messages. |
-| `system_prompt` | Per-task system messages or string. |
-| `answer` | Reference answer or target data. Stays on task, not state. |
-| `info` | Serializable metadata. |
-| `max_turns` | Per-task base-loop turn limit. |
-| `tools` | Toolset-keyed tool visibility: `{"wiki": {"show": [...]}}` or `{"wiki": {"hide": [...]}}`. |
-| `toolsets` | Toolset visibility: `{"show": [...]}` or `{"hide": [...]}`. |
-| `sandbox` | Per-task sandbox overrides for sandboxed programs. |
-| `artifacts` | Per-task text/JSON files collected after program execution. |
-| `program` | Task-owned files, dirs, env, setup, artifacts, bindings, and command args. |
-
-`task.runtime` is not public schema. Runtime metadata belongs on `State`.
+Tasks are immutable, serializable Pydantic specs. Subclass `vf.Task` for
+benchmark-specific fields; do not use task as an arbitrary bag.
 
 #### State
 
 ```python
-class State(dict):
-    @classmethod
-    def for_task(task: Task, ...) -> State: ...
-    def stop(self, condition: str = "state_done") -> None: ...
-    def get_model(self) -> str: ...
-    def get_client(api: str = "chat_completions", *, sync: bool = False) -> object: ...
-    def get_endpoint_config(api: str = "chat_completions") -> EndpointConfig: ...
-    def get_tools() -> dict[str, Callable[..., Awaitable[object]]]: ...
-    def get_max_turns(default: int) -> int: ...
-    def finalize() -> State: ...
+class State(BaseModel, extra="forbid"):
+    task_id: str | None
+    transcript: list[Turn]
+    extras: JsonData
+    metadata: JsonData
+    metrics: dict[str, float]
+    reward: float
+    artifacts: JsonData
 ```
 
-Mutable rollout output. State starts from a task and accumulates trajectory,
-completion, metrics, reward, timing, artifacts, errors, and user-defined
-serializable fields.
-
-Framework-managed fields such as `is_completed`, `stop_condition`,
-`is_truncated`, and `error` cannot be written directly. Use `state.stop(...)` or
-raise `vf.Error` subclasses.
-
-`State.for_task(...)` can borrow selected active runtime handles from another
-state:
-
-```python
-child_state = state.for_task(child_task, borrow=["model", "sandbox"], tools="bash")
-child_state = await child_harness.run(child_task, child_state)
-```
-
-Borrowed handles are process-local and stripped before state crosses the
-serialization boundary.
-
-#### Taskset
-
-```python
-class Taskset:
-    def __init__(config: TasksetConfig | None = None): ...
-
-    def to_task(task: Task | JsonData) -> Task: ...
-    def load_tasks(split: TaskSplit = "train") -> Tasks: ...
-    async def init_group(task: Task, num_rollouts: int) -> tuple[list[Task], list[State]]: ...
-    def get_dataset() -> Dataset: ...
-    def get_eval_dataset() -> Dataset: ...
-```
-
-Packages tasks and task-owned behavior. Tasksets define
-`load_tasks(split="train" | "eval")`. During rollout,
-records are always materialized as `vf.Task`.
-`Taskset.__init__` is final; subclasses customize behavior through config,
-task-loading methods, lifecycle handlers, `load_toolsets`, `load_user`, and
-other public load methods.
+`State` is the rollout record. `state.transcript` is canonical; there is no live
+`trajectory` alias. User-owned mutable rollout data belongs in `state.extras`.
+Advantages are token-level fields on `TurnTokens`, not scalar state fields.
+Live model clients, runtimes, MCP sessions, functions, and file handles never go
+on `State`.
 
 #### Harness
 
 ```python
 class Harness:
-    def __init__(
-        config: HarnessConfig | None = None,
+    async def run(
+        task: Task | str,
+        state: State | None = None,
         *,
-        model: str | ModelConfig | None = None,
-        client: Client | ClientConfig | str | None = None,
-        sampling_args: SamplingArgs | None = None,
-    ): ...
+        model: ModelConfig | str | None = None,
+        teacher: ModelConfig | str | None = None,
+        context: Context | None = None,
+        score: bool = False,
+    ) -> State: ...
 
-    async def run(task: Task, state: State | None = None) -> State: ...
-    async def score_group(tasks: list[Task], states: list[State]) -> list[State]: ...
-    async def cleanup_group(tasks: list[Task], states: list[State]) -> None: ...
-    async def teardown() -> None: ...
+    async def run_with_context(context: Context) -> None: ...
 ```
 
-Runs one task. All model calls go through the v1 interception endpoint so
-trajectory capture, sampling args, tool forwarding, and protocol translation use
-one path across local Python, sandboxed Python, command programs, and the base
-tool loop.
-`Harness.__init__` is final; subclasses customize behavior through config,
-`load_sandbox`, `load_toolsets`, `load_system_prompt`, lifecycle handlers, and
-program config.
+Subclass `run_with_context(...)` when the harness owns an execution mechanism
+such as a command agent, framework adapter, endpoint interception loop, or nested
+harness. `Context` is the live rollout object: task, state, model client,
+teacher client, runtime, MCP tools/user registries, parent context, and scoring
+flags.
 
-`HarnessConfig.program` is a `ProgramConfig`. Dict/TOML inputs are accepted as
-shorthand for the same config object:
+`EnvRun` is the environment execution object. It starts env-scope toolsets/users
+once, creates one runtime per rollout, and owns grouped rollout coordination.
+`Group` owns the tasks/states for one grouped example and calls `score_group`
+after its member rollouts finish.
 
-| Form | Meaning |
-|------|---------|
-| `ProgramConfig()` | Default endpoint-backed tool loop. |
-| `ProgramConfig(base=True, ...)` | Explicit default loop, usually with sandbox options. |
-| `ProgramConfig(fn="pkg.module:run", ...)` | Importable Python program. |
-| `ProgramConfig(command=["cmd", "arg"], ...)` | Local or sandboxed command. |
+#### Runtime
 
-Reusable command harnesses should subclass `ProgramConfig` and implement
-`resolve()` with `self.resolve_command(command=..., ...)` so typed harness
-settings resolve to a canonical command program without a second loader layer.
+`RuntimeConfig` is the serializable backend spec. `Runtime` is the live handle
+with `start`, `stop`, `expose`, `run`, `read`, and `write`. Built-in configs are
+`SubprocessRuntimeConfig`, `DockerRuntimeConfig`, and `PrimeRuntimeConfig`.
+`ModalRuntimeConfig` and `DaytonaRuntimeConfig` are reserved stubs.
 
-Sandboxed `program.fn` refs resolve their owning local package from the resolved
-module root: single-file modules use `pyproject.toml` in the same directory as
-the module file, and package modules use `pyproject.toml` inside the package
-directory. v1 uploads and installs that package in the program sandbox. Package
-dependencies come from normal `[project.dependencies]`.
+#### Toolset And User
+
+```python
+class SearchToolsetConfig(vf.ToolsetConfig):
+    scope: vf.Scope = "rollout"
+
+
+class SearchToolset(vf.Toolset):
+    @vf.tool(
+        args={"case": "state.metadata.case"},
+        extends={"events": "state.extras.search_events"},
+    )
+    def search(self, query: str, case: str) -> dict:
+        ...
+
+
+class MyTasksetConfig(vf.TasksetConfig):
+    toolsets: vf.ToolsetConfigs = {"search": SearchToolsetConfig()}
+```
+
+The `toolsets` mapping key is the tool prefix. Config can add a new key with
+`source = "my_env.servers.search.config:SearchToolsetConfig"`, which points to
+the config class; the tool implementation is derived from that class.
+`UserConfig` is a sibling config for `User` servers over the same server base.
+`@vf.tool` hides bound `args` from model-visible schemas and binds selected
+return keys back into state through `sets` and `extends`. Binding inputs may
+read `task.*`, `state.*`, `extras.*`, and server-local `resources.*`; binding
+outputs may write `state.*` or `extras.*`. Toolsets and users return messages
+through the shared `vf.ServerResponse` shape.
 
 #### Env
 
 ```python
-class Env(vf.Environment):
-    def __init__(config, *, taskset=Taskset, harness=Harness): ...
+class Env:
+    def __init__(*, taskset: Taskset, harness: Harness | None = None): ...
+    def run() -> EnvRun: ...
+    async def run_rollout(input, *, model, teacher=None, state=None) -> State: ...
+    async def score_group(tasks: list[Task], states: list[State], ...) -> list[State]: ...
 ```
 
-Adapter that makes a v1 taskset/harness pair usable by eval and training
-workers. `config` is an `EnvConfig` object or mapping with nested `taskset` and
-`harness` sections.
-
-#### Toolset And MCPTool
-
-```python
-class Toolset:
-    def __init__(
-        tools=None,
-        show=None,
-        hide=None,
-        bindings=None,
-        objects=None,
-        write: bool | None = None,
-        scope: Literal["rollout", "group", "global"] | None = None,
-        sandbox: SandboxConfig | Literal["program"] | None = None,
-        stops=None,
-        setups=None,
-        updates=None,
-        cleanups=None,
-        teardowns=None,
-        config: ToolsetConfig | None = None,
-    ): ...
-
-class MCPTool:
-    def __init__(command: str, args=None, env=None, cwd: str | None = None): ...
-```
-
-Toolsets package callable tools, MCP servers, private dependency factories,
-hidden bindings, and tool-owned lifecycle handlers. `objects.*` bindings are
-private to the owning toolset/user and are not directly accessible from state.
-String binding sources are framework paths; literal strings should be bound via
-callable sources.
-Tasks show all toolsets/tools by default and can restrict them with `show` or
-`hide` visibility at `task["toolsets"]` and `task["tools"]`.
-
-#### v1 Config Models
-
-```python
-TasksetConfig(...)
-HarnessConfig(...)
-ToolsetConfig(...)
-SandboxConfig(...)
-UserConfig(...)
-MCPToolConfig(...)
-```
-
-v1 config models are strict Pydantic models. Python code builds them directly,
-and TOML config validates into the same models at the loader boundary. TOML
-uses `"module:object"` refs for Python callables and loaders. Users are typed
-`UserConfig` objects materialized through registered `User` subclasses, not
-string refs. Unknown fields fail validation.
+`Env` is the thin eval/training adapter for a concrete taskset/harness pair.
 
 ---
 
@@ -1026,50 +968,48 @@ Provider-agnostic tool definition. Environments define tools using this type; ea
 ### v1 Config
 
 ```python
-class Config(BaseModel):
+class Config(BaseConfig):
     ...
 
+@final
 class EnvConfig(Config):
-    taskset: TasksetConfig
-    harness: HarnessConfig
+    taskset: dict[str, object] = Field(default_factory=dict)
+    harness: dict[str, object] = Field(default_factory=dict)
+    runtime: RuntimeConfig | None = None
+    advantage: AdvantageConfig = "rl"
 
 class TasksetConfig(Config):
-    taskset_id: str | None = None  # `id` shorthand accepted
+    id: str | None = None
     system_prompt: SystemPrompt = None
+    runtime: RuntimeConfig | None = None
     user: UserConfig | None = None
-    bindings: BindingsConfig = BindingsConfig()
-    objects: ObjectsConfig = ObjectsConfig()
-    artifacts: ArtifactsConfig = ArtifactsConfig()
+    toolsets: ToolsetConfigs = Field(default_factory=dict)
+    extras: Extras | None = None
 
 class HarnessConfig(Config):
-    harness_id: str | None = None  # `id` shorthand accepted
-    program: ProgramConfig = ProgramConfig()
-    model: ModelConfig = ModelConfig()
+    id: str | None = None
     system_prompt: SystemPrompt = None
     system_prompt_strategy: SystemPromptStrategy = "HT"
-    sandbox: SandboxConfig | None = None
-    user: UserConfig | None = None
-    bindings: BindingsConfig = BindingsConfig()
-    objects: ObjectsConfig = ObjectsConfig()
-    artifacts: ArtifactsConfig = ArtifactsConfig()
-    max_turns: int = -1  # <= 0 means unbounded (run until a stop condition)
+    max_turns: int = -1
+    runtime: RuntimeConfig | None = None
+    extras: Extras | None = None
 
 class ModelConfig(Config):
-    name: str | None = None
-    client: ClientConfig | str | None = None
-    sampling_args: SamplingArgs = {}
+    client: ClientConfig = ClientConfig()
+    model: str
+    sampling_args: JsonData = {}
 ```
 
-`EnvConfig` is the typed v1 loader envelope. TOML `[env.taskset]` and
-`[env.harness]` sections populate `EnvConfig.taskset` and `EnvConfig.harness`.
-The normal environment package loader stays typed as `load_environment(config:
-vf.EnvConfig)` and delegates child coercion to `vf.load_taskset` /
-`vf.load_harness`. Environment-specific fields belong on the taskset or harness
-config that owns them; do not subclass `EnvConfig` just to narrow child config
-types in ordinary environment packages.
+`EnvConfig` is the typed v1 component-loader envelope. TOML `[env.taskset]`
+and `[env.harness]` sections populate `EnvConfig.taskset` and
+`EnvConfig.harness`. The package loader discovers `taskset.py` and optional
+`harness.py`, then assembles `vf.Env` from the typed child loaders.
+Environment-specific fields belong on the taskset or harness config that owns
+them; `EnvConfig` is final.
 
-`Config` subclasses are strict Pydantic config models. Validate raw mappings
-with `MyConfig.model_validate(...)` or use the typed object directly.
+`Config` is the v1 alias for `pydantic_config.BaseConfig`. Config subclasses
+validate raw mappings with `MyConfig.model_validate(...)` or accept typed
+objects directly.
 
 ### ClientConfig
 

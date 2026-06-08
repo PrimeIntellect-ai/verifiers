@@ -9,12 +9,9 @@ tool bound with `sandbox="program"`, so tool calls execute in that primary
 program sandbox instead of creating a separate tool sandbox. The parent writes
 `/tmp/answer.txt`, then:
 
-1. two update-stage child harnesses run concurrently, borrow the live `model`
-   and `bash` tool, append their model calls to the public trajectory, and
-   inspect the same primary sandbox before rollout cleanup;
-2. a reward-stage child harness borrows the same live `model` and `bash` tool,
-   keeps its trajectory private, inspects the same sandbox, and returns a JSON
-   score.
+1. two update-stage audits run concurrently and store serializable findings in
+   `state.extras` and `state.artifacts`;
+2. reward scoring reads those findings and writes a scalar rollout reward.
 
 ```bash
 prime eval run hello-parallel-sandbox-v1 -m openai/gpt-5.4-mini -n 3 -r 1 -t 4096

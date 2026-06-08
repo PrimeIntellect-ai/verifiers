@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import itertools
 import json
@@ -454,7 +456,7 @@ def eval_env_id(config: Mapping[str, Any], section: str) -> str:
             if isinstance(env_config, Mapping):
                 taskset = env_config.get("taskset")
     if isinstance(taskset, Mapping):
-        taskset_id = taskset.get("id") or taskset.get("taskset_id")
+        taskset_id = taskset.get("id")
         if isinstance(taskset_id, str) and taskset_id:
             return taskset_id
     raise ValueError(f"{section} must contain env_id or taskset.id.")
@@ -890,6 +892,14 @@ def print_timing(results: GenerateOutputs):
             v = t[key]
             if isinstance(v, dict):
                 v = v.get("duration", 0.0)
+            elif isinstance(v, list):
+                total = 0.0
+                for item in v:
+                    if isinstance(item, dict):
+                        total += float(item.get("duration", 0.0))
+                    elif isinstance(item, int | float):
+                        total += float(item)
+                v = total
             out.append(float(v))
         return out
 
@@ -1014,6 +1024,19 @@ def get_log_level(verbose: bool) -> str:
     return "DEBUG" if verbose else os.getenv("VF_LOG_LEVEL", "INFO")
 
 
+def effective_max_concurrent(config: EvalConfig) -> int:
+    if (
+        not config.independent_scoring
+        and config.max_concurrent > 0
+        and config.rollouts_per_example > 1
+    ):
+        max_concurrent = math.ceil(config.max_concurrent / config.rollouts_per_example)
+        if config.num_examples > 0:
+            max_concurrent = min(max_concurrent, config.num_examples)
+        return max_concurrent
+    return config.max_concurrent
+
+
 @contextmanager
 def quiet_datasets():
     prev_level = ds_logging.get_verbosity()
@@ -1040,12 +1063,14 @@ async def run_evaluation(
     with maybe_suppress_logs:
         vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
+    from verifiers.v1.env import Env as V1Env
+
+    results_path = config.resume_path or get_eval_results_path(config)
     # set extra environment kwargs
-    if config.extra_env_kwargs:
+    if config.extra_env_kwargs and not isinstance(vf_env, V1Env):
         logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
-    results_path = config.resume_path or get_eval_results_path(config)
     if config.client_config.endpoint_configs:
         pricing_urls = [
             endpoint.api_base_url for endpoint in config.client_config.endpoint_configs
@@ -1056,6 +1081,26 @@ async def run_evaluation(
     if pricing_urls and all(is_prime_inference_url(url) for url in pricing_urls):
         model_pricing = (await fetch_prime_pricing()).get(config.model)
     on_progress = _with_eval_metadata(on_progress, model_pricing, config.name)
+
+    if isinstance(vf_env, V1Env):
+        from verifiers.v1.eval import run_evaluation as run_v1_evaluation
+
+        outputs = await run_v1_evaluation(
+            vf_env,
+            config,
+            results_path,
+            on_start,
+            on_progress,
+            on_log,
+        )
+        metadata_changed = _attach_metadata_name(outputs["metadata"], config.name)
+        if _attach_metadata_cost(
+            outputs["metadata"], model_pricing, outputs["outputs"]
+        ):
+            metadata_changed = True
+        if metadata_changed and config.save_results:
+            await asyncio.to_thread(save_metadata, outputs["metadata"], results_path)
+        return outputs
 
     try:
         if not config.disable_env_server:
@@ -1107,22 +1152,6 @@ async def run_evaluation(
             f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, shuffle={config.shuffle}, shuffle_seed={config.shuffle_seed}, max_concurrent={config.max_concurrent}"
         )
 
-        effective_group_max_concurrent = config.max_concurrent
-        if (
-            not config.independent_scoring
-            and config.max_concurrent > 0
-            and config.rollouts_per_example > 1
-        ):
-            # Grouped scoring applies the semaphore at group level. Convert
-            # rollout-level concurrency to group-level slots.
-            effective_group_max_concurrent = math.ceil(
-                config.max_concurrent / config.rollouts_per_example
-            )
-            if config.num_examples > 0:
-                effective_group_max_concurrent = min(
-                    effective_group_max_concurrent, config.num_examples
-                )
-
         outputs = await vf_env.evaluate(
             client=config.client_config,
             model=config.model,
@@ -1131,7 +1160,7 @@ async def run_evaluation(
             rollouts_per_example=config.rollouts_per_example,
             shuffle=config.shuffle,
             shuffle_seed=config.shuffle_seed,
-            max_concurrent=effective_group_max_concurrent,
+            max_concurrent=effective_max_concurrent(config),
             results_path=results_path,
             state_columns=config.state_columns,
             save_results=config.save_results,
