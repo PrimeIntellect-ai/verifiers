@@ -19,7 +19,7 @@ The paired `rlm_search` environment prompts RLM to write this file and provides 
 
 ## Scoring
 
-`RedSearcherRubric` compares the final response against the released `answer` label. It first applies a normalized exact-answer containment shortcut for unambiguous matches. Otherwise it uses an OpenAI-compatible LLM-as-judge prompt that follows the answer-matching convention in REDSearcher's DeepTraceHub evaluation code: judge whether the predicted final answer is equivalent to the ground truth and return binary accuracy.
+`RedSearcherRubric` compares the final response against the released `answer` label. It first applies a strict normalized exact-answer shortcut for unambiguous matches. Otherwise it uses an OpenAI-compatible LLM-as-judge prompt that follows the answer-matching convention in REDSearcher's DeepTraceHub evaluation code: judge whether the predicted final answer is equivalent to the ground truth and return binary accuracy.
 
 A reward of `1.0` means the final response matched the ground-truth answer; `0.0` means it did not, or no final answer was produced. Judge provider failures are preserved as `vf.Error` values on `state["error"]`.
 
@@ -35,4 +35,4 @@ A reward of `1.0` means the final response matched the ground-truth answer; `0.0
 | `judge_base_url` | `https://api.pinference.ai/api/v1` | Judge API base URL. |
 | `judge_api_key_var` | `PRIME_API_KEY` | Env var containing the judge API key. |
 | `judge_max_retries` | `5` | Number of parse retries for the A/B judge response. |
-| `use_exact_match_shortcut` | `True` | Return `1.0` without an LLM call when the normalized ground-truth answer appears directly in the final response. |
+| `use_exact_match_shortcut` | `True` | Return `1.0` without an LLM call when the normalized final response exactly equals the normalized ground-truth answer. |
