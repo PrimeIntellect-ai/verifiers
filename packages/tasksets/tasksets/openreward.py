@@ -34,6 +34,17 @@ class OpenRewardEnvironment(Protocol):
     ) -> Iterable[OpenRewardTask]: ...
 
 
+class OpenRewardTool(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def description(self) -> str | None: ...
+
+    @property
+    def input_schema(self) -> vf.JsonValue | None: ...
+
+
 class OpenRewardUserConfig(vf.UserConfig):
     pass
 
@@ -157,14 +168,24 @@ class OpenRewardSession:
         self.client = None
 
 
-def openreward_tool_defs(tools: Iterable[object]) -> list[vf.JsonData]:
+def openreward_tool_defs(
+    tools: Iterable[OpenRewardTool | vf.JsonData],
+) -> list[vf.JsonData]:
     tool_defs: list[vf.JsonData] = []
     for tool in tools:
-        name = getattr(tool, "name", None)
+        if isinstance(tool, dict):
+            tool_data = cast(vf.JsonData, tool)
+            name = tool_data.get("name")
+            description = tool_data.get("description", "")
+            schema = tool_data.get("input_schema")
+        else:
+            tool_spec = cast(OpenRewardTool, tool)
+            name = tool_spec.name
+            description = tool_spec.description
+            schema = tool_spec.input_schema
         if not isinstance(name, str) or not name:
             raise TypeError("OpenReward tools must have non-empty names.")
-        description = getattr(tool, "description", "") or ""
-        schema = getattr(tool, "input_schema", None)
+        description = description or ""
         parameters = (
             json_data(schema, context=f"OpenReward tool {name} schema")
             if isinstance(schema, dict)

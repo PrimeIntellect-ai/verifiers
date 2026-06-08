@@ -282,6 +282,49 @@ async def test_parsed_prompt_attribution_survives_v1_assert_serializable():
     State({"trajectory": [step]}).assert_serializable()
 
 
+def test_assert_serializable_accepts_msgpack_sidecars_rejects_unknown():
+    """The ``assert_serializable`` json.dumps gate must accept exactly what the
+    trainer transport (msgpack) accepts, while staying strict otherwise.
+
+    Trajectory token steps carry sidecars that are non-JSON by design and reach
+    the trainer via msgpack, not JSON: the renderer ``MultiModalData`` (a
+    dataclass holding numpy pixel arrays) and ``routed_experts`` (a raw
+    ``memoryview`` buffer). Both must clear the gate; any other
+    non-serializable object must still raise.
+    """
+    import dataclasses
+
+    import numpy as np
+
+    @dataclasses.dataclass
+    class _FakeMultiModalData:
+        mm_hashes: dict
+        mm_items: dict
+        mm_placeholders: dict
+
+    mm = _FakeMultiModalData(
+        mm_hashes={"image": ["h1"]},
+        mm_items={"image": [np.zeros((2, 2), dtype=np.uint8)]},
+        mm_placeholders={"image": [{"offset": 0, "length": 4}]},
+    )
+    step = {
+        "tokens": {
+            "prompt_ids": [1, 2],
+            "multi_modal_data": mm,
+            "routed_experts": {"data": memoryview(b"abc"), "shape": [3], "start": 0},
+        }
+    }
+    # Must not raise: both sidecars are msgpack-transported, not JSON.
+    State({"trajectory": [step]}).assert_serializable()
+
+    # A genuinely non-serializable object must still be rejected.
+    class _Unknown:
+        pass
+
+    with pytest.raises(TypeError):
+        State({"trajectory": [{"tokens": _Unknown()}]}).assert_serializable()
+
+
 def test_process_trajectory_steps_for_training(make_input):
     """Test processing trajectory steps into training examples."""
     state1 = State(

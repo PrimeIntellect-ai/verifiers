@@ -214,15 +214,15 @@ class AnthropicMessagesClient(
             return {}
 
         def build_tool_result_block(message: ToolMessage) -> ToolResultBlockParam:
+            if isinstance(message.content, str):
+                result_content: Any = message.content
+            else:
+                # Keep images: image_url parts -> Anthropic image blocks (not "[image]" text).
+                result_content = normalize_anthropic_content(message.content)
             return ToolResultBlockParam(
                 type="tool_result",
                 tool_use_id=message.tool_call_id,
-                content=cast(
-                    Any,
-                    message.content
-                    if isinstance(message.content, str)
-                    else " ".join(content_to_text_chunks(message.content)),
-                ),
+                content=cast(Any, result_content),
             )
 
         def from_chat_message(message: Message) -> AnthropicMessageParam | None:

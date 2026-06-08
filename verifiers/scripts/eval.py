@@ -459,6 +459,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of rollouts per example",
     )
     parser.add_argument(
+        "--shuffle",
+        default=False,
+        action="store_true",
+        help="Shuffle the evaluation dataset before selecting examples",
+    )
+    parser.add_argument(
+        "--shuffle-seed",
+        type=int,
+        default=None,
+        help="Seed for --shuffle. Defaults to 0 when --shuffle is enabled.",
+    )
+    parser.add_argument(
         "--max-concurrent",
         "-c",
         type=int,
@@ -697,6 +709,12 @@ def main(argv: list[str] | None = None):
             logger.debug(
                 f"Using rollouts_per_example={rollouts_per_example} from {source}"
             )
+        shuffle = bool(raw.get("shuffle", False))
+        shuffle_seed = raw.get("shuffle_seed")
+        if shuffle and shuffle_seed is None:
+            shuffle_seed = 0
+        if not shuffle:
+            shuffle_seed = None
 
         raw_endpoint_id = raw.get("endpoint_id")
         raw_model_field = raw.get("model")
@@ -903,6 +921,8 @@ def main(argv: list[str] | None = None):
                 model=model,
                 num_examples=num_examples,
                 rollouts_per_example=rollouts_per_example,
+                shuffle=shuffle,
+                shuffle_seed=shuffle_seed,
                 env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
                 output_dir=raw.get("output_dir"),
                 name=name,
@@ -942,6 +962,8 @@ def main(argv: list[str] | None = None):
             sampling_args=merged_sampling_args,
             num_examples=num_examples,
             rollouts_per_example=rollouts_per_example,
+            shuffle=shuffle,
+            shuffle_seed=shuffle_seed,
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
             max_retries=raw.get("max_retries", 3),
             num_workers=raw.get("num_workers", "auto"),

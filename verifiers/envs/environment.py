@@ -62,6 +62,7 @@ from verifiers.types import (
     SamplingArgs,
     StartCallback,
     State,
+    TextMessage,
     TokenUsage,
     Tool,
     UserMessage,
@@ -402,12 +403,13 @@ class Environment(ABC):
         self.build_dataset()
         if self.dataset is None:
             raise ValueError("dataset is not set")
+        dataset = self.dataset
         if seed is not None:
-            self.dataset = self.dataset.shuffle(seed=seed)
+            dataset = dataset.shuffle(seed=seed)
         if n > 0:
-            n = min(n, len(self.dataset))
-            return self.dataset.select(range(n))
-        return self.dataset
+            n = min(n, len(dataset))
+            return dataset.select(range(n))
+        return dataset
 
     @final
     def get_eval_dataset(self, n: int = -1, seed: int | None = None) -> "Dataset":
@@ -417,12 +419,13 @@ class Environment(ABC):
                 "eval_dataset is not set, falling back to train dataset"
             )
             return self.get_dataset(n, seed)
+        eval_dataset = self.eval_dataset
         if seed is not None:
-            self.eval_dataset = self.eval_dataset.shuffle(seed=seed)
+            eval_dataset = eval_dataset.shuffle(seed=seed)
         if n > 0:
-            n = min(n, len(self.eval_dataset))
-            return self.eval_dataset.select(range(n))
-        return self.eval_dataset
+            n = min(n, len(eval_dataset))
+            return eval_dataset.select(range(n))
+        return eval_dataset
 
     @final
     def _get_usage_tracker(
@@ -535,6 +538,16 @@ class Environment(ABC):
 
         return response
 
+    def _coerce_messages(self, value: str | list) -> Messages:
+        if isinstance(value, str):
+            message = (
+                TextMessage(content=value)
+                if self.message_type == "completion"
+                else UserMessage(content=value)
+            )
+            return [message]
+        return _MESSAGES_ADAPTER.validate_python(value)
+
     @final
     async def init_state(
         self,
@@ -561,11 +574,7 @@ class Environment(ABC):
         # Convert prompt to Pydantic messages
         raw_prompt = state_input.get("prompt")
         if isinstance(raw_prompt, (str, list)):
-            state["prompt"] = (
-                [UserMessage(content=raw_prompt)]
-                if isinstance(raw_prompt, str)
-                else _MESSAGES_ADAPTER.validate_python(raw_prompt)
-            )
+            state["prompt"] = self._coerce_messages(raw_prompt)
 
         state["client"] = resolve_client(client)
         state["model"] = model
@@ -837,6 +846,8 @@ class Environment(ABC):
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
         max_retries: int = 0,
+        shuffle: bool = False,
+        shuffle_seed: int | None = None,
         on_start: StartCallback | None = None,
         on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
@@ -940,6 +951,9 @@ class Environment(ABC):
         total_rollouts = len(raw_inputs)
         num_examples = len(set([i["example_id"] for i in raw_inputs]))
         rollouts_per_example = total_rollouts // num_examples if num_examples > 0 else 0
+        resolved_shuffle_seed = (
+            (0 if shuffle_seed is None else shuffle_seed) if shuffle else None
+        )
         builder = GenerateOutputsBuilder(
             env_id=self.env_id,
             env_args=self.env_args,
@@ -951,6 +965,8 @@ class Environment(ABC):
             sampling_args=sampling_args,
             results_path=results_path,
             pass_threshold=self.pass_threshold,
+            shuffle=shuffle,
+            shuffle_seed=resolved_shuffle_seed,
         )
 
         single_client: Client | None = None
@@ -995,6 +1011,8 @@ class Environment(ABC):
                     model=model,
                     num_examples=num_examples,
                     rollouts_per_example=rollouts_per_example,
+                    shuffle=shuffle,
+                    shuffle_seed=resolved_shuffle_seed,
                 )
                 on_log(f"Resuming evaluation from {results_path}")
                 outputs = load_outputs(results_path)
@@ -1158,11 +1176,20 @@ class Environment(ABC):
 
     # evaluation
     def _get_eval_inputs(
-        self, num_examples: int = -1, rollouts_per_example: int = 1
+        self,
+        num_examples: int = -1,
+        rollouts_per_example: int = 1,
+        shuffle: bool = False,
+        shuffle_seed: int | None = None,
     ) -> List[RolloutInput]:
         # get_eval_dataset handles fallback to train dataset if no eval source exists
-        inputs = self.get_eval_dataset(n=num_examples)
+        inputs = self.get_eval_dataset()
         assert inputs is not None, "No dataset found"
+        if shuffle:
+            inputs = inputs.shuffle(seed=0 if shuffle_seed is None else shuffle_seed)
+        if num_examples > 0:
+            num_examples = min(num_examples, len(inputs))
+            inputs = inputs.select(range(num_examples))
         if rollouts_per_example > 1:
             inputs = inputs.repeat(rollouts_per_example)
         return inputs.to_list()
@@ -1182,6 +1209,8 @@ class Environment(ABC):
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
         max_retries: int = 0,
+        shuffle: bool = False,
+        shuffle_seed: int | None = None,
         on_start: StartCallback | None = None,
         on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
@@ -1195,7 +1224,13 @@ class Environment(ABC):
                 A single callback replaces the default. A list of callbacks runs
                 alongside the default.
         """
-        inputs = self._get_eval_inputs(num_examples, rollouts_per_example)
+        resolved_shuffle_seed = 0 if shuffle and shuffle_seed is None else shuffle_seed
+        inputs = self._get_eval_inputs(
+            num_examples,
+            rollouts_per_example,
+            shuffle=shuffle,
+            shuffle_seed=resolved_shuffle_seed,
+        )
         return await self.generate(
             inputs,
             client=client,
@@ -1209,6 +1244,8 @@ class Environment(ABC):
             hf_hub_dataset_name=hf_hub_dataset_name,
             independent_scoring=independent_scoring,
             max_retries=max_retries,
+            shuffle=shuffle,
+            shuffle_seed=resolved_shuffle_seed,
             on_start=on_start,
             on_progress=on_progress,
             on_log=on_log,
@@ -1230,11 +1267,19 @@ class Environment(ABC):
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
         max_retries: int = 0,
+        shuffle: bool = False,
+        shuffle_seed: int | None = None,
     ) -> GenerateOutputs:
         """
         Evaluate model on the Environment evaluation dataset synchronously.
         """
-        inputs = self._get_eval_inputs(num_examples, rollouts_per_example)
+        resolved_shuffle_seed = 0 if shuffle and shuffle_seed is None else shuffle_seed
+        inputs = self._get_eval_inputs(
+            num_examples,
+            rollouts_per_example,
+            shuffle=shuffle,
+            shuffle_seed=resolved_shuffle_seed,
+        )
         return self.generate_sync(
             inputs,
             client=client,
@@ -1248,6 +1293,8 @@ class Environment(ABC):
             hf_hub_dataset_name=hf_hub_dataset_name,
             independent_scoring=independent_scoring,
             max_retries=max_retries,
+            shuffle=shuffle,
+            shuffle_seed=resolved_shuffle_seed,
         )
 
     # setters for use by trainers

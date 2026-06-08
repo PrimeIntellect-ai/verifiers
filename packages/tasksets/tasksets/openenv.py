@@ -30,6 +30,14 @@ class OpenEnvResult(Protocol):
     done: bool
 
 
+class OpenEnvTool(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def description(self) -> str | None: ...
+
+
 def default_openenv_prompt_renderer(observation: object) -> vf.PromptInput:
     if isinstance(observation, str):
         return [{"role": "user", "content": observation}]
@@ -307,7 +315,7 @@ def mcp_tool_content(observation: object) -> vf.JsonValue:
     return json_value(value)
 
 
-def openenv_tool_defs(tools: Iterable[object]) -> list[vf.JsonData]:
+def openenv_tool_defs(tools: Iterable[OpenEnvTool]) -> list[vf.JsonData]:
     tool_defs: list[vf.JsonData] = []
     for tool in tools:
         name = getattr(tool, "name", None)

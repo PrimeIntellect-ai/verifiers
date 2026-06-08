@@ -300,6 +300,30 @@ def test_evaluate_fallback_and_repeat(mock_client, make_dummy_env, make_input):
     assert len(states) == 2 * 2
 
 
+def test_get_eval_inputs_shuffles_before_take_and_repeat(mock_client, make_dummy_env):
+    ds = Dataset.from_dict(
+        {
+            "question": [f"q{i}" for i in range(6)],
+            "answer": [f"a{i}" for i in range(6)],
+        }
+    )
+    env = make_dummy_env(mock_client, dataset=ds)
+
+    inputs = env._get_eval_inputs(
+        num_examples=3,
+        rollouts_per_example=2,
+        shuffle=True,
+        shuffle_seed=123,
+    )
+    expected = (
+        env.get_eval_dataset().shuffle(seed=123).select(range(3)).repeat(2).to_list()
+    )
+
+    assert [row["example_id"] for row in inputs] == [
+        row["example_id"] for row in expected
+    ]
+
+
 @pytest.mark.asyncio
 async def test_generate_inside_running_loop(mock_client, make_dummy_env, make_input):
     env = make_dummy_env(mock_client)

@@ -37,10 +37,11 @@ def eval_inputs(
     env: Env,
     num_examples: int,
     rollouts_per_example: int,
+    seed: int | None = None,
 ) -> list[RolloutInput]:
     rows = [
         cast(RolloutInput, json_data(row))
-        for row in env.get_eval_dataset(n=num_examples)
+        for row in env.get_eval_dataset(n=num_examples, seed=seed)
     ]
     if rollouts_per_example <= 1:
         return rows
@@ -160,6 +161,7 @@ async def run_evaluation(
         env,
         config.num_examples,
         config.rollouts_per_example,
+        seed=config.shuffle_seed if config.shuffle else None,
     )
     example_ids = {row["example_id"] for row in raw_inputs}
     num_examples = len(example_ids)

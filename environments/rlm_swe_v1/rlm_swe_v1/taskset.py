@@ -71,7 +71,7 @@ def load_tasks(
     ds_num_proc: int | None = None,
     ds_keep_in_memory: bool = True,
     timeout_minutes: int | None = None,
-    env: dict[str, object] | None = None,
+    env: dict[str, str] | None = None,
 ) -> list[vf.JsonData]:
     dataset_kwargs = dict(
         num_proc=ds_num_proc,
@@ -138,7 +138,7 @@ def sandbox_config(
     return config
 
 
-def env_vars(*, repo_path: str, env: dict[str, object]) -> dict[str, str]:
+def env_vars(*, repo_path: str, env: dict[str, str]) -> dict[str, str]:
     return {
         "PATH": (
             f"/opt/miniconda3/bin:{repo_path}/.venv/bin:/root/.local/bin:"
@@ -150,7 +150,7 @@ def env_vars(*, repo_path: str, env: dict[str, object]) -> dict[str, str]:
         "LESS": "-R",
         "PIP_PROGRESS_BAR": "off",
         "TQDM_DISABLE": "1",
-        **{str(key): str(value) for key, value in env.items()},
+        **env,
     }
 
 

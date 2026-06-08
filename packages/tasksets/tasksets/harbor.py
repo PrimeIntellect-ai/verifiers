@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.json_utils import json_data
 from verifiers.utils.import_utils import load_toml
 from tasksets.utils.harbor_utils import (
     TASKS_SUBDIR,
@@ -53,14 +54,16 @@ class HarborTask(vf.Task, frozen=True):
         instruction_path = task_dir / "instruction.md"
         with task_toml_path.open("rb") as f:
             task_config = load_toml(f)
-        sections: dict[str, dict[str, object]] = {}
+        sections: dict[str, vf.JsonData] = {}
         for name in ("environment", "task", "metadata", "agent", "verifier"):
             section = task_config.get(name)
             if section is None:
                 section = {}
             if not isinstance(section, dict):
                 raise TypeError(f"Harbor task [{name}] must be a mapping.")
-            sections[name] = {str(key): value for key, value in section.items()}
+            sections[name] = json_data(
+                {str(key): value for key, value in section.items()}
+            )
 
         environment = sections["environment"]
         task_meta = sections["task"]
@@ -163,7 +166,7 @@ class HarborTask(vf.Task, frozen=True):
         )
 
     @staticmethod
-    def resources_from_environment(environment: dict[str, object]) -> vf.Resources:
+    def resources_from_environment(environment: vf.JsonData) -> vf.Resources:
         cpu_cores = (
             None
             if environment.get("cpus") is None

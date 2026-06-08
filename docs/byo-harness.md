@@ -1,8 +1,9 @@
 # v1 Taskset/Harness Environments
 
-v1 is the active-development Taskset/Harness API. Use it for new reusable
-tasksets, reusable harnesses, MCP tools, user simulators, framework adapters,
-endpoint interception, command agents, and runtime-backed environments.
+v1 is the active-development Taskset/Harness API and may change before release.
+Use it for new reusable tasksets, reusable harnesses, MCP tools, user
+simulators, framework adapters, endpoint interception, command agents, and
+runtime-backed environments.
 
 v1 is intentionally separate from v0. Author v1 files with:
 

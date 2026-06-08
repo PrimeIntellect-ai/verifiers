@@ -138,7 +138,9 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
 ```
 
 For new environments with reusable tasksets, toolsets, custom programs, or
-custom harnesses, use the v1 Taskset/Harness path:
+custom harnesses, there is also a separate v1 Taskset/Harness path. v1 is under
+active development and may change before release; v0 remains the top-level
+`verifiers` surface.
 ```python
 # my_env/taskset.py
 import verifiers.v1 as vf

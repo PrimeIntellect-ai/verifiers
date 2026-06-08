@@ -1,6 +1,7 @@
 # Verifiers v1
 
-v1 is an active-development rewrite of the Taskset/Harness stack. Import it as:
+v1 is an active-development rewrite of the Taskset/Harness stack. Breaking
+changes are expected before release. Import it as:
 
 ```python
 import verifiers.v1 as vf

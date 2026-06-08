@@ -4,7 +4,6 @@ import time
 from abc import abstractmethod
 from typing import final
 
-from pydantic import TypeAdapter
 import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import (
@@ -15,7 +14,6 @@ from verifiers.types import (
     State,
     TimeSpan,
     TrajectoryStep,
-    UserMessage,
 )
 from verifiers.utils.response_utils import (
     parse_response_message,
@@ -23,7 +21,6 @@ from verifiers.utils.response_utils import (
 )
 
 logger = logging.getLogger(__name__)
-_MESSAGES_ADAPTER = TypeAdapter(Messages)
 
 
 class MultiTurnMonitorRubric(vf.Rubric):
@@ -105,11 +102,7 @@ class MultiTurnEnv(vf.Environment):
         prev_turn_completion = state["trajectory"][-1]["completion"]
         messages = [*prev_turn_prompt, *prev_turn_completion]
         env_response = await self.env_response(messages, state)
-        env_response = (
-            [UserMessage(content=env_response)]
-            if isinstance(env_response, str)
-            else _MESSAGES_ADAPTER.validate_python(env_response)
-        )
+        env_response = self._coerce_messages(env_response)
         return [*messages, *env_response]
 
     async def render_completion(self, state: State):
@@ -122,11 +115,7 @@ class MultiTurnEnv(vf.Environment):
         full_conversation = [*last_prompt, *last_completion]
         if state.get("final_env_response"):
             final_resp = state["final_env_response"]
-            final_resp = (
-                [UserMessage(content=final_resp)]
-                if isinstance(final_resp, str)
-                else _MESSAGES_ADAPTER.validate_python(final_resp)
-            )
+            final_resp = self._coerce_messages(final_resp)
             full_conversation = [*full_conversation, *final_resp]
         prompt_messages = state["prompt"]
         state["completion"] = full_conversation[len(prompt_messages) :]
@@ -200,11 +189,7 @@ class MultiTurnEnv(vf.Environment):
                             TimeSpan(start=start_time, end=end_time)
                         )
 
-                    prompt_messages = (
-                        [UserMessage(content=prompt_messages)]
-                        if isinstance(prompt_messages, str)
-                        else _MESSAGES_ADAPTER.validate_python(prompt_messages)
-                    )
+                    prompt_messages = self._coerce_messages(prompt_messages)
                     if state.get("final_env_response") is not None:
                         continue
 

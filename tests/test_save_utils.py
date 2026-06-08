@@ -31,6 +31,7 @@ from verifiers.utils.save_utils import (
     load_outputs,
     make_serializable,
     save_new_outputs,
+    save_metadata,
     states_to_outputs,
     truncate_malformed_trailing_line,
     validate_resume_metadata,
@@ -197,6 +198,37 @@ class TestSavingMetadata:
         assert isinstance(metadata["base_url"], str)
         assert (
             metadata["base_url"] == "http://localhost:8000/v1,http://localhost:8001/v1"
+        )
+
+    def test_save_metadata_records_default_shuffle_seed_for_resume(
+        self, tmp_path: Path
+    ):
+        results_path = tmp_path / "results"
+        builder = GenerateOutputsBuilder(
+            env_id="math-env",
+            env_args={},
+            model="test-model",
+            client=ClientConfig(api_base_url="http://localhost:8000/v1"),
+            num_examples=3,
+            rollouts_per_example=2,
+            state_columns=[],
+            sampling_args={},
+            results_path=results_path,
+            shuffle=True,
+        )
+        save_metadata(builder.build_metadata(), results_path)
+
+        assert (
+            json.loads((results_path / "metadata.json").read_text())["shuffle_seed"]
+            == 0
+        )
+        validate_resume_metadata(
+            results_path=results_path,
+            env_id="math-env",
+            model="test-model",
+            num_examples=3,
+            rollouts_per_example=2,
+            shuffle=True,
         )
 
 
@@ -593,6 +625,35 @@ class TestResumeMetadataValidation:
                 model="test-model",
                 num_examples=3,
                 rollouts_per_example=2,
+            )
+
+    def test_validate_resume_metadata_rejects_shuffle_mismatch(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        metadata_path = results_path / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "env_id": "math-env",
+                    "model": "test-model",
+                    "num_examples": 3,
+                    "rollouts_per_example": 2,
+                    "shuffle": True,
+                    "shuffle_seed": 123,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="shuffle_seed"):
+            validate_resume_metadata(
+                results_path=results_path,
+                env_id="math-env",
+                model="test-model",
+                num_examples=3,
+                rollouts_per_example=2,
+                shuffle=True,
+                shuffle_seed=456,
             )
 
 

@@ -326,6 +326,8 @@ class GenerateMetadata(TypedDict):
     base_url: str
     num_examples: int
     rollouts_per_example: int
+    shuffle: NotRequired[bool]
+    shuffle_seed: NotRequired[int | None]
     sampling_args: SamplingArgs
     date: str
     time_ms: float
@@ -343,6 +345,8 @@ class GenerateMetadata(TypedDict):
 ```
 
 `base_url` is always serialized as a string. For multi-endpoint runs (e.g., using `ClientConfig.endpoint_configs`), it is stored as a comma-separated list of URLs.
+
+`shuffle` records whether evaluation inputs were shuffled before selecting examples. `shuffle_seed` records the seed used for that shuffle; when shuffle is enabled without an explicit seed, the saved value is `0`.
 
 `version_info` captures the verifiers framework version/commit and the environment package version/commit at generation time. Populated automatically by `GenerateOutputsBuilder`.
 
@@ -607,7 +611,8 @@ state, or output field.
 
 ### v1 Taskset/Harness Classes
 
-v1 is exposed from `verifiers.v1`, not the top-level `verifiers` namespace:
+v1 is under active development and is exposed from `verifiers.v1`, not the
+top-level `verifiers` namespace:
 
 ```python
 import verifiers.v1 as vf
@@ -1060,6 +1065,8 @@ class EvalConfig(BaseModel):
     sampling_args: SamplingArgs
     num_examples: int
     rollouts_per_example: int
+    shuffle: bool = False
+    shuffle_seed: int | None = None
     max_concurrent: int
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}

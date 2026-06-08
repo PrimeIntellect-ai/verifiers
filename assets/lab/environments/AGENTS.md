@@ -701,12 +701,12 @@ environments/my_env/
 
 ### v1 Env Shape
 
-v1 is component-first and intentionally separate from v0. v1 environment code
-imports `verifiers.v1 as vf`. Packages expose `taskset.py` and, only when they
-own reusable execution behavior, `harness.py`. They do not define a root
-`load_environment`; the library loader assembles `vf.Env` from discovered
-components. Factory annotations define config types for TOML, CLI, eval, GEPA,
-RL, and Hosted Training.
+v1 is component-first, under active development, and intentionally separate
+from v0. v1 environment code imports `verifiers.v1 as vf`. Packages expose
+`taskset.py` and, only when they own reusable execution behavior, `harness.py`.
+They do not define a root `load_environment`; the library loader assembles
+`vf.Env` from discovered components. Factory annotations define config types
+for TOML, CLI, eval, GEPA, RL, and Hosted Training.
 
 After `prime env init my-env --v1`, edit the generated taskset class:
 

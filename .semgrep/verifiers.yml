@@ -83,6 +83,41 @@ rules:
         - /environments/**/proj/**/*.py
     pattern-regex: "\\bAny\\b"
 
+  - id: verifiers-no-raw-object-containers-v1
+    languages: [python]
+    severity: ERROR
+    message: Do not spell broad object containers in v1 environment or package authoring code; use a concrete model or a named boundary type that describes the real payload.
+    paths:
+      include:
+        - /environments/**/*.py
+        - /packages/tasksets/tasksets/**/*.py
+        - /packages/harnesses/harnesses/**/*.py
+      exclude:
+        - /environments/openenv_*/proj/**/*.py
+    pattern-regex: "(?x)(def\\s+\\w+\\([^\\n)]*:\\s*(?:Mapping|MutableMapping|dict|list|Sequence|Iterable|Callable|Awaitable|tuple)\\[[^\\n\\]]*\\bobject\\b|->\\s*(?:Mapping|MutableMapping|dict|list|Sequence|Iterable|Callable|Awaitable|tuple)\\[[^\\n\\]]*\\bobject\\b)"
+
+  - id: verifiers-no-raw-mapping-annotations-v1
+    languages: [python]
+    severity: ERROR
+    message: Do not use raw Mapping annotations in v1 or environment code; normalize at the boundary to a dict, a typed Config model, or a named v1 boundary type. Do not patch around unclear contracts with loose Mapping types.
+    paths:
+      include:
+        - /environments/**/*.py
+        - /packages/tasksets/tasksets/**/*.py
+        - /packages/harnesses/harnesses/**/*.py
+      exclude:
+        - /environments/openenv_*/proj/**/*.py
+    pattern-regex: "(?x)(def\\s+\\w+\\([^\\n)]*:\\s*(?:Mapping|MutableMapping)\\[|->\\s*(?:Mapping|MutableMapping)\\[)"
+
+  - id: verifiers-get-messages-typed
+    languages: [python]
+    severity: ERROR
+    message: "`get_messages` must return typed `Message` objects, not raw dictionaries."
+    paths:
+      include:
+        - /verifiers/utils/message_utils.py
+    pattern-regex: "def\\s+get_messages\\b[\\s\\S]*?->\\s*list\\s*\\[\\s*dict\\b"
+
   - id: verifiers-v1-no-signal-factories
     languages: [python]
     severity: ERROR

@@ -4,7 +4,8 @@ import types
 from datasets import Dataset
 import pytest
 
-from verifiers.v1 import Task, Taskset
+from verifiers.v1 import Env, Task, Taskset
+from verifiers.v1.eval import eval_inputs
 from verifiers.v1.utils.taskset_utils import (
     dataset_from_result_typed,
     discover_sibling_dir,
@@ -148,3 +149,22 @@ def test_taskset_skips_empty_skills_dir(tmp_path, monkeypatch) -> None:
 
     assert taskset.get_skills_dir() == skills_dir
     assert taskset.get_upload_dirs() == {"skills": skills_dir}
+
+
+def test_v1_env_eval_inputs_can_shuffle_taskset_dataset() -> None:
+    class DemoTaskset(Taskset):
+        task_type = ReverseTextTask
+
+        def load_tasks(self, split: str = "train"):
+            return [{"question": f"Reverse {i}.", "answer": str(i)} for i in range(6)]
+
+    env = Env(taskset=DemoTaskset())
+
+    inputs = eval_inputs(env, num_examples=3, rollouts_per_example=2, seed=7)
+    expected = (
+        env.get_eval_dataset().shuffle(seed=7).select(range(3)).repeat(2).to_list()
+    )
+
+    assert [row["example_id"] for row in inputs] == [
+        row["example_id"] for row in expected
+    ]

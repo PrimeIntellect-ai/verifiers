@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from copy import deepcopy
+from typing import Protocol
 
 from tau2.data_model.message import (
     AssistantMessage,
@@ -24,6 +25,10 @@ import verifiers.v1 as vf
 from .config import UserConfig
 
 UserInputMessage = AssistantMessage | ToolMessage | MultiToolMessage
+
+
+class TauUserTool(Protocol):
+    pass
 
 
 class User(vf.User[UserConfig]):
@@ -237,7 +242,7 @@ class User(vf.User[UserConfig]):
                 llm_args.setdefault("api_key", api_key)
         return model, llm_args
 
-    def user_tools(self, environment: Environment) -> list[object] | None:
+    def user_tools(self, environment: Environment) -> list[TauUserTool] | None:
         try:
             return list(environment.get_user_tools())
         except ValueError:

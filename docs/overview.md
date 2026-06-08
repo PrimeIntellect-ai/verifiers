@@ -57,6 +57,9 @@ For the v1 Taskset/Harness authoring path:
 prime env init my-env --v1
 prime env init my-env --v1 --with-harness
 ```
+v1 is under active development and may change before release. The top-level
+`verifiers` package remains the v0 authoring surface; v1 environment code
+imports `verifiers.v1 as vf`.
 
 This will create a new module called `my_env` with a runnable environment
 template. For v1 templates, start by editing the generated `TasksetConfig`,
@@ -73,8 +76,8 @@ Environment modules should expose a `load_environment` function which returns an
 environment object. For simple legacy environments, this can still be a direct
 constructor:
 ```python
-# my_env/taskset.py
-import verifiers.v1 as vf
+# my_env.py
+import verifiers as vf
 
 def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
     dataset = vf.load_example_dataset(dataset_name) # 'question'
@@ -87,7 +90,7 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
 ```
 
 For new environments with reusable tasksets, toolsets, custom programs, or
-custom harnesses, use the v1 Taskset/Harness path:
+custom harnesses, use the separate v1 Taskset/Harness path:
 ```python
 # my_env/taskset.py
 import verifiers.v1 as vf
@@ -118,12 +121,9 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
 
     @vf.reward(weight=1.0)
     async def correct_answer(self, task: MyTask, state: vf.State) -> float:
-        messages = [
-            message for message in state.completion if message.role == "assistant"
-        ]
-        if not messages:
+        if not state.completion:
             return 0.0
-        response = str(messages[-1].content or "").strip()
+        response = str(state.completion[-1].content or "").strip()
         return float(response == task.answer)
 
 
