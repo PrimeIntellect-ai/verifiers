@@ -72,8 +72,21 @@ try:
     # crashes stop, that's the root cause. Pre-import torch+vllm so the first
     # call doesn't race on import either.
     import threading as _vf_threading
+    import os as _vf_os_gl
 
     _VF_MM_ENCODE_LOCK = _vf_threading.Lock()
+    # CONCURRENCY ROOT-CAUSE TEST/FIX: the pool lock serializes render-vs-render
+    # only. render (-> image_processor, torchvision native) is NOT serialized
+    # against the two offloads we added for heartbeat (_build_mm_features = torch
+    # native; _offload_prompt_images = PIL native), so at high inflight 3 threads
+    # do concurrent native work on shared torch/torchvision/PIL state -> heap
+    # corruption -> SIGSEGV. With VF_GLOBAL_NATIVE_LOCK=1 we serialize ALL three
+    # native paths under ONE process-global lock (still off the event loop, so
+    # the heartbeat stays safe). If the -11 stops, native concurrency from our
+    # offloads is the root cause and this lock is the fix.
+    _VF_GLOBAL_NATIVE_LOCK = _vf_threading.Lock()
+    def _vf_glock_on():
+        return bool(_vf_os_gl.environ.get("VF_GLOBAL_NATIVE_LOCK"))
     try:
         import torch as _vf_torch_preimport  # noqa: F401
         import vllm.multimodal.inputs as _vf_vllm_preimport  # noqa: F401
@@ -86,8 +99,11 @@ try:
         _vf_orig_build_mm = getattr(_renderers_client, "_build_mm_features", None)
         if callable(_vf_orig_build_mm):
             def _vf_timed_build_mm(*args, _orig=_vf_orig_build_mm, **kwargs):
-                # Serialize concurrent native mm-encode across threads.
-                with _VF_MM_ENCODE_LOCK:
+                # Serialize concurrent native mm-encode across threads. When the
+                # global-native-lock test is on, use the SHARED lock so this is
+                # serialized against render (image_processor) and image-offload.
+                _lk = _VF_GLOBAL_NATIVE_LOCK if _vf_glock_on() else _VF_MM_ENCODE_LOCK
+                with _lk:
                     with looptime("rdr_build_mm_features"):
                         return _orig(*args, **kwargs)
 
@@ -203,18 +219,72 @@ try:
     # next-turn bridge. The unmatched 'START' names the crashing using call.
     try:
         import renderers.qwen35 as _q35
+        import os as _vf_os_q
         _qcls = getattr(_q35, "Qwen35Renderer", None)
+        # _process_image holds the crashing native (image_processor). Wrap it to
+        # (a) breadcrumb and (b) take the global native lock when the
+        # concurrency test is on — serializing it vs _build_mm_features /
+        # _offload_prompt_images so no two native ops run at once.
+        def _vf_native_lock_wrap(obj, attr, label):
+            _orig = getattr(obj, attr, None)
+            if not callable(_orig):
+                return
+            def _w(*a, _o=_orig, _l=label, **k):
+                try:
+                    print(f"BC {_l} START", flush=True)
+                except Exception:
+                    pass
+                if _vf_glock_on():
+                    with _VF_GLOBAL_NATIVE_LOCK:
+                        r = _o(*a, **k)
+                else:
+                    r = _o(*a, **k)
+                try:
+                    print(f"BC {_l} OK", flush=True)
+                except Exception:
+                    pass
+                return r
+            try:
+                setattr(obj, attr, _w)
+            except Exception:
+                pass
         if _qcls is not None:
-            _vf_bc_wrap(_qcls, "_process_image", "q35._process_image")
+            _vf_native_lock_wrap(_qcls, "_process_image", "q35._process_image")
             _vf_bc_wrap(_qcls, "_encode", "q35._encode")
             _vf_bc_wrap(_qcls, "render", "q35.render")
             _vf_bc_wrap(_qcls, "bridge_to_next_turn", "q35.bridge_to_next_turn")
-        # SPLIT _process_image's two natives: PIL decode vs the HF (fast,
-        # torchvision-backed under transformers 5) image processor. Wrap the
-        # module-level _load_pil_image; if next crash shows _load_pil_image
-        # UNMATCHED -> PIL decode; if it's balanced but _process_image
-        # UNMATCHED -> the crash is proc.image_processor(images=[pil]).
-        _vf_bc_wrap(_q35, "_load_pil_image", "q35._load_pil_image")
+        # SPLIT _process_image's two natives + CAPTURE the killer image. Wrap the
+        # module-level _load_pil_image: print IMG_PROBE with the decoded image's
+        # exact dims/mode/format. On crash, the last IMG_PROBE from the dead pid
+        # is the image handed to image_processor -> the exact trigger. If
+        # _load_pil_image is UNMATCHED -> PIL decode itself; if balanced but
+        # _process_image UNMATCHED -> the crash is image_processor on that image.
+        _vf_orig_loadpil = getattr(_q35, "_load_pil_image", None)
+        if callable(_vf_orig_loadpil):
+            def _vf_loadpil_probe(*a, _o=_vf_orig_loadpil, **k):
+                try:
+                    print(f"BC q35._load_pil_image START pid={_vf_os_q.getpid()}", flush=True)
+                except Exception:
+                    pass
+                pil = _o(*a, **k)
+                try:
+                    print(
+                        f"IMG_PROBE pid={_vf_os_q.getpid()} "
+                        f"w={getattr(pil, 'width', '?')} h={getattr(pil, 'height', '?')} "
+                        f"mode={getattr(pil, 'mode', '?')} fmt={getattr(pil, 'format', '?')}",
+                        flush=True,
+                    )
+                except Exception:
+                    pass
+                try:
+                    print("BC q35._load_pil_image OK", flush=True)
+                except Exception:
+                    pass
+                return pil
+            try:
+                _q35._load_pil_image = _vf_loadpil_probe
+            except Exception:
+                pass
     except Exception as _e:
         logging.getLogger("vf.looptime").warning("qwen35 use-time BC wrap: %r", _e)
 
@@ -1128,9 +1198,15 @@ class RendererClient(
             # to a thread: on a shared NFS dir these fs ops can block for seconds,
             # and inline on the event loop they stall the env-worker heartbeat
             # (-> 30s timeout -> restart) under high inflight. See render-loop lag.
-            extra_kwargs["_image_offload_stats"] = await asyncio.to_thread(
-                _offload_prompt_images, messages
-            )
+            # VF_GLOBAL_NATIVE_LOCK: serialize this native PIL/base64 work against
+            # render(image_processor) + _build_mm_features (concurrency SIGSEGV test/fix).
+            def _vf_locked_offload(_m=messages):
+                _g = globals().get("_VF_GLOBAL_NATIVE_LOCK")
+                if _g is not None and globals().get("_vf_glock_on", lambda: False)():
+                    with _g:
+                        return _offload_prompt_images(_m)
+                return _offload_prompt_images(_m)
+            extra_kwargs["_image_offload_stats"] = await asyncio.to_thread(_vf_locked_offload)
         return (
             _attach_tool_call_names([_to_renderer_message(m) for m in messages]),
             extra_kwargs,
