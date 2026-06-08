@@ -52,12 +52,16 @@ from verifiers.clients.openai_chat_completions_client import (
 from verifiers.errors import EmptyModelResponseError, OverlongPromptError
 from verifiers.utils.loop_debug import looptime
 
-# NATIVE-CRASH RE-ARM: the -11 faults INSIDE image_processor (torchvision). Any
-# handler torch/vLLM installed after worker start (or that c10 silently ate) is
-# beaten by re-installing OUR ctypes backtrace handler as the LAST one, right
-# before the crashing call — so it's the active SIGSEGV handler when it faults.
-# Gated by VF_FORCE_CTYPES_BACKTRACE (only the diagnostic run pays the cost).
-_VF_REARM_ON = bool(os.environ.get("VF_FORCE_CTYPES_BACKTRACE"))
+# NATIVE-CRASH RE-ARM: re-install OUR ctypes backtrace handler right before each
+# image_processor call so it's the last-installed SIGSEGV handler when it faults.
+# DANGER: this injects 4x libc.signal() syscalls before every native call, which
+# PERTURBS the timing-sensitive race and was observed to SUPPRESS the -11 entirely
+# (~40min at 0 crashes vs the old ~4min cadence — a Heisenbug). So it is now OFF by
+# default and gated behind its own VF_REARM_PER_CALL flag, decoupled from
+# VF_FORCE_CTYPES_BACKTRACE. With the flag OFF, the handler is still installed once
+# at startup + periodically re-armed by the env_worker stats loop (minimal
+# perturbation) — enough to be active at crash time without masking the fault.
+_VF_REARM_ON = bool(os.environ.get("VF_REARM_PER_CALL"))
 _vf_rearm_fn = None
 
 
