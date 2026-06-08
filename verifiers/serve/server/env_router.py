@@ -390,8 +390,13 @@ class EnvRouter:
         now = time.time()
         for worker_id, worker in list(self.workers.items()):
             if not worker.process.is_alive():
+                # exitcode tells us WHY it died: negative => killed by signal N
+                # (-9 SIGKILL/OOM, -11 SIGSEGV native crash, -15 SIGTERM/evict);
+                # positive => clean-ish exit code. Without it "died" is ambiguous.
+                exitcode = worker.process.exitcode
                 self.logger.warning(
-                    f"Worker {worker_id} (pid={worker.process.pid}) died, restarting"
+                    f"Worker {worker_id} (pid={worker.process.pid}) died "
+                    f"(exitcode={exitcode}), restarting"
                 )
                 await self.restart_worker(worker_id)
             elif (
