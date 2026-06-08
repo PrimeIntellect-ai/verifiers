@@ -394,36 +394,19 @@ class EnvRouter:
                 # (-9 SIGKILL/OOM, -11 SIGSEGV native crash, -15 SIGTERM/evict);
                 # positive => clean-ish exit code. Without it "died" is ambiguous.
                 exitcode = worker.process.exitcode
-                # On SIGSEGV the worker's stdout is lost, but faulthandler wrote
-                # the all-thread crash stack to a pod-local file (same container,
-                # shared /tmp). Read+relay it via the router logger (captured).
-                fault = ""
-                fault_info = "no-file"
+                # Do NOT read/delete the crash file here — the router's own log
+                # messages get truncated by the transport. Just report its size;
+                # the RESTARTED worker reads + prints it to its (full-fidelity)
+                # stdout via the PRIORCRASH relay. Deleting here would race that.
+                _fp = f"/tmp/vf_crash_{worker.process.pid}.txt"
                 try:
-                    _fp = f"/tmp/vf_crash_{worker.process.pid}.txt"
-                    if os.path.exists(_fp):
-                        with open(_fp) as _f:
-                            fault = _f.read().strip()
-                        fault_info = f"{len(fault)}B"
-                        os.remove(_fp)
+                    fault_info = f"{os.path.getsize(_fp)}B" if os.path.exists(_fp) else "no-file"
                 except Exception as _e:
-                    fault_info = f"read-err:{_e!r}"
+                    fault_info = f"stat-err:{_e!r}"
                 self.logger.warning(
                     f"Worker {worker_id} (pid={worker.process.pid}) died "
                     f"(exitcode={exitcode}), restarting [crashfile={fault_info}]"
                 )
-                # Relay the crash file as base64 chunks: the content is often
-                # JSON-looking lines that the log pipeline re-parses/truncates,
-                # and raw newlines get cut. base64 (no quotes/newlines/braces)
-                # survives intact; reassemble + decode offline.
-                if fault:
-                    import base64 as _b64
-                    _enc = _b64.b64encode(fault.encode("utf-8", "replace")).decode("ascii")
-                    for _j in range(0, len(_enc), 180):
-                        self.logger.warning(
-                            f"CRASHB64 w{worker_id} {_j // 180:03d} {_enc[_j:_j + 180]}"
-                        )
-                    self.logger.warning(f"CRASHB64 w{worker_id} END {len(_enc)}")
                 await self.restart_worker(worker_id)
             elif (
                 now - worker.last_heartbeat > self.worker_heartbeat_timeout
