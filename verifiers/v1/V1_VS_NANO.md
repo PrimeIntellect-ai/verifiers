@@ -167,6 +167,10 @@ matches:
 - Prime runtime `public_url(...)` exposes sandbox ports natively, which lets
   runtime-placed MCP servers be reached from other runtimes without a host-local
   URL leak.
+- Harbor tasksets do not upload whole task directories or task metadata as a
+  framework concern. The taskset maps declared images/resources onto generic
+  task fields, the harness runs normally, and the reward stages only `tests/`
+  into the live runtime for verification.
 
 Nano also strengthened `run_uv_script(...)` for bare task images. v1 does not
 mirror that helper as a runtime contract. Script execution is just one caller

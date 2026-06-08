@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import base64
 from contextlib import asynccontextmanager
+import io
 import importlib
 import json
 import sys
+import tarfile
 from types import ModuleType
 
 from aiohttp import ClientSession, web
@@ -1295,23 +1297,45 @@ def test_parse_anthropic_user_messages_preserves_structured_content() -> None:
     ]
 
 
-def test_harbor_runtime_preserves_configured_resources_without_env_override() -> None:
-    from tasksets.harbor import harbor_runtime
+def test_harbor_taskset_maps_task_image_and_resources(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tasksets.harbor import HarborTaskset, HarborTasksetConfig
 
-    runtime = harbor_runtime(
-        {
-            "image": "python:3.13",
-            "cpu_cores": 8.0,
-            "memory_gb": 12.0,
-            "disk_size_gb": 99.0,
-        },
-        environment={},
-        agent_config={},
+    root = tmp_path / "tasks"
+    task_dir = root / "image-task"
+    task_dir.mkdir(parents=True)
+    (task_dir / "instruction.md").write_text("fix it\n")
+    (task_dir / "task.toml").write_text(
+        "[environment]\n"
+        'docker_image = "owner/task:latest"\n'
+        "cpus = 2\n"
+        "memory_mb = 4096\n"
+        "storage_mb = 10240\n"
+        "gpus = 1\n"
     )
+    taskset = HarborTaskset(config=HarborTasksetConfig(bundle_package="unused"))
 
-    assert runtime["cpu_cores"] == 8.0
-    assert runtime["memory_gb"] == 12.0
-    assert runtime["disk_size_gb"] == 99.0
+    task = taskset.task_from_dir(task_dir)
+
+    assert task.image == "owner/task:latest"
+    assert task.resources == vf.Resources(
+        cpu_cores=2.0,
+        memory_gb=4.0,
+        gpu_count=1,
+        disk_gb=10.0,
+    )
+    task_json = task.model_dump(mode="json")
+    assert "task_dir" not in task_json
+    assert "task_toml" not in task_json
+    assert "runtime_config" not in task_json
+    assert "program" not in task_json
+    monkeypatch.setattr(taskset, "task_root", lambda: root)
+    rehydrated = taskset.to_task(task_json)
+
+    assert isinstance(rehydrated, task.__class__)
+    assert rehydrated.task_dir == str(task_dir)
+    assert rehydrated.image == task.image
 
 
 def test_harbor_taskset_rejects_dockerfile_only_tasks(tmp_path) -> None:
@@ -1322,12 +1346,88 @@ def test_harbor_taskset_rejects_dockerfile_only_tasks(tmp_path) -> None:
     (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.11\n")
     (task_dir / "instruction.md").write_text("fix it\n")
     (task_dir / "task.toml").write_text("[environment]\n")
-    taskset = HarborTaskset(
-        config=HarborTasksetConfig(bundle_package="unused", task_runtime={})
-    )
+    taskset = HarborTaskset(config=HarborTasksetConfig(bundle_package="unused"))
 
     with pytest.raises(ValueError, match="Dockerfile"):
         taskset.task_from_dir(task_dir)
+
+
+@pytest.mark.asyncio
+async def test_harbor_reward_runs_verifier_in_live_runtime(tmp_path) -> None:
+    from tasksets.harbor import (
+        HarborSpec,
+        HarborTask,
+        HarborTaskset,
+        HarborTasksetConfig,
+    )
+
+    task_dir = tmp_path / "task"
+    tests_dir = task_dir / "tests"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "test.sh").write_text("echo 1 > /logs/verifier/reward.txt\n")
+    task = HarborTask(
+        task_name="task",
+        instruction="do it",
+        task_dir=str(task_dir),
+        prompt=[vf.UserMessage(content="do it")],
+        image="python:3.11",
+        harbor=HarborSpec(
+            task_name="task",
+            test_timeout=12.0,
+        ),
+    )
+
+    class FakeRuntime(vf.Runtime):
+        def __init__(self) -> None:
+            self.writes: list[tuple[str, bytes]] = []
+            self.runs: list[tuple[list[str], float | None]] = []
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def expose(self, port: int) -> str:
+            return f"http://127.0.0.1:{port}"
+
+        async def run(
+            self,
+            command: list[str],
+            *,
+            cwd: str | None = None,
+            env: dict[str, str] | None = None,
+            timeout: float | None = None,
+        ) -> vf.CommandResult:
+            _ = cwd, env
+            self.runs.append((command, timeout))
+            return vf.CommandResult(returncode=0)
+
+        async def read(self, path: str) -> bytes:
+            assert path == "/logs/verifier/reward.txt"
+            return b"1"
+
+        async def write(self, path: str, data: bytes) -> None:
+            self.writes.append((path, data))
+
+    runtime = FakeRuntime()
+    reward = await HarborTaskset(HarborTasksetConfig()).harbor_reward(task, runtime)
+
+    assert reward == 1.0
+    assert runtime.writes[0][0] == "/tmp/tests.tgz"
+    with tarfile.open(fileobj=io.BytesIO(runtime.writes[0][1]), mode="r:gz") as tar:
+        assert tar.getnames() == ["test.sh"]
+    assert runtime.runs == [
+        (
+            [
+                "sh",
+                "-c",
+                "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests",
+            ],
+            None,
+        ),
+        (["sh", "-c", "cd /tests && bash test.sh"], 12.0),
+    ]
 
 
 @pytest.mark.asyncio

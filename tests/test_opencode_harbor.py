@@ -72,7 +72,6 @@ def test_load_environment_accepts_v1_taskset_and_harness_config(
             "config": {
                 "taskset": {
                     "task_names": ["hello-world"],
-                    "task_runtime": {"cpu_cores": 1.5},
                 },
                 "harness": {
                     "cwd": "/workspace",
@@ -87,7 +86,6 @@ def test_load_environment_accepts_v1_taskset_and_harness_config(
     task = next(iter(env.taskset))
     assert task.task_dir == str(Path(module.__file__).parent / "tasks" / "hello-world")
     assert env.taskset.config.task_names == ["hello-world"]
-    assert env.taskset.config.task_runtime["cpu_cores"] == 1.5
     assert env.harness.config.cwd == "/workspace"
     assert env.harness.config.max_turns == 2
 

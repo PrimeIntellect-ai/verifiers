@@ -37,10 +37,8 @@ Notes:
 | --- | ---- | ------- | ----------- |
 | `task_names` | list[str] | `null` | Explicit Harbor task names to run. |
 | `dataset` | str | `null` | Harbor Hub dataset id. Defaults to bundled `tasks/`. |
-| `task_runtime` | object | Harbor default runtime | Base runtime settings merged with each Harbor task. |
+| `require_image` | bool | `false` | Require every task to declare `[environment].docker_image`. |
 | `verifier_timeout_seconds` | float | `900.0` | Default timeout for Harbor verifier scripts. |
-| `task_dir` | str | `"/task"` | Remote task metadata directory. |
-| `env` | dict[str, str] | `{}` | Extra environment variables passed to the agent program. |
 
 ### Harness Config
 
@@ -67,12 +65,13 @@ The harness also accepts the packaged `OpenCodeConfig` fields for `system_prompt
 
 ## How It Works
 
-1. `HarborTaskset` loads Harbor tasks and contributes sandbox settings,
-   task uploads, env vars, and the Harbor reward.
+1. `HarborTaskset` loads Harbor tasks, maps `[environment].docker_image` and
+   resource hints onto generic v1 `Task` fields, and owns the Harbor reward.
 2. `OpenCode` contributes the reusable OpenCode CLI program, install/setup,
    intercepted endpoint config, MCP tool proxy, and log artifact collection.
 3. The v1 runtime resolves both sides into one sandboxed command program at rollout time.
-4. Reward is computed by running the Harbor test scripts after the rollout.
+4. Reward is computed by staging only `tests/` into the live runtime after the
+   rollout and running `tests/test.sh`.
 
 `HarborTaskset` and `OpenCode` are packaged under `tasksets` and `harnesses` and
 imported by the environment package.
@@ -88,7 +87,7 @@ imported by the environment package.
 Uses Harbor's standard reward mechanism:
 
 - Runs `tests/test.sh` after agent completion
-- Reads reward from `/logs/verifier/reward.txt` or `/logs/verifier/reward.json`
+- Reads reward from `/logs/verifier/reward.txt`
 - Returns float reward value (typically 0 or 1)
 
 ## Notes

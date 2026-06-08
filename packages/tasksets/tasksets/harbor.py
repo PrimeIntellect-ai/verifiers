@@ -1,11 +1,11 @@
+import io
+import tarfile
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 import verifiers.v1 as vf
 from verifiers.utils.import_utils import load_toml
-from verifiers.v1.utils.json_utils import json_data
-
 from tasksets.utils.harbor_utils import (
     TASKS_SUBDIR,
     bundle_tasks_root,
@@ -16,15 +16,6 @@ from tasksets.utils.harbor_utils import (
     parse_reward_text,
 )
 
-HARBOR_DEFAULT_RUNTIME: vf.JsonData = {
-    "image": "python:3.11-slim",
-    "cpu_cores": 2.0,
-    "memory_gb": 4.0,
-    "disk_size_gb": 10.0,
-    "workdir": "/app",
-    "timeout_seconds": 900.0,
-}
-
 
 class HarborTasksetConfig(vf.TasksetConfig):
     id: str | None = "harbor"
@@ -33,33 +24,12 @@ class HarborTasksetConfig(vf.TasksetConfig):
     task_names: list[str] | None = None
     cache_dir: str | None = None
     refresh: bool = False
-    task_runtime: vf.JsonData = Field(
-        default_factory=lambda: dict(HARBOR_DEFAULT_RUNTIME)
-    )
+    require_image: bool = False
     verifier_timeout_seconds: float = 900.0
-    task_dir: str = "/task"
-    env: dict[str, str] = Field(default_factory=dict)
-
-
-class HarborRuntimeSpec(BaseModel, extra="forbid"):
-    image: str
-    cpu_cores: float = 2.0
-    memory_gb: float = 4.0
-    disk_size_gb: float = 10.0
-    workdir: str = "/app"
-    timeout_seconds: float = 900.0
-    network_access: bool | None = None
-
-
-class HarborProgramSpec(BaseModel, extra="forbid"):
-    files: dict[str, dict[str, str]]
-    env: dict[str, str]
 
 
 class HarborSpec(BaseModel, extra="forbid"):
-    task_dir: str
     task_name: str
-    config: vf.JsonData
     docker_image: str | None = None
     test_timeout: float
 
@@ -67,10 +37,7 @@ class HarborSpec(BaseModel, extra="forbid"):
 class HarborTask(vf.Task, frozen=True):
     task_name: str
     instruction: str
-    task_toml: str
-    task_dir: str
-    runtime_config: HarborRuntimeSpec
-    program: HarborProgramSpec
+    task_dir: str = Field(default="", exclude=True)
     harbor: HarborSpec
 
 
@@ -86,6 +53,14 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
         if not tasks:
             raise ValueError(f"No valid Harbor tasks found in {root}.")
         return tasks
+
+    def to_task(self, task: vf.Task | vf.JsonData) -> vf.Task:
+        harbor_task = super().to_task(task)
+        if not isinstance(harbor_task, HarborTask):
+            raise TypeError("HarborTaskset expected a HarborTask.")
+        if harbor_task.task_dir:
+            return harbor_task
+        return self.task_from_dir(self.task_root() / harbor_task.task_name)
 
     def task_root(self) -> Path:
         config = self.config
@@ -114,10 +89,8 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
         with task_toml_path.open("rb") as f:
             task_config = load_toml(f)
         environment = mapping(task_config.get("environment"), "environment")
-        agent_config = mapping(task_config.get("agent"), "agent")
         verifier_config = mapping(task_config.get("verifier"), "verifier")
         instruction = instruction_path.read_text().strip()
-        task_remote_dir = self.config.task_dir.rstrip("/") or "/task"
         raw_docker_image = environment.get("docker_image")
         docker_image = raw_docker_image if isinstance(raw_docker_image, str) else None
         if docker_image is None and (task_dir / "environment" / "Dockerfile").exists():
@@ -126,29 +99,33 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
                 "but no pullable [environment].docker_image. Building Harbor "
                 "Dockerfiles is not supported."
             )
-        runtime = harbor_runtime(
-            self.config.task_runtime,
-            environment=environment,
-            agent_config=agent_config,
+        if docker_image is None and self.config.require_image:
+            raise ValueError(
+                f"Harbor task {task_dir.name!r} has no pullable "
+                "[environment].docker_image."
+            )
+        cpu_cores = (
+            None
+            if environment.get("cpus") is None
+            else parse_number(environment.get("cpus"), 0.0)
         )
-        workdir = str(runtime.get("workdir") or "/app")
-        program = HarborProgramSpec(
-            files={
-                f"{task_remote_dir}/instruction.md": {"task": "instruction"},
-                f"{task_remote_dir}/task.toml": {"task": "task_toml"},
-            },
-            env={
-                "HARBOR_TASK_NAME": task_dir.name,
-                "HARBOR_TASK_DIR": task_remote_dir,
-                "HARBOR_INSTRUCTION_PATH": f"{task_remote_dir}/instruction.md",
-                "AGENT_WORKDIR": workdir,
-                **self.config.env,
-            },
+        memory_value = environment.get("memory_gb")
+        if memory_value is None and environment.get("memory_mb") is not None:
+            memory_gb = parse_number(environment.get("memory_mb"), 0.0) / 1024
+        else:
+            memory_gb = None if memory_value is None else parse_gb(memory_value, 0.0)
+        disk_value = environment.get("storage_gb")
+        if disk_value is None and environment.get("storage_mb") is not None:
+            disk_gb = parse_number(environment.get("storage_mb"), 0.0) / 1024
+        else:
+            disk_gb = None if disk_value is None else parse_gb(disk_value, 0.0)
+        gpu_count = (
+            None
+            if environment.get("gpus") is None
+            else int(parse_number(environment.get("gpus"), 0.0))
         )
         harbor = HarborSpec(
-            task_dir=str(task_dir),
             task_name=task_dir.name,
-            config=json_data(task_config, context="Harbor task config"),
             docker_image=docker_image,
             test_timeout=parse_number(
                 verifier_config.get("timeout_sec"),
@@ -158,34 +135,48 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
         return HarborTask(
             task_name=task_dir.name,
             instruction=instruction,
-            task_toml=task_toml_path.read_text(),
             task_dir=str(task_dir),
             prompt=[vf.UserMessage(content=instruction)],
-            image=str(runtime["image"]),
+            image=docker_image,
             resources=vf.Resources(
-                cpu_cores=parse_number(runtime.get("cpu_cores"), 2.0),
-                memory_gb=parse_gb(runtime.get("memory_gb"), 4.0),
-                disk_gb=parse_gb(runtime.get("disk_size_gb"), 10.0),
+                cpu_cores=cpu_cores,
+                memory_gb=memory_gb,
+                gpu_count=gpu_count,
+                disk_gb=disk_gb,
             ),
-            runtime_config=HarborRuntimeSpec.model_validate(runtime),
-            program=program,
             harbor=harbor,
         )
 
     @vf.reward(weight=1.0)
-    async def harbor_reward(self, state: vf.State) -> float:
-        reward = state.artifacts.get("harbor_reward")
-        if isinstance(reward, int | float):
-            return float(reward)
-        tests = state.artifacts.get("harbor_tests")
-        if isinstance(tests, dict):
-            reward_text = tests.get("reward")
-            if isinstance(reward_text, str):
-                return parse_reward_text(reward_text)
-            returncode = tests.get("returncode")
-            if isinstance(returncode, int | float) and int(returncode) == 0:
-                return 1.0
-        return 0.0
+    async def harbor_reward(self, task: HarborTask, runtime: vf.Runtime) -> float:
+        tests_dir = Path(task.task_dir) / "tests"
+        await runtime.write("/tmp/tests.tgz", make_tar(tests_dir))
+        extract = await runtime.run(
+            [
+                "sh",
+                "-c",
+                "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests",
+            ]
+        )
+        if extract.returncode != 0:
+            return 0.0
+        await runtime.run(
+            ["sh", "-c", "cd /tests && bash test.sh"],
+            timeout=task.harbor.test_timeout,
+        )
+        try:
+            reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
+        except (OSError, RuntimeError, ValueError):
+            return 0.0
+        return parse_reward_text(reward)
+
+
+def make_tar(directory: Path) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for item in sorted(directory.iterdir()):
+            tar.add(item, arcname=item.name)
+    return buffer.getvalue()
 
 
 def mapping(value: object, name: str) -> dict[str, object]:
@@ -194,36 +185,6 @@ def mapping(value: object, name: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise TypeError(f"Harbor task [{name}] must be a mapping.")
     return {str(key): item for key, item in value.items()}
-
-
-def harbor_runtime(
-    configured: vf.JsonData,
-    *,
-    environment: dict[str, object],
-    agent_config: dict[str, object],
-) -> dict[str, object]:
-    runtime: dict[str, object] = dict(configured)
-    runtime["image"] = environment.get("docker_image") or runtime.get("image")
-    runtime["cpu_cores"] = parse_number(
-        environment.get("cpus"), parse_number(runtime.get("cpu_cores"), 2.0)
-    )
-    runtime["memory_gb"] = parse_gb(
-        environment.get("memory"), parse_gb(runtime.get("memory_gb"), 4.0)
-    )
-    runtime["disk_size_gb"] = parse_gb(
-        environment.get("storage"), parse_gb(runtime.get("disk_size_gb"), 10.0)
-    )
-    timeout_value = runtime.get("timeout_seconds")
-    timeout_default = (
-        float(timeout_value) if isinstance(timeout_value, str | int | float) else 900.0
-    )
-    runtime["timeout_seconds"] = parse_number(
-        agent_config.get("timeout_sec"),
-        timeout_default,
-    )
-    if "allow_internet" in environment:
-        runtime["network_access"] = bool(environment["allow_internet"])
-    return runtime
 
 
 def load_taskset(config: HarborTasksetConfig) -> HarborTaskset:

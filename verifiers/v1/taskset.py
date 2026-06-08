@@ -249,7 +249,7 @@ class Taskset(Generic[ConfigT]):
 
     def __iter__(self):
         for record in self.get_dataset():
-            yield task_from_dataset_record(dict(record), self.task_type)
+            yield self.to_task(dict(record))
 
     def __len__(self) -> int:
         return len(self.get_dataset())
