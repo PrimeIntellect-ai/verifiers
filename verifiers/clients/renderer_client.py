@@ -133,6 +133,46 @@ try:
             logging.getLogger("vf.looptime").warning(
                 "renderers.generate offload: skipped (call site not found)"
             )
+
+    # CRASH LOCALIZATION: the -11 is in the renderer cold-build native path.
+    # Wrap each native sub-call to print a BC breadcrumb to stdout (the only
+    # channel that survives a worker crash). The last 'BC X START' with no
+    # matching 'OK' before a worker dies names the exact crashing call.
+    def _vf_bc_wrap(obj, attr, label):
+        _orig = getattr(obj, attr, None)
+        if not callable(_orig):
+            return
+        def _w(*a, _o=_orig, _l=label, **k):
+            try:
+                print(f"BC {_l} START {str(a[:1])[:80]}", flush=True)
+            except Exception:
+                pass
+            r = _o(*a, **k)
+            try:
+                print(f"BC {_l} OK", flush=True)
+            except Exception:
+                pass
+            return r
+        try:
+            setattr(obj, attr, _w)
+        except Exception:
+            pass
+
+    try:
+        import renderers.base as _rb
+        _vf_bc_wrap(_rb, "load_tokenizer", "load_tokenizer")
+        _vf_bc_wrap(_rb, "create_renderer", "create_renderer")
+        _vf_bc_wrap(_rb, "_populate_registry", "populate_registry")
+    except Exception as _e:
+        logging.getLogger("vf.looptime").warning("renderers.base BC wrap: %r", _e)
+    try:
+        import transformers as _tf
+        _vf_bc_wrap(_tf.AutoTokenizer, "from_pretrained", "AutoTokenizer.from_pretrained")
+        _vf_bc_wrap(_tf.AutoProcessor, "from_pretrained", "AutoProcessor.from_pretrained")
+        _vf_bc_wrap(_tf.AutoConfig, "from_pretrained", "AutoConfig.from_pretrained")
+    except Exception as _e:
+        logging.getLogger("vf.looptime").warning("transformers BC wrap: %r", _e)
+
 except Exception as _exc:  # pragma: no cover - never break import
     logging.getLogger("vf.looptime").warning(
         "renderers looptime monkeypatch skipped: %r", _exc
