@@ -673,8 +673,8 @@ class TestMaybeRetry:
         rollout_outputs = outputs["outputs"]
         assert env.call_counts[0] == 1  # No retries for non-retryable error
         assert rollout_outputs[0].get("error") is not None
-        error_info = rollout_outputs[0]["error"]
-        assert "ToolError" == error_info["error"]
+        error_data = rollout_outputs[0]["error"]
+        assert "ToolError" == error_data["error"]
 
     @pytest.mark.asyncio
     async def test_error_in_state_after_max_retries_exhausted(
@@ -694,8 +694,32 @@ class TestMaybeRetry:
         rollout_outputs = outputs["outputs"]
         assert env.call_counts[0] == 3  # 1 initial + 2 retries
         assert rollout_outputs[0].get("error") is not None
-        error_info = rollout_outputs[0]["error"]
-        assert "InfraError" == error_info["error"]
+        error_data = rollout_outputs[0]["error"]
+        assert "InfraError" == error_data["error"]
+
+    @pytest.mark.asyncio
+    async def test_retries_serialized_infra_error_subclass(self):
+        """A serialized InfraError subclass (e.g. SandboxError) in returned state
+        must trigger retry.
+
+        The v1 harness serializes state["error"] to ErrorData before maybe_retry
+        inspects it, so matching must be subclass-aware (rebuild concrete error +
+        isinstance) — base-name substring matching missed SandboxError, which is
+        an InfraError and should be retried.
+        """
+        from verifiers.utils.async_utils import maybe_retry
+        from verifiers.utils.error_utils import error_data
+
+        serialized = error_data(vf.SandboxError("Program file upload failed"))
+        calls = {"n": 0}
+
+        async def attempt():
+            calls["n"] += 1
+            return {"error": serialized}
+
+        result = await maybe_retry(attempt, max_retries=2, initial=0.0, max_wait=0.0)()
+        assert calls["n"] == 3  # 1 initial + 2 retries (InfraError is retryable)
+        assert result["error"] == serialized  # last result returned after exhaustion
 
 
 class TestEmptyModelResponseErrors:

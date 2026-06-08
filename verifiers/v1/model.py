@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 from verifiers.types import ClientConfig, SamplingArgs
 
@@ -28,7 +28,10 @@ class ModelConfig(Config):
         raise TypeError("model.client must resolve to a Client or ClientConfig.")
 
 
-def model_config_from_value(value: object = None) -> ModelConfig:
+ModelConfigSource: TypeAlias = ModelConfig | str | ConfigData | None
+
+
+def model_config_from_value(value: ModelConfigSource = None) -> ModelConfig:
     if isinstance(value, ModelConfig):
         return value
     if isinstance(value, str):
@@ -40,7 +43,7 @@ def model_config_from_value(value: object = None) -> ModelConfig:
     raise TypeError("model must be a string or mapping.")
 
 
-def model_config_data(value: object = None) -> ConfigData:
+def model_config_data(value: ModelConfigSource = None) -> ConfigData:
     return cast(
         ConfigData, model_config_from_value(value).model_dump(exclude_none=True)
     )

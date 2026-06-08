@@ -20,7 +20,11 @@ from verifiers.utils.async_utils import maybe_call_with_named_args
 
 from .program_utils import command_argv, command_env, float_config, int_config
 from .program_utils import program_channels
-from .program_utils import program_option_mapping, program_channel_setup
+from .program_utils import (
+    ProgramMappingInput,
+    program_option_mapping,
+    program_channel_setup,
+)
 from .program_utils import resolve_program_value
 from .program_utils import validate_program_bindings
 from .sandbox_python_utils import (
@@ -41,6 +45,14 @@ if TYPE_CHECKING:
 VF_STATE_INPUT_PATH_KEY = "_vf_state_input_path"
 SANDBOX_RETRY_ATTEMPTS = 6
 SANDBOX_WAIT_FOR_CREATION_ATTEMPTS = 120
+SANDBOX_TRANSFER_RETRY_TOKENS = (
+    "502",
+    "503",
+    "504",
+    "ConnectError",
+    "Read file timed out",
+    "Temporary failure in name resolution",
+)
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
@@ -143,6 +155,33 @@ async def with_sandbox_retry(operation: Callable[[], Awaitable[T]]) -> T:
         with attempt:
             return await operation()
     raise AssertionError("sandbox retry loop exited without running")
+
+
+def is_retryable_sandbox_transfer_error(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    if name.endswith(("UploadTimeoutError", "DownloadTimeoutError")):
+        return True
+    if not name.endswith("APIError"):
+        return False
+    text = str(exc)
+    return text.strip() in {"Upload failed", "Upload failed:"} or any(
+        token in text for token in SANDBOX_TRANSFER_RETRY_TOKENS
+    )
+
+
+async def with_sandbox_transfer_retry(operation: Callable[[], Awaitable[T]]) -> T:
+    retry_logger = cast(RetryLogger, logger)
+    async for attempt in tc.AsyncRetrying(
+        stop=tc.stop_after_attempt(SANDBOX_RETRY_ATTEMPTS),
+        wait=tc.wait_exponential_jitter(initial=0.5, max=30, jitter=1e-3),
+        retry=tc.retry_if_exception(is_retryable_sandbox_transfer_error),
+        before_sleep=tc.before_sleep_log(retry_logger, logging.WARNING),
+        sleep=asyncio.sleep,
+        reraise=True,
+    ):
+        with attempt:
+            return await operation()
+    raise AssertionError("sandbox transfer retry loop exited without running")
 
 
 async def close_sandbox_client(client: SandboxClient) -> None:
@@ -862,18 +901,22 @@ async def upload_program_files(
 ) -> None:
     from prime_sandboxes import APIError, UploadTimeoutError
 
-    files = program_option_mapping(program.get("files"), "program.files")
+    files = program_option_mapping(
+        cast(ProgramMappingInput, program.get("files")), "program.files"
+    )
     for path, source in files.items():
         content = await resolve_program_value(source, task, state, runtime, program)
         if not isinstance(content, str):
             content = str(content)
         try:
-            await maybe_call_with_named_args(
-                getattr(client, "upload_bytes"),
-                sandbox_id=sandbox_id,
-                file_path=path,
-                file_bytes=content.encode(),
-                filename=path.rsplit("/", 1)[-1] or "file",
+            await with_sandbox_transfer_retry(
+                lambda: maybe_call_with_named_args(
+                    getattr(client, "upload_bytes"),
+                    sandbox_id=sandbox_id,
+                    file_path=path,
+                    file_bytes=content.encode(),
+                    filename=path.rsplit("/", 1)[-1] or "file",
+                )
             )
         except (APIError, UploadTimeoutError) as exc:
             raise SandboxError(
@@ -889,7 +932,9 @@ async def upload_program_dirs(
     state: State,
     runtime: Runtime,
 ) -> None:
-    dirs = program_option_mapping(program.get("dirs"), "program.dirs")
+    dirs = program_option_mapping(
+        cast(ProgramMappingInput, program.get("dirs")), "program.dirs"
+    )
     for path, source in dirs.items():
         local_source = await resolve_program_value(
             source, task, state, runtime, program
@@ -902,11 +947,13 @@ async def upload_program_dirs(
             raise TypeError("program.dirs values must resolve to paths.")
         remote_tar = f"/tmp/_vf_upload_{path.strip('/').replace('/', '_')}.tar.gz"
         archive_path = await runtime.cached_upload_archive(local_source, path)
-        await maybe_call_with_named_args(
-            client.upload_file,
-            sandbox_id=sandbox_id,
-            file_path=remote_tar,
-            local_file_path=str(archive_path),
+        await with_sandbox_transfer_retry(
+            lambda: maybe_call_with_named_args(
+                client.upload_file,
+                sandbox_id=sandbox_id,
+                file_path=remote_tar,
+                local_file_path=str(archive_path),
+            )
         )
         result = await maybe_call_with_named_args(
             client.execute_command,
@@ -988,12 +1035,14 @@ async def upload_state_input(
         return
     if not isinstance(path, str):
         raise TypeError(f"{VF_STATE_INPUT_PATH_KEY} must be a string.")
-    await maybe_call_with_named_args(
-        client.upload_bytes,
-        sandbox_id=sandbox_id,
-        file_path=path,
-        file_bytes=json.dumps(state).encode(),
-        filename=path.rsplit("/", 1)[-1] or "file",
+    await with_sandbox_transfer_retry(
+        lambda: maybe_call_with_named_args(
+            client.upload_bytes,
+            sandbox_id=sandbox_id,
+            file_path=path,
+            file_bytes=json.dumps(state).encode(),
+            filename=path.rsplit("/", 1)[-1] or "file",
+        )
     )
 
 

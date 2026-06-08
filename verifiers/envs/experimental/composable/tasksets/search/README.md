@@ -17,6 +17,7 @@ The search family is intentionally backend-oriented, mirroring the SWE taskset p
 from verifiers.envs.experimental.composable.tasksets.search import make_search_taskset
 
 taskset = make_search_taskset(backend="openseeker")
+taskset = make_search_taskset(backend="quest", category="objective")
 ```
 
 `make_search_taskset()` dispatches by backend name. Unknown backends raise `ValueError` with the available backend list.

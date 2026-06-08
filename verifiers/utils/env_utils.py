@@ -4,7 +4,15 @@ import logging
 import sys
 from collections.abc import Mapping
 from types import ModuleType, UnionType
-from typing import Callable, Union, cast, get_args, get_origin, get_type_hints
+from typing import (
+    Callable,
+    TypeAlias,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from pydantic import BaseModel
 from verifiers.envs.environment import Environment
@@ -12,7 +20,12 @@ from verifiers.utils.config_utils import MissingKeyError
 from verifiers.v1.env import Env, EnvConfig
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.types import ConfigData, ConfigValue
 from verifiers.v1.utils.config_utils import coerce_config, explicit_config_data
+
+EnvConfigLoadData: TypeAlias = dict[str, ConfigValue | BaseModel]
+EnvConfigChildInput: TypeAlias = ConfigData | EnvConfigLoadData
+EnvConfigInput: TypeAlias = EnvConfig | ConfigData
 
 
 def load_environment(env_id: str, **env_args) -> Environment:
@@ -127,7 +140,7 @@ def caller_module() -> ModuleType:
 def load_taskset(
     env_id: str | None = None,
     *,
-    config: TasksetConfig | Mapping[str, object] | None = None,
+    config: TasksetConfig | ConfigData | None = None,
 ) -> Taskset:
     module = caller_module() if env_id is None else import_env_module(env_id)
     return load_taskset_from_module(module, config=config)
@@ -136,7 +149,7 @@ def load_taskset(
 def load_harness(
     env_id: str | None = None,
     *,
-    config: HarnessConfig | Mapping[str, object] | None = None,
+    config: HarnessConfig | ConfigData | None = None,
 ) -> Harness:
     module = caller_module() if env_id is None else import_env_module(env_id)
     return load_harness_from_module(module, config=config)
@@ -145,7 +158,7 @@ def load_harness(
 def load_taskset_from_module(
     module: ModuleType,
     *,
-    config: TasksetConfig | Mapping[str, object] | None = None,
+    config: TasksetConfig | ConfigData | None = None,
 ) -> Taskset:
     factory = getattr(module, "load_taskset", None)
     if factory is None:
@@ -170,7 +183,7 @@ def load_taskset_from_module(
 def load_harness_from_module(
     module: ModuleType,
     *,
-    config: HarnessConfig | Mapping[str, object] | None = None,
+    config: HarnessConfig | ConfigData | None = None,
 ) -> Harness:
     factory = getattr(module, "load_harness", None)
     if factory is None:
@@ -260,11 +273,11 @@ def env_config_type(annotation: object) -> type[EnvConfig] | None:
 def load_env_config(
     module: ModuleType,
     config_type: type[EnvConfig],
-    value: object,
+    value: EnvConfigInput,
     *,
     child_types: Mapping[str, type[BaseModel]] | None = None,
 ) -> EnvConfig:
-    data: dict[str, object]
+    data: EnvConfigLoadData
     if isinstance(value, config_type):
         data = dict(explicit_config_data(value))
     elif isinstance(value, BaseModel):
@@ -275,7 +288,7 @@ def load_env_config(
     elif not isinstance(value, Mapping):
         raise TypeError("load_environment config must be a mapping or EnvConfig.")
     else:
-        data = dict(explicit_config_data(value))
+        data = dict(value)
     resolved_child_types = (
         env_config_child_types(module, config_type, data)
         if child_types is None
@@ -293,6 +306,8 @@ def load_env_config(
             continue
         if child is None:
             raise TypeError(f"config.{field_name} cannot be None.")
+        if not isinstance(child, BaseModel | dict):
+            raise TypeError(f"config.{field_name} must be a mapping or config object.")
         data[field_name] = child_type.model_validate(explicit_config_data(child))
     config = config_type.model_validate(data)
     for field_name, child_type in resolved_child_types.items():
@@ -308,7 +323,7 @@ def load_env_config(
 def env_config_child_types(
     module: ModuleType,
     config_type: type[EnvConfig],
-    value: Mapping[str, object] | None = None,
+    value: EnvConfigChildInput | None = None,
 ) -> dict[str, type[BaseModel]]:
     child_types: dict[str, type[BaseModel]] = {}
     for field_name, id_field, factory_name, base_type in (

@@ -4,7 +4,7 @@ import types
 
 from datasets import Dataset
 
-from verifiers.v1 import Taskset
+from verifiers.v1 import Env, Taskset
 from verifiers.v1.utils.taskset_utils import dataset_from_result, discover_sibling_dir
 
 
@@ -118,3 +118,25 @@ def test_taskset_skips_empty_skills_dir(tmp_path, monkeypatch) -> None:
 
     assert taskset.get_skills_dir() == skills_dir
     assert taskset.get_upload_dirs() == {"skills": skills_dir}
+
+
+def test_v1_env_eval_inputs_can_shuffle_taskset_dataset() -> None:
+    class DemoTaskset(Taskset):
+        def load_tasks(self, split: str = "train"):
+            return [{"question": f"Reverse {i}.", "answer": str(i)} for i in range(6)]
+
+    env = Env(taskset=DemoTaskset())
+
+    inputs = env._get_eval_inputs(
+        num_examples=3,
+        rollouts_per_example=2,
+        shuffle=True,
+        shuffle_seed=7,
+    )
+    expected = (
+        env.get_eval_dataset().shuffle(seed=7).select(range(3)).repeat(2).to_list()
+    )
+
+    assert [row["example_id"] for row in inputs] == [
+        row["example_id"] for row in expected
+    ]

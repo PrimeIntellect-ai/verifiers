@@ -31,7 +31,7 @@ _CONFIG_REF_MODULE: ContextVar[str | None] = ContextVar(
 
 
 def explicit_config_data(
-    value: object, target: type[BaseModel] | None = None
+    value: BaseModel | ConfigData | None, target: type[BaseModel] | None = None
 ) -> ConfigData:
     if value is None:
         data: ConfigData = {}
@@ -48,7 +48,9 @@ def explicit_config_data(
     return data
 
 
-def coerce_config(config_cls: type[ConfigT], value: object = None) -> ConfigT:
+def coerce_config(
+    config_cls: type[ConfigT], value: BaseModel | ConfigData | None = None
+) -> ConfigT:
     if value is None:
         return config_cls()
     if isinstance(value, config_cls):
@@ -168,7 +170,7 @@ def resolve_config_annotation(owner_type: ConfigOwner, annotation: object) -> ob
 
 
 def resolved_config_data(
-    value: object, target: type[BaseModel] | None = None
+    value: BaseModel | ConfigData | None, target: type[BaseModel] | None = None
 ) -> ConfigData:
     if value is None:
         data: ConfigData = {}
@@ -248,7 +250,7 @@ def config_ref_parts(ref: str) -> tuple[str, str]:
 
 
 @contextmanager
-def config_ref_context(config: object) -> Iterator[None]:
+def config_ref_context(config: BaseModel | ConfigData | None) -> Iterator[None]:
     module_name = config_ref_module(config)
     if module_name is None:
         yield
@@ -260,7 +262,7 @@ def config_ref_context(config: object) -> Iterator[None]:
         _CONFIG_REF_MODULE.reset(token)
 
 
-def config_ref_module(config: object) -> str | None:
+def config_ref_module(config: BaseModel | ConfigData | None) -> str | None:
     if isinstance(config, BaseModel):
         module_name = type(config).__module__
         if module_name not in FRAMEWORK_CONFIG_MODULES:

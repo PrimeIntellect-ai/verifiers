@@ -165,7 +165,7 @@ rules:
   - id: verifiers-no-raw-object-containers-v1
     languages: [python]
     severity: ERROR
-    message: Do not spell broad object containers in v1 or environment code; use concrete config models, ConfigData, Handler, BindingsConfig, Objects, or a narrower type. Do not patch around weak typing with generic containers.
+    message: Do not spell broad object containers in v1 or environment code; use a concrete model or a named boundary type that describes the real payload. ConfigData is only for actual config-shaped data; do not use it as a patch to satisfy this rule for protocol, state, task, or endpoint payloads.
     paths:
       include:
         - /verifiers/v1/**/*.py
