@@ -13,7 +13,9 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
+import traceback
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any, cast
@@ -428,30 +430,82 @@ class EnvWorker:
                     faulthandler.cancel_dump_traceback_later()
                 except Exception:
                     pass
+                stall_stop = getattr(self, "_stall_stop", None)
+                if stall_stop is not None:
+                    stall_stop.set()
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _loop_watchdog(self) -> None:
-        """Re-arm a faulthandler timer each tick; if the event loop stalls past
-        the threshold the C timer fires *during* the stall and dumps all-thread
-        tracebacks to stderr (the loop thread + every to_thread worker), so we
-        capture exactly what is blocking the loop (gc / NFS read / sandbox / etc.)."""
+        """Catch actual event-loop blocks via TWO independent mechanisms:
+
+        1) A background daemon THREAD (``_stall_watchdog_thread``) that watches a
+           loop-updated heartbeat; when it goes stale > threshold it logs every
+           thread's stack via the logger (the *captured* channel — faulthandler's
+           raw stderr writes weren't showing in `prime train logs`). This is the
+           reliable capture of "what is the loop thread executing right now".
+        2) ``faulthandler.dump_traceback_later`` to **stdout** as a C-level backup
+           that fires even under total GIL starvation (when the python watchdog
+           thread itself can't get the GIL).
+
+        This coroutine just keeps the loop heartbeat fresh + re-arms faulthandler.
+        """
         lag_s = _loopdbg_lag_s()
-        interval = max(0.5, lag_s / 3.0)
+        interval = max(0.25, lag_s / 4.0)
+        self._loop_hb = time.monotonic()
+        self._loop_tid = threading.get_ident()  # the event-loop thread
+        # start the python watchdog thread once
+        if getattr(self, "_stall_thread", None) is None:
+            self._stall_stop = threading.Event()
+            self._stall_thread = threading.Thread(
+                target=self._stall_watchdog_thread,
+                args=(lag_s,),
+                name=f"loop-watchdog-{self.worker_id}",
+                daemon=True,
+            )
+            self._stall_thread.start()
         while True:
+            self._loop_hb = time.monotonic()
             try:
                 faulthandler.dump_traceback_later(
-                    lag_s, repeat=False, file=sys.stderr, exit=False
-                )
-                _loopdbg_log.debug(
-                    "loop-watchdog armed (%s, lag>=%.1fs, rss=%.0fMB)",
-                    self.worker_name, lag_s, _rss_mb(),
+                    lag_s, repeat=False, file=sys.stdout, exit=False
                 )
             except Exception as exc:
-                _loopdbg_log.warning("loop-watchdog arm failed: %r", exc)
-                return
+                _loopdbg_log.warning("faulthandler arm failed: %r", exc)
             await asyncio.sleep(interval)
+
+    def _stall_watchdog_thread(self, lag_s: float) -> None:
+        """Daemon thread: when the loop heartbeat is stale > lag_s, log all-thread
+        stacks via the logger so the blocking frame appears in captured logs."""
+        cooldown = 5.0
+        last_dump = 0.0
+        while not self._stall_stop.is_set():
+            loop_tid = getattr(self, "_loop_tid", None) or threading.main_thread().ident
+            time.sleep(min(0.25, lag_s / 4.0))
+            hb = getattr(self, "_loop_hb", None)
+            if hb is None:
+                continue
+            gap = time.monotonic() - hb
+            now = time.monotonic()
+            if gap >= lag_s and (now - last_dump) > cooldown:
+                last_dump = now
+                frames = sys._current_frames()
+                _loopdbg_log.warning(
+                    "LOOP STALL %s gap=%.1fs rss=%.0fMB — thread stacks follow",
+                    self.worker_name, gap, _rss_mb(),
+                )
+                # loop thread first (the blocker), then the rest
+                tids = [loop_tid] + [t for t in frames if t != loop_tid]
+                for tid in tids:
+                    frame = frames.get(tid)
+                    if frame is None:
+                        continue
+                    stack = "".join(traceback.format_stack(frame, limit=25))
+                    tag = "LOOP-THREAD" if tid == loop_tid else f"thread-{tid}"
+                    _loopdbg_log.warning(
+                        "LOOP STALL %s [%s]:\n%s", self.worker_name, tag, stack
+                    )
 
     async def close(self) -> None:
         self.shutting_down = True
