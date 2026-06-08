@@ -12,11 +12,13 @@ import contextlib
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import msgpack
 import pytest
 
 from verifiers.types import ClientConfig, RolloutInput, UserMessage
 from verifiers.utils.serve_utils import get_free_port
 from verifiers.serve import (
+    EnvRouter,
     HealthRequest,
     HealthResponse,
     PendingRequest,
@@ -324,6 +326,96 @@ class TestRetryOnServerError:
             assert attempt_count == 1
 
             await client.close()
+
+
+class TestIdempotentRetries:
+    """Tests for request idempotency across retry and response replay paths."""
+
+    @pytest.mark.asyncio
+    async def test_receive_loop_acks_pending_response(self):
+        """Completed responses are acked only when a pending future receives them."""
+        client = make_client()
+        pending, future = make_pending_request(request_id="req_1")
+        async with client.pending_lock:
+            client.pending_requests[pending.request_id] = pending
+
+        response_bytes = msgpack.packb(
+            HealthResponse(success=True).model_dump(), use_bin_type=True
+        )
+        client.socket.recv_multipart = AsyncMock(
+            side_effect=[[b"req_1", response_bytes], asyncio.CancelledError()]
+        )
+        client.send_ack = AsyncMock()
+
+        try:
+            await client.receive_loop()
+            client.send_ack.assert_awaited_once_with("req_1")
+            assert future.result()["success"] is True
+            assert client.pending_requests == {}
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_receive_loop_does_not_ack_stale_response(self):
+        """Late responses for cleared pending state must remain replayable."""
+        client = make_client()
+        client.socket.recv_multipart = AsyncMock(
+            side_effect=[[b"missing_req", b"payload"], asyncio.CancelledError()]
+        )
+        client.send_ack = AsyncMock()
+
+        try:
+            await client.receive_loop()
+            client.send_ack.assert_not_awaited()
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_send_request_uses_full_uuid_hex(self):
+        """Request ids keep full UUID entropy because caches are keyed by id."""
+        client = make_client()
+        sent_request_ids: list[str] = []
+        full_uuid_hex = "a" * 32
+
+        async def mock_send(frames, **kwargs):
+            if len(frames) == 2 and frames[1] in {b"", b"ack"}:
+                return
+            request_id = frames[0].decode()
+            sent_request_ids.append(request_id)
+            pending = client.pending_requests[request_id]
+            pending.future.set_result(HealthResponse(success=True).model_dump())
+
+        with (
+            patch("verifiers.serve.client.zmq_env_client.uuid.uuid4") as mock_uuid4,
+            patch_client_socket(client, send_side_effect=mock_send),
+        ):
+            mock_uuid4.return_value.hex = full_uuid_hex
+            try:
+                await client.send_request(HealthRequest(), HealthResponse, timeout=1.0)
+            finally:
+                await client.close()
+
+        assert sent_request_ids == [full_uuid_hex]
+
+    @pytest.mark.asyncio
+    async def test_completed_response_cache_prunes_expired_and_excess_entries(self):
+        """Abandoned completed responses are bounded without waiting for acks."""
+        router = EnvRouter(env_id="test")
+        now = time.time()
+
+        try:
+            router.completed_responses[b"expired"] = (now - 1, b"old")
+            router.completed_responses[b"fresh"] = (now + 60, b"fresh")
+            router.prune_completed_responses(now)
+            assert list(router.completed_responses) == [b"fresh"]
+
+            router.max_completed_responses = 2
+            router.completed_responses[b"one"] = (now + 60, b"one")
+            router.completed_responses[b"two"] = (now + 60, b"two")
+            router.prune_completed_responses(now)
+            assert list(router.completed_responses) == [b"one", b"two"]
+        finally:
+            await router.close()
 
 
 class TestSendCancelErrorHandling:

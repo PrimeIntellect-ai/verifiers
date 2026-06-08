@@ -213,28 +213,26 @@ class ZMQEnvClient(EnvClient):
 
                 request_id_bytes, response_data = msg[0], msg[1]
                 request_id = request_id_bytes.decode()
-                await self.send_ack(request_id)
 
                 # Pop pending request atomically
                 async with self.pending_lock:
                     pending_req = self.pending_requests.pop(request_id, None)
 
-                if pending_req is not None and not pending_req.future.done():
-                    try:
-                        response = msgpack.unpackb(response_data, raw=False)
-                        pending_req.future.set_result(response)
-                    except Exception as unpack_error:
-                        # Unpacking failed - fail the specific future
-                        self.logger.error(
-                            f"Request {request_id[:7]} failed to unpack response from env server {self.name} ({unpack_error})"
-                        )
-                        pending_req.future.set_exception(
-                            RuntimeError(
-                                f"Failed to deserialize response: {unpack_error}"
-                            )
-                        )
-                elif pending_req is None:
-                    pass  # ignore responses for requests we already popped (e.g. timed out)
+                if pending_req is None or pending_req.future.done():
+                    continue
+
+                await self.send_ack(request_id)
+                try:
+                    response = msgpack.unpackb(response_data, raw=False)
+                    pending_req.future.set_result(response)
+                except Exception as unpack_error:
+                    # Unpacking failed - fail the specific future
+                    self.logger.error(
+                        f"Request {request_id[:7]} failed to unpack response from env server {self.name} ({unpack_error})"
+                    )
+                    pending_req.future.set_exception(
+                        RuntimeError(f"Failed to deserialize response: {unpack_error}")
+                    )
 
             except asyncio.CancelledError:
                 break
@@ -288,7 +286,7 @@ class ZMQEnvClient(EnvClient):
                 use_bin_type=True,
             ),
         )
-        request_id = uuid.uuid4().hex[:8]
+        request_id = uuid.uuid4().hex
 
         while True:
             # Create future and pending request atomically

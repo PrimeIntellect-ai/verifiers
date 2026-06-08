@@ -14,6 +14,7 @@ import multiprocessing as mp
 import os
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from multiprocessing.connection import Connection
@@ -143,7 +144,11 @@ class EnvRouter:
         # setup state
         self.workers: dict[int, WorkerHandle] = {}
         self.request_to_worker: dict[bytes, int] = {}  # request_id → worker_id
-        self.completed_responses: dict[bytes, bytes] = {}
+        self.max_completed_responses = 10_000
+        self.completed_response_ttl = 300.0
+        self.completed_responses: OrderedDict[bytes, tuple[float, bytes]] = (
+            OrderedDict()
+        )
         self.on_response: OnResponseCallback | None = None
         self.lag_monitor = EventLoopLagMonitor()
 
@@ -279,7 +284,12 @@ class EnvRouter:
                         info = self.complete_request(request_id)
                         if info is not None:
                             client_id = info.client_id
-                        self.completed_responses[request_id] = response_bytes
+                        self.completed_responses[request_id] = (
+                            time.time() + self.completed_response_ttl,
+                            response_bytes,
+                        )
+                        self.completed_responses.move_to_end(request_id)
+                        self.prune_completed_responses()
                         await on_response(client_id, request_id, response_bytes)
 
                 # ── worker stats ───────────────────────────────────
@@ -298,6 +308,7 @@ class EnvRouter:
                     last_stats_log = now
                 if now - last_heartbeat_check >= 5.0:
                     await self.check_workers()
+                    self.prune_completed_responses(now)
                     last_heartbeat_check = now
 
         except asyncio.CancelledError:
@@ -351,9 +362,11 @@ class EnvRouter:
         self, client_id: bytes, request_id: bytes, payload: bytes
     ) -> None:
         """Send a request to the least-busy worker."""
-        response_bytes = self.completed_responses.get(request_id)
-        if response_bytes is not None:
+        self.prune_completed_responses()
+        cached_response = self.completed_responses.get(request_id)
+        if cached_response is not None:
             if self.on_response is not None:
+                _, response_bytes = cached_response
                 await self.on_response(client_id, request_id, response_bytes)
             return
 
@@ -400,6 +413,17 @@ class EnvRouter:
     def ack_request(self, request_id: bytes) -> None:
         """Forget a completed response once the client confirms receipt."""
         self.completed_responses.pop(request_id, None)
+
+    def prune_completed_responses(self, now: float | None = None) -> None:
+        """Drop expired or excess completed-response cache entries."""
+        now = time.time() if now is None else now
+        while self.completed_responses:
+            expires_at, _ = next(iter(self.completed_responses.values()))
+            within_ttl = expires_at > now
+            within_size = len(self.completed_responses) <= self.max_completed_responses
+            if within_ttl and within_size:
+                break
+            self.completed_responses.popitem(last=False)
 
     def is_current_worker(self, worker_id: int, incarnation: str) -> bool:
         """Check whether a worker message came from the current process."""
