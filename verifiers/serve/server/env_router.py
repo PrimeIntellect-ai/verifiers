@@ -118,7 +118,14 @@ class EnvRouter:
         self.json_logging = json_logging
 
         self.num_workers = num_workers
-        self.worker_heartbeat_timeout = worker_heartbeat_timeout
+        # VF_WORKER_HEARTBEAT_TIMEOUT wins over the passed arg (which the
+        # orchestrator may set) so a run can tune the restart threshold without
+        # an orchestrator redeploy. Band-aid for transient event-loop stalls:
+        # raising it stops the restart cascade but the loop is still frozen.
+        _env_hb = os.environ.get("VF_WORKER_HEARTBEAT_TIMEOUT")
+        self.worker_heartbeat_timeout = (
+            float(_env_hb) if _env_hb else worker_heartbeat_timeout
+        )
         self.stats_log_interval = stats_log_interval
         self.death_pipe = death_pipe
 
