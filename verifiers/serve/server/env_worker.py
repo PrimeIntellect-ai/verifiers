@@ -630,23 +630,26 @@ class EnvWorker:
         # do a guarded `import scipy.stats` self-test. If the worker dies between
         # SELFTEST START and OK, scipy import segfaults deterministically at
         # startup (and we have the version skew to pin).
+        # Use raw print->stdout (fd 1, captured): logging handlers aren't
+        # configured this early in run_worker, so logger calls go nowhere.
+        def _probe(msg):
+            print(f"PROBE {msg}", flush=True)
         try:
             import importlib.metadata as _md
-            _vlog = logging.getLogger("vf.loopdbg")
             for _p in ("numpy", "scipy", "scikit-image", "torch", "vllm",
-                       "transformers", "pillow"):
+                       "transformers", "pillow", "vllm-flash-attn"):
                 try:
-                    _vlog.warning("VERSIONS %s==%s", _p, _md.version(_p))
+                    _probe(f"VERSIONS {_p}=={_md.version(_p)}")
                 except Exception as _e:
-                    _vlog.warning("VERSIONS %s=missing(%r)", _p, _e)
-            _vlog.warning("SELFTEST import scipy.stats START")
+                    _probe(f"VERSIONS {_p}=missing({_e!r})")
+            _probe("SELFTEST scipy.stats START")
             import scipy.stats as _scipy_stats  # noqa: F401
-            _vlog.warning("SELFTEST import scipy.stats OK")
-            _vlog.warning("SELFTEST import vllm.multimodal START")
+            _probe("SELFTEST scipy.stats OK")
+            _probe("SELFTEST vllm.multimodal START")
             import vllm.multimodal as _vmm  # noqa: F401
-            _vlog.warning("SELFTEST import vllm.multimodal OK")
+            _probe("SELFTEST vllm.multimodal OK")
         except Exception as _e:
-            logging.getLogger("vf.loopdbg").warning("SELFTEST exception %r", _e)
+            _probe(f"SELFTEST exception {_e!r}")
 
         try:
             import uvloop
