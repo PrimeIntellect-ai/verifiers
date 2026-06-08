@@ -75,12 +75,20 @@ def _enable_native_cpp_fault_dump(probe=lambda m: None) -> str | None:
     try:
         os.environ.setdefault("TORCH_SHOW_CPP_STACKTRACES", "1")
         import torch  # noqa: F401
-        fn = getattr(torch._C, "_set_print_stack_traces_on_fatal_signal", None)
-        if callable(fn):
-            fn(True)
-            probe("NATIVE_DUMP torch c10 fatal handler enabled")
-            return "torch"
-        probe("NATIVE_DUMP torch api missing -> ctypes fallback")
+        # c10's fatal handler emits NOTHING on the real crash (re-entrant: it
+        # symbolizes the C++ stack from inside the torchvision fault and re-faults,
+        # dying silently). VF_FORCE_CTYPES_BACKTRACE=1 skips it so the ctypes
+        # backtrace_symbols_fd handler below is installed instead (writes a marker
+        # + native frames to fd 2 = the crash file before re-raising).
+        if not os.environ.get("VF_FORCE_CTYPES_BACKTRACE"):
+            fn = getattr(torch._C, "_set_print_stack_traces_on_fatal_signal", None)
+            if callable(fn):
+                fn(True)
+                probe("NATIVE_DUMP torch c10 fatal handler enabled")
+                return "torch"
+            probe("NATIVE_DUMP torch api missing -> ctypes fallback")
+        else:
+            probe("NATIVE_DUMP VF_FORCE_CTYPES_BACKTRACE -> skipping c10, using ctypes")
     except Exception as e:
         probe(f"NATIVE_DUMP torch enable failed: {e!r}")
     try:
@@ -747,6 +755,28 @@ class EnvWorker:
         # configured this early in run_worker, so logger calls go nowhere.
         def _probe(msg):
             print(f"PROBE {msg}", flush=True)
+
+        # CORE DUMP: in-process handlers (faulthandler/c10/ctypes) emit NOTHING on
+        # the real -11 — the torchvision native op likely faults with the GIL held
+        # by another thread, so any Python/ctypes signal callback deadlocks before
+        # writing. A kernel CORE DUMP needs zero in-process cooperation. Raise the
+        # core rlimit (no privileges needed) and report where the kernel writes it
+        # (core_pattern is node-global, read-only here). Minh: if core_pattern is a
+        # path -> the core lands on the pod; if `|/.../systemd-coredump` -> the node
+        # collects it (coredumpctl gdb). gdb <python> <core> -> `bt` = the C++ frame.
+        try:
+            import resource as _res
+            _res.setrlimit(_res.RLIMIT_CORE, (_res.RLIM_INFINITY, _res.RLIM_INFINITY))
+            _soft, _hard = _res.getrlimit(_res.RLIMIT_CORE)
+            try:
+                with open("/proc/sys/kernel/core_pattern") as _cpf:
+                    _corepat = _cpf.read().strip()
+            except Exception as _ce:
+                _corepat = f"?({_ce!r})"
+            _probe(f"CORE rlimit_core=({_soft},{_hard}) core_pattern={_corepat!r} cwd={os.getcwd()!r}")
+        except Exception as _e:
+            _probe(f"CORE enable failed: {_e!r}")
+
         try:
             import importlib.metadata as _md
             for _p in ("numpy", "scipy", "scikit-image", "torch", "vllm",

@@ -52,6 +52,31 @@ from verifiers.clients.openai_chat_completions_client import (
 from verifiers.errors import EmptyModelResponseError, OverlongPromptError
 from verifiers.utils.loop_debug import looptime
 
+# NATIVE-CRASH RE-ARM: the -11 faults INSIDE image_processor (torchvision). Any
+# handler torch/vLLM installed after worker start (or that c10 silently ate) is
+# beaten by re-installing OUR ctypes backtrace handler as the LAST one, right
+# before the crashing call — so it's the active SIGSEGV handler when it faults.
+# Gated by VF_FORCE_CTYPES_BACKTRACE (only the diagnostic run pays the cost).
+_VF_REARM_ON = bool(os.environ.get("VF_FORCE_CTYPES_BACKTRACE"))
+_vf_rearm_fn = None
+
+
+def _vf_rearm_native():
+    if not _VF_REARM_ON:
+        return
+    global _vf_rearm_fn
+    if _vf_rearm_fn is None:
+        try:
+            from verifiers.serve.server.env_worker import _enable_native_cpp_fault_dump as _f
+            _vf_rearm_fn = _f
+        except Exception:
+            _vf_rearm_fn = False
+    if _vf_rearm_fn:
+        try:
+            _vf_rearm_fn()
+        except Exception:
+            pass
+
 # Instrument the sync-on-loop multimodal feature build inside renderers.generate
 # (``_build_mm_features`` base64-encodes pixel kwargs and is NOT offloaded — it
 # runs on the event loop per request, a prime on-loop-block suspect). Monkeypatch
@@ -147,6 +172,10 @@ try:
                     print(f"BC {_l} START", flush=True)
                 except Exception:
                     pass
+                # Re-arm OUR native handler immediately before the crashing native
+                # call so it's the last-installed SIGSEGV handler when it faults.
+                if _c == "image_processor":
+                    _vf_rearm_native()
                 with looptime(_c):
                     r = _o(*a, **k)
                 try:
