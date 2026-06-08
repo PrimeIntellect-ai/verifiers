@@ -75,6 +75,42 @@ try:
             "renderers._build_mm_features looptime patch: %s",
             "applied" if callable(_vf_orig_build_mm) else "skipped (fn not found)",
         )
+
+    # FIX: _build_mm_features runs SYNC on the event loop inside generate
+    # (~1.2s/render, measured). Offload it by source-patching generate's call site
+    # (sync -> ``await asyncio.to_thread``). Can't be done by function-monkeypatch
+    # (the call site is sync). Fully defensive: on any failure we keep the original
+    # generate, so the worst case is the pre-fix behaviour (no crash, no regression).
+    if not getattr(_renderers_client, "_vf_generate_offload_patched", False):
+        import asyncio as _vf_aio
+        import inspect as _vf_inspect
+        import textwrap as _vf_textwrap
+
+        _vf_needle = "_build_mm_features(renderer, mm_data)"
+        _vf_src = _vf_textwrap.dedent(_vf_inspect.getsource(_renderers_client.generate))
+        if _vf_needle in _vf_src and "to_thread(_build_mm_features" not in _vf_src:
+            _vf_src = _vf_src.replace(
+                _vf_needle,
+                "(await asyncio.to_thread(_build_mm_features, renderer, mm_data))",
+            )
+            exec(
+                compile(_vf_src, _renderers_client.__file__, "exec"),
+                _renderers_client.__dict__,
+            )
+            if _vf_aio.iscoroutinefunction(_renderers_client.generate):
+                globals()["generate"] = _renderers_client.generate
+                _renderers_client._vf_generate_offload_patched = True
+                logging.getLogger("vf.looptime").warning(
+                    "renderers.generate _build_mm_features offload: APPLIED"
+                )
+            else:
+                logging.getLogger("vf.looptime").warning(
+                    "renderers.generate offload: skipped (not a coroutine after patch)"
+                )
+        else:
+            logging.getLogger("vf.looptime").warning(
+                "renderers.generate offload: skipped (call site not found)"
+            )
 except Exception as _exc:  # pragma: no cover - never break import
     logging.getLogger("vf.looptime").warning(
         "renderers looptime monkeypatch skipped: %r", _exc
