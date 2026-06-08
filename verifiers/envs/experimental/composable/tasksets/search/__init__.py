@@ -1,5 +1,9 @@
 """Composable search/research tasksets."""
 
-from .search_tasksets import make_quest_taskset, make_search_taskset
+from .search_tasksets import (
+    make_openseeker_taskset,
+    make_quest_taskset,
+    make_search_taskset,
+)
 
-__all__ = ["make_quest_taskset", "make_search_taskset"]
+__all__ = ["make_openseeker_taskset", "make_quest_taskset", "make_search_taskset"]

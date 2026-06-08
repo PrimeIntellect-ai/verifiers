@@ -8,6 +8,7 @@ The search family is intentionally backend-oriented, mirroring the SWE taskset p
 
 | Backend | Source | Default dataset | Status |
 |---|---|---|---|
+| `openseeker` | [PolarSeeker/OpenSeeker](https://github.com/PolarSeeker/OpenSeeker) | [`PolarSeeker/OpenSeeker-v1-Data`](https://huggingface.co/datasets/PolarSeeker/OpenSeeker-v1-Data) | Binary semantic answer judge |
 | `quest` | [OSU-NLP-Group/QUEST](https://github.com/OSU-NLP-Group/QUEST) | [`osunlp/QUEST-RL-Data`](https://huggingface.co/datasets/osunlp/QUEST-RL-Data) | Objective tasks supported |
 
 ## Usage
@@ -15,6 +16,7 @@ The search family is intentionally backend-oriented, mirroring the SWE taskset p
 ```python
 from verifiers.envs.experimental.composable.tasksets.search import make_search_taskset
 
+taskset = make_search_taskset(backend="openseeker")
 taskset = make_search_taskset(backend="quest", category="objective")
 ```
 
@@ -22,7 +24,7 @@ taskset = make_search_taskset(backend="quest", category="objective")
 
 ## Output Contract
 
-Search tasksets should define their own output contract. The initial `quest` backend expects the agent to write one final researched response to `/task/answer.txt`, including supporting URLs/citations when available. Scratch reasoning, tool traces, and logs should not be written as the final answer.
+Search tasksets should define their own output contract. The `quest` and `openseeker` backends expect the agent to write one final researched response to `/task/answer.txt`, including supporting URLs/citations when available. Scratch reasoning, tool traces, and logs should not be written as the final answer.
 
 ## Error Handling
 
