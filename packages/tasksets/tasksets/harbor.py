@@ -241,7 +241,11 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
     @vf.reward(weight=1.0)
     async def harbor_reward(self, task: HarborTask, runtime: vf.Runtime) -> float:
         tests_dir = Path(task.task_dir) / "tests"
-        await runtime.write("/tmp/tests.tgz", self.make_tar(tests_dir))
+        try:
+            tests_archive = self.make_tar(tests_dir)
+            await runtime.write("/tmp/tests.tgz", tests_archive)
+        except OSError:
+            return 0.0
         extract = await runtime.run(
             [
                 "sh",

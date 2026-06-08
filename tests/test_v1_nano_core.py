@@ -1450,6 +1450,56 @@ async def test_harbor_reward_runs_verifier_in_live_runtime(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_harbor_reward_returns_zero_when_tests_missing(tmp_path) -> None:
+    from tasksets.harbor import HarborTask, HarborTaskset, HarborTasksetConfig
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    task = HarborTask(
+        task_name="task",
+        instruction="do it",
+        task_dir=str(task_dir),
+        prompt=[vf.UserMessage(content="do it")],
+        image="python:3.11",
+    )
+
+    class FakeRuntime(vf.Runtime):
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def expose(self, port: int) -> str:
+            return f"http://127.0.0.1:{port}"
+
+        async def run(
+            self,
+            command: list[str],
+            *,
+            cwd: str | None = None,
+            env: dict[str, str] | None = None,
+            timeout: float | None = None,
+        ) -> vf.CommandResult:
+            _ = command, cwd, env, timeout
+            raise AssertionError("missing tests should not execute commands")
+
+        async def read(self, path: str) -> bytes:
+            _ = path
+            raise AssertionError("missing tests should not read verifier output")
+
+        async def write(self, path: str, data: bytes) -> None:
+            _ = path, data
+            raise AssertionError("missing tests should not write an archive")
+
+    reward = await HarborTaskset(HarborTasksetConfig()).harbor_reward(
+        task, FakeRuntime()
+    )
+
+    assert reward == 0.0
+
+
+@pytest.mark.asyncio
 async def test_score_group_empty_group_returns_empty_states() -> None:
     env = vf.Env(taskset=NanoTaskset())
 
