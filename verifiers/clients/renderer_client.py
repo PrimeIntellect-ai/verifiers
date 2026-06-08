@@ -187,6 +187,12 @@ try:
             _vf_bc_wrap(_qcls, "_encode", "q35._encode")
             _vf_bc_wrap(_qcls, "render", "q35.render")
             _vf_bc_wrap(_qcls, "bridge_to_next_turn", "q35.bridge_to_next_turn")
+        # SPLIT _process_image's two natives: PIL decode vs the HF (fast,
+        # torchvision-backed under transformers 5) image processor. Wrap the
+        # module-level _load_pil_image; if next crash shows _load_pil_image
+        # UNMATCHED -> PIL decode; if it's balanced but _process_image
+        # UNMATCHED -> the crash is proc.image_processor(images=[pil]).
+        _vf_bc_wrap(_q35, "_load_pil_image", "q35._load_pil_image")
     except Exception as _e:
         logging.getLogger("vf.looptime").warning("qwen35 use-time BC wrap: %r", _e)
 
