@@ -1314,7 +1314,11 @@ def test_harbor_taskset_maps_task_image_and_resources(
         "storage_mb = 10240\n"
         "gpus = 1\n"
     )
-    taskset = HarborTaskset(config=HarborTasksetConfig(bundle_package="unused"))
+    taskset = HarborTaskset(
+        config=HarborTasksetConfig(source="local", dataset=str(root))
+    )
+
+    assert taskset.task_root() == root.resolve()
 
     task = taskset.task_from_dir(task_dir)
 
@@ -1346,7 +1350,9 @@ def test_harbor_taskset_rejects_dockerfile_only_tasks(tmp_path) -> None:
     (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.11\n")
     (task_dir / "instruction.md").write_text("fix it\n")
     (task_dir / "task.toml").write_text("[environment]\n")
-    taskset = HarborTaskset(config=HarborTasksetConfig(bundle_package="unused"))
+    taskset = HarborTaskset(
+        config=HarborTasksetConfig(source="local", dataset=str(tmp_path))
+    )
 
     with pytest.raises(ValueError, match="Dockerfile"):
         taskset.task_from_dir(task_dir)

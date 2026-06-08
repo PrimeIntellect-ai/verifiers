@@ -86,7 +86,7 @@ def download_harbor_dataset(
             f"Harbor dataset {dataset_id!r} requires the Harbor CLI or uvx. "
             "Install Harbor or uvx before using Harbor Hub datasets."
         )
-    root = cache_dir or Path.home() / ".cache" / "verifiers" / "harbor"
+    root = cache_dir or Path.home() / ".cache" / "verifiers" / "harbor" / "hub"
     dataset_dir = root / (
         re.sub(r"[^A-Za-z0-9_.-]+", "_", dataset_id).strip("_") or "dataset"
     )

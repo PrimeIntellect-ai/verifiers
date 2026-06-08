@@ -35,8 +35,11 @@ Notes:
 
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
+| `source` | `"hub" \| "local" \| "package"` | `"package"` in this environment | Dataset source resolver. |
+| `dataset` | str | `"opencode_harbor_v1"` in this environment | Hub id, local tasks path, or Python package name. |
 | `task_names` | list[str] | `null` | Explicit Harbor task names to run. |
-| `dataset` | str | `null` | Harbor Hub dataset id. Defaults to bundled `tasks/`. |
+| `cache_dir` | str | `null` | Optional Hub cache root override. |
+| `refresh` | bool | `false` | Refresh Hub cache before loading. |
 | `require_image` | bool | `false` | Require every task to declare `[environment].docker_image`. |
 | `verifier_timeout_seconds` | float | `900.0` | Default timeout for Harbor verifier scripts. |
 
@@ -65,8 +68,9 @@ The harness also accepts the packaged `OpenCodeConfig` fields for `system_prompt
 
 ## How It Works
 
-1. `HarborTaskset` loads Harbor tasks, maps `[environment].docker_image` and
-   resource hints onto generic v1 `Task` fields, and owns the Harbor reward.
+1. `HarborTaskset` resolves Hub, local, or package task directories, maps
+   `[environment].docker_image` and resource hints onto generic v1 `Task`
+   fields, and owns the Harbor reward.
 2. `OpenCode` contributes the reusable OpenCode CLI program, install/setup,
    intercepted endpoint config, MCP tool proxy, and log artifact collection.
 3. The v1 runtime resolves both sides into one sandboxed command program at rollout time.

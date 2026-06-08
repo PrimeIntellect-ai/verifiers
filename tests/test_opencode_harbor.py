@@ -48,7 +48,8 @@ def test_load_environment_uses_v1_taskset_and_harness(
     assert isinstance(env.harness.config, OpenCodeConfig)
     assert not hasattr(module, "OpenCodeHarborHarnessConfig")
     assert not hasattr(module, "TERMINAL_BENCH_SAMPLE_TASKS")
-    assert env.taskset.config.bundle_package == "opencode_harbor_v1"
+    assert env.taskset.config.source == "package"
+    assert env.taskset.config.dataset == "opencode_harbor_v1"
     task = next(iter(env.taskset))
     assert Path(task.task_dir).parent == Path(module.__file__).parent / "tasks"
     assert env.harness.config.max_turns == 4
@@ -82,7 +83,9 @@ def test_load_environment_accepts_v1_taskset_and_harness_config(
         },
     )
 
-    assert env.taskset.config.bundle_package == "opencode_harbor_v1"
+    assert env.taskset.config.source == "package"
+    assert env.taskset.config.dataset == "opencode_harbor_v1"
+    assert isinstance(env.harness, OpenCode)
     task = next(iter(env.taskset))
     assert task.task_dir == str(Path(module.__file__).parent / "tasks" / "hello-world")
     assert env.taskset.config.task_names == ["hello-world"]

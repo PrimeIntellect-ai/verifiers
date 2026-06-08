@@ -1,6 +1,7 @@
 import io
 import tarfile
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -16,11 +17,13 @@ from tasksets.utils.harbor_utils import (
     parse_reward_text,
 )
 
+HarborSource = Literal["hub", "local", "package"]
+
 
 class HarborTasksetConfig(vf.TasksetConfig):
     id: str | None = "harbor"
-    dataset: str | None = None
-    bundle_package: str | None = None
+    source: HarborSource = "hub"
+    dataset: str = "hello-world"
     task_names: list[str] | None = None
     cache_dir: str | None = None
     refresh: bool = False
@@ -64,7 +67,7 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
 
     def task_root(self) -> Path:
         config = self.config
-        if config.dataset is not None:
+        if config.source == "hub":
             cache_dir = (
                 Path(config.cache_dir).expanduser() if config.cache_dir else None
             )
@@ -73,12 +76,12 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
                 cache_dir=cache_dir,
                 refresh=config.refresh,
             )
-        if config.bundle_package is None:
-            raise RuntimeError("HarborTaskset requires dataset or bundle_package.")
-        root = bundle_tasks_root(config.bundle_package)
+        if config.source == "local":
+            return Path(config.dataset).expanduser().resolve()
+        root = bundle_tasks_root(config.dataset)
         if not root.exists():
             raise FileNotFoundError(
-                "HarborTaskset bundle_package must contain "
+                "HarborTaskset package source must contain "
                 f"{TASKS_SUBDIR}/. Not found: {root}"
             )
         return root
@@ -112,11 +115,15 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
         memory_value = environment.get("memory_gb")
         if memory_value is None and environment.get("memory_mb") is not None:
             memory_gb = parse_number(environment.get("memory_mb"), 0.0) / 1024
+        elif memory_value is None and environment.get("memory") is not None:
+            memory_gb = parse_gb(environment.get("memory"), 0.0)
         else:
             memory_gb = None if memory_value is None else parse_gb(memory_value, 0.0)
         disk_value = environment.get("storage_gb")
         if disk_value is None and environment.get("storage_mb") is not None:
             disk_gb = parse_number(environment.get("storage_mb"), 0.0) / 1024
+        elif disk_value is None and environment.get("storage") is not None:
+            disk_gb = parse_gb(environment.get("storage"), 0.0)
         else:
             disk_gb = None if disk_value is None else parse_gb(disk_value, 0.0)
         gpu_count = (

@@ -1,0 +1,18 @@
+version = "1.0"
+
+[task]
+name = "hello-world"
+description = "Create a hello.txt file."
+keywords = ["smoke", "file"]
+
+[verifier]
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 120.0
+
+[environment]
+docker_image = "python:3.11-slim"
+cpus = 1
+memory = "1G"
+storage = "2G"
