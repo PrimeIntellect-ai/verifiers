@@ -56,9 +56,9 @@ def _loopdbg_on() -> bool:
 
 def _loopdbg_lag_s() -> float:
     try:
-        return float(os.getenv("VF_LOOP_DEBUG_LAG_S", "3.0") or 3.0)
+        return float(os.getenv("VF_LOOP_DEBUG_LAG_S", "1.5") or 1.5)
     except ValueError:
-        return 3.0
+        return 1.5
 
 
 def _rss_mb() -> float:
@@ -349,8 +349,11 @@ class EnvWorker:
         watchdog_task: asyncio.Task | None = None
         if loopdbg:
             _install_gc_debug(self.worker_name)
-            if os.getenv("VF_LOOP_DEBUG_ASYNCIO", "").strip().lower() in (
-                "1", "true", "on", "yes",
+            # asyncio debug (per-callback slow-call logging w/ source) default-ON
+            # in this diagnostic build; set VF_LOOP_DEBUG_ASYNCIO=0 to disable.
+            # NOTE: adds per-callback overhead — diagnostic builds only.
+            if os.getenv("VF_LOOP_DEBUG_ASYNCIO", "1").strip().lower() not in (
+                "0", "off", "false", "no", "",
             ):
                 loop = asyncio.get_event_loop()
                 loop.set_debug(True)
