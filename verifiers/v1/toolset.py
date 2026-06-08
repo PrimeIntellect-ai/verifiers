@@ -48,6 +48,7 @@ class ServerConfig(VisibilityConfig):
     headers: dict[str, str] = Field(default_factory=dict)
     env: dict[str, str] = Field(default_factory=dict)
     resources: JsonData = Field(default_factory=dict)
+    startup_timeout_seconds: float = 18.0
 
     @model_validator(mode="after")
     def validate_server(self) -> "ServerConfig":

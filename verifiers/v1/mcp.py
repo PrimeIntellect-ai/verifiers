@@ -223,7 +223,7 @@ class MCPToolRegistry:
             if base_url is None:
                 base_url = f"http://127.0.0.1:{port}"
             url = f"{base_url.rstrip('/')}/mcp"
-            await wait_for_http(url)
+            await wait_for_http(url, timeout_seconds=server.startup_timeout_seconds)
             async with connect_streamable_http(url, server.headers) as (read, write):
                 yield read, write
         finally:
@@ -520,8 +520,9 @@ def free_port() -> int:
     raise RuntimeError("Could not find a free port in [3000, 9000).")
 
 
-async def wait_for_http(url: str) -> None:
-    for _ in range(180):
+async def wait_for_http(url: str, *, timeout_seconds: float = 18.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while asyncio.get_running_loop().time() < deadline:
         if await asyncio.to_thread(http_serves, url):
             return
         await asyncio.sleep(0.1)

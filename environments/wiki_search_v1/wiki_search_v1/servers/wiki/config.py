@@ -5,6 +5,7 @@ CHROMA_DB_DIR = ".chroma_db"
 
 class WikiToolsetConfig(vf.ToolsetConfig):
     scope: vf.Scope = "env"
+    startup_timeout_seconds: float = 180.0
     corpus_dataset: str = "willcb/rare-wiki-pages"
     corpus_split: str = "train"
     chroma_db_dir: str = CHROMA_DB_DIR

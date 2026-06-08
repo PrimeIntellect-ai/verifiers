@@ -211,6 +211,7 @@ def bfcl_row(
         row["missed_function_with_hints"] = hinted_entry["missed_function"]
     if ground_truth is not None:
         row.update(ground_truth)
+        row.pop("id", None)
     return row
 
 

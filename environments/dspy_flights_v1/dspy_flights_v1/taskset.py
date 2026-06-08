@@ -77,7 +77,7 @@ class ExpectedFlightChange(BaseModel, extra="forbid"):
 class DSPyFlightsTask(vf.Task):
     user_request: str
     expected: ExpectedFlightChange
-    initial_itineraries: dict[str, Itinerary] = Field(default_factory=dict)
+    initial_itineraries: dict[str, Itinerary | None] = Field(default_factory=dict)
 
 
 def user_database() -> dict[str, UserProfile]:
@@ -235,7 +235,11 @@ def build_airline_tools(
 ) -> tuple[list[Callable[..., DSPyToolResult]], dict[str, dict[str, BaseModel]]]:
     users = user_database()
     flights = flight_database()
-    itineraries = dict(task.initial_itineraries)
+    itineraries = {
+        confirmation_number: itinerary
+        for confirmation_number, itinerary in task.initial_itineraries.items()
+        if itinerary is not None
+    }
     tickets: dict[str, Ticket] = {}
 
     def fetch_flight_info(date: Date, origin: str, destination: str) -> list[Flight]:

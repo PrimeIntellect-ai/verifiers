@@ -99,7 +99,7 @@ def normalize_nemo_gym_task_row(
             "type": "responses_api_agents",
             "name": agent_name,
         }
-    task_row: vf.JsonData = deepcopy(nemo_row)
+    task_row: vf.JsonData = {"nemo_gym_row": nemo_row}
     task_row["nemo_gym_row"] = nemo_row
     task_row.setdefault("row_id", index)
     prompt, system_prompt = prompt_parts_from_nemo_gym_row(nemo_row)
