@@ -134,6 +134,28 @@ try:
                 "renderers.generate offload: skipped (call site not found)"
             )
 
+    # SIGSEGV THREADING TEST: render (-> _process_image -> the torchvision
+    # image_processor) is offloaded to a to_thread pool worker via
+    # _maybe_offload. The size=1 pool lock serializes it (no concurrency race),
+    # but running native torch/torchvision off the main thread on a rotating
+    # pool thread can still fault. With VF_DISABLE_RENDER_OFFLOAD=1 we run the
+    # render INLINE on the event loop (no thread hop). If the -11 stops -> the
+    # threading is the trigger; if it persists -> the image/processor itself.
+    try:
+        import os as _vf_os
+        import renderers.client as _rc_off
+        _vf_orig_mo = _rc_off._maybe_offload
+        async def _vf_maybe_offload(renderer, fn, _o=_vf_orig_mo):
+            if _vf_os.environ.get("VF_DISABLE_RENDER_OFFLOAD"):
+                return fn()
+            return await _o(renderer, fn)
+        _rc_off._maybe_offload = _vf_maybe_offload
+        logging.getLogger("vf.looptime").info(
+            "renderers _maybe_offload toggle installed (VF_DISABLE_RENDER_OFFLOAD)"
+        )
+    except Exception as _e:
+        logging.getLogger("vf.looptime").warning("_maybe_offload toggle: %r", _e)
+
     # CRASH LOCALIZATION: the -11 is in the renderer cold-build native path.
     # Wrap each native sub-call to print a BC breadcrumb to stdout (the only
     # channel that survives a worker crash). The last 'BC X START' with no
