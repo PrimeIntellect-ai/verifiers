@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import json
 import os
 import shlex
 import shutil
@@ -16,25 +15,7 @@ from typing import Annotated, Literal, Protocol
 from pydantic import Field
 
 from .config import Config
-from .types import JsonData
 
-_INSTALL_CURL = (
-    "{ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } "
-    "|| { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } "
-    "|| apk add --no-cache curl ca-certificates"
-)
-_DOWNLOAD_UV = (
-    "{ command -v curl >/dev/null 2>&1 && "
-    "curl -LsSf https://astral.sh/uv/install.sh | sh; } "
-    "|| { command -v wget >/dev/null 2>&1 && "
-    "wget -qO- https://astral.sh/uv/install.sh | sh; }"
-)
-_ENSURE_UV = (
-    'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
-    "command -v uv >/dev/null 2>&1 "
-    "|| pip install -q uv 2>/dev/null "
-    f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
-)
 _SUBPROCESS_ENV = (
     "PATH",
     "HOME",
@@ -168,26 +149,6 @@ class Runtime(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not support background commands."
         )
-
-    async def run_uv_script(
-        self,
-        script: str | bytes,
-        *,
-        input: JsonData | None = None,
-        env: dict[str, str] | None = None,
-        timeout: float | None = None,
-    ) -> CommandResult:
-        token = uuid.uuid4().hex
-        script_path = f"_vf_{token}.py"
-        await self.write(
-            script_path, script.encode() if isinstance(script, str) else script
-        )
-        command = f"{_ENSURE_UV}; uv run {shlex.quote(script_path)}"
-        if input is not None:
-            input_path = f"_vf_{token}.json"
-            await self.write(input_path, json.dumps(input).encode())
-            command = f"{command} {shlex.quote(input_path)}"
-        return await self.run(["sh", "-c", command], env=env, timeout=timeout)
 
     async def __aenter__(self) -> "Runtime":
         await self.start()

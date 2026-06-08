@@ -168,9 +168,10 @@ matches:
   runtime-placed MCP servers be reached from other runtimes without a host-local
   URL leak.
 
-Nano also strengthened `run_uv_script(...)` for bare task images by bootstrapping
-`uv` through `pip`, `curl`/`wget`, `apt`, or `apk`. v1 mirrors that because
-Harbor-style images often lack the Python tooling expected by ordinary examples.
+Nano also strengthened `run_uv_script(...)` for bare task images. v1 does not
+mirror that helper as a runtime contract. Script execution is just one caller
+pattern built from `write(...)` plus `run(...)`; keeping it out of `Runtime`
+avoids a parallel framework path for dependency and program launch semantics.
 
 Nano's current eval runner added durable incremental `results.jsonl`, resolved
 `config.toml`, deterministic shuffle, and a rich dashboard that reads live
