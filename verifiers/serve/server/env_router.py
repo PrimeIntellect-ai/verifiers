@@ -412,16 +412,18 @@ class EnvRouter:
                     f"Worker {worker_id} (pid={worker.process.pid}) died "
                     f"(exitcode={exitcode}), restarting [crashfile={fault_info}]"
                 )
-                # The JSON logger truncates messages; raw stdout writes are
-                # captured verbatim (the faulthandler watchdog dumps proved it).
-                # So relay the crash file RAW to stdout, bracketed for grepping.
+                # Relay the crash file as base64 chunks: the content is often
+                # JSON-looking lines that the log pipeline re-parses/truncates,
+                # and raw newlines get cut. base64 (no quotes/newlines/braces)
+                # survives intact; reassemble + decode offline.
                 if fault:
-                    import sys as _sys
-                    _sys.stdout.write(
-                        f"\n===CRASHDUMP-BEGIN w{worker_id} pid={worker.process.pid}===\n"
-                        f"{fault}\n===CRASHDUMP-END===\n"
-                    )
-                    _sys.stdout.flush()
+                    import base64 as _b64
+                    _enc = _b64.b64encode(fault.encode("utf-8", "replace")).decode("ascii")
+                    for _j in range(0, len(_enc), 180):
+                        self.logger.warning(
+                            f"CRASHB64 w{worker_id} {_j // 180:03d} {_enc[_j:_j + 180]}"
+                        )
+                    self.logger.warning(f"CRASHB64 w{worker_id} END {len(_enc)}")
                 await self.restart_worker(worker_id)
             elif (
                 now - worker.last_heartbeat > self.worker_heartbeat_timeout
