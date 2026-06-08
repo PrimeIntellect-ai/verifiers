@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -8,7 +9,7 @@ import verifiers.v1 as vf
 
 from .servers.user import UserConfig
 
-DEFAULT_USER_MODEL = "openai/gpt-4.1-mini"
+DEFAULT_USER_MODEL = "openai/openai/gpt-4.1-mini"
 DEFAULT_USER_BASE_URL = "https://api.pinference.ai/api/v1"
 DEFAULT_USER_API_KEY_VAR = "PRIME_API_KEY"
 DEFAULT_MAX_STEPS = 30
@@ -30,8 +31,7 @@ class Tau2TasksetConfig(vf.TasksetConfig):
 
 class Tau2Task(vf.Task):
     domain: str
-    system_prompt: str
-    tau2_task: vf.JsonData
+    tau2_task_json: str
     tau2_user: vf.JsonData
 
 
@@ -71,7 +71,7 @@ class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
         now = get_now()
         simulation = SimulationRun(
             id=state.id,
-            task_id=task.task_id or task.tau2_task["id"],
+            task_id=task.task_id,
             start_time=now,
             end_time=now,
             duration=state.timing.total,
@@ -80,7 +80,7 @@ class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
         )
         reward_info = evaluate_simulation(
             simulation=simulation,
-            task=TauTask.model_validate(task.tau2_task),
+            task=TauTask.model_validate_json(task.tau2_task_json),
             evaluation_type=EvaluationType.ALL,
             solo_mode=False,
             domain=task.domain,
@@ -169,7 +169,11 @@ def load_tasks(
             "system_prompt": system_prompt,
             "max_turns": max_turns,
             "prompt": [],
-            "tau2_task": task.model_dump(mode="json", exclude_none=True),
+            "tau2_task_json": json.dumps(
+                task.model_dump(mode="json", exclude_none=True),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
             "tau2_user": {
                 "model": user_model,
                 "args": user_args,

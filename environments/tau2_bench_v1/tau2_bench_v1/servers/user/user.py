@@ -21,6 +21,7 @@ from tau2.user.user_simulator import UserSimulator
 from tau2.utils.utils import get_now
 
 import verifiers.v1 as vf
+from verifiers.utils.client_utils import load_prime_config
 
 from .config import UserConfig
 
@@ -57,15 +58,15 @@ class User(vf.User[UserConfig]):
         hidden=True,
         args={
             "domain": "task.domain",
-            "tau2_task": "task.tau2_task",
+            "tau2_task_json": "task.tau2_task_json",
             "tau2_user": "task.tau2_user",
         },
         sets={
             "tau2": "state.extras.tau2",
         },
     )
-    def setup(self, domain: str, tau2_task: dict, tau2_user: dict) -> dict:
-        tau_task = TauTask.model_validate(tau2_task)
+    def setup(self, domain: str, tau2_task_json: str, tau2_user: dict) -> dict:
+        tau_task = TauTask.model_validate_json(tau2_task_json)
         environment = registry.get_env_constructor(domain)()
         self.environment = environment
         self.task_id = tau_task.id
@@ -95,7 +96,7 @@ class User(vf.User[UserConfig]):
 
     @vf.user(
         args={
-            "tau2_task": "task.tau2_task",
+            "tau2_task_json": "task.tau2_task_json",
             "completion": "state.completion",
         },
         sets={
@@ -103,8 +104,8 @@ class User(vf.User[UserConfig]):
             "stop_condition": "state.stop_condition",
         },
     )
-    def respond(self, tau2_task: dict, completion: list[dict]) -> dict:
-        _ = TauTask.model_validate(tau2_task)
+    def respond(self, tau2_task_json: str, completion: list[dict]) -> dict:
+        _ = TauTask.model_validate_json(tau2_task_json)
         if self.user_simulator is None or self.user_state is None:
             raise RuntimeError("Tau2 user simulator has not started.")
         if not completion:
@@ -238,7 +239,9 @@ class User(vf.User[UserConfig]):
         api_key_var = data.get("api_key_var")
         if isinstance(api_key_var, str) and api_key_var:
             api_key = os.environ.get(api_key_var)
-            if api_key is not None:
+            if not api_key and api_key_var == "PRIME_API_KEY":
+                api_key = str(load_prime_config().get("api_key") or "")
+            if api_key:
                 llm_args.setdefault("api_key", api_key)
         return model, llm_args
 
