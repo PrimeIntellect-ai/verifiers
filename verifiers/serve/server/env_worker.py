@@ -616,6 +616,32 @@ class EnvWorker:
         # pod-local file: then EVERY crash writer — faulthandler, torch/c10's C++
         # backtrace, glibc abort, vLLM — lands in that file, which the router
         # reads after death. Robust to whichever handler wins.
+        # WORKER-SIDE CRASH RELAY: the router's relay (logger/base64/raw) all get
+        # truncated by the log transport; only a WORKER's own stdout comes through
+        # full (that's how the faulthandler watchdog frames survived). So before
+        # this (restarted) worker sets up its own crash file, scan /tmp for the
+        # DEAD predecessor's crash dump and print it to OUR stdout line-by-line,
+        # prefixed so the transport won't re-parse the embedded JSON log lines.
+        try:
+            import glob as _glob
+            _mypid = os.getpid()
+            for _cp in sorted(_glob.glob("/tmp/vf_crash_*.txt")):
+                if f"_{_mypid}.txt" in _cp:
+                    continue  # not our own (created below)
+                try:
+                    with open(_cp) as _cf:
+                        _cc = _cf.read()
+                    if _cc.strip():
+                        print(f"===PRIORCRASH BEGIN {_cp} bytes={len(_cc)}===", flush=True)
+                        for _cl in _cc.splitlines():
+                            print(f"PRIORCRASH| {_cl}", flush=True)
+                        print("===PRIORCRASH END===", flush=True)
+                    os.remove(_cp)
+                except Exception as _ce:
+                    print(f"PRIORCRASH read-err {_cp} {_ce!r}", flush=True)
+        except Exception as _e:
+            print(f"PRIORCRASH scan-err {_e!r}", flush=True)
+
         global _FAULTHANDLER_FILE
         try:
             _FAULTHANDLER_FILE = open(f"/tmp/vf_crash_{os.getpid()}.txt", "w", buffering=1)
