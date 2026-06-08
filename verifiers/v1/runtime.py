@@ -612,15 +612,15 @@ class PrimeRuntime(Runtime):
         env: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> CommandResult:
-        _ = timeout
         if self.client is None or self.sandbox_id is None:
             raise RuntimeError("Prime runtime has not started.")
-        result = await self.client.run_background_job(
+        run = self.client.run_background_job(
             self.sandbox_id,
             shlex.join(command),
             working_dir=cwd or self.config.workdir,
             env=env or {},
         )
+        result = await (asyncio.wait_for(run, timeout) if timeout is not None else run)
         return CommandResult(
             returncode=int(result.exit_code or 0),
             stdout=result.stdout or "",

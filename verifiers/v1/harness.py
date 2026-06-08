@@ -468,11 +468,7 @@ class Harness(Generic[ConfigT]):
                         }
                     )
                     env_toolsets = MCPToolRegistry(toolsets)
-                    try:
-                        await env_toolsets.__aenter__()
-                    except BaseException:
-                        await env_toolsets.__aexit__(None, None, None)
-                        raise
+                    await env_toolsets.__aenter__()
                     self._env_toolsets = env_toolsets
                     started_toolsets = True
                 if self._env_user is None:
@@ -481,11 +477,7 @@ class Harness(Generic[ConfigT]):
                         {} if user is None or user.scope != "env" else {"user": user}
                     )
                     env_user = MCPToolRegistry(user_toolsets)
-                    try:
-                        await env_user.__aenter__()
-                    except BaseException:
-                        await env_user.__aexit__(None, None, None)
-                        raise
+                    await env_user.__aenter__()
                     self._env_user = env_user
                 self._env_scope_count = 1
             except BaseException:

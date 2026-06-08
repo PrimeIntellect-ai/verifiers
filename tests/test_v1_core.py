@@ -1254,7 +1254,7 @@ async def test_env_user_startup_failure_closes_started_env_toolsets(
     with pytest.raises(RuntimeError, match="user failed"):
         await harness.start_env_scope()
 
-    assert events == ["enter:toolsets", "enter:user", "exit:user", "exit:toolsets"]
+    assert events == ["enter:toolsets", "enter:user", "exit:toolsets"]
     assert harness._env_toolsets is None
     assert harness._env_user is None
 
@@ -2026,6 +2026,28 @@ async def test_v1_prime_runtime_public_url_exposes_sandbox_port() -> None:
     runtime.sandbox_id = "sandbox-id"
 
     assert await runtime.public_url(8765) == "https://sandbox.example/mcp"
+
+
+@pytest.mark.asyncio
+async def test_v1_prime_runtime_run_honors_timeout() -> None:
+    class FakePrimeClient:
+        async def run_background_job(
+            self,
+            sandbox_id: str,
+            command: str,
+            *,
+            working_dir: str,
+            env: dict[str, str],
+        ) -> None:
+            _ = sandbox_id, command, working_dir, env
+            await asyncio.sleep(1)
+
+    runtime = vf.PrimeRuntime(vf.PrimeRuntimeConfig())
+    runtime.client = FakePrimeClient()
+    runtime.sandbox_id = "sandbox-id"
+
+    with pytest.raises(TimeoutError):
+        await runtime.run(["sleep", "10"], timeout=0.001)
 
 
 @pytest.mark.asyncio
