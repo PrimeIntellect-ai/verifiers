@@ -334,11 +334,13 @@ class EnvWorker:
         while True:
             await asyncio.sleep(interval)
 
-            # Re-arm faulthandler so a lazily-imported native lib (torch/vLLM)
-            # that installed its own fatal handler can't permanently override
-            # ours — the last enable() wins. Writes to fd 2 (redirected to the
-            # crash file in run_worker).
+            # Force-RE-REGISTER faulthandler so a lazily-imported native lib
+            # (torch/vLLM) that installed its own SIGSEGV handler can't keep it:
+            # enable() while already-enabled is a no-op (won't re-sigaction), so
+            # disable() first. Last sigaction wins -> ours. Writes to fd 2
+            # (redirected to the crash file in run_worker).
             try:
+                faulthandler.disable()
                 faulthandler.enable(all_threads=True)
             except Exception:
                 pass
