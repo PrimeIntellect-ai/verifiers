@@ -473,6 +473,8 @@ async def run_sandbox_command(
     task: Task,
     state: State,
     runtime: Runtime,
+    after_command: Callable[[SandboxLease, SandboxCommandResult], Awaitable[None]]
+    | None = None,
 ) -> State:
     validate_program_bindings(program)
     sandbox_data = sandbox_config.data()
@@ -553,6 +555,10 @@ async def run_sandbox_command(
                 f"Sandbox command exited with {result.exit_code}: {result.stderr}"
             )
         state._set_stop_condition("command_completed")
+        if after_command is not None:
+            await after_command(lease, result)
+        await runtime.collect_artifacts(task, state, sandbox_lease=lease)
+        runtime_state["artifacts_collected"] = True
         return state
 
 

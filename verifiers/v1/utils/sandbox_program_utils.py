@@ -89,24 +89,31 @@ async def run_sandbox_python_program(
         tool_defs=runtime.tool_defs(state),
     )
     command_record = state.get("command")
-    await run_sandbox_command(runner_program, sandbox_config, task, state, runtime)
-    lease = runtime.active_program_sandbox_lease(state)
-    if lease is None:
-        raise RuntimeError("Sandbox Python program has no active sandbox lease.")
-    output = json.loads(
-        await read_sandbox_artifact(lease.client, lease.id, STATE_OUTPUT_PATH)
+
+    async def apply_state_output(lease, _result) -> None:
+        output = json.loads(
+            await read_sandbox_artifact(lease.client, lease.id, STATE_OUTPUT_PATH)
+        )
+        if not isinstance(output, dict):
+            raise RuntimeError("Sandbox Python program did not return state.")
+        patch = dict(cast(ConfigData, output))
+        apply_internal_state_patch(state, patch, mode=mode)
+        patch_artifacts = patch.pop("artifacts", None)
+        if isinstance(patch_artifacts, dict):
+            state.setdefault("artifacts", {})
+            state["artifacts"].update(dict(patch_artifacts))
+        state.update(patch)
+        if command_record is not None:
+            state["command"] = command_record
+
+    await run_sandbox_command(
+        runner_program,
+        sandbox_config,
+        task,
+        state,
+        runtime,
+        after_command=apply_state_output,
     )
-    if not isinstance(output, dict):
-        raise RuntimeError("Sandbox Python program did not return state.")
-    patch = dict(cast(ConfigData, output))
-    apply_internal_state_patch(state, patch, mode=mode)
-    patch_artifacts = patch.pop("artifacts", None)
-    if isinstance(patch_artifacts, dict):
-        state.setdefault("artifacts", {})
-        state["artifacts"].update(dict(patch_artifacts))
-    state.update(patch)
-    if command_record is not None:
-        state["command"] = command_record
     return state
 
 

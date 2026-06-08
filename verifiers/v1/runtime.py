@@ -1069,7 +1069,13 @@ class Runtime:
             self.release_scoped_tools("group", state)
             await self.release_model_client(state, group=True)
 
-    async def collect_artifacts(self, task: Task, state: State) -> None:
+    async def collect_artifacts(
+        self,
+        task: Task,
+        state: State,
+        *,
+        sandbox_lease: "SandboxLease | None" = None,
+    ) -> None:
         artifacts = self.runtime_artifacts(task, state)
         if not artifacts:
             return
@@ -1081,7 +1087,9 @@ class Runtime:
                 raise ValueError(f"Artifact {name!r} is already present on state.")
         values = await asyncio.gather(
             *(
-                self.collect_runtime_artifact(artifact, task, state)
+                self.collect_runtime_artifact(
+                    artifact, task, state, sandbox_lease=sandbox_lease
+                )
                 for artifact in artifacts.values()
             )
         )
@@ -2210,9 +2218,16 @@ class Runtime:
             return spec.parse(f.read())
 
     async def collect_runtime_artifact(
-        self, artifact: RuntimeArtifact, task: Task, state: State
+        self,
+        artifact: RuntimeArtifact,
+        task: Task,
+        state: State,
+        *,
+        sandbox_lease: "SandboxLease | None" = None,
     ) -> object:
-        sandbox_lease = self.active_artifact_sandbox_lease(artifact.owner, state)
+        sandbox_lease = self.active_artifact_sandbox_lease(
+            artifact.owner, state, program_sandbox_lease=sandbox_lease
+        )
         owner_requires_sandbox = (
             isinstance(artifact.owner, Toolset | User)
             and artifact.owner.sandbox is not None
@@ -2231,21 +2246,25 @@ class Runtime:
         )
 
     def active_artifact_sandbox_lease(
-        self, owner: ArtifactOwner, state: State
+        self,
+        owner: ArtifactOwner,
+        state: State,
+        *,
+        program_sandbox_lease: "SandboxLease | None" = None,
     ) -> "SandboxLease | None":
         if not isinstance(owner, Toolset | User):
-            return self.active_program_sandbox_lease(state)
+            return program_sandbox_lease or self.active_program_sandbox_lease(state)
         from .utils.sandbox_utils import sandbox_owner_key, tool_sandbox_key
 
         sandbox = owner.sandbox
         if sandbox is None:
-            return self.active_program_sandbox_lease(state)
+            return program_sandbox_lease or self.active_program_sandbox_lease(state)
         if sandbox == "program":
-            return self.active_program_sandbox_lease(state)
+            return program_sandbox_lease or self.active_program_sandbox_lease(state)
         if not isinstance(sandbox, SandboxConfig):
             raise TypeError("Owner sandbox must be SandboxConfig or 'program'.")
         if sandbox.prefer == "program":
-            lease = self.active_program_sandbox_lease(state)
+            lease = program_sandbox_lease or self.active_program_sandbox_lease(state)
             if lease is not None:
                 return lease
         scope = sandbox.scope

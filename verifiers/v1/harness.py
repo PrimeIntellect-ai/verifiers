@@ -255,7 +255,8 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                     state = await self.run_program(task, state)
                     await self.runtime.is_completed(task, state)
                 state._set_stop_condition("program_completed")
-                await self.runtime.collect_artifacts(task, state)
+                if not state.runtime_state().pop("artifacts_collected", False):
+                    await self.runtime.collect_artifacts(task, state)
             except Error as e:
                 self.record_error(state, e)
             await self.runtime.update_rollout(task, state)
