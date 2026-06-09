@@ -3,7 +3,6 @@ from typing import Any, Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import (
-    ChatCompletion,
     ChatCompletionAssistantMessageParam,
 )
 from openai.types.chat.chat_completion_message_function_tool_call_param import (
@@ -108,6 +107,14 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         round-trip. Cached so we pay the ``AutoTokenizer.from_pretrained``
         cost once.
         """
+        # Honor the explicit tokenizer override (renderer_model_name) so model
+        # aliases don't break bridge stitching; fall back to the served model.
+        override = (
+            getattr(self._config, "renderer_model_name", None)
+            if self._config is not None
+            else None
+        )
+        model = override or model
         cache: dict[str, Any] = self.__dict__.setdefault("_tokenizer_cache", {})
         if model in cache:
             return cache[model]
@@ -310,11 +317,14 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                     continue
                 body[key] = value
 
-        return await self.client.post(
+        # Use the sidecar-aware post (same as the vLLM TITO + MITO paths) so any
+        # routed_experts blob is streamed, not JSON-parsed. dynamo_chat opts into
+        # extra_fields=["engine_data"] only, so routed_experts is normally absent.
+        return await post_chat_completion_with_routed_experts_sidecar(
+            self.client,
             "/chat/completions",
             body=body,
-            cast_to=ChatCompletion,
-            options={"headers": extra_headers} if extra_headers else {},
+            extra_headers=extra_headers,
         )
 
     async def get_prompt_ids(
@@ -611,14 +621,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         """
         import asyncio
 
-        # Prefer the explicit tokenizer override so model aliases don't silently
-        # disable turn-2+ TITO (fall back to the served model name).
-        tok_model = (
-            getattr(self._config, "renderer_model_name", None) or model
-            if self._config is not None
-            else model
-        )
-        tokenizer = self._get_local_tokenizer(tok_model)
+        tokenizer = self._get_local_tokenizer(model)
         add_generation_prompt = bool(extra_kwargs.get("add_generation_prompt", True))
         chat_template_kwargs = dict(extra_kwargs.get("chat_template_kwargs") or {})
 
