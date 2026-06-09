@@ -19,7 +19,7 @@ from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.errors import ProgramError, RolloutError
-from verifiers.v1.interception import InterceptionServer
+from verifiers.v1.interception import InterceptionServer, RolloutLimits
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, make_runtime
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
@@ -49,7 +49,7 @@ class Rollout:
         runtime_config: RuntimeConfig,
         harness_timeout: float | None = None,
         scoring_timeout: float | None = None,
-        max_turns: int | None = None,
+        limits: RolloutLimits | None = None,
     ) -> None:
         self.task = task
         self.taskset = taskset
@@ -58,7 +58,7 @@ class Rollout:
         self.runtime_config = runtime_config
         self.harness_timeout = harness_timeout
         self.scoring_timeout = scoring_timeout
-        self.max_turns = max_turns
+        self.limits = limits or RolloutLimits()
         self.phase = Phase.SETUP
         """Lifecycle phase for display (see `Phase`); advanced through the rollout, and
         set to DONE by the Episode once group scoring has run."""
@@ -92,7 +92,7 @@ class Rollout:
         )
         try:
             async with InterceptionServer(
-                self.ctx, trace, stops, self.max_turns
+                self.ctx, trace, stops, self.limits
             ) as server:
                 await runtime.start()
                 endpoint = f"{await runtime.expose(server.port)}/v1"
