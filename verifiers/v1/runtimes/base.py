@@ -46,6 +46,20 @@ class ProgramResult:
     stderr: str
 
 
+def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
+    """A Modal-style GPU spec -> (type, count) for providers that want them split:
+    "A100" -> ("A100", 1), "A100:2" -> ("A100", 2), "2" -> (None, 2) (count only,
+    provider-chosen type), None/"" -> (None, 0)."""
+    if not gpu:
+        return None, 0
+    head, _, tail = gpu.partition(":")
+    if tail:
+        return head, int(tail)
+    if head.isdigit():
+        return None, int(head)
+    return head, 1
+
+
 # `stop()` frees a runtime's external resource on the normal path (the rollout's `finally`).
 # A Ctrl-C / SIGTERM can cancel that `finally` mid-teardown, so runtimes are tracked in
 # `_LIVE` and freed by a *synchronous* `atexit` hook (`cleanup`) — sync because the event

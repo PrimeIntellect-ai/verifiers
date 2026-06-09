@@ -20,9 +20,9 @@ from verifiers.v1.runtimes.base import ProgramResult, Runtime
 logger = logging.getLogger(__name__)
 
 
-# Modal's max sandbox lifetime (24h); "auto" timeout requests it. Sandboxes are created
-# with a `sleep infinity` entrypoint so they stay alive for `exec` until we terminate them.
-_MAX_TIMEOUT_MINUTES = 24 * 60
+# Modal's max sandbox lifetime (24h in seconds); "auto" timeout requests it. Sandboxes are
+# created with a `sleep infinity` entrypoint so they stay alive for `exec` until terminated.
+_MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 # Shared Modal app every rollout's sandbox attaches to (created on first lookup).
 _APP_NAME = "verifiers-v1"
 
@@ -34,19 +34,20 @@ class ModalConfig(BaseConfig):
     network_access: bool = True
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
-    gpu_type: str | None = None
-    """GPU model when gpu_count > 0 (Modal requires a type, e.g. "A100", "H100")."""
-    timeout: int | Literal["auto"] = 360
-    """Max sandbox lifetime in minutes (default 6h; or "auto" = the highest Modal supports,
+    timeout: int | Literal["auto"] = 21600
+    """Max sandbox lifetime in seconds (default 6h; or "auto" = the highest Modal supports,
     24h). A hard backstop: the sandbox self-terminates even if local cleanup is skipped."""
-    # Resources, mirroring the provider defaults (also settable per-task via
-    # Task.resources, with precedence cli/toml > task > this default).
-    cpu_cores: float = 1.0
-    memory_gb: float = 2.0
-    gpu_count: int = 0
-    disk_gb: float = 5.0
-    """Advisory disk request. Modal sandboxes have no per-sandbox size knob, so this is
-    accepted (so a task can declare it without a warning) but not enforced."""
+    # Resources, in Modal's native units (also settable per-task via Task.resources, with
+    # precedence cli/toml > task > this default).
+    cpu: float = 1.0
+    """CPU cores."""
+    memory: int = 2048
+    """Memory in MB."""
+    gpu: str | None = None
+    """GPU spec, e.g. "A100" or "A100:2"."""
+    disk: int = 5120
+    """Disk in MB. Modal sandboxes have no disk knob, so this is accepted (so a task can
+    declare it without a warning) but not enforced."""
 
 
 class ModalRuntime(Runtime):
@@ -62,21 +63,11 @@ class ModalRuntime(Runtime):
     def descriptor(self) -> str | None:
         return self._sandbox_id
 
-    def _gpu(self) -> str | None:
-        """Modal's `gpu` string (e.g. "A100:2"), or None for CPU-only."""
-        if self.config.gpu_count <= 0:
-            return None
-        if not self.config.gpu_type:
-            raise ProgramError(
-                "modal gpu_count > 0 requires gpu_type (e.g. 'A100', 'H100')"
-            )
-        return f"{self.config.gpu_type}:{self.config.gpu_count}"
-
     async def start(self) -> None:
         import modal
 
         timeout = (
-            _MAX_TIMEOUT_MINUTES
+            _MAX_TIMEOUT_SECONDS
             if self.config.timeout == "auto"
             else self.config.timeout
         )
@@ -89,12 +80,12 @@ class ModalRuntime(Runtime):
                 name="v1-program",
                 image=modal.Image.from_registry(self.config.image),
                 workdir=self.config.workdir,
-                cpu=self.config.cpu_cores,
-                memory=int(self.config.memory_gb * 1024),  # Modal memory is MB
-                gpu=self._gpu(),
+                cpu=self.config.cpu,
+                memory=self.config.memory,
+                gpu=self.config.gpu,
                 region=self.config.region,
                 block_network=not self.config.network_access,
-                timeout=timeout * 60,  # Modal timeout is seconds
+                timeout=timeout,
             )
             self._sandbox_id = self._sandbox.object_id
             logger.info(

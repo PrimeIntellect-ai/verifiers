@@ -16,7 +16,7 @@ from typing import Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import ProgramResult, Runtime, parse_gpu
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +25,17 @@ class DockerConfig(BaseConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
     workdir: str = "/app"
-    cpu_cores: float | None = None
-    """Pin the container to this many CPUs (docker `--cpus`). None = unlimited."""
-    memory_gb: float | None = None
-    """Hard memory limit in GB (docker `--memory`). None = unlimited."""
-    gpu_count: int | None = None
-    """Expose this many GPUs (docker `--gpus`; needs the nvidia container toolkit).
-    None/0 = none."""
-    disk_gb: float | None = None
-    """Advisory disk request. Docker has no portable per-container size limit, so this
-    is accepted (so a task can declare it without a warning) but not enforced."""
+    # Resources in Modal's units (also settable per-task via Task.resources).
+    cpu: float | None = None
+    """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
+    memory: int | None = None
+    """Hard memory limit in MB (docker `--memory`). None = unlimited."""
+    gpu: str | None = None
+    """GPU spec, e.g. "A100" or "2" (docker `--gpus` uses the count; needs the nvidia
+    container toolkit). None = none."""
+    disk: int | None = None
+    """Advisory disk request in MB. Docker has no portable per-container size limit, so
+    this is accepted (so a task can declare it without a warning) but not enforced."""
 
 
 async def docker(*args: str) -> ProgramResult:
@@ -87,12 +88,13 @@ class DockerRuntime(Runtime):
             )
         self._container = f"vf-{uuid.uuid4().hex[:12]}"
         limits: list[str] = []
-        if self.config.cpu_cores is not None:
-            limits += ["--cpus", str(self.config.cpu_cores)]
-        if self.config.memory_gb is not None:
-            limits += ["--memory", f"{self.config.memory_gb}g"]
-        if self.config.gpu_count:
-            limits += ["--gpus", str(self.config.gpu_count)]
+        if self.config.cpu is not None:
+            limits += ["--cpus", str(self.config.cpu)]
+        if self.config.memory is not None:
+            limits += ["--memory", f"{self.config.memory}m"]
+        _, gpu_count = parse_gpu(self.config.gpu)
+        if gpu_count:
+            limits += ["--gpus", str(gpu_count)]
         run = await docker(
             "run",
             "--detach",
