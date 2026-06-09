@@ -13,6 +13,7 @@ Scoring is a pure function of the trace: the model wins by guessing the secret w
 import re
 import sys
 from collections.abc import Sequence
+from typing import Literal
 
 import verifiers.v1 as vf
 
@@ -37,8 +38,14 @@ _MOVE = re.compile(r"\[(\w+)\]")
 
 
 class TextArenaConfig(vf.TasksetConfig):
-    game: str
-    """The TextArena game id (required; the working example is "Wordle-v0")."""
+    game: Literal[
+        "Wordle-v0", "Wordle-v0-hardcore", "Wordle-v0-long", "Wordle-v0-long-hardcore"
+    ]
+    """The TextArena game (required). Restricted to the Wordle family — the games tested to
+    work with this taskset's assumptions: the answer is a single secret word (seeded via the
+    `secret_word` game-state key) scored by an exact-match `[word]` guess. The working
+    example is "Wordle-v0"; the others vary word length (long = 7) and dictionary size
+    (hardcore = full English word list)."""
 
 
 class TextArenaTask(vf.Task):
@@ -100,11 +107,15 @@ def _wordle_marks(guess: str, answer: str) -> tuple[int, int]:
 class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
     def load_tasks(self) -> list[TextArenaTask]:
         # One task per word in the game's list; the eval (num_tasks / shuffle) selects.
+        # Keep only lowercase words: the hardcore lists include capitalized proper nouns,
+        # and TextArena lowercases the guess but not the stored secret, so a capitalized
+        # answer can never be matched (an unwinnable task).
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
         template = ta.make(env_id=self.config.game)
         template.reset(num_players=1)
         _, instruction = template.get_observation()
+        words = [w for w in _word_list(template) if w.isalpha() and w == w.lower()]
         return [
             TextArenaTask(
                 idx=i,
@@ -114,7 +125,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
                 answer=word,
                 game=self.config.game,
             )
-            for i, word in enumerate(_word_list(template))
+            for i, word in enumerate(words)
         ]
 
     def user(self, task: TextArenaTask) -> vf.User:
