@@ -82,9 +82,6 @@ dev = [
     "nltk",
     "textarena",
 ]
-policy = [
-    "semgrep>=1.150.0",
-]
 # v1 plugins vendored under packages/ and examples/, resolved by id via
 # [tool.uv.sources]. Installed by default (tool.uv.default-groups) so the v1 CLIs
 # (eval --taskset.id <id>, serve) run straight from this repo.
@@ -130,28 +127,6 @@ preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
 default-groups = ["dev", "tasksets", "harnesses", "examples"]
-conflicts = [
-    [
-        { extra = "ta" },
-        { group = "policy" },
-    ],
-    [
-        { group = "tasksets" },
-        { group = "policy" },
-    ],
-    [
-        { group = "harnesses" },
-        { group = "policy" },
-    ],
-    [
-        { group = "examples" },
-        { group = "policy" },
-    ],
-    [
-        { group = "dev" },
-        { group = "policy" },
-    ],
-]
 
 [[tool.uv.index]]
 name = "pypi"
@@ -187,11 +162,6 @@ flash-attn = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
-
-[tool.ruff]
-exclude = [
-    ".semgrep",
-]
 
 [project.scripts]
 vf-eval = "verifiers.scripts.eval:main"

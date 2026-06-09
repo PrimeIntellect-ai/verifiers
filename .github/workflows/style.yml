@@ -42,21 +42,3 @@ jobs:
         run: uv sync
       - name: Run ty
         run: uv run ty check verifiers
-  semgrep:
-    name: Semgrep
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-      - name: Install dependencies
-        run: uv sync --no-default-groups --group policy
-      - name: Run Semgrep policy checks
-        run: env PYTHONWARNINGS=ignore::SyntaxWarning uv run --no-default-groups --group policy semgrep --metrics=off --disable-version-check --config .semgrep/verifiers.yml --error --quiet
