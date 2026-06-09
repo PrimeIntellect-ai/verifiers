@@ -18,6 +18,7 @@ from verifiers.v1.clients import (
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import group_reward, metric, reward, stop
 from verifiers.v1.env import EnvConfig, Environment, TimeoutConfig
+from verifiers.v1.retries import RetryConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.errors import ModelError, ProgramError, RolloutError, ToolError
@@ -121,6 +122,7 @@ __all__ = [
     "PrimeConfig",
     "Environment",
     "EnvConfig",
+    "RetryConfig",
     "TimeoutConfig",
     "Episode",
     "Rollout",

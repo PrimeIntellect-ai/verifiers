@@ -21,6 +21,7 @@ from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
+from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     RuntimeConfig,
@@ -52,6 +53,7 @@ class EnvConfig(BaseConfig):
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
     timeout: TimeoutConfig = TimeoutConfig()
+    retry: RetryConfig = RetryConfig()
     max_turns: int | None = None
     """Max model turns per rollout (None = no limit). Enforced by the framework (the
     interception server refuses turns past it), so it applies to any harness — turn
@@ -162,7 +164,7 @@ class Environment:
             )
             for _ in range(n)
         ]
-        return Episode(rollouts, self.taskset)
+        return Episode(rollouts, self.taskset, retry=self.config.retry)
 
     @contextlib.asynccontextmanager
     async def shared_tools(self, tasks: list[Task]):
