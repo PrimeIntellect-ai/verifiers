@@ -1,7 +1,7 @@
 """The taskset: produces typed tasks and owns scoring.
 
 A `Taskset` is the data + judgement half of an environment. It yields typed
-`Task`s, may expose tools via `tool_servers`, and defines rewards/metrics as
+`Task`s, may expose tools via `tools`, and defines rewards/metrics as
 decorated methods. All task framing lives in each task's user prompt (baked in by
 `load_tasks`); the harness drives control flow.
 
@@ -23,14 +23,15 @@ from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.tools import ToolServer
+from verifiers.v1.tools import Tools
+from verifiers.v1.user import User
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, SubprocessConfig
 from verifiers.v1.task import TaskT
 from verifiers.v1.trace import Trace
 
 
 class ToolsConfig(BaseConfig):
-    """How a taskset's `tool_servers` are run (`colocated` and `shared` are mutually
+    """How a taskset's `tools` are run (`colocated` and `shared` are mutually
     exclusive; reachability — localhost vs tunnel — is then inferred):
       - colocated: in the harness's runtime, per rollout (localhost; `runtime` ignored).
       - shared:    one instance for the whole eval, in its own `runtime`.
@@ -76,10 +77,18 @@ class Taskset(Generic[TaskT, ConfigT]):
     def load_tasks(self) -> list[TaskT]:
         raise NotImplementedError
 
-    def tool_servers(self, task: TaskT) -> list[ToolServer]:
+    def tools(self, task: TaskT) -> list[Tools]:
         """MCP servers exposing this task's tools, launched in the runtime by the
         harness. Empty by default; override to give a task tools."""
         return []
+
+    def user(self, task: TaskT) -> User | None:
+        """A user simulator for this task — structurally a tool server (an MCP server
+        with a runtime), but driven by the framework, not exposed to the model. After
+        each model turn the interception server calls its `respond` tool and injects the
+        reply as a user turn. None by default; override to make a task a simulated
+        multi-turn conversation (e.g. a TextArena game)."""
+        return None
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Score one rollout: run all `@metric` then `@reward` over its trace,

@@ -191,7 +191,5 @@ class Environment:
         if not (tools.shared and tasks):
             yield {}
             return
-        async with serve_shared(
-            self.taskset.tool_servers(tasks[0]), tools.runtime
-        ) as urls:
+        async with serve_shared(self.taskset.tools(tasks[0]), tools.runtime) as urls:
             yield urls

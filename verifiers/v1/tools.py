@@ -1,12 +1,12 @@
 """Tools: how a task gives the harness tools, via tool servers it declares.
 
-A taskset returns `ToolServer`s from `Taskset.tool_servers`. A server is either a
+A taskset returns `Tools`s from `Taskset.tools`. A server is either a
 single-file uv script the harness runs (`script` — its only runtime dep is `uv`, which
 resolves the script's PEP 723 inline deps, so it runs in any runtime: host, the harness's
 runtime when colocated, or its own) or an already-running remote endpoint (`url`, e.g.
 deepwiki). The server binds the port passed via `MCP_PORT`.
 
-`serve_mcp` brings a task's servers up for a rollout — colocated in the harness's runtime
+`serve_tools` brings a task's servers up for a rollout — colocated in the harness's runtime
 (reached via localhost) or in their own `tools.runtime` (reached via that runtime's
 `public_url`, or the harness runtime's `expose` for a tunnel) — and yields `{name: url}`;
 `serve_shared` brings up shared ones once per eval. `run_mcp_server` is the server-side
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class ToolServer:
+class Tools:
     """A tool server exposing tools to the model (as `<name>_<tool>`). Set exactly one
     of `script` (a single-file uv script we run) or `url` (already-running remote)."""
 
@@ -94,7 +94,7 @@ def _free_port() -> int:
     raise ProgramError("could not find a free port in [3000, 9000)")
 
 
-async def serve_in_runtime(server: ToolServer, runtime: Runtime, port: int) -> None:
+async def serve_in_runtime(server: Tools, runtime: Runtime, port: int) -> None:
     """Run `server` inside `runtime` on `port` (background) and wait until it serves.
     A `script` runs via uv (its deps come from the script); a `command` must already be
     runnable in the runtime."""
@@ -127,7 +127,7 @@ async def _resolve_url(tool_runtime: Runtime, agent_runtime: Runtime, port: int)
 
 
 @contextlib.asynccontextmanager
-async def serve_shared(servers: list[ToolServer], tool_runtime_config: RuntimeConfig):
+async def serve_shared(tools: list[Tools], tool_runtime_config: RuntimeConfig):
     """Start shared tool servers ONCE for a whole eval (each in its own `tools.runtime`)
     and yield `{name: url}` reachable by every rollout's harness — a prime tool runtime
     publishes its port (works for any harness), a host one is reached at localhost (works
@@ -136,7 +136,7 @@ async def serve_shared(servers: list[ToolServer], tool_runtime_config: RuntimeCo
     tool_runtimes: list[Runtime] = []
     urls: dict[str, str] = {}
     try:
-        for server in servers:
+        for server in tools:
             if server.url:
                 urls[server.name] = server.url
                 continue
@@ -156,8 +156,8 @@ async def serve_shared(servers: list[ToolServer], tool_runtime_config: RuntimeCo
 
 
 @contextlib.asynccontextmanager
-async def serve_mcp(
-    servers: list[ToolServer],
+async def serve_tools(
+    tools: list[Tools],
     agent_runtime: Runtime,
     colocated: bool = False,
     tool_runtime_config: RuntimeConfig | None = None,
@@ -168,7 +168,7 @@ async def serve_mcp(
     tool_runtimes: list[Runtime] = []  # per-rollout tool runtimes to tear down
     urls: dict[str, str] = {}
     try:
-        for server in servers:
+        for server in tools:
             if server.url:  # already running remotely
                 urls[server.name] = server.url
                 logger.info("tool server '%s' (remote): %s", server.name, server.url)

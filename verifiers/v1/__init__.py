@@ -31,7 +31,8 @@ from verifiers.v1.loaders import (
     task_type,
     taskset_config_type,
 )
-from verifiers.v1.tools import ToolServer, run_mcp_server
+from verifiers.v1.tools import Tools, run_mcp_server
+from verifiers.v1.user import User
 from verifiers.v1.runtimes import (
     DockerConfig,
     PrimeConfig,
@@ -135,8 +136,10 @@ __all__ = [
     "taskset_config_type",
     "harness_config_type",
     # mcp
-    "ToolServer",
+    "Tools",
     "run_mcp_server",
+    # user simulator
+    "User",
 ]
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is

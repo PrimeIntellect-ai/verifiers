@@ -1,0 +1,13 @@
+# terminal-bench-2-v1 — the harbor taskset pinned to Terminal-Bench 2. Needs the `harbor`
+# CLI (`uv tool install harbor`) and docker; enable_bash gives the agent the shell tool.
+#
+#   uv run eval @ configs/terminal-bench-2.toml
+num_tasks = 10
+
+[taskset]
+id = "terminal-bench-2-v1"
+
+[harness]
+id = "default"
+runtime = { type = "docker" }
+enable_bash = true
