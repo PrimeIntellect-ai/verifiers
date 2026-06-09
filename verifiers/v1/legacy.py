@@ -43,8 +43,18 @@ from verifiers.v1.types import (
 
 logger = logging.getLogger(__name__)
 
+_FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
+
 
 # --- v0 RolloutOutput -> v1 Trace mapping -----------------------------------
+
+
+def _as_dict(obj: Any) -> Any:
+    """v0 rollout objects are pydantic models in-process (messages, ``Response``); coerce
+    to plain dicts so the mapping reads them whether they arrive as objects or dicts."""
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    return obj
 
 
 def _text(content: Any) -> str:
@@ -63,6 +73,7 @@ def _tool_calls(raw: Any) -> list[ToolCall] | None:
         return None
     calls: list[ToolCall] = []
     for tc in raw:
+        tc = _as_dict(tc)
         if not isinstance(tc, dict):
             continue
         fn = tc.get("function", tc)  # OpenAI shape: {id, function: {name, arguments}}
@@ -79,6 +90,7 @@ def _tool_calls(raw: Any) -> list[ToolCall] | None:
 def _to_v1_messages(msgs: Any) -> list:
     out: list = []
     for m in msgs or []:
+        m = _as_dict(m)
         if not isinstance(m, dict):
             continue
         role = m.get("role")
@@ -104,16 +116,20 @@ def _to_v1_messages(msgs: Any) -> list:
     return out
 
 
-def _to_v1_response(raw: Any, model: str) -> Response:
-    raw = raw or {}
-    msg = raw.get("message", {}) if isinstance(raw, dict) else {}
-    usage_raw = raw.get("usage") if isinstance(raw, dict) else None
+def _to_v1_response(raw: Any, model: str, tokens: TurnTokens | None = None) -> Response:
+    raw = _as_dict(raw)
+    raw = raw if isinstance(raw, dict) else {}
+    msg = _as_dict(raw.get("message"))
+    msg = msg if isinstance(msg, dict) else {}
+    usage_raw = raw.get("usage")
     usage = None
     if isinstance(usage_raw, dict) and "prompt_tokens" in usage_raw:
         usage = Usage(
             prompt_tokens=int(usage_raw.get("prompt_tokens") or 0),
             completion_tokens=int(usage_raw.get("completion_tokens") or 0),
         )
+    # v0 records finish_reason on the response message; v1 puts it on the response.
+    finish = msg.get("finish_reason") or raw.get("finish_reason")
     return Response(
         id=str(raw.get("id") or ""),
         created=int(raw.get("created") or 0),
@@ -123,8 +139,9 @@ def _to_v1_response(raw: Any, model: str) -> Response:
             reasoning_content=msg.get("reasoning_content"),
             tool_calls=_tool_calls(msg.get("tool_calls")),
         ),
-        finish_reason=raw.get("finish_reason"),
+        finish_reason=finish if finish in _FINISH_REASONS else None,
         usage=usage,
+        tokens=tokens,
     )
 
 
@@ -161,18 +178,26 @@ def _timing(raw: Any) -> Timing:
 
 
 def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
-    """Map a v0 ``RolloutOutput`` into a v1 ``Trace``. The three training-critical token
-    fields (prompt_ids / completion_ids / completion_logprobs) map 1:1; ``is_truncated`` is
-    a computed v1 field, so we rely on the final turn's ``finish_reason`` / stop condition."""
-    trajectory = [
-        Turn(
-            prompt=_to_v1_messages(step.get("prompt")),
-            response=_to_v1_response(step.get("response"), str(out.get("model") or "")),
-            tokens=_to_v1_tokens(step.get("tokens")),
+    """Map a v0 ``RolloutOutput`` into a v1 ``Trace``, preserving the meta a native v1
+    trace carries: per-turn prompt messages, the response message (content / reasoning /
+    tool calls), ``finish_reason`` and ``usage``, the token ids/logprobs, and the task's
+    system prompt / instruction / answer. ``is_truncated`` is a computed v1 field derived
+    from the final turn's ``finish_reason`` and the stop condition."""
+    model = str(out.get("model") or "")
+    trajectory: list[Turn] = []
+    for step in out.get("trajectory") or []:
+        if not isinstance(step, dict):
+            continue
+        # The renderer records tokens on both the turn (training reads these) and the
+        # response, mirroring the native v1 client; keep both so the trace is identical.
+        tokens = _to_v1_tokens(step.get("tokens"))
+        trajectory.append(
+            Turn(
+                prompt=_to_v1_messages(step.get("prompt")),
+                response=_to_v1_response(step.get("response"), model, tokens),
+                tokens=tokens,
+            )
         )
-        for step in (out.get("trajectory") or [])
-        if isinstance(step, dict)
-    ]
 
     error = None
     raw_error = out.get("error")
@@ -187,7 +212,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
             error = Error(type="Error", message=str(raw_error), traceback=None)
 
     trace: Trace = Trace[WireTask](
-        task=WireTask(idx=task_idx, instruction=_prompt_text(out.get("prompt"))),
+        task=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
         trajectory=trajectory,
         rewards={"reward": float(out.get("reward") or 0.0)},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
@@ -199,9 +224,26 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     return trace
 
 
-def _prompt_text(prompt: Any) -> str:
-    return "\n\n".join(
-        _text(m.get("content")) for m in (prompt or []) if isinstance(m, dict)
+def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTask:
+    """Carry the v0 prompt's meta onto the v1 task: the system message becomes
+    ``system_prompt``, the user message(s) become ``instruction``, and the reference
+    ``answer`` rides along as a taskset-extra field (``WireTask`` allows extras)."""
+    system_prompt: str | None = None
+    user_texts: list[str] = []
+    for m in prompt or []:
+        m = _as_dict(m)
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") == "system" and system_prompt is None:
+            system_prompt = _text(m.get("content"))
+        elif m.get("role") == "user":
+            user_texts.append(_text(m.get("content")))
+    extra = {"answer": answer} if answer else {}
+    return WireTask(
+        idx=task_idx,
+        instruction="\n\n".join(user_texts),
+        system_prompt=system_prompt,
+        **extra,
     )
 
 
