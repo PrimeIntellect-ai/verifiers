@@ -91,7 +91,7 @@ examples = [
     "compact",
     "gsm8k-v1", "wikispeedia-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
     "reverse-text-v1", "hello-rlm-v1", "math-env-v1", "aime24-v1",
-    "wordle-v1", "terminal-bench-2-v1",
+    "wordle-v1", "terminal-bench-2-v1", "alphabet-sort-v1",
 ]
 
 [project.optional-dependencies]
@@ -152,6 +152,7 @@ wordle-v1 = { path = "examples/tasksets/wordle_v1", editable = true }
 terminal-bench-2-v1 = { path = "examples/tasksets/terminal_bench_2_v1", editable = true }
 math-env-v1 = { path = "examples/tasksets/math_env_v1", editable = true }
 aime24-v1 = { path = "examples/tasksets/aime24_v1", editable = true }
+alphabet-sort-v1 = { path = "examples/tasksets/alphabet_sort_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)

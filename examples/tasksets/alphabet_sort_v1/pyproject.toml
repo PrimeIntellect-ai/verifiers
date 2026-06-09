@@ -1,0 +1,17 @@
+[project]
+name = "alphabet-sort-v1"
+version = "0.1.0"
+description = "alphabet-sort-v1 — maintain an alphabetically sorted list of names across turns, driven by a colocated user simulator."
+requires-python = ">=3.10"
+dependencies = ["datasets"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+    "alphabet_sort_v1.py",
+    "alphabet_sort_v1_server.py",
+    "pyproject.toml",
+]
