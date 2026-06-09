@@ -112,7 +112,11 @@ async def main() -> None:
         )
         enable_bash = os.environ.get("ENABLE_BASH", "0") == "1"
         tools = ([BASH_TOOL] if enable_bash else []) + mcp_tools
-        messages = [{"role": "user", "content": instruction}]
+        system_prompt = os.environ.get("APPEND_SYSTEM_PROMPT", "")
+        messages = (
+            [{"role": "system", "content": system_prompt}] if system_prompt else []
+        )
+        messages.append({"role": "user", "content": instruction})
         while True:
             message = await chat(messages, tools)
             messages.append(message.model_dump(exclude_none=True))

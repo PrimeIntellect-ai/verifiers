@@ -35,7 +35,8 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTask, ReverseTextConfig]):
         return [
             ReverseTextTask(
                 idx=i,
-                instruction=f"{SYSTEM}\n\n{row['prompt']}",
+                instruction=row["prompt"],
+                system_prompt=SYSTEM,
                 answer=row["prompt"][::-1],
             )
             for i, row in enumerate(rows)

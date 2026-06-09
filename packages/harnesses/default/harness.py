@@ -16,6 +16,10 @@ from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
+# Added to the system prompt only when the bash tool is enabled, so the model knows it can
+# run shell commands (a pure-text chat loop gets no harness-injected system prompt).
+BASH_SYSTEM_PROMPT = "You have access to a bash tool; use it to run shell commands."
+
 
 class DefaultHarnessConfig(HarnessConfig):
     """The built-in harness. A uv script (deps: openai, mcp), so it runs in any runtime that
@@ -30,6 +34,8 @@ class DefaultHarnessConfig(HarnessConfig):
 
 
 class DefaultHarness(Harness[DefaultHarnessConfig]):
+    APPENDS_SYSTEM_PROMPT = True  # program.py emits it as a real system message
+
     async def launch(
         self,
         ctx: RolloutContext,
@@ -39,11 +45,17 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
+        system_prompt, instruction = self.resolve_prompt(trace.task)
+        if self.config.enable_bash:
+            system_prompt = "\n\n".join(
+                p for p in (BASH_SYSTEM_PROMPT, system_prompt) if p
+            )
         env = {
             "OPENAI_BASE_URL": endpoint,
             "OPENAI_API_KEY": secret,
             "OPENAI_MODEL": ctx.model,
             "ENABLE_BASH": "1" if self.config.enable_bash else "0",
+            "APPEND_SYSTEM_PROMPT": system_prompt or "",
         }
         if mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard
@@ -51,6 +63,4 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             env["MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
-        return await runtime.run_uv_script(
-            PROGRAM_SOURCE, args=[trace.task.instruction], env=env
-        )
+        return await runtime.run_uv_script(PROGRAM_SOURCE, args=[instruction], env=env)

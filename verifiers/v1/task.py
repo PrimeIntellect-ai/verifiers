@@ -39,8 +39,11 @@ class Task(StrictBaseModel):
     description: str | None = None
     """Optional human-readable task description."""
     instruction: str
-    """The single user message shown to the model. All framing/instructions are
-    baked in here at load time — there is no separate system prompt."""
+    """The user message shown to the model (the task's question/framing)."""
+    system_prompt: str | None = None
+    """Optional system prompt. Harnesses that set `APPENDS_SYSTEM_PROMPT` emit it as a real
+    system message (or their own mechanism); others prepend it to `instruction` (with a
+    warning). See `Harness.resolve_prompt`."""
     image: str | None = None
     """Container image this task needs (e.g. its harbor environment). When set, the
     runtime must be a container (docker/prime): the Environment injects it into the

@@ -35,6 +35,10 @@ class RLMHarnessConfig(HarnessConfig):
 
 
 class RLMHarness(Harness[RLMHarnessConfig]):
+    APPENDS_SYSTEM_PROMPT = (
+        True  # rlm appends it to its prompt via RLM_APPEND_TO_SYSTEM_PROMPT
+    )
+
     async def launch(
         self,
         ctx: RolloutContext,
@@ -44,6 +48,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
+        system_prompt, instruction = self.resolve_prompt(trace.task)
         # rlm reaches the interception server via OPENAI_BASE_URL/API_KEY (its
         # provider precedence falls back to OPENAI_*), and reads RLM_* for itself.
         env = {
@@ -53,6 +58,8 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "RLM_HOME": RLM_HOME,
         }
+        if system_prompt is not None:
+            env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
         if self.config.tools is not None:
             env["RLM_TOOLS"] = ",".join(self.config.tools)
         # Install rlm onto PATH only if it isn't already there (no runtime-type
@@ -68,7 +75,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         await runtime.run(
             ["sh", "-c", f"command -v rlm >/dev/null 2>&1 || ({install})"], env
         )
-        return await runtime.run(["rlm", trace.task.instruction], env)
+        return await runtime.run(["rlm", instruction], env)
 
     @metric
     async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:

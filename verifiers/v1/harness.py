@@ -8,9 +8,10 @@ runtime and the interception server are owned by the Rollout.
 """
 
 import asyncio
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import Generic, TypeVar
+from typing import ClassVar, Generic, TypeVar
 
 from pydantic_config import BaseConfig
 
@@ -18,7 +19,10 @@ from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes import DockerConfig, ProgramResult, Runtime, RuntimeConfig
+from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
+
+logger = logging.getLogger(__name__)
 
 
 class HarnessConfig(BaseConfig):
@@ -41,8 +45,26 @@ class Harness(ABC, Generic[ConfigT]):
     """Generic over its config type, so `self.config` is fully typed in subclasses
     (e.g. `RLMHarness(Harness[RLMHarnessConfig])`)."""
 
+    APPENDS_SYSTEM_PROMPT: ClassVar[bool] = (
+        False  # emit task.system_prompt as a system message (else fold into the user message)
+    )
+
     def __init__(self, config: ConfigT) -> None:
         self.config = config
+
+    def resolve_prompt(self, task: Task) -> tuple[str | None, str]:
+        """Resolve `(system_prompt, user_instruction)` for this harness. If the harness
+        appends the system prompt natively, returns it separately; otherwise folds it into
+        the user instruction (warning that it isn't sent as a system message)."""
+        system = task.system_prompt
+        if system is None or self.APPENDS_SYSTEM_PROMPT:
+            return system if self.APPENDS_SYSTEM_PROMPT else None, task.instruction
+        logger.warning(
+            "Harness %r does not support a separate system prompt; prepending "
+            "task.system_prompt to the user instruction.",
+            self.config.id,
+        )
+        return None, f"{system}\n\n{task.instruction}"
 
     async def run(
         self,
