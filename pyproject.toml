@@ -85,6 +85,19 @@ policy = [
 ]
 
 [project.optional-dependencies]
+# v1 is vf-nano (vendored under deps/vf-nano, imported as verifiers.nano / verifiers.v1).
+# Pulls vf-nano's runtime deps + its serve transport (ZMQ + msgpack), which the v0->vf.Trace
+# bridge (verifiers.nano_bridge) needs.
+v1 = [
+    "prime-pydantic-config[toml]",
+    "openai-agents>=0.0.7",
+    "loguru>=0.7.0",
+    "mcp>=1.2",
+    "tomli-w>=1.0.0",
+    "renderers>=0.1.8.dev28",
+    "pyzmq>=27.0.0",
+    "msgpack>=1.0.0",
+]
 rg = [
     "reasoning-gym",
 ]

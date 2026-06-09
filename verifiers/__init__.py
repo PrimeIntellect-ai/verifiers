@@ -10,6 +10,13 @@ import importlib
 import os
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
+# vf-nano is vendored as a submodule under deps/vf-nano; its package is `verifiers.nano`.
+# Extend this package's search path so `verifiers.nano` (aliased as `verifiers.v1`) imports
+# straight from the submodule — one `verifiers` package, nano 1:1, no second distribution.
+_nano_root = os.path.join(os.path.dirname(__file__), os.pardir, "deps", "vf-nano", "verifiers")
+if os.path.isdir(_nano_root):
+    __path__.append(_nano_root)
+
 # early imports to avoid circular dependencies
 from .errors import *  # noqa # isort: skip
 from .types import *  # noqa # isort: skip
