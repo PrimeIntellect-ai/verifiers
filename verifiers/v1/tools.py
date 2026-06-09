@@ -1,6 +1,6 @@
 """Tools: how a task gives the harness tools, via tool servers it declares.
 
-A taskset returns `Tools`s from `Taskset.tool_servers`. A server is either a
+A taskset returns `Tools`s from `Taskset.tools`. A server is either a
 single-file uv script the harness runs (`script` — its only runtime dep is `uv`, which
 resolves the script's PEP 723 inline deps, so it runs in any runtime: host, the harness's
 runtime when colocated, or its own) or an already-running remote endpoint (`url`, e.g.
@@ -127,7 +127,7 @@ async def _resolve_url(tool_runtime: Runtime, agent_runtime: Runtime, port: int)
 
 
 @contextlib.asynccontextmanager
-async def serve_shared(servers: list[Tools], tool_runtime_config: RuntimeConfig):
+async def serve_shared(tools: list[Tools], tool_runtime_config: RuntimeConfig):
     """Start shared tool servers ONCE for a whole eval (each in its own `tools.runtime`)
     and yield `{name: url}` reachable by every rollout's harness — a prime tool runtime
     publishes its port (works for any harness), a host one is reached at localhost (works
@@ -136,7 +136,7 @@ async def serve_shared(servers: list[Tools], tool_runtime_config: RuntimeConfig)
     tool_runtimes: list[Runtime] = []
     urls: dict[str, str] = {}
     try:
-        for server in servers:
+        for server in tools:
             if server.url:
                 urls[server.name] = server.url
                 continue
@@ -157,7 +157,7 @@ async def serve_shared(servers: list[Tools], tool_runtime_config: RuntimeConfig)
 
 @contextlib.asynccontextmanager
 async def serve_tools(
-    servers: list[Tools],
+    tools: list[Tools],
     agent_runtime: Runtime,
     colocated: bool = False,
     tool_runtime_config: RuntimeConfig | None = None,
@@ -168,7 +168,7 @@ async def serve_tools(
     tool_runtimes: list[Runtime] = []  # per-rollout tool runtimes to tear down
     urls: dict[str, str] = {}
     try:
-        for server in servers:
+        for server in tools:
             if server.url:  # already running remotely
                 urls[server.name] = server.url
                 logger.info("tool server '%s' (remote): %s", server.name, server.url)

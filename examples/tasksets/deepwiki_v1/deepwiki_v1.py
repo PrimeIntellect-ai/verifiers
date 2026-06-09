@@ -43,7 +43,7 @@ class DeepWikiTaskset(vf.Taskset[DeepWikiTask, vf.TasksetConfig]):
             for i, (repo, language) in enumerate(TASKS)
         ]
 
-    def tool_servers(self, task: DeepWikiTask) -> list[vf.Tools]:
+    def tools(self, task: DeepWikiTask) -> list[vf.Tools]:
         return [vf.Tools(name="deepwiki", url=DEEPWIKI_URL)]
 
     @vf.reward(weight=1.0)

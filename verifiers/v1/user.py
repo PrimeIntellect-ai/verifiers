@@ -1,6 +1,6 @@
 """The user simulator: a first-class conversation partner, served like a tool server.
 
-A taskset registers a `User` via `Taskset.user_server` — structurally a `Tools`
+A taskset registers a `User` via `Taskset.user` — structurally a `Tools`
 (an MCP server with a runtime), exposing a single `respond` tool. Unlike a tool server,
 the user simulator is never handed to the model: the framework drives it. After each model
 turn the interception server calls `respond` with the model's last message, appends the

@@ -117,7 +117,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
             for i, word in enumerate(_word_list(template))
         ]
 
-    def user_server(self, task: TextArenaTask) -> vf.User:
+    def user(self, task: TextArenaTask) -> vf.User:
         return vf.User(
             name="user",
             command=[sys.executable, "-m", "textarena_v1.server"],

@@ -97,7 +97,7 @@ class Rollout:
             ) as server:
                 await runtime.start()
                 endpoint = f"{await runtime.expose(server.port)}/v1"
-                tool_servers = self.taskset.tool_servers(self.task)
+                tool_servers = self.taskset.tools(self.task)
                 tools = self.taskset.config.tools
                 async with (
                     serve_tools(
@@ -107,11 +107,8 @@ class Rollout:
                         tool_runtime_config=tools.runtime,
                         shared_urls=shared_urls,
                     ) as urls,
-                    serve_user(self.taskset.user_server(self.task), runtime) as respond,
+                    serve_user(self.taskset.user(self.task), runtime) as server.user,
                 ):
-                    # The interception server drives the user simulator (if any); the
-                    # harness/program stays unaware. None when the taskset has no user sim.
-                    server.user = respond
                     self.phase = (
                         Phase.RUNNING
                     )  # setup done — the harness is now driving
