@@ -53,7 +53,8 @@ class ModalConfig(BaseConfig):
 class ModalRuntime(Runtime):
     """Runs the program in a Modal sandbox; the server is reached via a tunnel."""
 
-    def __init__(self, config: ModalConfig) -> None:
+    def __init__(self, config: ModalConfig, name: str | None = None) -> None:
+        super().__init__(name)
         self.config = config
         self._sandbox = None
         self._sandbox_id: str | None = None
@@ -77,7 +78,7 @@ class ModalRuntime(Runtime):
                 "sleep",
                 "infinity",  # keep-alive entrypoint; the harness runs via `exec`
                 app=app,
-                name="v1-program",
+                name=self.name,
                 image=modal.Image.from_registry(self.config.image),
                 workdir=self.config.workdir,
                 cpu=self.config.cpu,

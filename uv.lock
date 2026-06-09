@@ -161,6 +161,17 @@ wheels = [
 ]
 
 [[package]]
+name = "alphabet-sort-v1"
+version = "0.1.0"
+source = { editable = "examples/tasksets/alphabet_sort_v1" }
+dependencies = [
+    { name = "datasets" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "datasets" }]
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -5775,6 +5786,7 @@ dev = [
 ]
 examples = [
     { name = "aime24-v1" },
+    { name = "alphabet-sort-v1" },
     { name = "code-golf-v1" },
     { name = "compact" },
     { name = "deepwiki-v1" },
@@ -5872,6 +5884,7 @@ dev = [
 ]
 examples = [
     { name = "aime24-v1", editable = "examples/tasksets/aime24_v1" },
+    { name = "alphabet-sort-v1", editable = "examples/tasksets/alphabet_sort_v1" },
     { name = "code-golf-v1", editable = "examples/tasksets/code_golf_v1" },
     { name = "compact", editable = "examples/harnesses/compact" },
     { name = "deepwiki-v1", editable = "examples/tasksets/deepwiki_v1" },

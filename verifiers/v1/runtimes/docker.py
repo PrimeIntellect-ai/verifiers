@@ -9,7 +9,6 @@ import contextlib
 import logging
 import shlex
 import subprocess
-import uuid
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -57,7 +56,8 @@ async def docker(*args: str) -> ProgramResult:
 class DockerRuntime(Runtime):
     """Runs the program in a local Docker container reachable over the host network."""
 
-    def __init__(self, config: DockerConfig) -> None:
+    def __init__(self, config: DockerConfig, name: str | None = None) -> None:
+        super().__init__(name)
         self.config = config
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._container_id: str | None = None  # docker's short id (for display)
@@ -86,7 +86,7 @@ class DockerRuntime(Runtime):
             raise RuntimeError(
                 f"docker runtime selected but the Docker daemon is not reachable: {detail}{hint}"
             )
-        self._container = f"vf-{uuid.uuid4().hex[:12]}"
+        self._container = self.name
         limits: list[str] = []
         if self.config.cpu is not None:
             limits += ["--cpus", str(self.config.cpu)]
