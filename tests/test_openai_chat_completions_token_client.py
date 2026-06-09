@@ -309,11 +309,12 @@ async def test_post_dynamo_chat_scrubs_vllm_only_and_forwards_sampling():
         tools=None,
         sampling_args={
             "temperature": 0.5,
-            "presence_penalty": 0.2,  # standard arg outside the old allowlist
+            "presence_penalty": 0.2,
+            "reasoning_effort": "high",  # arbitrary key: full parity, not an allowlist
             "extra_body": {
                 "return_token_ids": True,  # vLLM-only — must be scrubbed
                 "nvext": {"extra_fields": ["engine_data"]},
-                "cache_salt": "ckpt-1",  # passthrough must survive
+                "cache_salt": "ckpt-1",
             },
         },
         extra_headers=None,
@@ -323,6 +324,7 @@ async def test_post_dynamo_chat_scrubs_vllm_only_and_forwards_sampling():
     assert "return_token_ids" not in body
     assert body["presence_penalty"] == 0.2
     assert body["temperature"] == 0.5
+    assert body["reasoning_effort"] == "high"
     assert body["nvext"]["token_data"] == [1, 2, 3]
     assert body["nvext"]["extra_fields"] == ["engine_data"]
     assert body["cache_salt"] == "ckpt-1"

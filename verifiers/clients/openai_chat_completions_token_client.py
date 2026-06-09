@@ -284,52 +284,16 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         if tools:
             body["tools"] = tools
 
-        # Sampling params that Dynamo's chat-completions surface accepts
-        # directly. Anything else stays in extra_body and rides as an
-        # unrecognized passthrough field (validate.rs PASSTHROUGH_EXTRA_FIELDS).
-        promotable = (
-            "max_completion_tokens",
-            "max_tokens",
-            "temperature",
-            "top_p",
-            "top_k",
-            "min_p",
-            "seed",
-            "n",
-            "repetition_penalty",
-            "min_tokens",
-            "logprobs",
-            "top_logprobs",
-            "stop",
-            # Standard chat-completions sampling args (parity with the vLLM path,
-            # which spreads the full normalized sampling_args).
-            "presence_penalty",
-            "frequency_penalty",
-            "logit_bias",
-            "response_format",
-            "parallel_tool_calls",
-        )
-        for key in promotable:
-            value = sampling_args.get(key, extra_body.get(key))
-            if value is not None and key not in body:
-                body[key] = value
-
-        # vLLM-only extra_body keys Dynamo's strict validator rejects — never
-        # forward these on the dynamo_chat wire (e.g. return_token_ids, which
-        # the vLLM path uses for TITO but Dynamo 400s on).
+        # Forward the full normalized sampling_args (parity with the vLLM path,
+        # which spreads all of sampling_args), then remaining extra_body keys —
+        # minus vLLM-only keys Dynamo's strict validator rejects (return_token_ids).
+        # Unknown keys ride through the dynamo frontend's PASSTHROUGH_EXTRA_FIELDS.
         vllm_only = {"return_token_ids"}
-        # Remaining extra_body keys (cache_salt, stop_token_ids,
-        # bad_words_token_ids, ...) pass through unchanged via the dynamo
-        # frontend's PASSTHROUGH_EXTRA_FIELDS allowlist.
-        passthrough = {
-            k: v
-            for k, v in extra_body.items()
-            if k not in promotable
-            and k not in vllm_only
-            and v is not None
-            and k not in body
-        }
-        body.update(passthrough)
+        for source in (sampling_args, extra_body):
+            for key, value in source.items():
+                if value is None or key in vllm_only or key in body:
+                    continue
+                body[key] = value
 
         return await self.client.post(
             "/chat/completions",
