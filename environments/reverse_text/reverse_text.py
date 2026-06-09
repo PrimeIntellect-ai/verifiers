@@ -8,24 +8,7 @@ def load_environment(
     dataset_split: str = "train",
     system_prompt: str
     | None = "Reverse the text character-by-character. Put your answer in <reversed_text> tags.",
-    v1: bool = False,
 ) -> vf.Environment:
-    if v1:
-        from reverse_text_v1 import (
-            ReverseTextTasksetConfig,
-            load_environment as load_v1,
-        )
-
-        return load_v1(
-            config=vf.EnvConfig(
-                taskset=ReverseTextTasksetConfig(
-                    dataset_name=dataset_name,
-                    dataset_split=dataset_split,
-                    system_prompt=system_prompt,
-                )
-            )
-        )
-
     def build_dataset():
         train_dataset = load_dataset(dataset_name, split=dataset_split).map(
             lambda x: {

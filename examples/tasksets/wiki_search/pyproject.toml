@@ -1,0 +1,14 @@
+[project]
+name = "wiki-search"
+version = "0.1.0"
+description = "wiki-search — answer trivia by searching a wiki corpus (read-only MCP tools + judge)."
+requires-python = ">=3.10"
+dependencies = ["chromadb", "datasets"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["wiki_search"]
+

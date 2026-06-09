@@ -1,157 +1,122 @@
-from importlib.abc import Traversable
-from pathlib import Path
-from typing import Generic, TypeVar, cast, final
+"""The taskset: produces typed tasks and owns scoring.
 
-from datasets import Dataset
-from pydantic import AliasChoices, Field
+A `Taskset` is the data + judgement half of an environment. It yields typed
+`Task`s, may expose tools via `tool_servers`, and defines rewards/metrics as
+decorated methods. All task framing lives in each task's user prompt (baked in by
+`load_tasks`); the harness drives control flow.
 
-from .config import (
-    ConfigSource,
-    LifecycleConfig,
-)
-from .artifact import ArtifactsConfig
-from .state import State
-from .task import Task
-from .user import UserConfig
-from .utils.binding_utils import (
-    BindingSources,
-    BindingsConfig,
-    ObjectsConfig,
-)
-from .utils.prompt_utils import SystemPrompt, normalize_system_prompt
-from .utils.config_utils import (
-    coerce_config,
-    config_ref_context,
-    config_type_from_class,
-    registered_config_type,
-    register_config_type,
-)
-from .utils.runtime_owner_utils import RuntimeOwnerMixin
-from .utils.taskset_utils import (
-    dataset_from_result,
-    discover_sibling_dir,
-    prepare_task,
-    task_from_dataset_record,
-)
-from .types import (
-    JsonData,
-    Objects,
-    TaskSplit,
-    Tasks,
-)
+It is the single judgement authority, scored at two granularities (execution lives in
+the Rollout — per-rollout — and the Episode — group — which call these):
+  - `score` runs `@reward`/`@metric` over one trace (in its live runtime).
+  - `score_group` runs `@group_reward` over all the rollouts of one task at once —
+    pairwise/preference rewards that compare samples.
+
+For a heterogeneous taskset (different verification per task), have a single
+`@reward` branch on a typed task field.
+"""
+
+import asyncio
+from collections.abc import Mapping
+from typing import Generic, TypeVar
+
+from pydantic import model_validator
+from pydantic_config import BaseConfig
+
+from verifiers.v1.decorators import discover_decorated, invoke
+from verifiers.v1.tools import ToolServer
+from verifiers.v1.runtimes import Runtime, RuntimeConfig, SubprocessConfig
+from verifiers.v1.task import TaskT
+from verifiers.v1.trace import Trace
 
 
-class TasksetConfig(LifecycleConfig):
-    # Core fields configure taskset-owned loaders and runtime behavior.
-    taskset_id: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("taskset_id", "id"),
-    )
-    system_prompt: SystemPrompt = None
-    user: UserConfig | None = None
-    bindings: BindingsConfig = BindingsConfig()
-    objects: ObjectsConfig = ObjectsConfig()
-    artifacts: ArtifactsConfig = ArtifactsConfig()
+class ToolsConfig(BaseConfig):
+    """How a taskset's `tool_servers` are run (`colocated` and `shared` are mutually
+    exclusive; reachability — localhost vs tunnel — is then inferred):
+      - colocated: in the harness's runtime, per rollout (localhost; `runtime` ignored).
+      - shared:    one instance for the whole eval, in its own `runtime`.
+      - neither:   its own `runtime`, per rollout."""
 
-    @classmethod
-    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
-        super().__pydantic_init_subclass__(**kwargs)
-        field = cls.model_fields.get("taskset_id")
-        if field is not None:
-            field.validation_alias = AliasChoices("taskset_id", "id")
-            cls.model_rebuild(force=True)
+    colocated: bool = True
+    """Run each tool server inside the harness's runtime (localhost, per rollout). The
+    default: a self-contained uv-script server runs anywhere. A data-heavy server that
+    re-fetches per rollout should opt out (host-served, or `shared`)."""
+    shared: bool = False
+    """Run one tool-server instance for the whole eval, shared across rollouts (in its
+    own `runtime`). Mutually exclusive with `colocated`."""
+    runtime: RuntimeConfig = SubprocessConfig()
+    """The tool server's own runtime, used when not colocated (colocated uses the
+    harness's runtime)."""
+
+    @model_validator(mode="after")
+    def _exclusive(self) -> "ToolsConfig":
+        if self.colocated and self.shared:
+            raise ValueError("tools.colocated and tools.shared are mutually exclusive")
+        return self
+
+
+class TasksetConfig(BaseConfig):
+    """Base taskset config. Subclass to add task-generation knobs."""
+
+    id: str = ""
+    """The taskset id — the discriminator that selects this taskset (built-in registry, else
+    a package imported by id). Set via `--taskset.id`."""
+    tools: ToolsConfig = ToolsConfig()
 
 
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
 
 
-class Taskset(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
-    config: ConfigT
+class Taskset(Generic[TaskT, ConfigT]):
+    """Generic over its task and config types, so `self.config` and `load_tasks`
+    are fully typed. Subclass: implement `load_tasks`, add @reward/@metric."""
 
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        super().__init_subclass__(**kwargs)
-        config_type = config_type_from_class(
-            cls,
-            inherited=False,
-            owner_base=Taskset,
-            config_base=TasksetConfig,
-        )
-        if config_type is not None:
-            register_config_type(cls, config_type)
+    def __init__(self, config: ConfigT) -> None:
+        self.config = config
 
-    @final
-    def __init__(self, config: ConfigSource = None):
-        config_type = registered_config_type(type(self), TasksetConfig)
-        self.config = cast(ConfigT, coerce_config(config_type, config))
-        with config_ref_context(self.config):
-            self.initialize_runtime_refresh()
-            resolved_taskset_id = self.config.taskset_id
-            if resolved_taskset_id is not None and not isinstance(
-                resolved_taskset_id, str
-            ):
-                raise TypeError("taskset_id must be a string.")
-            self.taskset_id = resolved_taskset_id or type(self).__name__
-            system_prompt_value = self.load_system_prompt(self.config)
-            self.system_prompt = normalize_system_prompt(
-                system_prompt_value,
-                field_name="taskset.system_prompt",
-            )
-            self.initialize_runtime_user(self.config.user)
-            self.bindings: BindingSources = self.config.bindings.entries(
-                "taskset.bindings"
-            )
-            self.objects: Objects = self.load_objects(self.config.objects)
-            self.artifacts = self.load_artifacts(self.config.artifacts)
-            self.initialize_runtime_toolsets(self.config, self.config.toolsets)
-            self.initialize_runtime_handlers()
-        self._dataset: Dataset | None = None
-        self._eval_dataset: Dataset | None = None
+    def load_tasks(self) -> list[TaskT]:
+        raise NotImplementedError
 
-    def get_skills_dir(self) -> Traversable | Path | None:
-        return discover_sibling_dir(type(self), "skills", require_non_empty=True)
-
-    def get_upload_dirs(self) -> dict[str, Traversable | Path]:
-        skills = self.get_skills_dir()
-        return {} if skills is None else {"skills": skills}
-
-    def to_task(self, task: Task | JsonData) -> Task:
-        if isinstance(task, Task):
-            return prepare_task(task, self.taskset_id)
-        return task_from_dataset_record(task, self.taskset_id)
-
-    def load_tasks(self, split: TaskSplit = "train") -> Tasks:
-        if split not in ("train", "eval"):
-            raise ValueError(f"Unknown task split: {split}")
+    def tool_servers(self, task: TaskT) -> list[ToolServer]:
+        """MCP servers exposing this task's tools, launched in the runtime by the
+        harness. Empty by default; override to give a task tools."""
         return []
 
-    async def init_group(
-        self, task: Task, num_rollouts: int
-    ) -> tuple[list[Task], list[State]]:
-        tasks = [task for _ in range(num_rollouts)]
-        return tasks, [State.for_task(task) for task in tasks]
+    async def score(self, trace: Trace, runtime: Runtime) -> None:
+        """Score one rollout: run all `@metric` then `@reward` over its trace,
+        concurrently within each phase. Each metric is recorded in `trace.metrics`
+        (a number, or a mapping merged in); each reward (weighted) in `trace.rewards`,
+        which `trace.reward` sums. Signals declare what they need — `task`, `trace`,
+        `runtime` — so a reward is either a pure function of the trace or runs
+        read/write/exec in that (still-live) runtime, e.g. a verifier script."""
+        available = {"task": trace.task, "trace": trace, "runtime": runtime}
+        metrics = discover_decorated(self, "metric")
+        for fn, result in zip(
+            metrics, await asyncio.gather(*(invoke(fn, available) for fn in metrics))
+        ):
+            if isinstance(result, Mapping):
+                trace.record_metrics(result)
+            else:
+                trace.record_metric(fn.__name__, result)
+        rewards = discover_decorated(self, "reward")
+        for fn, result in zip(
+            rewards, await asyncio.gather(*(invoke(fn, available) for fn in rewards))
+        ):
+            trace.record_reward(fn.__name__, result, getattr(fn, "_vf_weight", 1.0))
 
-    def get_dataset(self) -> Dataset:
-        if self._dataset is None:
-            with config_ref_context(self.config):
-                self._dataset = dataset_from_result(
-                    self.load_tasks(split="train"), self.taskset_id
-                )
-        return self._dataset
-
-    def get_eval_dataset(self) -> Dataset:
-        if self._eval_dataset is None:
-            with config_ref_context(self.config):
-                self._eval_dataset = dataset_from_result(
-                    self.load_tasks(split="eval"), self.taskset_id
-                )
-        return self._eval_dataset
-
-    def __iter__(self):
-        for record in self.get_dataset():
-            yield task_from_dataset_record(dict(record), self.taskset_id)
-
-    def __len__(self) -> int:
-        return len(self.get_dataset())
-
-    def load_system_prompt(self, config: ConfigT) -> SystemPrompt:
-        return config.system_prompt
+    async def score_group(self, traces: list[Trace]) -> None:
+        """Score a group of rollouts of one task: run every `@group_reward` over all
+        the traces at once (pairwise/preference rewards), each returning one score per
+        trace, aligned to `traces`. A group reward declares what it needs — `task` (the
+        shared task) and `traces` — and compares trace metadata (anything from the
+        runtime is recorded per rollout as a `@metric` first). Scores are weighted into
+        each trace's reward, alongside the per-rollout rewards. No-op without `@group_reward`s."""
+        rewards = discover_decorated(self, "group_reward")
+        if not rewards:
+            return
+        available = {"task": traces[0].task, "traces": traces}
+        for fn, scores in zip(
+            rewards, await asyncio.gather(*(invoke(fn, available) for fn in rewards))
+        ):
+            weight = getattr(fn, "_vf_weight", 1.0)
+            for trace, score in zip(traces, scores):
+                trace.record_reward(fn.__name__, score, weight)

@@ -5,7 +5,7 @@ This directory contains automated workflows for the verifiers project.
 ## Workflows
 
 ### 1. Style (`style.yml`)
-**Purpose**: Code style checking using ruff, ty, and Semgrep policy rules.
+**Purpose**: Code style checking using ruff and ty.
 
 **Triggers**:
 - Pull requests (opened, synchronized, reopened)
@@ -13,9 +13,8 @@ This directory contains automated workflows for the verifiers project.
 
 **What it does**:
 - Runs ruff for linting and formatting checks
-- Runs ty type checks with `uv run ty check verifiers packages/tasksets/tasksets packages/harnesses/harnesses`
-- Runs Semgrep policy checks from the isolated `policy` dependency group.
-- Uses configuration from `pyproject.toml`, `.pre-commit-config.yaml`, and `.semgrep/verifiers.yml`
+- Runs ty type checks with `uv run ty check verifiers`
+- Uses configuration from `pyproject.toml` and `.pre-commit-config.yaml`
 
 ### 2. Test (`test.yml`)
 **Purpose**: Comprehensive testing with coverage reports.
@@ -36,8 +35,6 @@ This directory contains automated workflows for the verifiers project.
 
 **Workflows**:
 - `publish-verifiers.yml` publishes `verifiers` with trusted publishing. On every push to `main` it builds and publishes a pre-release (`skip-existing`), and on a pushed `vX.Y.Z` tag (or manual dispatch) it publishes that stable release and creates a GitHub release.
-- `publish-tasksets.yml` publishes `tasksets` from `tasksets-v*` tags with trusted publishing. On `main`, it creates `tasksets-v<version>` when `packages/tasksets/tasksets/__init__.py` defines `__version__` and the matching remote tag does not already exist, then builds and publishes from that tag in the same workflow run.
-- `publish-harnesses.yml` publishes `harnesses` from `harnesses-v*` tags with trusted publishing. On `main`, it creates `harnesses-v<version>` when `packages/harnesses/harnesses/__init__.py` defines `__version__` and the matching remote tag does not already exist, then builds and publishes from that tag in the same workflow run.
 - `publish-verifiers-rl.yml` publishes `verifiers-rl` from `verifiers-rl-v*` tags.
 
 ## Setting Up
@@ -55,10 +52,7 @@ To run checks locally the same way they run in CI:
 
 ```bash
 # Ty parity with CI (Python 3.13 target configured in `pyproject.toml`)
-uv run ty check verifiers packages/tasksets/tasksets packages/harnesses/harnesses
-
-# Verifiers-specific policy lint
-env PYTHONWARNINGS=ignore::SyntaxWarning uv run --no-dev --group policy semgrep --metrics=off --disable-version-check --config .semgrep/verifiers.yml --error --quiet
+uv run ty check verifiers
 
 # Tests
 uv sync

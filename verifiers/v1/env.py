@@ -1,203 +1,180 @@
-import asyncio
-import uuid
-from typing import TYPE_CHECKING, cast
+"""The environment: a taskset composed with an harness and a runtime.
 
-import verifiers as vf
-from verifiers.clients import Client
-from verifiers.types import ClientConfig
-from verifiers.types import RolloutInput, SamplingArgs
+The Environment is the eval-level composition and *resolver* — it does not itself run
+rollouts. It holds the taskset, harness, runtime config, and timeouts; lists the tasks;
+and turns one task into a runnable `Episode` of `n` `Rollout`s, resolving per task the
+runtime (image + resources, with cli/task/default precedence) and the timeouts. Execution
+lives one level down: an `Episode` runs `n` `Rollout`s of a task and scores them
+(per-rollout `@reward`/`@metric`, then cross-rollout `@group_reward`); each `Rollout`
+runs one trajectory. The taskset's `@reward`/`@metric` get the rollout's runtime
+(read/exec inside it), so a task scores correctly under any harness; `@group_reward`s
+compare a task's rollouts.
+"""
 
-from .config import Config
-from .harness import Harness, HarnessConfig
-from .state import State
-from .taskset import Taskset, TasksetConfig
-from .types import JsonData, RuntimeData
-from .utils.taskset_utils import task_from_dataset_record
+import contextlib
+import logging
 
-if TYPE_CHECKING:
-    from datasets import Dataset
+from pydantic import SerializeAsAny, model_validator
+from pydantic_config import BaseConfig
+
+from verifiers.v1.harness import HarnessConfig
+from verifiers.v1.clients import RolloutContext
+from verifiers.v1.decorators import discover_decorated
+from verifiers.v1.episode import Episode
+from verifiers.v1.rollout import Rollout
+from verifiers.v1.runtimes import (
+    RuntimeConfig,
+    SubprocessConfig,
+)
+from verifiers.v1.task import Task
+from verifiers.v1.taskset import TasksetConfig
+from verifiers.v1.tools import serve_shared
 
 
-class EnvConfig(Config):
-    taskset: TasksetConfig = TasksetConfig()
-    harness: HarnessConfig = HarnessConfig()
+class TimeoutConfig(BaseConfig):
+    """Framework-enforced wall-clock timeouts, in seconds (None = no limit)."""
 
+    rollout: float | None = None
+    """Max wall-clock for the rollout (the harness run)."""
+    scoring: float | None = None
+    """Max wall-clock for scoring — verify + rewards/metrics."""
+
+
+class EnvConfig(BaseConfig):
+    """The rollout's two peers: the taskset (data + scoring) and the harness (which
+    program drives it, and where it runs — `harness.runtime`). Both are chosen at eval
+    time, not by the env — only `taskset` is narrowed per env (to its config type,
+    inferred from `load_taskset`). Tool-server placement lives on `taskset.tools`."""
+
+    # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, DefaultHarnessConfig);
+    # without it model_dump() narrows to the base type and drops the subclass fields, so the
+    # env-server subconfig the orchestrator writes would lose taskset/harness-specific knobs.
+    taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
+    harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
+    timeout: TimeoutConfig = TimeoutConfig()
+    max_turns: int | None = None
+    """Max model turns per rollout (None = no limit). Enforced by the framework (the
+    interception server refuses turns past it), so it applies to any harness — turn
+    capping is a framework concern, never an harness or task field."""
+
+    @model_validator(mode="before")
     @classmethod
-    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
-        super().__pydantic_init_subclass__(**kwargs)
-        extra_fields = set(cls.model_fields) - set(EnvConfig.model_fields)
-        if extra_fields:
-            raise TypeError(
-                f"{cls.__name__} defines unsupported root env config fields: "
-                f"{', '.join(sorted(extra_fields))}. Put env-specific settings on "
-                "a TasksetConfig or HarnessConfig instead."
-            )
-        for field_name, expected_type in (
-            ("taskset", TasksetConfig),
-            ("harness", HarnessConfig),
+    def _resolve_plugins(cls, data):
+        """Resolve the generic `taskset` / `harness` to its specific config type by `id`, so
+        env-specific fields validate against the real plugin config (no untyped args dict)."""
+        from verifiers.v1.loaders import harness_config_type, taskset_config_type
+
+        for field, resolve, default_id in (
+            ("taskset", taskset_config_type, None),
+            ("harness", harness_config_type, "default"),
         ):
-            annotation = cls.model_fields[field_name].annotation
-            if not (
-                isinstance(annotation, type) and issubclass(annotation, expected_type)
-            ):
-                raise TypeError(
-                    f"{cls.__name__}.{field_name} must be typed as a "
-                    f"{expected_type.__name__} subclass."
+            raw = data.get(field)
+            if isinstance(raw, BaseConfig):
+                raw = raw.model_dump()
+            raw = dict(raw or {})
+            ident = raw.get("id") or default_id
+            if ident:
+                data[field] = resolve(ident).model_validate({**raw, "id": ident})
+        return data
+
+
+logger = logging.getLogger(__name__)
+
+
+class Environment:
+    def __init__(self, config: EnvConfig) -> None:
+        from verifiers.v1.loaders import load_harness, load_taskset
+
+        self.config = config
+        self.taskset = load_taskset(config.taskset)
+        self.harness = load_harness(config.harness)
+        self.harness_timeout = config.timeout.rollout
+        self.scoring_timeout = config.timeout.scoring
+        self.max_turns = config.max_turns
+        self._warned_resources: set[tuple[str, str]] = set()
+
+    def runtime_for(self, task: Task) -> RuntimeConfig:
+        """Resolve the runtime config for a task: inject the task's `image` (a task
+        with an image must run in a container — refuse subprocess), and apply the
+        task's requested `resources` to fields the runtime supports. Precedence is
+        cli/toml > task > default; a resource the runtime doesn't support warns once."""
+        config = self.harness.config.runtime
+        updates: dict = {}
+        if task.image is not None:
+            if isinstance(config, SubprocessConfig):
+                raise ValueError(
+                    f"task {task.idx!r} requires image {task.image!r}, but the subprocess "
+                    "runtime has no container; use the docker or prime runtime"
                 )
+            updates["image"] = task.image
+        for field, value in task.resources.model_dump(exclude_none=True).items():
+            spec = type(config).model_fields.get(field)
+            if spec is None:
+                key = (config.type, field)
+                if key not in self._warned_resources:
+                    self._warned_resources.add(key)
+                    logger.warning(
+                        "runtime %r doesn't support resource %r; ignoring it",
+                        config.type,
+                        field,
+                    )
+            elif (
+                getattr(config, field) == spec.default
+            ):  # still the default → task may set it
+                updates[field] = value
+            # else: cli/toml changed it from the default → it wins over the task
+        return config.model_copy(update=updates) if updates else config
 
+    def episode(self, task: Task, ctx: RolloutContext, n: int = 1) -> Episode:
+        """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime
+        (image + resources) and its timeouts (cli/toml > task > default, None = no limit),
+        build one `Rollout` per sample sharing them, and wrap them in an `Episode` (which
+        runs them and applies the taskset's `@group_reward`s across their traces).
 
-class Env(vf.Environment):
-    def __init__(
-        self,
-        *,
-        taskset: Taskset | None = None,
-        harness: Harness | None = None,
-    ):
-        if taskset is None:
-            raise TypeError("Env requires a taskset.")
-        if not isinstance(taskset, Taskset):
-            raise TypeError("Env taskset must be a Taskset.")
-        if harness is not None and not isinstance(harness, Harness):
-            raise TypeError("Env harness must be a Harness.")
-        self.taskset = taskset
-        self.harness = harness or Harness(config=HarnessConfig())
-        self.config = EnvConfig(
-            taskset=cast(TasksetConfig, self.taskset.config),
-            harness=cast(HarnessConfig, self.harness.config),
-        )
-        self.harness.taskset = self.taskset
-        self.taskset.runtime_refresh = self.harness.rebuild_runtime
-        self.harness.rebuild_runtime()
-        super().__init__(
-            dataset=self.taskset.get_dataset,
-            eval_dataset=self.taskset.get_eval_dataset,
-            rubric=vf.Rubric(),
-        )
-        self._empty_dataset_checked = False
-        self._empty_eval_dataset_checked = False
-
-    def build_dataset(self) -> "Dataset | None":
-        if self.dataset is not None:
-            return self.dataset
-        if self._empty_dataset_checked:
-            return None
-        dataset = self.taskset.get_dataset()
-        if not len(dataset):
-            self._empty_dataset_checked = True
-            return None
-        self.dataset = self._format_dataset_source(dataset)
-        return self.dataset
-
-    def build_eval_dataset(self) -> "Dataset | None":
-        if self.eval_dataset is not None:
-            return self.eval_dataset
-        if self._empty_eval_dataset_checked:
-            return None
-        eval_dataset = self.taskset.get_eval_dataset()
-        if not len(eval_dataset):
-            self._empty_eval_dataset_checked = True
-            return None
-        self.eval_dataset = self._format_dataset_source(eval_dataset)
-        return self.eval_dataset
-
-    @vf.teardown
-    async def teardown_harness(self) -> None:
-        await self.harness.teardown()
-
-    @property
-    def requires_group_rollouts(self) -> bool:
-        uses_custom_init_group = type(self.taskset).init_group is not Taskset.init_group
-        return self.harness.runtime.has_group_stage or uses_custom_init_group
-
-    @property
-    def provides_advantages(self) -> bool:
-        return self.harness.runtime.has_group_advantages
-
-    async def rollout(
-        self,
-        input: RolloutInput,
-        client: Client | ClientConfig,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
-    ) -> State:
-        task = task_from_dataset_record(cast(JsonData, input), self.taskset.taskset_id)
-        state = State.for_task(task)
-        self.apply_controls(
-            [state],
-            {
-                "client": client,
-                "model": model,
-                "sampling_args": sampling_args or {},
-                "score_rollout": self.score_rollouts,
-            },
-        )
-        return await self.harness.run(task, state)
-
-    async def _run_rollout_state(
-        self,
-        input: RolloutInput,
-        client: Client,
-        model: str,
-        sampling_args: SamplingArgs,
-    ) -> State:
-        return await self.rollout(input, client, model, sampling_args)
-
-    async def _run_group_states(
-        self,
-        group_inputs: list[RolloutInput],
-        client: Client,
-        model: str,
-        sampling_args: SamplingArgs,
-    ) -> list[vf.State]:
-        base_task = task_from_dataset_record(
-            cast(JsonData, group_inputs[0]), self.taskset.taskset_id
-        )
-        tasks, states = await self.taskset.init_group(base_task, len(group_inputs))
-        if len(tasks) != len(group_inputs) or len(states) != len(group_inputs):
+        A taskset with `@group_reward`s compares a task's rollouts, so it needs >=2 of
+        them — refuse `n < 2` there (rather than silently scoring a group of one)."""
+        if n < 2 and discover_decorated(self.taskset, "group_reward"):
             raise ValueError(
-                "Taskset.init_group must return one task/state per rollout."
+                f"taskset defines @group_reward(s), which compare a task's rollouts and "
+                f"need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
             )
-        group_key = uuid.uuid4().hex
-        for state in states:
-            state.runtime_state()["group_key"] = group_key
-        self.apply_controls(
-            states,
-            {
-                "client": client,
-                "model": model,
-                "sampling_args": sampling_args,
-                "score_rollout": self.score_rollouts,
-            },
+        runtime_config = self.runtime_for(task)
+        harness_timeout = (
+            self.harness_timeout
+            if self.harness_timeout is not None
+            else task.harness_timeout
         )
-        states = await asyncio.gather(
-            *[self.harness.run(task, state) for task, state in zip(tasks, states)]
+        scoring_timeout = (
+            self.scoring_timeout
+            if self.scoring_timeout is not None
+            else task.scoring_timeout
         )
-        try:
-            if self.score_rollouts:
-                await self.harness.score_group(tasks, states)
-        finally:
-            await self.harness.cleanup_group(tasks, states)
-        for state in states:
-            state.strip_runtime_handles()
-            state.assert_serializable()
-        return cast(list[vf.State], states)
+        rollouts = [
+            Rollout(
+                task=task,
+                taskset=self.taskset,
+                harness=self.harness,
+                ctx=ctx,
+                runtime_config=runtime_config,
+                harness_timeout=harness_timeout,
+                scoring_timeout=scoring_timeout,
+                max_turns=self.max_turns,
+            )
+            for _ in range(n)
+        ]
+        return Episode(rollouts, self.taskset)
 
-    def apply_controls(
-        self, states: list[State], controls: RuntimeData | None = None
-    ) -> list[State]:
-        if controls is None:
-            return states
-        serializable_controls = {
-            key: value for key, value in controls.items() if key != "client"
-        }
-        for state in states:
-            runtime_state = state.runtime_state()
-            client = controls.get("client")
-            self.harness.runtime.bind_model_client(
-                state,
-                cast(Client | ClientConfig | None, client)
-                if client is not None
-                else None,
-            )
-            runtime_state.update(serializable_controls)
-        return states
+    @contextlib.asynccontextmanager
+    async def shared_tools(self, tasks: list[Task]):
+        """When `tools.shared` is set, start the taskset's tool servers ONCE for the eval
+        (in their own `tools.runtime`) and yield `{name: url}` to inject into every
+        rollout — so an expensive corpus is built once, not per rollout. No-op ({}) when
+        not shared. Shared servers must be task-agnostic, so they're read off any task."""
+        tools = self.taskset.config.tools
+        if not (tools.shared and tasks):
+            yield {}
+            return
+        async with serve_shared(
+            self.taskset.tool_servers(tasks[0]), tools.runtime
+        ) as urls:
+            yield urls

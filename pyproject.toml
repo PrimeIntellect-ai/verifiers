@@ -11,7 +11,7 @@ dynamic = ["version"]  # derived from git tags via hatch-vcs
 description = "Verifiers: Environments for LLM Reinforcement Learning"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.11,<3.14"
 keywords = ["reinforcement-learning", "llm", "rl", "grpo", "environments", "multi-turn", "agents", "agentic-rl", "tool-use", "train", "eval", "harness", "verifiers", "rlvr"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -19,7 +19,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -37,8 +36,8 @@ dependencies = [
     "nest-asyncio>=1.6.0", # for jupyter notebooks
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
-    "prime-tunnel>=0.1.6",
-    "prime-sandboxes>=0.2.25",
+    "prime-tunnel>=0.1.8",
+    "prime-sandboxes>=0.2.27",
     "pydantic>=2.11.9",
     "requests",
     "rich",
@@ -59,6 +58,10 @@ dependencies = [
     "certifi",
     "prime-pydantic-config[toml]",
     "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
+    # v1 (verifiers.v1) runtime — also used by the v0 -> vf.Trace bridge (verifiers.v1.legacy)
+    "loguru>=0.7.0",
+    "tomli-w>=1.0.0",
+    "renderers>=0.1.8.dev28",
 ]
 
 [dependency-groups]
@@ -76,12 +79,18 @@ dev = [
     "stagehand>=3.0.0",
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
-    "harnesses",
-    "renderers>=0.1.8.dev28",
-    "tasksets[openenv,openreward,ta]",
+    "nltk",
+    "textarena",
 ]
-policy = [
-    "semgrep>=1.150.0",
+# v1 plugins vendored under packages/ and examples/, resolved by id via
+# [tool.uv.sources]. Installed by default (tool.uv.default-groups) so the v1 CLIs
+# (eval --taskset.id <id>, serve) run straight from this repo.
+tasksets = ["tasksets"]
+harnesses = ["harnesses"]
+examples = [
+    "compact",
+    "gsm8k", "wikispeedia", "glossary", "deepwiki", "wiki-search", "code-golf",
+    "reverse-text-v1", "hello-rlm", "math-env", "aime24",
 ]
 
 [project.optional-dependencies]
@@ -92,30 +101,10 @@ ta = [
     "nltk",
     "textarena",
 ]
-tasksets = [
-    "tasksets[openenv,openreward,ta]>=0.1.5",
-]
-harnesses = [
-    "harnesses>=0.1.2",
-]
-packages = [
-    "harnesses>=0.1.2",
-    "tasksets[openenv,openreward,ta]>=0.1.5",
-]
 browser = [
     "stagehand>=3.0.0",
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
-]
-openenv = [
-    "tasksets[openenv]>=0.1.5",
-]
-openreward = [
-    "tasksets[openreward]>=0.1.5",
-]
-nemogym = [
-    "harnesses[nemogym]>=0.1.2",
-    "tasksets[nemogym]>=0.1.5",
 ]
 renderers = [
     "renderers>=0.1.8.dev28",
@@ -137,48 +126,7 @@ rl = [
 preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
-conflicts = [
-    [
-        { extra = "openenv" },
-        { group = "policy" },
-    ],
-    [
-        { extra = "nemogym" },
-        { extra = "openenv" },
-    ],
-    [
-        { extra = "nemogym" },
-        { group = "dev" },
-    ],
-    [
-        { extra = "nemogym" },
-        { extra = "tasksets" },
-    ],
-    [
-        { extra = "nemogym" },
-        { extra = "packages" },
-    ],
-    [
-        { extra = "ta" },
-        { group = "policy" },
-    ],
-    [
-        { extra = "tasksets" },
-        { group = "policy" },
-    ],
-    [
-        { extra = "packages" },
-        { group = "policy" },
-    ],
-    [
-        { extra = "openreward" },
-        { group = "policy" },
-    ],
-    [
-        { group = "dev" },
-        { group = "policy" },
-    ],
-]
+default-groups = ["dev", "tasksets", "harnesses", "examples"]
 
 [[tool.uv.index]]
 name = "pypi"
@@ -186,8 +134,21 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
-harnesses = { path = "packages/harnesses", editable = true }
+# Shipped v1 plugins are bundled in the `tasksets` / `harnesses` packages (vendored by
+# default); example plugins are standalone under examples/.
 tasksets = { path = "packages/tasksets", editable = true }
+harnesses = { path = "packages/harnesses", editable = true }
+compact = { path = "examples/harnesses/compact", editable = true }
+hello-rlm = { path = "examples/tasksets/hello_rlm", editable = true }
+glossary = { path = "examples/tasksets/glossary", editable = true }
+deepwiki = { path = "examples/tasksets/deepwiki", editable = true }
+wikispeedia = { path = "examples/tasksets/wikispeedia", editable = true }
+wiki-search = { path = "examples/tasksets/wiki_search", editable = true }
+gsm8k = { path = "examples/tasksets/gsm8k", editable = true }
+code-golf = { path = "examples/tasksets/code_golf", editable = true }
+reverse-text-v1 = { path = "examples/tasksets/reverse_text_v1", editable = true }
+math-env = { path = "examples/tasksets/math_env", editable = true }
+aime24 = { path = "examples/tasksets/aime24", editable = true }
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
@@ -195,9 +156,6 @@ prime-tunnel = false
 prime-sandboxes = false
 prime-pydantic-config = false
 renderers = false
-openenv-core = false
-harnesses = false
-tasksets = false
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
@@ -205,13 +163,10 @@ flash-attn = [{ requirement = "torch", match-runtime = true }]
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 
-[tool.ruff]
-exclude = [
-    ".semgrep",
-]
-
 [project.scripts]
 vf-eval = "verifiers.scripts.eval:main"
+eval = "verifiers.v1.cli.eval:main"
+serve = "verifiers.v1.cli.serve:main"
 vf-gepa = "verifiers.scripts.gepa:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
@@ -304,7 +259,9 @@ unknown-argument = "warn"
 redundant-cast = "ignore"
 
 [tool.ty.src]
-exclude = ["environments", "verifiers/v1/sketch.py"]
+# verifiers/v1 is vendored (heavily typed upstream for a different checker); it is not part
+# of verifiers' ty gate. environments/ are user-authored envs, also out of scope.
+exclude = ["environments", "verifiers/v1"]
 
 [[tool.ty.overrides]]
 include = ["verifiers/envs/experimental/composable/tasksets/**"]
