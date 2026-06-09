@@ -97,8 +97,9 @@ class Usage(StrictBaseModel):
 
 
 class TurnTokens(StrictBaseModel):
-    """Token ids + sampling logprobs for one response, for training. Populated only
-    by the renderer client (which tokenizes client-side); None otherwise."""
+    """Token ids + sampling logprobs for one response, for training. Populated by the
+    renderer client (client-side tokenization) or the chat client (parsed from vLLM's
+    token ids); None when the provider returns neither."""
 
     prompt_ids: list[int] = Field(default_factory=list)
     completion_ids: list[int] = Field(default_factory=list)
@@ -115,7 +116,7 @@ class Response(StrictBaseModel):
     finish_reason: FinishReason
     usage: Usage | None = None
     tokens: TurnTokens | None = None
-    """Client-side token ids + logprobs (renderer client only)."""
+    """Token ids + logprobs for training (renderer client, or chat client via vLLM)."""
 
 
 # --- sampling -----------------------------------------------------------------
