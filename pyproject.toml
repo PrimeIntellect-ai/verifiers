@@ -36,6 +36,7 @@ dependencies = [
     "nest-asyncio>=1.6.0", # for jupyter notebooks
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
+    "modal>=1.4.0",
     "prime-tunnel>=0.1.8",
     "prime-sandboxes>=0.2.27",
     "pydantic>=2.11.9",
