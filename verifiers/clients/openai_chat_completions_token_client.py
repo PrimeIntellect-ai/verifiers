@@ -621,16 +621,19 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         """
         import asyncio
 
-        tokenizer = self._get_local_tokenizer(model)
         add_generation_prompt = bool(extra_kwargs.get("add_generation_prompt", True))
         chat_template_kwargs = dict(extra_kwargs.get("chat_template_kwargs") or {})
 
+        # Load the tokenizer inside the worker thread: a cache miss runs the
+        # synchronous AutoTokenizer.from_pretrained, which must not block the loop.
         if isinstance(messages, str):
             def _encode_text() -> list[int]:
+                tokenizer = self._get_local_tokenizer(model)
                 return list(tokenizer.encode(messages, add_special_tokens=False))
             return await asyncio.to_thread(_encode_text)
 
         def _encode_chat() -> list[int]:
+            tokenizer = self._get_local_tokenizer(model)
             ids = tokenizer.apply_chat_template(
                 messages,
                 tools=tools,
