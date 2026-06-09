@@ -11,7 +11,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from verifiers.v1.runtimes.base import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import ProgramResult, Runtime, _register
 from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
 from verifiers.v1.runtimes.subprocess import SubprocessConfig, SubprocessRuntime
@@ -23,10 +23,13 @@ RuntimeConfig = Annotated[
 
 def make_runtime(config: RuntimeConfig) -> Runtime:
     if isinstance(config, PrimeConfig):
-        return PrimeRuntime(config)
-    if isinstance(config, DockerConfig):
-        return DockerRuntime(config)
-    return SubprocessRuntime(config)
+        runtime: Runtime = PrimeRuntime(config)
+    elif isinstance(config, DockerConfig):
+        runtime = DockerRuntime(config)
+    else:
+        runtime = SubprocessRuntime(config)
+    _register(runtime)  # track for the atexit teardown backstop
+    return runtime
 
 
 __all__ = [

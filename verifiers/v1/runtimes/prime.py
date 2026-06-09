@@ -81,7 +81,7 @@ class PrimeRuntime(Runtime):
         try:
             sandbox = await self._client.create(
                 CreateSandboxRequest(
-                    name="v1-program",
+                    name="vf-program",
                     docker_image=self.config.image,
                     network_access=self.config.network_access,
                     vm=self.config.vm,
@@ -187,6 +187,16 @@ class PrimeRuntime(Runtime):
             )
         except Exception as e:
             raise ProgramError(f"write {path!r}: {e}") from e
+
+    def cleanup(self) -> None:
+        # Synchronous atexit backstop: stop the (already sync) tunnels. The sandbox is
+        # deleted by the async `stop` on the normal path; if shutdown cut the rollout's
+        # `finally` short and we only reach here, the sandbox self-terminates via its
+        # server-side max-lifetime — a sync delete isn't possible through the async client.
+        for tunnel in self._tunnels:
+            with contextlib.suppress(Exception):
+                tunnel.sync_stop()
+        self._tunnels = []
 
     async def stop(self) -> None:
         # Best-effort, idempotent teardown: each step is independent so one failure
