@@ -40,7 +40,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DATASET_NAME = "PolarSeeker/OpenSeeker-v1-Data"
 DEFAULT_SPLIT = "train"
-DEFAULT_TRAJECTORY_CORRECTNESS = None
 DEFAULT_ANSWER_FILE = "/task/answer.txt"
 DEFAULT_WORKDIR = "/workspace"
 DEFAULT_JUDGE_BASE_URL = "https://api.pinference.ai/api/v1"
@@ -281,9 +280,6 @@ class OpenSeekerTaskSet(SandboxTaskSet):
         self,
         dataset_name: str = DEFAULT_DATASET_NAME,
         split: str = DEFAULT_SPLIT,
-        trajectory_correctness: str | None = DEFAULT_TRAJECTORY_CORRECTNESS,
-        min_tool_calls: int | None = None,
-        max_tool_calls: int | None = None,
         include_trajectory: bool = False,
         filter_fn: str | None = None,
         ds_keep_in_memory: bool | None = False,
@@ -299,27 +295,8 @@ class OpenSeekerTaskSet(SandboxTaskSet):
         judge_api_key_var: str = DEFAULT_JUDGE_API_KEY_VAR,
         judge_sampling_args: dict[str, Any] | None = None,
     ) -> None:
-        if trajectory_correctness == "all":
-            trajectory_correctness = None
-        if trajectory_correctness not in {"Correct", "Incorrect", None}:
-            raise ValueError(
-                "trajectory_correctness must be 'Correct', 'Incorrect', 'all', or None"
-            )
-        if min_tool_calls is not None and min_tool_calls < 0:
-            raise ValueError("min_tool_calls must be non-negative")
-        if max_tool_calls is not None and max_tool_calls < 0:
-            raise ValueError("max_tool_calls must be non-negative")
-        if (
-            min_tool_calls is not None
-            and max_tool_calls is not None
-            and min_tool_calls > max_tool_calls
-        ):
-            raise ValueError("min_tool_calls cannot exceed max_tool_calls")
         self.dataset_name = dataset_name
         self.split = split
-        self.trajectory_correctness = trajectory_correctness
-        self.min_tool_calls = min_tool_calls
-        self.max_tool_calls = max_tool_calls
         self.include_trajectory = include_trajectory
         self.ds_keep_in_memory = ds_keep_in_memory
         self.ds_num_proc = ds_num_proc
@@ -335,12 +312,9 @@ class OpenSeekerTaskSet(SandboxTaskSet):
         self._judge_base_url = judge_base_url
         self._judge_api_key_var = judge_api_key_var
         self._judge_sampling_args = dict(judge_sampling_args or {})
-        name_parts = ["search", "openseeker"]
-        if trajectory_correctness is not None:
-            name_parts.append(trajectory_correctness.lower())
         super().__init__(
             dataset=self._build_dataset,
-            name="/".join(name_parts),
+            name="search/openseeker",
             filter_fn=filter_fn,
         )
 
@@ -364,22 +338,9 @@ class OpenSeekerTaskSet(SandboxTaskSet):
         rows: list[dict[str, Any]] = []
         for row_index, row in enumerate(raw):
             correctness = row.get("trajectory correctness")
-            if (
-                self.trajectory_correctness is not None
-                and correctness != self.trajectory_correctness
-            ):
-                continue
             tool_calls = row.get("number of tool calls")
             if not isinstance(tool_calls, int):
                 tool_calls = None
-            if self.min_tool_calls is not None and (
-                tool_calls is None or tool_calls < self.min_tool_calls
-            ):
-                continue
-            if self.max_tool_calls is not None and (
-                tool_calls is None or tool_calls > self.max_tool_calls
-            ):
-                continue
             question = str(row.get("question") or "").strip()
             answer = str(row.get("answer") or "").strip()
             if not question or not answer:

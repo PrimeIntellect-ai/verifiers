@@ -4,9 +4,10 @@ Composable search taskset for [`PolarSeeker/OpenSeeker-v1-Data`](https://hugging
 
 OpenSeeker v1 data contains synthesized deep-search QA pairs plus trajectories generated with `search` and `visit` tools. The public OpenSeeker evaluator scores only the final answer: it sends the question, gold answer, and model response to an LLM judge and expects `A` for correct or `B` for incorrect. This backend preserves that binary semantic answer-judge contract.
 
-By default, the taskset uses the full dataset. The `trajectory_correctness`
-argument filters the quality label of the stored OpenSeeker source trajectory,
-not the validity of the question or gold answer.
+By default, the taskset uses the full dataset. Use the shared `filter_fn`
+argument for row subsets such as source trajectory quality or tool-call count.
+The `trajectory_correctness` metadata describes the stored OpenSeeker source
+trajectory, not the validity of the question or gold answer.
 
 ## Usage
 
@@ -14,6 +15,16 @@ not the validity of the question or gold answer.
 from verifiers.envs.experimental.composable.tasksets.search import make_search_taskset
 
 taskset = make_search_taskset(backend="openseeker")
+
+correct_source_trajectories = make_search_taskset(
+    backend="openseeker",
+    filter_fn="lambda x: x['info']['trajectory_correctness'] == 'Correct'",
+)
+
+shorter_source_trajectories = make_search_taskset(
+    backend="openseeker",
+    filter_fn="lambda x: (x['info']['number_of_tool_calls'] or 0) <= 20",
+)
 ```
 
 ## Arguments
@@ -22,9 +33,7 @@ taskset = make_search_taskset(backend="openseeker")
 |---|---:|---|
 | `dataset_name` | `PolarSeeker/OpenSeeker-v1-Data` | Hugging Face dataset name. |
 | `split` | `train` | Dataset split. |
-| `trajectory_correctness` | `None` | Keep rows with this source trajectory label. Use `None` or `all` for all rows. |
-| `min_tool_calls` | `None` | Optional lower bound for `number of tool calls`. |
-| `max_tool_calls` | `None` | Optional upper bound for `number of tool calls`. |
+| `filter_fn` | `None` | Optional composable taskset filter over normalized rows. |
 | `include_trajectory` | `False` | Include the large source trajectory in task metadata. |
 | `answer_file` | `/task/answer.txt` | Final answer path in the sandbox. |
 | `judge_model` | `openai/gpt-5.4-mini` | OpenAI-compatible model used for binary answer judging. |

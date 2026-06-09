@@ -225,7 +225,6 @@ class RedSearcherTaskSet(SandboxTaskSet):
         self,
         dataset_name: str = DEFAULT_DATASET_NAME,
         split: str = DEFAULT_SPLIT,
-        difficulty: str | None = None,
         filter_fn: str | None = None,
         ds_keep_in_memory: bool | None = True,
         ds_num_proc: int | None = None,
@@ -242,13 +241,8 @@ class RedSearcherTaskSet(SandboxTaskSet):
         judge_max_retries: int = 5,
         use_exact_match_shortcut: bool = True,
     ) -> None:
-        if difficulty not in {None, "all", "easy", "medium", "hard"}:
-            raise ValueError(
-                "difficulty must be one of None, 'all', 'easy', 'medium', or 'hard'"
-            )
         self.dataset_name = dataset_name
         self.split = split
-        self.difficulty = difficulty
         self.ds_keep_in_memory = ds_keep_in_memory
         self.ds_num_proc = ds_num_proc
         self.answer_file = answer_file
@@ -265,10 +259,9 @@ class RedSearcherTaskSet(SandboxTaskSet):
         self._judge_sampling_args = dict(judge_sampling_args or {})
         self._judge_max_retries = judge_max_retries
         self._use_exact_match_shortcut = use_exact_match_shortcut
-        label = difficulty or "all"
         super().__init__(
             dataset=self._build_dataset,
-            name=f"search/redsearcher/{label}",
+            name="search/redsearcher",
             filter_fn=filter_fn,
         )
 
@@ -282,8 +275,6 @@ class RedSearcherTaskSet(SandboxTaskSet):
         rows: list[dict[str, Any]] = []
         for idx, row in enumerate(raw):
             difficulty = str(row.get("difficulty") or "")
-            if self.difficulty not in {None, "all"} and difficulty != self.difficulty:
-                continue
             question = str(row.get("problem") or "").strip()
             answer = str(row.get("answer") or "").strip()
             if not question or not answer:
