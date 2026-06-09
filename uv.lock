@@ -5079,6 +5079,12 @@ name = "tasksets"
 version = "0.1.0"
 source = { editable = "packages/tasksets" }
 
+[package.optional-dependencies]
+textarena = [
+    { name = "nltk" },
+    { name = "textarena" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "nltk", marker = "extra == 'textarena'", specifier = ">=3.9.2" },
@@ -5094,6 +5100,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/47/c6/ee486fd809e357697
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55", size = 28926, upload-time = "2026-02-07T10:45:32.24Z" },
 ]
+
+[[package]]
+name = "terminal-bench-2-v1"
+version = "0.1.0"
+source = { editable = "examples/tasksets/terminal_bench_2_v1" }
+dependencies = [
+    { name = "tasksets" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "tasksets" }]
 
 [[package]]
 name = "textarena"
@@ -5658,8 +5675,10 @@ examples = [
     { name = "hello-rlm-v1" },
     { name = "math-env-v1" },
     { name = "reverse-text-v1" },
+    { name = "terminal-bench-2-v1" },
     { name = "wiki-search-v1" },
     { name = "wikispeedia-v1" },
+    { name = "wordle-v1" },
 ]
 harnesses = [
     { name = "harnesses" },
@@ -5752,8 +5771,10 @@ examples = [
     { name = "hello-rlm-v1", editable = "examples/tasksets/hello_rlm_v1" },
     { name = "math-env-v1", editable = "examples/tasksets/math_env_v1" },
     { name = "reverse-text-v1", editable = "examples/tasksets/reverse_text_v1" },
+    { name = "terminal-bench-2-v1", editable = "examples/tasksets/terminal_bench_2_v1" },
     { name = "wiki-search-v1", editable = "examples/tasksets/wiki_search_v1" },
     { name = "wikispeedia-v1", editable = "examples/tasksets/wikispeedia_v1" },
+    { name = "wordle-v1", editable = "examples/tasksets/wordle_v1" },
 ]
 harnesses = [{ name = "harnesses", editable = "packages/harnesses" }]
 tasksets = [{ name = "tasksets", editable = "packages/tasksets" }]
@@ -6030,6 +6051,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/b3/8f/705086c9d734d3b66
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/07/c6fe3ad3e685340704d314d765b7912993bcb8dc198f0e7a89382d37974b/win32_setctime-1.2.0-py3-none-any.whl", hash = "sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390", size = 4083, upload-time = "2024-12-07T15:28:26.465Z" },
 ]
+
+[[package]]
+name = "wordle-v1"
+version = "0.1.0"
+source = { editable = "examples/tasksets/wordle_v1" }
+dependencies = [
+    { name = "tasksets", extra = ["textarena"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "tasksets", extras = ["textarena"] }]
 
 [[package]]
 name = "xformers"
