@@ -15,5 +15,4 @@ num_tasks = 50  # pool of seeded episodes to draw the eval's tasks from
 
 [harness]
 id = "default"
-enable_bash = false
 runtime = { type = "subprocess" }
