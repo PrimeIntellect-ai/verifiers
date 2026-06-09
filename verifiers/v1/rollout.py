@@ -25,6 +25,7 @@ from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.tools import serve_mcp
 from verifiers.v1.trace import Trace
+from verifiers.v1.user import serve_user
 
 logger = logging.getLogger(__name__)
 
@@ -98,13 +99,19 @@ class Rollout:
                 endpoint = f"{await runtime.expose(server.port)}/v1"
                 tool_servers = self.taskset.tool_servers(self.task)
                 tools = self.taskset.config.tools
-                async with serve_mcp(
-                    tool_servers,
-                    runtime,
-                    colocated=tools.colocated,
-                    tool_runtime_config=tools.runtime,
-                    shared_urls=shared_urls,
-                ) as urls:
+                async with (
+                    serve_mcp(
+                        tool_servers,
+                        runtime,
+                        colocated=tools.colocated,
+                        tool_runtime_config=tools.runtime,
+                        shared_urls=shared_urls,
+                    ) as urls,
+                    serve_user(self.taskset.user_server(self.task), runtime) as respond,
+                ):
+                    # The interception server drives the user simulator (if any); the
+                    # harness/program stays unaware. None when the taskset has no user sim.
+                    server.user = respond
                     self.phase = (
                         Phase.RUNNING
                     )  # setup done — the harness is now driving

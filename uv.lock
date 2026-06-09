@@ -5079,6 +5079,13 @@ name = "tasksets"
 version = "0.1.0"
 source = { editable = "packages/tasksets" }
 
+[package.metadata]
+requires-dist = [
+    { name = "nltk", marker = "extra == 'textarena'", specifier = ">=3.9.2" },
+    { name = "textarena", marker = "extra == 'textarena'", specifier = "==0.7.4" },
+]
+provides-extras = ["textarena"]
+
 [[package]]
 name = "tenacity"
 version = "9.1.4"

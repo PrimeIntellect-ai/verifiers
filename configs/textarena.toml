@@ -1,0 +1,17 @@
+# textarena-v1 (Wordle-v0) — a multi-turn word game driven by a user simulator.
+# The framework's interception server plays the game (a vf.User registered on the taskset);
+# the harness/program never see it. The user sim runs colocated, so use the subprocess runtime.
+#
+#   uv run eval @ configs/textarena.toml --model <small-instruct-model>
+num_tasks = 5
+num_rollouts = 2
+max_turns = 8
+
+[taskset]
+id = "textarena-v1"
+game = "Wordle-v0"
+
+[harness]
+id = "default"
+enable_bash = false
+runtime = { type = "subprocess" }

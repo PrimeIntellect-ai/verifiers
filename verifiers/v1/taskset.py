@@ -17,7 +17,7 @@ For a heterogeneous taskset (different verification per task), have a single
 
 import asyncio
 from collections.abc import Mapping
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 from pydantic import model_validator
 from pydantic_config import BaseConfig
@@ -27,6 +27,9 @@ from verifiers.v1.tools import ToolServer
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, SubprocessConfig
 from verifiers.v1.task import TaskT
 from verifiers.v1.trace import Trace
+
+if TYPE_CHECKING:
+    from verifiers.v1.user import User
 
 
 class ToolsConfig(BaseConfig):
@@ -80,6 +83,14 @@ class Taskset(Generic[TaskT, ConfigT]):
         """MCP servers exposing this task's tools, launched in the runtime by the
         harness. Empty by default; override to give a task tools."""
         return []
+
+    def user_server(self, task: TaskT) -> "User | None":
+        """A user simulator for this task — structurally a tool server (an MCP server
+        with a runtime), but driven by the framework, not exposed to the model. After
+        each model turn the interception server calls its `respond` tool and injects the
+        reply as a user turn. None by default; override to make a task a simulated
+        multi-turn conversation (e.g. a TextArena game)."""
+        return None
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Score one rollout: run all `@metric` then `@reward` over its trace,
