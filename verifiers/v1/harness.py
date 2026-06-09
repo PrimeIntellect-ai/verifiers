@@ -18,6 +18,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import ProgramError
+from verifiers.v1.ids import EnvId
 from verifiers.v1.runtimes import DockerConfig, ProgramResult, Runtime, RuntimeConfig
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
@@ -30,12 +31,19 @@ class HarnessConfig(BaseConfig):
     `TasksetConfig`: the base type names the field, the concrete subclass is resolved by id
     (no closed union)."""
 
-    id: str = "default"
-    """The harness id — the discriminator that selects this harness (built-in registry, else
-    a package imported by id). Set via `--harness.id`."""
+    id: EnvId = EnvId("default")
+    """The harness id, which selects this harness: a local package, or an
+    `org/name[@version]` package installed on demand from the Environments Hub (see
+    `EnvId`). Set via `--harness.id`."""
     runtime: RuntimeConfig = DockerConfig()
     """Where the harness runs (subprocess / docker / prime). Lives on the harness — it's
     the harness's box; tool servers have their own placement (see `TasksetConfig.tools`)."""
+
+    @property
+    def name(self) -> str:
+        """The harness's bare name (org/version stripped) — for logging + output paths.
+        Wraps `id`, which a concrete subclass may re-annotate as a plain `str`."""
+        return EnvId(self.id).name
 
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)

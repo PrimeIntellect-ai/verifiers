@@ -25,7 +25,7 @@ def output_path(config: EvalConfig) -> Path:
     if config.output_dir is not None:
         return config.output_dir
     name = (
-        f"{config.taskset.id}--{config.model.replace('/', '--')}--{config.harness.id}"
+        f"{config.taskset.name}--{config.model.replace('/', '--')}--{config.harness.name}"
     )
     return Path("outputs") / name / config.uuid
 
