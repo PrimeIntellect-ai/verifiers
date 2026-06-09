@@ -46,29 +46,25 @@ class ProgramResult:
     stderr: str
 
 
-# A runtime provisions an external resource (a /tmp workspace, a container, a remote
-# sandbox). `stop()` frees it on the normal path — it runs from the rollout's `finally`,
-# so it covers success, error, and cancellation. A catchable exit (Ctrl-C / SIGTERM) can
-# cancel that `finally` mid-teardown, so every runtime is tracked in `_LIVE` (weakly, by
-# `make_runtime`) and freed by an `atexit` hook. That hook is *synchronous*: at interpreter
-# shutdown the event loop and its thread-pool are gone, so async teardown ("cannot schedule
-# new futures") fails — hence `cleanup` is sync. A SIGKILL runs none of this; prime
-# sandboxes self-terminate via a server-side max-lifetime, a local runtime leaves a workdir.
+# `stop()` frees a runtime's external resource on the normal path (the rollout's `finally`).
+# A Ctrl-C / SIGTERM can cancel that `finally` mid-teardown, so runtimes are tracked in
+# `_LIVE` and freed by a *synchronous* `atexit` hook (`cleanup`) — sync because the event
+# loop is gone at interpreter shutdown. SIGKILL runs none of this.
 _LIVE: "weakref.WeakSet[Runtime]" = weakref.WeakSet()
 _atexit_armed = False
 
 
-def _register(runtime: "Runtime") -> None:
+def register(runtime: "Runtime") -> None:
     """Track a runtime so the atexit hook can free it if a signal cuts its `finally` short.
     Weak, so a finished rollout's runtime drops out on its own; arms the hook once."""
     global _atexit_armed
     _LIVE.add(runtime)
     if not _atexit_armed:
         _atexit_armed = True
-        atexit.register(_cleanup_live_at_exit)
+        atexit.register(cleanup_at_exit)
 
 
-def _cleanup_live_at_exit() -> None:
+def cleanup_at_exit() -> None:
     """Synchronously free any runtime still live at interpreter shutdown — a Ctrl-C /
     SIGTERM cancelled its `finally` mid-teardown. Sync on purpose (the event loop is gone);
     best-effort and idempotent (a clean `stop` already ran it)."""

@@ -11,7 +11,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from verifiers.v1.runtimes.base import ProgramResult, Runtime, _register
+from verifiers.v1.runtimes.base import ProgramResult, Runtime, register
 from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
 from verifiers.v1.runtimes.subprocess import SubprocessConfig, SubprocessRuntime
@@ -28,7 +28,7 @@ def make_runtime(config: RuntimeConfig) -> Runtime:
         runtime = DockerRuntime(config)
     else:
         runtime = SubprocessRuntime(config)
-    _register(runtime)  # track for the atexit teardown backstop
+    register(runtime)
     return runtime
 
 
