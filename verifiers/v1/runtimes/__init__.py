@@ -21,13 +21,13 @@ RuntimeConfig = Annotated[
 ]
 
 
-def make_runtime(config: RuntimeConfig) -> Runtime:
+def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
     if isinstance(config, PrimeConfig):
-        runtime: Runtime = PrimeRuntime(config)
+        runtime: Runtime = PrimeRuntime(config, name)
     elif isinstance(config, DockerConfig):
-        runtime = DockerRuntime(config)
+        runtime = DockerRuntime(config, name)
     else:
-        runtime = SubprocessRuntime(config)
+        runtime = SubprocessRuntime(config, name)
     register(runtime)
     return runtime
 

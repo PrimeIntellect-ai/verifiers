@@ -1,6 +1,6 @@
 """Local subprocess runtime: run the program on the host; server on localhost.
 
-Each rollout gets a fresh, unique `/tmp/vf-*` workspace (created on `start`, removed on
+Each rollout gets a fresh `/tmp/<name>` workspace (created on `start`, removed on
 `stop`/`cleanup`) used as the program's cwd, so concurrent local rollouts are isolated
 and trivially cleaned up. Relative `read`/`write` paths resolve against it.
 """
@@ -10,7 +10,6 @@ import contextlib
 import os
 import shutil
 import signal
-import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -33,7 +32,8 @@ class SubprocessConfig(BaseConfig):
 class SubprocessRuntime(Runtime):
     """Runs the program as a local subprocess in a unique /tmp workspace."""
 
-    def __init__(self, config: SubprocessConfig) -> None:
+    def __init__(self, config: SubprocessConfig, name: str | None = None) -> None:
+        super().__init__(name)
         self.config = config
         self.workdir: Path | None = None
         self._background: list[asyncio.subprocess.Process] = []
@@ -43,7 +43,8 @@ class SubprocessRuntime(Runtime):
         return self.workdir.name if self.workdir else None
 
     async def start(self) -> None:
-        self.workdir = Path(tempfile.mkdtemp(prefix="vf-", dir="/tmp"))
+        self.workdir = Path("/tmp") / self.name
+        self.workdir.mkdir()
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}

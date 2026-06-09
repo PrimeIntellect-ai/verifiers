@@ -80,8 +80,8 @@ class Rollout:
         self.trace = trace  # expose for the --rich dashboard
         trace.timing.generation.start = time.time()
         self.runtime = make_runtime(
-            self.runtime_config
-        )  # ref set first → always tearable-down
+            self.runtime_config, name=trace.id
+        )  # ref set first → always tearable-down; named after the rollout for traceability
         runtime = self.runtime
         stops = discover_decorated(self.taskset, "stop")
         logger.info(
