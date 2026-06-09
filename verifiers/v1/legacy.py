@@ -218,7 +218,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         is_completed=bool(out.get("is_completed", True)),
         stop_condition=out.get("stop_condition"),
-        error=error,
+        errors=[error] if error else [],
         timing=_timing(out.get("timing")),
     )
     return trace

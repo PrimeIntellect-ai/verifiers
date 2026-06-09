@@ -15,20 +15,30 @@ Each Rollout tears its own runtime down (see rollout.py), so the Episode owns no
 runtimes — only the rollouts and the scoring across them.
 """
 
+from __future__ import annotations
+
 import asyncio
 from collections.abc import Callable
 from contextlib import nullcontext
+from typing import TYPE_CHECKING
 
 from verifiers.v1.decorators import discover_decorated
+from verifiers.v1.retries import run_with_retry
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
 
+if TYPE_CHECKING:
+    from verifiers.v1.retries import RetryConfig
+
 
 class Episode:
-    def __init__(self, rollouts: list[Rollout], taskset: Taskset) -> None:
+    def __init__(
+        self, rollouts: list[Rollout], taskset: Taskset, retry: RetryConfig
+    ) -> None:
         self.rollouts = rollouts
         self.taskset = taskset
+        self.retry = retry
 
     async def run(
         self,
@@ -48,7 +58,7 @@ class Episode:
 
         async def run_one(rollout: Rollout) -> Trace:
             async with semaphore or nullcontext():
-                trace = await rollout.run(shared_urls)
+                trace = await run_with_retry(rollout, shared_urls, self.retry)
             if not group_scored:  # reward already final → don't wait for the group
                 rollout.phase = Phase.DONE
                 on_complete(trace)
