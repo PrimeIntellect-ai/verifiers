@@ -1,11 +1,12 @@
 """TextArena user simulator: the game engine as a framework-driven conversation partner.
 
-Launched by the framework as a host subprocess per rollout (a `vf.User`, structurally a
-tool server). It holds one TextArena game in memory, seeded with the rollout's secret word
-from the env the taskset injects, and serves a single `respond` tool: given the model's
-last message (a guess), it steps the game and returns the game's feedback as the next user
-message, plus whether the game is over. The interception server drives it — the harness and
-its program never see it.
+Launched by the framework as a host subprocess per rollout (a `vf.User`). It holds one
+TextArena game in memory, set up from the `TEXTARENA_INFO` the taskset injects (game id +
+the secret word to seed), and serves a single `respond` tool: given the model's last
+message it steps the game and returns the next observation as a user message, plus whether
+the episode is over. When the game ends it writes the game's own outcome
+(`env.state.rewards`) to `OUTCOME_FILE` in the runtime workspace, where the taskset's reward
+reads it back.
 
 Feedback is trimmed to the latest block (the text after `Feedback:` in the last `[GAME]`
 message) so each injected user turn stays small and doesn't duplicate the running history.
@@ -13,11 +14,13 @@ message) so each injected user turn stays small and doesn't duplicate the runnin
 
 import json
 import os
-import re
+import random
 
 from mcp.server.fastmcp import FastMCP
 
 import verifiers.v1 as vf
+
+from textarena_v1 import OUTCOME_FILE
 
 import nltk
 
@@ -29,21 +32,22 @@ nltk.download("averaged_perceptron_tagger_eng")
 
 import textarena as ta  # noqa: E402
 
-GAME = os.environ["TEXTARENA_GAME"]
-ANSWER = os.environ["TEXTARENA_ANSWER"]
+INFO = json.loads(os.environ["TEXTARENA_INFO"])
 
-env = ta.make(env_id=GAME)
-env.reset(num_players=1)
-env.state.game_state["secret_word"] = ANSWER
+env = ta.make(env_id=INFO["game"])
+# Seed the secret generically: intercept the word pick during reset so the game itself
+# selects our answer and derives all of its own state (Wordle's secret_word, Hangman's
+# board, ...), without us needing to know each game's state keys.
+_orig_choice = random.choice
+random.choice = lambda seq: (
+    INFO["answer"] if seq is env.word_list else _orig_choice(seq)
+)
+try:
+    env.reset(num_players=1)
+finally:
+    random.choice = _orig_choice
 
 mcp = FastMCP("user")
-
-
-def parse_guess(message: str) -> str:
-    """The model's latest `<guess>...</guess>` (else the whole message), passed to the game
-    verbatim — TextArena owns its own action format (Wordle expects a bracketed `[word]`)."""
-    matches = re.findall(r"<guess>(.*?)</guess>", message, re.DOTALL | re.IGNORECASE)
-    return matches[-1].strip() if matches else message.strip()
 
 
 def latest_feedback(observation: str) -> str:
@@ -53,10 +57,13 @@ def latest_feedback(observation: str) -> str:
 
 @mcp.tool()
 def respond(message: str) -> str:
-    """Step the game with the model's latest guess; return the next user message + done."""
-    env.step(parse_guess(message))
+    """Step the game with the model's move; return the next user message + done."""
+    env.step(message)  # TextArena parses the bracketed move out of the message itself
     if env.state.done:
+        reward = float((env.state.rewards or {}).get(0, 0.0))
         reason = str(env.state.game_info[0]["reason"])
+        with open(OUTCOME_FILE, "w") as f:
+            json.dump({"reward": reward, "reason": reason}, f)
         return json.dumps(
             {"messages": [{"role": "user", "content": reason}], "done": True}
         )

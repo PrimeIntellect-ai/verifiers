@@ -1,16 +1,19 @@
 """textarena_v1 — TextArena games as a v1 taskset, driven by a user simulator.
 
 Each task is one episode of a TextArena game (the working example is Wordle). The model
-plays by emitting guesses; the framework's interception server drives a `vf.User` (the game
+plays by emitting moves; the framework's interception server drives a `vf.User` (the game
 engine, see `server.py`) that replies with the game's feedback as a user turn — so a whole
 game is one rollout of alternating assistant/user turns, and the harness/program never see
 the simulator. The user simulator runs colocated in the harness's runtime (host-reachable
 for the subprocess/docker runtimes), so this taskset uses the subprocess runtime.
 
-Scoring is a pure function of the trace: the model wins by guessing the secret word.
+Scoring is game-authoritative: when the episode ends the user simulator writes the game's
+own outcome (`env.state.rewards`) to `OUTCOME_FILE` in the runtime, and the reward reads it
+back — so the taskset needs no per-game guess parsing. Everything the simulator needs to set
+up a game is carried in the task's `info` dict (game id + the secret word to seed).
 """
 
-import re
+import json
 import sys
 from collections.abc import Sequence
 from typing import Literal
@@ -27,31 +30,14 @@ except ImportError as e:
 
 SYSTEM_PROMPT = (
     "You are a competitive game player. Read the game instructions carefully and always "
-    "use the exact answer format the game requires. Think step-by-step first, then give "
-    "your move as the only square-bracketed word in your reply (e.g. [crane]) — the game "
-    "reads the first bracketed word, so don't put other words in brackets."
+    "use the exact move format the game requires. Think step-by-step first, then give your "
+    "move as the only square-bracketed token in your reply — the game reads the first "
+    "bracketed token, so don't put other words in brackets."
 )
 
-# TextArena parses the move as the FIRST bracketed token, via re.search(r"\[(\w+)\]") (see
-# Wordle/env.py) — match that exactly so the reward scores the same word the game acted on.
-_MOVE = re.compile(r"\[(\w+)\]")
-
-
-class TextArenaConfig(vf.TasksetConfig):
-    game: Literal[
-        "Wordle-v0", "Wordle-v0-hardcore", "Wordle-v0-long", "Wordle-v0-long-hardcore"
-    ]
-    """The TextArena game (required). Restricted to the Wordle family — the games tested to
-    work with this taskset's assumptions: the answer is a single secret word (seeded via the
-    `secret_word` game-state key) scored by an exact-match `[word]` guess. The working
-    example is "Wordle-v0"; the others vary word length (long = 7) and dictionary size
-    (hardcore = full English word list)."""
-
-
-class TextArenaTask(vf.Task):
-    answer: str
-    """The secret word for this episode; the user simulator's game is seeded with it."""
-    game: str
+# The user simulator writes the game's outcome here (in the runtime workspace) and the
+# reward reads it back; shared with `server.py`.
+OUTCOME_FILE = "textarena_outcome.json"
 
 
 def _word_list(env: object) -> list[str]:
@@ -70,46 +56,33 @@ def _word_list(env: object) -> list[str]:
     return [str(w) for w in words]
 
 
-def _normalize(word: str) -> str:
-    return word.strip().lower()
+class TextArenaConfig(vf.TasksetConfig):
+    game: Literal[
+        "Wordle-v0",
+        "Wordle-v0-hardcore",
+        "Wordle-v0-long",
+        "Wordle-v0-long-hardcore",
+        "Hangman-v0",
+        "Hangman-v0-hardcore",
+    ]
+    """The TextArena game (required). Restricted to the tested single-secret-word games (the
+    Wordle and Hangman families): the secret is one word drawn from the game's `word_list`,
+    and the game reports its own win/partial outcome. The working example is "Wordle-v0";
+    variants vary word length (Wordle long = 7) and dictionary size (hardcore = full English
+    word list)."""
 
 
-def _extract_guess(content: str) -> str | None:
-    """The word TextArena acts on: the first bracketed token in the message (or None)."""
-    match = _MOVE.search(content)
-    return match.group(1) if match else None
-
-
-def _guesses(trace: vf.Trace) -> list[str]:
-    """The move per assistant turn that made one, in order."""
-    moves = (_extract_guess(m.content or "") for m in trace.assistant_messages)
-    return [g for g in moves if g]
-
-
-def _wordle_marks(guess: str, answer: str) -> tuple[int, int]:
-    """(#greens, #yellows) for a guess vs the answer — standard, letter-count-aware Wordle."""
-    n = len(answer)
-    g = _normalize(guess).ljust(n)[:n]
-    a = answer.lower()
-    greens = sum(1 for i in range(n) if g[i] == a[i])
-    counts: dict[str, int] = {}
-    for i in range(n):
-        if g[i] != a[i]:
-            counts[a[i]] = counts.get(a[i], 0) + 1
-    yellows = 0
-    for i in range(n):
-        if g[i] != a[i] and counts.get(g[i], 0) > 0:
-            counts[g[i]] -= 1
-            yellows += 1
-    return greens, yellows
+class TextArenaTask(vf.Task):
+    info: dict
+    """Everything the user simulator needs to set up the game: the `game` id and the secret
+    `answer` to seed."""
 
 
 class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
     def load_tasks(self) -> list[TextArenaTask]:
-        # One task per word in the game's list; the eval (num_tasks / shuffle) selects.
-        # Keep only lowercase words: the hardcore lists include capitalized proper nouns,
-        # and TextArena lowercases the guess but not the stored secret, so a capitalized
-        # answer can never be matched (an unwinnable task).
+        # One task per (lowercase) word; the eval (num_tasks / shuffle) selects. Capitalized
+        # proper nouns in the hardcore lists are unwinnable (TextArena lowercases the guess
+        # but not the stored secret), so drop them.
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
         template = ta.make(env_id=self.config.game)
@@ -122,8 +95,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
                 name=f"{self.config.game}#{i}",
                 instruction=str(instruction),
                 system_prompt=SYSTEM_PROMPT,
-                answer=word,
-                game=self.config.game,
+                info={"game": self.config.game, "answer": word},
             )
             for i, word in enumerate(words)
         ]
@@ -132,35 +104,20 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         return vf.User(
             name="user",
             command=[sys.executable, "-m", "textarena_v1.server"],
-            env={
-                "TEXTARENA_GAME": task.game,
-                "TEXTARENA_ANSWER": task.answer,
-            },
+            env={"TEXTARENA_INFO": json.dumps(task.info)},
         )
 
     @vf.reward(weight=1.0)
-    async def correct(self, task: TextArenaTask, trace: vf.Trace) -> float:
-        answer = _normalize(task.answer)
-        return float(any(_normalize(g) == answer for g in _guesses(trace)))
-
-    @vf.reward(weight=0.2)
-    async def partial(self, task: TextArenaTask, trace: vf.Trace) -> float:
-        # Best-guess shaping (green/yellow letters), recomputed from the trace; skipped once
-        # solved (the win already scores 1.0 via `correct`).
-        guesses = _guesses(trace)
-        answer = _normalize(task.answer)
-        n = len(task.answer)
-        if not guesses or not n or any(_normalize(g) == answer for g in guesses):
+    async def game_reward(
+        self, task: TextArenaTask, trace: vf.Trace, runtime: vf.Runtime
+    ) -> float:
+        # The simulator wrote the game's own outcome to the runtime when the episode ended;
+        # a missing file means the game never finished (e.g. every move was invalid).
+        try:
+            data = await runtime.read(OUTCOME_FILE)
+        except (FileNotFoundError, OSError):
             return 0.0
-        scores = (
-            (greens + 0.5 * yellows) / n
-            for greens, yellows in (_wordle_marks(g, task.answer) for g in guesses)
-        )
-        return max(scores, default=0.0)
-
-    @vf.metric
-    async def num_guesses(self, trace: vf.Trace) -> float:
-        return float(len(_guesses(trace)))
+        return float(json.loads(data)["reward"])
 
 
 def load_taskset(config: TextArenaConfig) -> TextArenaTaskset:
