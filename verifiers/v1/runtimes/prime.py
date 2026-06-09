@@ -189,14 +189,20 @@ class PrimeRuntime(Runtime):
             raise ProgramError(f"write {path!r}: {e}") from e
 
     def cleanup(self) -> None:
-        # Synchronous atexit backstop: stop the (already sync) tunnels. The sandbox is
-        # deleted by the async `stop` on the normal path; if shutdown cut the rollout's
-        # `finally` short and we only reach here, the sandbox self-terminates via its
-        # server-side max-lifetime — a sync delete isn't possible through the async client.
+        # Synchronous atexit backstop (the async client can't run once the loop is gone):
+        # stop the already-sync tunnels and delete the sandbox via the sync client, so the
+        # costly resource isn't left to its max-lifetime. Idempotent — the async `stop`
+        # deletes it on the normal path, and a second delete just 404s (suppressed).
         for tunnel in self._tunnels:
             with contextlib.suppress(Exception):
                 tunnel.sync_stop()
         self._tunnels = []
+        if self._sandbox_id is not None:
+            from prime_sandboxes import SandboxClient
+            from prime_sandboxes.core import APIClient
+
+            with contextlib.suppress(Exception):
+                SandboxClient(APIClient()).delete(self._sandbox_id)
 
     async def stop(self) -> None:
         # Best-effort, idempotent teardown: each step is independent so one failure
