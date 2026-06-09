@@ -91,6 +91,7 @@ rules:
       exclude:
         - /environments/alphabet_sort/alphabet_sort_v1.py
         - /environments/bfcl_v3/bfcl_v3.py
+        - /environments/browser_toolset_example/browser_toolset_example.py
         - /environments/dspy_flights/dspy_flights.py
         - /environments/dspy_rlm/dspy_rlm.py
         - /environments/hello_group_reward_v1/hello_group_reward_v1.py

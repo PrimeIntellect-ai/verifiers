@@ -1,0 +1,20 @@
+[project]
+name = "browser-toolset-example"
+version = "0.1.0"
+description = "Example v1 environment demonstrating the browser computer-use toolset over raw CDP (Browserbase by default)"
+tags = ["browser", "browserbase", "cdp", "computer-use", "vision", "example"]
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers[browser]>=0.1.15",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["browser_toolset_example.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 3
+rollouts_per_example = 1
