@@ -159,6 +159,13 @@ class TerminalLegoTaskSet(HarborDatasetTaskSet):
 
     async def setup(self, state) -> None:
         await super().setup(state)
+        sandbox_client = state["sandbox_client"]
+        sandbox_id = state["sandbox_id"]
+        await sandbox_client.execute_command(
+            sandbox_id,
+            "if [ -d /app/task_file ] && [ ! -e /app/task_file/output ]; then mkdir -p /app/task_file/output; fi",
+            timeout=10,
+        )
         config = state.get("info", {}).get("config") or {}
         verifier_timeout = _timeout_seconds(
             config.get("verifier", {}).get("timeout_sec")
