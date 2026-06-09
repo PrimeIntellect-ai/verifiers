@@ -81,7 +81,7 @@ class PrimeRuntime(Runtime):
         try:
             sandbox = await self._client.create(
                 CreateSandboxRequest(
-                    name="v1-program",
+                    name="vf-program",
                     docker_image=self.config.image,
                     network_access=self.config.network_access,
                     vm=self.config.vm,
@@ -187,6 +187,22 @@ class PrimeRuntime(Runtime):
             )
         except Exception as e:
             raise ProgramError(f"write {path!r}: {e}") from e
+
+    def cleanup(self) -> None:
+        # Synchronous atexit backstop (the async client can't run once the loop is gone):
+        # stop the already-sync tunnels and delete the sandbox via the sync client, so the
+        # costly resource isn't left to its max-lifetime. Idempotent — the async `stop`
+        # deletes it on the normal path, and a second delete just 404s (suppressed).
+        for tunnel in self._tunnels:
+            with contextlib.suppress(Exception):
+                tunnel.sync_stop()
+        self._tunnels = []
+        if self._sandbox_id is not None:
+            from prime_sandboxes import SandboxClient
+            from prime_sandboxes.core import APIClient
+
+            with contextlib.suppress(Exception):
+                SandboxClient(APIClient()).delete(self._sandbox_id)
 
     async def stop(self) -> None:
         # Best-effort, idempotent teardown: each step is independent so one failure

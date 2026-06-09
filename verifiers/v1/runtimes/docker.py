@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import logging
 import shlex
+import subprocess
 import uuid
 from pathlib import PurePosixPath
 from typing import Literal
@@ -84,7 +85,7 @@ class DockerRuntime(Runtime):
             raise RuntimeError(
                 f"docker runtime selected but the Docker daemon is not reachable: {detail}{hint}"
             )
-        self._container = f"v1-{uuid.uuid4().hex[:12]}"
+        self._container = f"vf-{uuid.uuid4().hex[:12]}"
         limits: list[str] = []
         if self.config.cpu_cores is not None:
             limits += ["--cpus", str(self.config.cpu_cores)]
@@ -183,7 +184,7 @@ class DockerRuntime(Runtime):
                 f"write {path!r}: {stderr.decode(errors='replace').strip()}"
             )
 
-    async def stop(self) -> None:
+    def cleanup(self) -> None:
         if self._container is None or self._stopped:
             return
         self._stopped = (
@@ -191,4 +192,9 @@ class DockerRuntime(Runtime):
         )
         logger.debug("docker: removing container %s", self._container)
         with contextlib.suppress(Exception):
-            await docker("rm", "--force", self._container)
+            subprocess.run(
+                ["docker", "rm", "--force", self._container],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            )
