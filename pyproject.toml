@@ -11,7 +11,7 @@ dynamic = ["version"]  # derived from git tags via hatch-vcs
 description = "Verifiers: Environments for LLM Reinforcement Learning"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.11,<3.14"
 keywords = ["reinforcement-learning", "llm", "rl", "grpo", "environments", "multi-turn", "agents", "agentic-rl", "tool-use", "train", "eval", "harness", "verifiers", "rlvr"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -19,7 +19,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
