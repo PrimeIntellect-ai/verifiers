@@ -31,11 +31,10 @@ import textarena as ta  # noqa: E402
 
 GAME = os.environ["TEXTARENA_GAME"]
 ANSWER = os.environ["TEXTARENA_ANSWER"]
-ANSWER_KEY = os.environ.get("TEXTARENA_ANSWER_KEY", "secret_word")
 
 env = ta.make(env_id=GAME)
 env.reset(num_players=1)
-env.state.game_state[ANSWER_KEY] = ANSWER
+env.state.game_state["secret_word"] = ANSWER
 
 mcp = FastMCP("user")
 

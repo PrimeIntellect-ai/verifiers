@@ -10,7 +10,6 @@ for the subprocess/docker runtimes), so this taskset uses the subprocess runtime
 Scoring is a pure function of the trace: the model wins by guessing the secret word.
 """
 
-import random
 import re
 import sys
 from collections.abc import Sequence
@@ -38,20 +37,14 @@ _MOVE = re.compile(r"\[(\w+)\]")
 
 
 class TextArenaConfig(vf.TasksetConfig):
-    game: str = "Wordle-v0"
-    """The TextArena game id (the working example is "Wordle-v0")."""
-    num_tasks: int = 20
-    seed: int = 0
-    max_turns: int = 8
-    answer_state_key: str = "secret_word"
-    """The `game_state` key the secret answer is written to (Wordle: "secret_word")."""
+    game: str
+    """The TextArena game id (required; the working example is "Wordle-v0")."""
 
 
 class TextArenaTask(vf.Task):
     answer: str
     """The secret word for this episode; the user simulator's game is seeded with it."""
     game: str
-    answer_state_key: str
 
 
 def _word_list(env: object) -> list[str]:
@@ -106,36 +99,31 @@ def _wordle_marks(guess: str, answer: str) -> tuple[int, int]:
 
 class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
     def load_tasks(self) -> list[TextArenaTask]:
+        # One task per word in the game's list; the eval (num_tasks / shuffle) selects.
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
         template = ta.make(env_id=self.config.game)
         template.reset(num_players=1)
         _, instruction = template.get_observation()
-        words = _word_list(template)
-        rng = random.Random(self.config.seed)
         return [
             TextArenaTask(
                 idx=i,
                 name=f"{self.config.game}#{i}",
                 instruction=str(instruction),
                 system_prompt=SYSTEM_PROMPT,
-                answer=rng.choice(words),
+                answer=word,
                 game=self.config.game,
-                answer_state_key=self.config.answer_state_key,
             )
-            for i in range(self.config.num_tasks)
+            for i, word in enumerate(_word_list(template))
         ]
 
     def user_server(self, task: TextArenaTask) -> vf.User:
-        # A colocated user simulator (the game engine) reachable from the host interception
-        # server; the secret word is injected via env, set before the first observation.
         return vf.User(
             name="user",
             command=[sys.executable, "-m", "textarena_v1.server"],
             env={
                 "TEXTARENA_GAME": task.game,
                 "TEXTARENA_ANSWER": task.answer,
-                "TEXTARENA_ANSWER_KEY": task.answer_state_key,
             },
         )
 
