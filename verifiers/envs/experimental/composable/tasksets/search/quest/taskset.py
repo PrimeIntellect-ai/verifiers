@@ -446,15 +446,29 @@ class QuestTaskSet(SandboxTaskSet):
             num_proc=self.ds_num_proc,
         )
         rows: list[dict[str, Any]] = []
-        for row in raw:
-            if self.category != "all" and row.get("rl_task_category") != self.category:
+        for row_index, row in enumerate(raw):
+            row_category = row.get("rl_task_category")
+            if self.category != "all" and row_category != self.category:
                 continue
+            if row_category not in {"objective", "open-ended"}:
+                raise ValueError(
+                    f"Unsupported QUEST row category at dataset index {row_index}: "
+                    f"{row_category!r}"
+                )
             extra_info = _parse_literal(row.get("extra_info"))
             reward_model = _parse_literal(row.get("reward_model"))
             question = _extract_question(row.get("prompt"), extra_info)
             task_id = _extract_task_id(reward_model, extra_info)
-            if self.category == "objective" and not task_id:
-                continue
+            if not task_id:
+                raise ValueError(
+                    f"QUEST {row_category} row is missing task_id metadata "
+                    f"at dataset index {row_index}"
+                )
+            if row_category == "open-ended" and not isinstance(reward_model, dict):
+                raise ValueError(
+                    "QUEST open-ended row has invalid reward_model metadata "
+                    f"at dataset index {row_index}"
+                )
             rows.append(
                 {
                     "question": question,
