@@ -1,150 +1,143 @@
-"""Taskset/harness authoring API."""
+"""verifiers v1 — a clean-slate, heavily-typed reimplementation.
 
-import importlib
+Public surface is re-exported here so environments can `import verifiers.v1 as vf`
+and reach everything they need. Built up milestone by milestone.
+"""
 
-from verifiers.decorators import (
-    advantage,
-    cleanup,
-    metric,
-    reward,
-    setup,
-    stop,
-    teardown,
-    update,
+import logging as _logging
+
+from pydantic_config import BaseConfig
+
+from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.clients import (
+    BaseClientConfig,
+    Client,
+    ClientConfig,
+    resolve_client,
 )
-from verifiers.types import (
+from verifiers.v1.clients import RolloutContext
+from verifiers.v1.decorators import group_reward, metric, reward, stop
+from verifiers.v1.env import EnvConfig, Environment, TimeoutConfig
+from verifiers.v1.episode import Episode
+from verifiers.v1.rollout import Rollout
+from verifiers.v1.errors import ModelError, ProgramError, RolloutError, ToolError
+from verifiers.v1.loaders import (
+    harness_config_type,
+    import_taskset,
+    import_harness,
+    load_harness,
+    load_taskset,
+    task_type,
+    taskset_config_type,
+)
+from verifiers.v1.tools import ToolServer, run_mcp_server
+from verifiers.v1.runtimes import (
+    DockerConfig,
+    PrimeConfig,
+    ProgramResult,
+    Runtime,
+    RuntimeConfig,
+    SubprocessConfig,
+)
+from verifiers.v1.task import Resources, Task, WireTask
+from verifiers.v1.taskset import Taskset, TasksetConfig, ToolsConfig
+from verifiers.v1.trace import (
+    Branch,
+    Error,
+    TimeSpan,
+    Timing,
+    Trace,
+    Turn,
+    TurnTokens,
+)
+from verifiers.v1.types import (
     AssistantMessage,
-    EndpointConfig,
     Message,
     Messages,
+    Response,
+    SamplingConfig,
+    StrictBaseModel,
     SystemMessage,
-    TextMessage,
-    ToolLike,
+    Tool,
+    ToolCall,
     ToolMessage,
+    Usage,
     UserMessage,
 )
-from verifiers.utils.message_utils import get_messages
-
-from .config import (
-    CallableConfig,
-    Config,
-    SignalConfig,
-)
-from .env import Env, EnvConfig
-from .artifact import ArtifactConfig, Artifacts, ArtifactsConfig
-from .harness import Harness, HarnessConfig
-from .model import ModelConfig
-from .program import ProgramConfig, ProgramValue
-from .runtime import TrajectoryVisibility
-from .sandbox import SandboxConfig
-from .utils.scoring_utils import (
-    add_metric,
-    add_reward,
-    add_advantage,
-    build_signals,
-    collect_signals,
-    score_group,
-    score_rollout,
-)
-from .state import State
-from .task import Task
-from .taskset import Taskset, TasksetConfig, discover_sibling_dir
-from .toolset import (
-    MCPTool,
-    MCPToolConfig,
-    Toolset,
-    ToolsetConfig,
-    Toolsets,
-    VisibilityConfig,
-)
-from .utils.endpoint_utils import Endpoint
-from .utils.binding_utils import BindingsConfig, ObjectsConfig
-from .utils.prompt_utils import SystemPrompt, SystemPromptConfig, SystemPromptStrategy
-from .types import (
-    ConfigData,
-    Handler,
-    JsonData,
-    Objects,
-    PromptInput,
-    TaskSplit,
-    Tasks,
-)
-from .user import User, UserConfig
 
 __all__ = [
-    "BindingsConfig",
-    "ArtifactConfig",
-    "Artifacts",
-    "ArtifactsConfig",
-    "ConfigData",
-    "CallableConfig",
-    "Config",
-    "Env",
-    "EnvConfig",
-    "Endpoint",
-    "EndpointConfig",
+    # types
     "AssistantMessage",
-    "Harness",
-    "HarnessConfig",
-    "Handler",
-    "JsonData",
-    "MCPTool",
-    "MCPToolConfig",
     "Message",
     "Messages",
-    "ModelConfig",
-    "Objects",
-    "ObjectsConfig",
-    "ProgramConfig",
-    "ProgramValue",
-    "PromptInput",
-    "SandboxConfig",
-    "SignalConfig",
-    "State",
-    "SystemPrompt",
-    "SystemPromptConfig",
-    "SystemPromptStrategy",
+    "Response",
+    "SamplingConfig",
+    "StrictBaseModel",
+    "SystemMessage",
+    "Tool",
+    "ToolCall",
+    "ToolMessage",
+    "Usage",
+    "UserMessage",
+    # task / trace
     "Task",
-    "TaskSplit",
-    "Tasks",
+    "WireTask",
+    "Resources",
+    "Trace",
+    "Turn",
+    "Branch",
+    "TurnTokens",
+    "Timing",
+    "TimeSpan",
+    "Error",
+    # decorators
+    "stop",
+    "metric",
+    "reward",
+    "group_reward",
+    # errors
+    "RolloutError",
+    "ModelError",
+    "ToolError",
+    "ProgramError",
+    # clients
+    "Client",
+    "BaseClientConfig",
+    "ClientConfig",
+    "resolve_client",
+    # taskset / harness / runtime / environment
     "Taskset",
     "TasksetConfig",
-    "SystemMessage",
-    "TextMessage",
-    "ToolLike",
-    "Toolset",
-    "ToolsetConfig",
-    "Toolsets",
-    "ToolMessage",
-    "TrajectoryVisibility",
-    "User",
-    "UserMessage",
-    "UserConfig",
-    "VisibilityConfig",
-    "add_metric",
-    "add_reward",
-    "add_advantage",
-    "advantage",
-    "build_signals",
-    "cleanup",
-    "collect_signals",
-    "discover_sibling_dir",
-    "metric",
-    "get_messages",
-    "load_harness",
+    "ToolsConfig",
+    "BaseConfig",
+    "Harness",
+    "HarnessConfig",
+    "RolloutContext",
+    "Runtime",
+    "RuntimeConfig",
+    "ProgramResult",
+    "SubprocessConfig",
+    "DockerConfig",
+    "PrimeConfig",
+    "Environment",
+    "EnvConfig",
+    "TimeoutConfig",
+    "Episode",
+    "Rollout",
+    # loaders
+    "import_taskset",
+    "import_harness",
     "load_taskset",
-    "reward",
-    "score_group",
-    "score_rollout",
-    "setup",
-    "stop",
-    "teardown",
-    "update",
+    "load_harness",
+    "task_type",
+    "taskset_config_type",
+    "harness_config_type",
+    # mcp
+    "ToolServer",
+    "run_mcp_server",
 ]
 
-
-def __getattr__(name: str):
-    if name in ("load_harness", "load_taskset"):
-        module = importlib.import_module("verifiers.utils.env_utils")
-        return getattr(module, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+# The library logs via stdlib logging (per-module `getLogger(__name__)`), but is
+# silent until an app opts in: a NullHandler on the package root absorbs records
+# so nothing is emitted (and no "no handler" warning) unless handlers are added.
+_logging.getLogger(__name__).addHandler(_logging.NullHandler())

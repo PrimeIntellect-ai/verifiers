@@ -1,0 +1,14 @@
+[project]
+name = "deepwiki"
+version = "0.1.0"
+description = "deepwiki — task tools via a remote (streamable-HTTP) MCP server."
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["deepwiki.py", "pyproject.toml"]
+

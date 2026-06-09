@@ -1,0 +1,14 @@
+[project]
+name = "code-golf"
+version = "0.1.0"
+description = "code_golf — write a short, fast program (showcases group rewards)."
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["code_golf.py", "pyproject.toml"]
+

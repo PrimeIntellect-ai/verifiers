@@ -35,38 +35,7 @@ def load_environment(
     corpus_dataset: str = "willcb/rare-wiki-pages",
     corpus_split: str = "train",
     chroma_db_dir: str = CHROMA_DB_DIR,
-    v1: bool = False,
 ) -> vf.Environment:
-    if v1:
-        if (
-            judge_base_url != DEFAULT_JUDGE_BASE_URL
-            or judge_api_key_var != DEFAULT_JUDGE_API_KEY_VAR
-        ):
-            raise ValueError(
-                'v1 wiki_search judges through state.get_endpoint_config(api="chat"); '
-                "set the rollout endpoint and only override judge_model."
-            )
-        from wiki_search_v1 import (
-            WikiSearchEnvConfig,
-            WikiSearchTasksetConfig,
-            load_environment as load_v1,
-        )
-
-        return load_v1(
-            config=WikiSearchEnvConfig(
-                taskset=WikiSearchTasksetConfig(
-                    max_turns=max_turns,
-                    judge_model=judge_model,
-                    corpus_dataset=corpus_dataset,
-                    corpus_split=corpus_split,
-                    chroma_db_dir=chroma_db_dir,
-                    embed_model=embed_model,
-                    embed_base_url=embed_base_url,
-                    embed_api_key_var=embed_api_key_var,
-                )
-            )
-        )
-
     # lazy corpus loading and chroma initialization
     _corpus_state: dict = {
         "loaded": False,

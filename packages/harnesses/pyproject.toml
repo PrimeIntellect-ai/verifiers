@@ -1,47 +1,13 @@
+[project]
+name = "harnesses"
+version = "0.1.0"
+description = "Shipped v1 harnesses (resolved by id via `import <id>`), vendored by default."
+requires-python = ">=3.10"
+dependencies = []
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[project]
-name = "harnesses"
-dynamic = ["version"]  # load from harnesses/__init__.py
-authors = [
-    {name = "William Brown", email = "williambrown97@gmail.com"},
-]
-description = "Reusable harnesses for Verifiers"
-readme = "README.md"
-license = "MIT"
-requires-python = ">=3.10,<3.14"
-dependencies = [
-    "verifiers>=0.1.15.dev158",
-]
-
-[project.optional-dependencies]
-nemogym = [
-    "aiohttp>=3.9.0",
-    "nemo-gym>=0.2.1,<0.3; python_version >= '3.12'",
-]
-
-[project.urls]
-Homepage = "https://github.com/primeintellect-ai/verifiers"
-Repository = "https://github.com/primeintellect-ai/verifiers.git"
-Issues = "https://github.com/primeintellect-ai/verifiers/issues"
-
-[tool.uv]
-preview = true
-exclude-newer = "7 days"
-
-[[tool.uv.index]]
-name = "pypi"
-url = "https://pypi.org/simple"
-default = true
-
-[tool.uv.exclude-newer-package]
-# PrimeIntellect-published on PyPI (trusted publisher)
-verifiers = false
-
-[tool.hatch.version]
-path = "harnesses/__init__.py"
-
 [tool.hatch.build.targets.wheel]
-packages = ["harnesses"]
+packages = ["default", "rlm"]
