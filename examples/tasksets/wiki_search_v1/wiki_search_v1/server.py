@@ -9,7 +9,7 @@ read.
 from mcp.server.fastmcp import FastMCP
 
 import verifiers.v1 as vf
-from wiki_search.corpus import collection, corpus, normalize_id
+from wiki_search_v1.corpus import collection, corpus, normalize_id
 
 PAGES = corpus()
 COLLECTION = collection()

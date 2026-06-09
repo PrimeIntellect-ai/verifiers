@@ -12,7 +12,7 @@ import os
 from mcp.server.fastmcp import FastMCP
 
 import verifiers.v1 as vf
-from wikispeedia.graph import WikiGraph, format_article
+from wikispeedia_v1.graph import WikiGraph, format_article
 
 wiki = WikiGraph.load()
 SOURCE = os.environ["WIKISPEEDIA_SOURCE"]

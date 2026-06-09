@@ -1,0 +1,14 @@
+[project]
+name = "math-env-v1"
+version = "0.1.0"
+description = "math-env-v1 — math problems with a boxed final answer (single-turn, math-verify scoring)."
+requires-python = ">=3.10"
+dependencies = ["datasets"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["math_env_v1.py", "verify.py", "pyproject.toml"]
+

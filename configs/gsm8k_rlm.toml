@@ -1,4 +1,4 @@
-# The gsm8k taskset run with the rlm harness, configured entirely from TOML.
+# The gsm8k-v1 taskset run with the rlm harness, configured entirely from TOML.
 #
 #   uv run eval @ configs/gsm8k_rlm.toml
 #
@@ -9,7 +9,7 @@
 num_tasks = 1
 
 [taskset]
-id = "gsm8k"
+id = "gsm8k-v1"
 
 [harness]
 id = "rlm"

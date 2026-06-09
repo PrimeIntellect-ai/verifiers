@@ -1,9 +1,9 @@
-# code-golf — group rewards (@vf.group_reward) score N rollouts of a task together
+# code-golf-v1 — group rewards (@vf.group_reward) score N rollouts of a task together
 # (shortest / fastest of the group), so it needs >= 2 rollouts.
 #
-#   uv run eval code-golf @ configs/code_golf.toml
+#   uv run eval code-golf-v1 @ configs/code_golf.toml
 num_tasks = 1
 num_rollouts = 2
 
 [taskset]
-id = "code-golf"
+id = "code-golf-v1"
