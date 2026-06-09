@@ -1,9 +1,11 @@
 """OpenAI-compatible chat-completions client.
 
 Distilled from v1's 545-line client: message<->wire translation, tool schemas,
-best-effort reasoning_content. Token-id/logprob/routed-experts/audio handling is
-dropped (training-only). This is the one place raw provider dicts cross into our
-typed `Response`.
+best-effort reasoning_content. Sampling args pass straight through; when the
+response carries vLLM's token ids + sampling logprobs (the caller asked for
+`logprobs` and `return_token_ids`), we parse them into the response's `tokens`
+so MITO training needs no renderer. Routed-experts/audio handling stays dropped.
+This is the one place raw provider dicts cross into our typed `Response`.
 """
 
 from openai import AsyncOpenAI, OpenAIError
@@ -19,6 +21,7 @@ from verifiers.v1.types import (
     SamplingConfig,
     Tool,
     ToolCall,
+    TurnTokens,
     Usage,
 )
 
@@ -58,6 +61,25 @@ def tool_to_wire(tool: Tool) -> dict:
     return {"type": "function", "function": function}
 
 
+def tokens_from_wire(completion, choice) -> TurnTokens | None:
+    """Parse vLLM's token ids + sampling logprobs into `TurnTokens`, for training.
+
+    vLLM surfaces the completion ids on the choice (`return_token_ids`), the prompt
+    ids on the completion, and the sampled logprobs as one `logprobs.content` entry
+    per generated token (`logprobs=True`). All are absent on providers that don't
+    return them, so this is best-effort: no completion ids means no `tokens`.
+    """
+    completion_ids = getattr(choice, "token_ids", None)
+    if not completion_ids:
+        return None
+    content = choice.logprobs.content if choice.logprobs else None
+    return TurnTokens(
+        prompt_ids=list(getattr(completion, "prompt_token_ids", None) or []),
+        completion_ids=list(completion_ids),
+        completion_logprobs=[lp.logprob for lp in content] if content else [],
+    )
+
+
 def response_from_wire(completion) -> Response:
     choice = completion.choices[0]
     message = choice.message
@@ -87,6 +109,7 @@ def response_from_wire(completion) -> Response:
         ),
         finish_reason=finish,
         usage=usage,
+        tokens=tokens_from_wire(completion, choice),
     )
 
 
