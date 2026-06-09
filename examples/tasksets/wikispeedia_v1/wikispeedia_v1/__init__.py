@@ -12,7 +12,7 @@ import sys
 
 import verifiers.v1 as vf
 
-from wikispeedia.graph import WikiGraph, format_article
+from wikispeedia_v1.graph import WikiGraph, format_article
 
 SYSTEM = (
     "This game is easy and fun: starting from the first Wikipedia article, reach the "
@@ -105,7 +105,7 @@ class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
         return [
             vf.ToolServer(
                 name="wiki",
-                command=[sys.executable, "-m", "wikispeedia.server"],
+                command=[sys.executable, "-m", "wikispeedia_v1.server"],
                 env={
                     "WIKISPEEDIA_SOURCE": task.source,
                     "WIKISPEEDIA_TARGET": task.target,

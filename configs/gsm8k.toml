@@ -1,8 +1,8 @@
-# gsm8k — grade-school math, default harness; a few tasks with several rollouts each.
+# gsm8k-v1 — grade-school math, default harness; a few tasks with several rollouts each.
 #
-#   uv run eval gsm8k @ configs/gsm8k.toml
+#   uv run eval gsm8k-v1 @ configs/gsm8k.toml
 num_tasks = 5
 num_rollouts = 3
 
 [taskset]
-id = "gsm8k"
+id = "gsm8k-v1"

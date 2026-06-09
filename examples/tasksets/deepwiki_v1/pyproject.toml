@@ -1,7 +1,7 @@
 [project]
-name = "glossary"
+name = "deepwiki-v1"
 version = "0.1.0"
-description = "glossary — task-specific tools via a stdio MCP server."
+description = "deepwiki-v1 — task tools via a remote (streamable-HTTP) MCP server."
 requires-python = ">=3.10"
 dependencies = []
 
@@ -10,5 +10,5 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["glossary.py", "server.py", "facts.json", "pyproject.toml"]
+include = ["deepwiki_v1.py", "pyproject.toml"]
 
