@@ -23,7 +23,7 @@ from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.tools import ToolServer
+from verifiers.v1.tools import Tools
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, SubprocessConfig
 from verifiers.v1.task import TaskT
 from verifiers.v1.trace import Trace
@@ -79,7 +79,7 @@ class Taskset(Generic[TaskT, ConfigT]):
     def load_tasks(self) -> list[TaskT]:
         raise NotImplementedError
 
-    def tool_servers(self, task: TaskT) -> list[ToolServer]:
+    def tool_servers(self, task: TaskT) -> list[Tools]:
         """MCP servers exposing this task's tools, launched in the runtime by the
         harness. Empty by default; override to give a task tools."""
         return []

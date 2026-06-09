@@ -23,7 +23,7 @@ from verifiers.v1.interception import InterceptionServer, RolloutLimits
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, make_runtime
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
-from verifiers.v1.tools import serve_mcp
+from verifiers.v1.tools import serve_tools
 from verifiers.v1.trace import Trace
 from verifiers.v1.user import serve_user
 
@@ -100,7 +100,7 @@ class Rollout:
                 tool_servers = self.taskset.tool_servers(self.task)
                 tools = self.taskset.config.tools
                 async with (
-                    serve_mcp(
+                    serve_tools(
                         tool_servers,
                         runtime,
                         colocated=tools.colocated,

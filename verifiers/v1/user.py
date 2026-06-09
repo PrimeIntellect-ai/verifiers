@@ -1,6 +1,6 @@
 """The user simulator: a first-class conversation partner, served like a tool server.
 
-A taskset registers a `User` via `Taskset.user_server` — structurally a `ToolServer`
+A taskset registers a `User` via `Taskset.user_server` — structurally a `Tools`
 (an MCP server with a runtime), exposing a single `respond` tool. Unlike a tool server,
 the user simulator is never handed to the model: the framework drives it. After each model
 turn the interception server calls `respond` with the model's last message, appends the
@@ -21,14 +21,14 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.tools import ToolServer, serve_mcp
+from verifiers.v1.tools import Tools, serve_tools
 from verifiers.v1.types import Messages
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class User(ToolServer):
+class User(Tools):
     """A user simulator — structurally a tool server (an MCP server with a runtime), but
     consumed by the framework, not the model. Its single `respond` tool maps the model's
     last message to the next user message(s) and a done flag."""
@@ -67,7 +67,7 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
 
 @contextlib.asynccontextmanager
 async def serve_user(
-    user: ToolServer | None, runtime: Runtime
+    user: Tools | None, runtime: Runtime
 ) -> AsyncIterator[Respond | None]:
     """Bring a rollout's user server up (colocated in the harness's runtime, like a tool
     server) and yield the async `respond` for the interception server to drive — or `None`
@@ -76,6 +76,6 @@ async def serve_user(
     if user is None:
         yield None
         return
-    async with serve_mcp([user], runtime, colocated=True) as urls:
+    async with serve_tools([user], runtime, colocated=True) as urls:
         async with connect_user(next(iter(urls.values()))) as respond:
             yield respond

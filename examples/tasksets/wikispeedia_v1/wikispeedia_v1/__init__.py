@@ -101,9 +101,9 @@ class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
             for i, (source, target, dist) in enumerate(pairs)
         ]
 
-    def tool_servers(self, task: WikiTask) -> list[vf.ToolServer]:
+    def tool_servers(self, task: WikiTask) -> list[vf.Tools]:
         return [
-            vf.ToolServer(
+            vf.Tools(
                 name="wiki",
                 command=[sys.executable, "-m", "wikispeedia_v1.server"],
                 env={

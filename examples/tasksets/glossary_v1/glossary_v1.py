@@ -42,11 +42,9 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, vf.TasksetConfig]):
             for i, (entity, fact) in enumerate(FACTS.items())
         ]
 
-    def tool_servers(self, task: GlossaryTask) -> list[vf.ToolServer]:
+    def tool_servers(self, task: GlossaryTask) -> list[vf.Tools]:
         return [
-            vf.ToolServer(
-                name="facts", script=SERVER, env={"FACTS_JSON": json.dumps(FACTS)}
-            )
+            vf.Tools(name="facts", script=SERVER, env={"FACTS_JSON": json.dumps(FACTS)})
         ]
 
     @vf.reward(weight=1.0)

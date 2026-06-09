@@ -78,9 +78,9 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
             for i, row in enumerate(rows.select(range(min(NUM_QUESTIONS, len(rows)))))
         ]
 
-    def tool_servers(self, task: TriviaTask) -> list[vf.ToolServer]:
+    def tool_servers(self, task: TriviaTask) -> list[vf.Tools]:
         return [
-            vf.ToolServer(
+            vf.Tools(
                 name="wiki", command=[sys.executable, "-m", "wiki_search_v1.server"]
             )
         ]
