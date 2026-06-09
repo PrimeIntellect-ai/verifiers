@@ -188,8 +188,7 @@ class InterceptionServer:
             return web.json_response({"error": "unauthorized"}, status=401)
         turn = len(self.trace.trajectory) + 1  # 1-based: the turn being handled
         # A framework limit (turns or a token budget) refuses the turn before it's served,
-        # halting any harness — the same mechanism as a @stop. Capping turns/tokens is the
-        # framework's job, not the harness's.
+        # halting any harness — the same mechanism as a @stop.
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s turn=%d", limit, self.trace.id, turn)
