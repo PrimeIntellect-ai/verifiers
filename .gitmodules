@@ -1,3 +1,0 @@
-[submodule "deps/vf-nano"]
-	path = deps/vf-nano
-	url = git@github.com:PrimeIntellect-ai/vf-nano.git

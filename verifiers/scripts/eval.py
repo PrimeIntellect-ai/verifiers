@@ -10,16 +10,12 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
 import argparse
 import asyncio
-import inspect
 import importlib.util
 import json
 import logging
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import BaseModel, create_model
-from pydantic_config import ConfigFileError
-from pydantic_config import cli as parse_pydantic_config_cli
 
 from verifiers import setup_logging
 from verifiers.types import (
@@ -39,7 +35,6 @@ from verifiers.utils.eval_utils import (
     run_evaluations,
     run_evaluations_tui,
 )
-from verifiers.utils.env_utils import import_env_module
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.install_utils import check_hub_env_installed
 

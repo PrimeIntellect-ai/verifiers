@@ -240,8 +240,6 @@ async def test_parse_response_tokens_truncates_prompt_attribution_with_overlong_
     assert out_attr["message_roles"] == ["user", "tool"]
 
 
-
-
 def test_assert_serializable_accepts_msgpack_sidecars_rejects_unknown():
     """The ``assert_serializable`` json.dumps gate must accept exactly what the
     trainer transport (msgpack) accepts, while staying strict otherwise.

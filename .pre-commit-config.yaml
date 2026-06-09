@@ -28,7 +28,7 @@ repos:
         pass_filenames: false
       - id: ty
         name: ty (ci parity)
-        entry: uv run --python 3.13 ty check verifiers packages/tasksets/tasksets packages/harnesses/harnesses
+        entry: uv run --python 3.13 ty check verifiers
         language: system
         pass_filenames: false
         stages: [pre-push]

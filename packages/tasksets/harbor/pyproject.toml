@@ -1,0 +1,14 @@
+[project]
+name = "harbor"
+version = "0.1.0"
+description = "harbor — run any Harbor (Terminal-Bench) dataset."
+requires-python = ">=3.10,<3.14"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["harbor.py", "pyproject.toml"]
+

@@ -1,5 +1,5 @@
 from pathlib import Path
-import verifiers as vf
+
 from verifiers.scripts.init import init_environment
 
 
@@ -17,30 +17,3 @@ def test_init_default_writes_v0_stub(tmp_path: Path) -> None:
     assert "NotImplementedError" in content
     assert "load_taskset" not in content
     assert "EnvTaskset" not in content
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def test_init_openenv_multifile_exports_taskset_loader(tmp_path: Path) -> None:
-    init_environment(
-        "openenv-pkg",
-        path=str(tmp_path),
-        openenv=True,
-        multi_file=True,
-    )
-    init_content = (
-        tmp_path / "openenv_pkg" / "openenv_pkg" / "__init__.py"
-    ).read_text()
-
-    assert "from .openenv_pkg import load_environment, load_taskset" in init_content
-    assert "__all__ = ['load_environment', 'load_taskset']" in init_content

@@ -41,7 +41,7 @@ jobs:
       - name: Install dependencies
         run: uv sync
       - name: Run ty
-        run: uv run ty check verifiers packages/tasksets/tasksets packages/harnesses/harnesses
+        run: uv run ty check verifiers
   semgrep:
     name: Semgrep
     runs-on: ubuntu-latest

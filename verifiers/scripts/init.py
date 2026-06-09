@@ -106,25 +106,11 @@ def load_environment(**kwargs) -> vf.Environment:
 """
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def _write_if_missing(path: Path, content: str) -> None:
     if path.exists():
         print(f"{path.name} already exists at {path}, skipping...")
         return
     path.write_text(content)
-
-
 
 
 def _class_name(env_id_underscore: str, suffix: str) -> str:
