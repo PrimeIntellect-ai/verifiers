@@ -191,7 +191,8 @@ class DockerRuntime(Runtime):
             True  # idempotency guard; keep `_container` so the name still shows
         )
         logger.debug("docker: removing container %s", self._container)
-        with contextlib.suppress(Exception):  # blocking `docker rm` → no event loop needed
+        # blocking `docker rm` — no event loop needed (works from the atexit backstop)
+        with contextlib.suppress(Exception):
             subprocess.run(
                 ["docker", "rm", "--force", self._container],
                 stdout=subprocess.DEVNULL,

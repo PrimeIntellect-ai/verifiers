@@ -91,7 +91,8 @@ class SubprocessRuntime(Runtime):
         await asyncio.to_thread(target.write_bytes, data)
 
     def cleanup(self) -> None:
-        for proc in self._background:  # os.kill (not proc.terminate) → no event loop needed
+        # os.kill (not proc.terminate) so it works without an event loop (atexit backstop)
+        for proc in self._background:
             with contextlib.suppress(ProcessLookupError, OSError):
                 os.kill(proc.pid, signal.SIGTERM)
         self._background = []
