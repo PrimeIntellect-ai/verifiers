@@ -27,42 +27,6 @@ DATASET = "kalomaze/alphabetic-arxiv-authors-it1"
 SEED = 1337420
 
 
-def _first_name(name: str) -> str:
-    """'VladimirDrinfeld' -> 'Vladimir' (split before the second capital)."""
-    for i in range(1, len(name)):
-        if name[i].isupper():
-            return name[:i]
-    return name
-
-
-def _last_name(name: str) -> str:
-    """'VladimirDrinfeld' -> 'Drinfeld' (split before the second capital)."""
-    for i in range(1, len(name)):
-        if name[i].isupper():
-            return name[i:]
-    return ""
-
-
-def _turn_score(
-    response: str, expected: list[str], tag: str, power: int, scale: bool
-) -> float:
-    """Score one turn by the similarity of its parsed `<tag>` content to `expected`. Multiple
-    attempts only count if they strictly improve (else 0); a lone attempt is taken as-is."""
-    attempts = re.findall(f"<{tag}>(.*?)</{tag}>", response, re.DOTALL)
-    if not attempts:
-        return 0.0
-    exp = "\n".join(s.strip().lower() for s in expected)
-    scores = []
-    for content in attempts:
-        pred = "\n".join(ln.strip().lower() for ln in content.split("\n") if ln.strip())
-        sim = difflib.SequenceMatcher(None, pred, exp).ratio() if pred and exp else 0.0
-        scores.append(sim**power if scale else sim)
-    if len(scores) == 1:
-        return scores[0]
-    improved = all(b > a for a, b in zip(scores, scores[1:]))
-    return scores[-1] if improved else 0.0
-
-
 class AlphabetSortConfig(vf.TasksetConfig):
     min_turns: int = 1
     """Minimum number of turns (assistant sorts) per episode."""
@@ -103,8 +67,13 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
             ]
             if len(names) < sum(counts):
                 continue
-            label = "FIRST" if rng.choice([True, False]) else "LAST"
-            key = _first_name if label == "FIRST" else _last_name
+            by_first = rng.choice([True, False])
+            label = "FIRST" if by_first else "LAST"
+
+            def sort_key(s: str) -> str:
+                # split at the first capital after index 0 -> first- vs last-name part
+                cut = next((i for i in range(1, len(s)) if s[i].isupper()), len(s))
+                return s[:cut] if by_first else s[cut:]
 
             turns, cumulative, ground_truths, i = [], [], [], 0
             for count in counts:
@@ -112,7 +81,7 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
                 i += count
                 turns.append(turn)
                 cumulative += turn
-                ranked = sorted(cumulative, key=key)
+                ranked = sorted(cumulative, key=sort_key)
                 ground_truths.append(
                     ranked
                     if len(turns) == 1
@@ -185,16 +154,30 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
         ground_truths = task.info["ground_truths"]
         num_turns = task.info["num_turns"]
         responses = [m.content or "" for m in trace.assistant_messages]
-        scores = [
-            _turn_score(
-                responses[t] if t < len(responses) else "",
-                ground_truths[t],
-                "alphabetical_sorted" if t == 0 else "combined_alphabetical_sorted",
-                c.similarity_power,
-                scale=c.power_per_turn,
-            )
-            for t in range(num_turns)
-        ]
+        scores = []
+        for t in range(num_turns):
+            tag = "alphabetical_sorted" if t == 0 else "combined_alphabetical_sorted"
+            response = responses[t] if t < len(responses) else ""
+            expected = "\n".join(s.strip().lower() for s in ground_truths[t])
+            # Multiple <tag> attempts only count if they strictly improve (else 0).
+            attempts = []
+            for content in re.findall(f"<{tag}>(.*?)</{tag}>", response, re.DOTALL):
+                pred = "\n".join(
+                    ln.strip().lower() for ln in content.split("\n") if ln.strip()
+                )
+                sim = (
+                    difflib.SequenceMatcher(None, pred, expected).ratio()
+                    if pred and expected
+                    else 0.0
+                )
+                attempts.append(sim**c.similarity_power if c.power_per_turn else sim)
+            if not attempts:
+                scores.append(0.0)
+            elif len(attempts) == 1:
+                scores.append(attempts[0])
+            else:
+                improved = all(b > a for a, b in zip(attempts, attempts[1:]))
+                scores.append(attempts[-1] if improved else 0.0)
         avg = sum(scores) / num_turns if num_turns else 0.0
         return avg if c.power_per_turn else avg**c.similarity_power
 
