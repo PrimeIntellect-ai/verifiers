@@ -12,7 +12,7 @@ from verifiers.v1.types import SamplingConfig
 
 class EvalConfig(EnvConfig):
     """The eval run plus its environment: inherits the env's fields (`taskset`, `harness`,
-    `max_turns`, timeouts) so they're top-level flags (`--taskset.id`, `--harness.id`,
+    `max_turns`, token limits, timeouts) so they're top-level flags (`--taskset.id`, `--harness.id`,
     `--harness.runtime.*`, …) with no `--env.` prefix, and adds the run knobs (model,
     sampling, counts, …)."""
 

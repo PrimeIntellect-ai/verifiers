@@ -21,6 +21,7 @@ from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
+from verifiers.v1.interception import RolloutLimits
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
@@ -58,6 +59,15 @@ class EnvConfig(BaseConfig):
     """Max model turns per rollout (None = no limit). Enforced by the framework (the
     interception server refuses turns past it), so it applies to any harness — turn
     capping is a framework concern, never an harness or task field."""
+    max_input_tokens: int | None = None
+    """Max input (prompt) tokens per rollout (None = no limit). Caps the trace's
+    `prompt_len`; framework-enforced between turns, like `max_turns`."""
+    max_output_tokens: int | None = None
+    """Max output (completion) tokens per rollout (None = no limit). Caps the trace's
+    `completion_len`; framework-enforced between turns, like `max_turns`."""
+    max_total_tokens: int | None = None
+    """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
+    trace's `total_tokens`; framework-enforced between turns, like `max_turns`."""
 
     @model_validator(mode="before")
     @classmethod
@@ -92,7 +102,12 @@ class Environment:
         self.harness = load_harness(config.harness)
         self.harness_timeout = config.timeout.rollout
         self.scoring_timeout = config.timeout.scoring
-        self.max_turns = config.max_turns
+        self.limits = RolloutLimits(
+            max_turns=config.max_turns,
+            max_input_tokens=config.max_input_tokens,
+            max_output_tokens=config.max_output_tokens,
+            max_total_tokens=config.max_total_tokens,
+        )
         self._warned_resources: set[tuple[str, str]] = set()
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
@@ -160,7 +175,7 @@ class Environment:
                 runtime_config=runtime_config,
                 harness_timeout=harness_timeout,
                 scoring_timeout=scoring_timeout,
-                max_turns=self.max_turns,
+                limits=self.limits,
             )
             for _ in range(n)
         ]
