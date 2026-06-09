@@ -2,7 +2,7 @@
 
 Launched by the framework as a host subprocess per rollout (a `vf.User`). It holds one
 TextArena game in memory, set up from the `TEXTARENA_INFO` the taskset injects (game id +
-the secret word to seed), and serves a single `respond` tool: given the model's last
+RNG seed), and serves a single `respond` tool: given the model's last
 message it steps the game and returns the next observation as a user message, plus whether
 the episode is over. When the game ends it writes the game's own outcome
 (`env.state.rewards`) to `OUTCOME_FILE` in the runtime workspace, where the taskset's reward
@@ -34,18 +34,11 @@ import textarena as ta  # noqa: E402
 
 INFO = json.loads(os.environ["TEXTARENA_INFO"])
 
+# Generic seed: the game derives its whole setup from the global RNG at reset, so seeding it
+# reproduces the exact episode the taskset built the instruction from — no per-game keys.
 env = ta.make(env_id=INFO["game"])
-# Seed the secret generically: intercept the word pick during reset so the game itself
-# selects our answer and derives all of its own state (Wordle's secret_word, Hangman's
-# board, ...), without us needing to know each game's state keys.
-_orig_choice = random.choice
-random.choice = lambda seq: (
-    INFO["answer"] if seq is env.word_list else _orig_choice(seq)
-)
-try:
-    env.reset(num_players=1)
-finally:
-    random.choice = _orig_choice
+random.seed(INFO["seed"])
+env.reset(num_players=1)
 
 mcp = FastMCP("user")
 
