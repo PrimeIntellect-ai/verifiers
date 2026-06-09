@@ -505,11 +505,16 @@ class OpenAIChatCompletionsClient(
             # bundles logprobs + prompt_token_ids in one place.
             completion_token_ids: list[int] | None = None
             prompt_token_ids: list[int] | None = None
+            completion_logprobs: list[float] | None = None
             if isinstance(engine_data, dict):
                 if engine_data.get("completion_token_ids") is not None:
                     completion_token_ids = list(engine_data["completion_token_ids"])
                 if engine_data.get("prompt_token_ids") is not None:
                     prompt_token_ids = list(engine_data["prompt_token_ids"])
+                if engine_data.get("completion_logprobs") is not None:
+                    completion_logprobs = [
+                        float(x) for x in engine_data["completion_logprobs"]
+                    ]
             if completion_token_ids is None and completion_token_ids_top is not None:
                 completion_token_ids = list(completion_token_ids_top)
             if prompt_token_ids is None and prompt_token_ids_top is not None:
@@ -531,6 +536,18 @@ class OpenAIChatCompletionsClient(
                     response.prompt_token_ids = prompt_token_ids
                 except Exception:
                     object.__setattr__(response, "prompt_token_ids", prompt_token_ids)
+            # Dynamo returns logprobs only under engine_data, not
+            # choices[0].logprobs. Synthesize the standard shape so parse_tokens
+            # (which requires choices[0].logprobs.content) can read them.
+            if (
+                getattr(choice, "logprobs", None) is None
+                and completion_logprobs is not None
+            ):
+                synthesized = {"content": [{"logprob": lp} for lp in completion_logprobs]}
+                try:
+                    choice.logprobs = synthesized
+                except Exception:
+                    object.__setattr__(choice, "logprobs", synthesized)
 
         def parse_tokens(response: OpenAIChatResponse) -> ResponseTokens | None:
             assert len(response.choices) == 1, "Response should always have one choice"

@@ -606,14 +606,19 @@ class RendererClient(
         # Thread renderer_transport from ClientConfig into generate() so the
         # renderer client works against Dynamo's /v1/chat/completions surface
         # as well as vLLM's /inference/v1/generate. setup_clients auto-picks
-        # "dynamo_chat_nvext" when client_config.backend == "dynamo".
+        # "dynamo_chat" when client_config.backend == "dynamo".
         # ``renderers.client.generate`` raises ``renderers.OverlongPromptError``
         # on pre-flight overflow; rebadge to verifiers-native so MultiTurnEnv stops.
         transport = (
             self._config.renderer_transport
             if self._config is not None
-            else "prime_vllm_generate"
+            else "vllm_generate"
         )
+        # Only pass transport= when non-default: a pinned ``renderers`` may
+        # predate the kwarg, so the default path must use the upstream signature.
+        generate_kwargs: dict[str, Any] = {}
+        if transport != "vllm_generate":
+            generate_kwargs["transport"] = transport
         try:
             return await generate(
                 client=self.client,
@@ -625,11 +630,11 @@ class RendererClient(
                 prompt_attribution=prompt_attribution,
                 tools=tools,
                 sampling_params=sampling_params,
-                transport=transport,
                 cache_salt=args.get("cache_salt")
                 or sampling_params.pop("cache_salt", None),
                 priority=args.get("priority") or sampling_params.pop("priority", None),
                 extra_headers=extra_headers or None,
+                **generate_kwargs,
             )
         except RendererOverlongPromptError as exc:
             raise OverlongPromptError(str(exc)) from exc

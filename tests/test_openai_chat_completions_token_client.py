@@ -293,3 +293,36 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
     assert len(recording_client.calls) == 1
     assert recording_client.calls[0]["path"] == "/chat/completions/tokens"
     assert recording_client.calls[0]["body"]["tokens"] == [10, 20]
+
+
+@pytest.mark.asyncio
+async def test_post_dynamo_chat_scrubs_vllm_only_and_forwards_sampling():
+    """dynamo_chat wire body: vLLM-only keys scrubbed (R3), standard sampling
+    args forwarded (R4), nvext token_data + passthrough preserved."""
+    recording_client = _RecordingClient()
+    client = OpenAIChatCompletionsTokenClient(recording_client)
+
+    await client._post_dynamo_chat(
+        prompt=cast(Any, [{"role": "user", "content": ""}]),
+        prompt_ids=[1, 2, 3],
+        model="test-model",
+        tools=None,
+        sampling_args={
+            "temperature": 0.5,
+            "presence_penalty": 0.2,  # standard arg outside the old allowlist
+            "extra_body": {
+                "return_token_ids": True,  # vLLM-only — must be scrubbed
+                "nvext": {"extra_fields": ["engine_data"]},
+                "cache_salt": "ckpt-1",  # passthrough must survive
+            },
+        },
+        extra_headers=None,
+    )
+
+    body = recording_client.calls[0]["body"]
+    assert "return_token_ids" not in body  # R3
+    assert body["presence_penalty"] == 0.2  # R4
+    assert body["temperature"] == 0.5
+    assert body["nvext"]["token_data"] == [1, 2, 3]
+    assert body["nvext"]["extra_fields"] == ["engine_data"]
+    assert body["cache_salt"] == "ckpt-1"  # passthrough preserved
