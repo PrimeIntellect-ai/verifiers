@@ -136,7 +136,9 @@ class Trace(StrictBaseModel, Generic[TaskT]):
 
     is_completed: bool = False
     stop_condition: str | None = None
-    error: Error | None = None
+    errors: list[Error] = Field(default_factory=list)
+    """Every error captured across attempts, oldest first (more than one only when the
+    rollout was retried). `error` exposes the most recent."""
     timing: Timing = Field(default_factory=Timing)
 
     _branch_cache: dict[int, list[list[int]]] = PrivateAttr(default_factory=dict)
@@ -148,9 +150,15 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     def reward(self) -> float:
         return sum(self.rewards.values())
 
+    @computed_field
+    @property
+    def error(self) -> Error | None:
+        """The most recent captured error (the rest are earlier retry attempts)."""
+        return self.errors[-1] if self.errors else None
+
     @property
     def has_error(self) -> bool:
-        return self.error is not None
+        return bool(self.errors)
 
     @property
     def last_turn(self) -> Turn | None:
@@ -273,10 +281,12 @@ class Trace(StrictBaseModel, Generic[TaskT]):
 
     def capture_error(self, error: Exception) -> None:
         """Record a caught error (with traceback) and stop the rollout."""
-        self.error = Error(
-            type=type(error).__name__,
-            message=str(error),
-            traceback=traceback.format_exc(),
+        self.errors.append(
+            Error(
+                type=type(error).__name__,
+                message=str(error),
+                traceback=traceback.format_exc(),
+            )
         )
         self.stop("error")
 
