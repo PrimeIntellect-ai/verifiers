@@ -1,7 +1,7 @@
-# deepwiki — an existing remote MCP server, reached by URL (nothing to run ourselves).
+# deepwiki-v1 — an existing remote MCP server, reached by URL (nothing to run ourselves).
 #
 #   uv run eval @ configs/deepwiki.toml
 num_tasks = 1
 
 [taskset]
-id = "deepwiki"
+id = "deepwiki-v1"

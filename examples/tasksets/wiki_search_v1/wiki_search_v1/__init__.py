@@ -81,7 +81,7 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
     def tool_servers(self, task: TriviaTask) -> list[vf.ToolServer]:
         return [
             vf.ToolServer(
-                name="wiki", command=[sys.executable, "-m", "wiki_search.server"]
+                name="wiki", command=[sys.executable, "-m", "wiki_search_v1.server"]
             )
         ]
 
