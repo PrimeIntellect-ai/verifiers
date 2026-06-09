@@ -538,11 +538,17 @@ class OpenAIChatCompletionsClient(
                     object.__setattr__(response, "prompt_token_ids", prompt_token_ids)
             # Dynamo returns logprobs only under engine_data, not
             # choices[0].logprobs. Synthesize the standard shape so parse_tokens
-            # (which requires choices[0].logprobs.content) can read them.
-            if (
-                getattr(choice, "logprobs", None) is None
-                and completion_logprobs is not None
-            ):
+            # (which requires choices[0].logprobs.content) can read them. Graft
+            # whenever the choice has no usable logprobs content — i.e. logprobs
+            # is missing OR present-but-content-less (empty/None content) — not
+            # only when it is absent entirely.
+            existing_lp = getattr(choice, "logprobs", None)
+            existing_content = (
+                existing_lp.get("content")
+                if isinstance(existing_lp, dict)
+                else getattr(existing_lp, "content", None)
+            )
+            if completion_logprobs is not None and not existing_content:
                 synthesized = {"content": [{"logprob": lp} for lp in completion_logprobs]}
                 try:
                     choice.logprobs = synthesized

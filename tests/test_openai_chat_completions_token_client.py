@@ -297,8 +297,8 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
 
 @pytest.mark.asyncio
 async def test_post_dynamo_chat_scrubs_vllm_only_and_forwards_sampling():
-    """dynamo_chat wire body: vLLM-only keys scrubbed (R3), standard sampling
-    args forwarded (R4), nvext token_data + passthrough preserved."""
+    """dynamo_chat wire body: vLLM-only keys scrubbed, standard sampling args
+    forwarded, nvext token_data + passthrough preserved."""
     recording_client = _RecordingClient()
     client = OpenAIChatCompletionsTokenClient(recording_client)
 
@@ -320,9 +320,48 @@ async def test_post_dynamo_chat_scrubs_vllm_only_and_forwards_sampling():
     )
 
     body = recording_client.calls[0]["body"]
-    assert "return_token_ids" not in body  # R3
-    assert body["presence_penalty"] == 0.2  # R4
+    assert "return_token_ids" not in body
+    assert body["presence_penalty"] == 0.2
     assert body["temperature"] == 0.5
     assert body["nvext"]["token_data"] == [1, 2, 3]
     assert body["nvext"]["extra_fields"] == ["engine_data"]
-    assert body["cache_salt"] == "ckpt-1"  # passthrough preserved
+    assert body["cache_salt"] == "ckpt-1"
+
+
+@pytest.mark.asyncio
+async def test_graft_engine_data_synthesizes_logprobs_when_content_less():
+    """engine_data.completion_logprobs must be grafted even when the choice
+    carries a content-less logprobs object (not only when absent)."""
+    from openai.types.chat import ChatCompletion
+
+    client = OpenAIChatCompletionsClient(_NoopClient())
+    native = ChatCompletion.model_validate(
+        {
+            "id": "x",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                    "logprobs": {"content": None},  # present but content-less
+                }
+            ],
+            "nvext": {
+                "engine_data": {
+                    "completion_token_ids": [10, 11],
+                    "prompt_token_ids": [1, 2, 3],
+                    "completion_logprobs": [-0.1, -0.2],
+                }
+            },
+        }
+    )
+
+    vf_response = await client.from_native_response(native)
+    tokens = vf_response.message.tokens
+    assert tokens is not None  # would be None before the fix (TITO lost)
+    assert tokens.completion_ids == [10, 11]
+    assert tokens.prompt_ids == [1, 2, 3]
+    assert tokens.completion_logprobs == [-0.1, -0.2]
