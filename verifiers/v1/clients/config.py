@@ -60,6 +60,10 @@ class RendererClientConfig(BaseClientConfig):
     fine-tunes / tool-using envs."""
     pool_size: int = 1
     """Renderer slots shared across concurrent rollouts (client-side tokenization)."""
+    renderer_model_name: str | None = None
+    """Model the tokenizer/renderer pool is built for. Pin to the base model so a LoRA
+    adapter name (served only for sampling) never drives tokenizer loading. Falls back to
+    the per-request model when None."""
 
 
 # Discriminated union for a CLI-selectable client (`--client.type renderers`).
@@ -81,5 +85,6 @@ def resolve_client(config: BaseClientConfig) -> Client:
             make_openai_client(config),
             pool_size=config.pool_size,
             config=config.renderer,
+            renderer_model_name=config.renderer_model_name,
         )
     return OpenAIChatCompletionsClient(make_openai_client(config))

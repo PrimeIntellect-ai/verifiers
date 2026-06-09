@@ -91,17 +91,21 @@ class RendererClient(Client):
         openai: AsyncOpenAI,
         pool_size: int = 1,
         config: RendererConfig | None = None,
+        renderer_model_name: str | None = None,
     ) -> None:
         self.openai = openai
         self.pool_size = pool_size
         self.config = config
+        self.renderer_model_name = renderer_model_name
         self._pool = None
 
     def _renderer_pool(self, model: str):
         if self._pool is None:
             from renderers import create_renderer_pool
 
-            self._pool = create_renderer_pool(model, self.config, size=self.pool_size)
+            self._pool = create_renderer_pool(
+                self.renderer_model_name or model, self.config, size=self.pool_size
+            )
         return self._pool
 
     async def get_response(

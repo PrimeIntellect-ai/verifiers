@@ -243,8 +243,12 @@ class LegacyEnvServer(EnvServer):
 
     def _v0_client(self, client_config: ClientConfig, model: str):
         """Translate the v1 renderer ``ClientConfig`` into a v0 renderer client (cached;
-        a renderer builds the model's tokenizer pool on first use)."""
-        key = (client_config.model_dump_json(), model)
+        a renderer builds the tokenizer pool on first use). The tokenizer is pinned to
+        ``renderer_model_name`` (the base model) so a LoRA adapter name — served only for
+        sampling — never drives tokenizer loading; the per-request ``model`` still selects
+        the sampling target in ``run_rollout``."""
+        renderer_model = getattr(client_config, "renderer_model_name", None) or model
+        key = (client_config.model_dump_json(), renderer_model)
         if key not in self._clients:
             from verifiers.clients import resolve_client
             from verifiers.types import ClientConfig as V0ClientConfig
@@ -252,7 +256,7 @@ class LegacyEnvServer(EnvServer):
             v0_config = V0ClientConfig(
                 client_type="renderer",
                 renderer_config=getattr(client_config, "renderer", None),
-                renderer_model_name=model,
+                renderer_model_name=renderer_model,
                 renderer_pool_size=getattr(client_config, "pool_size", None),
                 api_base_url=client_config.base_url,
                 api_key_var=client_config.api_key_var,
