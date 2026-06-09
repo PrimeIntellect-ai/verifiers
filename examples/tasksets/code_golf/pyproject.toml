@@ -2,7 +2,7 @@
 name = "code-golf"
 version = "0.1.0"
 description = "code_golf — write a short, fast program (showcases group rewards)."
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.10"
 dependencies = []
 
 [build-system]

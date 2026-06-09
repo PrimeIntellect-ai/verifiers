@@ -8,10 +8,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.harnesses import (
-    Harness,
-    HarnessConfig,
-)
+from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,

@@ -15,7 +15,7 @@ import logging
 import time
 from enum import StrEnum
 
-from verifiers.v1.harnesses import Harness
+from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.errors import ProgramError, RolloutError

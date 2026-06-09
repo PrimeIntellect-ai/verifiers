@@ -17,7 +17,7 @@ import logging
 from pydantic import SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.harnesses import HarnessConfig
+from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode

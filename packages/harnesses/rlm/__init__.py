@@ -7,7 +7,7 @@ runtime knobs (`max_depth`, `tools`), which rlm reads from `RLM_*` env vars.
 import json
 import logging
 
-from verifiers.v1.harnesses.base import Harness, HarnessConfig
+from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import metric
 from verifiers.v1.runtimes import ProgramResult, Runtime

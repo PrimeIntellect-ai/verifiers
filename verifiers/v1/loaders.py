@@ -16,7 +16,7 @@ import inspect
 from types import ModuleType
 from typing import get_args
 
-from verifiers.v1.harnesses.base import Harness, HarnessConfig
+from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 
@@ -29,8 +29,8 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     except ModuleNotFoundError as e:
         raise ModuleNotFoundError(
             f"{kind} {plugin_id!r} not found (tried to import {module!r}). A {kind} is a package "
-            f"exposing load_{kind}(config) — install the shipped ones with the `{group}` extra "
-            f"(`uv sync --extra {group}`), or install/author your own."
+            f"exposing load_{kind}(config) — the shipped ones are bundled in the `{group}` "
+            f"package (vendored by default), or install/author your own."
         ) from e
 
 

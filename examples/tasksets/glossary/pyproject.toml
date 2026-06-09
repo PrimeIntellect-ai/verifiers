@@ -2,7 +2,7 @@
 name = "glossary"
 version = "0.1.0"
 description = "glossary — task-specific tools via a stdio MCP server."
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.10"
 dependencies = []
 
 [build-system]

@@ -1241,11 +1241,6 @@ version = "0.1.0"
 source = { editable = "examples/tasksets/deepwiki" }
 
 [[package]]
-name = "default"
-version = "0.1.0"
-source = { editable = "packages/harnesses/default" }
-
-[[package]]
 name = "depyf"
 version = "0.19.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1821,9 +1816,9 @@ wheels = [
 ]
 
 [[package]]
-name = "harbor"
+name = "harnesses"
 version = "0.1.0"
-source = { editable = "packages/tasksets/harbor" }
+source = { editable = "packages/harnesses" }
 
 [[package]]
 name = "hello-rlm"
@@ -4465,7 +4460,7 @@ toml = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.25"
+version = "0.2.27"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -4475,23 +4470,23 @@ dependencies = [
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7d/6d/a800c22973f99e4b9a57caa25aa1b54e54f022641b0576bfcfb064137153/prime_sandboxes-0.2.25.tar.gz", hash = "sha256:df4bf7965ccff953208b881fb743c8cde5280064a8c5a13eabeedded53dd366b", size = 66132, upload-time = "2026-05-11T23:45:19.993Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9a/1f/b257b21f54e9b961bcac05335f6637c494ed0986fb4b5d2054f97f96faa0/prime_sandboxes-0.2.27.tar.gz", hash = "sha256:db4071387f4b2dc8bcd0c8916af4031f864dfd5dfd9818f56119347af20b1469", size = 68661, upload-time = "2026-06-05T21:55:35.175Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/e8/2ddba24d992ef10b69eb311647443b11992fb2e9514e3a625b98b6a5da65/prime_sandboxes-0.2.25-py3-none-any.whl", hash = "sha256:c335eba6c817722365495ab3d3dfbe77f0a726d9a9f2fd3452ad44666811fbfc", size = 33621, upload-time = "2026-05-11T23:45:18.759Z" },
+    { url = "https://files.pythonhosted.org/packages/94/bc/a9142d0ef67d92672469cff15cadc04eb46ca9957b00156445d14c14b04f/prime_sandboxes-0.2.27-py3-none-any.whl", hash = "sha256:3fb227cc909c15475fb2874974d166d857021ee6ed9a6e0d4482b1b5ebfc50e2", size = 34402, upload-time = "2026-06-05T21:55:33.451Z" },
 ]
 
 [[package]]
 name = "prime-tunnel"
-version = "0.1.6"
+version = "0.1.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d1/e8/fec186cfbcc670deed94a7b5ace67688feed38b114b1c602d35a8f8d7564/prime_tunnel-0.1.6.tar.gz", hash = "sha256:5e371bc3557d8a5257a43ef1aeea1f8918da966a8565dacd33a647b6c82a0eaa", size = 13019, upload-time = "2026-04-13T15:13:17.24Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9c/e7/557c7623bd8c9a7a9127d880dce2a3d8612d3a7df02bdde6f01c958a20b8/prime_tunnel-0.1.8.tar.gz", hash = "sha256:07803d5d5c6ec83c260bbef0ecd340f4f6acab0f6a254d5d34a4c6ddfc777c0b", size = 14576, upload-time = "2026-06-02T06:39:36.56Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/52/35/adfac88e5880418f095758729b73e395c81be869d0be786fcd4b31938b2f/prime_tunnel-0.1.6-py3-none-any.whl", hash = "sha256:bc096bca509621379f671e2401253ab2ebe6c8c143d797b6ef85d8290c462e0d", size = 14914, upload-time = "2026-04-13T15:13:16.08Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/5f/181fe0ca1ca8507c0a373e55363b411bdeab9ad904c68edec7d7b1bdea74/prime_tunnel-0.1.8-py3-none-any.whl", hash = "sha256:fab081f566e0887ce50c7b5872169e9f356fc3263d5f0493cfabb3150eb73b0a", size = 15843, upload-time = "2026-06-02T06:39:34.043Z" },
 ]
 
 [[package]]
@@ -5606,11 +5601,6 @@ wheels = [
 ]
 
 [[package]]
-name = "rlm"
-version = "0.1.0"
-source = { editable = "packages/harnesses/rlm" }
-
-[[package]]
 name = "rpds-py"
 version = "0.30.0"
 source = { registry = "https://pypi.org/simple" }
@@ -6306,6 +6296,11 @@ wheels = [
 ]
 
 [[package]]
+name = "tasksets"
+version = "0.1.0"
+source = { editable = "packages/tasksets" }
+
+[[package]]
 name = "tenacity"
 version = "9.1.4"
 source = { registry = "https://pypi.org/simple" }
@@ -6825,6 +6820,7 @@ dependencies = [
     { name = "gepa" },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "loguru" },
     { name = "math-verify" },
     { name = "mcp", version = "1.23.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-9-verifiers-policy'" },
     { name = "mcp", version = "1.27.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-9-verifiers-ta' or extra == 'group-9-verifiers-dev' or extra == 'group-9-verifiers-examples' or extra == 'group-9-verifiers-harnesses' or extra != 'group-9-verifiers-policy' or (extra == 'group-9-verifiers-policy' and extra == 'group-9-verifiers-tasksets')" },
@@ -6841,12 +6837,14 @@ dependencies = [
     { name = "pymupdf" },
     { name = "pyzmq" },
     { name = "regex" },
+    { name = "renderers" },
     { name = "requests" },
     { name = "rich" },
     { name = "setproctitle" },
     { name = "tenacity" },
     { name = "textual" },
     { name = "tomli", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-examples' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-harnesses' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-policy' and extra == 'group-9-verifiers-tasksets')" },
+    { name = "tomli-w" },
     { name = "typing-extensions", marker = "python_full_version < '3.12' or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-examples' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-harnesses' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-policy' and extra == 'group-9-verifiers-tasksets')" },
     { name = "uvloop", marker = "(platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'group-9-verifiers-examples' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'group-9-verifiers-harnesses' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'group-9-verifiers-policy' and extra == 'group-9-verifiers-tasksets') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'group-9-verifiers-examples' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'group-9-verifiers-harnesses' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'group-9-verifiers-policy' and extra == 'group-9-verifiers-tasksets') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'group-9-verifiers-examples' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'group-9-verifiers-harnesses' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'group-9-verifiers-policy' and extra == 'group-9-verifiers-tasksets')" },
 ]
@@ -6879,17 +6877,6 @@ ta = [
     { name = "nltk" },
     { name = "textarena" },
 ]
-v1 = [
-    { name = "loguru" },
-    { name = "mcp", version = "1.23.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-9-verifiers-policy'" },
-    { name = "mcp", version = "1.27.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-9-verifiers-ta' or extra == 'group-9-verifiers-dev' or extra == 'group-9-verifiers-examples' or extra == 'group-9-verifiers-harnesses' or extra != 'group-9-verifiers-policy' or (extra == 'group-9-verifiers-policy' and extra == 'group-9-verifiers-tasksets')" },
-    { name = "msgpack" },
-    { name = "openai-agents" },
-    { name = "prime-pydantic-config", extra = ["toml"] },
-    { name = "pyzmq" },
-    { name = "renderers" },
-    { name = "tomli-w" },
-]
 
 [package.dev-dependencies]
 dev = [
@@ -6904,7 +6891,6 @@ dev = [
     { name = "pytest-xdist" },
     { name = "python-dotenv" },
     { name = "reasoning-gym" },
-    { name = "renderers" },
     { name = "ruff" },
     { name = "stagehand" },
     { name = "textarena" },
@@ -6924,14 +6910,13 @@ examples = [
     { name = "wikispeedia" },
 ]
 harnesses = [
-    { name = "default" },
-    { name = "rlm" },
+    { name = "harnesses" },
 ]
 policy = [
     { name = "semgrep" },
 ]
 tasksets = [
-    { name = "harbor" },
+    { name = "tasksets" },
 ]
 
 [package.metadata]
@@ -6949,33 +6934,28 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "liger-kernel", marker = "extra == 'rl'", specifier = ">=0.5.10" },
-    { name = "loguru", marker = "extra == 'v1'", specifier = ">=0.7.0" },
+    { name = "loguru", specifier = ">=0.7.0" },
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "mcp", specifier = ">=1.14.1" },
-    { name = "mcp", marker = "extra == 'v1'", specifier = ">=1.2" },
     { name = "msgpack", specifier = ">=1.1.2" },
-    { name = "msgpack", marker = "extra == 'v1'", specifier = ">=1.0.0" },
     { name = "nest-asyncio", specifier = ">=1.6.0" },
     { name = "nltk", marker = "extra == 'ta'" },
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-agents", specifier = ">=0.0.7" },
-    { name = "openai-agents", marker = "extra == 'v1'", specifier = ">=0.0.7" },
     { name = "peft", marker = "extra == 'rl'" },
     { name = "pillow" },
     { name = "prime-pydantic-config", extras = ["toml"] },
-    { name = "prime-pydantic-config", extras = ["toml"], marker = "extra == 'v1'" },
-    { name = "prime-sandboxes", specifier = ">=0.2.25" },
-    { name = "prime-tunnel", specifier = ">=0.1.6" },
+    { name = "prime-sandboxes", specifier = ">=0.2.27" },
+    { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pymupdf" },
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
-    { name = "pyzmq", marker = "extra == 'v1'", specifier = ">=27.0.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
+    { name = "renderers", specifier = ">=0.1.8.dev28" },
     { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev28" },
-    { name = "renderers", marker = "extra == 'v1'", specifier = ">=0.1.8.dev28" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
@@ -6985,7 +6965,7 @@ requires-dist = [
     { name = "textarena", marker = "extra == 'ta'" },
     { name = "textual" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
-    { name = "tomli-w", marker = "extra == 'v1'", specifier = ">=1.0.0" },
+    { name = "tomli-w", specifier = ">=1.0.0" },
     { name = "torch", marker = "extra == 'rl'", specifier = ">=2.8.0,<2.9.0" },
     { name = "transformers", marker = "extra == 'rl'", specifier = ">=4.56.2" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
@@ -6993,7 +6973,7 @@ requires-dist = [
     { name = "vllm", marker = "extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
     { name = "wandb", marker = "extra == 'rl'" },
 ]
-provides-extras = ["browser", "renderers", "rg", "rl", "ta", "v1"]
+provides-extras = ["browser", "renderers", "rg", "rl", "ta"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -7008,7 +6988,6 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym" },
-    { name = "renderers", specifier = ">=0.1.8.dev28" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "textarena" },
@@ -7027,12 +7006,9 @@ examples = [
     { name = "wiki-search", editable = "examples/tasksets/wiki_search" },
     { name = "wikispeedia", editable = "examples/tasksets/wikispeedia" },
 ]
-harnesses = [
-    { name = "default", editable = "packages/harnesses/default" },
-    { name = "rlm", editable = "packages/harnesses/rlm" },
-]
+harnesses = [{ name = "harnesses", editable = "packages/harnesses" }]
 policy = [{ name = "semgrep", specifier = ">=1.150.0" }]
-tasksets = [{ name = "harbor", editable = "packages/tasksets/harbor" }]
+tasksets = [{ name = "tasksets", editable = "packages/tasksets" }]
 
 [[package]]
 name = "virtualenv"
