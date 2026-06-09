@@ -600,6 +600,11 @@ class OpenAIChatCompletionsClient(
                 logprobs_content = response.choices[0].logprobs["content"]
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
 
+            if len(completion_logprobs) != len(completion_ids):
+                # Engine returned mismatched logprobs/ids — drop rather than emit
+                # out-of-sync ResponseTokens.
+                return None
+
             choice_extra = choice.model_extra or {}
             return ResponseTokens(
                 prompt_ids=prompt_ids,
