@@ -228,7 +228,10 @@ class HarborTaskSet(SandboxTaskSet):
             tar_path.unlink(missing_ok=True)
 
         results = await sandbox_client.execute_command(
-            sandbox_id, "bash /oracle/solve.sh", working_dir="/app", timeout=120
+            sandbox_id,
+            "bash /oracle/solve.sh",
+            working_dir="/app",
+            timeout=int(state.get("solution_timeout", 120)),
         )
         if results.exit_code != 0:
             stderr = (results.stderr or "")[:500]

@@ -32,6 +32,10 @@ from verifiers.envs.experimental.composable.tasksets.harbor.harbor import (
     HarborRubric,
     HarborTaskSet,
 )
+from verifiers.envs.experimental.composable.tasksets.harbor.terminal_lego import (
+    TerminalLegoTaskSet,
+    make_terminal_lego_taskset,
+)
 
 __all__ = [
     "make_swe_taskset",
@@ -60,4 +64,6 @@ __all__ = [
     "HarborDatasetTaskSet",
     "HarborRubric",
     "HarborDatasetRubric",
+    "TerminalLegoTaskSet",
+    "make_terminal_lego_taskset",
 ]
