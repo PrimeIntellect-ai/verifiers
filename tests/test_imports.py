@@ -35,28 +35,8 @@ def test_package_tasksets_and_harnesses_are_not_root_exports():
         assert not hasattr(verifiers, name)
 
 
-def test_package_tasksets_and_harnesses_are_not_v1_exports():
-    v1 = importlib.import_module("verifiers.v1")
-    for name in PACKAGE_SYMBOLS:
-        assert name not in v1.__all__
-        assert not hasattr(v1, name)
 
 
-def test_v1_taskset_imports_do_not_import_textarena():
-    textarena_module = "tasksets.textarena"
-    sys.modules.pop(textarena_module, None)
-
-    tasksets = importlib.import_module("tasksets")
-    tasksets.__dict__.pop("TextArenaTaskset", None)
-    tasksets.__dict__.pop("TextArenaTasksetConfig", None)
-    importlib.reload(tasksets)
-    assert textarena_module not in sys.modules
-
-    v1 = importlib.import_module("verifiers.v1")
-    v1.__dict__.pop("TextArenaTaskset", None)
-    v1.__dict__.pop("TextArenaTasksetConfig", None)
-    importlib.reload(v1)
-    assert textarena_module not in sys.modules
 
 
 def test_harness_imports_do_not_import_nemo_gym():

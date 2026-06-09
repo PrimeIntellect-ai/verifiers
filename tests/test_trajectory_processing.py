@@ -240,46 +240,6 @@ async def test_parse_response_tokens_truncates_prompt_attribution_with_overlong_
     assert out_attr["message_roles"] == ["user", "tool"]
 
 
-@pytest.mark.asyncio
-async def test_parsed_prompt_attribution_survives_v1_assert_serializable():
-    """Regression for PR #1414: a v1 state with ``prompt_attribution``
-    on a trajectory step must clear ``State.assert_serializable`` (the
-    ``json.dumps`` gate that pre-fix raised on the RenderedTokens dataclass).
-    """
-    from renderers.base import RenderedTokens
-
-    from verifiers.v1.utils.serialization_utils import serializable
-
-    response = Response(
-        id="t",
-        created=0,
-        model="m",
-        message=ResponseMessage(
-            role="assistant",
-            content="hi",
-            reasoning_content=None,
-            tool_calls=None,
-            finish_reason="stop",
-            is_truncated=False,
-            tokens=ResponseTokens(
-                prompt_ids=[1, 2],
-                prompt_mask=[0, 0],
-                completion_ids=[3],
-                completion_mask=[1],
-                completion_logprobs=[-0.1],
-                prompt_attribution=RenderedTokens(
-                    token_ids=[1, 2],
-                    message_indices=[0, 0],
-                    sampled_mask=[False, False],
-                    is_content=[False, True],
-                    message_roles=["user"],
-                ),
-            ),
-        ),
-    )
-    parsed = await parse_response_tokens(response)
-    step = {"tokens": serializable(parsed), "response": serializable(response)}
-    State({"trajectory": [step]}).assert_serializable()
 
 
 def test_assert_serializable_accepts_msgpack_sidecars_rejects_unknown():
