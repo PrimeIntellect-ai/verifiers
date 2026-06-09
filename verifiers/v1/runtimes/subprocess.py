@@ -1,14 +1,15 @@
 """Local subprocess runtime: run the program on the host; server on localhost.
 
-Each rollout gets a fresh, unique `/tmp/v1-*` workspace (created on `start`,
-removed on `stop`) used as the program's cwd, so concurrent local rollouts are
-isolated and trivially cleaned up. Relative `read`/`write` paths resolve against it.
+Each rollout gets a fresh, unique `/tmp/vf-*` workspace (created on `start`, removed on
+`stop`/`cleanup`) used as the program's cwd, so concurrent local rollouts are isolated
+and trivially cleaned up. Relative `read`/`write` paths resolve against it.
 """
 
 import asyncio
 import contextlib
 import os
 import shutil
+import signal
 import tempfile
 from pathlib import Path
 from typing import Literal
@@ -42,7 +43,7 @@ class SubprocessRuntime(Runtime):
         return self.workdir.name if self.workdir else None
 
     async def start(self) -> None:
-        self.workdir = Path(tempfile.mkdtemp(prefix="v1-", dir="/tmp"))
+        self.workdir = Path(tempfile.mkdtemp(prefix="vf-", dir="/tmp"))
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
@@ -89,10 +90,10 @@ class SubprocessRuntime(Runtime):
         target.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_bytes, data)
 
-    async def stop(self) -> None:
+    def cleanup(self) -> None:
         for proc in self._background:
-            with contextlib.suppress(ProcessLookupError):
-                proc.terminate()
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.kill(proc.pid, signal.SIGTERM)
         self._background = []
         if self.workdir is not None:
-            await asyncio.to_thread(shutil.rmtree, self.workdir, True)
+            shutil.rmtree(self.workdir, ignore_errors=True)
