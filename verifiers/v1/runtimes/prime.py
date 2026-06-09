@@ -7,6 +7,7 @@ import shlex
 from pathlib import PurePosixPath
 from typing import Literal
 
+from aiolimiter import AsyncLimiter
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
@@ -18,6 +19,15 @@ logger = logging.getLogger(__name__)
 # Prime sandbox defaults, mirrored here so our behavior is stable even if the
 # provider's defaults change. "auto" timeout requests the max prime allows.
 _MAX_TIMEOUT_MINUTES = 24 * 60
+
+# Prime caps tunnel creation at 100/min per API token; past that `tunnel.start()`
+# returns 429 (per-token limit) and the rollout dies. One process-wide leaky bucket
+# paces tunnel issuing across all concurrent rollouts to stay under it. Phrased as
+# 1-every-0.6s (capacity 1) rather than (100, 60) on purpose: a full 100-capacity
+# bucket would let 100 tunnels fire at once and then refill, stacking to ~200 within
+# the first minute and still tripping the limit — capacity 1 keeps issuing evenly paced.
+_TUNNELS_PER_MIN = 100
+_TUNNEL_LIMITER = AsyncLimiter(1, 60 / _TUNNELS_PER_MIN)
 
 
 class PrimeConfig(BaseConfig):
@@ -108,7 +118,8 @@ class PrimeRuntime(Runtime):
 
         tunnel = Tunnel(local_port=port)
         try:
-            url = str(await tunnel.start()).rstrip("/")
+            async with _TUNNEL_LIMITER:  # stay under prime's per-token tunnel rate
+                url = str(await tunnel.start()).rstrip("/")
         except Exception as e:
             raise ProgramError(f"prime tunnel failed (host port {port}): {e}") from e
         self._tunnels.append(tunnel)
