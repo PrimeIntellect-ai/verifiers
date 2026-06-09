@@ -134,7 +134,10 @@ class RolloutLimits:
         """The name of the first limit `trace` has reached, or None if within all caps."""
         if self.max_turns is not None and trace.num_turns >= self.max_turns:
             return "max_turns"
-        if self.max_input_tokens is not None and trace.prompt_len >= self.max_input_tokens:
+        if (
+            self.max_input_tokens is not None
+            and trace.prompt_len >= self.max_input_tokens
+        ):
             return "max_input_tokens"
         if (
             self.max_output_tokens is not None
@@ -192,9 +195,7 @@ class InterceptionServer:
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s turn=%d", limit, self.trace.id, turn)
-            return web.json_response(
-                {"error": f"rollout stopped: {limit}"}, status=400
-            )
+            return web.json_response({"error": f"rollout stopped: {limit}"}, status=400)
         # A @stop firing here refuses the turn before it is served, which halts the
         # harness (its model call errors out); Harness.run treats that exit as clean.
         for stop in self.stops:
