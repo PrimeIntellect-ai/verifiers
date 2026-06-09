@@ -48,7 +48,8 @@ class PrimeConfig(BaseConfig):
 class PrimeRuntime(Runtime):
     """Runs the program in a Prime sandbox; the server is reached via a tunnel."""
 
-    def __init__(self, config: PrimeConfig) -> None:
+    def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
+        super().__init__(name)
         self.config = config
         self._client = None
         self._sandbox_id: str | None = None
@@ -81,7 +82,7 @@ class PrimeRuntime(Runtime):
         try:
             sandbox = await self._client.create(
                 CreateSandboxRequest(
-                    name="vf-program",
+                    name=self.name,
                     docker_image=self.config.image,
                     network_access=self.config.network_access,
                     vm=self.config.vm,

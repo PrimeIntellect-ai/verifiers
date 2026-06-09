@@ -74,6 +74,13 @@ def cleanup_at_exit() -> None:
 
 
 class Runtime(ABC):
+    def __init__(self, name: str | None = None) -> None:
+        self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
+        """Resource name — the subprocess workdir, docker `--name`, prime sandbox name.
+        The rollout passes its trace id, so the provisioned resource is greppable back to
+        the rollout it serves; falls back to a unique `vf-` name (standalone / tool
+        runtimes, where there's no single owning rollout)."""
+
     @abstractmethod
     async def start(self) -> None:
         """Provision execution (workspace / container / sandbox). Use `expose` to turn a
