@@ -10,6 +10,7 @@ def make_search_taskset(backend: str = "quest", **kwargs: Any) -> TaskSet:
     factories = {
         "openseeker": make_openseeker_taskset,
         "quest": make_quest_taskset,
+        "redsearcher": make_redsearcher_taskset,
     }
     if backend not in factories:
         raise ValueError(
@@ -34,3 +35,12 @@ def make_openseeker_taskset(**kwargs: Any) -> TaskSet:
     )
 
     return OpenSeekerTaskSet(**kwargs)
+
+
+def make_redsearcher_taskset(**kwargs: Any) -> TaskSet:
+    """REDSearcher RL query-set deep-search TaskSet."""
+    from verifiers.envs.experimental.composable.tasksets.search.redsearcher import (
+        RedSearcherTaskSet,
+    )
+
+    return RedSearcherTaskSet(**kwargs)
