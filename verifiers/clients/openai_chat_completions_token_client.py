@@ -28,6 +28,12 @@ from verifiers.utils.client_utils import (
 # around the legacy /tokenize body shape without changing the signature.
 _DEFAULT_TRANSPORT: RendererTransport = "vllm_generate"
 
+# vLLM/prime-only sampling keys Dynamo's strict validator rejects — scrubbed
+# from every dynamo_chat request body (both MITO and TITO paths).
+_DYNAMO_DROP_KEYS = frozenset(
+    {"return_token_ids", "spaces_between_special_tokens", "priority"}
+)
+
 
 def _has_multimodal_content(messages) -> bool:
     """Check if any message contains multimodal content (images, audio).
@@ -175,6 +181,15 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                     sampling_args["extra_body"] = {**merged, **extra_body}
             else:
                 sampling_args["extra_body"] = extra_body
+            if self.renderer_transport == "dynamo_chat":
+                # Drop vLLM/prime-only keys Dynamo rejects from both top-level
+                # args and extra_body, so MITO + TITO paths send a clean body.
+                eb = sampling_args.get("extra_body")
+                if isinstance(eb, dict):
+                    for k in _DYNAMO_DROP_KEYS:
+                        eb.pop(k, None)
+                for k in _DYNAMO_DROP_KEYS:
+                    sampling_args.pop(k, None)
             return {k: v for k, v in sampling_args.items() if v is not None}
 
         sampling_args = normalize_sampling_args(sampling_args)
@@ -288,7 +303,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         # which spreads all of sampling_args), then remaining extra_body keys —
         # minus vLLM-only keys Dynamo's strict validator rejects (return_token_ids).
         # Unknown keys ride through the dynamo frontend's PASSTHROUGH_EXTRA_FIELDS.
-        vllm_only = {"return_token_ids"}
+        vllm_only = _DYNAMO_DROP_KEYS
         for source in (sampling_args, extra_body):
             for key, value in source.items():
                 if value is None or key in vllm_only or key in body:
@@ -596,7 +611,14 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         """
         import asyncio
 
-        tokenizer = self._get_local_tokenizer(model)
+        # Prefer the explicit tokenizer override so model aliases don't silently
+        # disable turn-2+ TITO (fall back to the served model name).
+        tok_model = (
+            getattr(self._config, "renderer_model_name", None) or model
+            if self._config is not None
+            else model
+        )
+        tokenizer = self._get_local_tokenizer(tok_model)
         add_generation_prompt = bool(extra_kwargs.get("add_generation_prompt", True))
         chat_template_kwargs = dict(extra_kwargs.get("chat_template_kwargs") or {})
 

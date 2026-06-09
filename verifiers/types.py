@@ -1286,7 +1286,6 @@ class ClientConfig(BaseModel):
     Drives the renderer pool when ``client_type == "renderer"``. Defaults
     to ``None`` so non-renderer clients aren't forced to declare it; the
     renderer client treats ``None`` as ``AutoRendererConfig()``."""
-    renderer: str = "auto"
     renderer_transport: RendererTransport = "vllm_generate"
     renderer_model_name: str | None = None
     """Override the tokenizer model name used to instantiate the renderer

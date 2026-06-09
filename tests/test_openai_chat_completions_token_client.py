@@ -311,6 +311,7 @@ async def test_post_dynamo_chat_scrubs_vllm_only_and_forwards_sampling():
             "temperature": 0.5,
             "presence_penalty": 0.2,
             "reasoning_effort": "high",  # arbitrary key: full parity, not an allowlist
+            "spaces_between_special_tokens": False,  # vLLM-only — must be scrubbed
             "extra_body": {
                 "return_token_ids": True,  # vLLM-only — must be scrubbed
                 "nvext": {"extra_fields": ["engine_data"]},
@@ -322,6 +323,7 @@ async def test_post_dynamo_chat_scrubs_vllm_only_and_forwards_sampling():
 
     body = recording_client.calls[0]["body"]
     assert "return_token_ids" not in body
+    assert "spaces_between_special_tokens" not in body
     assert body["presence_penalty"] == 0.2
     assert body["temperature"] == 0.5
     assert body["reasoning_effort"] == "high"

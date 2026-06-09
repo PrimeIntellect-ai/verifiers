@@ -548,7 +548,12 @@ class OpenAIChatCompletionsClient(
                 if isinstance(existing_lp, dict)
                 else getattr(existing_lp, "content", None)
             )
-            if completion_logprobs is not None and not existing_content:
+            if (
+                completion_logprobs is not None
+                and completion_token_ids is not None
+                and len(completion_logprobs) == len(completion_token_ids)
+                and not existing_content
+            ):
                 synthesized = {"content": [{"logprob": lp} for lp in completion_logprobs]}
                 try:
                     choice.logprobs = synthesized
