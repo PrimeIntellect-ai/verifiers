@@ -9,9 +9,5 @@ dependencies = ["datasets"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build]
-include = [
-    "alphabet_sort_v1.py",
-    "alphabet_sort_v1_server.py",
-    "pyproject.toml",
-]
+[tool.hatch.build.targets.wheel]
+packages = ["alphabet_sort_v1"]
