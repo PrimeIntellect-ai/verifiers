@@ -146,6 +146,7 @@ class Endpoint:
         secret: str | None = None,
         use_tunnel: bool = False,
         logger: logging.Logger | None = None,
+        tunnel_labels: list[str] | None = None,
     ):
         self.use_tunnel = use_tunnel
         self.logger = logger or logging.getLogger(__name__)
@@ -154,6 +155,7 @@ class Endpoint:
             secret=secret or os.environ.get("ENDPOINT_SECRET"),
         )
         self.secret = self.server.secret
+        self.tunnel_labels = list(tunnel_labels) if tunnel_labels else []
         self._tunnel: TunnelHandle | None = None
         self._tunnel_lock = asyncio.Lock()
         self._tunnel_last_checked = 0.0
@@ -295,7 +297,10 @@ class Endpoint:
                         self._tunnel = None
 
             if self._tunnel is None:
-                tunnel = cast(TunnelHandle, Tunnel(local_port=self.server.port))
+                tunnel = cast(
+                    TunnelHandle,
+                    Tunnel(local_port=self.server.port, labels=self.tunnel_labels),
+                )
                 url = await tunnel.start()
                 self._tunnel = tunnel
                 self._tunnel_last_checked = time.time()

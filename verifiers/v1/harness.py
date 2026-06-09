@@ -236,8 +236,10 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         return config
 
     def load_endpoint(self) -> Endpoint:
+        sandbox_config = self.program_sandbox_config(self.program_config)
         return Endpoint(
-            use_tunnel=self.program_sandbox_config(self.program_config) is not None
+            use_tunnel=sandbox_config is not None,
+            tunnel_labels=sandbox_config.labels if sandbox_config is not None else None,
         )
 
     def rebuild_runtime(self) -> None:
