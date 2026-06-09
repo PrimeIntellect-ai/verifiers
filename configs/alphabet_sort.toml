@@ -12,5 +12,4 @@ max_turns = 2
 
 [harness]
 id = "default"
-enable_bash = false
 runtime = { type = "subprocess" }
