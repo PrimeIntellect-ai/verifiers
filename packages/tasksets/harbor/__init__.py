@@ -112,10 +112,10 @@ def resolve_image(task_dir: Path, config: dict, require_image: bool) -> str | No
 def parse_resources(env: dict) -> Resources:
     """Map a task.toml [environment] block to Resources (0 gpus -> unset)."""
     return Resources(
-        cpu_cores=env.get("cpus"),
-        memory_gb=env["memory_mb"] / 1024 if env.get("memory_mb") else None,
-        gpu_count=env.get("gpus") or None,
-        disk_gb=env["storage_mb"] / 1024 if env.get("storage_mb") else None,
+        cpu=env.get("cpus"),
+        memory=env["memory_mb"] / 1024 if env.get("memory_mb") else None,
+        gpu=str(env["gpus"]) if env.get("gpus") else None,
+        disk=env["storage_mb"] / 1024 if env.get("storage_mb") else None,
     )
 
 
