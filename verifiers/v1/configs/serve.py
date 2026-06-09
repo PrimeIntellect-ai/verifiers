@@ -1,6 +1,6 @@
 """The `EnvServerConfig`: the config the env-server CLI parses.
 
-Inherits `EnvConfig` (taskset + harness + timeouts + max_turns) so the swappable
+Inherits `EnvConfig` (taskset + harness + timeouts + turn/token limits) so the swappable
 harness/runtime knobs are the same flags as the eval CLI (`--taskset.id`, `--harness.id`,
 `--harness.runtime.type`, `--taskset.*`), and adds only the serving knobs (bind address).
 This is the type the orchestrator embeds to drive the server.

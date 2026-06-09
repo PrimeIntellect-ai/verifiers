@@ -11,6 +11,7 @@ and the user simulator are handled out-of-band for now).
 import logging
 import secrets
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from aiohttp import web
 
@@ -115,6 +116,42 @@ def serialize_completion(response: Response, model: str) -> dict:
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 
 
+@dataclass(frozen=True)
+class RolloutLimits:
+    """Per-rollout framework limits (None = no cap), checked before each turn is served.
+    The first limit reached refuses the turn — halting any harness, the same mechanism as
+    a @stop — and becomes the trace's stop condition. Each caps a trace computed property:
+    `max_turns` -> num_turns, `max_input_tokens` -> prompt_len, `max_output_tokens` ->
+    completion_len, `max_total_tokens` -> total_tokens. Token caps are soft by one turn:
+    they're checked between turns, so the turn that crosses a cap still completes."""
+
+    max_turns: int | None = None
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    max_total_tokens: int | None = None
+
+    def reached(self, trace: Trace) -> str | None:
+        """The name of the first limit `trace` has reached, or None if within all caps."""
+        if self.max_turns is not None and trace.num_turns >= self.max_turns:
+            return "max_turns"
+        if (
+            self.max_input_tokens is not None
+            and trace.prompt_len >= self.max_input_tokens
+        ):
+            return "max_input_tokens"
+        if (
+            self.max_output_tokens is not None
+            and trace.completion_len >= self.max_output_tokens
+        ):
+            return "max_output_tokens"
+        if (
+            self.max_total_tokens is not None
+            and trace.total_tokens >= self.max_total_tokens
+        ):
+            return "max_total_tokens"
+        return None
+
+
 class InterceptionServer:
     """A localhost server that proxies one rollout's chat-completions calls."""
 
@@ -123,12 +160,12 @@ class InterceptionServer:
         ctx: RolloutContext,
         trace: Trace,
         stops: list[Callable[[Trace], Awaitable[bool]]] | None = None,
-        max_turns: int | None = None,
+        limits: RolloutLimits | None = None,
     ) -> None:
         self.ctx = ctx
         self.trace = trace
         self.stops = stops or []
-        self.max_turns = max_turns
+        self.limits = limits or RolloutLimits()
         self.secret = secrets.token_urlsafe(16)
         self.port = 0
         self.runner: web.AppRunner | None = None
@@ -153,14 +190,12 @@ class InterceptionServer:
             logger.warning("interception: unauthorized request id=%s", self.trace.id)
             return web.json_response({"error": "unauthorized"}, status=401)
         turn = len(self.trace.trajectory) + 1  # 1-based: the turn being handled
-        # The framework's max_turns cap refuses turns past it, halting any harness (same
-        # mechanism as a @stop) — a turn limit is the framework's job, not the harness's.
-        if self.max_turns is not None and len(self.trace.trajectory) >= self.max_turns:
-            self.trace.stop("max_turns")
-            logger.debug("max_turns %d reached: id=%s", self.max_turns, self.trace.id)
-            return web.json_response(
-                {"error": "rollout stopped: max_turns"}, status=400
-            )
+        # A framework limit (turns or a token budget) refuses the turn before it's served,
+        # halting any harness — the same mechanism as a @stop.
+        if (limit := self.limits.reached(self.trace)) is not None:
+            self.trace.stop(limit)
+            logger.debug("limit %r reached: id=%s turn=%d", limit, self.trace.id, turn)
+            return web.json_response({"error": f"rollout stopped: {limit}"}, status=400)
         # A @stop firing here refuses the turn before it is served, which halts the
         # harness (its model call errors out); Harness.run treats that exit as clean.
         for stop in self.stops:
