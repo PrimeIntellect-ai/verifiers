@@ -61,13 +61,13 @@ class EnvConfig(BaseConfig):
     capping is a framework concern, never an harness or task field."""
     max_input_tokens: int | None = None
     """Max input (prompt) tokens per rollout (None = no limit). Caps the trace's
-    `prompt_len`; framework-enforced between turns, like `max_turns`."""
+    `prompt_len`; framework-enforced between turns."""
     max_output_tokens: int | None = None
     """Max output (completion) tokens per rollout (None = no limit). Caps the trace's
-    `completion_len`; framework-enforced between turns, like `max_turns`."""
+    `completion_len`; framework-enforced between turns."""
     max_total_tokens: int | None = None
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
-    trace's `total_tokens`; framework-enforced between turns, like `max_turns`."""
+    trace's `total_tokens`; framework-enforced between turns."""
 
     @model_validator(mode="before")
     @classmethod
