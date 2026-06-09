@@ -23,12 +23,12 @@ class Resources(StrictBaseModel):
 
     cpu: float | None = None
     """CPU cores."""
-    memory: int | None = None
-    """Memory in MB."""
+    memory: float | None = None
+    """Memory in GB."""
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2" (type[:count])."""
-    disk: int | None = None
-    """Disk in MB (enforced by prime; advisory on docker/modal)."""
+    disk: float | None = None
+    """Disk in GB (enforced by prime; advisory on docker/modal)."""
 
 
 class Task(StrictBaseModel):

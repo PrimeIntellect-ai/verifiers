@@ -38,12 +38,12 @@ class PrimeConfig(BaseConfig):
     # precedence cli/toml > task > this default). Mapped to prime's API in `start`.
     cpu: float = 1.0
     """CPU cores."""
-    memory: int = 2048
-    """Memory in MB."""
+    memory: float = 2.0
+    """Memory in GB."""
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
-    disk: int = 5120
-    """Disk in MB."""
+    disk: float = 5.0
+    """Disk in GB."""
 
 
 class PrimeRuntime(Runtime):
@@ -68,13 +68,13 @@ class PrimeRuntime(Runtime):
             if self.config.timeout == "auto"
             else self.config.timeout
         )
-        # Map the Modal-unit resources onto prime's API (GB, minutes, split GPU).
-        # gpu_type/region are only sent when set (else provider-chosen).
+        # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
+        # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
         options = {
             "cpu_cores": self.config.cpu,
-            "memory_gb": self.config.memory / 1024,
-            "disk_size_gb": self.config.disk / 1024,
+            "memory_gb": self.config.memory,
+            "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
             "timeout_minutes": timeout // 60,
             "gpu_type": gpu_type,

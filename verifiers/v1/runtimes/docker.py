@@ -28,13 +28,13 @@ class DockerConfig(BaseConfig):
     # Resources in Modal's units (also settable per-task via Task.resources).
     cpu: float | None = None
     """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
-    memory: int | None = None
-    """Hard memory limit in MB (docker `--memory`). None = unlimited."""
+    memory: float | None = None
+    """Hard memory limit in GB (docker `--memory`). None = unlimited."""
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "2" (docker `--gpus` uses the count; needs the nvidia
     container toolkit). None = none."""
-    disk: int | None = None
-    """Advisory disk request in MB. Docker has no portable per-container size limit, so
+    disk: float | None = None
+    """Advisory disk request in GB. Docker has no portable per-container size limit, so
     this is accepted (so a task can declare it without a warning) but not enforced."""
 
 
@@ -91,7 +91,7 @@ class DockerRuntime(Runtime):
         if self.config.cpu is not None:
             limits += ["--cpus", str(self.config.cpu)]
         if self.config.memory is not None:
-            limits += ["--memory", f"{self.config.memory}m"]
+            limits += ["--memory", f"{self.config.memory}g"]
         _, gpu_count = parse_gpu(self.config.gpu)
         if gpu_count:
             limits += ["--gpus", str(gpu_count)]

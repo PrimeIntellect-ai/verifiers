@@ -41,12 +41,12 @@ class ModalConfig(BaseConfig):
     # precedence cli/toml > task > this default).
     cpu: float = 1.0
     """CPU cores."""
-    memory: int = 2048
-    """Memory in MB."""
+    memory: float = 2.0
+    """Memory in GB."""
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2"."""
-    disk: int = 5120
-    """Disk in MB. Modal sandboxes have no disk knob, so this is accepted (so a task can
+    disk: float = 5.0
+    """Disk in GB. Modal sandboxes have no disk knob, so this is accepted (so a task can
     declare it without a warning) but not enforced."""
 
 
@@ -81,7 +81,7 @@ class ModalRuntime(Runtime):
                 image=modal.Image.from_registry(self.config.image),
                 workdir=self.config.workdir,
                 cpu=self.config.cpu,
-                memory=self.config.memory,
+                memory=int(self.config.memory * 1024),  # Modal memory is MB
                 gpu=self.config.gpu,
                 region=self.config.region,
                 block_network=not self.config.network_access,

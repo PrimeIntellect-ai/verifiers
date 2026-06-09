@@ -110,13 +110,12 @@ def resolve_image(task_dir: Path, config: dict, require_image: bool) -> str | No
 
 
 def parse_resources(env: dict) -> Resources:
-    """Map a task.toml [environment] block to Resources (0 gpus -> unset). Modal units
-    (MB, GPU spec string) line up with harbor's `memory_mb` / `storage_mb` directly."""
+    """Map a task.toml [environment] block to Resources (0 gpus -> unset)."""
     return Resources(
         cpu=env.get("cpus"),
-        memory=int(env["memory_mb"]) if env.get("memory_mb") else None,
+        memory=env["memory_mb"] / 1024 if env.get("memory_mb") else None,
         gpu=str(env["gpus"]) if env.get("gpus") else None,
-        disk=int(env["storage_mb"]) if env.get("storage_mb") else None,
+        disk=env["storage_mb"] / 1024 if env.get("storage_mb") else None,
     )
 
 
