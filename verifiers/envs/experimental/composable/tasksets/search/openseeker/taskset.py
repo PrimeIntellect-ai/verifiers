@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DATASET_NAME = "PolarSeeker/OpenSeeker-v1-Data"
 DEFAULT_SPLIT = "train"
-DEFAULT_TRAJECTORY_CORRECTNESS = "Correct"
+DEFAULT_TRAJECTORY_CORRECTNESS = None
 DEFAULT_ANSWER_FILE = "/task/answer.txt"
 DEFAULT_WORKDIR = "/workspace"
 DEFAULT_JUDGE_BASE_URL = "https://api.pinference.ai/api/v1"

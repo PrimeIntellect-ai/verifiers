@@ -4,6 +4,10 @@ Composable search taskset for [`PolarSeeker/OpenSeeker-v1-Data`](https://hugging
 
 OpenSeeker v1 data contains synthesized deep-search QA pairs plus trajectories generated with `search` and `visit` tools. The public OpenSeeker evaluator scores only the final answer: it sends the question, gold answer, and model response to an LLM judge and expects `A` for correct or `B` for incorrect. This backend preserves that binary semantic answer-judge contract.
 
+By default, the taskset uses the full dataset. The `trajectory_correctness`
+argument filters the quality label of the stored OpenSeeker source trajectory,
+not the validity of the question or gold answer.
+
 ## Usage
 
 ```python
@@ -18,7 +22,7 @@ taskset = make_search_taskset(backend="openseeker")
 |---|---:|---|
 | `dataset_name` | `PolarSeeker/OpenSeeker-v1-Data` | Hugging Face dataset name. |
 | `split` | `train` | Dataset split. |
-| `trajectory_correctness` | `Correct` | Keep rows with this trajectory label. Use `None` or `all` for all rows. |
+| `trajectory_correctness` | `None` | Keep rows with this source trajectory label. Use `None` or `all` for all rows. |
 | `min_tool_calls` | `None` | Optional lower bound for `number of tool calls`. |
 | `max_tool_calls` | `None` | Optional upper bound for `number of tool calls`. |
 | `include_trajectory` | `False` | Include the large source trajectory in task metadata. |
