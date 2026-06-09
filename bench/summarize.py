@@ -39,7 +39,7 @@ def main() -> None:
         f"e2e_s={args.elapsed:.0f} "
         f"throughput_rps={len(traces) / args.elapsed:.2f} "
         f"gen_min={min(gen):.1f} gen_p50={statistics.median(gen):.1f} "
-        f"gen_p95={pct(gen, 95):.1f} gen_max={max(gen):.1f} "
+        f"gen_p90={pct(gen, 90):.1f} gen_max={max(gen):.1f} "
         f"reward_mean={statistics.mean(rewards):.3f} "
         f"errors={errors} truncated={truncated}"
     )
