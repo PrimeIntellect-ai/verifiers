@@ -5,9 +5,14 @@ description = "Shipped v1 tasksets (resolved by id via `import <id>`), vendored 
 requires-python = ">=3.10"
 dependencies = []
 
+[project.optional-dependencies]
+# textarena_v1 (the TextArena taskset) needs the game engine; kept optional so the other
+# shipped tasksets install without it.
+textarena = ["textarena==0.7.4", "nltk>=3.9.2"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["harbor"]
+packages = ["harbor", "textarena_v1"]
