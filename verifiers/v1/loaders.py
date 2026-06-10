@@ -18,7 +18,7 @@ from types import ModuleType
 from typing import get_args
 
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.types import ensure_installed
+from verifiers.v1.ids import ensure_installed
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 

@@ -23,7 +23,7 @@ from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.types import EnvId, env_name
+from verifiers.v1.ids import EnvId, env_name
 from verifiers.v1.tools import Tools
 from verifiers.v1.user import User
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, SubprocessConfig

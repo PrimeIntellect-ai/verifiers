@@ -264,7 +264,7 @@ class LegacyEnvServer(EnvServer):
         address: str = "tcp://127.0.0.1:5000",
     ) -> None:
         from verifiers import load_environment
-        from verifiers.v1.types import ensure_installed, env_name
+        from verifiers.v1.ids import ensure_installed, env_name
 
         self.address = address
         # Install from the env hub on demand for an `org/name[@version]` id, then load the

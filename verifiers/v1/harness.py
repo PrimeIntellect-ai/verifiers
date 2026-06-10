@@ -18,7 +18,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.types import EnvId, env_name
+from verifiers.v1.ids import EnvId, env_name
 from verifiers.v1.runtimes import DockerConfig, ProgramResult, Runtime, RuntimeConfig
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
