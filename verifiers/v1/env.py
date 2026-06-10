@@ -166,6 +166,8 @@ class Environment:
                     "runtime has no container; use the docker or prime runtime"
                 )
             updates["image"] = task.image
+        if task.workdir is not None and "workdir" in type(config).model_fields:
+            updates["workdir"] = task.workdir
         for field, value in task.resources.model_dump(exclude_none=True).items():
             spec = type(config).model_fields.get(field)
             if spec is None:

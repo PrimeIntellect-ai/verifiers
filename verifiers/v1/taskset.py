@@ -109,6 +109,12 @@ class Taskset(Generic[TaskT, ConfigT]):
         multi-turn conversation (e.g. a TextArena game)."""
         return None
 
+    async def setup(self, task: TaskT, runtime: Runtime) -> None:
+        """Prepare the live runtime for this task, after `runtime.start()` and before the
+        harness runs. No-op by default; override to run per-task setup in the runtime (e.g.
+        a SWE row checking out its base commit). Errors propagate and fail the rollout."""
+        return None
+
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Score one rollout: run all `@metric` then `@reward` over its trace,
         concurrently within each phase. Each metric is recorded in `trace.metrics`

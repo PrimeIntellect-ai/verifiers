@@ -52,6 +52,11 @@ class Task(StrictBaseModel):
     """Container image this task needs (e.g. its harbor environment). When set, the
     runtime must be a container (docker/prime): the Environment injects it into the
     runtime config and refuses the subprocess runtime, which has no container."""
+    workdir: str | None = None
+    """Working directory the harness and scoring run in — the Environment injects it into
+    the runtime config's `workdir` (where the runtime supports one). For a containerized
+    task whose image puts the working tree at a non-default path (e.g. a SWE row's
+    `/workspace/<repo>`)."""
     harness_timeout: float | None = None
     """Optional per-task harness timeout (seconds). Merges with the eval's
     `harness_timeout`: cli/toml > this > default (no limit)."""
