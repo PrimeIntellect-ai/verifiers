@@ -64,23 +64,29 @@ and live in two places:
 - **`packages/`** — shipped, installed by default. Commonly-used **harnesses** (`default`,
   `rlm`) and **taskset integrations** that wrap a whole benchmark family (`harbor` — the
   agentic-benchmark registry; `textarena` — TextArena games). Use them by id.
-- **`examples/`** — small reference implementations to copy when **authoring your own**
-  taskset or harness. Each shows one pattern:
+- **`examples/`** — small reference implementations to copy when **authoring your own**,
+  split by kind into `examples/tasksets/` and `examples/harnesses/`. Each shows one pattern.
+
+Taskset examples (`examples/tasksets/`):
 
 | example | pattern it shows |
 | --- | --- |
 | `reverse-text-v1` | the minimal single-turn taskset |
 | `gsm8k-v1`, `aime24-v1`, `math-env-v1` | single-turn + in-runtime scoring (a `@reward` uv script) |
 | `code-golf-v1` | group rewards (`@group_reward` over a task's N rollouts) |
-| `alphabet-sort-v1` | a multi-turn, stateful task |
+| `alphabet-sort-v1` | a multi-turn, stateful task driven by a `vf.User` simulator |
 | `glossary-v1` | a custom **colocated** tool server |
 | `wikispeedia-v1` | a tool server in its **own per-rollout** runtime |
 | `wiki-search-v1` | a **shared** tool server (built once for the eval) + an LLM judge |
 | `deepwiki-v1` | an **existing remote** tool server, by URL |
-| `hello-rlm-v1` | an agentic env driven by the `rlm` harness |
 | `wordle-v1` | configuring the vendored `textarena` integration (user simulator) |
 | `terminal-bench-2-v1` | configuring the vendored `harbor` integration |
-| `compact` (harness) | context compaction → branching trajectories |
+
+Harness examples (`examples/harnesses/`):
+
+| example | pattern it shows |
+| --- | --- |
+| `compact` | context compaction → branching trajectories |
 
 ## Patterns
 
@@ -112,9 +118,9 @@ guaranteed cleanup of its resources, even on exit/interrupt.
 
 ### Tools
 
-A task declares tool servers (`tool_servers`); **placement** is config on
-`taskset.tools` and reachability (localhost / tunnel / native sandbox expose) is resolved
-automatically. A tool server is a single-file uv script (only runtime dep: `uv`), so a
+A taskset exposes a task's tools via `tools` (MCP servers launched in the runtime);
+**placement** is config on `taskset.tools` and reachability (localhost / tunnel / native
+sandbox expose) is resolved automatically. A tool server is a single-file uv script (only runtime dep: `uv`), so a
 colocated or own-runtime tool runs in any runtime. The tool examples each show one
 placement:
 
@@ -173,15 +179,6 @@ uv run eval gsm8k-v1 -n 1 --max-turns 8                  # cap model turns
 uv run eval gsm8k-v1 -n 1 --max-total-tokens 8192        # cap prompt+completion tokens
                                                           # (also --max-input-tokens / --max-output-tokens)
 uv run eval gsm8k-v1 -n 1 --retry.attempts 3 --retry.include ProgramError  # retry by exception type
-```
-
-### User simulation
-
-A taskset can drive the *user* side of a multi-turn conversation. The interception server
-injects user turns from a `vf.User`, so the harness is unaware it's talking to a simulator:
-
-```bash
-uv run eval @ configs/textarena.toml -n 1   # a user simulator plays the game (TextArena Wordle-v0)
 ```
 
 ### First-class Harbor support
