@@ -277,7 +277,7 @@ class LegacyEnvServer(EnvServer):
         # The formatted dataset rows are RolloutInputs (prompt + example_id); index by task_idx.
         self.dataset = self.env.get_dataset()
         self.tasks = self.dataset  # `len(self.tasks)` drives the `info` response
-        self.requires_group_scoring = False
+        self.requires_group_scoring = self.env.requires_group_rollouts
         self._clients: dict[tuple[str, str], Any] = {}
 
         self.ctx = zmq.asyncio.Context()
@@ -340,10 +340,16 @@ class LegacyEnvServer(EnvServer):
         )
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
-        traces = []
-        for _ in range(req.n):
-            out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
-            traces.append(rollout_output_to_trace(out, req.task_idx).to_wire())
+        client = self._v0_client(req.client, req.model)
+        # run_group scores the rollouts together so group/preference reward funcs apply.
+        outs = await self.env.run_group(
+            group_inputs=[dict(self.dataset[req.task_idx]) for _ in range(req.n)],
+            client=client,
+            model=req.model,
+            sampling_args=req.sampling.model_dump(exclude_none=True),
+            state_columns=["trajectory"],
+        )
+        traces = [rollout_output_to_trace(out, req.task_idx).to_wire() for out in outs]
         return RunGroupResponse(traces=traces)
 
 
