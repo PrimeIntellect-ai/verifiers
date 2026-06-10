@@ -58,6 +58,9 @@ class Harness(ABC, Generic[ConfigT]):
     SUPPORTS_TASK_TOOLS: ClassVar[bool] = (
         True  # expose a task's MCP tool servers to the model; set False for harnesses without an MCP client
     )
+    SUPPORTS_USER_SIM: ClassVar[bool] = (
+        False  # drive a task's user simulator (multi-turn user injection); opt in per harness
+    )
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config

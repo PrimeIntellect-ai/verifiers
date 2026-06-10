@@ -48,14 +48,17 @@ def harness(request) -> str:
 
 
 @pytest.fixture
-def supports_task_tools():
-    """Read an harness's `SUPPORTS_TASK_TOOLS` capability (whether it can drive a taskset's MCP
-    tools). The tools test uses it to decide whether a pairing should run or be rejected."""
+def harness_supports():
+    """Read a capability flag (e.g. `SUPPORTS_TASK_TOOLS`, `SUPPORTS_USER_SIM`) off an harness
+    by id — the matrix tests use it to decide whether a harness/task pairing should run, be
+    rejected, or be skipped."""
     from verifiers.v1.loaders import load_harness
 
-    def _supports(harness_id: str) -> bool:
-        config = EvalConfig.model_validate({"harness": {"id": harness_id}})
-        return load_harness(config.harness).SUPPORTS_TASK_TOOLS
+    def _supports(harness_id: str, flag: str) -> bool:
+        harness = load_harness(
+            EvalConfig.model_validate({"harness": {"id": harness_id}}).harness
+        )
+        return getattr(harness, flag)
 
     return _supports
 

@@ -5,10 +5,10 @@ turn/timeout caps. The reward tests fan out across the full **harness x runtime*
 `harness` x `runtime` fixtures): the built-in harnesses (default, rlm) x the runtimes
 (subprocess/docker/prime, modal excluded).
 
-The tools test reads the harness's `SUPPORTS_TASK_TOOLS` capability to decide its expectation:
-an harness that can't drive a taskset's MCP tools (rlm) is refused up front, so the pairing
-must raise rather than run. The agentic task is the one pinned combination — it needs the bash
-tool, which only the default harness exposes — so it varies runtime but not harness.
+The capability-sensitive tests read the harness flags: the tools test expects a harness
+without `SUPPORTS_TASK_TOOLS` (rlm) to be refused up front (raise); the multi-turn test skips a
+harness without `SUPPORTS_USER_SIM` (rlm). The agentic task pins the default harness (only it
+exposes the bash tool) and varies runtime.
 """
 
 import pytest
@@ -27,21 +27,17 @@ async def test_single_turn(run_v1, harness, runtime, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_multi_turn(run_v1, harness, runtime, tmp_path):
-    """Multi-turn (sort one name per turn, two turns)."""
+async def test_multi_turn(run_v1, harness, runtime, harness_supports, tmp_path):
+    """Multi-turn, driven by a (container-safe) user simulator. Skipped on harnesses without
+    `SUPPORTS_USER_SIM` (rlm: a single-instruction interface that can't take injected turns)."""
+    if not harness_supports(harness, "SUPPORTS_USER_SIM"):
+        pytest.skip(f"{harness} does not support a user simulator")
     (trace,) = await run_v1(
-        "alphabet-sort-v1",
+        "echo-multi-v1",
         harness=harness,
         runtime=runtime,
         output_dir=tmp_path,
-        max_turns=4,
-        taskset_overrides={
-            "min_turns": 2,
-            "max_turns": 2,
-            "min_names_per_turn": 1,
-            "max_names_per_turn": 1,
-            "similarity_power": 1,  # linear similarity (no power scaling), so a near-perfect sort isn't sharply penalized
-        },
+        max_turns=6,
     )
     assert trace.errors == []
     assert not trace.is_truncated
@@ -51,11 +47,11 @@ async def test_multi_turn(run_v1, harness, runtime, tmp_path):
 
 @pytest.mark.e2e
 async def test_multi_turn_with_tools(
-    run_v1, harness, runtime, supports_task_tools, tmp_path
+    run_v1, harness, runtime, harness_supports, tmp_path
 ):
     """Multi-turn with a colocated tool. An harness whose `SUPPORTS_TASK_TOOLS` is False can't
     drive the task's tools, so the pairing is refused at build time instead of running."""
-    if not supports_task_tools(harness):
+    if not harness_supports(harness, "SUPPORTS_TASK_TOOLS"):
         with pytest.raises(ValueError, match="task tools"):
             await run_v1(
                 "glossary-v1", harness=harness, runtime=runtime, output_dir=tmp_path
