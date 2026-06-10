@@ -56,6 +56,7 @@ from verifiers.v1.types import (
     AssistantMessage,
     Message,
     Messages,
+    MMData,
     Response,
     SamplingConfig,
     StrictBaseModel,
@@ -65,6 +66,7 @@ from verifiers.v1.types import (
     ToolMessage,
     Usage,
     UserMessage,
+    WireTensor,
 )
 from verifiers.v1.user import User
 
@@ -73,6 +75,8 @@ __all__ = [
     "EnvId",
     "ensure_installed",
     "env_name",
+    "MMData",
+    "WireTensor",
     "AssistantMessage",
     "Message",
     "Messages",

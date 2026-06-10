@@ -32,6 +32,7 @@ from verifiers.v1.task import WireTask
 from verifiers.v1.trace import Error, TimeSpan, Timing, Trace, Turn
 from verifiers.v1.types import (
     AssistantMessage,
+    MMData,
     Response,
     SamplingConfig,
     SystemMessage,
@@ -147,9 +148,8 @@ def _to_v1_response(raw: Any, model: str, tokens: TurnTokens | None = None) -> R
 
 
 def _to_v1_tokens(raw: Any) -> TurnTokens | None:
-    # NOTE: only ids + sampling logprobs are bridged. Multimodal inputs (`mm_kwargs`) and
-    # MoE router-replay (`routed_experts`) are not yet carried through `TurnTokens`, so a v0
-    # VLM or router-replay run is not supported via the bridge yet.
+    # Bridges ids + sampling logprobs + multimodal inputs (the v0 renderer's
+    # `multi_modal_data`). NOTE: MoE router-replay (`routed_experts`) is not yet carried.
     if not isinstance(raw, dict):
         return None
     if not raw.get("completion_ids") and not raw.get("prompt_ids"):
@@ -158,6 +158,7 @@ def _to_v1_tokens(raw: Any) -> TurnTokens | None:
         prompt_ids=list(raw.get("prompt_ids") or []),
         completion_ids=list(raw.get("completion_ids") or []),
         completion_logprobs=list(raw.get("completion_logprobs") or []),
+        multi_modal_data=MMData.from_renderer(raw.get("multi_modal_data")),
     )
 
 

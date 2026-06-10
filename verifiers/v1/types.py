@@ -96,6 +96,69 @@ class Usage(StrictBaseModel):
         return self.prompt_tokens + self.completion_tokens
 
 
+class WireTensor(StrictBaseModel):
+    """A tensor on the wire: dtype + shape + base64 of the raw buffer. JSON-native, so it
+    survives `model_dump(mode="json")` + msgpack (a raw tensor would not)."""
+
+    dtype: str
+    shape: list[int]
+    data: str  # base64 of arr.tobytes()
+
+
+def _encode_wire_tensor(val: Any) -> WireTensor:
+    """Encode a torch tensor / numpy array / already-encoded `{dtype,shape,data:bytes}`
+    dict into a `WireTensor` (base64). Torch/numpy imported lazily — text-only callers
+    never hit this."""
+    import base64
+
+    if isinstance(val, dict) and "data" in val and "dtype" in val:  # v0-wire encoded
+        return WireTensor(
+            dtype=str(val["dtype"]),
+            shape=list(val["shape"]),
+            data=base64.b64encode(bytes(val["data"])).decode(),
+        )
+    import numpy as np
+
+    if hasattr(val, "detach"):  # torch tensor
+        val = val.detach().cpu().contiguous().numpy()
+    arr = np.ascontiguousarray(val)
+    return WireTensor(
+        dtype=str(arr.dtype),
+        shape=list(arr.shape),
+        data=base64.b64encode(arr.tobytes()).decode(),
+    )
+
+
+class MMData(StrictBaseModel):
+    """Per-turn multimodal sidecar — the JSON-native mirror of `renderers.MultiModalData`.
+    `mm_items[modality][i]` is the HF processor's per-image dict (e.g. `pixel_values`,
+    `image_grid_thw`) with each tensor encoded as a `WireTensor`."""
+
+    mm_items: dict[str, list[dict[str, WireTensor]]] = Field(default_factory=dict)
+    mm_hashes: dict[str, list[str]] = Field(default_factory=dict)
+
+    @classmethod
+    def from_renderer(cls, mm: Any) -> "MMData | None":
+        """Encode a `renderers.MultiModalData` (or an already-encoded dict) into a
+        JSON-native `MMData`; None when there's no image/video payload."""
+        if mm is None:
+            return None
+        items = getattr(mm, "mm_items", None)
+        hashes = getattr(mm, "mm_hashes", None)
+        if items is None and isinstance(mm, dict):
+            items, hashes = mm.get("mm_items"), mm.get("mm_hashes")
+        if not items:
+            return None
+        wire = {
+            modality: [
+                {key: _encode_wire_tensor(val) for key, val in item.items()}
+                for item in per_modality
+            ]
+            for modality, per_modality in items.items()
+        }
+        return cls(mm_items=wire, mm_hashes=hashes or {})
+
+
 class TurnTokens(StrictBaseModel):
     """Token ids + sampling logprobs for one response, for training. Populated by the
     renderer client (client-side tokenization) or the chat client (parsed from vLLM's
@@ -104,6 +167,8 @@ class TurnTokens(StrictBaseModel):
     prompt_ids: list[int] = Field(default_factory=list)
     completion_ids: list[int] = Field(default_factory=list)
     completion_logprobs: list[float] = Field(default_factory=list)
+    multi_modal_data: MMData | None = None
+    """Per-turn image/video inputs (VLM training); None for text-only turns."""
 
 
 class Response(StrictBaseModel):

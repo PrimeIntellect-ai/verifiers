@@ -23,6 +23,7 @@ from verifiers.v1.types import (
     FinishReason,
     Message,
     Messages,
+    MMData,
     Response,
     SamplingConfig,
     Tool,
@@ -79,6 +80,7 @@ def response_from_generate(result: dict, model: str) -> Response:
             prompt_ids=prompt_ids,
             completion_ids=completion_ids,
             completion_logprobs=result.get("completion_logprobs") or [],
+            multi_modal_data=MMData.from_renderer(result.get("multi_modal_data")),
         ),
     )
 
