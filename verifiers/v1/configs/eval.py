@@ -4,10 +4,20 @@ from pathlib import Path
 from uuid import uuid4
 
 from pydantic import AliasChoices, Field
+from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig, OpenAIClientConfig
 from verifiers.v1.env import EnvConfig
 from verifiers.v1.types import SamplingConfig
+
+
+class LegacyConfig(BaseConfig):
+    """Opt-in v0 backwards-compat. When `id` is set, the eval runs a classic
+    `verifiers.load_environment(id, **args)` env in-process and bridges its rollouts to v1
+    `Trace`s (all in `verifiers.v1.legacy`), ignoring `taskset`/`harness`/runtime."""
+
+    id: str | None = None
+    args: dict = {}
 
 
 class EvalConfig(EnvConfig):
@@ -54,3 +64,5 @@ class EvalConfig(EnvConfig):
     )
     """Where to write the run (config.toml + results.jsonl). None = a fresh per-run dir
     under `outputs/<env>--<model>--<harness>/<uuid>` (so runs never overwrite each other)."""
+    legacy: LegacyConfig = LegacyConfig()
+    """Run a classic v0 env instead: `--legacy.id <env-id> [--legacy.args '{...}']`."""

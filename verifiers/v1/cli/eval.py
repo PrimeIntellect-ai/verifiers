@@ -28,7 +28,7 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.cli.runner import run_eval
 from verifiers.v1.configs.eval import EvalConfig
 
-USAGE = "usage: uv run eval [<taskset-id>] [--harness.id <id>] [options] [@ file.toml]"
+USAGE = "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--legacy.id <v0-env-id>] [options] [@ file.toml]"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -45,10 +45,14 @@ def main(argv: list[str] | None = None) -> None:
             narrow_config(EvalConfig, argv)
         )  # full option help, narrowed to the given ids
         return
-    if not extract_id(argv, "taskset") and not references_config_file(argv):
+    if (
+        not extract_id(argv, "taskset")
+        and not extract_id(argv, "legacy")
+        and not references_config_file(argv)
+    ):
         raise SystemExit(
             USAGE
-        )  # need a taskset: a positional / --taskset.id, or one in @ file.toml
+        )  # need a taskset (positional / --taskset.id), a --legacy.id, or a @ file.toml
 
     config_type = narrow_config(EvalConfig, argv)
     sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
@@ -56,14 +60,23 @@ def main(argv: list[str] | None = None) -> None:
     if config.dry_run:  # resolved + validated; dump it and skip the run
         print(config.model_dump_json(indent=2, exclude_none=True))
         return
+    # The --rich dashboard reads live v1 Rollout state, so it's off for a legacy run.
+    rich = config.rich and not config.legacy.id
     # --rich owns the screen, so quiet the per-rollout INFO logs it would replace.
-    setup_logging("DEBUG" if config.verbose else "WARNING" if config.rich else "INFO")
+    setup_logging("DEBUG" if config.verbose else "WARNING" if rich else "INFO")
 
-    env = vf.Environment(config)
-    # Make SIGTERM behave like Ctrl-C (SIGINT) so a killed/timed-out eval still runs
-    # each rollout's `finally` — i.e. tears down its docker container / prime sandbox.
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
-    traces = asyncio.run(run_eval(env, config))
-    if not config.rich:  # --rich is the whole output; otherwise dump each trace as JSON
+    if config.legacy.id:  # v0 backwards-compat: run the classic env, bridged to Traces
+        from verifiers.v1.legacy import run_legacy_eval
+
+        traces = asyncio.run(run_legacy_eval(config))
+    else:
+        env = vf.Environment(config)
+        # Make SIGTERM behave like Ctrl-C (SIGINT) so a killed/timed-out eval still runs
+        # each rollout's `finally` — i.e. tears down its docker container / prime sandbox.
+        signal.signal(
+            signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt())
+        )
+        traces = asyncio.run(run_eval(env, config))
+    if not rich:  # --rich is the whole output; otherwise dump each trace as JSON
         for trace in traces:
             print(trace.model_dump_json(indent=2, exclude_none=True))

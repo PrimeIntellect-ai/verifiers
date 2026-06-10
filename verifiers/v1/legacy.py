@@ -14,6 +14,7 @@ v1 stays importable without the v0 package present.
 """
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import zmq
@@ -335,3 +336,94 @@ class LegacyEnvServer(EnvServer):
             out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
             traces.append(rollout_output_to_trace(out, req.task_idx).to_wire())
         return RunGroupResponse(traces=traces)
+
+
+# --- in-process v0 eval (the `eval` CLI's `--legacy.id` path) ------------------
+
+
+def _eval_client(client_config: ClientConfig, model: str):
+    """A v0 chat-completions client built from the v1 eval `ClientConfig` (base url + api
+    key var + headers). Eval needs no token ids, so this skips the renderer pool the
+    training bridge (`_v0_client`) builds."""
+    from verifiers.clients import resolve_client
+    from verifiers.types import ClientConfig as V0ClientConfig
+
+    return resolve_client(
+        V0ClientConfig(
+            client_type="openai_chat_completions",
+            api_base_url=client_config.base_url,
+            api_key_var=client_config.api_key_var,
+            extra_headers=dict(getattr(client_config, "headers", None) or {}),
+        )
+    )
+
+
+def _legacy_output_dir(config) -> Path:
+    """The legacy run's output dir, mirroring the native `output_path` shape but keyed by
+    the v0 env id (`outputs/<id>--<model>--legacy/<uuid>`); honors `--output-dir`."""
+    if config.output_dir is not None:
+        return config.output_dir
+    name = f"{config.legacy.id}--{config.model.replace('/', '--')}--legacy"
+    return Path("outputs") / name / config.uuid
+
+
+async def run_legacy_eval(config) -> list[Trace]:
+    """In-process v0 eval used by the `eval` CLI when `config.legacy.id` is set.
+
+    Loads the v0 env, runs `num_rollouts` per task with bounded concurrency, maps each v0
+    `RolloutOutput` to a v1 `Trace` (`rollout_output_to_trace`), persists results as they
+    land (the same `results.jsonl` / `config.toml` a native run writes), and returns the
+    traces. The v0 env is run directly (`env.run_rollout`, no env server), so this needs no
+    runtime / interception server. All v0 specifics live here; the CLI only branches on
+    `config.legacy.id`."""
+    import asyncio
+    import random
+
+    from verifiers import load_environment
+
+    from verifiers.v1.cli.output import append_trace, save_config
+
+    env = load_environment(config.legacy.id, **(config.legacy.args or {}))
+    dataset = env.get_dataset()
+    idxs = list(range(len(dataset)))
+    if config.shuffle:
+        random.Random(0).shuffle(idxs)  # fixed seed: same sample every run
+    if config.num_tasks is not None:
+        idxs = idxs[: config.num_tasks]
+
+    client = _eval_client(config.client, config.model)
+    sampling_args = config.sampling.model_dump(exclude_none=True)
+    out_dir = _legacy_output_dir(config)
+    save_config(config, out_dir)
+    logger.info("results: %s", out_dir)
+    logger.info(
+        "running %dx%d v0 rollouts on %s (legacy: %s)",
+        len(idxs),
+        config.num_rollouts,
+        config.model,
+        config.legacy.id,
+    )
+
+    sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+
+    async def run_one(task_idx: int) -> Trace:
+        async def go() -> Trace:
+            out = await env.run_rollout(
+                input=dict(dataset[task_idx]),
+                client=client,
+                model=config.model,
+                sampling_args=sampling_args,
+                state_columns=["trajectory"],
+            )
+            trace = rollout_output_to_trace(out, task_idx)
+            append_trace(out_dir, trace)
+            return trace
+
+        if sem is None:
+            return await go()
+        async with sem:
+            return await go()
+
+    # `num_rollouts` rollouts per selected task, all bounded by the one semaphore.
+    coros = [run_one(i) for i in idxs for _ in range(config.num_rollouts)]
+    return list(await asyncio.gather(*coros))
