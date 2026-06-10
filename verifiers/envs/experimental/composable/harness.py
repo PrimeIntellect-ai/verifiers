@@ -15,9 +15,13 @@ connects them.
 """
 
 from dataclasses import dataclass
-from importlib.abc import Traversable
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
+
+try:
+    from importlib.resources.abc import Traversable
+except ImportError:  # Python < 3.14
+    from importlib.abc import Traversable
 
 if TYPE_CHECKING:
     from verifiers.envs.experimental.composable.task import SandboxSpec

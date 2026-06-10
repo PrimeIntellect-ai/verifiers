@@ -8,7 +8,6 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-from importlib.abc import Traversable
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -19,6 +18,11 @@ from typing import (
     get_args,
     runtime_checkable,
 )
+
+try:
+    from importlib.resources.abc import Traversable
+except ImportError:  # Python < 3.14
+    from importlib.abc import Traversable
 
 from verifiers.clients import Client, resolve_client
 from verifiers.types import Messages, Response, ResponseMessage, Tool

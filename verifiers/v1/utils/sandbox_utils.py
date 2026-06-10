@@ -8,9 +8,13 @@ import tarfile
 import tempfile
 import uuid
 from collections.abc import Awaitable, Callable
-from importlib.abc import Traversable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, cast
+
+try:
+    from importlib.resources.abc import Traversable
+except ImportError:  # Python < 3.14
+    from importlib.abc import Traversable
 
 import tenacity as tc
 
