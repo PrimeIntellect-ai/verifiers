@@ -67,7 +67,7 @@ class TasksetConfig(BaseConfig):
 
     @property
     def name(self) -> str:
-        """The taskset's bare name (org/version stripped) — for logging + output paths."""
+        """The taskset's package name (the id with any org / version stripped)."""
         return env_name(self.id)
 
 

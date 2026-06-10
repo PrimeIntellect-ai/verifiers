@@ -8,8 +8,8 @@ A taskset, harness, or v0 environment is selected by an id in one of three forms
 
 `EnvId` is the type of every id field: a plain ``str`` validated against those forms (an
 `Annotated[str, ...]`, not a subclass), so it flows unchanged through configs and the
-wire. `env_name` derives the bare name (org / version stripped) for logging, display, and
-output paths; `ensure_installed` makes a hub id importable on demand, reusing the same
+wire. `env_name` derives the package name (org / version stripped) for logging, display,
+and output paths; `ensure_installed` makes a hub id importable on demand, reusing the same
 install path as `prime env install`.
 """
 
@@ -43,8 +43,8 @@ A plain validated ``str``; parse it with `env_name` / `env_module`."""
 
 
 def env_name(env_id: str) -> str:
-    """The bare name — org and version stripped (``org/gsm8k@1.0`` -> ``gsm8k``). Used for
-    logging, display, and output paths."""
+    """The package name — the id with org and version stripped (``org/gsm8k@1.0`` ->
+    ``gsm8k``). Used for logging, display, and output paths."""
     return parse_env_id(env_id)[1] if is_hub_env(env_id) else env_id
 
 
