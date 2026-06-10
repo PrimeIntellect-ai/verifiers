@@ -1,11 +1,11 @@
 """Message-graph trajectory: store each message once, recover branches by walking.
 
-Replaces the flat `trajectory: list[Turn]` — where every turn restated the whole prompt,
-so storage was quadratic in turns — with a graph of `MessageNode`s, one per distinct
-message, each linked to its predecessor. A rollout's conversation is a path from a root to
-a leaf; branches (compaction, subagents) are simply multiple leaves. Each node stores only
-the tokens it *adds* to the cumulative sequence, so a branch's training sample is a cheap
-concat of node `token_ids`/`mask`/`logprobs` along its path.
+A rollout is a graph of `MessageNode`s — one per distinct message, each linked to its
+predecessor. The conversation is a path from a root to a leaf; branches (compaction,
+subagents) are simply multiple leaves, so branching falls out of the walk. Each node stores
+only the tokens it *adds* to the cumulative sequence, keeping size linear in turns and
+making a branch's training sample a cheap concat of node `token_ids`/`mask`/`logprobs` along
+its path.
 
 Token attribution (renderer client): the renderer reports, per prompt, each message's token
 span (`RenderedTokens.message_token_spans()`, carried on `TurnTokens.message_spans`). A new
