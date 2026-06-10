@@ -1531,11 +1531,6 @@ version = "0.1.0"
 source = { editable = "packages/harnesses" }
 
 [[package]]
-name = "hello-rlm-v1"
-version = "0.1.0"
-source = { editable = "examples/tasksets/hello_rlm_v1" }
-
-[[package]]
 name = "hf-xet"
 version = "1.4.3"
 source = { registry = "https://pypi.org/simple" }
@@ -3650,14 +3645,14 @@ wheels = [
 
 [[package]]
 name = "prime-pydantic-config"
-version = "0.3.0.dev83"
+version = "0.3.0.dev86"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b3/4e/bcdb244336d3abae60c7767626aaf635ef724bdc3f2cb46e317d11b23d91/prime_pydantic_config-0.3.0.dev83.tar.gz", hash = "sha256:7446e6439ba6de2f2c332acb292ba5b53da7c1a4ad60e4a25b78393b17859fdd", size = 73322, upload-time = "2026-05-24T02:58:49.485Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ad/34/006fc720a8fcda84706793582d50a2028bf6950fb7a0eedb59d3f6555261/prime_pydantic_config-0.3.0.dev86.tar.gz", hash = "sha256:1139bb6d21a8cf134e212ee4e529e5150f2db7422b42eae3ca69a5c77b8a69f5", size = 75656, upload-time = "2026-06-02T01:08:19.079Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1a/6b/372380c6f5cc3a6f0b6690acb453e9aa9d848e8c1ec421e883c1c3c7a293/prime_pydantic_config-0.3.0.dev83-py3-none-any.whl", hash = "sha256:91a8d883181aff069a4a07f56b636c399c32f1814d8177b9e167a8398643e313", size = 26259, upload-time = "2026-05-24T02:58:48.432Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/a3/ded48c436cd56ddac3b216458ac458eaf069b55e0ca3be506b2508d16fa2/prime_pydantic_config-0.3.0.dev86-py3-none-any.whl", hash = "sha256:51ac33ae1b5de9ba2e44eb9a91242d9dd783784234942f166f6e8974bcdf1577", size = 27437, upload-time = "2026-06-02T01:08:20.23Z" },
 ]
 
 [package.optional-dependencies]
@@ -5792,7 +5787,6 @@ examples = [
     { name = "deepwiki-v1" },
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
-    { name = "hello-rlm-v1" },
     { name = "math-env-v1" },
     { name = "reverse-text-v1" },
     { name = "terminal-bench-2-v1" },
@@ -5834,7 +5828,7 @@ requires-dist = [
     { name = "openai-agents", specifier = ">=0.0.7" },
     { name = "peft", marker = "extra == 'rl'" },
     { name = "pillow" },
-    { name = "prime-pydantic-config", extras = ["toml"] },
+    { name = "prime-pydantic-config", extras = ["toml"], specifier = ">=0.3.0.dev86" },
     { name = "prime-sandboxes", specifier = ">=0.2.27" },
     { name = "prime-tunnel", specifier = ">=0.1.8" },
     { name = "pydantic", specifier = ">=2.11.9" },
@@ -5890,7 +5884,6 @@ examples = [
     { name = "deepwiki-v1", editable = "examples/tasksets/deepwiki_v1" },
     { name = "glossary-v1", editable = "examples/tasksets/glossary_v1" },
     { name = "gsm8k-v1", editable = "examples/tasksets/gsm8k_v1" },
-    { name = "hello-rlm-v1", editable = "examples/tasksets/hello_rlm_v1" },
     { name = "math-env-v1", editable = "examples/tasksets/math_env_v1" },
     { name = "reverse-text-v1", editable = "examples/tasksets/reverse_text_v1" },
     { name = "terminal-bench-2-v1", editable = "examples/tasksets/terminal_bench_2_v1" },

@@ -20,7 +20,7 @@ from mcp.server.fastmcp import FastMCP
 
 import verifiers.v1 as vf
 
-from textarena_v1 import OUTCOME_FILE
+from tasksets.textarena_v1 import OUTCOME_FILE
 
 import nltk
 

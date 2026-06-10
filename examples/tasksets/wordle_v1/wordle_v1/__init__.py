@@ -7,7 +7,7 @@ and game-authoritative scoring — is inherited unchanged.
 
 from typing import Literal
 
-from textarena_v1 import TextArenaConfig, TextArenaTaskset
+from tasksets.textarena_v1 import TextArenaConfig, TextArenaTaskset
 
 
 class WordleConfig(TextArenaConfig):

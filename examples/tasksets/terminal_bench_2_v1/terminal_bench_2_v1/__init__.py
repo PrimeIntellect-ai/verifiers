@@ -1,12 +1,12 @@
-"""terminal-bench-2-v1 — the harbor taskset pinned to Terminal-Bench 2 (example env).
+"""terminal-bench-2-v1 — the harbor-v1 taskset pinned to Terminal-Bench 2 (example env).
 
-A thin wrapper over `harbor`: pins `dataset` to "terminal-bench/terminal-bench-2". Needs the
-`harbor` CLI (`uv tool install harbor`) and a container runtime (docker/prime), like harbor.
+A thin wrapper over `harbor-v1`: pins `dataset` to "terminal-bench/terminal-bench-2". Needs
+the `harbor` CLI (`uv tool install harbor`) and a container runtime (docker/prime).
 """
 
 from typing import Literal
 
-from harbor import HarborConfig, HarborTaskset
+from tasksets.harbor_v1 import HarborConfig, HarborTaskset
 
 
 class TerminalBench2Config(HarborConfig):
