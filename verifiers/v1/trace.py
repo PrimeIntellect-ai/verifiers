@@ -135,8 +135,8 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     """The (immutable) task being solved — fully typed, flows into scoring."""
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph — one node per distinct message, linked to its predecessor (see
-    `graph`). The ground truth; `trajectory` and `branches` are views over it. Stores each
-    message once, so size is linear (not quadratic) in turns."""
+    `graph`). The ground truth; `branches` is a view over it. Stores each message once, so
+    size is linear (not quadratic) in turns."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
     """Per-`@reward`-function contributions, with each function's weight applied."""
@@ -208,8 +208,17 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     def branches(self) -> list[Branch]:
         """The conversation segmented into linear branches — a view over the graph: each
         leaf's root→leaf path is a branch (one when linear, several under compaction or
-        subagents). Branching falls out of the walk; see `graph.branches_from_nodes`."""
-        return graph.branches_from_nodes(self)
+        subagents). Branching falls out of walking each leaf's parents back to its root."""
+        branches: list[Branch] = []
+        for i, leaf in enumerate(graph.leaves(self)):
+            path: list[int] = []
+            nid: int | None = leaf
+            while nid is not None:
+                path.append(nid)
+                nid = self.nodes[nid].parent
+            path.reverse()
+            branches.append(Branch(index=i, nodes=[self.nodes[n] for n in path]))
+        return branches
 
     @property
     def num_branches(self) -> int:

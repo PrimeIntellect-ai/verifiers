@@ -32,7 +32,7 @@ from verifiers.v1.types import (
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.trace import Branch, Trace
+    from verifiers.v1.trace import Trace
 
 
 class MessageNode(StrictBaseModel):
@@ -151,29 +151,8 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
 # --- walking the graph (views) ---------------------------------------------------------
 
 
-def _path_to(trace: "Trace", leaf: int) -> list[int]:
-    """Node ids from the root down to `leaf` (inclusive), in order."""
-    path: list[int] = []
-    nid: int | None = leaf
-    while nid is not None:
-        path.append(nid)
-        nid = trace.nodes[nid].parent
-    path.reverse()
-    return path
-
-
 def leaves(trace: "Trace") -> list[int]:
-    """Node ids that are no node's parent — one per branch (the last node of each)."""
+    """Node ids that are no node's parent — one per branch (the last node of each). The
+    `Trace.branches` view walks each leaf's parents back to its root to build the branch."""
     has_child = {n.parent for n in trace.nodes if n.parent is not None}
     return [i for i in range(len(trace.nodes)) if i not in has_child]
-
-
-def branches_from_nodes(trace: "Trace") -> list["Branch"]:
-    """Each leaf's root→leaf node path becomes a `Branch` — one per leaf (one branch when
-    linear, several under compaction or subagents)."""
-    from verifiers.v1.trace import Branch
-
-    return [
-        Branch(index=i, nodes=[trace.nodes[nid] for nid in _path_to(trace, leaf)])
-        for i, leaf in enumerate(leaves(trace))
-    ]
