@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Generic, TypeVar
 
-from pydantic import Field, PrivateAttr, computed_field
+from pydantic import Field, PrivateAttr, computed_field, model_validator
 
 from verifiers.v1 import branching
 from verifiers.v1.task import TaskT
@@ -119,6 +119,87 @@ class Branch(StrictBaseModel):
         return [*last.prompt, last.response.message]
 
 
+def _lcp_len(a: list, b: list) -> int:
+    """Length of the longest common prefix of two sequences."""
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _delta_encode_turns(turns: list[dict]) -> None:
+    """Compress `prompt_ids` and cumulative multimodal `mm_items` to per-turn deltas, in
+    place. Consecutive turns in a branch share a growing prefix — the prompt restates the
+    whole conversation each turn — so a turn stores only the tail beyond the running
+    sequence and records the kept-prefix length in `pk` (prompt) / `mk` (per-modality mm).
+    Avoids the quadratic blow-up of re-sending the full prompt every turn.
+    `_delta_decode_turns` inverts this. The kept length is the actual longest common
+    prefix, so forks (no shared prefix) just store the full tail — always lossless."""
+    run_ids: list[int] = []
+    run_hashes: dict[str, list[str]] = {}
+    for turn in turns:
+        tok = turn.get("tokens")
+        if not isinstance(tok, dict):
+            run_ids, run_hashes = [], {}
+            continue
+        pid = tok.get("prompt_ids") or []
+        keep = _lcp_len(run_ids, pid)
+        tok["prompt_ids"] = pid[keep:]
+        tok["pk"] = keep
+        run_ids = pid + (tok.get("completion_ids") or [])
+
+        mm = tok.get("multi_modal_data")
+        if isinstance(mm, dict) and mm.get("mm_items"):
+            mk: dict[str, int] = {}
+            hashes_map = mm.get("mm_hashes") or {}
+            for modality, items in list(mm["mm_items"].items()):
+                hashes = hashes_map.get(modality) or []
+                mkeep = _lcp_len(run_hashes.get(modality, []), hashes) if hashes else 0
+                mm["mm_items"][modality] = items[mkeep:]
+                if modality in hashes_map:
+                    hashes_map[modality] = hashes[mkeep:]
+                mk[modality] = mkeep
+                run_hashes[modality] = hashes
+            tok["mk"] = mk
+
+
+def _delta_decode_turns(turns: list[dict]) -> None:
+    """Inverse of `_delta_encode_turns`: rebuild full `prompt_ids` / cumulative `mm_items`
+    from the per-turn deltas and drop the `pk`/`mk` markers. A no-op on inputs without
+    markers (full, uncompressed dicts), so it's safe to run on any trace input."""
+    run_ids: list[int] = []
+    run_items: dict[str, list] = {}
+    run_hashes: dict[str, list] = {}
+    for turn in turns:
+        if not isinstance(turn, dict):
+            run_ids, run_items, run_hashes = [], {}, {}
+            continue
+        tok = turn.get("tokens")
+        if not isinstance(tok, dict):
+            run_ids, run_items, run_hashes = [], {}, {}
+            continue
+        if "pk" in tok:
+            keep = tok.pop("pk")
+            tok["prompt_ids"] = run_ids[:keep] + (tok.get("prompt_ids") or [])
+            run_ids = tok["prompt_ids"] + (tok.get("completion_ids") or [])
+        mk = tok.pop("mk", None)
+        mm = tok.get("multi_modal_data")
+        if mk is not None and isinstance(mm, dict):
+            hashes_map = mm.get("mm_hashes")
+            for modality, mkeep in mk.items():
+                items = run_items.get(modality, [])[:mkeep] + (
+                    mm["mm_items"].get(modality) or []
+                )
+                mm["mm_items"][modality] = items
+                run_items[modality] = items
+                if isinstance(hashes_map, dict) and modality in hashes_map:
+                    h = run_hashes.get(modality, [])[:mkeep] + hashes_map[modality]
+                    hashes_map[modality] = h
+                    run_hashes[modality] = h
+
+
 class Trace(StrictBaseModel, Generic[TaskT]):
     """The full record of one rollout. Subclass to add typed fields."""
 
@@ -144,6 +225,15 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     _branch_cache: dict[int, list[list[int]]] = PrivateAttr(default_factory=dict)
     """Branch segmentation (index-groups, no turn copies) cached by trajectory length —
     the trajectory only grows, so its length is a sufficient invalidation key."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _expand_wire_delta(cls, data):
+        """Restore delta-compressed `to_wire` payloads (see `_delta_encode_turns`) before
+        strict field validation; a no-op on normal/full inputs."""
+        if isinstance(data, dict) and isinstance(data.get("trajectory"), list):
+            _delta_decode_turns(data["trajectory"])
+        return data
 
     @computed_field
     @property
@@ -303,13 +393,20 @@ class Trace(StrictBaseModel, Generic[TaskT]):
         timing durations. A strict `Trace` can't round-trip them as input, and the
         consumer recomputes them, so we avoid re-running branching + duplicating the
         trajectory on every reply. The full `model_dump` (with derived fields) is what
-        gets written to disk."""
+        gets written to disk.
+
+        Within a branch, consecutive turns share a growing prefix, so `prompt_ids` (and
+        cumulative multimodal `mm_items`) are delta-encoded against the running sequence —
+        `_expand_wire_delta` restores them on the way back in. This is what keeps the wire
+        from growing quadratically with turn count."""
         exclude: dict = {field: True for field in type(self).model_computed_fields}
         exclude["timing"] = {
             "generation": {"duration": True},
             "scoring": {"duration": True},
         }
-        return self.model_dump(mode="json", exclude=exclude)
+        dump = self.model_dump(mode="json", exclude=exclude)
+        _delta_encode_turns(dump.get("trajectory") or [])
+        return dump
 
 
 TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]
