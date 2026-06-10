@@ -228,6 +228,7 @@ Issues = "https://github.com/primeintellect-ai/verifiers/issues"
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
+pythonpath = ["tests/v1/fixtures"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -239,6 +240,8 @@ addopts = [
 ]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "e2e: marks end-to-end eval-run tests (need a model API key; skipped without one)",
+    "prime: marks tests that run on the prime runtime (provision a real sandbox + tunnel)",
     "integration: marks tests as integration tests",
     "prime_sandbox: marks tests that provision real Prime sandbox or tunnel resources",
     "unit: marks tests as unit tests",

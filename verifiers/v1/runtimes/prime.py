@@ -155,6 +155,9 @@ class PrimeRuntime(Runtime):
         # Native sandbox port exposure → a public HTTPS URL reachable from anywhere
         # (incl. another sandbox). The exposure is removed when the sandbox is deleted
         # in stop(), so a tool in its own prime sandbox needs no host middleman/tunnel.
+        # TODO: `expose` currently only works in a default-region sandbox (port <= 9000), so a
+        # tool/user-sim in its own prime sandbox needs the region pinned. Fix once prime
+        # supports port exposure in any region (then drop the e2e `skip_if_unexposable` guard).
         try:
             exposed = await self._client.expose(self._sandbox_id, port)
         except Exception as e:  # surface prime's exposure constraints actionably

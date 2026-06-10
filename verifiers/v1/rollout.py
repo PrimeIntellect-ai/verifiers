@@ -137,7 +137,9 @@ class Rollout:
                         tool_runtime_config=tools.runtime,
                         shared_urls=shared_urls,
                     ) as urls,
-                    serve_user(self.taskset.user(self.task), runtime) as session.user,
+                    serve_user(
+                        self.taskset.user(self.task), self.taskset.config.user.runtime
+                    ) as session.user,
                 ):
                     self.phase = (
                         Phase.RUNNING

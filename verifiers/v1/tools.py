@@ -160,10 +160,14 @@ async def serve_tools(
     tools: list[Tools],
     agent_runtime: Runtime,
     colocated: bool = False,
+    host_reachable: bool = False,
     tool_runtime_config: RuntimeConfig | None = None,
     shared_urls: dict[str, str] | None = None,
 ):
-    """Bring up the declared tool servers for a rollout; yield `{name: url}`."""
+    """Bring up the declared tool servers for a rollout; yield `{name: url}`. A colocated
+    server is reached in-sandbox (localhost) by default — set `host_reachable` for one the
+    framework consumes from the host (a user simulator), so its port is published back to the
+    host (a remote sandbox's `public_url`, else localhost)."""
     shared_urls = shared_urls or {}
     tool_runtimes: list[Runtime] = []  # per-rollout tool runtimes to tear down
     urls: dict[str, str] = {}
@@ -179,10 +183,17 @@ async def serve_tools(
                     server.name,
                     shared_urls[server.name],
                 )
-            elif colocated:  # in the harness's runtime → localhost
+            elif colocated:  # in the given runtime
                 port = _free_port()
                 await serve_in_runtime(server, agent_runtime, port)
-                urls[server.name] = f"http://127.0.0.1:{port}/mcp"
+                # The model reaches a colocated tool in-sandbox (localhost); a host-consumed
+                # one (a user simulator) needs the port published back to the host.
+                base = (
+                    (await agent_runtime.public_url(port) or f"http://127.0.0.1:{port}")
+                    if host_reachable
+                    else f"http://127.0.0.1:{port}"
+                )
+                urls[server.name] = f"{base.rstrip('/')}/mcp"
                 logger.info("tool server '%s' colocated on port %d", server.name, port)
             else:  # its own runtime; reachability resolved per where it runs
                 port = _free_port()

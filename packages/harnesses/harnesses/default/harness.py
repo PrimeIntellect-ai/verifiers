@@ -35,6 +35,7 @@ class DefaultHarnessConfig(HarnessConfig):
 
 class DefaultHarness(Harness[DefaultHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True  # program.py emits it as a real system message
+    SUPPORTS_USER_SIM = True  # the chat loop drives a task's user simulator
 
     async def launch(
         self,
