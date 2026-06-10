@@ -17,6 +17,7 @@ from verifiers.v1.cli.resolve import (
     extract_id,
     local_examples,
     narrow_config,
+    references_config_file,
     with_positional_taskset,
 )
 from verifiers.v1.configs.serve import EnvServerConfig
@@ -38,8 +39,12 @@ def main(argv: list[str] | None = None) -> None:
         cli(narrow_config(EnvServerConfig, argv))
         return
     legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
-    if not extract_id(argv, "taskset") and not legacy_id:
-        raise SystemExit(USAGE)  # need a --taskset.id (v1) or a legacy --id (v0)
+    if (
+        not extract_id(argv, "taskset")
+        and not legacy_id
+        and not references_config_file(argv)
+    ):
+        raise SystemExit(USAGE)  # need a --taskset.id (v1), a legacy --id (v0), or @ file.toml
 
     config_type = narrow_config(EnvServerConfig, argv)
     sys.argv = [sys.argv[0], *argv]
