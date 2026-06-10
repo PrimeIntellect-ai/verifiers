@@ -29,6 +29,7 @@ from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import EnvConfig, Environment
+from verifiers.v1.interception import InterceptionPool
 from verifiers.v1.serve.types import (
     BaseResponse,
     HealthResponse,
@@ -60,6 +61,7 @@ class EnvServer:
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client
+        self.pool: InterceptionPool | None = None  # set in run() (v1 only)
 
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
@@ -99,14 +101,22 @@ class EnvServer:
             client=self._client(client_config, model), model=model, sampling=sampling
         )
 
+    def interception_pool(self):
+        """Context for the server's shared interception pool, entered for the server's
+        lifetime so its tunnels are reused across requests. The legacy v0 bridge overrides
+        this (it runs its own rollouts, with no v1 interception)."""
+        return self.env.interception_pool()
+
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        traces = await self.env.episode(self.tasks[req.task_idx], ctx, n=1).run()
+        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=1)
+        traces = await episode.run(interception=self.pool)
         return RunRolloutResponse(trace=traces[0].to_wire())
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        traces = await self.env.episode(self.tasks[req.task_idx], ctx, n=req.n).run()
+        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=req.n)
+        traces = await episode.run(interception=self.pool)
         return RunGroupResponse(traces=[t.to_wire() for t in traces])
 
     async def _handle(
@@ -154,31 +164,34 @@ class EnvServer:
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
         tasks: set[asyncio.Task] = set()
-        try:
-            while True:
-                events = dict(await poller.poll(timeout=100))
-                if self.frontend not in events:
-                    continue
-                frames = await self.frontend.recv_multipart()
-                if len(frames) != 4:
-                    logger.warning(
-                        "invalid message: expected 4 frames, got %d", len(frames)
+        # Enter the interception pool for the server's lifetime so its tunnels are reused
+        # across requests (the legacy bridge overrides this to a no-op).
+        async with self.interception_pool() as self.pool:
+            try:
+                while True:
+                    events = dict(await poller.poll(timeout=100))
+                    if self.frontend not in events:
+                        continue
+                    frames = await self.frontend.recv_multipart()
+                    if len(frames) != 4:
+                        logger.warning(
+                            "invalid message: expected 4 frames, got %d", len(frames)
+                        )
+                        continue
+                    client_id, request_id, method, payload = frames
+                    task = asyncio.create_task(
+                        self._handle(client_id, request_id, method, payload)
                     )
-                    continue
-                client_id, request_id, method, payload = frames
-                task = asyncio.create_task(
-                    self._handle(client_id, request_id, method, payload)
-                )
-                tasks.add(task)
-                task.add_done_callback(tasks.discard)
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            pass
-        finally:
-            for task in tasks:
-                task.cancel()
-            for client in self._clients.values():
-                with contextlib.suppress(Exception):
-                    await client.close()
-            self.frontend.close()
-            self.ctx.term()
-            logger.info("EnvServer down: taskset=%s", self.taskset_id)
+                    tasks.add(task)
+                    task.add_done_callback(tasks.discard)
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                pass
+            finally:
+                for task in tasks:
+                    task.cancel()
+                for client in self._clients.values():
+                    with contextlib.suppress(Exception):
+                        await client.close()
+                self.frontend.close()
+                self.ctx.term()
+                logger.info("EnvServer down: taskset=%s", self.taskset_id)

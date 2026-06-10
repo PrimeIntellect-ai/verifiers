@@ -52,11 +52,19 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     def on_complete(trace: Trace) -> None:
         append_trace(out, trace)
 
-    # Shared tool servers (if any) come up once here and their URLs flow into every
-    # rollout; non-shared ones start per rollout inside the episodes.
-    async with env.shared_tools(tasks) as shared_urls, display:
+    # Shared tool servers (if any) come up once here and their URLs flow into every rollout
+    # (non-shared ones start per rollout inside the episodes); the interception pool comes up
+    # here too, so concurrent rollouts share its servers + tunnels rather than one each.
+    async with (
+        env.shared_tools(tasks) as shared_urls,
+        env.interception_pool() as pool,
+        display,
+    ):
         results = await asyncio.gather(
-            *(episode.run(semaphore, shared_urls, on_complete) for episode in episodes)
+            *(
+                episode.run(semaphore, shared_urls, on_complete, pool)
+                for episode in episodes
+            )
         )
     traces = [trace for episode_traces in results for trace in episode_traces]
     await client.close()

@@ -14,7 +14,7 @@ compare a task's rollouts.
 import contextlib
 import logging
 
-from pydantic import SerializeAsAny, model_validator
+from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import HarnessConfig
@@ -22,7 +22,7 @@ from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.ids import EnvId
-from verifiers.v1.interception import RolloutLimits
+from verifiers.v1.interception import InterceptionPool, RolloutLimits
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
@@ -69,6 +69,10 @@ class EnvConfig(BaseConfig):
     max_total_tokens: int | None = None
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
     trace's `total_tokens`; framework-enforced between turns."""
+    multiplex: int = Field(32, ge=1)
+    """Rollouts that share one interception server (and, behind a remote runtime, one
+    tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
+    key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
@@ -218,6 +222,13 @@ class Environment:
             for _ in range(n)
         ]
         return Episode(rollouts, self.taskset, retry=self.config.retry)
+
+    def interception_pool(self) -> InterceptionPool:
+        """The shared interception pool for this env's rollouts — one server (+ tunnel
+        behind a remote runtime) per `multiplex` rollouts, grown on demand. Built here,
+        where the harness runtime and `multiplex` live; the caller (eval runner / env
+        server) enters it for the run and tears it down. Pass it to `Episode.run`."""
+        return InterceptionPool(self.harness.config.runtime, self.config.multiplex)
 
     @contextlib.asynccontextmanager
     async def shared_tools(self, tasks: list[Task]):
