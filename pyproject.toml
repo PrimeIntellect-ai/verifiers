@@ -181,6 +181,9 @@ vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"
 vf-vllm = "verifiers.scripts.vllm:main"
 
+[tool.ruff]
+line-length = 88
+
 # hatchling configuration
 [tool.hatch.version]
 source = "vcs"
