@@ -1,11 +1,10 @@
 # verifiers.v1
 
-A clean-slate, heavily-typed, minimal reimplementation of
-[verifiers](https://github.com/PrimeIntellect-ai/verifiers) (originally `vf-nano`, now
-vendored here). It keeps the high-level abstractions and on-disk output, and discards the
-implementation. Everything is pydantic-typed; `import verifiers.v1 as vf`.
+The next version of [verifiers](https://github.com/PrimeIntellect-ai/verifiers) — a
+clean-slate, heavily-typed, minimal core that carries forward the proven high-level
+abstractions and on-disk output. Everything is pydantic-typed; `import verifiers.v1 as vf`.
 
-## What we've gained
+## Highlights
 
 - **Much more minimal** — the high-level abstractions, without the implementation bulk.
 - **Fully typed** — pydantic end-to-end (`Task` / `Trace` / configs); no loose
@@ -19,8 +18,7 @@ implementation. Everything is pydantic-typed; `import verifiers.v1 as vf`.
 ## Install
 
 ```bash
-uv sync                 # core + the shipped plugins + examples (eval, serve, all runtimes)
-uv sync --extra rl      # + the training stack (torch / vllm / ...)
+uv sync   # core + the shipped plugins + examples (eval, serve, all runtimes)
 ```
 
 ## Quickstart
