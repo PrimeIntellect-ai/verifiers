@@ -224,6 +224,18 @@ class Endpoint:
     def get_request(self, request_id: str) -> ConfigData:
         return cast(ConfigData, self.server.intercepts[request_id])
 
+    def discard_request(self, request_id: str) -> None:
+        """Drop a delivered intercept from the server's per-request store.
+
+        Each intercept retains the raw request body — the full message
+        history including in-sandbox base64 screenshots — and the server
+        only sweeps them at rollout unregister, so without per-delivery
+        discard a long browser rollout holds every turn's request body
+        simultaneously (~74% of env-worker memory measured). The HTTP
+        handler keeps its own local reference, so delivery is unaffected.
+        """
+        self.server.intercepts.pop(request_id, None)
+
     def request_context(
         self, request_id: str, request: ConfigData
     ) -> ModelRequestContext:
@@ -450,14 +462,17 @@ async def forward_request(
             state._set_error(error_info(e))
         raise
     finally:
-        if bool(request.get("stream")):
-            if request.get("protocol") != "openai_chat_completions":
-                raise NotImplementedError(
-                    "Streaming interception is currently supported for OpenAI Chat Completions."
-                )
-            await synthesize_stream(request, response, error)
-        else:
-            deliver_response(request, response, error)
+        try:
+            if bool(request.get("stream")):
+                if request.get("protocol") != "openai_chat_completions":
+                    raise NotImplementedError(
+                        "Streaming interception is currently supported for OpenAI Chat Completions."
+                    )
+                await synthesize_stream(request, response, error)
+            else:
+                deliver_response(request, response, error)
+        finally:
+            endpoint.discard_request(request_id)
 
 
 def normalize_endpoint_prompt(request: ConfigData) -> Messages:
