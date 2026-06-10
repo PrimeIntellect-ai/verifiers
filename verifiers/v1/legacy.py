@@ -275,7 +275,11 @@ class LegacyEnvServer(EnvServer):
         if extra_env_kwargs:  # post-load knobs applied via the v0 env's setters
             self.env.set_kwargs(**extra_env_kwargs)
         # The formatted dataset rows are RolloutInputs (prompt + example_id); index by task_idx.
-        self.dataset = self.env.get_dataset()
+        # Eval-only v0 envs (e.g. aime2024) define no train split; serve the eval split instead.
+        try:
+            self.dataset = self.env.get_dataset()
+        except ValueError:
+            self.dataset = self.env.get_eval_dataset()
         self.tasks = self.dataset  # `len(self.tasks)` drives the `info` response
         self.requires_group_scoring = self.env.requires_group_rollouts
         self._clients: dict[tuple[str, str], Any] = {}
