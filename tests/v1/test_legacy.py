@@ -22,7 +22,10 @@ async def test_v0_single_turn_matches_v1_shape(run_v0, run_v1, ensure_v0, tmp_pa
     ensure_v0("reverse_text", "environments/reverse_text")
     (v0,) = await run_v0("reverse-text", output_dir=tmp_path / "v0")
     (v1,) = await run_v1(
-        "reverse-text-v1", runtime="subprocess", output_dir=tmp_path / "v1", max_turns=2,
+        "reverse-text-v1",
+        runtime="subprocess",
+        output_dir=tmp_path / "v1",
+        max_turns=2,
     )
     assert v0.trajectory  # the bridge populated a trajectory
     assert v0.num_turns == 1
@@ -34,11 +37,16 @@ async def test_v0_multi_turn_matches_v1_shape(run_v0, run_v1, ensure_v0, tmp_pat
     ensure_v0("alphabet_sort", "environments/alphabet_sort")
     (v0,) = await run_v0("alphabet-sort", output_dir=tmp_path / "v0", max_tokens=256)
     (v1,) = await run_v1(
-        "alphabet-sort-v1", runtime="subprocess", output_dir=tmp_path / "v1",
-        max_turns=4, max_tokens=256,
+        "alphabet-sort-v1",
+        runtime="subprocess",
+        output_dir=tmp_path / "v1",
+        max_turns=4,
+        max_tokens=256,
         taskset_overrides={
-            "min_turns": 2, "max_turns": 2,
-            "min_names_per_turn": 1, "max_names_per_turn": 1,
+            "min_turns": 2,
+            "max_turns": 2,
+            "min_names_per_turn": 1,
+            "max_names_per_turn": 1,
         },
     )
     assert v0.num_turns >= 2  # genuinely multi-turn

@@ -14,7 +14,8 @@ import pytest
 from verifiers.v1.configs.eval import EvalConfig
 
 CONFIGS = sorted(
-    p for p in (Path(__file__).resolve().parents[2] / "configs").glob("*.toml")
+    p
+    for p in (Path(__file__).resolve().parents[2] / "configs").glob("*.toml")
     if p.name != "endpoints.toml"
 )
 

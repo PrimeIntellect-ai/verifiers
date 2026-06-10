@@ -2,8 +2,8 @@
 
 The smallest possible reward-1 taskset — no dataset, no tools, no reasoning required — so an
 end-to-end eval run is fast and deterministic. The reward is 1.0 when the phrase appears in
-the model's reply. It lives under tests/ as a fixture taskset for the v1 e2e suite (resolved
-by id `echo-v1` once `tests/v1` is on the path; see conftest).
+the model's reply. It's a fixture taskset for the v1 e2e suite (in tests/v1/fixtures, resolved
+by id `echo-v1` via pytest's `pythonpath`).
 """
 
 import verifiers.v1 as vf
@@ -11,11 +11,15 @@ import verifiers.v1 as vf
 SYSTEM = "Repeat the user's message back to them exactly, with no extra words."
 
 
+def _key(text: str) -> str:
+    """Lenient comparison key: lowercase, alphanumerics only."""
+    return "".join(c for c in text.casefold() if c.isalnum())
+
+
 def lenient_match(answer: str, text: str) -> bool:
     """True if `answer` appears in `text` ignoring case, spacing, and punctuation — so a
     reformatted echo ("Hello, World!") still counts."""
-    key = lambda s: "".join(c for c in s.casefold() if c.isalnum())
-    return key(answer) in key(text)
+    return _key(answer) in _key(text)
 
 
 class EchoTask(vf.Task):

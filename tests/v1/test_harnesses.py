@@ -20,7 +20,11 @@ def harness(request) -> str:
 @pytest.mark.e2e
 async def test_single_turn_across_harnesses(run_v1, harness, tmp_path):
     (trace,) = await run_v1(
-        "echo-v1", runtime="subprocess", harness=harness, output_dir=tmp_path, max_turns=2,
+        "echo-v1",
+        runtime="subprocess",
+        harness=harness,
+        output_dir=tmp_path,
+        max_turns=2,
     )
     assert trace.errors == []
     assert trace.reward == 1.0
@@ -29,7 +33,11 @@ async def test_single_turn_across_harnesses(run_v1, harness, tmp_path):
 @pytest.mark.e2e
 async def test_tools_across_harnesses(run_v1, harness, tmp_path):
     (trace,) = await run_v1(
-        "glossary-v1", runtime="subprocess", harness=harness, output_dir=tmp_path, max_turns=6,
+        "glossary-v1",
+        runtime="subprocess",
+        harness=harness,
+        output_dir=tmp_path,
+        max_turns=6,
     )
     assert trace.errors == []
     assert trace.reward == 1.0

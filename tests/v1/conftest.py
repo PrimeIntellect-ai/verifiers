@@ -6,9 +6,9 @@ not unit tests of individual components. They need a model API key (`PRIME_API_K
 without one the `e2e`-marked tests skip (config parsing still runs).
 
 `run_v1` / `run_v0` mirror the eval CLI's two paths (`run_eval` for a v1 taskset,
-`run_legacy_eval` for a v0 env). The `runtime` / `container_runtime` fixtures fan a test
-out across the built-in runtimes (modal excluded for now); docker/prime are marked so they
-deselect cleanly (`-m "not slow"`).
+`run_legacy_eval` for a v0 env). The `runtime` fixture fans a test out across the built-in
+runtimes (modal excluded for now); docker/prime are marked so they deselect cleanly
+(`-m "not slow"`).
 """
 
 import os
@@ -47,7 +47,9 @@ def pytest_collection_modifyitems(config, items) -> None:
     rest of the suite (e.g. config parsing) still runs in a keyless environment."""
     if os.environ.get("PRIME_API_KEY") or os.environ.get("OPENAI_API_KEY"):
         return
-    skip = pytest.mark.skip(reason="needs a model API key (PRIME_API_KEY / OPENAI_API_KEY)")
+    skip = pytest.mark.skip(
+        reason="needs a model API key (PRIME_API_KEY / OPENAI_API_KEY)"
+    )
     for item in items:
         if "e2e" in item.keywords:
             item.add_marker(skip)

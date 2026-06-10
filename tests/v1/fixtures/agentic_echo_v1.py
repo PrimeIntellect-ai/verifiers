@@ -15,10 +15,14 @@ SYSTEM = "You complete the task by running shell commands with the bash tool."
 TARGET = "answer.txt"  # workdir-relative, so it's isolated per rollout on every runtime
 
 
+def _key(text: str) -> str:
+    """Lenient comparison key: lowercase, alphanumerics only."""
+    return "".join(c for c in text.casefold() if c.isalnum())
+
+
 def lenient_match(answer: str, text: str) -> bool:
     """True if `answer` appears in `text` ignoring case, spacing, and punctuation."""
-    key = lambda s: "".join(c for c in s.casefold() if c.isalnum())
-    return key(answer) in key(text)
+    return _key(answer) in _key(text)
 
 
 class AgenticEchoTask(vf.Task):
