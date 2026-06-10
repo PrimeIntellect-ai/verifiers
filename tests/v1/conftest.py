@@ -13,7 +13,6 @@ deselect cleanly (`-m "not slow"`).
 
 import os
 import subprocess
-import sys
 from importlib import invalidate_caches
 from importlib.util import find_spec
 from pathlib import Path
@@ -25,11 +24,9 @@ from verifiers.v1.env import Environment
 from verifiers.v1.cli.runner import run_eval
 from verifiers.v1.trace import Trace
 
+# The fixture tasksets (echo-v1, agentic-echo-v1) live in tests/v1/fixtures, added to the
+# path via `pythonpath` in pyproject so the eval loader resolves them by id.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-# Make this dir importable so the loader resolves fixture tasksets defined here by id (the
-# `echo-v1` taskset in echo_v1.py is a flat module on the path).
-sys.path.insert(0, str(Path(__file__).parent))
 
 # Built-in runtimes, modal excluded. docker needs the daemon; prime provisions real
 # sandboxes + tunnels (network + PRIME credentials), so both are marked to deselect easily.

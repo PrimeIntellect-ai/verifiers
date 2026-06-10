@@ -228,6 +228,7 @@ Issues = "https://github.com/primeintellect-ai/verifiers/issues"
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
+pythonpath = ["tests/v1/fixtures"]  # fixture tasksets resolved by id (echo-v1, agentic-echo-v1)
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
