@@ -21,6 +21,7 @@ from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
+from verifiers.v1.ids import EnvId
 from verifiers.v1.interception import RolloutLimits
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
@@ -73,9 +74,10 @@ class EnvConfig(BaseConfig):
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
     # unset) to opt in; native v1 envs leave these untouched. Mirrors prime-rl's EnvConfig
     # so it inherits these (a v0 env is driven the same way in eval and the env server).
-    id: str | None = None
-    """Classic (v0) env id, loaded via `verifiers.load_environment(id, **args)` and run
-    through the legacy bridge. Set this *instead of* `taskset` to run a v0 environment."""
+    id: EnvId | None = None
+    """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
+    hub on demand), loaded via `verifiers.load_environment` and run through the legacy
+    bridge. Set this *instead of* `taskset` to run a v0 environment."""
     args: dict = {}
     """Construction kwargs forwarded to `load_environment(id, **args)`."""
     extra_env_kwargs: dict = {}

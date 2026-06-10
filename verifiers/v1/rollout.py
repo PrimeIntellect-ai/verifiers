@@ -88,7 +88,7 @@ class Rollout:
             "rollout start: id=%s task=%s harness=%s runtime=%s",
             trace.id,
             self.task.idx,
-            self.harness.config.id,
+            self.harness.config.name,
             self.runtime_config.type,
         )
         try:
