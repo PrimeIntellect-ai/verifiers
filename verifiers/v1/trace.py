@@ -15,9 +15,10 @@ import uuid
 from collections.abc import Mapping
 from typing import Generic, TypeVar
 
-from pydantic import Field, PrivateAttr, computed_field
+from pydantic import Field, PrivateAttr, computed_field, model_validator
 
-from verifiers.v1 import branching
+from verifiers.v1 import graph
+from verifiers.v1.graph import MessageNode
 from verifiers.v1.task import TaskT
 from verifiers.v1.types import (
     AssistantMessage,
@@ -126,8 +127,10 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     """Unique id for this rollout, auto-generated per trace."""
     task: TaskT
     """The (immutable) task being solved — fully typed, flows into scoring."""
-    trajectory: list[Turn] = Field(default_factory=list)
-    """Every model turn in order — the ground truth."""
+    nodes: list[MessageNode] = Field(default_factory=list)
+    """The message graph — one node per distinct message, linked to its predecessor (see
+    `graph`). The ground truth; `trajectory` and `branches` are views over it. Stores each
+    message once, so size is linear (not quadratic) in turns."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
     """Per-`@reward`-function contributions, with each function's weight applied."""
@@ -141,9 +144,20 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     rollout was retried). `error` exposes the most recent."""
     timing: Timing = Field(default_factory=Timing)
 
-    _branch_cache: dict[int, list[list[int]]] = PrivateAttr(default_factory=dict)
-    """Branch segmentation (index-groups, no turn copies) cached by trajectory length —
-    the trajectory only grows, so its length is a sufficient invalidation key."""
+    _head_index: dict = PrivateAttr(default_factory=dict)
+    """`(parent, msg_hash) -> node_id` for the graph builder (`graph.add_turn`); rebuilt
+    lazily from `nodes` after deserialization."""
+    _view_cache: dict = PrivateAttr(default_factory=dict)
+    """Cached `trajectory`/`branches` views, invalidated when `nodes` grows (append-only)."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_trajectory(cls, data):
+        """Tolerate a pre-graph trace dict (a flat `trajectory`): drop it so the file loads.
+        (Faithful legacy→graph conversion is a follow-up; new traces carry `nodes`.)"""
+        if isinstance(data, dict) and "trajectory" in data and "nodes" not in data:
+            data = {k: v for k, v in data.items() if k != "trajectory"}
+        return data
 
     @computed_field
     @property
@@ -189,39 +203,37 @@ class Trace(StrictBaseModel, Generic[TaskT]):
         last = self.last_turn
         return bool(last and last.response.message.content)
 
-    def _branch_groups(self) -> list[list[int]]:
-        """Branch index-groups for the current trajectory, recomputed only when a turn
-        is added (the trajectory is append-only, so its length is a sufficient key).
-        Caches the groups (ints), never copies of the turns."""
-        n = len(self.trajectory)
-        if n not in self._branch_cache:
-            self._branch_cache = {n: branching.segment(self.trajectory)}
-        return self._branch_cache[n]
+    def _cached(self, key: str, fn):
+        """Cache a graph-derived view, invalidated when `nodes` grows (append-only)."""
+        n = len(self.nodes)
+        if self._view_cache.get("_n") != n:
+            self._view_cache = {"_n": n}
+        if key not in self._view_cache:
+            self._view_cache[key] = fn(self)
+        return self._view_cache[key]
 
-    @computed_field
+    @property
+    def trajectory(self) -> list[Turn]:
+        """Every model turn in arrival order — a view over the graph
+        (`graph.trajectory_from_nodes`). The flat history the old stored field exposed."""
+        return self._cached("trajectory", graph.trajectory_from_nodes)
+
     @property
     def branches(self) -> list[Branch]:
-        """The trajectory segmented into linear branches (see `branching`): one branch
-        when linear, several under compaction or subagents. The structured view of what
-        the harness saw, replacing a flat message list. Branches hold turn references, not
-        copies."""
-        return [
-            Branch(index=i, turns=[self.trajectory[j] for j in group])
-            for i, group in enumerate(self._branch_groups())
-        ]
+        """The conversation segmented into linear branches — a view over the graph: each
+        leaf's root→leaf path is a branch (one when linear, several under compaction or
+        subagents). Branching falls out of the walk; see `graph.branches_from_nodes`."""
+        return self._cached("branches", graph.branches_from_nodes)
 
-    @computed_field
     @property
     def num_branches(self) -> int:
-        """How many branches the trajectory has (1 = linear; >1 = compaction/subagents)."""
-        return len(self._branch_groups())
+        """How many branches (1 = linear; >1 = compaction/subagents)."""
+        return len(graph.leaves(self))
 
-    @computed_field
     @property
     def num_turns(self) -> int:
-        """Total model turns across the whole trajectory (all branches); per-branch
-        counts are on each `Branch.num_turns`."""
-        return len(self.trajectory)
+        """Total model turns (assistant nodes) across all branches."""
+        return sum(1 for n in self.nodes if isinstance(n.message, AssistantMessage))
 
     @computed_field
     @property

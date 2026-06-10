@@ -29,7 +29,8 @@ from verifiers.v1.serve.types import (
     RunRolloutResponse,
 )
 from verifiers.v1.task import WireTask
-from verifiers.v1.trace import Error, TimeSpan, Timing, Trace, Turn
+from verifiers.v1 import graph
+from verifiers.v1.trace import Error, TimeSpan, Timing, Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Response,
@@ -185,20 +186,6 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     system prompt / instruction / answer. ``is_truncated`` is a computed v1 field derived
     from the final turn's ``finish_reason`` and the stop condition."""
     model = str(out.get("model") or "")
-    trajectory: list[Turn] = []
-    for step in out.get("trajectory") or []:
-        if not isinstance(step, dict):
-            continue
-        # The renderer records tokens on both the turn (training reads these) and the
-        # response, mirroring the native v1 client; keep both so the trace is identical.
-        tokens = _to_v1_tokens(step.get("tokens"))
-        trajectory.append(
-            Turn(
-                prompt=_to_v1_messages(step.get("prompt")),
-                response=_to_v1_response(step.get("response"), model, tokens),
-                tokens=tokens,
-            )
-        )
 
     error = None
     raw_error = out.get("error")
@@ -214,7 +201,6 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
 
     trace: Trace = Trace[WireTask](
         task=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
-        trajectory=trajectory,
         rewards={"reward": float(out.get("reward") or 0.0)},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         is_completed=bool(out.get("is_completed", True)),
@@ -222,6 +208,17 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         errors=[error] if error else [],
         timing=_timing(out.get("timing")),
     )
+    # Rebuild the message graph from the v0 steps. v0 tokens carry no per-message spans, so
+    # attribution is coarse (the per-turn delta lands on the assistant node) — still linear.
+    for step in out.get("trajectory") or []:
+        if not isinstance(step, dict):
+            continue
+        tokens = _to_v1_tokens(step.get("tokens"))
+        graph.add_turn(
+            trace,
+            _to_v1_messages(step.get("prompt")),
+            _to_v1_response(step.get("response"), model, tokens),
+        )
     return trace
 
 

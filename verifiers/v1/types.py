@@ -105,6 +105,12 @@ class TurnTokens(StrictBaseModel):
     completion_ids: list[int] = Field(default_factory=list)
     completion_logprobs: list[float] = Field(default_factory=list)
 
+    # Transient build carrier: per-prompt-message token spans into `prompt_ids`, produced by
+    # the renderer (`RenderedTokens.message_token_spans()`) and consumed by the graph builder
+    # to attribute tokens per message, then dropped — never persisted (it would reintroduce
+    # the quadratic data the graph removes).
+    message_spans: list[tuple[int, int] | None] | None = Field(default=None, exclude=True)
+
 
 class Response(StrictBaseModel):
     """One model completion, provider-agnostic."""

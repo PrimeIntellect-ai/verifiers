@@ -20,7 +20,8 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.trace import Trace, Turn
+from verifiers.v1 import graph
+from verifiers.v1.trace import Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Message,
@@ -241,9 +242,8 @@ class InterceptionServer:
             except Exception as e:  # surface to the program as an API error
                 logger.warning("model call failed: id=%s %s", self.trace.id, e)
                 return web.json_response({"error": str(e)}, status=502)
-            self.trace.trajectory.append(
-                Turn(prompt=prompt, response=response, tokens=response.tokens)
-            )  # branches are derived from the trajectory (see Trace.branches)
+            graph.add_turn(self.trace, prompt, response)  # one node per new message;
+            # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
             last = response
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
