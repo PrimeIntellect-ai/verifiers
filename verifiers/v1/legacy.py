@@ -263,12 +263,15 @@ class LegacyEnvServer(EnvServer):
         env_id: str,
         env_args: dict | None = None,
         address: str = "tcp://127.0.0.1:5000",
+        extra_env_kwargs: dict | None = None,
     ) -> None:
         from verifiers import load_environment
 
         self.address = address
         self.taskset_id = env_id
         self.env = load_environment(env_id, **(env_args or {}))
+        if extra_env_kwargs:  # post-load knobs applied via the v0 env's setters
+            self.env.set_kwargs(**extra_env_kwargs)
         # The formatted dataset rows are RolloutInputs (prompt + example_id); index by task_idx.
         self.dataset = self.env.get_dataset()
         self.tasks = self.dataset  # `len(self.tasks)` drives the `info` response
@@ -385,6 +388,8 @@ async def run_legacy_eval(config) -> list[Trace]:
     from verifiers.v1.cli.output import append_trace, save_config
 
     env = load_environment(config.id, **(config.args or {}))
+    if config.extra_env_kwargs:  # post-load knobs (max_total_completion_tokens, …)
+        env.set_kwargs(**config.extra_env_kwargs)
     dataset = env.get_dataset()
     idxs = list(range(len(dataset)))
     if config.shuffle:
