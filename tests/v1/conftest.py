@@ -42,6 +42,27 @@ def runtime(request) -> str:
     return request.param
 
 
+# Built-in harnesses (bundled in the `harnesses` package), composed with `runtime` for the
+# harness x runtime matrix. compact is an example harness, not built-in, so it's excluded. rlm
+# installs a heavy agent binary at rollout, so it's marked slow.
+@pytest.fixture(params=["default", pytest.param("rlm", marks=pytest.mark.slow)])
+def harness(request) -> str:
+    return request.param
+
+
+@pytest.fixture
+def supports_task_tools():
+    """Read an harness's `SUPPORTS_TASK_TOOLS` capability (whether it can drive a taskset's MCP
+    tools). The tools test uses it to decide whether a pairing should run or be rejected."""
+    from verifiers.v1.loaders import load_harness
+
+    def _supports(harness_id: str) -> bool:
+        config = EvalConfig.model_validate({"harness": {"id": harness_id}})
+        return load_harness(config.harness).SUPPORTS_TASK_TOOLS
+
+    return _supports
+
+
 def pytest_collection_modifyitems(config, items) -> None:
     """Skip the live-model tests (marked `e2e`) when no model endpoint is configured, so the
     rest of the suite (e.g. config parsing) still runs in a keyless environment."""
