@@ -30,6 +30,9 @@ class PrimeConfig(BaseConfig):
     """Request guaranteed (vs best-effort) capacity."""
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
+    labels: list[str] = []
+    """Labels attached to the sandbox and its tunnels — e.g. to group every resource a run
+    creates. When unset, the eval defaults them to the run's uuid (see `run_eval`)."""
     timeout: int | Literal["auto"] = 21600
     """Max sandbox lifetime in seconds (default 6h; or "auto" = the highest prime
     supports). A hard backstop: the sandbox self-terminates even if local cleanup is
@@ -85,6 +88,7 @@ class PrimeRuntime(Runtime):
             sandbox = await self._client.create(
                 CreateSandboxRequest(
                     name=self.name,
+                    labels=self.config.labels,
                     docker_image=self.config.image,
                     network_access=self.config.network_access,
                     vm=self.config.vm,
@@ -109,7 +113,7 @@ class PrimeRuntime(Runtime):
         # The sandbox is remote, so reach a host port via a tunnel (one per port).
         from prime_tunnel import Tunnel
 
-        tunnel = Tunnel(local_port=port)
+        tunnel = Tunnel(local_port=port, labels=self.config.labels or None)
         try:
             url = str(await tunnel.start()).rstrip("/")
         except Exception as e:
