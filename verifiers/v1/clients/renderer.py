@@ -62,6 +62,12 @@ def response_from_generate(result: dict, model: str) -> Response:
     ] or None
     prompt_ids = result.get("prompt_ids") or []
     completion_ids = result.get("completion_ids") or []
+    # Per-message token spans (the renderer's attribution) let the trace graph store each
+    # message's tokens once; carried transiently on TurnTokens and consumed by `graph.add_turn`.
+    attribution = result.get("prompt_attribution")
+    message_spans = (
+        attribution.message_token_spans() if attribution is not None else None
+    )
     return Response(
         id=result.get("request_id", ""),
         created=0,
@@ -79,6 +85,7 @@ def response_from_generate(result: dict, model: str) -> Response:
             prompt_ids=prompt_ids,
             completion_ids=completion_ids,
             completion_logprobs=result.get("completion_logprobs") or [],
+            message_spans=message_spans,
         ),
     )
 

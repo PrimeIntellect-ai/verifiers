@@ -1,9 +1,10 @@
 """The interception server: harness chat-completions, caught and proxied.
 
 Every rollout runs an harness program whose OpenAI-style calls are caught here: a small
-localhost server routes each `POST /v1/chat/completions` to our `Client`, records a
-`Turn`, and returns the result in OpenAI shape. We inject `OPENAI_BASE_URL`/`OPENAI_API_KEY`
-so the program's SDK talks to us. Chat completions only, no streaming.
+localhost server routes each `POST /v1/chat/completions` to our `Client`, records the turn
+into the trace's message graph, and returns the result in OpenAI shape. We inject
+`OPENAI_BASE_URL`/`OPENAI_API_KEY` so the program's SDK talks to us. Chat completions only,
+no streaming.
 
 One server multiplexes many rollouts: each rollout registers a `RolloutSession` under its
 own secret (the bearer token the harness already sends), and the server routes by that
@@ -25,7 +26,8 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.trace import Trace, Turn
+from verifiers.v1 import graph
+from verifiers.v1.trace import Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Message,
@@ -265,9 +267,8 @@ class InterceptionServer:
             except Exception as e:  # surface to the program as an API error
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response({"error": str(e)}, status=502)
-            session.trace.trajectory.append(
-                Turn(prompt=prompt, response=response, tokens=response.tokens)
-            )  # branches are derived from the trajectory (see Trace.branches)
+            graph.add_turn(session.trace, prompt, response)  # one node per new message;
+            # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
             last = response
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
