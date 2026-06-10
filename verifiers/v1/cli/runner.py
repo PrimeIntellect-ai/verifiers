@@ -47,6 +47,13 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # append, safe to call from concurrent rollouts in the one event loop.
     out = output_path(config)
     save_config(config, out)
+    # Default the runtime's labels to the run uuid (after saving, so re-running `@ config.toml`
+    # gets a fresh uuid rather than reusing the saved one). Shared by every sandbox and tunnel
+    # the run creates, so they can be found/cleaned up together. Only label-aware runtimes
+    # (prime) carry the field; others are left untouched.
+    runtime = env.harness.config.runtime
+    if hasattr(runtime, "labels") and not runtime.labels:
+        runtime.labels = [config.uuid]
     logger.info("results: %s", out)
 
     def on_complete(trace: Trace) -> None:
