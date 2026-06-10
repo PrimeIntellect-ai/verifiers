@@ -23,7 +23,7 @@ abstractions and on-disk output. Everything is pydantic-typed; `import verifiers
 ## Install
 
 ```bash
-uv sync   # core + the shipped plugins + examples (eval, serve, all runtimes)
+uv sync   # core + the shipped packages + examples (eval, serve, all runtimes)
 ```
 
 ## Quickstart
@@ -58,7 +58,7 @@ Common knobs have short aliases:
 
 ## Tasksets & harnesses
 
-Tasksets (data + scoring) and harnesses (the rollout driver) are plugins selected by `id`,
+Tasksets (data + scoring) and harnesses (the rollout driver) are packages selected by `id`,
 and live in two places:
 
 - **`packages/`** — shipped, installed by default. Commonly-used **harnesses** (`default`,
