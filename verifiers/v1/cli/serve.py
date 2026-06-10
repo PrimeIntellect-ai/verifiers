@@ -22,7 +22,7 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.configs.serve import EnvServerConfig
 from verifiers.v1.serve.server import EnvServer
 
-USAGE = "usage: uv run serve <taskset-id> [--harness.id <id>] [options] [@ file.toml]"
+USAGE = "usage: uv run serve [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -37,8 +37,9 @@ def main(argv: list[str] | None = None) -> None:
         sys.argv = [sys.argv[0], "--help"]
         cli(narrow_config(EnvServerConfig, argv))
         return
-    if not extract_id(argv, "taskset"):
-        raise SystemExit(USAGE)  # --taskset.id is required
+    legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
+    if not extract_id(argv, "taskset") and not legacy_id:
+        raise SystemExit(USAGE)  # need a --taskset.id (v1) or a legacy --id (v0)
 
     config_type = narrow_config(EnvServerConfig, argv)
     sys.argv = [sys.argv[0], *argv]
@@ -48,7 +49,17 @@ def main(argv: list[str] | None = None) -> None:
         return
     setup_logging("DEBUG" if config.verbose else "INFO")
 
-    server = EnvServer(config, address=config.address)
+    if config.is_legacy:  # v0 env served through the legacy bridge
+        from verifiers.v1.legacy import LegacyEnvServer
+
+        server: EnvServer = LegacyEnvServer(
+            env_id=config.id,
+            env_args=config.args,
+            extra_env_kwargs=config.extra_env_kwargs,
+            address=config.address,
+        )
+    else:
+        server = EnvServer(config, address=config.address)
     # SIGTERM behaves like Ctrl-C so a killed server runs its teardown (closes clients).
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     asyncio.run(server.run())
