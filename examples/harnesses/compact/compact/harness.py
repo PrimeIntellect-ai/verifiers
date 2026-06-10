@@ -27,6 +27,8 @@ class CompactingHarnessConfig(HarnessConfig):
 
 
 class CompactingHarness(Harness[CompactingHarnessConfig]):
+    SUPPORTS_TASK_TOOLS = True
+
     async def launch(
         self,
         ctx: RolloutContext,

@@ -55,6 +55,9 @@ class Harness(ABC, Generic[ConfigT]):
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = (
         False  # emit task.system_prompt as a system message (else fold into the user message)
     )
+    SUPPORTS_TASK_TOOLS: ClassVar[bool] = (
+        True  # expose a task's MCP tool servers to the model; set False for harnesses without an MCP client
+    )
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
