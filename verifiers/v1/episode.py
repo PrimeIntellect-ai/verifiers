@@ -29,6 +29,7 @@ from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
 
 if TYPE_CHECKING:
+    from verifiers.v1.interception import InterceptionPool
     from verifiers.v1.retries import RetryConfig
 
 
@@ -45,6 +46,7 @@ class Episode:
         semaphore: asyncio.Semaphore | None = None,
         shared_urls: dict[str, str] | None = None,
         on_complete: Callable[[Trace], None] = lambda _trace: None,
+        interception: "InterceptionPool | None" = None,
     ) -> list[Trace]:
         """Run all rollouts (each under `semaphore`), then group-score across their
         traces. Without `@group_reward`s a rollout's reward is final the moment its own
@@ -58,7 +60,9 @@ class Episode:
 
         async def run_one(rollout: Rollout) -> Trace:
             async with semaphore or nullcontext():
-                trace = await run_with_retry(rollout, shared_urls, self.retry)
+                trace = await run_with_retry(
+                    rollout, shared_urls, interception, self.retry
+                )
             if not group_scored:  # reward already final → don't wait for the group
                 rollout.phase = Phase.DONE
                 on_complete(trace)
