@@ -91,7 +91,7 @@ harnesses = ["harnesses"]
 examples = [
     "compact",
     "gsm8k-v1", "wikispeedia-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
-    "reverse-text-v1", "hello-rlm-v1", "math-env-v1", "aime24-v1",
+    "reverse-text-v1", "math-env-v1", "aime24-v1",
     "wordle-v1", "terminal-bench-2-v1", "alphabet-sort-v1",
 ]
 
@@ -141,7 +141,6 @@ default = true
 tasksets = { path = "packages/tasksets", editable = true }
 harnesses = { path = "packages/harnesses", editable = true }
 compact = { path = "examples/harnesses/compact", editable = true }
-hello-rlm-v1 = { path = "examples/tasksets/hello_rlm_v1", editable = true }
 glossary-v1 = { path = "examples/tasksets/glossary_v1", editable = true }
 deepwiki-v1 = { path = "examples/tasksets/deepwiki_v1", editable = true }
 wikispeedia-v1 = { path = "examples/tasksets/wikispeedia_v1", editable = true }

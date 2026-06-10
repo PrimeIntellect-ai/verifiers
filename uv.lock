@@ -1531,11 +1531,6 @@ version = "0.1.0"
 source = { editable = "packages/harnesses" }
 
 [[package]]
-name = "hello-rlm-v1"
-version = "0.1.0"
-source = { editable = "examples/tasksets/hello_rlm_v1" }
-
-[[package]]
 name = "hf-xet"
 version = "1.4.3"
 source = { registry = "https://pypi.org/simple" }
@@ -5792,7 +5787,6 @@ examples = [
     { name = "deepwiki-v1" },
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
-    { name = "hello-rlm-v1" },
     { name = "math-env-v1" },
     { name = "reverse-text-v1" },
     { name = "terminal-bench-2-v1" },
@@ -5890,7 +5884,6 @@ examples = [
     { name = "deepwiki-v1", editable = "examples/tasksets/deepwiki_v1" },
     { name = "glossary-v1", editable = "examples/tasksets/glossary_v1" },
     { name = "gsm8k-v1", editable = "examples/tasksets/gsm8k_v1" },
-    { name = "hello-rlm-v1", editable = "examples/tasksets/hello_rlm_v1" },
     { name = "math-env-v1", editable = "examples/tasksets/math_env_v1" },
     { name = "reverse-text-v1", editable = "examples/tasksets/reverse_text_v1" },
     { name = "terminal-bench-2-v1", editable = "examples/tasksets/terminal_bench_2_v1" },
