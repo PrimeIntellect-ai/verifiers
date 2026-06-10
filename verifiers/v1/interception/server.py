@@ -1,20 +1,25 @@
-"""The per-rollout interception server.
+"""The interception server: harness chat-completions, caught and proxied.
 
-Every rollout runs an harness program whose OpenAI-style calls are caught here:
-this small localhost server routes each `POST /v1/chat/completions` to our
-`Client`, records a `Turn`, and returns the result in OpenAI shape. We inject
-`OPENAI_BASE_URL`/`OPENAI_API_KEY` so the program's SDK talks to us. Chat
-completions only, no streaming. When the rollout sets a user simulator (see
-`verifiers.v1.user`), this server also drives it: after each model turn it injects
-the simulator's reply as a user turn and re-prompts the model, so a multi-turn
-exchange plays out within one program request, transparently to the harness. Tools
-are handled out-of-band (run by the harness).
+Every rollout runs an harness program whose OpenAI-style calls are caught here: a small
+localhost server routes each `POST /v1/chat/completions` to our `Client`, records a
+`Turn`, and returns the result in OpenAI shape. We inject `OPENAI_BASE_URL`/`OPENAI_API_KEY`
+so the program's SDK talks to us. Chat completions only, no streaming.
+
+One server multiplexes many rollouts: each rollout registers a `RolloutSession` under its
+own secret (the bearer token the harness already sends), and the server routes by that
+secret to the right session. So N rollouts need one server (and, behind a remote runtime,
+one tunnel) per pool member rather than one each — see `interception.pool`.
+
+When a rollout sets a user simulator (see `verifiers.v1.user`), the session also drives it:
+after each model turn it injects the simulator's reply as a user turn and re-prompts the
+model, so a multi-turn exchange plays out within one program request, transparently to the
+harness. Tools are handled out-of-band (run by the harness).
 """
 
 import logging
 import secrets
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -115,11 +120,10 @@ def serialize_completion(response: Response, model: str) -> dict:
     }
 
 
-# The interception server only ever proxies one rollout's own harness requests, so
-# aiohttp's default 1 MiB body cap is an artificial bottleneck — a large tool result
-# (e.g. a `cat` of a big file) trips it and the harness gets a 413. Allow large bodies; the
-# upstream provider and the model's context window are the real limits, this is just a
-# host-OOM backstop.
+# Each session proxies one rollout's own harness requests, so aiohttp's default 1 MiB body
+# cap is an artificial bottleneck — a large tool result (e.g. a `cat` of a big file) trips it
+# and the harness gets a 413. Allow large bodies; the upstream provider and the model's
+# context window are the real limits, this is just a host-OOM backstop.
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 
 
@@ -159,45 +163,25 @@ class RolloutLimits:
         return None
 
 
-class InterceptionServer:
-    """A localhost server that proxies one rollout's chat-completions calls."""
+@dataclass
+class RolloutSession:
+    """One rollout's interception state, served by a (possibly shared) `InterceptionServer`
+    and keyed there by its secret. Holds everything a single rollout's chat-completions need:
+    the client/model context, the trace to record turns onto, the framework limits + `@stop`s
+    checked before each turn, and (optionally) a user simulator the rollout sets before the
+    harness runs."""
 
-    def __init__(
-        self,
-        ctx: RolloutContext,
-        trace: Trace,
-        stops: list[Callable[[Trace], Awaitable[bool]]] | None = None,
-        limits: RolloutLimits | None = None,
-    ) -> None:
-        self.ctx = ctx
-        self.trace = trace
-        self.stops = stops or []
-        self.limits = limits or RolloutLimits()
-        self.secret = secrets.token_urlsafe(16)
-        self.port = 0
-        self.runner: web.AppRunner | None = None
-        self.user: "Respond | None" = None
-        """A user simulator the rollout sets before the harness runs (see
-        `verifiers.v1.user`). When set, each model turn with no tool call is followed by
-        the simulator's reply, injected as a user turn, and the model is re-prompted —
-        all within one program request, transparently to the harness."""
+    ctx: RolloutContext
+    trace: Trace
+    stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
+    limits: RolloutLimits = field(default_factory=RolloutLimits)
+    user: "Respond | None" = None
+    """A user simulator the rollout sets before the harness runs (see `verifiers.v1.user`).
+    When set, each model turn with no tool call is followed by the simulator's reply,
+    injected as a user turn, and the model is re-prompted — all within one program request,
+    transparently to the harness."""
 
-    async def __aenter__(self) -> "InterceptionServer":
-        app = web.Application(client_max_size=_MAX_REQUEST_BODY)
-        app.router.add_post("/v1/chat/completions", self.handle_chat)
-        self.runner = web.AppRunner(app)
-        await self.runner.setup()
-        site = web.TCPSite(self.runner, "127.0.0.1", 0)
-        await site.start()
-        self.port = site._server.sockets[0].getsockname()[1]  # actual ephemeral port
-        logger.debug("interception up: id=%s port=%d", self.trace.id, self.port)
-        return self
-
-    async def __aexit__(self, *exc) -> None:
-        if self.runner is not None:
-            await self.runner.cleanup()
-
-    async def _refused(self) -> str | None:
+    async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
         call halts the harness (its model call errors out); Harness.run treats it as clean."""
@@ -212,9 +196,49 @@ class InterceptionServer:
                 return stop.__name__
         return None
 
+
+class InterceptionServer:
+    """A localhost server that proxies chat-completions for one or more rollouts. Each
+    rollout `register`s a `RolloutSession` and gets back a secret; `handle_chat` routes every
+    request to the session whose secret matches the request's bearer token. A single server
+    can multiplex many rollouts (the basis for `interception.pool`); used 1:1 it's just a
+    server with one session."""
+
+    def __init__(self) -> None:
+        self.sessions: dict[str, RolloutSession] = {}
+        self.port = 0
+        self.runner: web.AppRunner | None = None
+
+    def register(self, session: RolloutSession) -> str:
+        """Add a session under a fresh secret (the bearer token the harness must send) and
+        return it."""
+        secret = secrets.token_urlsafe(16)
+        self.sessions[secret] = session
+        return secret
+
+    def unregister(self, secret: str) -> None:
+        self.sessions.pop(secret, None)
+
+    async def __aenter__(self) -> "InterceptionServer":
+        app = web.Application(client_max_size=_MAX_REQUEST_BODY)
+        app.router.add_post("/v1/chat/completions", self.handle_chat)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, "127.0.0.1", 0)
+        await site.start()
+        self.port = site._server.sockets[0].getsockname()[1]  # actual ephemeral port
+        logger.debug("interception up: port=%d", self.port)
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        if self.runner is not None:
+            await self.runner.cleanup()
+
     async def handle_chat(self, request: web.Request) -> web.Response:
-        if request.headers.get("Authorization") != f"Bearer {self.secret}":
-            logger.warning("interception: unauthorized request id=%s", self.trace.id)
+        auth = request.headers.get("Authorization", "")
+        session = self.sessions.get(auth.removeprefix("Bearer "))
+        if session is None:
+            logger.warning("interception: unauthorized request")
             return web.json_response({"error": "unauthorized"}, status=401)
         body = await request.json()
         prompt: Messages = [parse_message(m) for m in body.get("messages", [])]
@@ -225,7 +249,7 @@ class InterceptionServer:
         # returns to the (simulator-unaware) program. Without a simulator the loop runs once.
         last: Response | None = None
         while True:
-            refused = await self._refused()
+            refused = await session.refused()
             if refused is not None:
                 # Refuse the first model call to halt the harness; once a simulated
                 # conversation is under way, just end it and return the last turn cleanly.
@@ -233,24 +257,28 @@ class InterceptionServer:
                     return web.json_response(
                         {"error": f"rollout stopped: {refused}"}, status=400
                     )
-                return web.json_response(serialize_completion(last, self.ctx.model))
+                return web.json_response(serialize_completion(last, session.ctx.model))
             try:
-                response = await self.ctx.client.get_response(
-                    prompt, self.ctx.model, self.ctx.sampling, tools
+                response = await session.ctx.client.get_response(
+                    prompt, session.ctx.model, session.ctx.sampling, tools
                 )
             except Exception as e:  # surface to the program as an API error
-                logger.warning("model call failed: id=%s %s", self.trace.id, e)
+                logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response({"error": str(e)}, status=502)
-            self.trace.trajectory.append(
+            session.trace.trajectory.append(
                 Turn(prompt=prompt, response=response, tokens=response.tokens)
             )  # branches are derived from the trajectory (see Trace.branches)
             last = response
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
-            if response.message.tool_calls or self.user is None:
-                return web.json_response(serialize_completion(response, self.ctx.model))
-            user_messages, done = await self.user(response.message.content or "")
+            if response.message.tool_calls or session.user is None:
+                return web.json_response(
+                    serialize_completion(response, session.ctx.model)
+                )
+            user_messages, done = await session.user(response.message.content or "")
             if done:
-                self.trace.stop("user_completed")
-                return web.json_response(serialize_completion(response, self.ctx.model))
+                session.trace.stop("user_completed")
+                return web.json_response(
+                    serialize_completion(response, session.ctx.model)
+                )
             prompt = [*prompt, response.message, *user_messages]

@@ -13,6 +13,7 @@ This is the only place that imports the v0 ``verifiers`` API; all imports of it 
 v1 stays importable without the v0 package present.
 """
 
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -290,6 +291,10 @@ class LegacyEnvServer(EnvServer):
         self.frontend.setsockopt(zmq.LINGER, 0)
         self.frontend.bind(self.address)
         self.address = self.frontend.getsockopt_string(zmq.LAST_ENDPOINT)
+
+    def interception_pool(self):
+        # The v0 bridge runs its own rollouts (no v1 interception), so no pool to enter.
+        return contextlib.nullcontext()
 
     def _v0_client(self, client_config: ClientConfig, model: str):
         """Translate the v1 renderer ``ClientConfig`` into a v0 renderer client (cached;
