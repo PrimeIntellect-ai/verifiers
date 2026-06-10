@@ -20,7 +20,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import RuntimeConfig, make_runtime
 from verifiers.v1.tools import Tools, serve_tools
 from verifiers.v1.types import Messages
 
@@ -67,15 +67,23 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
 
 @contextlib.asynccontextmanager
 async def serve_user(
-    user: Tools | None, runtime: Runtime
+    user: Tools | None, runtime_config: RuntimeConfig
 ) -> AsyncIterator[Respond | None]:
-    """Bring a rollout's user server up (colocated in the harness's runtime, like a tool
-    server) and yield the async `respond` for the interception server to drive — or `None`
-    when the taskset has no user server. Colocated keeps it reachable from the host (where
-    the interception server runs) for the subprocess/docker runtimes."""
+    """Bring a rollout's user server up and yield the async `respond` the interception server
+    drives — or `None` when the taskset has no user server. The framework drives the user from
+    the host, so it runs in its OWN runtime (host subprocess by default, or its own sandbox via
+    `runtime_config`) — never colocated in the agent's runtime — and is published back to the
+    host (`host_reachable`): a remote sandbox's `public_url`, else localhost."""
     if user is None:
         yield None
         return
-    async with serve_tools([user], runtime, colocated=True) as urls:
-        async with connect_user(next(iter(urls.values()))) as respond:
-            yield respond
+    runtime = make_runtime(runtime_config)
+    await runtime.start()
+    try:
+        async with serve_tools(
+            [user], runtime, colocated=True, host_reachable=True
+        ) as urls:
+            async with connect_user(next(iter(urls.values()))) as respond:
+                yield respond
+    finally:
+        await runtime.stop()

@@ -85,3 +85,22 @@ async def test_agentic(run_v1, runtime, tmp_path):
     assert trace.errors == []
     assert trace.num_turns >= 1  # ran a command, then finished
     assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+@pytest.mark.slow
+async def test_multi_turn_user_in_own_sandbox(run_v1, tmp_path):
+    """The user simulator can run in its own sandbox (here docker), not just on the host —
+    published back to the host while the agent runs on subprocess."""
+    (trace,) = await run_v1(
+        "echo-multi-v1",
+        harness="default",
+        runtime="subprocess",
+        output_dir=tmp_path,
+        max_turns=6,
+        taskset_overrides={"user": {"runtime": {"type": "docker"}}},
+    )
+    assert trace.errors == []
+    assert not trace.is_truncated
+    assert trace.num_turns >= 2
+    assert trace.reward == 1.0
