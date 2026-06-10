@@ -298,32 +298,38 @@ class LegacyEnvServer(EnvServer):
         return contextlib.nullcontext()
 
     def _v0_client(self, client_config: ClientConfig, model: str):
-        """Translate the v1 renderer ``ClientConfig`` into a v0 renderer client (cached;
-        a renderer builds the tokenizer pool on first use). The tokenizer is pinned to
+        """Translate a v1 ``ClientConfig`` into a v0 client (cached). A renderer config
+        (token-in/out, training) builds a v0 renderer client whose tokenizer is pinned to
         ``renderer_model_name`` (the base model) so a LoRA adapter name — served only for
-        sampling — never drives tokenizer loading; the per-request ``model`` still selects
-        the sampling target in ``run_rollout``."""
-        if not isinstance(client_config, RendererClientConfig):
-            raise ValueError(
-                "the v0 legacy bridge trains through a renderer (token-in/out) client, "
-                f"got client type {client_config.type!r}; MITO (chat-completions) "
-                "training of v0 envs is not supported"
-            )
-        renderer_model = client_config.renderer_model_name or model
+        sampling — never drives tokenizer loading. An OpenAI config (chat-completions, eval)
+        builds a v0 chat-completions client. The per-request ``model`` selects the sampling
+        target in ``run_rollout``."""
+        is_renderer = isinstance(client_config, RendererClientConfig)
+        renderer_model = (
+            client_config.renderer_model_name if is_renderer else None
+        ) or model
         key = (client_config.model_dump_json(), renderer_model)
         if key not in self._clients:
             from verifiers.clients import resolve_client
             from verifiers.types import ClientConfig as V0ClientConfig
 
-            v0_config = V0ClientConfig(
-                client_type="renderer",
-                renderer_config=client_config.renderer,
-                renderer_model_name=renderer_model,
-                renderer_pool_size=client_config.pool_size,
-                api_base_url=client_config.base_url,
-                api_key_var=client_config.api_key_var,
-                extra_headers=dict(client_config.headers or {}),
-            )
+            if is_renderer:
+                v0_config = V0ClientConfig(
+                    client_type="renderer",
+                    renderer_config=client_config.renderer,
+                    renderer_model_name=renderer_model,
+                    renderer_pool_size=client_config.pool_size,
+                    api_base_url=client_config.base_url,
+                    api_key_var=client_config.api_key_var,
+                    extra_headers=dict(client_config.headers or {}),
+                )
+            else:
+                v0_config = V0ClientConfig(
+                    client_type="openai_chat_completions",
+                    api_base_url=client_config.base_url,
+                    api_key_var=client_config.api_key_var,
+                    extra_headers=dict(client_config.headers or {}),
+                )
             self._clients[key] = resolve_client(v0_config)
         return self._clients[key]
 
