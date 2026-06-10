@@ -74,16 +74,24 @@ Reward is a completion sanity-check only (default sampling temperature → run-t
 
 The uncapped tails above are dominated by rare long generations (≈1.5% of completions exceed 2048 tokens; p90 is 554), not runtime overhead. Re-running with `--sampling.max_tokens 2048` (`MAX_TOKENS=2048 bench/run_bench.sh <rt> <n>`) trims that straggler tail. Smaller scales (32/64/128), **two passes** each, **0 errors**, rewards unchanged (0.93–1.0; ≤2 truncations/run).
 
-End-to-end wall clock (seconds, mean of 2 runs):
+End-to-end wall clock is gated by the single slowest rollout — an endpoint-queue straggler can
+sit for minutes even on a capped generation — so it's a noisy comparator the max hides. The
+robust view is the per-rollout **generation-duration distribution** (min / p50 / p90, pooled
+over both passes; `bench/plot_e2e.py`):
 
-| batch | subprocess | docker | prime |
-|---:|---:|---:|---:|
-| 32  | 28 | 30  | 52  |
-| 64  | 18 | 53  | 81  |
-| 128 | 40 | 134 | 178 |
+![gen duration by runtime](gen_by_runtime.png)
+![gen duration by batch size](gen_by_batchsize.png)
 
-![e2e by runtime](e2e_by_runtime.png)
-![e2e by batch size](e2e_by_batchsize.png)
+generation duration (s) — min / p50 / p90 at batch 32 / 64 / 128:
+
+| runtime | min | p50 | p90 |
+|---|---|---|---|
+| subprocess | 2 / 3 / 4    | 5 / 6 / 7    | 9 / 11 / 11  |
+| docker     | 10 / 17 / 21 | 13 / 23 / 69 | 19 / 28 / 98 |
+| prime      | 16 / 18 / 17 | 30 / 40 / 65 | 38 / 59 / 99 |
+
+`prime`'s **min is flat (~17s)** — its fixed sandbox+tunnel provisioning floor — while p50/p90
+climb with concurrency, i.e. the growth is endpoint queueing, not runtime overhead.
 
 - **Capping removes the straggler tail**: docker-128 drops 319 → ~134 s and prime-128 413 → ~178 s vs the uncapped runs — confirming much of the earlier tail was generation length, not runtime overhead.
 - **Provisioning ordering holds**: subprocess (≈0) < docker (per-container) < prime (per-sandbox+tunnel), widening with scale.
