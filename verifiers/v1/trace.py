@@ -93,7 +93,9 @@ class Branch(StrictBaseModel):
     @property
     def prompt_len(self) -> int:
         """Input context size: the final-turn prompt = full sequence minus the last completion."""
-        last_completion = next((sum(n.mask) for n in reversed(self.nodes) if any(n.mask)), 0)
+        last_completion = next(
+            (sum(n.mask) for n in reversed(self.nodes) if any(n.mask)), 0
+        )
         return self.total_tokens - last_completion
 
 
@@ -143,7 +145,11 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     def _last_assistant(self) -> "MessageNode | None":
         """The most recent assistant node, or None for a trace with no responses."""
         return next(
-            (n for n in reversed(self.nodes) if isinstance(n.message, AssistantMessage)),
+            (
+                n
+                for n in reversed(self.nodes)
+                if isinstance(n.message, AssistantMessage)
+            ),
             None,
         )
 
@@ -209,7 +215,9 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     @property
     def assistant_messages(self) -> list[AssistantMessage]:
         """Every model response, in order — one per turn, branch-independent."""
-        return [n.message for n in self.nodes if isinstance(n.message, AssistantMessage)]
+        return [
+            n.message for n in self.nodes if isinstance(n.message, AssistantMessage)
+        ]
 
     @property
     def tool_messages(self) -> list[ToolMessage]:

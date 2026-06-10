@@ -105,7 +105,8 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
 
     parent: int | None = None
     path_len = 0  # cumulative stored token length of the reused prefix
-    cursor: int | None = None  # in prompt_ids: end of the previous *new* message's tokens
+    # cursor: in prompt_ids, the end of the previous *new* message's tokens
+    cursor: int | None = None
     for i, msg in enumerate(prompt):
         key = (parent, message_hash(msg))
         existing = idx.get(key)

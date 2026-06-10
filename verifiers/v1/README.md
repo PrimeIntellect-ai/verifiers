@@ -16,7 +16,10 @@ abstractions and on-disk output. Everything is pydantic-typed; `import verifiers
 - **Minimal & pythonic** — the high-level abstractions without the implementation bulk;
   plain classes + decorators (`@vf.reward` / `@vf.metric` / ...).
 - **Training-ready traces** — exact token ids + logprobs straight from an agentic rollout
-  (renderer client), with branching recovered for compaction / subagents.
+  (renderer client); one training sample per branch, recovered for compaction / subagents.
+- **Delta-native trace graph** — each message is stored once as a node linked to its
+  predecessor, so a trace's size is linear in turns, not quadratic; branches fall out of
+  walking the graph, and a training sample is a cheap concat of node tokens along a path.
 - **Hub-native + v0-compatible** — ids install on demand from the Environments Hub, and
   classic v0 envs run through the same CLIs via a bridge.
 
@@ -145,9 +148,9 @@ uv run eval code-golf-v1 -n 1 -r 2  # group rewards: a @vf.group_reward scores N
 
 A rollout isn't always linear. The `compact` harness rewrites its context every turn — a
 fresh `[system, user]` carrying its running notes plus the last tool output — so each turn
-is its own *branch*. `branching` recovers them from the flat trajectory and
-`trace.branches` / `num_branches` expose it (a linear harness is one branch; the compact
-harness is one per turn — it also handles subagents):
+is its own *branch*. Branches fall out of the message graph — each leaf's root→leaf path is
+one branch, exposed by `trace.branches` / `num_branches` (a linear harness is one branch;
+the compact harness is one per turn — it also handles subagents):
 
 ```bash
 uv run eval wiki-search-v1 -n 1 --harness.id compact  # fresh prompt each turn → num_branches == turns
@@ -164,10 +167,11 @@ uv run eval gsm8k-v1 -n 1 --client.type renderers \  # renderers: client-side to
   --client.base-url http://localhost:8000/v1          # token-in/out traces (needs a vLLM engine)
 ```
 
-With `renderers`, each `trace.trajectory[i].tokens` carries the exact `prompt_ids` /
-`completion_ids` / `completion_logprobs` the engine saw — training-ready token data
-straight from an agentic rollout, with zero agent changes. (When the engine returns ids on
-the response itself, the openai client picks them up too — no renderer required.)
+With `renderers`, each graph node carries the exact tokens the engine saw — `token_ids`
+plus a per-token trainable `mask` and `logprobs` — so concatenating a branch's nodes is a
+ready training sample, straight from an agentic rollout with zero agent changes. (When the
+engine returns ids on the response itself, the openai client picks them up too — no
+renderer required.)
 
 ### Limits & retries
 
