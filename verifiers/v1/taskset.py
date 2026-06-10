@@ -23,7 +23,7 @@ from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.ids import EnvId
+from verifiers.v1.types import EnvId, env_name
 from verifiers.v1.tools import Tools
 from verifiers.v1.user import User
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, SubprocessConfig
@@ -59,7 +59,7 @@ class ToolsConfig(BaseConfig):
 class TasksetConfig(BaseConfig):
     """Base taskset config. Subclass to add task-generation knobs."""
 
-    id: EnvId = EnvId("")
+    id: EnvId = ""
     """The taskset id, which selects this taskset: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
     `EnvId`). Set via `--taskset.id`."""
@@ -67,9 +67,8 @@ class TasksetConfig(BaseConfig):
 
     @property
     def name(self) -> str:
-        """The taskset's bare name (org/version stripped) — for logging + output paths.
-        Wraps `id`, which a concrete subclass may re-annotate as a plain `str`."""
-        return EnvId(self.id).name
+        """The taskset's bare name (org/version stripped) — for logging + output paths."""
+        return env_name(self.id)
 
 
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig)

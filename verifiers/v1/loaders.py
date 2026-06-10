@@ -18,7 +18,7 @@ from types import ModuleType
 from typing import get_args
 
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.ids import ensure_installed
+from verifiers.v1.types import ensure_installed
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 
@@ -26,12 +26,12 @@ from verifiers.v1.taskset import Taskset, TasksetConfig
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     """Import a plugin by id, installing it from the env hub on demand for an
     `org/name[@version]` id, else importing the local package (hyphens → underscores)."""
-    eid = ensure_installed(plugin_id)
+    module = ensure_installed(plugin_id)
     try:
-        return importlib.import_module(eid.module)
+        return importlib.import_module(module)
     except ModuleNotFoundError as e:
         raise ModuleNotFoundError(
-            f"{kind} {plugin_id!r} not found (tried to import {eid.module!r}). A {kind} is a "
+            f"{kind} {plugin_id!r} not found (tried to import {module!r}). A {kind} is a "
             f"package exposing load_{kind}(config) — the shipped ones are bundled in the "
             f"`{group}` package (vendored by default), installed from the Environments Hub "
             f"(`org/name`), or authored yourself."
