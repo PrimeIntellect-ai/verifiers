@@ -1,11 +1,9 @@
-"""Shipped v1 tasksets, resolved by id (`--taskset.id <id>`).
+"""Built-in tasksets, resolved by id (`--taskset.id <id>`) as `tasksets.<id>`.
 
-`REGISTRY` maps a taskset id to its dotted module (each exposes `load_taskset(config)`).
-The loader imports the module on demand, so importing this package stays cheap — e.g. the
-textarena taskset's `textarena` dependency is only imported when that id is selected.
-"""
+Re-exports each taskset's class + config off the package. `textarena_v1` is not re-exported
+here — it imports the optional `textarena` dependency at module load — but still resolves as
+`tasksets.textarena_v1`."""
 
-REGISTRY: dict[str, str] = {
-    "harbor": "tasksets.harbor",
-    "textarena_v1": "tasksets.textarena_v1",
-}
+from tasksets.harbor_v1 import HarborConfig, HarborTaskset
+
+__all__ = ["HarborConfig", "HarborTaskset"]

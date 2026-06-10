@@ -1,10 +1,13 @@
-"""Shipped v1 harnesses, resolved by id (`--harness.id <id>`).
+"""Built-in harnesses, resolved by id (`--harness.id <id>`) as `harnesses.<id>`.
 
-`REGISTRY` maps a harness id to its dotted module (each exposes `load_harness(config)`).
-The loader imports the module on demand, so importing this package stays cheap.
-"""
+Re-exports each harness's class + config off the package."""
 
-REGISTRY: dict[str, str] = {
-    "default": "harnesses.default",
-    "rlm": "harnesses.rlm",
-}
+from harnesses.default import DefaultHarness, DefaultHarnessConfig
+from harnesses.rlm import RLMHarness, RLMHarnessConfig
+
+__all__ = [
+    "DefaultHarness",
+    "DefaultHarnessConfig",
+    "RLMHarness",
+    "RLMHarnessConfig",
+]

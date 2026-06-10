@@ -62,8 +62,8 @@ Tasksets (data + scoring) and harnesses (the rollout driver) are packages select
 and live in two places:
 
 - **`packages/`** — shipped, installed by default. Commonly-used **harnesses** (`default`,
-  `rlm`) and **taskset integrations** that wrap a whole benchmark family (`harbor` — the
-  agentic-benchmark registry; `textarena` — TextArena games). Use them by id.
+  `rlm`) and **taskset integrations** that wrap a whole benchmark family (`harbor-v1` — the
+  agentic-benchmark registry; `textarena-v1` — TextArena games). Use them by id.
 - **`examples/`** — small reference implementations to copy when **authoring your own**,
   split by kind into `examples/tasksets/` and `examples/harnesses/`. Each shows one pattern.
 
@@ -79,8 +79,8 @@ Taskset examples (`examples/tasksets/`):
 | `wikispeedia-v1` | a tool server in its **own per-rollout** runtime |
 | `wiki-search-v1` | a **shared** tool server (built once for the eval) + an LLM judge |
 | `deepwiki-v1` | an **existing remote** tool server, by URL |
-| `wordle-v1` | configuring the vendored `textarena` integration (user simulator) |
-| `terminal-bench-2-v1` | configuring the vendored `harbor` integration |
+| `wordle-v1` | configuring the vendored `textarena-v1` integration (user simulator) |
+| `terminal-bench-2-v1` | configuring the vendored `harbor-v1` integration |
 
 Harness examples (`examples/harnesses/`):
 
@@ -183,12 +183,12 @@ uv run eval gsm8k-v1 -n 1 --retry.attempts 3 --retry.include ProgramError  # ret
 
 ### First-class Harbor support
 
-Common agentic benchmarks run out of the box: the shipped `harbor` taskset (installed by
+Common agentic benchmarks run out of the box: the shipped `harbor-v1` taskset (installed by
 default) pulls tasks straight from the Harbor registry, each in its own declared, pullable
 container image — e.g. Terminal-Bench 2 (the `terminal-bench-2-v1` example just pins this):
 
 ```bash
-uv run eval harbor --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.enable-bash true
+uv run eval harbor-v1 --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.enable-bash true
 ```
 
 Tasks that define their environment with a `Dockerfile` rather than a pullable image (e.g.

@@ -2,10 +2,10 @@
 
 A plugin (taskset or harness) exposes a single load hook — `load_taskset(config) -> Taskset`
 for tasksets, `load_harness(config) -> Harness` for harnesses. An id (an `EnvId`) resolves to
-the module exposing it: a built-in id (`default`, `rlm`, `harbor`, `textarena_v1`) maps through
-its group package's registry (`harnesses.REGISTRY` / `tasksets.REGISTRY`) to a namespaced
-module (`harnesses.rlm`, ...); any other id names a flat module — a local package (hyphens →
-underscores), or an `org/name[@version]` package installed on demand from the Environments Hub.
+the module exposing it: a built-in id (`default`, `rlm`, `harbor_v1`, `textarena_v1`) resolves
+to its namespaced module under the group package (`harnesses.rlm`, `tasksets.harbor_v1`, ...);
+any other id names a flat module — a local package (hyphens → underscores), or an
+`org/name[@version]` package installed on demand from the Environments Hub.
 Built-ins live under `packages/`, installed by default via the `tasksets`/`harnesses` extras;
 custom ones live under `examples/`, on `sys.path`, or on the hub. The CLI introspects the
 hook's parameter annotation to narrow the plugin's config for `--taskset.*` /
@@ -13,6 +13,7 @@ hook's parameter annotation to narrow the plugin's config for `--taskset.*` /
 """
 
 import importlib
+import importlib.util
 import inspect
 from types import ModuleType
 from typing import get_args
@@ -24,11 +25,12 @@ from verifiers.v1.taskset import Taskset, TasksetConfig
 
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
-    """Import a plugin by id. A built-in id resolves through the `group` package's registry
-    (`harnesses` / `tasksets`) to its namespaced module; a hub `org/name[@version]` id is
-    installed on demand; any other is a local package (hyphens → underscores)."""
+    """Import a plugin by id. A built-in id resolves to its namespaced module under the
+    `group` package (`harnesses` / `tasksets`); a hub `org/name[@version]` id is installed on
+    demand; any other is a local package (hyphens → underscores)."""
     module = ensure_installed(plugin_id)
-    target = importlib.import_module(group).REGISTRY.get(module, module)
+    namespaced = f"{group}.{module}"
+    target = namespaced if importlib.util.find_spec(namespaced) else module
     try:
         return importlib.import_module(target)
     except ModuleNotFoundError as e:
