@@ -83,8 +83,8 @@ class InterceptionPool:
         and yield its `(endpoint, secret)`; free the slot on exit."""
         async with self._lock:
             entry = await self._entry()
+            secret = entry.server.register(session)
             entry.load += 1
-        secret = entry.server.register(session)
         try:
             yield entry.endpoint, secret
         finally:
