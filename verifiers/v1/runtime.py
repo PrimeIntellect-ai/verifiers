@@ -989,6 +989,12 @@ class Runtime:
         await self.close_mcp_tools(state)
         self.release_scoped_tools("rollout", state)
         await self.release_model_client(state)
+        # The live-trajectory registry (register_trajectory) is only read by
+        # resolve_trajectory for handle-borrowing sub-runtime states, whose
+        # lifetime is within the owning rollout — without this pop the
+        # long-lived Runtime retains every completed rollout's full
+        # trajectory and the env worker leaks ~50-400MB per rollout.
+        self.trajectories.pop(str(state["trajectory_id"]), None)
         self.release_tool_handles(state)
 
     async def cleanup_group(self, tasks: list[Task], states: list[State]) -> None:
