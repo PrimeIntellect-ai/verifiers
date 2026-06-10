@@ -264,10 +264,14 @@ class LegacyEnvServer(EnvServer):
         address: str = "tcp://127.0.0.1:5000",
     ) -> None:
         from verifiers import load_environment
+        from verifiers.v1.ids import ensure_installed, env_name
 
         self.address = address
-        self.taskset_id = env_id
-        self.env = load_environment(env_id, **(env_args or {}))
+        # Install from the env hub on demand for an `org/name[@version]` id, then load the
+        # v0 env by its module name (a local id is already importable).
+        module = ensure_installed(env_id)
+        self.taskset_id = env_name(env_id)
+        self.env = load_environment(module, **(env_args or {}))
         # The formatted dataset rows are RolloutInputs (prompt + example_id); index by task_idx.
         self.dataset = self.env.get_dataset()
         self.tasks = self.dataset  # `len(self.tasks)` drives the `info` response

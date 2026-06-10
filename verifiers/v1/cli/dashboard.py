@@ -49,7 +49,7 @@ def _config(config: EvalConfig) -> Table:
     grid.add_column()
     grid.add_row(
         "env",
-        f"{config.taskset.id}  ·  {config.harness.id} harness  ·  {config.harness.runtime.type} runtime",
+        f"{config.taskset.name}  ·  {config.harness.name} harness  ·  {config.harness.runtime.type} runtime",
     )
     grid.add_row("model", f"{config.model}  ({sampling})")
     grid.add_row("output", str(out))
