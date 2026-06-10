@@ -875,10 +875,21 @@ class Runtime:
         is_truncated = response.message.is_truncated or (
             tokens is not None and bool(tokens.get("is_truncated"))
         )
+        # Identity/usage only: the full Response dump would re-store the
+        # message content (= ``completion``) and ``message.tokens``
+        # (= ``tokens``, incl. per-token attribution), doubling every
+        # trajectory step in worker memory, on the wire, and in the
+        # orchestrator's group buffers. v1 step readers that want the
+        # heavy fields isinstance-check the live ``Response``, which a
+        # serialized dict never passes; usage is recorded on state at
+        # this call site via ``record_response_usage``.
+        response_meta = serializable(response)
+        if isinstance(response_meta, dict):
+            response_meta.pop("message", None)
         step = {
             "prompt": serializable(prompt),
             "completion": serializable(completion),
-            "response": serializable(response),
+            "response": response_meta,
             "tokens": serializable(tokens),
             "reward": None,
             "advantage": None,
@@ -978,6 +989,12 @@ class Runtime:
         await self.close_mcp_tools(state)
         self.release_scoped_tools("rollout", state)
         await self.release_model_client(state)
+        # The live-trajectory registry (register_trajectory) is only read by
+        # resolve_trajectory for handle-borrowing sub-runtime states, whose
+        # lifetime is within the owning rollout — without this pop the
+        # long-lived Runtime retains every completed rollout's full
+        # trajectory and the env worker leaks ~50-400MB per rollout.
+        self.trajectories.pop(str(state["trajectory_id"]), None)
         self.release_tool_handles(state)
 
     async def cleanup_group(self, tasks: list[Task], states: list[State]) -> None:
