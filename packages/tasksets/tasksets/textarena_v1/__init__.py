@@ -94,7 +94,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
     def user(self, task: TextArenaTask) -> vf.User:
         return vf.User(
             name="user",
-            command=[sys.executable, "-m", "textarena_v1.server"],
+            command=[sys.executable, "-m", "tasksets.textarena_v1.server"],
             env={"TEXTARENA_INFO": json.dumps(task.info)},
         )
 
