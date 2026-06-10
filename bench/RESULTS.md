@@ -70,6 +70,28 @@ Reward is a completion sanity-check only (default sampling temperature → run-t
 3. **docker degrades sharply at scale** — 256/512 local containers drive `gen_p50` to 144 s / 286 s (vs 13.7 s at 32). Completes cleanly but slowly.
 4. **prime scales cleanly and beats docker at 256** by offloading to parallel cloud sandboxes; its per-rollout `gen` rises with concurrency (provisioning + the shared endpoint).
 
+## Capped runs — `max_tokens=2048` (isolating runtime overhead)
+
+The uncapped tails above are dominated by rare long generations (≈1.5% of completions exceed 2048 tokens; p90 is 554), not runtime overhead. Re-running with `--sampling.max_tokens 2048` (`MAX_TOKENS=2048 bench/run_bench.sh <rt> <n>`) trims that straggler tail. Smaller scales (32/64/128), **two passes** each, **0 errors**, rewards unchanged (0.93–1.0; ≤2 truncations/run).
+
+End-to-end wall clock (seconds, mean of 2 runs):
+
+| batch | subprocess | docker | prime |
+|---:|---:|---:|---:|
+| 32  | 28 | 30  | 52  |
+| 64  | 18 | 53  | 81  |
+| 128 | 40 | 134 | 178 |
+
+![e2e by runtime](e2e_by_runtime.png)
+![e2e by batch size](e2e_by_batchsize.png)
+
+- **Capping removes the straggler tail**: docker-128 drops 319 → ~134 s and prime-128 413 → ~178 s vs the uncapped runs — confirming much of the earlier tail was generation length, not runtime overhead.
+- **Provisioning ordering holds**: subprocess (≈0) < docker (per-container) < prime (per-sandbox+tunnel), widening with scale.
+- **subprocess is endpoint-bound and noisy** — the 64 < 32 dip is endpoint variance; with ~0 provisioning its wall clock ≈ model latency.
+- **prime variance is highest at 128** (124 vs 232 s across passes) — the 100 tunnels/min cap biting unevenly.
+
+`bench/plot_e2e.py` regenerates both graphs from the `BENCH` lines.
+
 ## Next
 
 - **endpoint**: it dominates wall clock at 512 concurrency — re-measure against a higher-throughput inference deployment to separate runtime overhead from model latency.
