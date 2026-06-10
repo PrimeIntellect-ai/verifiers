@@ -12,7 +12,7 @@ span (`RenderedTokens.message_token_spans()`, carried on `TurnTokens.message_spa
 input message's node gets its span plus the leading template scaffold since the previous
 message; the trailing scaffold (the generation prompt) goes on the assistant node, prefixed
 to its sampled completion. By construction `concat(node.token_ids along a path)` reproduces
-the exact `prompt_ids + completion_ids` the model saw (see `tests`).
+the exact `prompt_ids + completion_ids` the model saw.
 """
 
 from __future__ import annotations

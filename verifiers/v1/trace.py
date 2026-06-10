@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Generic, TypeVar
 
-from pydantic import Field, PrivateAttr, computed_field, model_validator
+from pydantic import Field, PrivateAttr, computed_field
 
 from verifiers.v1 import graph
 from verifiers.v1.graph import MessageNode
@@ -124,17 +124,6 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder (`graph.add_turn`); rebuilt
     lazily from `nodes` after deserialization."""
-    _view_cache: dict = PrivateAttr(default_factory=dict)
-    """Cached `trajectory`/`branches` views, invalidated when `nodes` grows (append-only)."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_legacy_trajectory(cls, data):
-        """Tolerate a pre-graph trace dict (a flat `trajectory`): drop it so the file loads.
-        (Faithful legacy→graph conversion is a follow-up; new traces carry `nodes`.)"""
-        if isinstance(data, dict) and "trajectory" in data and "nodes" not in data:
-            data = {k: v for k, v in data.items() if k != "trajectory"}
-        return data
 
     @computed_field
     @property
@@ -182,21 +171,12 @@ class Trace(StrictBaseModel, Generic[TaskT]):
         last = self._last_assistant()
         return bool(last and last.message.content)
 
-    def _cached(self, key: str, fn):
-        """Cache a graph-derived view, invalidated when `nodes` grows (append-only)."""
-        n = len(self.nodes)
-        if self._view_cache.get("_n") != n:
-            self._view_cache = {"_n": n}
-        if key not in self._view_cache:
-            self._view_cache[key] = fn(self)
-        return self._view_cache[key]
-
     @property
     def branches(self) -> list[Branch]:
         """The conversation segmented into linear branches — a view over the graph: each
         leaf's root→leaf path is a branch (one when linear, several under compaction or
         subagents). Branching falls out of the walk; see `graph.branches_from_nodes`."""
-        return self._cached("branches", graph.branches_from_nodes)
+        return graph.branches_from_nodes(self)
 
     @property
     def num_branches(self) -> int:
