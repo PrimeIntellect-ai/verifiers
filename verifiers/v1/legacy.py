@@ -147,6 +147,9 @@ def _to_v1_response(raw: Any, model: str, tokens: TurnTokens | None = None) -> R
 
 
 def _to_v1_tokens(raw: Any) -> TurnTokens | None:
+    # NOTE: only ids + sampling logprobs are bridged. Multimodal inputs (`mm_kwargs`) and
+    # MoE router-replay (`routed_experts`) are not yet carried through `TurnTokens`, so a v0
+    # VLM or router-replay run is not supported via the bridge yet.
     if not isinstance(raw, dict):
         return None
     if not raw.get("completion_ids") and not raw.get("prompt_ids"):
@@ -279,7 +282,10 @@ class LegacyEnvServer(EnvServer):
         # The formatted dataset rows are RolloutInputs (prompt + example_id); index by task_idx.
         self.dataset = self.env.get_dataset()
         self.tasks = self.dataset  # `len(self.tasks)` drives the `info` response
-        self.requires_group_scoring = False
+        # Reflect the v0 env's rubric: an env with group-level reward funcs must be scored
+        # as a group (`run_group` → `score_group`), else per-rollout `score_rollout` asserts
+        # there are no group funcs and every rollout errors.
+        self.requires_group_scoring = self.env.requires_group_rollouts
         self._clients: dict[tuple[str, str], Any] = {}
 
         self.ctx = zmq.asyncio.Context()
@@ -292,26 +298,36 @@ class LegacyEnvServer(EnvServer):
         self.address = self.frontend.getsockopt_string(zmq.LAST_ENDPOINT)
 
     def _v0_client(self, client_config: ClientConfig, model: str):
-        """Translate the v1 renderer ``ClientConfig`` into a v0 renderer client (cached;
-        a renderer builds the tokenizer pool on first use). The tokenizer is pinned to
-        ``renderer_model_name`` (the base model) so a LoRA adapter name — served only for
-        sampling — never drives tokenizer loading; the per-request ``model`` still selects
-        the sampling target in ``run_rollout``."""
+        """Build the v0 client matching the v1 client type (cached):
+          - renderer (TITO): client-side tokenization. The tokenizer is pinned to
+            ``renderer_model_name`` (the base model) so a LoRA adapter name — served only
+            for sampling — never drives tokenizer loading.
+          - chat (MITO, `type="openai"`): tokens come from vLLM via `return_token_ids`,
+            so the v0 chat-completions client is used instead of building a renderer pool.
+        The per-request ``model`` still selects the sampling target in ``run_rollout``."""
         renderer_model = getattr(client_config, "renderer_model_name", None) or model
         key = (client_config.model_dump_json(), renderer_model)
         if key not in self._clients:
             from verifiers.clients import resolve_client
             from verifiers.types import ClientConfig as V0ClientConfig
 
-            v0_config = V0ClientConfig(
-                client_type="renderer",
-                renderer_config=getattr(client_config, "renderer", None),
-                renderer_model_name=renderer_model,
-                renderer_pool_size=getattr(client_config, "pool_size", None),
-                api_base_url=client_config.base_url,
-                api_key_var=client_config.api_key_var,
-                extra_headers=dict(client_config.headers or {}),
-            )
+            if client_config.type == "renderers":
+                v0_config = V0ClientConfig(
+                    client_type="renderer",
+                    renderer_config=getattr(client_config, "renderer", None),
+                    renderer_model_name=renderer_model,
+                    renderer_pool_size=getattr(client_config, "pool_size", None),
+                    api_base_url=client_config.base_url,
+                    api_key_var=client_config.api_key_var,
+                    extra_headers=dict(client_config.headers or {}),
+                )
+            else:  # MITO: chat-completions, tokens parsed from vLLM (return_token_ids)
+                v0_config = V0ClientConfig(
+                    client_type="openai_chat_completions",
+                    api_base_url=client_config.base_url,
+                    api_key_var=client_config.api_key_var,
+                    extra_headers=dict(client_config.headers or {}),
+                )
             self._clients[key] = resolve_client(v0_config)
         return self._clients[key]
 
@@ -338,11 +354,22 @@ class LegacyEnvServer(EnvServer):
         )
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
-        traces = []
-        for _ in range(req.n):
-            out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
-            traces.append(rollout_output_to_trace(out, req.task_idx).to_wire())
-        return RunGroupResponse(traces=traces)
+        # One group through the v0 env so `score_group` runs (group/preference rewards over
+        # all rollouts at once) — not N independent `run_rollout`s, which only per-rollout
+        # score and would drop the cross-rollout rewards.
+        client = self._v0_client(req.client, req.model)
+        outputs = await self.env.run_group(
+            [dict(self.dataset[req.task_idx]) for _ in range(req.n)],
+            client=client,
+            model=req.model,
+            sampling_args=req.sampling.model_dump(exclude_none=True),
+            state_columns=["trajectory"],
+        )
+        return RunGroupResponse(
+            traces=[
+                rollout_output_to_trace(out, req.task_idx).to_wire() for out in outputs
+            ]
+        )
 
 
 # --- in-process v0 eval (the `eval` CLI's `--legacy.id` path) ------------------
