@@ -3,8 +3,8 @@
     uv run --with matplotlib python bench/plot_mux.py
 
 Reads the prime gsm8k-v1 runs (capped max_tokens=2048) at batch 32/64/128/256 for each
-variant and plots per-rollout generation-duration p50 (solid) + p90 (dashed) — e2e is gated
-by endpoint-queue stragglers, so the distribution is the honest comparator. Writes
+variant and plots per-rollout generation-duration p50 (line) with a p10–p90 band — e2e is
+gated by endpoint-queue stragglers, so the distribution is the honest comparator. Writes
 bench/mux_vs_base.png.
 """
 
@@ -37,15 +37,18 @@ def pct(v: list[float], q: float) -> float:
 fig, ax = plt.subplots(figsize=(7.5, 4.8))
 for variant, label, color in VARIANTS:
     data = {n: gens(variant, n) for n in SIZES}
-    ax.plot(SIZES, [pct(data[n], 0.5) for n in SIZES], marker="o", color=color, label=label)
-    ax.plot(SIZES, [pct(data[n], 0.9) for n in SIZES], linestyle="--", color=color, alpha=0.7)
+    p10 = [pct(data[n], 0.1) for n in SIZES]
+    p50 = [pct(data[n], 0.5) for n in SIZES]
+    p90 = [pct(data[n], 0.9) for n in SIZES]
+    ax.plot(SIZES, p50, marker="o", color=color, label=label)
+    ax.fill_between(SIZES, p10, p90, alpha=0.12, color=color)
 
 ax.set_xlabel("batch size (concurrent rollouts)")
 ax.set_ylabel("gen duration (s)")
 ax.set_xticks(SIZES)
 ax.set_title(
     "prime gsm8k-v1 — interception multiplexing\n"
-    "solid = p50, dashed = p90 (max_tokens=2048, 512 tunnel limiter)"
+    "p50 line, p10–p90 band (max_tokens=2048, 512 tunnel limiter)"
 )
 ax.legend()
 ax.grid(True, alpha=0.3)
