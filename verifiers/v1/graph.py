@@ -5,7 +5,7 @@ so storage was quadratic in turns — with a graph of `MessageNode`s, one per di
 message, each linked to its predecessor. A rollout's conversation is a path from a root to
 a leaf; branches (compaction, subagents) are simply multiple leaves. Each node stores only
 the tokens it *adds* to the cumulative sequence, so a branch's training sample is a cheap
-concat of node `token_ids`/`sampled_mask`/`logprobs` along its path.
+concat of node `token_ids`/`mask`/`logprobs` along its path.
 
 Token attribution (renderer client): the renderer reports, per prompt, each message's token
 span (`RenderedTokens.message_token_spans()`, carried on `TurnTokens.message_spans`). A new
@@ -37,18 +37,26 @@ if TYPE_CHECKING:
 
 
 class MessageNode(StrictBaseModel):
-    """One message in the graph. `token_ids` is this message's delta contribution to the
-    cumulative token sequence: for an input message, its leading template scaffold + its own
-    tokens; for an assistant, the generation-prompt scaffold + the sampled completion.
-    `sampled_mask` marks the trainable (model-sampled) tokens; `logprobs` are the sampling
-    logprobs for them (length == number of True entries)."""
+    """One message in the graph: a message plus the tokens it adds to the cumulative
+    sequence. Concatenating a root→leaf path's nodes reconstructs that branch's full token
+    sequence; the mask/logprobs make it a training sample."""
 
     parent: int | None = None
     """Index into `Trace.nodes` of the predecessor message; None for a root."""
     message: Message
+    """The message this node carries (system / user / assistant / tool)."""
     token_ids: list[int] = Field(default_factory=list)
-    sampled_mask: list[bool] = Field(default_factory=list)
+    """This message's delta contribution to the cumulative token sequence: its leading
+    template scaffold + its own tokens — for an assistant, the generation-prompt scaffold
+    followed by the sampled completion. Concatenated along a path, these reproduce the exact
+    `prompt_ids + completion_ids` the model saw."""
+    mask: list[bool] = Field(default_factory=list)
+    """Per-token, parallel to `token_ids`: True for trainable, model-sampled tokens (only an
+    assistant node's completion span); False for template scaffold and every input-message
+    token."""
     logprobs: list[float] = Field(default_factory=list)
+    """Sampling logprobs for the sampled tokens — length equals the number of True entries in
+    `mask`; empty for input messages."""
 
 
 def message_hash(message: Message) -> str:
@@ -112,7 +120,7 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
                 parent=parent,
                 message=msg,
                 token_ids=node_tokens,
-                sampled_mask=[False] * len(node_tokens),
+                mask=[False] * len(node_tokens),
             )
         )
         parent = len(trace.nodes) - 1
@@ -128,7 +136,7 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
             parent=parent,
             message=response.message,
             token_ids=[*gen_prompt, *comp_ids],
-            sampled_mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
+            mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
             logprobs=list(tokens.completion_logprobs) if tokens else [],
         )
     )
@@ -168,8 +176,8 @@ def _path_to_turns(trace: "Trace", path: list[int]) -> list["Turn"]:
     for nid in path:
         node = trace.nodes[nid]
         if isinstance(node.message, AssistantMessage):
-            comp_ids = [t for t, s in zip(node.token_ids, node.sampled_mask) if s]
-            scaffold = [t for t, s in zip(node.token_ids, node.sampled_mask) if not s]
+            comp_ids = [t for t, s in zip(node.token_ids, node.mask) if s]
+            scaffold = [t for t, s in zip(node.token_ids, node.mask) if not s]
             full_prompt = [*prompt_ids, *scaffold]
             tokens = TurnTokens(
                 prompt_ids=full_prompt,
@@ -205,7 +213,7 @@ def branch_token_sequences(
     trace: "Trace",
 ) -> list[tuple[list[int], list[bool], list[float]]]:
     """Per branch (each leaf→root path), the flat training sequence: `(token_ids,
-    sampled_mask, per_token_logprobs)` — a cheap concat of the path's nodes. `sampled_mask`
+    mask, per_token_logprobs)` — a cheap concat of the path's nodes. `mask`
     marks the trainable (model-generated) tokens; logprobs are 0.0 on non-sampled tokens.
     The training consumer splits this into prompt (up to the first sampled token) +
     completion."""
@@ -217,7 +225,7 @@ def branch_token_sequences(
         for nid in _path_to(trace, leaf):
             node = trace.nodes[nid]
             li = 0
-            for tok, sampled in zip(node.token_ids, node.sampled_mask):
+            for tok, sampled in zip(node.token_ids, node.mask):
                 ids.append(tok)
                 mask.append(sampled)
                 if sampled:
