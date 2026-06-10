@@ -502,6 +502,12 @@ def test_strip_routed_experts_data_key_order_robust():
     assert blob2 is not None and blob2.tobytes() == b"WFla"
     assert b'"data":""' in stripped2
 
+    # routed_experts object lacks data; an unrelated sibling has data — must
+    # NOT be mistaken for routed experts (search bounded to the object).
+    raw4 = b'{"routed_experts":{"shape":[3],"start":0},"other":{"data":"UNRELATED"}}'
+    stripped4, blob4 = strip_routed_experts_data(raw4)
+    assert blob4 is None and stripped4 == raw4
+
     # absent — no-op passthrough
     raw3 = b'{"choices":[{"token_ids":[1,2]}]}'
     stripped3, blob3 = strip_routed_experts_data(raw3)

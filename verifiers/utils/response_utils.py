@@ -22,7 +22,15 @@ def strip_routed_experts_data(raw: bytes) -> tuple[bytes, memoryview | None]:
     if obj_start < 0:
         return raw, None
 
-    data_key = raw.find(ROUTED_EXPERTS_DATA_KEY, obj_start)
+    # Bound the search to the routed_experts object so a missing `data` here
+    # can't match an unrelated sibling's `data` later in the response. The
+    # object's values (base64 string, int shape/start, dtype) contain no `}`,
+    # so the first `}` after the prefix closes it.
+    obj_end = raw.find(b"}", obj_start)
+    if obj_end < 0:
+        return raw, None
+
+    data_key = raw.find(ROUTED_EXPERTS_DATA_KEY, obj_start, obj_end)
     if data_key < 0:
         return raw, None
 

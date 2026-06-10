@@ -215,6 +215,7 @@ class RoutedExpertsPayload(TypedDict):
     data: Any  # actually memoryview; kept opaque so Pydantic skips schema validation
     shape: list[int]
     start: int
+    dtype: NotRequired[Literal["uint8", "uint16", "int16", "int32"]]  # optional; absent → uint8
 ```
 
 ### TrajectoryStepTokens
