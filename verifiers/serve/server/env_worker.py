@@ -248,8 +248,17 @@ class EnvWorker:
 
     async def stats_loop(self, interval: float = 10.0) -> None:
         """Loop to push worker stats to the router."""
+        try:
+            import ctypes
+
+            libc = ctypes.CDLL("libc.so.6")
+        except OSError:
+            libc = None
         while True:
             await asyncio.sleep(interval)
+
+            if libc is not None:
+                libc.malloc_trim(0)
 
             stats = EnvWorkerStats(
                 worker_id=self.worker_id,

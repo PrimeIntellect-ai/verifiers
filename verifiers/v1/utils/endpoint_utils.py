@@ -240,6 +240,10 @@ class Endpoint:
     def get_request(self, request_id: str) -> EndpointInterceptData:
         return cast(EndpointInterceptData, self.server.intercepts[request_id])
 
+    def discard_request(self, request_id: str) -> None:
+        """Drop a delivered intercept from the server's per-request store."""
+        self.server.intercepts.pop(request_id, None)
+
     def request_context(
         self, request_id: str, request: EndpointInterceptData
     ) -> ModelRequestContext:
@@ -513,14 +517,17 @@ async def forward_request(
             state._set_error(e)
         raise
     finally:
-        if bool(request.get("stream")):
-            if request.get("protocol") != "openai_chat_completions":
-                raise NotImplementedError(
-                    "Streaming interception is currently supported for OpenAI Chat Completions."
-                )
-            await synthesize_stream(request, response, error)
-        else:
-            deliver_response(request, response, error)
+        try:
+            if bool(request.get("stream")):
+                if request.get("protocol") != "openai_chat_completions":
+                    raise NotImplementedError(
+                        "Streaming interception is currently supported for OpenAI Chat Completions."
+                    )
+                await synthesize_stream(request, response, error)
+            else:
+                deliver_response(request, response, error)
+        finally:
+            endpoint.discard_request(request_id)
 
 
 def normalize_endpoint_prompt(request: EndpointInterceptData) -> Messages:
