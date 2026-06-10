@@ -184,7 +184,8 @@ uv run eval gsm8k-v1 -n 1 --retry.attempts 3 --retry.include ProgramError  # ret
 ### First-class Harbor support
 
 Common agentic benchmarks run out of the box: the shipped `harbor-v1` taskset (installed by
-default) pulls tasks straight from the Harbor registry, each in its own declared, pullable
+default) pulls tasks straight from the Harbor registry via the `harbor` CLI
+(`uv tool install harbor`), each in its own declared, pullable
 container image — e.g. Terminal-Bench 2 (the `terminal-bench-2-v1` example just pins this):
 
 ```bash
