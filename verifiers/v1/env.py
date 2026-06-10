@@ -124,10 +124,20 @@ logger = logging.getLogger(__name__)
 class Environment:
     def __init__(self, config: EnvConfig) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
+        from verifiers.v1.taskset import Taskset
 
         self.config = config
         self.taskset = load_taskset(config.taskset)
         self.harness = load_harness(config.harness)
+        if (
+            not self.harness.SUPPORTS_TASK_TOOLS
+            and type(self.taskset).tools is not Taskset.tools
+        ):
+            raise ValueError(
+                f"Harness {self.harness.config.id!r} does not support task tools, but taskset "
+                f"{self.taskset.config.id!r} exposes tool servers (MCP). Run it with a harness "
+                f"that supports task tools (e.g. --harness.id default), or use a taskset without tools."
+            )
         self.harness_timeout = config.timeout.rollout
         self.scoring_timeout = config.timeout.scoring
         self.limits = RolloutLimits(
