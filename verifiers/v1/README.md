@@ -169,7 +169,9 @@ server the orchestrator (or any `EnvClient`) drives by task index.
 
 ### Backwards compatibility
 
-A classic v0 `verifiers.load_environment` env runs through the same CLI via the legacy
+The v0 framework is untouched — the classic `verifiers` API and its entrypoints (`vf-eval`,
+...) keep working exactly as before; v1 lives alongside it as `verifiers.v1`. On top of
+that, a v0 `verifiers.load_environment` env runs through the v1 CLI too, via the legacy
 bridge — its rollouts mapped to v1 `Trace`s. Set `--id` (instead of a `taskset`):
 
 ```bash
