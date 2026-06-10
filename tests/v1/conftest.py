@@ -21,7 +21,7 @@ from verifiers.v1.env import Environment
 from verifiers.v1.cli.runner import run_eval
 from verifiers.v1.trace import Trace
 
-# Fixture tasksets/envs (echo-v1, agentic-echo-v1, echo-v0, echo-multi-v0) live in
+# Fixture tasksets/envs (echo-v1, echo-agentic-v1, echo-v0, echo-multi-v0) live in
 # tests/v1/fixtures, added to the path via `pythonpath` in pyproject so the v1 loader and the
 # v0 legacy bridge both resolve them by id (no install).
 

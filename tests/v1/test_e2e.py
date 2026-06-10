@@ -75,7 +75,7 @@ async def test_agentic(run_v1, runtime, tmp_path):
     """Agentic: write a phrase to a file with the bash tool, checked in the runtime. Only the
     default harness exposes the bash tool, so this varies runtime but pins the harness."""
     (trace,) = await run_v1(
-        "agentic-echo-v1",
+        "echo-agentic-v1",
         harness="default",
         enable_bash=True,
         runtime=runtime,

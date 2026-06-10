@@ -1,4 +1,4 @@
-"""agentic-echo: write a phrase to a file with the bash tool, verified in the runtime.
+"""echo-agentic: write a phrase to a file with the bash tool, verified in the runtime.
 
 Like harbor's hello-world but with no Dockerfile to build — it runs on the runtime's default
 image, so the whole agentic loop works end to end: the model issues bash commands and the
@@ -25,20 +25,20 @@ def lenient_match(answer: str, text: str) -> bool:
     return _key(answer) in _key(text)
 
 
-class AgenticEchoTask(vf.Task):
+class EchoAgenticTask(vf.Task):
     answer: str
     """The phrase the model should write into the file."""
 
 
-class AgenticEchoConfig(vf.TasksetConfig):
+class EchoAgenticConfig(vf.TasksetConfig):
     phrase: str = "hello world"
 
 
-class AgenticEchoTaskset(vf.Taskset[AgenticEchoTask, AgenticEchoConfig]):
-    def load_tasks(self) -> list[AgenticEchoTask]:
+class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
+    def load_tasks(self) -> list[EchoAgenticTask]:
         phrase = self.config.phrase
         return [
-            AgenticEchoTask(
+            EchoAgenticTask(
                 idx=0,
                 instruction=(
                     f"Use the bash tool to write exactly the text '{phrase}' to a file named "
@@ -51,7 +51,7 @@ class AgenticEchoTaskset(vf.Taskset[AgenticEchoTask, AgenticEchoConfig]):
 
     @vf.reward(weight=1.0)
     async def wrote_phrase(
-        self, task: AgenticEchoTask, trace: vf.Trace, runtime: Runtime
+        self, task: EchoAgenticTask, trace: vf.Trace, runtime: Runtime
     ) -> float:
         try:
             content = (await runtime.read(TARGET)).decode(errors="replace")
@@ -60,5 +60,5 @@ class AgenticEchoTaskset(vf.Taskset[AgenticEchoTask, AgenticEchoConfig]):
         return float(lenient_match(task.answer, content))
 
 
-def load_taskset(config: AgenticEchoConfig) -> AgenticEchoTaskset:
-    return AgenticEchoTaskset(config)
+def load_taskset(config: EchoAgenticConfig) -> EchoAgenticTaskset:
+    return EchoAgenticTaskset(config)
