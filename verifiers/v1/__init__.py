@@ -43,14 +43,13 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.task import Resources, Task, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig, ToolsConfig
 from verifiers.v1.tools import Tools, run_mcp_server
+from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     Branch,
     Error,
     TimeSpan,
     Timing,
     Trace,
-    Turn,
-    TurnTokens,
 )
 from verifiers.v1.types import (
     AssistantMessage,
@@ -62,6 +61,7 @@ from verifiers.v1.types import (
     SystemMessage,
     Tool,
     ToolCall,
+    TurnTokens,
     ToolMessage,
     Usage,
     UserMessage,
@@ -90,7 +90,7 @@ __all__ = [
     "WireTask",
     "Resources",
     "Trace",
-    "Turn",
+    "MessageNode",
     "Branch",
     "TurnTokens",
     "Timing",

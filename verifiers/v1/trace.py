@@ -17,15 +17,14 @@ from typing import Generic, TypeVar
 
 from pydantic import Field, PrivateAttr, computed_field
 
-from verifiers.v1 import branching
+from verifiers.v1 import graph
+from verifiers.v1.graph import MessageNode
 from verifiers.v1.task import TaskT
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
-    Response,
     StrictBaseModel,
     ToolMessage,
-    TurnTokens,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,62 +60,70 @@ class Error(StrictBaseModel):
     )
 
 
-class Turn(StrictBaseModel):
-    """One model turn: the prompt sent, the response, and optional token encoding."""
-
-    prompt: Messages
-    response: Response
-    tokens: TurnTokens | None = None
-
-    @property
-    def num_prompt_tokens(self) -> int:
-        if self.tokens and self.tokens.prompt_ids:
-            return len(self.tokens.prompt_ids)
-        return self.response.usage.prompt_tokens if self.response.usage else 0
-
-    @property
-    def num_completion_tokens(self) -> int:
-        if self.tokens and self.tokens.completion_ids:
-            return len(self.tokens.completion_ids)
-        return self.response.usage.completion_tokens if self.response.usage else 0
-
-
 class Branch(StrictBaseModel):
-    """A linear run of turns whose context grew without being rewritten. A trajectory
-    that compacts splits into several branches (see `branching`); a linear one is a
-    single branch. `messages` is the branch's full conversation — its last turn's
-    prompt plus that turn's response (the last prompt already holds the branch's
-    earlier turns)."""
+    """A linear run of messages whose context grew without being rewritten — a root→leaf
+    path in the message graph. A conversation that compacts (or runs subagents) splits into
+    several branches; a linear one is a single branch. `messages` is the full conversation;
+    one training sample is built per branch."""
 
     index: int
-    turns: list[Turn]
+    nodes: list[MessageNode]
 
     @computed_field
     @property
     def num_turns(self) -> int:
-        """Model turns in this branch."""
-        return len(self.turns)
-
-    @property
-    def prompt_len(self) -> int:
-        """Input context size: this branch's final-turn prompt (the full last context)."""
-        return self.turns[-1].num_prompt_tokens if self.turns else 0
-
-    @property
-    def completion_len(self) -> int:
-        """All assistant-generated tokens across this branch's turns."""
-        return sum(turn.num_completion_tokens for turn in self.turns)
-
-    @property
-    def total_tokens(self) -> int:
-        """This branch's final-turn sequence length (prompt + completion)."""
-        last = self.turns[-1] if self.turns else None
-        return last.num_prompt_tokens + last.num_completion_tokens if last else 0
+        """Model turns (assistant messages) in this branch."""
+        return sum(1 for n in self.nodes if isinstance(n.message, AssistantMessage))
 
     @property
     def messages(self) -> Messages:
-        last = self.turns[-1]
-        return [*last.prompt, last.response.message]
+        """The branch's full conversation, in order."""
+        return [n.message for n in self.nodes]
+
+    @property
+    def token_ids(self) -> list[int]:
+        """The branch's full token sequence — every node's tokens concatenated in order
+        (final-turn prompt + every completion). The training sample's input ids."""
+        return [t for node in self.nodes for t in node.token_ids]
+
+    @property
+    def sampled_mask(self) -> list[bool]:
+        """Per-token trainable flag aligned to `token_ids`: True for the model-sampled
+        (completion) tokens, False for prompt/template scaffold."""
+        return [m for node in self.nodes for m in node.mask]
+
+    @property
+    def logprobs(self) -> list[float]:
+        """Per-token sampling logprobs aligned to `token_ids` — the node logprobs spread onto
+        their sampled positions, 0.0 on every non-sampled token."""
+        out: list[float] = []
+        for node in self.nodes:
+            li = 0
+            for sampled in node.mask:
+                if sampled:
+                    out.append(node.logprobs[li] if li < len(node.logprobs) else 0.0)
+                    li += 1
+                else:
+                    out.append(0.0)
+        return out
+
+    @property
+    def completion_len(self) -> int:
+        """All assistant-generated (model-sampled) tokens across this branch."""
+        return sum(sum(n.mask) for n in self.nodes)
+
+    @property
+    def total_tokens(self) -> int:
+        """This branch's full sequence length (final-turn prompt + every completion)."""
+        return sum(len(n.token_ids) for n in self.nodes)
+
+    @property
+    def prompt_len(self) -> int:
+        """Input context size: the final-turn prompt = full sequence minus the last completion."""
+        last_completion = next(
+            (sum(n.mask) for n in reversed(self.nodes) if any(n.mask)), 0
+        )
+        return self.total_tokens - last_completion
 
 
 class Trace(StrictBaseModel, Generic[TaskT]):
@@ -126,8 +133,10 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     """Unique id for this rollout, auto-generated per trace."""
     task: TaskT
     """The (immutable) task being solved — fully typed, flows into scoring."""
-    trajectory: list[Turn] = Field(default_factory=list)
-    """Every model turn in order — the ground truth."""
+    nodes: list[MessageNode] = Field(default_factory=list)
+    """The message graph — one node per distinct message, linked to its predecessor (see
+    `graph`). The ground truth; `trajectory` and `branches` are views over it. Stores each
+    message once, so size is linear (not quadratic) in turns."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
     """Per-`@reward`-function contributions, with each function's weight applied."""
@@ -141,9 +150,9 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     rollout was retried). `error` exposes the most recent."""
     timing: Timing = Field(default_factory=Timing)
 
-    _branch_cache: dict[int, list[list[int]]] = PrivateAttr(default_factory=dict)
-    """Branch segmentation (index-groups, no turn copies) cached by trajectory length —
-    the trajectory only grows, so its length is a sufficient invalidation key."""
+    _head_index: dict = PrivateAttr(default_factory=dict)
+    """`(parent, msg_hash) -> node_id` for the graph builder (`graph.add_turn`); rebuilt
+    lazily from `nodes` after deserialization."""
 
     @computed_field
     @property
@@ -160,10 +169,16 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     def has_error(self) -> bool:
         return bool(self.errors)
 
-    @property
-    def last_turn(self) -> Turn | None:
-        """The final model turn, or None for an empty trajectory."""
-        return self.trajectory[-1] if self.trajectory else None
+    def _last_assistant(self) -> "MessageNode | None":
+        """The most recent assistant node, or None for a trace with no responses."""
+        return next(
+            (
+                n
+                for n in reversed(self.nodes)
+                if isinstance(n.message, AssistantMessage)
+            ),
+            None,
+        )
 
     @property
     def prompt_len(self) -> int:
@@ -185,43 +200,26 @@ class Trace(StrictBaseModel, Generic[TaskT]):
 
     @property
     def has_response(self) -> bool:
-        """Whether the final assistant turn produced non-empty content."""
-        last = self.last_turn
-        return bool(last and last.response.message.content)
+        """Whether the most recent assistant message produced non-empty content."""
+        last = self._last_assistant()
+        return bool(last and last.message.content)
 
-    def _branch_groups(self) -> list[list[int]]:
-        """Branch index-groups for the current trajectory, recomputed only when a turn
-        is added (the trajectory is append-only, so its length is a sufficient key).
-        Caches the groups (ints), never copies of the turns."""
-        n = len(self.trajectory)
-        if n not in self._branch_cache:
-            self._branch_cache = {n: branching.segment(self.trajectory)}
-        return self._branch_cache[n]
-
-    @computed_field
     @property
     def branches(self) -> list[Branch]:
-        """The trajectory segmented into linear branches (see `branching`): one branch
-        when linear, several under compaction or subagents. The structured view of what
-        the harness saw, replacing a flat message list. Branches hold turn references, not
-        copies."""
-        return [
-            Branch(index=i, turns=[self.trajectory[j] for j in group])
-            for i, group in enumerate(self._branch_groups())
-        ]
+        """The conversation segmented into linear branches — a view over the graph: each
+        leaf's root→leaf path is a branch (one when linear, several under compaction or
+        subagents). Branching falls out of the walk; see `graph.branches_from_nodes`."""
+        return graph.branches_from_nodes(self)
 
-    @computed_field
     @property
     def num_branches(self) -> int:
-        """How many branches the trajectory has (1 = linear; >1 = compaction/subagents)."""
-        return len(self._branch_groups())
+        """How many branches (1 = linear; >1 = compaction/subagents)."""
+        return len(graph.leaves(self))
 
-    @computed_field
     @property
     def num_turns(self) -> int:
-        """Total model turns across the whole trajectory (all branches); per-branch
-        counts are on each `Branch.num_turns`."""
-        return len(self.trajectory)
+        """Total model turns (assistant nodes) across all branches."""
+        return sum(1 for n in self.nodes if isinstance(n.message, AssistantMessage))
 
     @computed_field
     @property
@@ -238,21 +236,23 @@ class Trace(StrictBaseModel, Generic[TaskT]):
             "harness_timeout",
         ):
             return True
-        last = self.last_turn
-        return bool(last and last.response.finish_reason == "length")
+        last = self._last_assistant()
+        return bool(last and last.finish_reason == "length")
 
     @property
     def assistant_messages(self) -> list[AssistantMessage]:
         """Every model response, in order — one per turn, branch-independent."""
-        return [turn.response.message for turn in self.trajectory]
+        return [
+            n.message for n in self.nodes if isinstance(n.message, AssistantMessage)
+        ]
 
     @property
     def tool_messages(self) -> list[ToolMessage]:
-        """The tool results in the latest full context — the last turn's prompt. (For a
-        linear rollout that's every tool result; computed straight off the trajectory,
-        like `assistant_messages`, with no branch reconstruction.)"""
-        last = self.trajectory[-1].prompt if self.trajectory else []
-        return [m for m in last if isinstance(m, ToolMessage)]
+        """The tool results in the latest full context — the main (last) branch's
+        conversation. For a linear rollout that's every tool result."""
+        branches = self.branches
+        messages = branches[-1].messages if branches else []
+        return [m for m in messages if isinstance(m, ToolMessage)]
 
     def record_metric(self, name: str, value: float) -> None:
         """Record a single `@metric` result under `name`. Warns if it overrides an
