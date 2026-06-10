@@ -8,7 +8,7 @@ so the program's SDK talks to us. Chat completions only, no streaming.
 One server multiplexes many rollouts: each rollout registers a `RolloutSession` under its
 own secret (the bearer token the harness already sends), and the server routes by that
 secret to the right session. So N rollouts need one server (and, behind a remote runtime,
-one tunnel) per pool member rather than one each — see `interception_pool`.
+one tunnel) per pool member rather than one each — see `interception.pool`.
 
 When a rollout sets a user simulator (see `verifiers.v1.user`), the session also drives it:
 after each model turn it injects the simulator's reply as a user turn and re-prompts the

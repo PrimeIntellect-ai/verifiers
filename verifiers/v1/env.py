@@ -14,7 +14,7 @@ compare a task's rollouts.
 import contextlib
 import logging
 
-from pydantic import SerializeAsAny, model_validator
+from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import HarnessConfig
@@ -69,6 +69,10 @@ class EnvConfig(BaseConfig):
     max_total_tokens: int | None = None
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
     trace's `total_tokens`; framework-enforced between turns."""
+    multiplex: int = Field(32, ge=1)
+    """Rollouts that share one interception server (and, behind a remote runtime, one
+    tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
+    key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`

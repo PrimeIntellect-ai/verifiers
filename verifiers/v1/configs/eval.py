@@ -43,12 +43,6 @@ class EvalConfig(EnvConfig):
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )
     """Max rollouts in flight at once."""
-    interception_multiplex: int = Field(
-        0, validation_alias=AliasChoices("interception_multiplex", "multiplex")
-    )
-    """Rollouts to multiplex per shared interception server (and, behind a remote runtime,
-    per tunnel). 0 = a server (+ tunnel) per rollout. >0 brings up ceil(concurrency/this)
-    shared servers, so N rollouts need O(N/this) tunnels — key past the per-token tunnel cap."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = False

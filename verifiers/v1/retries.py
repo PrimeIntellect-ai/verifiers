@@ -19,7 +19,7 @@ from tenacity import (
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.interception_pool import InterceptionPool
+    from verifiers.v1.interception import InterceptionPool
     from verifiers.v1.rollout import Rollout
     from verifiers.v1.trace import Trace
 

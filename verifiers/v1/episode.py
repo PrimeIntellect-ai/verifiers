@@ -29,7 +29,7 @@ from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
 
 if TYPE_CHECKING:
-    from verifiers.v1.interception_pool import InterceptionPool
+    from verifiers.v1.interception import InterceptionPool
     from verifiers.v1.retries import RetryConfig
 
 

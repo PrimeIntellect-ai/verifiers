@@ -31,7 +31,7 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.user import serve_user
 
 if TYPE_CHECKING:
-    from verifiers.v1.interception_pool import InterceptionPool
+    from verifiers.v1.interception import InterceptionPool
 
 logger = logging.getLogger(__name__)
 
