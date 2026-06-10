@@ -228,10 +228,10 @@ class RoutedExpertsPayload(TypedDict):
     data: Any
     shape: list[int]
     start: int
-    # Element dtype of the decoded expert-id buffer ("uint8" / "uint16" /
-    # "int32"). NotRequired so payloads serialized before this field still
-    # validate; consumers default to "uint8" (the historical encoding).
-    dtype: NotRequired[str]
+    # Element dtype of the decoded expert-id buffer. NotRequired so payloads
+    # serialized before this field still validate; a decoder that doesn't see
+    # it falls back to "uint8" (the historical encoding).
+    dtype: NotRequired[Literal["uint8", "uint16", "int16", "int32"]]
 
 
 class ResponseTokens(CustomBaseModel):
