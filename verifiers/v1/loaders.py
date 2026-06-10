@@ -3,12 +3,13 @@
 A plugin (taskset or harness) is just a Python package named by its id, depending on
 v1 and exposing a single load hook — `load_taskset(config) -> Taskset` for tasksets,
 `load_harness(config) -> Harness` for harnesses. Resolution is the same for every plugin
-(no registry, no built-in special case): the id is imported as a module (hyphens →
-underscores). The shipped plugins (`harbor`, `default`, `rlm`) are ordinary packages under
-`packages/`, installed by default via the `tasksets`/`harnesses` extras; custom ones live
-under `examples/` or anywhere on `sys.path`. The CLI introspects the hook's parameter
-annotation to narrow the plugin's config for `--taskset.*` / `--harness.*` flags;
-`task_type` reads the return annotation.
+(no registry, no built-in special case): the id (an `EnvId`) names a module — a local
+package (hyphens → underscores), or an `org/name[@version]` package installed on demand
+from the Environments Hub. The shipped plugins (`harbor`, `default`, `rlm`) are ordinary
+packages under `packages/`, installed by default via the `tasksets`/`harnesses` extras;
+custom ones live under `examples/`, on `sys.path`, or on the hub. The CLI introspects the
+hook's parameter annotation to narrow the plugin's config for `--taskset.*` /
+`--harness.*` flags; `task_type` reads the return annotation.
 """
 
 import importlib
@@ -17,20 +18,23 @@ from types import ModuleType
 from typing import get_args
 
 from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.ids import ensure_installed
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
-    """Import a plugin by id — the id is the module name (hyphens → underscores)."""
-    module = plugin_id.replace("-", "_")
+    """Import a plugin by id, installing it from the env hub on demand for an
+    `org/name[@version]` id, else importing the local package (hyphens → underscores)."""
+    module = ensure_installed(plugin_id)
     try:
         return importlib.import_module(module)
     except ModuleNotFoundError as e:
         raise ModuleNotFoundError(
-            f"{kind} {plugin_id!r} not found (tried to import {module!r}). A {kind} is a package "
-            f"exposing load_{kind}(config) — the shipped ones are bundled in the `{group}` "
-            f"package (vendored by default), or install/author your own."
+            f"{kind} {plugin_id!r} not found (tried to import {module!r}). A {kind} is a "
+            f"package exposing load_{kind}(config) — the shipped ones are bundled in the "
+            f"`{group}` package (vendored by default), installed from the Environments Hub "
+            f"(`org/name`), or authored yourself."
         ) from e
 
 
