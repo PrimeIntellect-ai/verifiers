@@ -23,8 +23,9 @@ from verifiers.v1.interception import InterceptionServer, RolloutLimits
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, make_runtime
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
-from verifiers.v1.tools import serve_mcp
+from verifiers.v1.tools import serve_tools
 from verifiers.v1.trace import Trace
+from verifiers.v1.user import serve_user
 
 logger = logging.getLogger(__name__)
 
@@ -79,15 +80,15 @@ class Rollout:
         self.trace = trace  # expose for the --rich dashboard
         trace.timing.generation.start = time.time()
         self.runtime = make_runtime(
-            self.runtime_config
-        )  # ref set first → always tearable-down
+            self.runtime_config, name=trace.id
+        )  # ref set first → always tearable-down; named after the rollout for traceability
         runtime = self.runtime
         stops = discover_decorated(self.taskset, "stop")
         logger.info(
             "rollout start: id=%s task=%s harness=%s runtime=%s",
             trace.id,
             self.task.idx,
-            self.harness.config.id,
+            self.harness.config.name,
             self.runtime_config.type,
         )
         try:
@@ -96,15 +97,18 @@ class Rollout:
             ) as server:
                 await runtime.start()
                 endpoint = f"{await runtime.expose(server.port)}/v1"
-                tool_servers = self.taskset.tool_servers(self.task)
+                tool_servers = self.taskset.tools(self.task)
                 tools = self.taskset.config.tools
-                async with serve_mcp(
-                    tool_servers,
-                    runtime,
-                    colocated=tools.colocated,
-                    tool_runtime_config=tools.runtime,
-                    shared_urls=shared_urls,
-                ) as urls:
+                async with (
+                    serve_tools(
+                        tool_servers,
+                        runtime,
+                        colocated=tools.colocated,
+                        tool_runtime_config=tools.runtime,
+                        shared_urls=shared_urls,
+                    ) as urls,
+                    serve_user(self.taskset.user(self.task), runtime) as server.user,
+                ):
                     self.phase = (
                         Phase.RUNNING
                     )  # setup done — the harness is now driving

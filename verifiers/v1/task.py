@@ -14,17 +14,21 @@ from verifiers.v1.types import StrictBaseModel
 
 
 class Resources(StrictBaseModel):
-    """Runtime resources a task requests (all optional). Applied to the runtime
-    config where the field exists (e.g. `cpu_cores` on prime); a field the runtime
-    doesn't support is warned about and ignored. Precedence: cli/toml > task > the
-    runtime default (`None` here = use the runtime/provider default)."""
+    """Runtime resources a task requests (all optional), in Modal's units. Applied to the
+    runtime config where the field exists; a field the runtime doesn't support is warned
+    about and ignored. Precedence: cli/toml > task > the runtime default (`None` here =
+    use the runtime/provider default)."""
 
     model_config = ConfigDict(frozen=True)
 
-    cpu_cores: float | None = None
-    memory_gb: float | None = None
-    gpu_count: int | None = None
-    disk_gb: float | None = None
+    cpu: float | None = None
+    """CPU cores."""
+    memory: float | None = None
+    """Memory in GB."""
+    gpu: str | None = None
+    """GPU spec, e.g. "A100" or "A100:2" (type[:count])."""
+    disk: float | None = None
+    """Disk in GB (enforced by prime; advisory on docker/modal)."""
 
 
 class Task(StrictBaseModel):

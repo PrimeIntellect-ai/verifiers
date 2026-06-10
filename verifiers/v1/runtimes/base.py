@@ -5,9 +5,13 @@ server. Concrete runtimes live alongside this base; harnesses and the Environmen
 depend only on this contract, so they stay runtime-agnostic.
 """
 
+import asyncio
+import atexit
+import contextlib
 import hashlib
 import shlex
 import uuid
+import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -42,11 +46,69 @@ class ProgramResult:
     stderr: str
 
 
+def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
+    """A Modal-style GPU spec -> (type, count) for providers that want them split:
+    "A100" -> ("A100", 1), "A100:2" -> ("A100", 2), "2" -> (None, 2) (count only,
+    provider-chosen type), None/"" -> (None, 0)."""
+    if not gpu:
+        return None, 0
+    head, _, tail = gpu.partition(":")
+    if tail:
+        return head, int(tail)
+    if head.isdigit():
+        return None, int(head)
+    return head, 1
+
+
+# `stop()` frees a runtime's external resource on the normal path (the rollout's `finally`).
+# A Ctrl-C / SIGTERM can cancel that `finally` mid-teardown, so runtimes are tracked in
+# `_LIVE` and freed by a *synchronous* `atexit` hook (`cleanup`) — sync because the event
+# loop is gone at interpreter shutdown. SIGKILL runs none of this.
+_LIVE: "weakref.WeakSet[Runtime]" = weakref.WeakSet()
+_atexit_armed = False
+
+
+def register(runtime: "Runtime") -> None:
+    """Track a runtime so the atexit hook can free it if a signal cuts its `finally` short.
+    Weak, so a finished rollout's runtime drops out on its own; arms the hook once."""
+    global _atexit_armed
+    _LIVE.add(runtime)
+    if not _atexit_armed:
+        _atexit_armed = True
+        atexit.register(cleanup_at_exit)
+
+
+def cleanup_at_exit() -> None:
+    """Synchronously free any runtime still live at interpreter shutdown — a Ctrl-C /
+    SIGTERM cancelled its `finally` mid-teardown. Sync on purpose (the event loop is gone);
+    best-effort and idempotent (a clean `stop` already ran it)."""
+    for runtime in list(_LIVE):
+        with contextlib.suppress(Exception):
+            runtime.cleanup()
+
+
 class Runtime(ABC):
+    def __init__(self, name: str | None = None) -> None:
+        self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
+        """Resource name — the subprocess workdir, docker `--name`, prime sandbox name.
+        The rollout passes its trace id, so the provisioned resource is greppable back to
+        the rollout it serves; falls back to a unique `vf-` name (standalone / tool
+        runtimes, where there's no single owning rollout)."""
+
     @abstractmethod
     async def start(self) -> None:
         """Provision execution (workspace / container / sandbox). Use `expose` to turn a
         host port into a URL the program can reach."""
+
+    def cleanup(self) -> None:
+        """Synchronously free the provisioned resource — best-effort and idempotent. The
+        source of truth for teardown: usable from the atexit backstop where async machinery
+        is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
+
+    async def stop(self) -> None:
+        """Free the provisioned resource on the normal path, off the event loop. Override
+        only for teardown that must be async (e.g. a remote API call)."""
+        await asyncio.to_thread(self.cleanup)
 
     async def expose(self, port: int) -> str:
         """A base URL the program (inside this runtime) can use to reach a host service
@@ -55,9 +117,6 @@ class Runtime(ABC):
         network (subprocess, docker --network host). Remote runtimes (prime) override to
         tunnel the port."""
         return f"http://127.0.0.1:{port}"
-
-    async def stop(self) -> None:
-        """Tear down any provisioned resources. Default no-op."""
 
     @abstractmethod
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
@@ -117,7 +176,7 @@ class Runtime(ABC):
         number of distinct scripts. Published via a unique temp + atomic `mv`, so
         concurrent rollouts writing the same content never race a half-written read."""
         data = script.encode() if isinstance(script, str) else script
-        path = f"/tmp/v1-scripts/{hashlib.sha256(data).hexdigest()}.py"
+        path = f"/tmp/vf-scripts/{hashlib.sha256(data).hexdigest()}.py"
         tmp = f"{path}.{uuid.uuid4().hex}.tmp"
         await self.write(tmp, data)
         await self.run(

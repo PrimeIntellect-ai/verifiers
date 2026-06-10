@@ -11,14 +11,13 @@ from aiolimiter import AsyncLimiter
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import ProgramResult, Runtime, parse_gpu
 
 logger = logging.getLogger(__name__)
 
 
-# Prime sandbox defaults, mirrored here so our behavior is stable even if the
-# provider's defaults change. "auto" timeout requests the max prime allows.
-_MAX_TIMEOUT_MINUTES = 24 * 60
+# "auto" timeout requests the max prime allows (24h).
+_MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 
 # Prime caps tunnel creation at 100/min per API token; past that `tunnel.start()`
 # returns 429 (per-token limit) and the rollout dies. One process-wide leaky bucket
@@ -41,24 +40,27 @@ class PrimeConfig(BaseConfig):
     """Request guaranteed (vs best-effort) capacity."""
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
-    gpu_type: str | None = None
-    """GPU model when gpu_count > 0 (None = provider-chosen)."""
-    timeout: int | Literal["auto"] = 360
-    """Max sandbox lifetime in minutes (default 6h; or "auto" = the highest prime
+    timeout: int | Literal["auto"] = 21600
+    """Max sandbox lifetime in seconds (default 6h; or "auto" = the highest prime
     supports). A hard backstop: the sandbox self-terminates even if local cleanup is
     skipped."""
-    # Resources, mirroring the provider defaults (also settable per-task via
-    # Task.resources, with precedence cli/toml > task > this default).
-    cpu_cores: float = 1.0
-    memory_gb: float = 2.0
-    gpu_count: int = 0
-    disk_gb: float = 5.0
+    # Resources, in Modal's units (also settable per-task via Task.resources, with
+    # precedence cli/toml > task > this default). Mapped to prime's API in `start`.
+    cpu: float = 1.0
+    """CPU cores."""
+    memory: float = 2.0
+    """Memory in GB."""
+    gpu: str | None = None
+    """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
+    disk: float = 5.0
+    """Disk in GB."""
 
 
 class PrimeRuntime(Runtime):
     """Runs the program in a Prime sandbox; the server is reached via a tunnel."""
 
-    def __init__(self, config: PrimeConfig) -> None:
+    def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
+        super().__init__(name)
         self.config = config
         self._client = None
         self._sandbox_id: str | None = None
@@ -73,25 +75,26 @@ class PrimeRuntime(Runtime):
 
         self._client = AsyncSandboxClient()
         timeout = (
-            _MAX_TIMEOUT_MINUTES
+            _MAX_TIMEOUT_SECONDS
             if self.config.timeout == "auto"
             else self.config.timeout
         )
-        # We always send the mirrored resource defaults (so behavior is stable);
-        # gpu_type/region are only sent when set (else provider-chosen).
+        # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
+        # GB). gpu_type/region are only sent when set (else provider-chosen).
+        gpu_type, gpu_count = parse_gpu(self.config.gpu)
         options = {
-            "cpu_cores": self.config.cpu_cores,
-            "memory_gb": self.config.memory_gb,
-            "disk_size_gb": self.config.disk_gb,
-            "gpu_count": self.config.gpu_count,
-            "timeout_minutes": timeout,
-            "gpu_type": self.config.gpu_type,
+            "cpu_cores": self.config.cpu,
+            "memory_gb": self.config.memory,
+            "disk_size_gb": self.config.disk,
+            "gpu_count": gpu_count,
+            "timeout_minutes": timeout // 60,
+            "gpu_type": gpu_type,
             "region": self.config.region,
         }
         try:
             sandbox = await self._client.create(
                 CreateSandboxRequest(
-                    name="v1-program",
+                    name=self.name,
                     docker_image=self.config.image,
                     network_access=self.config.network_access,
                     vm=self.config.vm,
@@ -198,6 +201,22 @@ class PrimeRuntime(Runtime):
             )
         except Exception as e:
             raise ProgramError(f"write {path!r}: {e}") from e
+
+    def cleanup(self) -> None:
+        # Synchronous atexit backstop (the async client can't run once the loop is gone):
+        # stop the already-sync tunnels and delete the sandbox via the sync client, so the
+        # costly resource isn't left to its max-lifetime. Idempotent — the async `stop`
+        # deletes it on the normal path, and a second delete just 404s (suppressed).
+        for tunnel in self._tunnels:
+            with contextlib.suppress(Exception):
+                tunnel.sync_stop()
+        self._tunnels = []
+        if self._sandbox_id is not None:
+            from prime_sandboxes import SandboxClient
+            from prime_sandboxes.core import APIClient
+
+            with contextlib.suppress(Exception):
+                SandboxClient(APIClient()).delete(self._sandbox_id)
 
     async def stop(self) -> None:
         # Best-effort, idempotent teardown: each step is independent so one failure

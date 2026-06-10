@@ -8,14 +8,14 @@ import asyncio
 import contextlib
 import logging
 import shlex
-import uuid
+import subprocess
 from pathlib import PurePosixPath
 from typing import Literal
 
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import ProgramResult, Runtime, parse_gpu
 
 logger = logging.getLogger(__name__)
 
@@ -24,16 +24,17 @@ class DockerConfig(BaseConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
     workdir: str = "/app"
-    cpu_cores: float | None = None
-    """Pin the container to this many CPUs (docker `--cpus`). None = unlimited."""
-    memory_gb: float | None = None
+    # Resources in Modal's units (also settable per-task via Task.resources).
+    cpu: float | None = None
+    """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
+    memory: float | None = None
     """Hard memory limit in GB (docker `--memory`). None = unlimited."""
-    gpu_count: int | None = None
-    """Expose this many GPUs (docker `--gpus`; needs the nvidia container toolkit).
-    None/0 = none."""
-    disk_gb: float | None = None
-    """Advisory disk request. Docker has no portable per-container size limit, so this
-    is accepted (so a task can declare it without a warning) but not enforced."""
+    gpu: str | None = None
+    """GPU spec, e.g. "A100" or "2" (docker `--gpus` uses the count; needs the nvidia
+    container toolkit). None = none."""
+    disk: float | None = None
+    """Advisory disk request in GB. Docker has no portable per-container size limit, so
+    this is accepted (so a task can declare it without a warning) but not enforced."""
 
 
 async def docker(*args: str) -> ProgramResult:
@@ -55,7 +56,8 @@ async def docker(*args: str) -> ProgramResult:
 class DockerRuntime(Runtime):
     """Runs the program in a local Docker container reachable over the host network."""
 
-    def __init__(self, config: DockerConfig) -> None:
+    def __init__(self, config: DockerConfig, name: str | None = None) -> None:
+        super().__init__(name)
         self.config = config
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._container_id: str | None = None  # docker's short id (for display)
@@ -84,14 +86,15 @@ class DockerRuntime(Runtime):
             raise RuntimeError(
                 f"docker runtime selected but the Docker daemon is not reachable: {detail}{hint}"
             )
-        self._container = f"v1-{uuid.uuid4().hex[:12]}"
+        self._container = self.name
         limits: list[str] = []
-        if self.config.cpu_cores is not None:
-            limits += ["--cpus", str(self.config.cpu_cores)]
-        if self.config.memory_gb is not None:
-            limits += ["--memory", f"{self.config.memory_gb}g"]
-        if self.config.gpu_count:
-            limits += ["--gpus", str(self.config.gpu_count)]
+        if self.config.cpu is not None:
+            limits += ["--cpus", str(self.config.cpu)]
+        if self.config.memory is not None:
+            limits += ["--memory", f"{self.config.memory}g"]
+        _, gpu_count = parse_gpu(self.config.gpu)
+        if gpu_count:
+            limits += ["--gpus", str(gpu_count)]
         run = await docker(
             "run",
             "--detach",
@@ -183,7 +186,7 @@ class DockerRuntime(Runtime):
                 f"write {path!r}: {stderr.decode(errors='replace').strip()}"
             )
 
-    async def stop(self) -> None:
+    def cleanup(self) -> None:
         if self._container is None or self._stopped:
             return
         self._stopped = (
@@ -191,4 +194,9 @@ class DockerRuntime(Runtime):
         )
         logger.debug("docker: removing container %s", self._container)
         with contextlib.suppress(Exception):
-            await docker("rm", "--force", self._container)
+            subprocess.run(
+                ["docker", "rm", "--force", self._container],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            )

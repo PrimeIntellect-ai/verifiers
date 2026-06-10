@@ -1,7 +1,7 @@
 """glossary: a custom COLOCATED tool server.
 
 Each task asks the model to look up an entity. The taskset ships a tiny tool server
-(`server.py`, a single-file uv script) and declares it via `tool_servers`, passing the
+(`server.py`, a single-file uv script) and declares it via `tools`, passing the
 facts in through an env var; the harness surfaces its `lookup` tool as `facts_lookup`, and
 the reward checks the looked-up fact reached the answer.
 
@@ -42,11 +42,9 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, vf.TasksetConfig]):
             for i, (entity, fact) in enumerate(FACTS.items())
         ]
 
-    def tool_servers(self, task: GlossaryTask) -> list[vf.ToolServer]:
+    def tools(self, task: GlossaryTask) -> list[vf.Tools]:
         return [
-            vf.ToolServer(
-                name="facts", script=SERVER, env={"FACTS_JSON": json.dumps(FACTS)}
-            )
+            vf.Tools(name="facts", script=SERVER, env={"FACTS_JSON": json.dumps(FACTS)})
         ]
 
     @vf.reward(weight=1.0)

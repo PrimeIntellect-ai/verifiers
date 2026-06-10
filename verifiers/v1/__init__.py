@@ -8,30 +8,30 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
+    RolloutContext,
     resolve_client,
 )
-from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import group_reward, metric, reward, stop
 from verifiers.v1.env import EnvConfig, Environment, TimeoutConfig
-from verifiers.v1.retries import RetryConfig
 from verifiers.v1.episode import Episode
-from verifiers.v1.rollout import Rollout
 from verifiers.v1.errors import ModelError, ProgramError, RolloutError, ToolError
+from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.ids import EnvId, ensure_installed, env_name
 from verifiers.v1.loaders import (
     harness_config_type,
-    import_taskset,
     import_harness,
+    import_taskset,
     load_harness,
     load_taskset,
     task_type,
     taskset_config_type,
 )
-from verifiers.v1.tools import ToolServer, run_mcp_server
+from verifiers.v1.retries import RetryConfig
+from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     DockerConfig,
     PrimeConfig,
@@ -42,6 +42,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Resources, Task, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig, ToolsConfig
+from verifiers.v1.tools import Tools, run_mcp_server
 from verifiers.v1.trace import (
     Branch,
     Error,
@@ -65,9 +66,13 @@ from verifiers.v1.types import (
     Usage,
     UserMessage,
 )
+from verifiers.v1.user import User
 
 __all__ = [
     # types
+    "EnvId",
+    "ensure_installed",
+    "env_name",
     "AssistantMessage",
     "Message",
     "Messages",
@@ -135,8 +140,10 @@ __all__ = [
     "taskset_config_type",
     "harness_config_type",
     # mcp
-    "ToolServer",
+    "Tools",
     "run_mcp_server",
+    # user simulator
+    "User",
 ]
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is

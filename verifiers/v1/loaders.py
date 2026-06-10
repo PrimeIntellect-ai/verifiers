@@ -1,36 +1,44 @@
 """Loaders: resolve a plugin id to its taskset or harness.
 
-A plugin (taskset or harness) is just a Python package named by its id, depending on
-v1 and exposing a single load hook — `load_taskset(config) -> Taskset` for tasksets,
-`load_harness(config) -> Harness` for harnesses. Resolution is the same for every plugin
-(no registry, no built-in special case): the id is imported as a module (hyphens →
-underscores). The shipped plugins (`harbor`, `default`, `rlm`) are ordinary packages under
-`packages/`, installed by default via the `tasksets`/`harnesses` extras; custom ones live
-under `examples/` or anywhere on `sys.path`. The CLI introspects the hook's parameter
-annotation to narrow the plugin's config for `--taskset.*` / `--harness.*` flags;
-`task_type` reads the return annotation.
+A plugin (taskset or harness) exposes a single load hook — `load_taskset(config) -> Taskset`
+for tasksets, `load_harness(config) -> Harness` for harnesses. An id (an `EnvId`) resolves to
+the module exposing it: a built-in id (`default`, `rlm`, `harbor_v1`, `textarena_v1`) resolves
+to its namespaced module under the group package (`harnesses.rlm`, `tasksets.harbor_v1`, ...);
+any other id names a flat module — a local package (hyphens → underscores), or an
+`org/name[@version]` package installed on demand from the Environments Hub.
+Built-ins live under `packages/`, installed by default via the `tasksets`/`harnesses` extras;
+custom ones live under `examples/`, on `sys.path`, or on the hub. The CLI introspects the
+hook's parameter annotation to narrow the plugin's config for `--taskset.*` /
+`--harness.*` flags; `task_type` reads the return annotation.
 """
 
 import importlib
+import importlib.util
 import inspect
 from types import ModuleType
 from typing import get_args
 
 from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.ids import ensure_installed
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
-    """Import a plugin by id — the id is the module name (hyphens → underscores)."""
-    module = plugin_id.replace("-", "_")
+    """Import a plugin by id. A built-in id resolves to its namespaced module under the
+    `group` package (`harnesses` / `tasksets`); a hub `org/name[@version]` id is installed on
+    demand; any other is a local package (hyphens → underscores)."""
+    module = ensure_installed(plugin_id)
+    namespaced = f"{group}.{module}"
+    target = namespaced if importlib.util.find_spec(namespaced) else module
     try:
-        return importlib.import_module(module)
+        return importlib.import_module(target)
     except ModuleNotFoundError as e:
         raise ModuleNotFoundError(
-            f"{kind} {plugin_id!r} not found (tried to import {module!r}). A {kind} is a package "
-            f"exposing load_{kind}(config) — the shipped ones are bundled in the `{group}` "
-            f"package (vendored by default), or install/author your own."
+            f"{kind} {plugin_id!r} not found (tried to import {target!r}). A {kind} is a "
+            f"package exposing load_{kind}(config) — the built-in ones are bundled in the "
+            f"`{group}` package (vendored by default), installed from the Environments Hub "
+            f"(`org/name`), or authored yourself."
         ) from e
 
 
