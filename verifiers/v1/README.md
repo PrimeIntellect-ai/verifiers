@@ -24,22 +24,32 @@ uv sync   # core + the shipped plugins + examples (eval, serve, all runtimes)
 ## Quickstart
 
 ```bash
-uv run eval gsm8k-v1 --n 5 --r 3   # single-turn math; default harness; docker runtime
-uv run eval -h                      # typed help (+ the local example tasksets/harnesses)
+uv run eval gsm8k-v1 -n 5 -r 3   # single-turn math; default harness; docker runtime
+uv run eval -h                   # typed help (+ the local example tasksets/harnesses)
+```
+
+Everything is typed config, so the advanced knobs — per-rollout budgets, retries, and
+wall-clock timeouts — are all CLI flags (or TOML):
+
+```bash
+uv run eval gsm8k-v1 -n 5 -r 3 \
+  --max-turns 8 --max-total-tokens 8192 \        # per-rollout budgets (also --max-{input,output}-tokens)
+  --retry.attempts 3 --retry.include ProgramError \  # retry a failed rollout, by exception type
+  --timeout.rollout 600 --timeout.scoring 120        # wall-clock caps, in seconds
 ```
 
 Common knobs have short aliases:
 
-| alias  | long               | meaning                                    |
-| ------ | ------------------ | ------------------------------------------ |
-| `--m`  | `--model`          | model id                                   |
-| `--n`  | `--num-tasks`      | how many tasks to evaluate                 |
-| `--s`  | `--shuffle`        | shuffle before the `--n` slice             |
-| `--r`  | `--num-rollouts`   | rollouts per task                          |
-| `--c`  | `--max-concurrent` | max rollouts in flight                     |
-| `--v`  | `--verbose`        | debug logging                              |
-| `--o`  | `--output-dir`     | where to write results                     |
-|        | `--no-rich`        | disable the live dashboard (on by default) |
+| alias | long               | meaning                                    |
+| ----- | ------------------ | ------------------------------------------ |
+| `-m`  | `--model`          | model id                                   |
+| `-n`  | `--num-tasks`      | how many tasks to evaluate                 |
+| `-s`  | `--shuffle`        | shuffle before the `-n` slice              |
+| `-r`  | `--num-rollouts`   | rollouts per task                          |
+| `-c`  | `--max-concurrent` | max rollouts in flight                     |
+| `-v`  | `--verbose`        | debug logging                              |
+| `-o`  | `--output-dir`     | where to write results                     |
+|       | `--no-rich`        | disable the live dashboard (on by default) |
 
 ## Patterns
 
@@ -48,25 +58,26 @@ Common knobs have short aliases:
 The program that drives the rollout — same taskset, different driver:
 
 ```bash
-uv run eval gsm8k-v1 --n 1                   # default: a tiny OpenAI chat loop (bash tool opt-in)
-uv run eval gsm8k-v1 --n 1 --harness.id rlm  # the rlm harness
+uv run eval gsm8k-v1 -n 1                   # default: a tiny OpenAI chat loop (bash tool opt-in)
+uv run eval gsm8k-v1 -n 1 --harness.id rlm  # the rlm harness
 ```
 
 ### Swappable runtime
 
-*Where* code runs, behind one `Runtime` contract — the same contract backs both the harness
-(`--harness.runtime`) and a task's own tool servers (`--taskset.tools.runtime`):
+*Where* code runs, behind one `Runtime` contract — the same contract backs the harness
+(`--harness.runtime`), a task's own tool servers (`--taskset.tools.runtime`), and the user
+simulator (all structurally MCP servers in a runtime):
 
 ```bash
-uv run eval gsm8k-v1 --n 1 --harness.runtime.type subprocess  # harness: local process
-uv run eval gsm8k-v1 --n 1 --harness.runtime.type docker      # harness: local container (default)
-uv run eval gsm8k-v1 --n 1 --harness.runtime.type prime       # harness: remote Prime sandbox
-uv run eval gsm8k-v1 --n 1 --harness.runtime.type modal       # harness: remote Modal sandbox
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # harness: local process
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # harness: local container (default)
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # harness: remote Prime sandbox
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # harness: remote Modal sandbox
 ```
 
 Remote sandboxes are named after the rollout id (greppable in `prime sandbox list` /
-`modal`), and every runtime is freed on exit/interrupt (an atexit backstop catches a
-signal that cut a rollout's teardown short).
+`modal`), and the framework manages each runtime's full lifecycle — provisioning through
+guaranteed cleanup of its resources, even on exit/interrupt.
 
 ### Tools
 
@@ -77,10 +88,10 @@ colocated or own-runtime tool runs in any runtime. The tool examples each show o
 placement:
 
 ```bash
-uv run eval glossary-v1 --n 1     # colocated — in the harness's own runtime, localhost (default)
-uv run eval wikispeedia-v1 --n 1 --taskset.min-dist 2 --taskset.max-dist 2  # its own per-rollout runtime
-uv run eval wiki-search-v1 --n 1  # shared — one instance built once for the whole eval
-uv run eval deepwiki-v1 --n 1     # an existing remote server, by URL
+uv run eval glossary-v1 -n 1     # colocated — in the harness's own runtime, localhost (default)
+uv run eval wikispeedia-v1 -n 1 --taskset.min-dist 2 --taskset.max-dist 2  # its own per-rollout runtime
+uv run eval wiki-search-v1 -n 1  # shared — one instance built once for the whole eval
+uv run eval deepwiki-v1 -n 1     # an existing remote server, by URL
 ```
 
 ### Scoring
@@ -88,9 +99,9 @@ uv run eval deepwiki-v1 --n 1     # an existing remote server, by URL
 Rewards / metrics are decorated methods on the taskset:
 
 ```bash
-uv run eval gsm8k-v1 --n 1            # runtime scoring: a @vf.reward runs a math-verify uv script
+uv run eval gsm8k-v1 -n 1            # runtime scoring: a @vf.reward runs a math-verify uv script
                                      # IN the rollout's runtime (its deps never touch the eval process)
-uv run eval code-golf-v1 --n 1 --r 2  # group rewards: a @vf.group_reward scores N rollouts together
+uv run eval code-golf-v1 -n 1 -r 2  # group rewards: a @vf.group_reward scores N rollouts together
 ```
 
 ### Branching trajectories
@@ -102,7 +113,7 @@ is its own *branch*. `branching` recovers them from the flat trajectory and
 harness is one per turn — it also handles subagents):
 
 ```bash
-uv run eval wiki-search-v1 --n 1 --harness.id compact  # fresh prompt each turn → num_branches == turns
+uv run eval wiki-search-v1 -n 1 --harness.id compact  # fresh prompt each turn → num_branches == turns
 ```
 
 ### Clients
@@ -111,8 +122,8 @@ The client sits *behind* the interception server, so the harness only ever speak
 chat-completions:
 
 ```bash
-uv run eval gsm8k-v1 --n 1                          # openai (default): text in / text out
-uv run eval gsm8k-v1 --n 1 --client.type renderers \  # renderers: client-side tokenization →
+uv run eval gsm8k-v1 -n 1                          # openai (default): text in / text out
+uv run eval gsm8k-v1 -n 1 --client.type renderers \  # renderers: client-side tokenization →
   --client.base-url http://localhost:8000/v1          # token-in/out traces (needs a vLLM engine)
 ```
 
@@ -121,18 +132,6 @@ With `renderers`, each `trace.trajectory[i].tokens` carries the exact `prompt_id
 straight from an agentic rollout, with zero agent changes. (When the engine returns ids on
 the response itself, the openai client picks them up too — no renderer required.)
 
-### Limits & retries
-
-Framework-enforced budgets, applied between turns (so they hold for any harness), plus
-native whole-rollout retries:
-
-```bash
-uv run eval gsm8k-v1 --n 1 --max-turns 8                  # cap model turns
-uv run eval gsm8k-v1 --n 1 --max-total-tokens 8192        # cap prompt+completion tokens
-                                                          # (also --max-input-tokens / --max-output-tokens)
-uv run eval gsm8k-v1 --n 1 --retry.attempts 3 --retry.include ProgramError  # retry by exception type
-```
-
 ### Installable ids (the Hub)
 
 An id is `name` (local), `org/name`, or `org/name@version`. A hub id is installed on demand
@@ -140,7 +139,7 @@ An id is `name` (local), `org/name`, or `org/name@version`. A hub id is installe
 v0 env:
 
 ```bash
-uv run eval org/my-taskset@1.2.0 --n 1   # installed from the Environments Hub, then run
+uv run eval org/my-taskset@1.2.0 -n 1   # installed from the Environments Hub, then run
 ```
 
 ### v0 backwards-compat
@@ -149,7 +148,7 @@ A classic v0 `verifiers.load_environment` env runs through the same CLI via the 
 bridge — its rollouts mapped to v1 `Trace`s. Set `--id` (instead of a `taskset`):
 
 ```bash
-uv run eval --id reverse-text --n 2                       # a local v0 env
+uv run eval --id reverse-text -n 2                       # a local v0 env
 uv run eval --id reverse-text --args.num_train_examples 50 \
   --extra-env-kwargs.max-total-completion-tokens 256       # construction + post-load kwargs
 ```
@@ -160,7 +159,7 @@ A taskset can drive the *user* side of a multi-turn conversation. The intercepti
 injects user turns from a `vf.User`, so the harness is unaware it's talking to a simulator:
 
 ```bash
-uv run eval @ configs/textarena.toml --n 1   # a user simulator plays the game (TextArena Wordle-v0)
+uv run eval @ configs/textarena.toml -n 1   # a user simulator plays the game (TextArena Wordle-v0)
 ```
 
 ### Typed eval CLI
@@ -170,7 +169,7 @@ taskset / harness `id` is read from the file, so no positional id is needed:
 
 ```bash
 uv run eval @ configs/gsm8k.toml          # ids + knobs from the file
-uv run eval @ configs/gsm8k.toml --n 1    # CLI flags still override the file
+uv run eval @ configs/gsm8k.toml -n 1    # CLI flags still override the file
 ```
 
 This is the same TOML-driven shape prime-rl consumes (ids live in the config, resolved by
