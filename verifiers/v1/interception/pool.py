@@ -13,7 +13,7 @@ server routes by.
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 
 from verifiers.v1.interception.server import InterceptionServer, RolloutSession
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class _PooledServer:
+class PooledServer:
     server: InterceptionServer
     exposer: Runtime
     endpoint: str
@@ -38,18 +38,21 @@ class InterceptionPool:
     def __init__(self, runtime_config: RuntimeConfig, multiplex: int) -> None:
         self.runtime_config = runtime_config
         self.multiplex = max(1, multiplex)
-        self._servers: list[_PooledServer] = []
+        self._servers: list[PooledServer] = []
         self._lock = asyncio.Lock()
 
     async def __aenter__(self) -> "InterceptionPool":
         return self
 
     async def __aexit__(self, *exc) -> None:
+        # Tear every server down even if one fails — a stuck tunnel shouldn't leak the rest.
         for entry in self._servers:
-            await entry.exposer.stop()
-            await entry.server.__aexit__(*exc)
+            with suppress(Exception):
+                await entry.exposer.stop()
+            with suppress(Exception):
+                await entry.server.__aexit__(*exc)
 
-    async def _entry(self) -> _PooledServer:
+    async def _entry(self) -> PooledServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new
         one (its own tunnel). The caller holds `_lock`."""
         for entry in self._servers:
@@ -64,7 +67,7 @@ class InterceptionPool:
             self.runtime_config, name=f"interception-{len(self._servers)}"
         )
         endpoint = f"{await exposer.expose(server.port)}/v1"
-        entry = _PooledServer(server, exposer, endpoint)
+        entry = PooledServer(server, exposer, endpoint)
         self._servers.append(entry)
         logger.info(
             "interception pool: %d server(s), multiplex=%d (%s)",

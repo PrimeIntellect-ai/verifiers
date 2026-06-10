@@ -34,8 +34,8 @@ uv run --with matplotlib python bench/plot.py   # benchmark.json -> bench/benchm
 - Ordering holds: **subprocess < docker < prime** — provisioning ≈ 0 / per-container /
   per-sandbox+tunnel. The bottleneck at scale is **endpoint queueing**, shared by all runtimes.
 - Interception **multiplexing** (PR #1605) keeps remote tunnels at O(N/multiplex): it roughly
-  halves prime's gen p50/p90 from n≥128 (see `bench/plot_mux.py` / `mux_vs_base.png`); the
-  win is fewer tunnels, not CPU. `multiplex=32` is the sweet spot.
+  halves prime's gen p50/p90 from n≥128 (base-vs-mux numbers in PR #1605); the win is fewer
+  tunnels, not CPU. `multiplex=32` is the sweet spot.
 
 ## Next
 
