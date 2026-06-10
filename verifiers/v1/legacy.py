@@ -21,7 +21,7 @@ from typing import Any
 import zmq
 import zmq.asyncio
 
-from verifiers.v1.clients.config import ClientConfig
+from verifiers.v1.clients.config import ClientConfig, RendererClientConfig
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
     RunGroupRequest,
@@ -299,7 +299,13 @@ class LegacyEnvServer(EnvServer):
         ``renderer_model_name`` (the base model) so a LoRA adapter name — served only for
         sampling — never drives tokenizer loading; the per-request ``model`` still selects
         the sampling target in ``run_rollout``."""
-        renderer_model = getattr(client_config, "renderer_model_name", None) or model
+        if not isinstance(client_config, RendererClientConfig):
+            raise ValueError(
+                "the v0 legacy bridge trains through a renderer (token-in/out) client, "
+                f"got client type {client_config.type!r}; MITO (chat-completions) "
+                "training of v0 envs is not supported"
+            )
+        renderer_model = client_config.renderer_model_name or model
         key = (client_config.model_dump_json(), renderer_model)
         if key not in self._clients:
             from verifiers.clients import resolve_client
@@ -307,9 +313,9 @@ class LegacyEnvServer(EnvServer):
 
             v0_config = V0ClientConfig(
                 client_type="renderer",
-                renderer_config=getattr(client_config, "renderer", None),
+                renderer_config=client_config.renderer,
                 renderer_model_name=renderer_model,
-                renderer_pool_size=getattr(client_config, "pool_size", None),
+                renderer_pool_size=client_config.pool_size,
                 api_base_url=client_config.base_url,
                 api_key_var=client_config.api_key_var,
                 extra_headers=dict(client_config.headers or {}),
