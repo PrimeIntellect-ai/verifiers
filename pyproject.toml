@@ -57,7 +57,7 @@ dependencies = [
     "pymupdf",
     "pillow",
     "certifi",
-    "prime-pydantic-config[toml]>=0.3.0.dev86",  # single-dash short flags (-n, -r, ...)
+    "prime-pydantic-config[toml]>=0.3.0.dev86",
     "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
     # v1 (verifiers.v1) runtime — also used by the v0 -> vf.Trace bridge (verifiers.v1.legacy)
     "loguru>=0.7.0",
