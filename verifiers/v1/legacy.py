@@ -417,7 +417,7 @@ async def run_legacy_eval(config) -> list[Trace]:
     env = load_environment(ensure_installed(config.id), **(config.args or {}))
     if config.extra_env_kwargs:  # post-load knobs (max_total_completion_tokens, …)
         env.set_kwargs(**config.extra_env_kwargs)
-    dataset = env.get_dataset()
+    dataset = env.get_eval_dataset()  # the eval split (falls back to train when unset)
     idxs = list(range(len(dataset)))
     if config.shuffle:
         random.Random(0).shuffle(idxs)  # fixed seed: same sample every run
