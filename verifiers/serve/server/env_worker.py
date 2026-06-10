@@ -257,8 +257,25 @@ class EnvWorker:
 
     async def stats_loop(self, interval: float = 10.0) -> None:
         """Loop to push worker stats to the router."""
+        libc = None
+        try:
+            import ctypes
+
+            libc = ctypes.CDLL("libc.so.6")
+        except OSError:
+            pass
         while True:
             await asyncio.sleep(interval)
+
+            # Return freed arena pages to the OS at the heartbeat cadence.
+            # Long multimodal rollouts churn hundreds of MB of boxed objects
+            # per rollout; without trim the worker's RSS ratchets to its
+            # high-water mark (~3x the live set, measured). ctypes calls
+            # release the GIL, so this never stalls the loop — unlike
+            # gc.collect(), which must NOT be called here (full collections
+            # on fat heaps are what caused worker heartbeat timeouts).
+            if libc is not None:
+                libc.malloc_trim(0)
 
             stats = EnvWorkerStats(
                 worker_id=self.worker_id,
