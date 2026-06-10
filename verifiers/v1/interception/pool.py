@@ -31,7 +31,7 @@ class _PooledServer:
 
 
 class InterceptionPool:
-    """Shared interception servers for an eval or env server. `multiplex` rollouts share one
+    """Shared interception servers. `multiplex` rollouts share one
     server (one tunnel behind a remote runtime); `acquire` hands a rollout a slot on one,
     bringing up a new server when all are at capacity."""
 

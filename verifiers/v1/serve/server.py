@@ -101,6 +101,12 @@ class EnvServer:
             client=self._client(client_config, model), model=model, sampling=sampling
         )
 
+    def interception_pool(self):
+        """Context for the server's shared interception pool, entered for the server's
+        lifetime so its tunnels are reused across requests. The legacy v0 bridge overrides
+        this (it runs its own rollouts, with no v1 interception)."""
+        return self.env.interception_pool()
+
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         episode = self.env.episode(self.tasks[req.task_idx], ctx, n=1)
@@ -155,16 +161,12 @@ class EnvServer:
             len(self.tasks),
             self.requires_group_scoring,
         )
-        # Shared interception pool for the server's lifetime — reused across requests so
-        # tunnels aren't re-created per call. v1 only; the legacy v0 bridge runs its own
-        # rollouts (overriding the run hooks), so it needs no pool.
-        self.pool = (
-            self.env.interception_pool() if isinstance(self.env, Environment) else None
-        )
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
         tasks: set[asyncio.Task] = set()
-        async with self.pool or contextlib.nullcontext():
+        # Enter the interception pool for the server's lifetime so its tunnels are reused
+        # across requests (the legacy bridge overrides this to a no-op).
+        async with self.interception_pool() as self.pool:
             try:
                 while True:
                     events = dict(await poller.poll(timeout=100))
