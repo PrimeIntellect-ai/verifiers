@@ -6,14 +6,19 @@ abstractions and on-disk output. Everything is pydantic-typed; `import verifiers
 
 ## Highlights
 
-- **Much more minimal** — the high-level abstractions, without the implementation bulk.
+- **Composable taskset × harness** — a taskset (data + scoring) is fully decoupled from the
+  harness (the program that drives the rollout); any taskset runs under any harness
+  (`default` / `rlm` / `compact` / your own), selected by id.
+- **Swappable runtime** — the harness, its tools, and the user simulator all run behind one
+  `Runtime` contract, in `subprocess` / `docker` / `prime` / `modal`.
 - **Fully typed** — pydantic end-to-end (`Task` / `Trace` / configs); no loose
   `dict` / `object` / `cast`.
-- **Pythonic API preserved** — plain classes + decorators (`@vf.reward` / `@vf.metric` / ...).
-- **Runtime-agnostic execution** — harnesses / tools run in swappable runtimes (`subprocess` /
-  `docker` / `prime` / `modal`).
+- **Minimal & pythonic** — the high-level abstractions without the implementation bulk;
+  plain classes + decorators (`@vf.reward` / `@vf.metric` / ...).
+- **Training-ready traces** — exact token ids + logprobs straight from an agentic rollout
+  (renderer client), with branching recovered for compaction / subagents.
 - **Hub-native + v0-compatible** — ids install on demand from the Environments Hub, and
-  classic v0 envs run through the same CLI via a bridge.
+  classic v0 envs run through the same CLIs via a bridge.
 
 ## Install
 
@@ -178,6 +183,21 @@ injects user turns from a `vf.User`, so the harness is unaware it's talking to a
 ```bash
 uv run eval @ configs/textarena.toml -n 1   # a user simulator plays the game (TextArena Wordle-v0)
 ```
+
+### First-class Harbor support
+
+Common agentic benchmarks run out of the box: the shipped `harbor` taskset (installed by
+default) pulls tasks straight from the Harbor registry, each in its own declared, pullable
+container image — e.g. Terminal-Bench 2 (the `terminal-bench-2-v1` example just pins this):
+
+```bash
+uv run eval harbor --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.enable-bash true
+```
+
+Tasks that define their environment with a `Dockerfile` rather than a pullable image (e.g.
+SWE-bench) are rejected at load — building Dockerfiles isn't supported here (a locally-built
+image isn't pullable by a remote sandbox) — rather than silently scored against a wrong
+default image.
 
 ### Typed eval CLI
 
