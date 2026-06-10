@@ -1052,6 +1052,7 @@ class Runtime:
         key = str(state["trajectory_id"])
         self._model_request_locks.pop(key, None)
         self._inflight_visible_model_requests.pop(key, None)
+        self.trajectories.pop(key, None)
         self.release_tool_handles(state)
 
     async def cleanup_group(self, tasks: list[Task], states: list[State]) -> None:
