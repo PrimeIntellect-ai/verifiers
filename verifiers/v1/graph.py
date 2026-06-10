@@ -177,31 +177,3 @@ def branches_from_nodes(trace: "Trace") -> list["Branch"]:
         Branch(index=i, nodes=[trace.nodes[nid] for nid in _path_to(trace, leaf)])
         for i, leaf in enumerate(leaves(trace))
     ]
-
-
-def branch_token_sequences(
-    trace: "Trace",
-) -> list[tuple[list[int], list[bool], list[float]]]:
-    """Per branch (each leaf→root path), the flat training sequence: `(token_ids,
-    mask, per_token_logprobs)` — a cheap concat of the path's nodes. `mask`
-    marks the trainable (model-generated) tokens; logprobs are 0.0 on non-sampled tokens.
-    The training consumer splits this into prompt (up to the first sampled token) +
-    completion."""
-    out: list[tuple[list[int], list[bool], list[float]]] = []
-    for leaf in leaves(trace):
-        ids: list[int] = []
-        mask: list[bool] = []
-        lps: list[float] = []
-        for nid in _path_to(trace, leaf):
-            node = trace.nodes[nid]
-            li = 0
-            for tok, sampled in zip(node.token_ids, node.mask):
-                ids.append(tok)
-                mask.append(sampled)
-                if sampled:
-                    lps.append(node.logprobs[li] if li < len(node.logprobs) else 0.0)
-                    li += 1
-                else:
-                    lps.append(0.0)
-        out.append((ids, mask, lps))
-    return out

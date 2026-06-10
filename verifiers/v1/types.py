@@ -109,7 +109,9 @@ class TurnTokens(StrictBaseModel):
     # the renderer (`RenderedTokens.message_token_spans()`) and consumed by the graph builder
     # to attribute tokens per message, then dropped — never persisted (it would reintroduce
     # the quadratic data the graph removes).
-    message_spans: list[tuple[int, int] | None] | None = Field(default=None, exclude=True)
+    message_spans: list[tuple[int, int] | None] | None = Field(
+        default=None, exclude=True
+    )
 
 
 class Response(StrictBaseModel):

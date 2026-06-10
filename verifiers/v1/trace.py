@@ -81,6 +81,33 @@ class Branch(StrictBaseModel):
         return [n.message for n in self.nodes]
 
     @property
+    def token_ids(self) -> list[int]:
+        """The branch's full token sequence — every node's tokens concatenated in order
+        (final-turn prompt + every completion). The training sample's input ids."""
+        return [t for node in self.nodes for t in node.token_ids]
+
+    @property
+    def sampled_mask(self) -> list[bool]:
+        """Per-token trainable flag aligned to `token_ids`: True for the model-sampled
+        (completion) tokens, False for prompt/template scaffold."""
+        return [m for node in self.nodes for m in node.mask]
+
+    @property
+    def logprobs(self) -> list[float]:
+        """Per-token sampling logprobs aligned to `token_ids` — the node logprobs spread onto
+        their sampled positions, 0.0 on every non-sampled token."""
+        out: list[float] = []
+        for node in self.nodes:
+            li = 0
+            for sampled in node.mask:
+                if sampled:
+                    out.append(node.logprobs[li] if li < len(node.logprobs) else 0.0)
+                    li += 1
+                else:
+                    out.append(0.0)
+        return out
+
+    @property
     def completion_len(self) -> int:
         """All assistant-generated (model-sampled) tokens across this branch."""
         return sum(sum(n.mask) for n in self.nodes)
