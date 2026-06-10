@@ -11,6 +11,7 @@ from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.env import Environment
+from verifiers.v1.interception_pool import InterceptionPool
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -52,11 +53,30 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     def on_complete(trace: Trace) -> None:
         append_trace(out, trace)
 
+    # A shared interception pool (if multiplexing is on) comes up once here too, so N
+    # rollouts share O(N/multiplex) servers + tunnels rather than one each. Sized to the
+    # eval's actual concurrency (capped by both max_concurrent and the total rollouts).
+    total_rollouts = len(tasks) * config.num_rollouts
+    concurrency = min(config.max_concurrent or total_rollouts, total_rollouts)
+    pool_ctx = (
+        InterceptionPool(
+            env.harness.config.runtime, concurrency, config.interception_multiplex
+        )
+        if config.interception_multiplex > 0
+        else contextlib.nullcontext()
+    )
     # Shared tool servers (if any) come up once here and their URLs flow into every
     # rollout; non-shared ones start per rollout inside the episodes.
-    async with env.shared_tools(tasks) as shared_urls, display:
+    async with (
+        env.shared_tools(tasks) as shared_urls,
+        pool_ctx as pool,
+        display,
+    ):
         results = await asyncio.gather(
-            *(episode.run(semaphore, shared_urls, on_complete) for episode in episodes)
+            *(
+                episode.run(semaphore, shared_urls, on_complete, pool)
+                for episode in episodes
+            )
         )
     traces = [trace for episode_traces in results for trace in episode_traces]
     await client.close()
