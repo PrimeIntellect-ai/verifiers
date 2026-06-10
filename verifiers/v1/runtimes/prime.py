@@ -19,13 +19,13 @@ logger = logging.getLogger(__name__)
 # "auto" timeout requests the max prime allows (24h).
 _MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 
-# Prime caps tunnel creation at 100/min per API token; past that `tunnel.start()`
+# Prime caps tunnel creation at 512/min per API token; past that `tunnel.start()`
 # returns 429 (per-token limit) and the rollout dies. One process-wide leaky bucket
 # paces tunnel issuing across all concurrent rollouts to stay under it. Phrased as
-# 1-every-0.6s (capacity 1) rather than (100, 60) on purpose: a full 100-capacity
-# bucket would let 100 tunnels fire at once and then refill, stacking to ~200 within
-# the first minute and still tripping the limit — capacity 1 keeps issuing evenly paced.
-_TUNNELS_PER_MIN = 100
+# 1-every-(60/rate)s (capacity 1) rather than (rate, 60) on purpose: a full rate-capacity
+# bucket would let `rate` tunnels fire at once and then refill, ~doubling within the first
+# minute and still tripping the limit — capacity 1 keeps issuing evenly paced.
+_TUNNELS_PER_MIN = 512
 _TUNNEL_LIMITER = AsyncLimiter(1, 60 / _TUNNELS_PER_MIN)
 
 
