@@ -21,6 +21,7 @@ from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
+from verifiers.v1.ids import EnvId
 from verifiers.v1.interception import RolloutLimits
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
@@ -68,6 +69,33 @@ class EnvConfig(BaseConfig):
     max_total_tokens: int | None = None
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
     trace's `total_tokens`; framework-enforced between turns."""
+    # --- legacy (v0) backwards-compat -----------------------------------------
+    # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
+    # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
+    # unset) to opt in; native v1 envs leave these untouched. Mirrors prime-rl's EnvConfig
+    # so it inherits these (a v0 env is driven the same way in eval and the env server).
+    id: EnvId | None = None
+    """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
+    hub on demand), loaded via `verifiers.load_environment` and run through the legacy
+    bridge. Set this *instead of* `taskset` to run a v0 environment."""
+    args: dict = {}
+    """Construction kwargs forwarded to `load_environment(id, **args)`."""
+    extra_env_kwargs: dict = {}
+    """Post-load kwargs applied to the v0 env via `env.set_kwargs(**extra_env_kwargs)` (e.g.
+    `max_total_completion_tokens`, `max_seq_len`, `timeout_seconds`) — typically
+    auto-populated by the orchestrator, distinct from the `args` passed at construction."""
+
+    @property
+    def is_legacy(self) -> bool:
+        """A v0/legacy env (run via the bridge): a legacy `id` is set and no v1 `taskset`."""
+        return self.id is not None and not self.taskset.id
+
+    @property
+    def env_id(self) -> str:
+        """The env identifier — the v1 taskset id, else the legacy v0 env id."""
+        return self.taskset.id or self.id or ""
+
+    # --- end legacy -----------------------------------------------------------
 
     @model_validator(mode="before")
     @classmethod
