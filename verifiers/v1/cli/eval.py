@@ -28,7 +28,7 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.cli.runner import run_eval
 from verifiers.v1.configs.eval import EvalConfig
 
-USAGE = "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--id <v0-env-id>] [options] [@ file.toml]"
+USAGE = "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
 
 
 def main(argv: list[str] | None = None) -> None:
