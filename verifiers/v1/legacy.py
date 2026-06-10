@@ -363,19 +363,20 @@ def _legacy_output_dir(config) -> Path:
     the v0 env id (`outputs/<id>--<model>--legacy/<uuid>`); honors `--output-dir`."""
     if config.output_dir is not None:
         return config.output_dir
-    name = f"{config.legacy.id}--{config.model.replace('/', '--')}--legacy"
+    name = f"{config.env_id}--{config.model.replace('/', '--')}--legacy"
     return Path("outputs") / name / config.uuid
 
 
 async def run_legacy_eval(config) -> list[Trace]:
-    """In-process v0 eval used by the `eval` CLI when `config.legacy.id` is set.
+    """In-process v0 eval used by the `eval` CLI when `config.is_legacy` (a legacy `id` is
+    set, no v1 `taskset`).
 
     Loads the v0 env, runs `num_rollouts` per task with bounded concurrency, maps each v0
     `RolloutOutput` to a v1 `Trace` (`rollout_output_to_trace`), persists results as they
     land (the same `results.jsonl` / `config.toml` a native run writes), and returns the
     traces. The v0 env is run directly (`env.run_rollout`, no env server), so this needs no
     runtime / interception server. All v0 specifics live here; the CLI only branches on
-    `config.legacy.id`."""
+    `config.is_legacy`."""
     import asyncio
     import random
 
@@ -383,7 +384,7 @@ async def run_legacy_eval(config) -> list[Trace]:
 
     from verifiers.v1.cli.output import append_trace, save_config
 
-    env = load_environment(config.legacy.id, **(config.legacy.args or {}))
+    env = load_environment(config.id, **(config.args or {}))
     dataset = env.get_dataset()
     idxs = list(range(len(dataset)))
     if config.shuffle:
@@ -401,7 +402,7 @@ async def run_legacy_eval(config) -> list[Trace]:
         len(idxs),
         config.num_rollouts,
         config.model,
-        config.legacy.id,
+        config.id,
     )
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None

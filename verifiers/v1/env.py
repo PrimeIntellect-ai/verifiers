@@ -68,6 +68,22 @@ class EnvConfig(BaseConfig):
     max_total_tokens: int | None = None
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
     trace's `total_tokens`; framework-enforced between turns."""
+    id: str | None = None
+    """Classic (v0) env id, loaded via `verifiers.load_environment(id, **args)` and run
+    through the legacy bridge (`verifiers.v1.legacy`). Set this *instead of* `taskset` to
+    run a legacy v0 environment."""
+    args: dict = {}
+    """Kwargs forwarded to the v0 env's `load_environment` (only used when `id` is set)."""
+
+    @property
+    def is_legacy(self) -> bool:
+        """A v0/legacy env (run via the bridge): a legacy `id` is set and no v1 `taskset`."""
+        return self.id is not None and not self.taskset.id
+
+    @property
+    def env_id(self) -> str:
+        """The env identifier — the v1 taskset id, else the legacy v0 env id."""
+        return self.taskset.id or self.id or ""
 
     @model_validator(mode="before")
     @classmethod

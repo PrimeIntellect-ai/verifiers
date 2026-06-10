@@ -28,7 +28,7 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.cli.runner import run_eval
 from verifiers.v1.configs.eval import EvalConfig
 
-USAGE = "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--legacy.id <v0-env-id>] [options] [@ file.toml]"
+USAGE = "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--id <v0-env-id>] [options] [@ file.toml]"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -45,14 +45,15 @@ def main(argv: list[str] | None = None) -> None:
             narrow_config(EvalConfig, argv)
         )  # full option help, narrowed to the given ids
         return
+    legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
     if (
         not extract_id(argv, "taskset")
-        and not extract_id(argv, "legacy")
+        and not legacy_id
         and not references_config_file(argv)
     ):
         raise SystemExit(
             USAGE
-        )  # need a taskset (positional / --taskset.id), a --legacy.id, or a @ file.toml
+        )  # need a taskset (positional / --taskset.id), a legacy --id, or a @ file.toml
 
     config_type = narrow_config(EvalConfig, argv)
     sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
@@ -61,11 +62,11 @@ def main(argv: list[str] | None = None) -> None:
         print(config.model_dump_json(indent=2, exclude_none=True))
         return
     # The --rich dashboard reads live v1 Rollout state, so it's off for a legacy run.
-    rich = config.rich and not config.legacy.id
+    rich = config.rich and not config.is_legacy
     # --rich owns the screen, so quiet the per-rollout INFO logs it would replace.
     setup_logging("DEBUG" if config.verbose else "WARNING" if rich else "INFO")
 
-    if config.legacy.id:  # v0 backwards-compat: run the classic env, bridged to Traces
+    if config.is_legacy:  # v0 backwards-compat: run the classic env, bridged to Traces
         from verifiers.v1.legacy import run_legacy_eval
 
         traces = asyncio.run(run_legacy_eval(config))
