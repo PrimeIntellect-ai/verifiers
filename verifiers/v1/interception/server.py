@@ -44,18 +44,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class RolloutStopped(Exception):
-    """The first model call was refused by a limit/@stop — halts the harness (HTTP 400)."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
-
-
-class ModelCallError(Exception):
-    """The upstream model call failed — surfaced to the program as an API error (HTTP 502)."""
-
-
 def parse_message(raw: dict) -> Message:
     """An OpenAI request message dict -> a typed Message."""
     role = raw.get("role")
@@ -193,7 +181,7 @@ class RolloutSession:
     injected as a user turn, and the model is re-prompted — all within one program request,
     transparently to the harness."""
 
-    async def _refused(self) -> str | None:
+    async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
         call halts the harness (its model call errors out); Harness.run treats it as clean."""
@@ -208,48 +196,12 @@ class RolloutSession:
                 return stop.__name__
         return None
 
-    async def handle(self, prompt: Messages, tools: list[Tool] | None) -> dict:
-        """Serve one program chat-completions request: call the model, record the turn, and
-        return the OpenAI completion dict. With a user simulator this loops — injecting the
-        simulator's reply as a user turn and re-prompting — so a whole multi-turn exchange
-        plays out here and only the final assistant message returns to the (simulator-unaware)
-        program. Raises `RolloutStopped` if the first call is refused, `ModelCallError` on an
-        upstream failure."""
-        last: Response | None = None
-        while True:
-            refused = await self._refused()
-            if refused is not None:
-                # Refuse the first model call to halt the harness; once a simulated
-                # conversation is under way, just end it and return the last turn cleanly.
-                if last is None:
-                    raise RolloutStopped(refused)
-                return serialize_completion(last, self.ctx.model)
-            try:
-                response = await self.ctx.client.get_response(
-                    prompt, self.ctx.model, self.ctx.sampling, tools
-                )
-            except Exception as e:  # surface to the program as an API error
-                raise ModelCallError(str(e)) from e
-            self.trace.trajectory.append(
-                Turn(prompt=prompt, response=response, tokens=response.tokens)
-            )  # branches are derived from the trajectory (see Trace.branches)
-            last = response
-            # Hand back to the program when the model wants a tool (the program runs it) or
-            # when there's no user simulator to keep the conversation going.
-            if response.message.tool_calls or self.user is None:
-                return serialize_completion(response, self.ctx.model)
-            user_messages, done = await self.user(response.message.content or "")
-            if done:
-                self.trace.stop("user_completed")
-                return serialize_completion(response, self.ctx.model)
-            prompt = [*prompt, response.message, *user_messages]
-
 
 class InterceptionServer:
     """A localhost server that proxies chat-completions for one or more rollouts. Each
     rollout `register`s a `RolloutSession` and gets back a secret; `handle_chat` routes every
     request to the session whose secret matches the request's bearer token. A single server
-    can multiplex many rollouts (the basis for `interception_pool`); used 1:1 it's just a
+    can multiplex many rollouts (the basis for `interception.pool`); used 1:1 it's just a
     server with one session."""
 
     def __init__(self) -> None:
@@ -291,12 +243,42 @@ class InterceptionServer:
         body = await request.json()
         prompt: Messages = [parse_message(m) for m in body.get("messages", [])]
         tools = parse_tools(body.get("tools"))
-        try:
-            return web.json_response(await session.handle(prompt, tools))
-        except RolloutStopped as stop:
-            return web.json_response(
-                {"error": f"rollout stopped: {stop.reason}"}, status=400
-            )
-        except ModelCallError as e:
-            logger.warning("model call failed: id=%s %s", session.trace.id, e)
-            return web.json_response({"error": str(e)}, status=502)
+        # A user simulator turns one program request into a multi-turn exchange: after each
+        # model turn the simulator's reply is injected as a user turn and the model is
+        # re-prompted, so a whole game plays out here and only the final assistant message
+        # returns to the (simulator-unaware) program. Without a simulator the loop runs once.
+        last: Response | None = None
+        while True:
+            refused = await session.refused()
+            if refused is not None:
+                # Refuse the first model call to halt the harness; once a simulated
+                # conversation is under way, just end it and return the last turn cleanly.
+                if last is None:
+                    return web.json_response(
+                        {"error": f"rollout stopped: {refused}"}, status=400
+                    )
+                return web.json_response(serialize_completion(last, session.ctx.model))
+            try:
+                response = await session.ctx.client.get_response(
+                    prompt, session.ctx.model, session.ctx.sampling, tools
+                )
+            except Exception as e:  # surface to the program as an API error
+                logger.warning("model call failed: id=%s %s", session.trace.id, e)
+                return web.json_response({"error": str(e)}, status=502)
+            session.trace.trajectory.append(
+                Turn(prompt=prompt, response=response, tokens=response.tokens)
+            )  # branches are derived from the trajectory (see Trace.branches)
+            last = response
+            # Hand back to the program when the model wants a tool (the program runs it) or
+            # when there's no user simulator to keep the conversation going.
+            if response.message.tool_calls or session.user is None:
+                return web.json_response(
+                    serialize_completion(response, session.ctx.model)
+                )
+            user_messages, done = await session.user(response.message.content or "")
+            if done:
+                session.trace.stop("user_completed")
+                return web.json_response(
+                    serialize_completion(response, session.ctx.model)
+                )
+            prompt = [*prompt, response.message, *user_messages]

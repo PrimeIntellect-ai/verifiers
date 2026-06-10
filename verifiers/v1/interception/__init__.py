@@ -8,10 +8,8 @@ each, behind a remote runtime) across all of an eval's or env-server's rollouts.
 from verifiers.v1.interception.pool import InterceptionPool
 from verifiers.v1.interception.server import (
     InterceptionServer,
-    ModelCallError,
     RolloutLimits,
     RolloutSession,
-    RolloutStopped,
     parse_message,
     parse_tools,
     serialize_completion,
@@ -20,10 +18,8 @@ from verifiers.v1.interception.server import (
 __all__ = [
     "InterceptionPool",
     "InterceptionServer",
-    "ModelCallError",
     "RolloutLimits",
     "RolloutSession",
-    "RolloutStopped",
     "parse_message",
     "parse_tools",
     "serialize_completion",
