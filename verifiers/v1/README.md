@@ -132,25 +132,16 @@ With `renderers`, each `trace.trajectory[i].tokens` carries the exact `prompt_id
 straight from an agentic rollout, with zero agent changes. (When the engine returns ids on
 the response itself, the openai client picks them up too — no renderer required.)
 
-### Installable ids (the Hub)
+### Limits & retries
 
-An id is `name` (local), `org/name`, or `org/name@version`. A hub id is installed on demand
-(the same path as `prime env install`) before it loads — for the taskset, the harness, or a
-v0 env:
-
-```bash
-uv run eval org/my-taskset@1.2.0 -n 1   # installed from the Environments Hub, then run
-```
-
-### v0 backwards-compat
-
-A classic v0 `verifiers.load_environment` env runs through the same CLI via the legacy
-bridge — its rollouts mapped to v1 `Trace`s. Set `--id` (instead of a `taskset`):
+Framework-enforced budgets, applied between turns (so they hold for any harness), plus
+native whole-rollout retries:
 
 ```bash
-uv run eval --id reverse-text -n 2                       # a local v0 env
-uv run eval --id reverse-text --args.num_train_examples 50 \
-  --extra-env-kwargs.max-total-completion-tokens 256       # construction + post-load kwargs
+uv run eval gsm8k-v1 -n 1 --max-turns 8                  # cap model turns
+uv run eval gsm8k-v1 -n 1 --max-total-tokens 8192        # cap prompt+completion tokens
+                                                          # (also --max-input-tokens / --max-output-tokens)
+uv run eval gsm8k-v1 -n 1 --retry.attempts 3 --retry.include ProgramError  # retry by exception type
 ```
 
 ### User simulation
@@ -175,6 +166,17 @@ uv run eval @ configs/gsm8k.toml -n 1    # CLI flags still override the file
 This is the same TOML-driven shape prime-rl consumes (ids live in the config, resolved by
 `EnvConfig`). The other CLI is `uv run serve` — the same env, served over ZMQ as an env
 server the orchestrator (or any `EnvClient`) drives by task index.
+
+### Backwards compatibility
+
+A classic v0 `verifiers.load_environment` env runs through the same CLI via the legacy
+bridge — its rollouts mapped to v1 `Trace`s. Set `--id` (instead of a `taskset`):
+
+```bash
+uv run eval --id reverse-text -n 2                       # a local v0 env
+uv run eval --id reverse-text --args.num_train_examples 50 \
+  --extra-env-kwargs.max-total-completion-tokens 256       # construction + post-load kwargs
+```
 
 ## Open TODOs
 
