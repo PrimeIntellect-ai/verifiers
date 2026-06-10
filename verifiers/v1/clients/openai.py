@@ -47,7 +47,10 @@ def message_to_wire(message: Message) -> dict:
             "tool_call_id": message.tool_call_id,
             "content": message.content,
         }
-    return {"role": message.role, "content": message.content}
+    content = message.content
+    if isinstance(content, list):  # multimodal parts -> plain OpenAI dicts
+        content = [part.model_dump() for part in content]
+    return {"role": message.role, "content": content}
 
 
 def tool_to_wire(tool: Tool) -> dict:

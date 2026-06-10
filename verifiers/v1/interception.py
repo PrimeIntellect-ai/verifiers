@@ -43,7 +43,9 @@ def parse_message(raw: dict) -> Message:
     """An OpenAI request message dict -> a typed Message."""
     role = raw.get("role")
     content = raw.get("content")
-    if isinstance(content, list):  # multimodal parts -> joined text
+    if role == "user":  # may carry multimodal content parts (text + images); keep them
+        return UserMessage(content=content if content is not None else "")
+    if isinstance(content, list):  # other roles are text-only -> flatten parts
         content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
     content = content or ""
     if role == "system":

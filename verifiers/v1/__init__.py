@@ -54,6 +54,8 @@ from verifiers.v1.trace import (
 )
 from verifiers.v1.types import (
     AssistantMessage,
+    ImagePart,
+    ImageUrl,
     Message,
     Messages,
     MMData,
@@ -61,6 +63,7 @@ from verifiers.v1.types import (
     SamplingConfig,
     StrictBaseModel,
     SystemMessage,
+    TextPart,
     Tool,
     ToolCall,
     ToolMessage,
@@ -77,6 +80,9 @@ __all__ = [
     "env_name",
     "MMData",
     "WireTensor",
+    "TextPart",
+    "ImagePart",
+    "ImageUrl",
     "AssistantMessage",
     "Message",
     "Messages",

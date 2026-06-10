@@ -20,6 +20,30 @@ class StrictBaseModel(BaseModel):
 # --- messages -----------------------------------------------------------------
 
 
+class TextPart(StrictBaseModel):
+    """A text content part (OpenAI shape)."""
+
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ImageUrl(StrictBaseModel):
+    url: str
+    """An http(s) URL or a `data:image/...;base64,...` data URI."""
+
+
+class ImagePart(StrictBaseModel):
+    """An image content part (OpenAI shape) — carries a VLM image into the prompt."""
+
+    type: Literal["image_url"] = "image_url"
+    image_url: ImageUrl
+
+
+ContentPart = Annotated[TextPart | ImagePart, Field(discriminator="type")]
+Content = str | list[ContentPart]
+"""A message body: plain text, or OpenAI-style content parts (text + images)."""
+
+
 class SystemMessage(StrictBaseModel):
     """A system instruction message."""
 
@@ -28,10 +52,10 @@ class SystemMessage(StrictBaseModel):
 
 
 class UserMessage(StrictBaseModel):
-    """A user message."""
+    """A user message — text, or content parts (e.g. images) for a VLM."""
 
     role: Literal["user"] = "user"
-    content: str
+    content: Content
 
 
 class ToolCall(StrictBaseModel):
