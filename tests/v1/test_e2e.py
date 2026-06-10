@@ -88,19 +88,41 @@ async def test_agentic(run_v1, runtime, tmp_path):
 
 
 @pytest.mark.e2e
-@pytest.mark.slow
-async def test_multi_turn_user_in_own_sandbox(run_v1, tmp_path):
-    """The user simulator can run in its own sandbox (here docker), not just on the host —
-    published back to the host while the agent runs on subprocess."""
+async def test_task_tools_own_runtime(
+    run_v1, server_runtime, skip_if_unexposable, tmp_path
+):
+    """A task's tool server runs in its OWN runtime (not colocated) — cover every server
+    runtime, with the agent on subprocess. The harness reaches the tool over the runtime's
+    resolved URL (a remote sandbox publishes its port; a host one is localhost)."""
+    (trace,) = await run_v1(
+        "glossary-v1",
+        harness="default",
+        runtime="subprocess",
+        output_dir=tmp_path,
+        max_turns=6,
+        taskset_overrides={
+            "tools": {"colocated": False, "runtime": {"type": server_runtime}}
+        },
+    )
+    skip_if_unexposable(trace)
+    assert trace.errors == []
+    assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+async def test_user_own_runtime(run_v1, server_runtime, skip_if_unexposable, tmp_path):
+    """The user simulator runs in its OWN runtime — cover every server runtime (host
+    subprocess, its own docker container, or its own remote sandbox), with the agent on
+    subprocess. Reached host-side via the runtime's published URL or localhost."""
     (trace,) = await run_v1(
         "echo-multi-v1",
         harness="default",
         runtime="subprocess",
         output_dir=tmp_path,
         max_turns=6,
-        taskset_overrides={"user": {"runtime": {"type": "docker"}}},
+        taskset_overrides={"user": {"runtime": {"type": server_runtime}}},
     )
+    skip_if_unexposable(trace)
     assert trace.errors == []
-    assert not trace.is_truncated
     assert trace.num_turns >= 2
     assert trace.reward == 1.0

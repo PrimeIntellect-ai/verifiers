@@ -39,6 +39,28 @@ def runtime(request) -> str:
     return request.param
 
 
+# The runtime a tool / user-sim server runs in (its OWN, not colocated in the agent's), so the
+# task-tools and user-sim tests can cover every runtime independent of the agent's.
+@pytest.fixture(params=RUNTIMES)
+def server_runtime(request) -> str:
+    return request.param
+
+
+@pytest.fixture
+def skip_if_unexposable():
+    """Skip when a trace failed because the server's runtime couldn't publish its port to the
+    host — a prime sandbox whose region doesn't support port exposure (a known infra limit, not
+    a code bug). subprocess/docker share the host network, so they never hit this."""
+
+    def _skip(trace) -> None:
+        if any("port exposure" in str(e) for e in trace.errors):
+            pytest.skip(
+                "runtime can't publish a port to the host (pin a prime region that supports port exposure)"
+            )
+
+    return _skip
+
+
 # Built-in harnesses (bundled in the `harnesses` package), composed with `runtime` for the
 # harness x runtime matrix. compact is an example harness, not built-in, so it's excluded. rlm
 # installs a heavy agent binary at rollout, so it's marked slow.
