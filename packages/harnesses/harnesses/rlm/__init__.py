@@ -35,10 +35,8 @@ class RLMHarnessConfig(HarnessConfig):
 
 
 class RLMHarness(Harness[RLMHarnessConfig]):
-    APPENDS_SYSTEM_PROMPT = (
-        True  # rlm appends it to its prompt via RLM_APPEND_TO_SYSTEM_PROMPT
-    )
-    SUPPORTS_TASK_TOOLS = False  # rlm drives its own tools; it has no MCP client for a task's tool servers
+    APPENDS_SYSTEM_PROMPT = True
+    SUPPORTS_TASK_TOOLS = False
 
     async def launch(
         self,
