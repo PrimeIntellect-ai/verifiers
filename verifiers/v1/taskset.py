@@ -56,6 +56,17 @@ class ToolsConfig(BaseConfig):
         return self
 
 
+class UserConfig(BaseConfig):
+    """How a taskset's user simulator is run. The framework drives it from the host, so it's
+    reached host-side (`public_url` for a remote sandbox, localhost otherwise) — never
+    colocated in the agent's runtime, which a remote sandbox can't serve back to the host."""
+
+    runtime: RuntimeConfig = SubprocessConfig()
+    """The user simulator's own runtime: host (subprocess) by default — always localhost-
+    reachable; set docker/prime to isolate it in its own sandbox (reached via the sandbox's
+    published URL)."""
+
+
 class TasksetConfig(BaseConfig):
     """Base taskset config. Subclass to add task-generation knobs."""
 
@@ -64,6 +75,7 @@ class TasksetConfig(BaseConfig):
     `org/name[@version]` package installed on demand from the Environments Hub (see
     `EnvId`). Set via `--taskset.id`."""
     tools: ToolsConfig = ToolsConfig()
+    user: UserConfig = UserConfig()
 
     @property
     def name(self) -> str:
