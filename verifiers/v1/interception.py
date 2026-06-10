@@ -2,7 +2,8 @@
 
 Every rollout runs an harness program whose OpenAI-style calls are caught here:
 this small localhost server routes each `POST /v1/chat/completions` to our
-`Client`, records a `Turn`, and returns the result in OpenAI shape. We inject
+`Client`, records the turn into the trace's message graph, and returns the result in OpenAI
+shape. We inject
 `OPENAI_BASE_URL`/`OPENAI_API_KEY` so the program's SDK talks to us. Chat
 completions only, no streaming. When the rollout sets a user simulator (see
 `verifiers.v1.user`), this server also drives it: after each model turn it injects

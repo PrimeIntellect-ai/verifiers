@@ -163,7 +163,7 @@ class Rollout:
             trace.id,
             self.task.idx,
             trace.reward,
-            len(trace.trajectory),
+            trace.num_turns,
             trace.error.type if trace.error else trace.stop_condition,
         )
         return trace

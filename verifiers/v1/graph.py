@@ -24,16 +24,15 @@ from pydantic import Field
 
 from verifiers.v1.types import (
     AssistantMessage,
+    FinishReason,
     Message,
     Response,
     StrictBaseModel,
     ToolMessage,
-    TurnTokens,
-    Usage,
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.trace import Branch, Trace, Turn
+    from verifiers.v1.trace import Branch, Trace
 
 
 class MessageNode(StrictBaseModel):
@@ -57,13 +56,16 @@ class MessageNode(StrictBaseModel):
     logprobs: list[float] = Field(default_factory=list)
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
+    finish_reason: FinishReason = None
+    """The response's finish reason (assistant nodes only) — kept for truncation detection."""
 
 
 def message_hash(message: Message) -> str:
-    """Stable content hash on the fields `branching.same_message` compares — role, content
+    """Stable content hash on the fields that round-trip through a prompt — role, content
     (None and "" equal), assistant tool calls, tool call id; `reasoning_content` ignored.
-    The dedup key for sharing a prefix message across turns/branches; salt-free so it is
-    identical across processes and after deserialization."""
+    Two messages hash equal iff they're the same conversational message, so a re-stated
+    prefix message dedups to one node. The dedup key for sharing a prefix across
+    turns/branches; salt-free so it is identical across processes and after deserialization."""
     parts: list[str] = [type(message).__name__, message.content or ""]
     if isinstance(message, AssistantMessage):
         for tc in message.tool_calls or []:
@@ -138,6 +140,7 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
             token_ids=[*gen_prompt, *comp_ids],
             mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
             logprobs=list(tokens.completion_logprobs) if tokens else [],
+            finish_reason=response.finish_reason,
         )
     )
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.
@@ -164,47 +167,13 @@ def leaves(trace: "Trace") -> list[int]:
     return [i for i in range(len(trace.nodes)) if i not in has_child]
 
 
-def _path_to_turns(trace: "Trace", path: list[int]) -> list["Turn"]:
-    """Reconstruct the per-turn `Turn` view along a node path: each assistant node closes a
-    turn whose `prompt` is the messages seen so far and whose `tokens` are the running concat
-    (prompt = ancestors' token_ids + this turn's generation scaffold; completion = sampled)."""
-    from verifiers.v1.trace import Turn
-
-    turns: list[Turn] = []
-    prompt_msgs: list[Message] = []
-    prompt_ids: list[int] = []
-    for nid in path:
-        node = trace.nodes[nid]
-        if isinstance(node.message, AssistantMessage):
-            comp_ids = [t for t, s in zip(node.token_ids, node.mask) if s]
-            scaffold = [t for t, s in zip(node.token_ids, node.mask) if not s]
-            full_prompt = [*prompt_ids, *scaffold]
-            tokens = TurnTokens(
-                prompt_ids=full_prompt,
-                completion_ids=comp_ids,
-                completion_logprobs=list(node.logprobs),
-            )
-            response = Response(
-                id="",
-                created=0,
-                model="",
-                message=node.message,
-                finish_reason=None,
-                usage=Usage(prompt_tokens=len(full_prompt), completion_tokens=len(comp_ids)),
-                tokens=tokens,
-            )
-            turns.append(Turn(prompt=list(prompt_msgs), response=response, tokens=tokens))
-        prompt_msgs.append(node.message)
-        prompt_ids = [*prompt_ids, *node.token_ids]
-    return turns
-
-
 def branches_from_nodes(trace: "Trace") -> list["Branch"]:
-    """Each leaf's root→leaf path becomes a `Branch` (turns = the assistant nodes on it)."""
+    """Each leaf's root→leaf node path becomes a `Branch` — one per leaf (one branch when
+    linear, several under compaction or subagents)."""
     from verifiers.v1.trace import Branch
 
     return [
-        Branch(index=i, turns=_path_to_turns(trace, _path_to(trace, leaf)))
+        Branch(index=i, nodes=[trace.nodes[nid] for nid in _path_to(trace, leaf)])
         for i, leaf in enumerate(leaves(trace))
     ]
 
@@ -235,20 +204,3 @@ def branch_token_sequences(
                     lps.append(0.0)
         out.append((ids, mask, lps))
     return out
-
-
-def trajectory_from_nodes(trace: "Trace") -> list["Turn"]:
-    """Every turn in arrival order (one per assistant node, by node id) — the flat view that
-    `Trace.trajectory` exposed."""
-    turns_by_assistant: dict[int, "Turn"] = {}
-    assistant_ids = [
-        nid
-        for nid, n in enumerate(trace.nodes)
-        if isinstance(n.message, AssistantMessage)
-    ]
-    for leaf in leaves(trace):
-        path = _path_to(trace, leaf)
-        path_assistants = [n for n in path if isinstance(trace.nodes[n].message, AssistantMessage)]
-        for turn, aid in zip(_path_to_turns(trace, path), path_assistants):
-            turns_by_assistant[aid] = turn
-    return [turns_by_assistant[aid] for aid in assistant_ids if aid in turns_by_assistant]

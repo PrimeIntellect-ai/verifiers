@@ -81,15 +81,10 @@ def _tokens(trace: Trace) -> str:
     final context the model saw. (Output can exceed the final context — reasoning tokens
     count toward completions but aren't re-fed — so it's not derived by subtraction.)"""
     branches = trace.branches
-    if not branches or not branches[0].turns:
+    if not branches or not branches[0].nodes:
         return ""
-    usages = [
-        t.response.usage for t in branches[0].turns if t.response.usage is not None
-    ]
-    if not usages:
-        return ""
-    output = sum(u.completion_tokens for u in usages)
-    return f"{format_count(usages[-1].prompt_tokens)}/{format_count(output)} tokens"
+    b = branches[0]
+    return f"{format_count(b.prompt_len)}/{format_count(b.completion_len)} tokens"
 
 
 def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
