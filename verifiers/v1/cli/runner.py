@@ -11,7 +11,6 @@ from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.env import Environment
-from verifiers.v1.interception import InterceptionPool
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -54,9 +53,8 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
         append_trace(out, trace)
 
     # A shared interception pool comes up once here too, so N concurrent rollouts share
-    # ~N/multiplex servers + tunnels rather than one each (grown on demand). Always on
-    # (multiplex >= 1; 1 = a server/tunnel per rollout).
-    pool = InterceptionPool(env.harness.config.runtime, config.multiplex)
+    # ~N/multiplex servers + tunnels rather than one each (grown on demand).
+    pool = env.interception_pool()
     # Shared tool servers (if any) come up once here and their URLs flow into every
     # rollout; non-shared ones start per rollout inside the episodes.
     async with (

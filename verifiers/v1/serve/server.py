@@ -159,9 +159,7 @@ class EnvServer:
         # tunnels aren't re-created per call. v1 only; the legacy v0 bridge runs its own
         # rollouts (overriding the run hooks), so it needs no pool.
         self.pool = (
-            InterceptionPool(self.env.harness.config.runtime, self.env.config.multiplex)
-            if isinstance(self.env, Environment)
-            else None
+            self.env.interception_pool() if isinstance(self.env, Environment) else None
         )
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)

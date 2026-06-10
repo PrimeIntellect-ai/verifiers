@@ -22,7 +22,7 @@ from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.ids import EnvId
-from verifiers.v1.interception import RolloutLimits
+from verifiers.v1.interception import InterceptionPool, RolloutLimits
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
@@ -222,6 +222,13 @@ class Environment:
             for _ in range(n)
         ]
         return Episode(rollouts, self.taskset, retry=self.config.retry)
+
+    def interception_pool(self) -> InterceptionPool:
+        """The shared interception pool for this env's rollouts — one server (+ tunnel
+        behind a remote runtime) per `multiplex` rollouts, grown on demand. Built here,
+        where the harness runtime and `multiplex` live; the caller (eval runner / env
+        server) enters it for the run and tears it down. Pass it to `Episode.run`."""
+        return InterceptionPool(self.harness.config.runtime, self.config.multiplex)
 
     @contextlib.asynccontextmanager
     async def shared_tools(self, tasks: list[Task]):
