@@ -51,6 +51,32 @@ Common knobs have short aliases:
 | `-o`  | `--output-dir`     | where to write results                     |
 |       | `--no-rich`        | disable the live dashboard (on by default) |
 
+## Tasksets & harnesses
+
+Tasksets (data + scoring) and harnesses (the rollout driver) are plugins selected by `id`,
+and live in two places:
+
+- **`packages/`** — shipped, installed by default. Commonly-used **harnesses** (`default`,
+  `rlm`) and **taskset integrations** that wrap a whole benchmark family (`harbor` — the
+  agentic-benchmark registry; `textarena` — TextArena games). Use them by id.
+- **`examples/`** — small reference implementations to copy when **authoring your own**
+  taskset or harness. Each shows one pattern:
+
+| example | pattern it shows |
+| --- | --- |
+| `reverse-text-v1` | the minimal single-turn taskset |
+| `gsm8k-v1`, `aime24-v1`, `math-env-v1` | single-turn + in-runtime scoring (a `@reward` uv script) |
+| `code-golf-v1` | group rewards (`@group_reward` over a task's N rollouts) |
+| `alphabet-sort-v1` | a multi-turn, stateful task |
+| `glossary-v1` | a custom **colocated** tool server |
+| `wikispeedia-v1` | a tool server in its **own per-rollout** runtime |
+| `wiki-search-v1` | a **shared** tool server (built once for the eval) + an LLM judge |
+| `deepwiki-v1` | an **existing remote** tool server, by URL |
+| `hello-rlm-v1` | an agentic env driven by the `rlm` harness |
+| `wordle-v1` | configuring the vendored `textarena` integration (user simulator) |
+| `terminal-bench-2-v1` | configuring the vendored `harbor` integration |
+| `compact` (harness) | context compaction → branching trajectories |
+
 ## Patterns
 
 ### Swappable harness
@@ -171,20 +197,13 @@ server the orchestrator (or any `EnvClient`) drives by task index.
 
 The v0 framework is untouched — the classic `verifiers` API and its entrypoints (`vf-eval`,
 ...) keep working exactly as before; v1 lives alongside it as `verifiers.v1`. On top of
-that, a v0 `verifiers.load_environment` env runs through the v1 CLI too, via the legacy
-bridge — its rollouts mapped to v1 `Trace`s. Set `--id` (instead of a `taskset`):
+that, a v0 `verifiers.load_environment` env runs through the v1 CLIs too, via the legacy
+bridge — its rollouts mapped to v1 `Trace`s. Set `--id` (instead of a `taskset`) on either
+`eval` or `serve`:
 
 ```bash
-uv run eval --id reverse-text -n 2                       # a local v0 env
+uv run eval --id reverse-text -n 2     # eval a v0 env
+uv run serve --id reverse-text         # serve a v0 env over ZMQ (the orchestrator can't tell v0 from v1)
 uv run eval --id reverse-text --args.num_train_examples 50 \
-  --extra-env-kwargs.max-total-completion-tokens 256       # construction + post-load kwargs
+  --extra-env-kwargs.max-total-completion-tokens 256   # construction + post-load kwargs
 ```
-
-## Open TODOs
-
-- **Iterable taskset** — let `load_tasks` stream tasks instead of returning a `list`
-  (system-prompt diversity, privileged information, replay buffers, ...).
-- **Multi-agent** — more than one agent per rollout.
-- **More agent adapters** — other CLI agents (Claude Code, Codex, ...).
-- **Trainer layer (credit assignment)** — an `Episode` (a task's scored rollouts) is the
-  largest unit the *evaluator* knows about.
