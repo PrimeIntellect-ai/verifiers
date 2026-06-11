@@ -10,7 +10,7 @@ from typing import TypeVar
 
 from pydantic import ConfigDict
 
-from verifiers.v1.types import StrictBaseModel
+from verifiers.v1.types import Messages, StrictBaseModel
 
 
 class Resources(StrictBaseModel):
@@ -42,8 +42,10 @@ class Task(StrictBaseModel):
     """Optional human-readable task name/label (for display/filtering)."""
     description: str | None = None
     """Optional human-readable task description."""
-    instruction: str
-    """The user message shown to the model (the task's question/framing)."""
+    instruction: str | Messages
+    """The user message shown to the model (the task's question/framing). Usually a `str`; a
+    `Messages` list seeds a full initial conversation (e.g. a user message carrying images) and
+    is only accepted by harnesses that set `SUPPORTS_MESSAGE_INSTRUCTION`."""
     system_prompt: str | None = None
     """Optional system prompt. Harnesses that set `APPENDS_SYSTEM_PROMPT` emit it as a real
     system message (or their own mechanism); others prepend it to `instruction` (with a

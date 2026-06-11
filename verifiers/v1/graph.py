@@ -21,7 +21,8 @@ import hashlib
 import json
 from typing import TYPE_CHECKING
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
+from renderers.base import MultiModalData
 
 from verifiers.v1.types import (
     AssistantMessage,
@@ -59,6 +60,21 @@ class MessageNode(StrictBaseModel):
     `mask`; empty for input messages."""
     finish_reason: FinishReason = None
     """The response's finish reason (assistant nodes only) — kept for truncation detection."""
+    multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
+    """The renderer items for the images this message's content introduces. Transient
+    (excluded from wire/disk); `Branch.multi_modal_data` concatenates them along the path."""
+
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+
+def _content_str(content) -> str:
+    """A message body as a stable string for hashing — plain text as-is, a content-part list as
+    canonical JSON (so two messages carrying the same text/images hash equal), None as ""."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    return json.dumps([p.model_dump() for p in content], sort_keys=True)
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -74,7 +90,7 @@ def message_hash(message: Message) -> str:
     tool call id. Two messages hash equal iff they're the same conversational message, so a
     re-stated prefix message dedups to one node. The dedup key for sharing a prefix across
     turns/branches; salt-free so it is identical across processes and after deserialization."""
-    parts: list[str] = [type(message).__name__, message.content or ""]
+    parts: list[str] = [type(message).__name__, _content_str(message.content)]
     if isinstance(message, AssistantMessage):
         if message.reasoning_content is not None:
             parts += ["reasoning_content", message.reasoning_content]
@@ -93,6 +109,53 @@ def _head_index(trace: "Trace") -> dict[tuple[int | None, str], int]:
             for nid, node in enumerate(trace.nodes)
         }
     return trace._head_index
+
+
+def _part_modality(part) -> str | None:
+    """The multimodal modality a content part introduces (currently only images), or None."""
+    return "image" if getattr(part, "type", None) == "image_url" else None
+
+
+def _attribute_mm(
+    trace: "Trace",
+    path: "list[tuple[int, Message]]",
+    num_reused: int,
+    mmd: MultiModalData | None,
+) -> None:
+    """Attach each new image's renderer item to the node whose message introduced it. The
+    renderer emits items per modality in prompt order (message order, then content-part order),
+    so we walk the path advancing a per-modality cursor over every message's media but write
+    only the nodes created this turn — `path[:num_reused]` is the reused prefix, already
+    attributed when first created. Item order is all training needs; placeholder offsets aren't
+    carried."""
+    if mmd is None or mmd.is_empty():
+        return
+    cursors: dict[str, int] = {}
+    for pos, (node_id, msg) in enumerate(path):
+        content = msg.content
+        if not isinstance(content, list):
+            continue
+        node_items: dict[str, list] = {}
+        node_hashes: dict[str, list] = {}
+        for part in content:
+            modality = _part_modality(part)
+            if modality is None:
+                continue
+            k = cursors.get(modality, 0)
+            cursors[modality] = k + 1
+            # Reused prefix: advance the cursor over its media, don't re-attribute.
+            if pos < num_reused:
+                continue
+            items = mmd.mm_items.get(modality) or []
+            hashes = mmd.mm_hashes.get(modality) or []
+            if k < len(items):
+                node_items.setdefault(modality, []).append(items[k])
+            if k < len(hashes):
+                node_hashes.setdefault(modality, []).append(hashes[k])
+        if node_items:
+            trace.nodes[node_id].multi_modal_data = MultiModalData(
+                mm_items=node_items, mm_hashes=node_hashes
+            )
 
 
 def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> None:
@@ -117,12 +180,18 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
     path_len = 0  # cumulative stored token length of the reused prefix
     # cursor: in prompt_ids, the end of the previous *new* message's tokens
     cursor: int | None = None
+    # (node_id, message) per prompt message (reused prefix first, then new), for multimodal
+    # attribution; `num_reused` marks where the newly-created nodes begin.
+    path: list[tuple[int, Message]] = []
+    num_reused = 0
     for i, msg in enumerate(prompt):
         key = (parent, message_hash(msg))
         existing = idx.get(key)
         if cursor is None and existing is not None:  # still extending the shared prefix
             parent = existing
             path_len += len(trace.nodes[existing].token_ids)
+            path.append((existing, msg))
+            num_reused += 1
             continue
         start = path_len if cursor is None else cursor
         span = spans[i] if spans and i < len(spans) else None
@@ -138,6 +207,7 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
         )
         parent = len(trace.nodes) - 1
         idx[key] = parent
+        path.append((parent, msg))
         cursor = end
 
     # Assistant node: trailing scaffold (the generation prompt) + the sampled completion.
@@ -156,6 +226,9 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
     )
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.
     idx[(parent, message_hash(response.message))] = len(trace.nodes) - 1
+
+    # Attribute this turn's images onto the input nodes that introduced them (by content part).
+    _attribute_mm(trace, path, num_reused, tokens.multi_modal_data if tokens else None)
 
 
 # --- walking the graph (views) ---------------------------------------------------------
