@@ -25,14 +25,6 @@ from verifiers.v1.runtimes.base import ProgramResult, Runtime
 # allow-by-default model is subprocess-only.
 
 
-def _killpg(proc: asyncio.subprocess.Process, sig: int) -> None:
-    """Signal the process's whole group, reaping any children it spawned (the `sh -> uv ->
-    python` tree a uv script becomes). The process is started with its own session
-    (`start_new_session`), so its pgid is its pid. Best-effort — the group may already be gone."""
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(os.getpgid(proc.pid), sig)
-
-
 class SubprocessConfig(BaseConfig):
     type: Literal["subprocess"] = "subprocess"
 
@@ -70,10 +62,12 @@ class SubprocessRuntime(Runtime):
         finally:
             # If the await didn't finish, the caller cancelled it (e.g. the rollout's
             # scoring_timeout / harness_timeout fired): communicate() leaves the process
-            # running, so SIGKILL the whole group — otherwise a hung child (a wedged uv/sympy
-            # verify) outlives the rollout and leaks CPU. A no-op once it has exited on its own.
+            # running, so SIGKILL its whole group (start_new_session => pgid == pid) — otherwise
+            # a hung child (a wedged uv/sympy verify) outlives the rollout and leaks CPU. A
+            # no-op once it has exited on its own.
             if proc.returncode is None:
-                _killpg(proc, signal.SIGKILL)
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         return ProgramResult(
             exit_code=proc.returncode or 0,
             stdout=stdout.decode(errors="replace"),
@@ -111,7 +105,10 @@ class SubprocessRuntime(Runtime):
 
     def cleanup(self) -> None:
         for proc in self._background:
-            _killpg(proc, signal.SIGTERM)
+            # Kill the whole group (start_new_session => pgid == pid), not just proc.pid, so a
+            # background server's children (sh -> uv -> python) are reaped too.
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         self._background = []
         if self.workdir is not None:
             shutil.rmtree(self.workdir, ignore_errors=True)
