@@ -62,7 +62,7 @@ dependencies = [
     # v1 (verifiers.v1) runtime — also used by the v0 -> vf.Trace bridge (verifiers.v1.legacy)
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers>=0.1.8.dev28",
+    "renderers>=0.1.8.dev40",
 ]
 
 [dependency-groups]
@@ -109,7 +109,7 @@ browser = [
     "python-dotenv>=1.0.0",
 ]
 renderers = [
-    "renderers>=0.1.8.dev28",
+    "renderers>=0.1.8.dev40",
 ]
 rl = [
     "torch>=2.8.0,<2.9.0",
