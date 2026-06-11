@@ -1,6 +1,5 @@
 """Terminal-Lego taskset built on the composable Harbor task layout."""
 
-import json
 import logging
 import math
 import os
@@ -16,10 +15,8 @@ from verifiers.envs.experimental.composable.tasksets.harbor.harbor import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_HF_REPO_ID = "PrimeIntellect/Terminal-Lego-15k"
-DEFAULT_IMAGE_REF_FIELD = "full_image_path"
 DEFAULT_WORKDIR = "/app"
 DATASET_PATH_ENV = "TERMINAL_LEGO_DATASET_PATH"
-IMAGE_MAP_PATH_ENV = "TERMINAL_LEGO_IMAGE_MAP_PATH"
 
 
 class TerminalLegoTaskSet(HarborDatasetTaskSet):
@@ -35,17 +32,12 @@ class TerminalLegoTaskSet(HarborDatasetTaskSet):
         self,
         dataset_path: str | Path | None = None,
         task_names: list[str] | None = None,
-        image_map_path: str | Path | None = None,
         hf_repo_id: str = DEFAULT_HF_REPO_ID,
         hf_revision: str | None = None,
-        image_ref_field: str = DEFAULT_IMAGE_REF_FIELD,
         filter_fn: str | None = None,
     ):
         self.hf_repo_id = hf_repo_id
         self.hf_revision = hf_revision
-        self.image_ref_field = image_ref_field
-        self.image_map_path = _resolve_image_map_path(image_map_path)
-        self.image_map = _load_image_map(self.image_map_path, image_ref_field)
 
         resolved_dataset_path = _resolve_dataset_path(
             dataset_path=dataset_path,
@@ -75,15 +67,6 @@ class TerminalLegoTaskSet(HarborDatasetTaskSet):
                 continue
             seen.add(task_name)
 
-            image_row = self.image_map.get(task_name)
-            if image_row is None:
-                if requested:
-                    raise ValueError(
-                        f"Terminal-Lego task {task_name!r} has no pushed image "
-                        f"in {self.image_map_path}"
-                    )
-                continue
-
             missing = _missing_required_files(task_dir)
             if missing:
                 if requested:
@@ -101,11 +84,21 @@ class TerminalLegoTaskSet(HarborDatasetTaskSet):
 
             entry = _load_task_entry(task_dir, len(tasks))
             config = entry["info"]["config"]
-            image_ref = image_row[self.image_ref_field]
+            image_ref = config.get("environment", {}).get("docker_image")
+            if not image_ref:
+                if requested:
+                    raise ValueError(
+                        f"Terminal-Lego task {task_name!r} is missing "
+                        "[environment].docker_image in task.toml"
+                    )
+                logger.warning(
+                    "Skipping %s: missing [environment].docker_image in task.toml",
+                    task_name,
+                )
+                continue
             entry["info"].update(
                 {
                     "docker_image": image_ref,
-                    "terminal_lego_image": image_row,
                     "terminal_lego_source": {
                         "hf_repo_id": self.hf_repo_id,
                         "hf_revision": self.hf_revision,
@@ -126,14 +119,13 @@ class TerminalLegoTaskSet(HarborDatasetTaskSet):
         if not tasks:
             raise ValueError(
                 "No runnable Terminal-Lego tasks found. Check dataset_path and "
-                f"image_map_path={self.image_map_path}."
+                "that task.toml files contain [environment].docker_image."
             )
 
         logger.info(
-            "Loaded %s Terminal-Lego tasks from %s with image map %s",
+            "Loaded %s Terminal-Lego tasks from %s",
             len(tasks),
             self.dataset_path,
-            self.image_map_path,
         )
         return Dataset.from_list(tasks)
 
@@ -177,19 +169,15 @@ class TerminalLegoTaskSet(HarborDatasetTaskSet):
 def make_terminal_lego_taskset(
     dataset_path: str | Path | None = None,
     task_names: list[str] | str | None = None,
-    image_map_path: str | Path | None = None,
     hf_repo_id: str = DEFAULT_HF_REPO_ID,
     hf_revision: str | None = None,
-    image_ref_field: str = DEFAULT_IMAGE_REF_FIELD,
     filter_fn: str | None = None,
 ) -> TerminalLegoTaskSet:
     return TerminalLegoTaskSet(
         dataset_path=dataset_path,
         task_names=_normalize_task_names(task_names),
-        image_map_path=image_map_path,
         hf_repo_id=hf_repo_id,
         hf_revision=hf_revision,
-        image_ref_field=image_ref_field,
         filter_fn=filter_fn,
     )
 
@@ -243,46 +231,6 @@ def _resolve_dataset_path(
     if not path.exists():
         raise FileNotFoundError(f"Terminal-Lego dataset path not found: {path}")
     return path
-
-
-def _resolve_image_map_path(image_map_path: str | Path | None) -> Path:
-    if image_map_path is not None:
-        path = Path(image_map_path).expanduser()
-    elif env_path := os.environ.get(IMAGE_MAP_PATH_ENV):
-        path = Path(env_path).expanduser()
-    else:
-        raise ValueError(
-            "Terminal-Lego requires a pushed image map. Pass image_map_path or "
-            f"set {IMAGE_MAP_PATH_ENV}."
-        )
-    if not path.exists():
-        raise FileNotFoundError(f"Terminal-Lego image map not found: {path}")
-    return path
-
-
-def _load_image_map(path: Path, image_ref_field: str) -> dict[str, dict[str, str]]:
-    image_map: dict[str, dict[str, str]] = {}
-    with path.open() as f:
-        for line_number, line in enumerate(f, start=1):
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSON in {path}:{line_number}") from exc
-            task_id = row.get("item_id") or row.get("task_id")
-            image_ref = row.get(image_ref_field)
-            if not task_id or not image_ref:
-                raise ValueError(
-                    f"Image map row {path}:{line_number} must contain item_id "
-                    f"and {image_ref_field}"
-                )
-            image_map[str(task_id)] = {
-                str(key): str(value) for key, value in row.items()
-            }
-    if not image_map:
-        raise ValueError(f"Terminal-Lego image map is empty: {path}")
-    return image_map
 
 
 def _missing_required_files(task_dir: Path) -> list[str]:
