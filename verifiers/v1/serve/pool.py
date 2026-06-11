@@ -231,27 +231,37 @@ def serve_env(
     spawned worker — without it a spawned server inherits no handlers and its INFO logs
     (rollout start/done, the pool line) are silently dropped."""
     # SIGTERM -> KeyboardInterrupt so a killed server runs its teardown (pool: kill the
-    # workers; single: close clients).
+    # workers; single: close clients). It can fire inside a C call (e.g. zmq getsockopt),
+    # raising in the loop machinery rather than at an `await`, so it escapes the server's
+    # own run loop; `asyncio.run` still tears the server down via task cancellation, and we
+    # swallow the re-raised KeyboardInterrupt here for a clean exit (no spurious traceback).
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     if log_setup is not None:
         log_setup()
-    if num_workers > 1:
-        if (
-            "config" in server_kwargs
-        ):  # dict-ify for the workers (config_data is picklable)
-            server_kwargs = {"config_data": env_config_data(server_kwargs["config"])}
-        pool = EnvServerPool(server_kwargs, num_workers, address, legacy, log_setup)
-        if address_queue is not None:
-            address_queue.put(pool.address)
-        asyncio.run(pool.run())
-    else:
-        from verifiers.v1.legacy import LegacyEnvServer
+    try:
+        if num_workers > 1:
+            if (
+                "config" in server_kwargs
+            ):  # dict-ify for the workers (config_data is picklable)
+                server_kwargs = {
+                    "config_data": env_config_data(server_kwargs["config"])
+                }
+            pool = EnvServerPool(server_kwargs, num_workers, address, legacy, log_setup)
+            if address_queue is not None:
+                address_queue.put(pool.address)
+            asyncio.run(pool.run())
+        else:
+            from verifiers.v1.legacy import LegacyEnvServer
 
-        if (
-            "config_data" in server_kwargs
-        ):  # rebuild the env config for an in-process server
-            server_kwargs = {
-                "config": EnvConfig.model_validate(server_kwargs["config_data"])
-            }
-        cls = LegacyEnvServer if legacy else EnvServer
-        cls.run_server(address=address, address_queue=address_queue, **server_kwargs)
+            if (
+                "config_data" in server_kwargs
+            ):  # rebuild the env config for an in-process server
+                server_kwargs = {
+                    "config": EnvConfig.model_validate(server_kwargs["config_data"])
+                }
+            cls = LegacyEnvServer if legacy else EnvServer
+            cls.run_server(
+                address=address, address_queue=address_queue, **server_kwargs
+            )
+    except KeyboardInterrupt:
+        pass
