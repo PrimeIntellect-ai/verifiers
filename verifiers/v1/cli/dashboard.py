@@ -79,12 +79,19 @@ def _tokens(trace: Trace) -> str:
     """Input/output tokens for the main branch: output is every assistant (completion)
     token generated across the branch's turns; input is the last turn's prompt — the full
     final context the model saw. (Output can exceed the final context — reasoning tokens
-    count toward completions but aren't re-fed — so it's not derived by subtraction.)"""
+    count toward completions but aren't re-fed — so it's not derived by subtraction.)
+
+    Prefers the token-id counts; falls back to provider-reported usage when the endpoint
+    returns no token ids (e.g. plain OpenAI completions), so the counts aren't shown as 0/0."""
     branches = trace.branches
     if not branches or not branches[0].nodes:
         return ""
     b = branches[0]
-    return f"{format_count(b.prompt_len)}/{format_count(b.completion_len)} tokens"
+    prompt = b.prompt_len or b.num_prompt_tokens
+    completion = b.completion_len or b.num_completion_tokens
+    if not prompt and not completion:
+        return ""
+    return f"{format_count(prompt)}/{format_count(completion)} tokens"
 
 
 def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
