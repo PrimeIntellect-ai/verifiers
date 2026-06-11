@@ -11,7 +11,6 @@ from pathlib import Path
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.clients.openai import message_to_wire
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -37,9 +36,6 @@ class DefaultHarnessConfig(HarnessConfig):
 class DefaultHarness(Harness[DefaultHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True  # program.py emits it as a real system message
     SUPPORTS_USER_SIM = True  # the chat loop drives a task's user simulator
-    SUPPORTS_MESSAGE_INSTRUCTION = (
-        True  # seeds the chat loop from a Messages instruction (e.g. images)
-    )
 
     async def launch(
         self,
@@ -68,13 +64,4 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             env["MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
-        # A Messages instruction (e.g. an image-bearing prompt) seeds the chat loop directly;
-        # a plain string is the single first user message.
-        if isinstance(instruction, str):
-            args = [instruction]
-        else:
-            env["INITIAL_MESSAGES"] = json.dumps(
-                [message_to_wire(m) for m in instruction]
-            )
-            args = [""]
-        return await runtime.run_uv_script(PROGRAM_SOURCE, args=args, env=env)
+        return await runtime.run_uv_script(PROGRAM_SOURCE, args=[instruction], env=env)

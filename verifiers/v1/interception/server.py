@@ -38,7 +38,6 @@ from verifiers.v1.types import (
     ToolCall,
     ToolMessage,
     UserMessage,
-    content_to_parts,
 )
 
 if TYPE_CHECKING:
@@ -47,24 +46,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _content_text(content) -> str:
-    """Flatten content to text — for roles that never carry images (assistant, tool)."""
-    if isinstance(content, list):
-        return "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return content or ""
-
-
 def parse_message(raw: dict) -> Message:
-    """An OpenAI request message dict -> a typed Message. User/system bodies keep their
-    image parts (multimodal ingress); assistant/tool bodies flatten to text."""
+    """An OpenAI request message dict -> a typed Message."""
     role = raw.get("role")
     content = raw.get("content")
+    if isinstance(content, list):  # multimodal parts -> joined text
+        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    content = content or ""
     if role == "system":
-        return SystemMessage(content=content_to_parts(content))
+        return SystemMessage(content=content)
     if role == "tool":
-        return ToolMessage(
-            tool_call_id=raw.get("tool_call_id", ""), content=_content_text(content)
-        )
+        return ToolMessage(tool_call_id=raw.get("tool_call_id", ""), content=content)
     if role == "assistant":
         calls = [
             ToolCall(
@@ -74,10 +66,8 @@ def parse_message(raw: dict) -> Message:
             )
             for c in (raw.get("tool_calls") or [])
         ] or None
-        return AssistantMessage(
-            content=_content_text(content) or None, tool_calls=calls
-        )
-    return UserMessage(content=content_to_parts(content))
+        return AssistantMessage(content=raw.get("content"), tool_calls=calls)
+    return UserMessage(content=content)
 
 
 def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
