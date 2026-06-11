@@ -71,11 +71,8 @@ def main(argv: list[str] | None = None) -> None:
     log_file = str(output_path(config) / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
     if rich:
-        # The Live dashboard owns the terminal: keep logs off it entirely (regardless of
-        # verbosity) while still writing them to the file. `lastResort = None` drops any
-        # third-party stdlib records that bypass loguru, so nothing flashes over the UI.
         setup_logging(level, log_file=log_file, console=False)
-        logging.lastResort = None
+        logging.lastResort = None  # drop stray stdlib records (else they print over the UI)
     else:
         setup_logging(level, log_file=log_file, console=True)
     # Make SIGTERM behave like Ctrl-C (SIGINT) so a killed/timed-out eval still runs each
