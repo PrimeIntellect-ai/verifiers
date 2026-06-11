@@ -16,6 +16,7 @@ import sys
 from io import BytesIO
 
 from PIL import Image
+from pydantic import Field
 
 import verifiers.v1 as vf
 
@@ -49,6 +50,11 @@ Red=A, Green=B, Blue=C, Yellow=D, Purple=E, Cyan=F, Orange=G, White=H, Black=I
 Example: Turn 1 shows Red, Blue. Turn 2 shows Green, Yellow. The full codeword is "ACBD" (all 4 letters in order).
 
 After each turn, output your accumulated codeword so far. Output ONLY the letters with NO spaces."""
+
+# Turns per episode; the codeword has `images_per_turn * MAX_TURNS` letters.
+MAX_TURNS = 3
+# RNG seed for reproducible color sequences.
+SEED = 42
 
 
 def color_data_url(color: str, size: int = 100) -> str:
@@ -93,12 +99,8 @@ def extract_codeword(text: str) -> str:
 class ColorCodewordConfig(vf.TasksetConfig):
     num_examples: int = 1000
     """Number of synthetic episodes to generate."""
-    images_per_turn: int = 2
+    images_per_turn: int = Field(2, ge=1)
     """Colored squares shown per turn."""
-    max_turns: int = 3
-    """Turns per episode; the codeword has `images_per_turn * max_turns` letters."""
-    seed: int = 42
-    """RNG seed for reproducible color sequences."""
 
 
 class ColorCodewordTask(vf.Task):
@@ -111,22 +113,19 @@ class ColorCodewordTask(vf.Task):
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
     def load_tasks(self) -> list[ColorCodewordTask]:
         c = self.config
-        assert c.images_per_turn >= 1 and c.max_turns >= 1, (
-            "need images_per_turn >= 1 and max_turns >= 1"
-        )
-        rng = random.Random(c.seed)
+        rng = random.Random(SEED)
         colors = list(COLOR_MAP)
-        length = c.images_per_turn * c.max_turns
+        length = c.images_per_turn * MAX_TURNS
         tasks: list[ColorCodewordTask] = []
         for idx in range(c.num_examples):
             sequence = [rng.choice(colors) for _ in range(length)]
             answer = "".join(COLOR_MAP[col] for col in sequence)
             colors_per_turn = [
                 sequence[t * c.images_per_turn : (t + 1) * c.images_per_turn]
-                for t in range(c.max_turns)
+                for t in range(MAX_TURNS)
             ]
             turn0 = colors_per_turn[0]
-            text = turn_text(0, len(turn0), c.max_turns, len(turn0))
+            text = turn_text(0, len(turn0), MAX_TURNS, len(turn0))
             parts = [
                 vf.ImageUrlContentPart(
                     image_url=vf.ImageUrlSource(url=color_data_url(col))
@@ -139,7 +138,7 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
                     instruction=[vf.UserMessage(content=parts)],
                     system_prompt=SYSTEM_PROMPT,
                     answer=answer,
-                    info={"colors_per_turn": colors_per_turn, "max_turns": c.max_turns},
+                    info={"colors_per_turn": colors_per_turn, "max_turns": MAX_TURNS},
                 )
             )
         return tasks

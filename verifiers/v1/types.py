@@ -153,17 +153,13 @@ class TurnTokens(StrictBaseModel):
     completion_ids: list[int] = Field(default_factory=list)
     completion_logprobs: list[float] = Field(default_factory=list)
 
-    # Transient build carrier: per-prompt-message token spans into `prompt_ids`, produced by
-    # the renderer (`RenderedTokens.message_token_spans()`) and consumed by the graph builder
-    # to attribute tokens per message, then dropped — never persisted (it would reintroduce
-    # the quadratic data the graph removes).
+    # Transient carrier (excluded): per-message token spans into `prompt_ids` from the renderer,
+    # consumed by `graph.add_turn` to attribute tokens per message, then dropped.
     message_spans: list[tuple[int, int] | None] | None = Field(
         default=None, exclude=True
     )
-    # Transient build carrier (like `message_spans`): the renderer's multimodal sidecar —
-    # image pixel tensors + placeholder offsets (global in `prompt_ids`). Consumed by
-    # `graph.add_turn` (attributed per node, offsets stored node-local) then dropped — never
-    # persisted (the tensors are large; training rebuilds mm_kwargs from the nodes in-process).
+    # Transient carrier (excluded): the renderer's multimodal sidecar (image tensors + offsets),
+    # attributed per node by `graph.add_turn`, then dropped — never persisted.
     multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
 
 

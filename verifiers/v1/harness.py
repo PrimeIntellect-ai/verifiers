@@ -53,18 +53,14 @@ class Harness(ABC, Generic[ConfigT]):
     """Generic over its config type, so `self.config` is fully typed in subclasses
     (e.g. `RLMHarness(Harness[RLMHarnessConfig])`)."""
 
-    APPENDS_SYSTEM_PROMPT: ClassVar[bool] = (
-        False  # emit task.system_prompt as a system message (else fold into the user message)
-    )
-    SUPPORTS_TASK_TOOLS: ClassVar[bool] = (
-        True  # expose a task's MCP tool servers to the model; set False for harnesses without an MCP client
-    )
-    SUPPORTS_USER_SIM: ClassVar[bool] = (
-        False  # drive a task's user simulator (multi-turn user injection); opt in per harness
-    )
-    SUPPORTS_MESSAGE_INSTRUCTION: ClassVar[bool] = (
-        False  # accept a Messages-list task.instruction (e.g. an image-bearing prompt); opt in per harness
-    )
+    APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
+    """Emit task.system_prompt as a system message (else fold into the user message)."""
+    SUPPORTS_TASK_TOOLS: ClassVar[bool] = True
+    """Expose a task's MCP tool servers to the model; set False for harnesses without an MCP client."""
+    SUPPORTS_USER_SIM: ClassVar[bool] = False
+    """Drive a task's user simulator (multi-turn user injection); opt in per harness."""
+    SUPPORTS_MESSAGE_INSTRUCTION: ClassVar[bool] = False
+    """Accept a Messages-list task.instruction (e.g. an image-bearing prompt); opt in per harness."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config

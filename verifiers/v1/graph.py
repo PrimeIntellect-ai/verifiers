@@ -61,10 +61,8 @@ class MessageNode(StrictBaseModel):
     finish_reason: FinishReason = None
     """The response's finish reason (assistant nodes only) — kept for truncation detection."""
     multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
-    """Transient (excluded from wire/disk): the images this message introduces — pixel tensors
-    with placeholder offsets stored NODE-LOCAL (relative to this node's `token_ids`). Set by
-    `add_turn`; `Branch.multi_modal_data` merges + rebases to branch-global; consumed in-process
-    to build training `mm_kwargs` / `mm_token_type_ids`."""
+    """Images this message introduces, offsets stored node-local. Transient (excluded from
+    wire/disk); `Branch.multi_modal_data` merges + rebases them to branch-global."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
