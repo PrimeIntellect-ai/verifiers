@@ -59,9 +59,15 @@ class Task(StrictBaseModel):
     the runtime config's `workdir` (where the runtime supports one). For a containerized
     task whose image puts the working tree at a non-default path (e.g. a SWE row's
     `/workspace/<repo>`)."""
+    setup_timeout: float | None = None
+    """Optional per-task setup timeout (seconds). Merges with the eval's
+    `setup_timeout`: cli/toml > this > default (no limit)."""
     harness_timeout: float | None = None
     """Optional per-task harness timeout (seconds). Merges with the eval's
     `harness_timeout`: cli/toml > this > default (no limit)."""
+    finalize_timeout: float | None = None
+    """Optional per-task finalize timeout (seconds). Merges with the eval's
+    `finalize_timeout`: cli/toml > this > default (no limit)."""
     scoring_timeout: float | None = None
     """Optional per-task scoring timeout (seconds). Merges with the eval's
     `scoring_timeout`: cli/toml > this > default (no limit)."""

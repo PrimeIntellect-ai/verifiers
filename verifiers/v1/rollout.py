@@ -2,10 +2,11 @@
 
 A Rollout owns a single trajectory end-to-end, including its runtime's lifecycle. It
 makes and starts the runtime, gets an interception endpoint (a slot on the shared pool if
-one is given, else a per-rollout server exposed via its own runtime), runs the harness
-against it under `harness_timeout`, runs the per-rollout `@reward`/`@metric` signals under
-`scoring_timeout` while the runtime is still live, then tears the runtime down in a
-`finally`. Cross-rollout `@group_reward`s run afterwards (in the Episode) over the traces
+one is given, else a per-rollout server exposed via its own runtime), then drives the
+staged lifecycle while the runtime is live — the taskset's `setup`, the harness, the
+taskset's `finalize`, and the per-rollout `@reward`/`@metric` scoring — each under its own
+stage timeout (`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`),
+then tears the runtime down in a `finally`. Cross-rollout `@group_reward`s run afterwards (in the Episode) over the traces
 alone — they never need a live runtime — so a runtime is never kept up past its own
 rollout. The runtime ref is set the instant it's created, so it's always tearable-down
 even if `run()` crashes.
@@ -44,10 +45,11 @@ logger = logging.getLogger(__name__)
 
 class Phase(StrEnum):
     """A rollout's lifecycle phase (for display): provisioning, the harness driving,
-    per-rollout + group scoring, then fully scored."""
+    post-run finalize, per-rollout + group scoring, then fully scored."""
 
     SETUP = "setup"
     RUNNING = "running"
+    FINALIZE = "finalize"
     SCORING = "scoring"
     DONE = "done"
 
@@ -60,7 +62,9 @@ class Rollout:
         harness: Harness,
         ctx: RolloutContext,
         runtime_config: RuntimeConfig,
+        setup_timeout: float | None = None,
         harness_timeout: float | None = None,
+        finalize_timeout: float | None = None,
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
         model_retries: int = 0,
@@ -71,7 +75,9 @@ class Rollout:
         self.harness = harness
         self.ctx = ctx
         self.runtime_config = runtime_config
+        self.setup_timeout = setup_timeout
         self.harness_timeout = harness_timeout
+        self.finalize_timeout = finalize_timeout
         self.scoring_timeout = scoring_timeout
         self.limits = limits or RolloutLimits()
         self.model_retries = model_retries
@@ -138,7 +144,14 @@ class Rollout:
         try:
             session = RolloutSession(ctx, trace, stops, self.limits)
             await runtime.start()
-            await self.taskset.setup(self.task, runtime)
+            try:
+                await asyncio.wait_for(
+                    self.taskset.setup(self.task, runtime), self.setup_timeout
+                )
+            except TimeoutError:
+                raise ProgramError(
+                    f"setup exceeded setup_timeout of {self.setup_timeout}s"
+                ) from None
             async with self._serve_interception(interception, runtime, session) as (
                 endpoint,
                 secret,
@@ -177,11 +190,25 @@ class Rollout:
                         # harness produced (like max_turns), don't error out. `is_truncated`
                         # is computed from this stop condition.
                         trace.stop("harness_timeout")
-            trace.timing.generation.end = time.time()
+            now = time.time()
+            trace.timing.generation.end = now
+            trace.timing.finalize.start = now
+            self.phase = Phase.FINALIZE  # post-run taskset work, before scoring
+            try:
+                await asyncio.wait_for(
+                    self.taskset.finalize(self.task, trace, runtime),
+                    self.finalize_timeout,
+                )
+            except TimeoutError:
+                raise ProgramError(
+                    f"finalize exceeded finalize_timeout of {self.finalize_timeout}s"
+                ) from None
+            now = time.time()
+            trace.timing.finalize.end = now
             self.phase = (
                 Phase.SCORING
             )  # per-rollout scoring; the Episode marks DONE after group scoring
-            trace.timing.scoring.start = time.time()
+            trace.timing.scoring.start = now
             try:
                 # Per-rollout scoring: taskset + harness, concurrently, both with the live
                 # runtime. (Cross-rollout `@group_reward`s run later, in the Episode.)
@@ -206,6 +233,8 @@ class Rollout:
                 trace.timing.setup.end = now
             if trace.timing.generation.start and not trace.timing.generation.end:
                 trace.timing.generation.end = now  # error mid-run: close generation
+            if trace.timing.finalize.start and not trace.timing.finalize.end:
+                trace.timing.finalize.end = now  # error mid-finalize: close finalize
             # Tear down here — group rewards (later) need only the trace, not a live
             # runtime. `runtime` is always set: make_runtime() ran before the `try`.
             try:

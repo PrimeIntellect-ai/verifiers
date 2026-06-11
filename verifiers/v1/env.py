@@ -36,10 +36,16 @@ from verifiers.v1.tools import serve_shared
 
 
 class TimeoutConfig(BaseConfig):
-    """Framework-enforced wall-clock timeouts, in seconds (None = no limit)."""
+    """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no
+    limit). Each bounds one stage of `Rollout.run`: the taskset's `setup` hook, the harness
+    run, the taskset's `finalize` hook, then scoring."""
 
+    setup: float | None = None
+    """Max wall-clock for the taskset's `setup` hook (per-task runtime prep)."""
     rollout: float | None = None
     """Max wall-clock for the rollout (the harness run)."""
+    finalize: float | None = None
+    """Max wall-clock for the taskset's `finalize` hook (post-run work, before scoring)."""
     scoring: float | None = None
     """Max wall-clock for scoring — verify + rewards/metrics."""
 
@@ -197,7 +203,9 @@ class Environment:
                 "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
                 "use --harness.runtime.type docker or prime."
             )
+        self.setup_timeout = config.timeout.setup
         self.harness_timeout = config.timeout.rollout
+        self.finalize_timeout = config.timeout.finalize
         self.scoring_timeout = config.timeout.scoring
         self.limits = RolloutLimits(
             max_turns=config.max_turns,
@@ -260,10 +268,18 @@ class Environment:
                 f"need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
             )
         runtime_config = self.runtime_for(task)
+        setup_timeout = (
+            self.setup_timeout if self.setup_timeout is not None else task.setup_timeout
+        )
         harness_timeout = (
             self.harness_timeout
             if self.harness_timeout is not None
             else task.harness_timeout
+        )
+        finalize_timeout = (
+            self.finalize_timeout
+            if self.finalize_timeout is not None
+            else task.finalize_timeout
         )
         scoring_timeout = (
             self.scoring_timeout
@@ -278,7 +294,9 @@ class Environment:
                 harness=self.harness,
                 ctx=ctx,
                 runtime_config=runtime_config,
+                setup_timeout=setup_timeout,
                 harness_timeout=harness_timeout,
+                finalize_timeout=finalize_timeout,
                 scoring_timeout=scoring_timeout,
                 limits=self.limits,
                 model_retries=retries.model.max_retries,
