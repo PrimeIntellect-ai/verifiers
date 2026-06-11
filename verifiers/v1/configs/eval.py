@@ -55,3 +55,7 @@ class EvalConfig(EnvServerConfig):
     )
     """Where to write the run (config.toml + results.jsonl). None = a fresh per-run dir
     under `outputs/<env>--<model>--<harness>/<uuid>` (so runs never overwrite each other)."""
+    resume: Path | None = Field(None, exclude=True)
+    """Set by `--resume <dir>`: re-run only the rollouts a previous run left missing or
+    errored, appending to that run's own results. The run's saved config is loaded verbatim,
+    so `--resume` takes no other arguments. Excluded from the saved config."""
