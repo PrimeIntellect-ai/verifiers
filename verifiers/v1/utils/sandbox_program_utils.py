@@ -482,7 +482,15 @@ def tool_call_name(tool_call):
 def tool_call_arguments(tool_call):
     raw = tool_call.get("arguments") or "{}"
     if isinstance(raw, str):
-        return json.loads(raw)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            snippet = raw if len(raw) <= 500 else f"{raw[:500]}..."
+            raise ValueError(
+                "Invalid JSON tool-call arguments: "
+                f"{exc.msg} at line {exc.lineno} column {exc.colno}; "
+                f"raw={snippet!r}"
+            ) from exc
     return raw
 
 
@@ -570,10 +578,10 @@ async def run_base(task, state):
             set_stop_condition(state, "no_tools")
             break
         for tool_call in tool_calls:
-            name = tool_call_name(tool_call)
-            arguments = tool_call_arguments(tool_call)
-            endpoint = tool_endpoints.get(name)
             try:
+                name = tool_call_name(tool_call)
+                arguments = tool_call_arguments(tool_call)
+                endpoint = tool_endpoints.get(name)
                 if endpoint:
                     result = await call_sandbox_local_tool(
                         state, name, arguments, endpoint

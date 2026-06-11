@@ -1038,6 +1038,105 @@ async def test_base_program_returns_tool_errors_to_model() -> None:
 
 
 @pytest.mark.asyncio
+async def test_base_program_returns_malformed_tool_arguments_to_model() -> None:
+    client = FakeModelClient(
+        [
+            fake_response(
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="failing_tool",
+                        arguments='{"section_id": "bad"}}',
+                    )
+                ]
+            ),
+            fake_response(content="Recovered."),
+        ]
+    )
+    harness = make_harness(
+        client=cast(Client, client),
+        model="fake",
+        toolsets=[vf.Toolset(tools=[failing_tool])],
+        max_turns=2,
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    tool_message = state["completion"][1]
+    assert tool_message["role"] == "tool"
+    assert tool_message["tool_call_id"] == "call_1"
+    assert "Invalid JSON tool-call arguments" in tool_message["content"]
+    assert "raw=" in tool_message["content"]
+    assert state["completion"][-1]["content"] == "Recovered."
+    assert state["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_runner_source_returns_malformed_tool_arguments_to_model(
+    tmp_path: Path,
+) -> None:
+    source = runner_source().rsplit("asyncio.run(main())", 1)[0]
+    namespace: dict[str, Any] = {}
+    exec(source, namespace)
+    runner_config = tmp_path / "vf_runner_config.json"
+    runner_config.write_text(json.dumps({"max_turns": 2}), encoding="utf-8")
+    tool_defs = tmp_path / "vf_tool_defs_by_protocol.json"
+    tool_defs.write_text(json.dumps({"vf": []}), encoding="utf-8")
+    namespace["RUNNER_CONFIG_PATH"] = str(runner_config)
+    namespace["TOOL_DEFS_BY_PROTOCOL_PATH"] = str(tool_defs)
+    model_calls = 0
+    requested_paths: list[str] = []
+
+    async def fake_vf_post(
+        state: dict[str, object],
+        path: str,
+        payload: dict[str, object],
+        timeout: object = None,
+    ) -> dict[str, object]:
+        _ = state, payload, timeout
+        nonlocal model_calls
+        requested_paths.append(path)
+        if path == "stop":
+            return {"done": False}
+        if path == "model":
+            model_calls += 1
+            if model_calls == 1:
+                return {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "name": "failing_tool",
+                                "arguments": '{"section_id": "bad"}}',
+                            }
+                        ],
+                    }
+                }
+            return {"message": {"role": "assistant", "content": "Recovered."}}
+        if path == "user":
+            return {"messages": []}
+        raise AssertionError(f"unexpected path: {path}")
+
+    namespace["vf_post"] = fake_vf_post
+    state: dict[str, object] = {
+        "prompt": [{"role": "user", "content": "hi"}],
+    }
+
+    result = await namespace["run_base"]({}, state)
+
+    completion = cast(list[dict[str, object]], result["completion"])
+    tool_message = completion[1]
+    assert tool_message["role"] == "tool"
+    assert tool_message["tool_call_id"] == "call_1"
+    assert "Invalid JSON tool-call arguments" in cast(str, tool_message["content"])
+    assert "raw=" in cast(str, tool_message["content"])
+    assert completion[-1]["content"] == "Recovered."
+    assert not any(path.startswith("tools/") for path in requested_paths)
+
+
+@pytest.mark.asyncio
 async def test_base_program_stops_after_tool_calls_state_stop() -> None:
     client = FakeModelClient(
         [
