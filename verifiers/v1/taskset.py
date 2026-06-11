@@ -17,7 +17,7 @@ For a heterogeneous taskset (different verification per task), have a single
 
 import asyncio
 from collections.abc import Mapping
-from typing import Generic, TypeVar
+from typing import ClassVar, Generic, TypeVar
 
 from pydantic import model_validator
 from pydantic_config import BaseConfig
@@ -89,6 +89,11 @@ ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
 class Taskset(Generic[TaskT, ConfigT]):
     """Generic over its task and config types, so `self.config` and `load_tasks`
     are fully typed. Subclass: implement `load_tasks`, add @reward/@metric."""
+
+    NEEDS_CONTAINER: ClassVar[bool] = False
+    """Whether this taskset only runs in a container runtime (docker/prime). When True the
+    Environment refuses the subprocess runtime — for tasksets whose work only makes sense
+    inside a per-task image (e.g. a SWE repo sandbox)."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import verifiers.v1 as vf
 
+DATASET = "AweAI-Team/Scale-SWE"
 REGISTRY = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
 
 # The testbed conda env (with the project + pytest installed) and quiet, non-interactive
@@ -91,16 +92,13 @@ class ScaleSWETask(vf.Task):
     pass_to_pass: list[str] = []
 
 
-class ScaleSWEConfig(vf.TasksetConfig):
-    dataset_name: str = "AweAI-Team/Scale-SWE"
-    split: str = "train"
+class ScaleSWETaskset(vf.Taskset[ScaleSWETask, vf.TasksetConfig]):
+    NEEDS_CONTAINER = True
 
-
-class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
     def load_tasks(self) -> list[ScaleSWETask]:
         from datasets import load_dataset
 
-        rows = load_dataset(self.config.dataset_name, split=self.config.split)
+        rows = load_dataset(DATASET, split="train")
         return [
             ScaleSWETask(
                 idx=i,
@@ -121,8 +119,6 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
         ]
 
     async def setup(self, task: ScaleSWETask, runtime: vf.Runtime) -> None:
-        if not task.pre_commands:
-            raise vf.ProgramError(f"scaleswe row {task.name!r} has no pre_commands")
         result = await runtime.run(["sh", "-c", task.pre_commands], ENV)
         if result.exit_code != 0:
             raise vf.ProgramError(
@@ -159,5 +155,5 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
                 return
 
 
-def load_taskset(config: ScaleSWEConfig) -> ScaleSWETaskset:
+def load_taskset(config: vf.TasksetConfig) -> ScaleSWETaskset:
     return ScaleSWETaskset(config)

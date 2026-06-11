@@ -142,6 +142,14 @@ class Environment:
                 f"{self.taskset.config.id!r} exposes tool servers (MCP). Run it with a harness "
                 f"that supports task tools (e.g. --harness.id default), or use a taskset without tools."
             )
+        if self.taskset.NEEDS_CONTAINER and isinstance(
+            self.harness.config.runtime, SubprocessConfig
+        ):
+            raise ValueError(
+                f"Taskset {self.taskset.config.id!r} needs a container runtime "
+                "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
+                "use --harness.runtime.type docker or prime."
+            )
         self.harness_timeout = config.timeout.rollout
         self.scoring_timeout = config.timeout.scoring
         self.limits = RolloutLimits(
