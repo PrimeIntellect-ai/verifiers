@@ -5,7 +5,7 @@ reset it to the base commit on a clean `scaleswe` branch, F2P/P2P pytest ids, an
 optional `f2p_patch` / `f2p_script` carrying the failing test. `setup` runs the row's
 `pre_commands` in the live runtime before the agent (the runtime's workdir is the row's
 repo). The `solved` reward restores the test files to base (the agent only fixes the
-source), applies the f2p test, then runs the merged F2P+P2P ids through `_scorer.py` —
+source), applies the f2p test, then runs the merged F2P+P2P ids through `score.py` —
 which scores 1.0 iff every expected id passed. A v1 port of the v0 ComposableEnv
 `ScaleSWETaskSet`.
 """
@@ -55,7 +55,7 @@ done
 
 PATCH = "/tmp/scaleswe_f2p.patch"
 SCORER = "/tmp/scaleswe_scorer.py"
-SCORER_SRC = (Path(__file__).parent / "_scorer.py").read_bytes()
+SCORER_SRC = (Path(__file__).parent / "score.py").read_bytes()
 
 
 def _image(image_url: str) -> str:
