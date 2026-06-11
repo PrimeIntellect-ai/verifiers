@@ -1,10 +1,14 @@
 """Terminal-Lego taskset built on the composable Harbor task layout."""
 
+import contextlib
 import logging
 import math
 import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from verifiers.envs.experimental.composable import SandboxSpec
 from verifiers.envs.experimental.composable.tasksets.harbor.harbor import (
@@ -24,8 +28,9 @@ class TerminalLegoTaskSet(HarborDatasetTaskSet):
 
     Terminal-Lego ships as a Hugging Face dataset repository whose rows are
     Terminal-Bench/Harbor-style task directories. The Docker build context is
-    each task's ``environment/`` directory; this taskset expects those contexts
-    to have already been pushed and supplies the corresponding image per row.
+    each task's ``environment/`` directory; this taskset expects a local Git
+    LFS/Xet checkout, cloned automatically if needed, and prebuilt per-task
+    image refs in ``task.toml``.
     """
 
     def __init__(
@@ -41,7 +46,6 @@ class TerminalLegoTaskSet(HarborDatasetTaskSet):
 
         resolved_dataset_path = _resolve_dataset_path(
             dataset_path=dataset_path,
-            task_names=task_names,
             hf_repo_id=hf_repo_id,
             hf_revision=hf_revision,
         )
@@ -195,7 +199,6 @@ def _normalize_task_names(task_names: list[str] | str | None) -> list[str] | Non
 def _resolve_dataset_path(
     *,
     dataset_path: str | Path | None,
-    task_names: list[str] | None,
     hf_repo_id: str,
     hf_revision: str | None,
 ) -> Path:
@@ -204,33 +207,149 @@ def _resolve_dataset_path(
     elif env_path := os.environ.get(DATASET_PATH_ENV):
         path = Path(env_path).expanduser()
     else:
-        try:
-            from huggingface_hub import snapshot_download
-        except ImportError as exc:
-            raise RuntimeError(
-                "huggingface_hub is required to download Terminal-Lego. "
-                f"Set {DATASET_PATH_ENV} or pass dataset_path to use a local clone."
-            ) from exc
-
-        allow_patterns = None
-        if task_names:
-            allow_patterns = [
-                pattern
-                for task_name in task_names
-                for pattern in (f"{task_name}/**", f"{task_name}")
-            ]
-        path = Path(
-            snapshot_download(
-                repo_id=hf_repo_id,
-                repo_type="dataset",
-                revision=hf_revision,
-                allow_patterns=allow_patterns,
-            )
-        )
+        path = _ensure_git_checkout(hf_repo_id=hf_repo_id, hf_revision=hf_revision)
 
     if not path.exists():
         raise FileNotFoundError(f"Terminal-Lego dataset path not found: {path}")
     return path
+
+
+def _ensure_git_checkout(*, hf_repo_id: str, hf_revision: str | None) -> Path:
+    cache_root = _git_cache_root()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    checkout_dir = cache_root / _cache_key(hf_repo_id, hf_revision)
+    lock_path = cache_root / f"{checkout_dir.name}.lock"
+
+    with _file_lock(lock_path):
+        if checkout_dir.exists():
+            if not (checkout_dir / ".git").exists():
+                raise RuntimeError(
+                    f"Terminal-Lego cache path exists but is not a Git checkout: "
+                    f"{checkout_dir}"
+                )
+            return checkout_dir
+
+        tmp_dir = cache_root / f".{checkout_dir.name}.tmp-{os.getpid()}"
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        token = _hf_token()
+        repo_url = f"https://huggingface.co/datasets/{hf_repo_id}"
+        try:
+            _run_git(["git", "clone", repo_url, str(tmp_dir)], token=token)
+            if hf_revision:
+                _checkout_revision(tmp_dir, hf_revision, token=token)
+            _run_git(["git", "-C", str(tmp_dir), "lfs", "version"], token=token)
+            _run_git(["git", "-C", str(tmp_dir), "lfs", "pull"], token=token)
+            tmp_dir.rename(checkout_dir)
+        except Exception:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+
+    return checkout_dir
+
+
+def _checkout_revision(checkout_dir: Path, revision: str, token: str | None) -> None:
+    verify = _run_git(
+        [
+            "git",
+            "-C",
+            str(checkout_dir),
+            "rev-parse",
+            "--verify",
+            f"{revision}^{{commit}}",
+        ],
+        check=False,
+        token=token,
+    )
+    if verify.returncode != 0:
+        _run_git(
+            ["git", "-C", str(checkout_dir), "fetch", "origin", revision], token=token
+        )
+    _run_git(
+        ["git", "-C", str(checkout_dir), "checkout", "--detach", revision], token=token
+    )
+
+
+def _git_cache_root() -> Path:
+    return Path(os.environ.get("HF_HOME", "~/.cache/huggingface")).expanduser() / (
+        "terminal-lego-git"
+    )
+
+
+def _cache_key(hf_repo_id: str, hf_revision: str | None) -> str:
+    revision = hf_revision or "default"
+    raw = f"{hf_repo_id}--{revision}"
+    return "".join(ch if ch.isalnum() or ch in ("-", ".", "_") else "-" for ch in raw)
+
+
+@contextlib.contextmanager
+def _file_lock(lock_path: Path) -> Iterator[None]:
+    import fcntl
+
+    with lock_path.open("w") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _hf_token() -> str | None:
+    for env_name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN"):
+        token = os.environ.get(env_name)
+        if token:
+            return token
+    try:
+        from huggingface_hub import get_token
+    except ImportError:
+        return None
+    return get_token()
+
+
+def _run_git(
+    args: list[str],
+    *,
+    token: str | None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    if shutil.which("git") is None:
+        raise RuntimeError("Terminal-Lego dataset cloning requires git on PATH")
+
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    askpass_path: str | None = None
+    if token:
+        fd, askpass_path = tempfile.mkstemp(prefix="hf-git-askpass-")
+        with os.fdopen(fd, "w") as askpass:
+            askpass.write(
+                "#!/bin/sh\n"
+                'case "$1" in\n'
+                '*Username*) printf "%s\\n" "hf_user" ;;\n'
+                '*) printf "%s\\n" "$HF_GIT_TOKEN" ;;\n'
+                "esac\n"
+            )
+        os.chmod(askpass_path, 0o700)
+        env["GIT_ASKPASS"] = askpass_path
+        env["HF_GIT_TOKEN"] = token
+
+    try:
+        result = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            env=env,
+            text=True,
+        )
+        if check and result.returncode != 0:
+            command = " ".join(args)
+            raise RuntimeError(
+                f"Git command failed with exit code {result.returncode}: {command}\n"
+                f"stdout:\n{result.stdout[-2000:]}\n"
+                f"stderr:\n{result.stderr[-2000:]}"
+            )
+        return result
+    finally:
+        if askpass_path:
+            Path(askpass_path).unlink(missing_ok=True)
 
 
 def _missing_required_files(task_dir: Path) -> list[str]:

@@ -125,7 +125,7 @@ class HarborTaskSet(SandboxTaskSet):
             tar_path = Path(tmp_file.name)
 
         try:
-            with tarfile.open(tar_path, "w:gz") as tar:
+            with tarfile.open(tar_path, "w:gz", dereference=True) as tar:
                 instruction_path = task_dir / "instruction.md"
                 if instruction_path.exists():
                     tar.add(instruction_path, arcname="task/instruction.md")
@@ -158,18 +158,18 @@ class HarborTaskSet(SandboxTaskSet):
             tar_path = Path(tmp_file.name)
 
         try:
-            with tarfile.open(tar_path, "w:gz") as tar:
+            with tarfile.open(tar_path, "w:gz", dereference=True) as tar:
                 if tests_dir.exists():
                     for item in tests_dir.iterdir():
                         tar.add(item, arcname=f"tests/{item.name}")
 
             remote_tar = "/tmp/harbor_tests.tar.gz"
             await sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
-            reserved_paths = ["/tests", "/logs", "/logs/verifier"]
+            reserved_paths = ["/tests", "/logs/verifier"]
             if not allow_existing_oracle:
                 reserved_paths.append("/oracle")
             reserved_paths_str = " ".join(shlex.quote(path) for path in reserved_paths)
-            await sandbox_client.execute_command(
+            setup_result = await sandbox_client.execute_command(
                 sandbox_id,
                 "for path in "
                 f"{reserved_paths_str}; do "
@@ -178,22 +178,49 @@ class HarborTaskSet(SandboxTaskSet):
                 "exit 1; "
                 "fi; "
                 "done; "
+                "if [ -e /logs ] && { [ ! -d /logs ] || [ -L /logs ]; }; then "
+                'echo "reserved verifier path already exists: /logs" >&2; '
+                "exit 1; "
+                "fi; "
                 f"mkdir -p /tests /logs/verifier && tar -xzf {remote_tar} -C / && rm {remote_tar}",
                 timeout=900,
             )
+            if setup_result.exit_code != 0:
+                output = (setup_result.stdout or "") + (setup_result.stderr or "")
+                state["harbor_test_setup"] = {
+                    "returncode": setup_result.exit_code,
+                    "stdout": setup_result.stdout or "",
+                    "stderr": setup_result.stderr or "",
+                }
+                raise RuntimeError(
+                    f"test setup failed: exit_code={setup_result.exit_code} "
+                    f"output={output[:500]}"
+                )
         finally:
             tar_path.unlink(missing_ok=True)
 
-        await sandbox_client.run_background_job(
+        test_result = await sandbox_client.run_background_job(
             sandbox_id, "bash test.sh", timeout=test_timeout, working_dir="/tests"
         )
+        state["harbor_tests"] = {
+            "returncode": test_result.exit_code,
+            "stdout": test_result.stdout or "",
+            "stderr": test_result.stderr or "",
+        }
 
         reward_result = await sandbox_client.execute_command(
             sandbox_id,
             "if [ -s /logs/verifier/reward.txt ]; then cat /logs/verifier/reward.txt; "
             "elif [ -s /logs/verifier/reward.json ]; then cat /logs/verifier/reward.json; fi",
         )
-        return (reward_result.stdout or "").strip()
+        reward_output = (reward_result.stdout or "").strip()
+        if not reward_output and test_result.exit_code != 0:
+            output = (test_result.stdout or "") + (test_result.stderr or "")
+            raise RuntimeError(
+                f"test.sh failed before writing reward: "
+                f"exit_code={test_result.exit_code} output={output[:500]}"
+            )
+        return reward_output
 
     def _calculate_reward(self, test_output: str, info: dict) -> float:
         """Parse reward string: try float, fallback JSON with .reward key."""
@@ -223,7 +250,7 @@ class HarborTaskSet(SandboxTaskSet):
             tar_path = Path(tmp_file.name)
 
         try:
-            with tarfile.open(tar_path, "w:gz") as tar:
+            with tarfile.open(tar_path, "w:gz", dereference=True) as tar:
                 for item in solution_dir.iterdir():
                     tar.add(item, arcname=f"oracle/{item.name}")
 
