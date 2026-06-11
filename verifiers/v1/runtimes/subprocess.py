@@ -55,8 +55,19 @@ class SubprocessRuntime(Runtime):
             cwd=self.workdir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,  # own process group, so we can reap the whole tree
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await proc.communicate()
+        finally:
+            # If the await didn't finish, the caller cancelled it (e.g. the rollout's
+            # scoring_timeout / harness_timeout fired): communicate() leaves the process
+            # running, so SIGKILL its whole group (start_new_session => pgid == pid) — otherwise
+            # a hung child (a wedged uv/sympy verify) outlives the rollout and leaks CPU. A
+            # no-op once it has exited on its own.
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         return ProgramResult(
             exit_code=proc.returncode or 0,
             stdout=stdout.decode(errors="replace"),
@@ -78,6 +89,7 @@ class SubprocessRuntime(Runtime):
                 cwd=self.workdir,
                 stdout=f,
                 stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,  # own process group, so cleanup() reaps the whole tree
             )
         self._background.append(
             proc
@@ -93,8 +105,10 @@ class SubprocessRuntime(Runtime):
 
     def cleanup(self) -> None:
         for proc in self._background:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                os.kill(proc.pid, signal.SIGTERM)
+            # Kill the whole group (start_new_session => pgid == pid), not just proc.pid, so a
+            # background server's children (sh -> uv -> python) are reaped too.
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         self._background = []
         if self.workdir is not None:
             shutil.rmtree(self.workdir, ignore_errors=True)
