@@ -69,3 +69,103 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     traces = [trace for episode_traces in results for trace in episode_traces]
     await client.close()
     return traces
+
+
+async def run_eval_server(config: EvalConfig) -> list[Trace]:
+    """Eval through the env-server worker pool (`--num-workers > 0`). Spawns the pool
+    (works for v1 and the v0 bridge), then drives rollouts by task idx over an
+    `EnvClient` — the same path prime-rl trains through, so it exercises the
+    router + workers end-to-end. Output matches `run_eval` (config.toml + results.jsonl)."""
+    import multiprocessing as mp
+
+    from verifiers.v1.serve import EnvClient, env_config_data, serve_env
+
+    legacy = config.is_legacy
+    server_kwargs = (
+        {
+            "env_id": config.id,
+            "env_args": config.args,
+            "extra_env_kwargs": config.extra_env_kwargs,
+        }
+        if legacy
+        else {"config_data": env_config_data(config)}  # picklable across the spawn
+    )
+    mpctx = mp.get_context("spawn")
+    address_queue: mp.Queue = mpctx.Queue()
+    proc = mpctx.Process(
+        target=serve_env,
+        kwargs=dict(
+            num_workers=config.num_workers,
+            legacy=legacy,
+            address="tcp://127.0.0.1:0",
+            address_queue=address_queue,
+            **server_kwargs,
+        ),
+        daemon=False,
+    )
+    proc.start()
+    try:
+        address = await asyncio.to_thread(address_queue.get, timeout=600)
+        client = EnvClient(address=address)
+        await client.wait_for_server_startup(timeout=600)
+        info = await client.info()
+        idxs = list(range(info.num_tasks))
+        if config.shuffle:
+            random.Random(_SHUFFLE_SEED).shuffle(idxs)
+        if config.num_tasks is not None:
+            idxs = idxs[: config.num_tasks]
+        logger.info(
+            "running %dx%d rollouts via a %d-worker pool on %s",
+            len(idxs),
+            config.num_rollouts,
+            config.num_workers,
+            config.model,
+        )
+        out = output_path(config)
+        save_config(config, out)
+        logger.info("results: %s", out)
+        semaphore = (
+            asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+        )
+
+        async def run_group_unit(idx: int) -> list[Trace]:
+            async with semaphore or contextlib.nullcontext():
+                traces = await client.run_group(
+                    task_idx=idx,
+                    n=config.num_rollouts,
+                    client=config.client,
+                    model=config.model,
+                    sampling=config.sampling,
+                )
+            for trace in traces:
+                append_trace(out, trace)
+            return traces
+
+        async def run_rollout_unit(idx: int) -> list[Trace]:
+            async with semaphore or contextlib.nullcontext():
+                trace = await client.run_rollout(
+                    task_idx=idx,
+                    client=config.client,
+                    model=config.model,
+                    sampling=config.sampling,
+                )
+            append_trace(out, trace)
+            return [trace]
+
+        # A group-scored taskset must run each task's rollouts together (cross-rollout
+        # scoring) → one `run_group` request per task (one worker). Otherwise the rollouts
+        # are independent → one `run_rollout` request each, which the broker round-robins
+        # (least-busy) across workers — mirrors the prime-rl dispatcher.
+        if info.requires_group_scoring:
+            units = [run_group_unit(i) for i in idxs]
+        else:
+            units = [
+                run_rollout_unit(i) for i in idxs for _ in range(config.num_rollouts)
+            ]
+        results = await asyncio.gather(*units)
+        await client.close()
+        return [trace for unit_traces in results for trace in unit_traces]
+    finally:
+        proc.terminate()
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(proc.join, 10)
