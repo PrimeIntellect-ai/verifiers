@@ -11,7 +11,7 @@ This is the one place raw provider dicts cross into our typed `Response`.
 from openai import AsyncOpenAI, OpenAIError
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.errors import ModelError
+from verifiers.v1.errors import ModelError, OverlongPromptError
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -26,6 +26,28 @@ from verifiers.v1.types import (
 )
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
+
+_CONTEXT_LENGTH_PHRASES = (
+    "this model's maximum context length is",
+    "is longer than the model's context length",
+    "is longer than the maximum model length",
+    "exceeds the model's context length",
+    "exceed the configured limit",
+    "exceeds the configured limit",
+    "exceeded model",
+    "prompt_too_long",
+    "context length",
+    "maximum model length",
+)
+
+
+def model_error(e: OpenAIError) -> ModelError:
+    """Map a provider client error to our error type, distinguishing an overlong prompt
+    from any other model-call failure (auth, rate limit, a genuine bad request, ...)."""
+    text = str(e).casefold()
+    if any(phrase in text for phrase in _CONTEXT_LENGTH_PHRASES):
+        return OverlongPromptError(str(e))
+    return ModelError(str(e))
 
 
 def _content_to_wire(content):
@@ -142,7 +164,7 @@ class OpenAIChatCompletionsClient(Client):
         try:
             completion = await self.openai.chat.completions.create(**body)
         except OpenAIError as e:
-            raise ModelError(str(e)) from e
+            raise model_error(e) from e
         return response_from_wire(completion)
 
     async def close(self) -> None:

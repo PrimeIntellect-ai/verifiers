@@ -11,13 +11,14 @@ needs a running vLLM engine.
 import json
 
 from openai import AsyncOpenAI, OpenAIError
+from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.openai import FINISH_REASONS
+from verifiers.v1.clients.openai import FINISH_REASONS, model_error
 from verifiers.v1.clients.openai import message_to_wire as chat_message_to_wire
 from verifiers.v1.clients.openai import tool_to_wire
-from verifiers.v1.errors import ModelError
+from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -135,8 +136,10 @@ class RendererClient(Client):
                 tools=[tool_to_wire(t) for t in tools] if tools else None,
                 sampling_params=sampling_args.model_dump(exclude_none=True),
             )
+        except RendererOverlongPromptError as e:
+            raise OverlongPromptError(str(e)) from e
         except OpenAIError as e:
-            raise ModelError(str(e)) from e
+            raise model_error(e) from e
         return response_from_generate(result, model)
 
     async def close(self) -> None:
