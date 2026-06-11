@@ -34,8 +34,6 @@ from verifiers.utils.serve_utils import make_ipc_address
 OnResponseCallback = Callable[[bytes, bytes, bytes], Awaitable[None]]
 
 
-@dataclass
-
 def _default_worker_heartbeat_timeout() -> float:
     """Worker heartbeat timeout: VF_WORKER_HEARTBEAT_TIMEOUT env var, else 90s.
 
@@ -51,6 +49,8 @@ def _default_worker_heartbeat_timeout() -> float:
         return 90.0
     return value if value > 0 else 90.0
 
+
+@dataclass
 class ActiveRequestInfo:
     client_id: bytes
     request_id: bytes
