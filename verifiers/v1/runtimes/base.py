@@ -79,14 +79,25 @@ def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
 _creation_limiters: dict[float, AsyncLimiter] = {}
 
 
-def creation_limiter(per_sec: float) -> AsyncLimiter | None:
-    """A shared limiter pacing resource creation to `per_sec` per second (<= 0 disables)."""
-    if per_sec <= 0:
+def creation_limiter(per_sec: float | None) -> AsyncLimiter | None:
+    """A shared limiter pacing resource creation to `per_sec` per second (None/<= 0 disables).
+
+    Per-process: under the multi-worker env-server pool each worker gets its own bucket, so
+    the effective global rate is `per_sec` times the worker count."""
+    if not per_sec or per_sec <= 0:
         return None
     limiter = _creation_limiters.get(per_sec)
     if limiter is None:
         limiter = _creation_limiters[per_sec] = AsyncLimiter(1, 1 / per_sec)
     return limiter
+
+
+# The prime_tunnel service caps tunnel starts at 512/min per API token — a property of the
+# tunnel service, shared by every runtime that opens a prime_tunnel (prime AND modal), so
+# it's a fixed process-wide limiter rather than a per-runtime config knob. (Same per-process
+# caveat as above: N env-server workers => N x this rate globally.)
+_TUNNELS_PER_MIN = 512
+_TUNNEL_LIMITER = creation_limiter(_TUNNELS_PER_MIN / 60)
 
 
 # `stop()` frees a runtime's external resource on the normal path (the rollout's `finally`).

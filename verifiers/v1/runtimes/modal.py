@@ -15,7 +15,12 @@ from typing import Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import ProgramResult, Runtime, creation_limiter
+from verifiers.v1.runtimes.base import (
+    _TUNNEL_LIMITER,
+    ProgramResult,
+    Runtime,
+    creation_limiter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +53,10 @@ class ModalConfig(BaseConfig):
     disk: float = 5.0
     """Disk in GB. Modal sandboxes have no disk knob, so this is accepted (so a task can
     declare it without a warning) but not enforced."""
-    sandbox_creates_per_sec: float = 5.0
-    """Pace sandbox creation to stay under Modal's per-workspace creation rate limit (5/s on
-    a new account; raising it needs Modal support). A process-wide limiter shared across all
-    concurrent rollouts; <= 0 disables it."""
+    creates_per_sec: float | None = 5.0
+    """Pace sandbox creation to this many per second, shared across concurrent rollouts in
+    this process (None/<= 0 disables it) — Modal's per-workspace limit is 5/s. Per-process,
+    so under the multi-worker env-server pool the global rate is this times the worker count."""
 
 
 class ModalRuntime(Runtime):
@@ -78,9 +83,10 @@ class ModalRuntime(Runtime):
         )
         try:
             app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
-            async with creation_limiter(
-                self.config.sandbox_creates_per_sec
-            ) or contextlib.nullcontext():
+            async with (
+                creation_limiter(self.config.creates_per_sec)
+                or contextlib.nullcontext()
+            ):
                 self._sandbox = await modal.Sandbox.create.aio(
                     "sleep",
                     "infinity",  # keep-alive entrypoint; the harness runs via `exec`
@@ -113,7 +119,10 @@ class ModalRuntime(Runtime):
 
         tunnel = Tunnel(local_port=port)
         try:
-            url = str(await tunnel.start()).rstrip("/")
+            async with (
+                _TUNNEL_LIMITER
+            ):  # shared prime_tunnel rate (512/min, runtime-independent)
+                url = str(await tunnel.start()).rstrip("/")
         except Exception as e:
             raise ProgramError(f"modal tunnel failed (host port {port}): {e}") from e
         self._tunnels.append(tunnel)
