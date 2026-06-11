@@ -62,7 +62,9 @@ CLEAN_PYCACHE = (
 # Stash the ground-truth tests away from the agent (tar to /opt, then remove the dir).
 HIDE_TESTS = f"tar -C / -czf {STAGED_TESTS} r2e_tests && rm -rf /r2e_tests"
 # Restore them into the workdir for scoring (run_tests.sh expects /testbed/r2e_tests).
-RESTORE_TESTS = f"rm -rf {REPO_PATH}/r2e_tests && tar -C {REPO_PATH} -xzf {STAGED_TESTS}"
+RESTORE_TESTS = (
+    f"rm -rf {REPO_PATH}/r2e_tests && tar -C {REPO_PATH} -xzf {STAGED_TESTS}"
+)
 
 
 def parse_log_pytest(log: str | None) -> dict[str, str]:
@@ -110,7 +112,11 @@ def extract_gold_patch(parsed_commit_content: str, only_python: bool = True) -> 
     r2egym package."""
     if not parsed_commit_content:  # row without commit JSON — no gold patch to build
         return ""
-    data = json.loads(parsed_commit_content) if isinstance(parsed_commit_content, str) else parsed_commit_content
+    data = (
+        json.loads(parsed_commit_content)
+        if isinstance(parsed_commit_content, str)
+        else parsed_commit_content
+    )
     patch = ""
     for fd in data.get("file_diffs", []):
         path = fd.get("header", {}).get("file", {}).get("path", "")
@@ -137,12 +143,25 @@ def extract_gold_patch(parsed_commit_content: str, only_python: bool = True) -> 
         for hunk in fd.get("hunks", []):
             desc = hunk.get("descriptor", {})
             old, new = desc.get("old_range", {}), desc.get("new_range", {})
-            old_str = str(old.get("start", 0)) + (f",{old['length']}" if old.get("length") is not None else "")
-            new_str = str(new.get("start", 0)) + (f",{new['length']}" if new.get("length") is not None else "")
-            patch += f"@@ -{old_str} +{new_str} @@" + (f" {desc['section']}" if desc.get("section") else "") + "\n"
+            old_str = str(old.get("start", 0)) + (
+                f",{old['length']}" if old.get("length") is not None else ""
+            )
+            new_str = str(new.get("start", 0)) + (
+                f",{new['length']}" if new.get("length") is not None else ""
+            )
+            patch += (
+                f"@@ -{old_str} +{new_str} @@"
+                + (f" {desc['section']}" if desc.get("section") else "")
+                + "\n"
+            )
             for line in hunk.get("line_group", {}).get("all_lines", []):
                 c, t = line.get("content", ""), line.get("type", "")
-                patch += {"context": f" {c}\n", "added": f"+{c}\n", "deleted": f"-{c}\n", "note": f"\\ {c}\n"}.get(t, "")
+                patch += {
+                    "context": f" {c}\n",
+                    "added": f"+{c}\n",
+                    "deleted": f"-{c}\n",
+                    "note": f"\\ {c}\n",
+                }.get(t, "")
     return patch
 
 
@@ -188,9 +207,7 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, vf.TasksetConfig]):
         restore = await runtime.run(["sh", "-c", RESTORE_TESTS], ENV)
         if restore.exit_code != 0:
             return 0.0
-        result = await runtime.run(
-            ["sh", "-c", "/bin/bash run_tests.sh 2>&1"], ENV
-        )
+        result = await runtime.run(["sh", "-c", "/bin/bash run_tests.sh 2>&1"], ENV)
         return calculate_reward(result.stdout or "", task.expected_output_json)
 
     async def apply_gold_patch(self, task: R2EGymTask, runtime: vf.Runtime) -> None:
@@ -203,7 +220,9 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, vf.TasksetConfig]):
             ["sh", "-c", "git apply --whitespace=fix /tmp/gold.patch"], ENV
         )
         if result.exit_code != 0:
-            raise vf.ProgramError(f"gold apply failed ({task.name}): {result.stderr.strip()[-500:]}")
+            raise vf.ProgramError(
+                f"gold apply failed ({task.name}): {result.stderr.strip()[-500:]}"
+            )
 
 
 def load_taskset(config: vf.TasksetConfig) -> R2EGymTaskset:
