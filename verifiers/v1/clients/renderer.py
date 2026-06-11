@@ -137,10 +137,6 @@ class RendererClient(Client):
                 sampling_params=sampling_args.model_dump(exclude_none=True),
             )
         except RendererOverlongPromptError as e:
-            # The renderer tokenizes client-side and checks the prompt against the engine's
-            # context window (from `GET /v1/models`), so an overlong prompt is rejected here
-            # before the engine sees it — rebadge to our error so the interception server
-            # ends the rollout as a clean truncation, same as the engine-4xx path below.
             raise OverlongPromptError(str(e)) from e
         except OpenAIError as e:
             raise model_error(e) from e
