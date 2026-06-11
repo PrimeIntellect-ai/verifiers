@@ -9,6 +9,7 @@ loguru. Mirrors prime-rl's `intercept_vf_logging`.
 
 import logging
 import sys
+from pathlib import Path
 
 from loguru import logger
 
@@ -35,12 +36,21 @@ class InterceptHandler(logging.Handler):
         )
 
 
-def setup_logging(level: str = "INFO") -> None:
-    """Send loguru to stderr and route the library's stdlib logs into it."""
+def setup_logging(
+    level: str = "INFO", log_file: str | None = None, console: bool = True
+) -> None:
+    """Route the library's stdlib logs through loguru, to stderr (when `console`) and/or a
+    `log_file`. `console=False` (used under the `--rich` dashboard, which owns the screen)
+    keeps logs off the terminal while still writing them to `log_file`."""
+    lvl = level.upper()
     logger.remove()
-    logger.add(sys.stderr, level=level.upper(), format=FORMAT)
+    if console:
+        logger.add(sys.stderr, level=lvl, format=FORMAT)
+    if log_file is not None:
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        logger.add(log_file, level=lvl, format=FORMAT)
     library = logging.getLogger(LIBRARY_LOGGER)
     library.handlers.clear()  # drop the opt-in NullHandler
     library.addHandler(InterceptHandler())
-    library.setLevel(level.upper())
+    library.setLevel(lvl)
     library.propagate = False

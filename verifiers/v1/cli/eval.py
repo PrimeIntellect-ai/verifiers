@@ -19,6 +19,7 @@ from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.log import setup_logging
+from verifiers.v1.cli.output import output_path
 from verifiers.v1.cli.resolve import (
     extract_id,
     local_examples,
@@ -66,13 +67,17 @@ def main(argv: list[str] | None = None) -> None:
     # plain (non-rich) v1 run goes through the env server using `pool` (the path prime-rl
     # trains through). Legacy always runs in-process via the bridge.
     rich = config.rich and not config.is_legacy
-    # --rich owns the screen, so quiet the per-rollout INFO logs it would replace.
-    setup_logging("DEBUG" if config.verbose else "WARNING" if rich else "INFO")
-    if rich and not config.verbose:
-        # The Live dashboard owns the screen — gag WARNING-and-below from every logger
-        # (library + third-party, which `setup_logging` doesn't route) so stray log lines
-        # don't flash over it. Errors still print; pass --verbose to see everything.
-        logging.disable(logging.WARNING)
+    # Always tee the run's logs to a file under the output dir (in-process and server mode).
+    log_file = str(output_path(config) / "eval.log")
+    level = "DEBUG" if config.verbose else "INFO"
+    if rich:
+        # The Live dashboard owns the terminal: keep logs off it entirely (regardless of
+        # verbosity) while still writing them to the file. `lastResort = None` drops any
+        # third-party stdlib records that bypass loguru, so nothing flashes over the UI.
+        setup_logging(level, log_file=log_file, console=False)
+        logging.lastResort = None
+    else:
+        setup_logging(level, log_file=log_file, console=True)
     # Make SIGTERM behave like Ctrl-C (SIGINT) so a killed/timed-out eval still runs each
     # rollout's `finally` (tears down containers/sandboxes) and any worker pool it spawned.
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
