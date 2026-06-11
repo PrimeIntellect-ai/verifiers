@@ -145,6 +145,21 @@ class Branch(StrictBaseModel):
         )
         return self.total_tokens - last_completion
 
+    @property
+    def num_prompt_tokens(self) -> int:
+        """Final-turn input tokens from provider-reported usage — a fallback for display when
+        the endpoint returns no token ids (so `prompt_len` is 0); 0 if no usage was reported."""
+        last = next(
+            (n.usage for n in reversed(self.nodes) if n.usage is not None), None
+        )
+        return last.prompt_tokens if last else 0
+
+    @property
+    def num_completion_tokens(self) -> int:
+        """All completion tokens across the branch from provider-reported usage — a fallback for
+        display when the endpoint returns no token ids; 0 if no usage was reported."""
+        return sum(n.usage.completion_tokens for n in self.nodes if n.usage is not None)
+
 
 class Trace(StrictBaseModel, Generic[TaskT]):
     """The full record of one rollout. Subclass to add typed fields."""
