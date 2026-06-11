@@ -123,6 +123,7 @@ class Rollout:
         try:
             session = RolloutSession(self.ctx, trace, stops, self.limits)
             await runtime.start()
+            await self.taskset.setup(self.task, runtime)
             async with self._serve_interception(interception, runtime, session) as (
                 endpoint,
                 secret,
