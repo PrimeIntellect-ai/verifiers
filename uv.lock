@@ -4609,7 +4609,7 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.8.dev28"
+version = "0.1.8.dev43"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastokens" },
@@ -4621,9 +4621,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ea/73/44de1aaf8e2e1f891d7773760cf6fb9049009aee9f70904ccb4505210762/renderers-0.1.8.dev28.tar.gz", hash = "sha256:0dd6c74173d78f181411250815f3eeac85c1e9edee5c9d9ad2648842460b903f", size = 293084, upload-time = "2026-05-25T23:51:49.913Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/ab/3c55e9476064554931c6faa890353dbb497210f744631390e44deb3f9f70/renderers-0.1.8.dev43.tar.gz", hash = "sha256:2961647fc36f7497275c4e64538f044038a86c079384515afe7bbfa2e8062b22", size = 316761, upload-time = "2026-06-10T00:04:09.869Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4f/e7/a15449f2e9b223867c9d628b662b93f88f719ea1cc532ea16f7728d9b513/renderers-0.1.8.dev28-py3-none-any.whl", hash = "sha256:53574dfb3ee71c4589153fb693343d032f44f08b11ea693167ff1b3e3a254329", size = 153774, upload-time = "2026-05-25T23:51:48.541Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/17/38e64015955d20ef26147ed3667eb5aa9e613a133ff0274ab072bbcbb796/renderers-0.1.8.dev43-py3-none-any.whl", hash = "sha256:ffef914ebddd0691cba33997ef46f2340a2981b5bad0090aa4d6f788c5e7fde7", size = 170410, upload-time = "2026-06-10T00:04:08.318Z" },
 ]
 
 [[package]]
@@ -5837,8 +5837,8 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", specifier = ">=0.1.8.dev28" },
-    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev28" },
+    { name = "renderers", specifier = ">=0.1.8.dev40" },
+    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev40" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },

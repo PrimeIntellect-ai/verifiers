@@ -19,7 +19,8 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.configs.serve import EnvServerConfig
+from verifiers.v1.configs.serve import ServeConfig
+from verifiers.v1.env import pool_serve_kwargs
 from verifiers.v1.serve import serve_env
 
 USAGE = "usage: uv run serve [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
@@ -35,7 +36,7 @@ def main(argv: list[str] | None = None) -> None:
             if local:
                 print(f"example {kind}:", ", ".join(local))
         sys.argv = [sys.argv[0], "--help"]
-        cli(narrow_config(EnvServerConfig, argv))
+        cli(narrow_config(ServeConfig, argv))
         return
     legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
     if (
@@ -47,7 +48,7 @@ def main(argv: list[str] | None = None) -> None:
             USAGE
         )  # need a --taskset.id (v1), a legacy --id (v0), or @ file.toml
 
-    config_type = narrow_config(EnvServerConfig, argv)
+    config_type = narrow_config(ServeConfig, argv)
     sys.argv = [sys.argv[0], *argv]
     config = cli(config_type)
     if config.dry_run:
@@ -56,7 +57,7 @@ def main(argv: list[str] | None = None) -> None:
     level = "DEBUG" if config.verbose else "INFO"
     setup_logging(level)
 
-    # A single in-process server (num_workers=1) or a router + worker pool (>1); the
+    # The pool config decides in-process vs router + worker pool (static or elastic); the
     # frontend speaks the same protocol either way. serve_env owns the SIGTERM teardown.
     # Pool workers are spawned with no logging, so hand serve_env the same setup to apply
     # in each one.
@@ -70,7 +71,7 @@ def main(argv: list[str] | None = None) -> None:
         else {"config": config}
     )
     serve_env(
-        num_workers=config.num_workers,
+        **pool_serve_kwargs(config.pool),
         legacy=config.is_legacy,
         address=config.address,
         log_setup=partial(setup_logging, level),
