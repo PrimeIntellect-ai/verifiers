@@ -15,7 +15,7 @@ from verifiers.envs.experimental.composable.tasksets.harbor.harbor import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HF_REPO_ID = "SWE-Lego/Terminal-Lego-15k"
+DEFAULT_HF_REPO_ID = "PrimeIntellect/Terminal-Lego-15k"
 DEFAULT_IMAGE_REF_FIELD = "full_image_path"
 DEFAULT_WORKDIR = "/app"
 DATASET_PATH_ENV = "TERMINAL_LEGO_DATASET_PATH"
@@ -36,7 +36,6 @@ class TerminalLegoTaskSet(HarborDatasetTaskSet):
         dataset_path: str | Path | None = None,
         task_names: list[str] | None = None,
         image_map_path: str | Path | None = None,
-        exclusion_path: str | Path | None = None,
         hf_repo_id: str = DEFAULT_HF_REPO_ID,
         hf_revision: str | None = None,
         image_ref_field: str = DEFAULT_IMAGE_REF_FIELD,
@@ -47,7 +46,6 @@ class TerminalLegoTaskSet(HarborDatasetTaskSet):
         self.image_ref_field = image_ref_field
         self.image_map_path = _resolve_image_map_path(image_map_path)
         self.image_map = _load_image_map(self.image_map_path, image_ref_field)
-        self.excluded_task_ids = _load_excluded_task_ids(exclusion_path)
 
         resolved_dataset_path = _resolve_dataset_path(
             dataset_path=dataset_path,
@@ -112,7 +110,6 @@ class TerminalLegoTaskSet(HarborDatasetTaskSet):
                         "hf_repo_id": self.hf_repo_id,
                         "hf_revision": self.hf_revision,
                     },
-                    "excluded": task_name in self.excluded_task_ids,
                     "config": config,
                 }
             )
@@ -181,7 +178,6 @@ def make_terminal_lego_taskset(
     dataset_path: str | Path | None = None,
     task_names: list[str] | str | None = None,
     image_map_path: str | Path | None = None,
-    exclusion_path: str | Path | None = None,
     hf_repo_id: str = DEFAULT_HF_REPO_ID,
     hf_revision: str | None = None,
     image_ref_field: str = DEFAULT_IMAGE_REF_FIELD,
@@ -191,7 +187,6 @@ def make_terminal_lego_taskset(
         dataset_path=dataset_path,
         task_names=_normalize_task_names(task_names),
         image_map_path=image_map_path,
-        exclusion_path=exclusion_path,
         hf_repo_id=hf_repo_id,
         hf_revision=hf_revision,
         image_ref_field=image_ref_field,
@@ -288,30 +283,6 @@ def _load_image_map(path: Path, image_ref_field: str) -> dict[str, dict[str, str
     if not image_map:
         raise ValueError(f"Terminal-Lego image map is empty: {path}")
     return image_map
-
-
-def _load_excluded_task_ids(path: str | Path | None) -> set[str]:
-    if path is None:
-        return set()
-    exclusion_path = Path(path).expanduser()
-    if not exclusion_path.exists():
-        raise FileNotFoundError(f"Terminal-Lego exclusion file not found: {path}")
-    excluded: set[str] = set()
-    with exclusion_path.open() as f:
-        for line in f:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if stripped.startswith("{"):
-                row = json.loads(stripped)
-                task_id = (
-                    row.get("item_id") or row.get("task_id") or row.get("task_name")
-                )
-                if task_id:
-                    excluded.add(str(task_id))
-            else:
-                excluded.add(stripped)
-    return excluded
 
 
 def _missing_required_files(task_dir: Path) -> list[str]:
