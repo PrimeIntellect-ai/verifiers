@@ -57,19 +57,14 @@ class ToolsConfig(BaseConfig):
 
 
 class UserConfig(BaseConfig):
-    """How a taskset's user simulator is run. The framework always drives it from the host
-    (`public_url` for a remote sandbox, localhost otherwise). By default it is `colocated` in
-    the agent's runtime — reusing the runtime already up for the harness, so there's no extra
-    runtime per rollout. Set `colocated = false` to give it its own `runtime` (e.g. a remote
-    sandbox that can't publish the colocated port back to the host)."""
+    """How a taskset's user simulator is run. The framework drives it from the host, so it's
+    reached host-side (`public_url` for a remote sandbox, localhost otherwise) — never
+    colocated in the agent's runtime, which a remote sandbox can't serve back to the host."""
 
-    colocated: bool = True
-    """Run the user simulator inside the agent's (harness's) runtime, per rollout, reusing it
-    rather than starting a separate runtime. Its port is published back to the host so the
-    framework can still drive it."""
     runtime: RuntimeConfig = SubprocessConfig()
-    """The user simulator's own runtime, used when not colocated: host (subprocess) by default
-    — always localhost-reachable; set docker/prime to isolate it in its own sandbox."""
+    """The user simulator's own runtime: host (subprocess) by default — always localhost-
+    reachable; set docker/prime to isolate it in its own sandbox (reached via the sandbox's
+    published URL)."""
 
 
 class TasksetConfig(BaseConfig):

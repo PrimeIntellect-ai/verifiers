@@ -139,10 +139,7 @@ class Rollout:
                         shared_urls=shared_urls,
                     ) as urls,
                     serve_user(
-                        self.taskset.user(self.task),
-                        self.taskset.config.user.runtime,
-                        agent_runtime=runtime,
-                        colocated=self.taskset.config.user.colocated,
+                        self.taskset.user(self.task), self.taskset.config.user.runtime
                     ) as session.user,
                 ):
                     self.phase = (
