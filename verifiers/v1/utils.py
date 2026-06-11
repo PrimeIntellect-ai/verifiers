@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ctypes
 from typing import TYPE_CHECKING
 
@@ -22,7 +23,9 @@ _rollouts_since_trim = 0
 
 def trim_memory() -> None:
     """Best-effort `malloc_trim(0)` — return glibc's freed arenas to the OS. A no-op off
-    glibc (musl, macOS), resolved once and then cached."""
+    glibc (musl, macOS), resolved once and then cached. Walks every arena's free lists, so it
+    can block for tens of ms on a large heap — call it off the event loop (see
+    `trim_memory_periodically`)."""
     global _malloc_trim
     if _malloc_trim is None:
         try:
@@ -33,14 +36,16 @@ def trim_memory() -> None:
         _malloc_trim(0)
 
 
-def trim_memory_periodically() -> None:
+async def trim_memory_periodically() -> None:
     """Call `trim_memory` once every `_TRIM_EVERY_ROLLOUTS` invocations. Invoked per finished
-    rollout so a worker's resting RSS is bounded without trimming on every single one."""
+    rollout so a worker's resting RSS is bounded without trimming on every single one. The
+    trim runs in a worker thread — `ctypes` releases the GIL during the call, so the heap walk
+    doesn't block the event loop (and every other in-flight rollout with it)."""
     global _rollouts_since_trim
     _rollouts_since_trim += 1
     if _rollouts_since_trim >= _TRIM_EVERY_ROLLOUTS:
         _rollouts_since_trim = 0
-        trim_memory()
+        await asyncio.to_thread(trim_memory)
 
 
 def format_time(seconds: float) -> str:

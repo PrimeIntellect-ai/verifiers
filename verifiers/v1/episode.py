@@ -67,7 +67,8 @@ class Episode:
             if not group_scored:  # reward already final → don't wait for the group
                 rollout.phase = Phase.DONE
                 on_complete(trace)
-            trim_memory_periodically()  # hand freed per-turn request bodies back to the OS
+            # hand freed per-turn request bodies (base64 images) back to the OS
+            await trim_memory_periodically()
             return trace
 
         traces = await asyncio.gather(*(run_one(r) for r in self.rollouts))
