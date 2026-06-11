@@ -203,6 +203,8 @@ def sandbox_failure_kind(exc: BaseException) -> str | None:
         return "oom"
     if name in {"SandboxTimeoutError", "CommandTimeoutError"} or "timed out" in text:
         return "timeout"
+    if name == "SandboxNotRunningError":
+        return "not_running"
     return None
 
 
@@ -373,11 +375,10 @@ class SandboxHandle:
             raise
         except Exception as exc:
             kind = mark_sandbox_failure(self.state, self.lease, exc, phase="execute")
-            if kind is not None:
-                raise SandboxError(
-                    f"Sandbox {self.lease.id} failed during execute ({kind}): {exc}"
-                ) from exc
-            raise
+            failure = f" ({kind})" if kind is not None else ""
+            raise SandboxError(
+                f"Sandbox {self.lease.id} failed during execute{failure}: {exc}"
+            ) from exc
         record_tool_sandbox_command(self.state, self.lease, command, result)
         return result
 
@@ -421,11 +422,10 @@ class SandboxHandle:
             kind = mark_sandbox_failure(
                 self.state, self.lease, exc, phase="background_job"
             )
-            if kind is not None:
-                raise SandboxError(
-                    f"Sandbox {self.lease.id} failed during background job ({kind}): {exc}"
-                ) from exc
-            raise
+            failure = f" ({kind})" if kind is not None else ""
+            raise SandboxError(
+                f"Sandbox {self.lease.id} failed during background job{failure}: {exc}"
+            ) from exc
         record_tool_sandbox_command(self.state, self.lease, command, result)
         return result
 
@@ -534,11 +534,10 @@ async def run_sandbox_command(
             raise
         except Exception as exc:
             kind = mark_sandbox_failure(state, lease, exc, phase="command")
-            if kind is not None:
-                raise SandboxError(
-                    f"Sandbox {lease.id} failed during command ({kind}): {exc}"
-                ) from exc
-            raise
+            failure = f" ({kind})" if kind is not None else ""
+            raise SandboxError(
+                f"Sandbox {lease.id} failed during command{failure}: {exc}"
+            ) from exc
         state["command"] = {
             "argv": argv,
             "returncode": result.exit_code,
