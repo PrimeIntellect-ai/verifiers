@@ -4,7 +4,7 @@ Two open v1 refactors of verifiers (the `Taskset × Harness × Runtime` model), 
 
 |  | **#1559** — `codex/v1-nano-refactor-draft` | **#1576** — `feat/nano-as-v1` |
 |---|---|---|
-| Size | +17.6k / −34.1k, 422 files | +11.5k / −50k, 401 files (re-vendors vf-nano) |
+| Code diff (`verifiers/`) | +6,906 / −11,817, 69 files | +6,010 / −13,585, 93 files (re-vendors vf-nano) |
 | Thesis | Broad v1 surface — many harnesses, in-tree advantages, nested subagents | v0↔v1 bridge + training-readiness — legacy bridge, message graph, multiplexing, benchmarked |
 | Rollout record | `State` + flat `Turn` list (serializable, no graph) | delta-native `MessageNode` graph (branches via leaves→root) |
 | RL contract | token-level **advantages computed in-lib** (`@advantage`) | trainer (prime-rl) computes advantages; lib exposes trainable `Trace` |
