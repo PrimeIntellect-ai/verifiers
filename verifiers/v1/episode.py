@@ -31,12 +31,12 @@ from verifiers.v1.utils import trim_memory_periodically
 
 if TYPE_CHECKING:
     from verifiers.v1.interception import InterceptionPool
-    from verifiers.v1.retries import RetryConfig
+    from verifiers.v1.retries import RolloutRetryConfig
 
 
 class Episode:
     def __init__(
-        self, rollouts: list[Rollout], taskset: Taskset, retry: RetryConfig
+        self, rollouts: list[Rollout], taskset: Taskset, retry: RolloutRetryConfig
     ) -> None:
         self.rollouts = rollouts
         self.taskset = taskset

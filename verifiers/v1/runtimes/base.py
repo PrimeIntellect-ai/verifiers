@@ -15,6 +15,13 @@ import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+)
+
 # Ensure `uv` is available to run our PEP 723 scripts (the harness + tool servers): use it
 # if present, else bootstrap it — via pip; else via the standalone installer (curl/wget),
 # first installing curl + CA certs from the distro package manager when the image has no
@@ -184,3 +191,60 @@ class Runtime(ABC):
         )
         command = f'{_ENSURE_UV}; exec uv run {shlex.quote(path)} "$@"'
         return await self.run(["sh", "-c", command, path, *(args or [])], env or {})
+
+
+class RetryingRuntime(Runtime):
+    """Wraps a runtime to retry each call on a transient error (tenacity, `max_attempts`
+    total). A program's own failure surfaces as a `ProgramResult` (non-zero exit), not an
+    exception, so retries fire only on infra/transport faults — provisioning, exec
+    transport, file I/O across the runtime boundary. `CancelledError` (a `BaseException`)
+    and `NotImplementedError` (an unsupported op) are never retried. Sync teardown
+    (`cleanup`) and display (`descriptor`) delegate straight through; `run_uv_script` is
+    inherited, so it runs over the retrying `write`/`run`."""
+
+    def __init__(self, inner: Runtime, max_attempts: int) -> None:
+        super().__init__(inner.name)
+        self.inner = inner
+        self.max_attempts = max_attempts
+
+    async def _retry(self, fn, *args):
+        retrying = AsyncRetrying(
+            stop=stop_after_attempt(self.max_attempts),
+            retry=retry_if_exception_type(Exception)
+            & retry_if_not_exception_type(NotImplementedError),
+            reraise=True,
+        )
+        return await retrying(fn, *args)
+
+    async def start(self) -> None:
+        await self._retry(self.inner.start)
+
+    async def stop(self) -> None:
+        await self._retry(self.inner.stop)
+
+    def cleanup(self) -> None:
+        self.inner.cleanup()
+
+    async def expose(self, port: int) -> str:
+        return await self._retry(self.inner.expose, port)
+
+    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        return await self._retry(self.inner.run, argv, env)
+
+    async def run_background(
+        self, argv: list[str], env: dict[str, str], log: str
+    ) -> None:
+        await self._retry(self.inner.run_background, argv, env, log)
+
+    @property
+    def descriptor(self) -> str | None:
+        return self.inner.descriptor
+
+    async def public_url(self, port: int) -> str | None:
+        return await self._retry(self.inner.public_url, port)
+
+    async def read(self, path: str) -> bytes:
+        return await self._retry(self.inner.read, path)
+
+    async def write(self, path: str, data: bytes) -> None:
+        await self._retry(self.inner.write, path, data)

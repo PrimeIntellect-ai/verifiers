@@ -92,7 +92,7 @@ class EnvConfig(BaseConfig):
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
     timeout: TimeoutConfig = TimeoutConfig()
-    retry: RetryConfig = RetryConfig()
+    retries: RetryConfig = RetryConfig()
     max_turns: int | None = None
     """Max model turns per rollout (None = no limit). Enforced by the framework (the
     interception server refuses turns past it), so it applies to any harness — turn
@@ -270,6 +270,7 @@ class Environment:
             if self.scoring_timeout is not None
             else task.scoring_timeout
         )
+        retries = self.config.retries
         rollouts = [
             Rollout(
                 task=task,
@@ -280,10 +281,12 @@ class Environment:
                 harness_timeout=harness_timeout,
                 scoring_timeout=scoring_timeout,
                 limits=self.limits,
+                model_retries=retries.model.max_attempts,
+                runtime_retries=retries.runtime.max_attempts,
             )
             for _ in range(n)
         ]
-        return Episode(rollouts, self.taskset, retry=self.config.retry)
+        return Episode(rollouts, self.taskset, retry=retries.rollout)
 
     def interception_pool(self) -> InterceptionPool:
         """The shared interception pool for this env's rollouts — one server (+ tunnel
