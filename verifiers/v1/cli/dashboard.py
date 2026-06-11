@@ -137,6 +137,7 @@ def _rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             )
             runtime = f"{runtime_type}({descriptor})" if descriptor else runtime_type
             turns = t.num_turns
+            start = t.timing.generation.start
             end = t.timing.scoring.end or t.timing.generation.end or now
             left = [
                 f"task {label}",
@@ -146,7 +147,8 @@ def _rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                 _tokens(t),
                 stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
             ]
-            elapsed = format_time(end - t.timing.generation.start)
+            # No start time yet (queued, not generating) → blank, not `now - 0` (~56 years).
+            elapsed = format_time(end - start) if start else ""
             rows.append((_brace(i, len(group)), state, left, result, elapsed))
     grid = Table.grid(expand=True, padding=(0, 1))
     grid.add_column(
