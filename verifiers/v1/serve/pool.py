@@ -26,6 +26,7 @@ import os
 import signal
 import threading
 import uuid
+from collections.abc import Callable
 
 import msgpack
 import zmq
@@ -54,14 +55,17 @@ def _monitor_parent(conn) -> None:
 
 
 def _worker_entry(
-    *, server_kwargs: dict, address: str, death_pipe, legacy: bool
+    *, server_kwargs: dict, address: str, death_pipe, legacy: bool, log_setup=None
 ) -> None:
     """Spawned worker: an ordinary EnvServer/LegacyEnvServer bound to `address` (ipc).
     A native config arrives as a dict (`config_data`): the eval/serve CLI's narrowed
     config type is dynamic and unpicklable, so we rebuild it here via EnvConfig's
-    id-resolving validator."""
+    id-resolving validator. `log_setup` (if given) configures this fresh process's
+    logging so per-rollout logs surface — a spawned worker inherits no handlers."""
     from verifiers.v1.legacy import LegacyEnvServer
 
+    if log_setup is not None:
+        log_setup()
     _monitor_parent(death_pipe)
     if "config_data" in server_kwargs:
         server_kwargs = {
@@ -80,10 +84,12 @@ class EnvServerPool:
         num_workers: int,
         address: str,
         legacy: bool,
+        log_setup: Callable[[], None] | None = None,
     ) -> None:
         self.server_kwargs = server_kwargs
         self.num_workers = num_workers
         self.legacy = legacy
+        self.log_setup = log_setup
         self.session = uuid.uuid4().hex[:12]
         self.workers: list[dict] = []
 
@@ -111,6 +117,7 @@ class EnvServerPool:
                     address=address,
                     death_pipe=child_conn,
                     legacy=self.legacy,
+                    log_setup=self.log_setup,
                 ),
                 daemon=False,
             )
@@ -207,6 +214,7 @@ def serve_env(
     legacy: bool = False,
     address: str = "tcp://127.0.0.1:5000",
     address_queue=None,
+    log_setup: Callable[[], None] | None = None,
     **server_kwargs,
 ) -> None:
     """Serve one env over ZMQ: a single in-process `EnvServer` when `num_workers <= 1`,
@@ -217,16 +225,22 @@ def serve_env(
     A native env config may be passed as `config` (an object) or `config_data` (the
     picklable dict from `env_config_data`, for callers that spawn this function and so
     can't pickle a dynamically-narrowed config type); legacy passes `env_id`/`env_args`/
-    `extra_env_kwargs`."""
+    `extra_env_kwargs`.
+
+    `log_setup` (a picklable callable) configures logging for this process and every
+    spawned worker — without it a spawned server inherits no handlers and its INFO logs
+    (rollout start/done, the pool line) are silently dropped."""
     # SIGTERM -> KeyboardInterrupt so a killed server runs its teardown (pool: kill the
     # workers; single: close clients).
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    if log_setup is not None:
+        log_setup()
     if num_workers > 1:
         if (
             "config" in server_kwargs
         ):  # dict-ify for the workers (config_data is picklable)
             server_kwargs = {"config_data": env_config_data(server_kwargs["config"])}
-        pool = EnvServerPool(server_kwargs, num_workers, address, legacy)
+        pool = EnvServerPool(server_kwargs, num_workers, address, legacy, log_setup)
         if address_queue is not None:
             address_queue.put(pool.address)
         asyncio.run(pool.run())

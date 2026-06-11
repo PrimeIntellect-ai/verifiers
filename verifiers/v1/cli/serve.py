@@ -7,6 +7,7 @@ rollouts on request by task idx.
 """
 
 import sys
+from functools import partial
 
 from pydantic_config import cli
 
@@ -52,10 +53,13 @@ def main(argv: list[str] | None = None) -> None:
     if config.dry_run:
         print(config.model_dump_json(indent=2, exclude_none=True))
         return
-    setup_logging("DEBUG" if config.verbose else "INFO")
+    level = "DEBUG" if config.verbose else "INFO"
+    setup_logging(level)
 
     # A single in-process server (num_workers=1) or a router + worker pool (>1); the
     # frontend speaks the same protocol either way. serve_env owns the SIGTERM teardown.
+    # Pool workers are spawned with no logging, so hand serve_env the same setup to apply
+    # in each one.
     server_kwargs = (
         {
             "env_id": config.id,
@@ -69,5 +73,6 @@ def main(argv: list[str] | None = None) -> None:
         num_workers=config.num_workers,
         legacy=config.is_legacy,
         address=config.address,
+        log_setup=partial(setup_logging, level),
         **server_kwargs,
     )
