@@ -15,12 +15,8 @@ from typing import Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import (
-    _TUNNEL_LIMITER,
-    ProgramResult,
-    Runtime,
-    creation_limiter,
-)
+from verifiers.v1.runtimes.base import ProgramResult, Runtime
+from verifiers.v1.runtimes.limiters import _TUNNEL_LIMITER, creation_limiter
 
 logger = logging.getLogger(__name__)
 
