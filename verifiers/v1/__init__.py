@@ -23,6 +23,7 @@ from verifiers.v1.env import (
     Environment,
     StaticPoolConfig,
     TimeoutConfig,
+    pool_serve_kwargs,
 )
 from verifiers.v1.episode import Episode
 from verifiers.v1.errors import ModelError, ProgramError, RolloutError, ToolError
@@ -147,6 +148,7 @@ __all__ = [
     "EnvServerConfig",
     "StaticPoolConfig",
     "ElasticPoolConfig",
+    "pool_serve_kwargs",
     "RetryConfig",
     "TimeoutConfig",
     "Episode",
