@@ -32,8 +32,8 @@ class CallRetryConfig(BaseConfig):
     """Retries around a single model or runtime call (tenacity). Reruns just the failed
     call, so the rest of the rollout's progress survives a transient failure."""
 
-    max_attempts: int = Field(3, ge=1)
-    """Total attempts for one call (1 = no retry)."""
+    max_attempts: int = Field(3, ge=0)
+    """Total attempts for one call (0 or 1 = no retry)."""
 
 
 class RolloutRetryConfig(BaseConfig):
@@ -41,8 +41,8 @@ class RolloutRetryConfig(BaseConfig):
     rollout-level retries). Matching is by the error's exception type name, so
     `include`/`exclude` name exception classes (e.g. ``ModelError``, ``ProgramError``)."""
 
-    max_attempts: int = Field(1, ge=1)
-    """Total rollout attempts (1 = no retry)."""
+    max_attempts: int = Field(1, ge=0)
+    """Total rollout attempts (0 or 1 = no retry)."""
     include: list[str] = []
     """Only retry errors whose type is listed. Empty = retry anything not excluded."""
     exclude: list[str] = []
