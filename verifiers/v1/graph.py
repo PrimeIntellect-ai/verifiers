@@ -18,6 +18,7 @@ the exact `prompt_ids + completion_ids` the model saw.
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import TYPE_CHECKING
 
 from pydantic import Field
@@ -60,16 +61,25 @@ class MessageNode(StrictBaseModel):
     """The response's finish reason (assistant nodes only) — kept for truncation detection."""
 
 
+def _canonical_tool_arguments(arguments: str) -> str:
+    try:
+        return json.dumps(json.loads(arguments), sort_keys=True, separators=(",", ":"))
+    except (json.JSONDecodeError, ValueError):
+        return arguments
+
+
 def message_hash(message: Message) -> str:
     """Stable content hash on the fields that round-trip through a prompt — role, content
-    (None and "" equal), assistant tool calls, tool call id; `reasoning_content` ignored.
-    Two messages hash equal iff they're the same conversational message, so a re-stated
-    prefix message dedups to one node. The dedup key for sharing a prefix across
+    (None and "" equal), assistant reasoning content when present, assistant tool calls,
+    tool call id. Two messages hash equal iff they're the same conversational message, so a
+    re-stated prefix message dedups to one node. The dedup key for sharing a prefix across
     turns/branches; salt-free so it is identical across processes and after deserialization."""
     parts: list[str] = [type(message).__name__, message.content or ""]
     if isinstance(message, AssistantMessage):
+        if message.reasoning_content is not None:
+            parts += ["reasoning_content", message.reasoning_content]
         for tc in message.tool_calls or []:
-            parts += [tc.id, tc.name, tc.arguments]
+            parts += [tc.id, tc.name, _canonical_tool_arguments(tc.arguments)]
     elif isinstance(message, ToolMessage):
         parts.append(message.tool_call_id)
     return hashlib.blake2b("\x00".join(parts).encode(), digest_size=16).hexdigest()
