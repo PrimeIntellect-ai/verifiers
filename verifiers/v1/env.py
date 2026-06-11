@@ -179,7 +179,7 @@ class Environment:
             task.workdir is not None
             and workdir_spec is not None
             and getattr(config, "workdir") == workdir_spec.default
-        ):  # cli/toml-set workdir wins over the task's (precedence as for resources)
+        ):
             updates["workdir"] = task.workdir
         for field, value in task.resources.model_dump(exclude_none=True).items():
             spec = type(config).model_fields.get(field)
