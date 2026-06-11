@@ -4,11 +4,13 @@
 
 `<work_dir>` holds one `<runtime>-r<rollouts>/` eval output dir per cell run this time, plus
 `e2e.txt` (`<runtime> <rollouts> <e2e_seconds>` lines). For each cell we write
-`<results_dir>/<runtime>-r<rollouts>.json` with the e2e wall clock, the per-rollout
-`setup.duration` + `generation.duration` lists (so p10/p50/p90 — e2e is straggler-gated, so
-the distribution is the honest comparator), the resolved `max_concurrent`, reward and error
-count. One file per cell means re-running a subset (e.g. just docker) refreshes only those
-cells and never clobbers the rest. `bench/plot.py` reads the whole results dir.
+`<results_dir>/<runtime>-r<rollouts>.json` with the e2e wall clock, the resolved
+`max_concurrent`, reward / error count, and the sorted per-rollout duration lists for each
+stage — `setup` (provisioning), `generation`, `scoring`, and `total` (the whole rollout,
+`scoring.end - start`, so it also captures any between-stage gaps). Sorted lists let
+`plot.py` read off p10/p50/p90 — e2e is straggler-gated, so the distribution is the honest
+comparator. One file per cell means re-running a subset (e.g. just docker) refreshes only
+those cells and never clobbers the rest. `bench/plot.py` reads the whole results dir.
 """
 
 import glob
@@ -24,6 +26,17 @@ e2e: dict[tuple[str, int], int] = {}
 for line in open(os.path.join(work, "e2e.txt")):
     rt, r, secs = line.split()
     e2e[(rt, int(r))] = int(secs)
+
+
+def stage(timing: dict, name: str) -> float:
+    return round(timing.get(name, {}).get("duration", 0.0), 3)
+
+
+def total(timing: dict) -> float:
+    # Whole-rollout wall time: start -> the last stage end (captures any between-stage gaps).
+    ends = [s["end"] for s in timing.values() if isinstance(s, dict) and "end" in s]
+    return round(max(ends) - timing["start"], 3) if ends else 0.0
+
 
 for d in sorted(p for p in glob.glob(f"{work}/*") if os.path.isdir(p)):
     base = os.path.basename(d)  # <runtime>-r<rollouts>
@@ -42,12 +55,10 @@ for d in sorted(p for p in glob.glob(f"{work}/*") if os.path.isdir(p)):
         "e2e_s": e2e.get((runtime, rollouts)),
         "reward": round(sum(rewards) / len(rewards), 3) if rewards else None,
         "errors": sum(1 for r in rows if r.get("errors")),
-        "setup_durations": sorted(
-            round(r["timing"].get("setup", {}).get("duration", 0.0), 3) for r in rows
-        ),
-        "gen_durations": sorted(
-            round(r["timing"]["generation"]["duration"], 3) for r in rows
-        ),
+        "setup_durations": sorted(stage(r["timing"], "setup") for r in rows),
+        "gen_durations": sorted(stage(r["timing"], "generation") for r in rows),
+        "scoring_durations": sorted(stage(r["timing"], "scoring") for r in rows),
+        "total_durations": sorted(total(r["timing"]) for r in rows),
     }
     out = os.path.join(results, f"{base}.json")
     with open(out, "w") as f:
