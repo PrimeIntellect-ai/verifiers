@@ -15,15 +15,21 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from verifiers.v1.harness import Harness
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import RetryingClient, RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.errors import ProgramError, RolloutError
 from verifiers.v1.interception import InterceptionServer, RolloutLimits, RolloutSession
-from verifiers.v1.runtimes import Runtime, RuntimeConfig, make_runtime
+from verifiers.v1.runtimes import (
+    RetryingRuntime,
+    Runtime,
+    RuntimeConfig,
+    make_runtime,
+)
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.tools import serve_tools
@@ -57,6 +63,8 @@ class Rollout:
         harness_timeout: float | None = None,
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
+        model_retries: int = 0,
+        runtime_retries: int = 0,
     ) -> None:
         self.task = task
         self.taskset = taskset
@@ -66,6 +74,8 @@ class Rollout:
         self.harness_timeout = harness_timeout
         self.scoring_timeout = scoring_timeout
         self.limits = limits or RolloutLimits()
+        self.model_retries = model_retries
+        self.runtime_retries = runtime_retries
         self.phase = Phase.SETUP
         """Lifecycle phase for display (see `Phase`); advanced through the rollout, and
         set to DONE by the Episode once group scoring has run."""
@@ -111,7 +121,12 @@ class Rollout:
         self.runtime = make_runtime(
             self.runtime_config, name=trace.id
         )  # ref set first → always tearable-down; named after the rollout for traceability
+        if self.runtime_retries > 0:
+            self.runtime = RetryingRuntime(self.runtime, self.runtime_retries)
         runtime = self.runtime
+        ctx = self.ctx
+        if self.model_retries > 0:
+            ctx = replace(ctx, client=RetryingClient(ctx.client, self.model_retries))
         stops = discover_decorated(self.taskset, "stop")
         logger.info(
             "rollout start: id=%s task=%s harness=%s runtime=%s",
@@ -121,7 +136,7 @@ class Rollout:
             self.runtime_config.type,
         )
         try:
-            session = RolloutSession(self.ctx, trace, stops, self.limits)
+            session = RolloutSession(ctx, trace, stops, self.limits)
             await runtime.start()
             await self.taskset.setup(self.task, runtime)
             async with self._serve_interception(interception, runtime, session) as (
@@ -153,7 +168,7 @@ class Rollout:
                     try:
                         await asyncio.wait_for(
                             self.harness.run(
-                                self.ctx, trace, runtime, endpoint, secret, urls
+                                ctx, trace, runtime, endpoint, secret, urls
                             ),
                             self.harness_timeout,
                         )

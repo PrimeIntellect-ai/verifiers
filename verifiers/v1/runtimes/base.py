@@ -9,11 +9,22 @@ import asyncio
 import atexit
 import contextlib
 import hashlib
+import logging
 import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
+from tenacity import (
+    AsyncRetrying,
+    RetryCallState,
+    retry_if_exception_type,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+)
+
+logger = logging.getLogger(__name__)
 
 # Ensure `uv` is available to run our PEP 723 scripts (the harness + tool servers): use it
 # if present, else bootstrap it — via pip; else via the standalone installer (curl/wget),
@@ -184,3 +195,72 @@ class Runtime(ABC):
         )
         command = f'{_ENSURE_UV}; exec uv run {shlex.quote(path)} "$@"'
         return await self.run(["sh", "-c", command, path, *(args or [])], env or {})
+
+
+class RetryingRuntime(Runtime):
+    """Wraps a runtime to retry each call on a transient error (tenacity, up to
+    `max_retries` retries). A program's own failure surfaces as a `ProgramResult` (non-zero
+    exit), not an exception, so retries fire only on infra/transport faults — provisioning,
+    exec transport, file I/O across the runtime boundary. `CancelledError` (a
+    `BaseException`) and `NotImplementedError` (an unsupported op) are never retried. Sync
+    teardown (`cleanup`) and display (`descriptor`) delegate straight through;
+    `run_uv_script` is inherited, so it runs over the retrying `write`/`run`."""
+
+    def __init__(self, inner: Runtime, max_retries: int) -> None:
+        super().__init__(inner.name)
+        self.inner = inner
+        self.max_retries = max_retries
+        # One Retrying, reused across (and concurrent within) calls: the control flow runs
+        # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.
+        self._retrying = AsyncRetrying(
+            stop=stop_after_attempt(max_retries + 1),
+            retry=retry_if_exception_type(Exception)
+            & retry_if_not_exception_type(NotImplementedError),
+            before_sleep=self._log_retry,
+            reraise=True,
+        )
+
+    def _log_retry(self, state: RetryCallState) -> None:
+        logger.warning(
+            "retrying runtime.%s (attempt %d/%d) after error: %s",
+            getattr(state.fn, "__name__", "call"),
+            state.attempt_number,
+            self.max_retries + 1,
+            state.outcome.exception(),
+        )
+
+    async def _retry(self, fn, *args):
+        return await self._retrying(fn, *args)
+
+    async def start(self) -> None:
+        await self._retry(self.inner.start)
+
+    async def stop(self) -> None:
+        await self._retry(self.inner.stop)
+
+    def cleanup(self) -> None:
+        self.inner.cleanup()
+
+    async def expose(self, port: int) -> str:
+        return await self._retry(self.inner.expose, port)
+
+    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        return await self._retry(self.inner.run, argv, env)
+
+    async def run_background(
+        self, argv: list[str], env: dict[str, str], log: str
+    ) -> None:
+        await self._retry(self.inner.run_background, argv, env, log)
+
+    @property
+    def descriptor(self) -> str | None:
+        return self.inner.descriptor
+
+    async def public_url(self, port: int) -> str | None:
+        return await self._retry(self.inner.public_url, port)
+
+    async def read(self, path: str) -> bytes:
+        return await self._retry(self.inner.read, path)
+
+    async def write(self, path: str, data: bytes) -> None:
+        await self._retry(self.inner.write, path, data)

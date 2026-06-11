@@ -11,7 +11,12 @@ from typing import Annotated
 
 from pydantic import Field
 
-from verifiers.v1.runtimes.base import ProgramResult, Runtime, register
+from verifiers.v1.runtimes.base import (
+    ProgramResult,
+    RetryingRuntime,
+    Runtime,
+    register,
+)
 from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
@@ -38,6 +43,7 @@ def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
 
 __all__ = [
     "ProgramResult",
+    "RetryingRuntime",
     "Runtime",
     "RuntimeConfig",
     "make_runtime",

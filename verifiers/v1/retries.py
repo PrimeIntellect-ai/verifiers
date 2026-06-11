@@ -1,15 +1,20 @@
-"""Rollout-level retries: rerun a whole rollout while it ends with a retryable error.
+"""Retries at two granularities: per-call (model, runtime) and whole-rollout.
 
-Parity with v0's rollout retries. `RetryConfig` lives on `EnvConfig.retry`; `run_with_retry`
-wraps a `Rollout` with tenacity, retrying on the trace's captured error (matched by exception
-type name against include/exclude) and accumulating each failed attempt's error onto the
-returned trace's `errors`, so the final trace shows the whole retry history.
+`RetryConfig` lives on `EnvConfig.retries`. Per-call retries wrap a single model or
+runtime call (`RetryingClient` / `RetryingRuntime`), rerunning just the failed call so
+the rest of the rollout's progress is kept — the cheap, default-on layer. Whole-rollout
+retries (`run_with_retry`) rerun an entire trajectory when its trace ends with a retryable
+error (matched by exception type name against include/exclude), accumulating each failed
+attempt's error onto the returned trace's `errors`; off by default (parity with v0, but
+superseded by the finer per-call retries).
 """
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
+from pydantic import Field
 from pydantic_config import BaseConfig
 from tenacity import (
     AsyncRetrying,
@@ -23,21 +28,43 @@ if TYPE_CHECKING:
     from verifiers.v1.rollout import Rollout
     from verifiers.v1.trace import Trace
 
+logger = logging.getLogger(__name__)
 
-class RetryConfig(BaseConfig):
+
+class CallRetryConfig(BaseConfig):
+    """Retries around a single model or runtime call (tenacity). Reruns just the failed
+    call, so the rest of the rollout's progress survives a transient failure."""
+
+    max_retries: int = Field(3, ge=0)
+    """Retries for one call beyond the first attempt (0 = no retry, N = up to N retries)."""
+
+
+class RolloutRetryConfig(BaseConfig):
     """Retry a whole rollout when it ends with a captured error (parity with v0's
     rollout-level retries). Matching is by the error's exception type name, so
     `include`/`exclude` name exception classes (e.g. ``ModelError``, ``ProgramError``)."""
 
-    attempts: int = 3
-    """Total rollout attempts (1 = no retry)."""
+    max_retries: int = Field(1, ge=0)
+    """Whole-rollout retries beyond the first attempt (0 = no retry, N = up to N retries)."""
     include: list[str] = []
     """Only retry errors whose type is listed. Empty = retry anything not excluded."""
     exclude: list[str] = []
     """Never retry errors whose type is listed (wins over `include`)."""
 
 
-def should_retry(trace: Trace, retry: RetryConfig) -> bool:
+class RetryConfig(BaseConfig):
+    """All of a rollout's retries: per-call `model` + `runtime` (rerun a single failed
+    call) and whole-`rollout` (rerun the whole trajectory on a captured error)."""
+
+    model: CallRetryConfig = CallRetryConfig()
+    """Retries around each model/provider call (the interception server's completion)."""
+    runtime: CallRetryConfig = CallRetryConfig()
+    """Retries around each runtime call (provision, exec, file read/write)."""
+    rollout: RolloutRetryConfig = RolloutRetryConfig()
+    """Retries of the whole rollout, on a captured retryable error."""
+
+
+def should_retry(trace: Trace, retry: RolloutRetryConfig) -> bool:
     """Whether a finished rollout should be retried: it ended with an error whose
     exception type is included (and not excluded)."""
     error = trace.error
@@ -54,13 +81,13 @@ async def run_with_retry(
     rollout: Rollout,
     shared_urls: dict[str, str] | None,
     interception: InterceptionPool | None,
-    retry: RetryConfig,
+    retry: RolloutRetryConfig,
 ) -> Trace:
     """Run the whole rollout, retrying it while its trace ends with a retryable error.
     Each retry-causing attempt's error is collected onto the returned trace's `errors`,
     so the final trace shows the full history; the last attempt's trace is returned
     as-is once attempts run out (or the rollout succeeds / hits a non-retryable error)."""
-    if retry.attempts <= 1:
+    if retry.max_retries < 1:
         return await rollout.run(shared_urls, interception)
 
     history: list = []
@@ -68,10 +95,18 @@ async def run_with_retry(
     def record(state: RetryCallState) -> None:
         # before_sleep fires only between attempts (a retry is imminent), so this
         # collects exactly the errors that caused a retry — never the final attempt's.
-        history.extend(state.outcome.result().errors)
+        trace = state.outcome.result()
+        logger.warning(
+            "retrying rollout %s (attempt %d/%d) after error: %s",
+            trace.id,
+            state.attempt_number,
+            retry.max_retries + 1,
+            trace.error.type if trace.error else "?",
+        )
+        history.extend(trace.errors)
 
     retrying = AsyncRetrying(
-        stop=stop_after_attempt(retry.attempts),
+        stop=stop_after_attempt(retry.max_retries + 1),
         retry=retry_if_result(lambda trace: should_retry(trace, retry)),
         before_sleep=record,
         retry_error_callback=lambda state: state.outcome.result(),
