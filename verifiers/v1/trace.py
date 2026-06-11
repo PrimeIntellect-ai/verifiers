@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from typing import Generic, TypeVar
 
 from pydantic import Field, PrivateAttr, computed_field
+from renderers.base import MultiModalData, PlaceholderRange
 
 from verifiers.v1 import graph
 from verifiers.v1.graph import MessageNode
@@ -106,6 +107,35 @@ class Branch(StrictBaseModel):
                 else:
                     out.append(0.0)
         return out
+
+    @property
+    def multi_modal_data(self) -> MultiModalData | None:
+        """The branch's multimodal sidecar — every node's images concatenated in token order,
+        each placeholder offset rebased from node-local to the branch-global token index
+        (aligned to `token_ids`). None when the branch has no images. Drives the training
+        `mm_kwargs` / `mm_token_type_ids`; never persisted (node mm is transient)."""
+        merged = MultiModalData()
+        running = 0
+        found = False
+        for node in self.nodes:
+            mmd = node.multi_modal_data
+            if mmd is not None and not mmd.is_empty():
+                found = True
+                for modality, placeholders in mmd.mm_placeholders.items():
+                    items = mmd.mm_items.get(modality, [])
+                    hashes = mmd.mm_hashes.get(modality, [])
+                    for k, ph in enumerate(placeholders):
+                        merged.mm_placeholders.setdefault(modality, []).append(
+                            PlaceholderRange(
+                                offset=running + ph.offset, length=ph.length
+                            )
+                        )
+                        if k < len(items):
+                            merged.mm_items.setdefault(modality, []).append(items[k])
+                        if k < len(hashes):
+                            merged.mm_hashes.setdefault(modality, []).append(hashes[k])
+            running += len(node.token_ids)
+        return merged if found else None
 
     @property
     def completion_len(self) -> int:

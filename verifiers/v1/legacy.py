@@ -42,6 +42,7 @@ from verifiers.v1.types import (
     TurnTokens,
     Usage,
     UserMessage,
+    content_to_parts,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,9 +99,9 @@ def _to_v1_messages(msgs: Any) -> list:
             continue
         role = m.get("role")
         if role == "system":
-            out.append(SystemMessage(content=_text(m.get("content"))))
+            out.append(SystemMessage(content=content_to_parts(m.get("content"))))
         elif role == "user":
-            out.append(UserMessage(content=_text(m.get("content"))))
+            out.append(UserMessage(content=content_to_parts(m.get("content"))))
         elif role == "assistant":
             out.append(
                 AssistantMessage(

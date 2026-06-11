@@ -116,7 +116,13 @@ async def main() -> None:
         messages = (
             [{"role": "system", "content": system_prompt}] if system_prompt else []
         )
-        messages.append({"role": "user", "content": instruction})
+        # A Messages instruction (e.g. an image-bearing prompt) arrives pre-built as OpenAI
+        # wire dicts; otherwise the single argv string is the first user message.
+        initial = json.loads(os.environ.get("INITIAL_MESSAGES", "[]"))
+        if initial:
+            messages.extend(initial)
+        else:
+            messages.append({"role": "user", "content": instruction})
         while True:
             message = await chat(messages, tools)
             messages.append(message.model_dump(exclude_none=True))

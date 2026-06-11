@@ -22,6 +22,7 @@ from verifiers.v1.ids import EnvId, env_name
 from verifiers.v1.runtimes import DockerConfig, ProgramResult, Runtime, RuntimeConfig
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Messages
 
 logger = logging.getLogger(__name__)
 
@@ -61,23 +62,39 @@ class Harness(ABC, Generic[ConfigT]):
     SUPPORTS_USER_SIM: ClassVar[bool] = (
         False  # drive a task's user simulator (multi-turn user injection); opt in per harness
     )
+    SUPPORTS_MESSAGE_INSTRUCTION: ClassVar[bool] = (
+        False  # accept a Messages-list task.instruction (e.g. an image-bearing prompt); opt in per harness
+    )
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
-    def resolve_prompt(self, task: Task) -> tuple[str | None, str]:
+    def resolve_prompt(self, task: Task) -> tuple[str | None, str | Messages]:
         """Resolve `(system_prompt, user_instruction)` for this harness. If the harness
         appends the system prompt natively, returns it separately; otherwise folds it into
-        the user instruction (warning that it isn't sent as a system message)."""
+        the user instruction (warning that it isn't sent as a system message). A `Messages`
+        instruction (e.g. an image-bearing prompt) is only allowed for harnesses that set
+        `SUPPORTS_MESSAGE_INSTRUCTION`."""
+        instruction = task.instruction
+        if not isinstance(instruction, str) and not self.SUPPORTS_MESSAGE_INSTRUCTION:
+            raise ValueError(
+                f"Harness {self.config.id!r} does not support a Messages instruction; "
+                "task.instruction must be a string."
+            )
         system = task.system_prompt
         if system is None or self.APPENDS_SYSTEM_PROMPT:
-            return system if self.APPENDS_SYSTEM_PROMPT else None, task.instruction
+            return system if self.APPENDS_SYSTEM_PROMPT else None, instruction
+        if not isinstance(instruction, str):
+            raise ValueError(
+                f"Harness {self.config.id!r} cannot fold a system prompt into a Messages "
+                "instruction; set APPENDS_SYSTEM_PROMPT to emit it as a system message."
+            )
         logger.warning(
             "Harness %r does not support a separate system prompt; prepending "
             "task.system_prompt to the user instruction.",
             self.config.id,
         )
-        return None, f"{system}\n\n{task.instruction}"
+        return None, f"{system}\n\n{instruction}"
 
     async def run(
         self,

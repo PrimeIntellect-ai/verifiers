@@ -21,7 +21,8 @@ import hashlib
 import json
 from typing import TYPE_CHECKING
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
+from renderers.base import MultiModalData, PlaceholderRange
 
 from verifiers.v1.types import (
     AssistantMessage,
@@ -59,6 +60,23 @@ class MessageNode(StrictBaseModel):
     `mask`; empty for input messages."""
     finish_reason: FinishReason = None
     """The response's finish reason (assistant nodes only) — kept for truncation detection."""
+    multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
+    """Transient (excluded from wire/disk): the images this message introduces — pixel tensors
+    with placeholder offsets stored NODE-LOCAL (relative to this node's `token_ids`). Set by
+    `add_turn`; `Branch.multi_modal_data` merges + rebases to branch-global; consumed in-process
+    to build training `mm_kwargs` / `mm_token_type_ids`."""
+
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+
+def _content_str(content) -> str:
+    """A message body as a stable string for hashing — plain text as-is, a content-part list as
+    canonical JSON (so two messages carrying the same text/images hash equal), None as ""."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    return json.dumps([p.model_dump() for p in content], sort_keys=True)
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -74,7 +92,7 @@ def message_hash(message: Message) -> str:
     tool call id. Two messages hash equal iff they're the same conversational message, so a
     re-stated prefix message dedups to one node. The dedup key for sharing a prefix across
     turns/branches; salt-free so it is identical across processes and after deserialization."""
-    parts: list[str] = [type(message).__name__, message.content or ""]
+    parts: list[str] = [type(message).__name__, _content_str(message.content)]
     if isinstance(message, AssistantMessage):
         if message.reasoning_content is not None:
             parts += ["reasoning_content", message.reasoning_content]
@@ -93,6 +111,46 @@ def _head_index(trace: "Trace") -> dict[tuple[int | None, str], int]:
             for nid, node in enumerate(trace.nodes)
         }
     return trace._head_index
+
+
+def _node_for_offset(
+    ranges: list[tuple[int, int, int]], offset: int
+) -> tuple[int | None, int]:
+    """The (node_id, start) whose prompt span `[start, start + prompt_len)` contains `offset`,
+    else (None, 0). An image in a reused-prefix node (already attributed) matches no range."""
+    for node_id, start, prompt_len in ranges:
+        if start <= offset < start + prompt_len:
+            return node_id, start
+    return None, 0
+
+
+def _attribute_mm(
+    trace: "Trace", ranges: list[tuple[int, int, int]], mmd: MultiModalData | None
+) -> None:
+    """Distribute a turn's `MultiModalData` (placeholder offsets global in this turn's
+    `prompt_ids`) onto the nodes created this turn — each offset stored node-local, with its
+    item / hash kept aligned. Images in a reused-prefix node match no new range and are
+    skipped (already attributed when that node was first created)."""
+    if mmd is None or mmd.is_empty():
+        return
+    per_node: dict[int, MultiModalData] = {}
+    for modality, placeholders in mmd.mm_placeholders.items():
+        items = mmd.mm_items.get(modality, [])
+        hashes = mmd.mm_hashes.get(modality, [])
+        for k, ph in enumerate(placeholders):
+            node_id, start = _node_for_offset(ranges, ph.offset)
+            if node_id is None:
+                continue
+            nd = per_node.setdefault(node_id, MultiModalData())
+            nd.mm_placeholders.setdefault(modality, []).append(
+                PlaceholderRange(offset=ph.offset - start, length=ph.length)
+            )
+            if k < len(items):
+                nd.mm_items.setdefault(modality, []).append(items[k])
+            if k < len(hashes):
+                nd.mm_hashes.setdefault(modality, []).append(hashes[k])
+    for node_id, nd in per_node.items():
+        trace.nodes[node_id].multi_modal_data = nd
 
 
 def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> None:
@@ -117,6 +175,9 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
     path_len = 0  # cumulative stored token length of the reused prefix
     # cursor: in prompt_ids, the end of the previous *new* message's tokens
     cursor: int | None = None
+    # (node_id, start, prompt_len) per node created this turn — the prompt_ids span each new
+    # node covers, used to attribute this turn's multimodal items to the node that owns them.
+    ranges: list[tuple[int, int, int]] = []
     for i, msg in enumerate(prompt):
         key = (parent, message_hash(msg))
         existing = idx.get(key)
@@ -138,6 +199,7 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
         )
         parent = len(trace.nodes) - 1
         idx[key] = parent
+        ranges.append((parent, start, len(node_tokens)))
         cursor = end
 
     # Assistant node: trailing scaffold (the generation prompt) + the sampled completion.
@@ -156,6 +218,11 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
     )
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.
     idx[(parent, message_hash(response.message))] = len(trace.nodes) - 1
+    ranges.append((len(trace.nodes) - 1, gen_start, len(gen_prompt)))
+
+    # Attribute this turn's images (placeholder offsets global in prompt_ids) onto the new
+    # nodes, stored node-local; reused-prefix nodes already carry theirs.
+    _attribute_mm(trace, ranges, tokens.multi_modal_data if tokens else None)
 
 
 # --- walking the graph (views) ---------------------------------------------------------
