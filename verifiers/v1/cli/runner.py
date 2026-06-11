@@ -8,8 +8,10 @@ import time
 
 from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.cli import resume
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import append_trace, output_path, save_config
+from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import Environment
 from verifiers.v1.trace import Trace
 
@@ -33,20 +35,42 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
-    episodes = [env.episode(task, ctx, n=config.num_rollouts) for task in tasks]
-    logger.info(
-        "running %dx%d rollouts on %s", len(tasks), config.num_rollouts, config.model
-    )
+    out = output_path(config)
+    # Write config.toml up front, then persist each trace as it completes (so the results are
+    # durable mid-run, not only at the end). On resume, keep the saved config + good traces and
+    # run only the owed rollouts. `append_trace` is a sync single-line append, safe to call from
+    # concurrent rollouts in the one event loop.
+    if config.resume is not None:
+        group = bool(discover_decorated(env.taskset, "group_reward"))
+        keep, owed = resume.plan(
+            out, [t.idx for t in tasks], config.num_rollouts, group
+        )
+        if not owed:  # already complete - report it and exit successfully
+            print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
+            raise SystemExit(0)
+        tasks = [task for task in tasks if owed.get(task.idx)]
+        episodes = [env.episode(task, ctx, n=owed[task.idx]) for task in tasks]
+        resume.rewrite_results(out, keep)
+        logger.info(
+            "resuming %s: %d task(s), %d rollout(s) owed",
+            out,
+            len(tasks),
+            sum(owed.values()),
+        )
+    else:
+        episodes = [env.episode(task, ctx, n=config.num_rollouts) for task in tasks]
+        save_config(config, out)
+        logger.info(
+            "running %dx%d rollouts on %s",
+            len(tasks),
+            config.num_rollouts,
+            config.model,
+        )
     start = time.time()
     rollouts = [rollout for episode in episodes for rollout in episode.rollouts]
     display = (
         dashboard(rollouts, config, start) if config.rich else contextlib.nullcontext()
     )
-    # Write config.toml up front, then persist each trace as it completes (so the results
-    # are durable mid-run, not only at the end). `append_trace` is a sync single-line
-    # append, safe to call from concurrent rollouts in the one event loop.
-    out = output_path(config)
-    save_config(config, out)
     logger.info("results: %s", out)
 
     def on_complete(trace: Trace) -> None:
@@ -123,15 +147,32 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             random.Random(_SHUFFLE_SEED).shuffle(idxs)
         if config.num_tasks is not None:
             idxs = idxs[: config.num_tasks]
-        logger.info(
-            "running %dx%d rollouts via the env-server %s pool on %s",
-            len(idxs),
-            config.num_rollouts,
-            config.pool.type,
-            config.model,
-        )
         out = output_path(config)
-        save_config(config, out)
+        if config.resume is not None:
+            keep, owed = resume.plan(
+                out, idxs, config.num_rollouts, info.requires_group_scoring
+            )
+            if not owed:  # already complete - report it and exit successfully
+                print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
+                raise SystemExit(0)
+            resume.rewrite_results(out, keep)
+            idxs = [idx for idx in idxs if owed.get(idx)]
+            logger.info(
+                "resuming %s: %d task(s), %d rollout(s) owed",
+                out,
+                len(idxs),
+                sum(owed.values()),
+            )
+        else:
+            owed = {idx: config.num_rollouts for idx in idxs}
+            save_config(config, out)
+            logger.info(
+                "running %dx%d rollouts via the env-server %s pool on %s",
+                len(idxs),
+                config.num_rollouts,
+                config.pool.type,
+                config.model,
+            )
         logger.info("results: %s", out)
         semaphore = (
             asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
@@ -168,9 +209,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         if info.requires_group_scoring:
             units = [run_group_unit(i) for i in idxs]
         else:
-            units = [
-                run_rollout_unit(i) for i in idxs for _ in range(config.num_rollouts)
-            ]
+            units = [run_rollout_unit(i) for i in idxs for _ in range(owed[i])]
         results = await asyncio.gather(*units)
         await client.close()
         return [trace for unit_traces in results for trace in unit_traces]

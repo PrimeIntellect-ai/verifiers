@@ -19,7 +19,7 @@ from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.log import setup_logging
-from verifiers.v1.cli.output import output_path
+from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     local_examples,
@@ -27,10 +27,16 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
+from verifiers.v1.cli.resume import load_resume_config, split_resume
 from verifiers.v1.cli.runner import run_eval
 from verifiers.v1.configs.eval import EvalConfig
 
-USAGE = "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
+logger = logging.getLogger(__name__)
+
+USAGE = (
+    "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
+    "       uv run eval --resume <output-dir>   (re-run a previous run's missing/errored rollouts)"
+)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -47,22 +53,34 @@ def main(argv: list[str] | None = None) -> None:
             narrow_config(EvalConfig, argv)
         )  # full option help, narrowed to the given ids
         return
-    legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
-    if (
-        not extract_id(argv, "taskset")
-        and not legacy_id
-        and not references_config_file(argv)
-    ):
-        raise SystemExit(
-            USAGE
-        )  # need a taskset (positional / --taskset.id), a legacy --id, or a @ file.toml
+    resume_dir, rest = split_resume(argv)
+    # re-run a previous run's missing/errored rollouts, in place
+    if resume_dir is not None:
+        if rest:
+            raise SystemExit(
+                f"{USAGE}\n--resume re-runs a saved config verbatim and takes no other arguments"
+            )
+        config = load_resume_config(resume_dir)
+    else:
+        legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
+        if (
+            not extract_id(argv, "taskset")
+            and not legacy_id
+            and not references_config_file(argv)
+        ):
+            raise SystemExit(
+                USAGE
+            )  # need a taskset (positional / --taskset.id), a legacy --id, or a @ file.toml
 
-    config_type = narrow_config(EvalConfig, argv)
-    sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
-    config = cli(config_type)
-    if config.dry_run:  # resolved + validated; dump it and skip the run
-        print(config.model_dump_json(indent=2, exclude_none=True))
-        return
+        config_type = narrow_config(EvalConfig, argv)
+        sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
+        config = cli(config_type)
+        if config.dry_run:  # resolved + validated; write it to the output dir and exit
+            setup_logging("DEBUG" if config.verbose else "INFO")
+            logger.info("wrote config to %s", write_config(config, output_path(config)))
+            return
+    if config.is_legacy and config.resume is not None:
+        raise SystemExit("--resume is not supported for legacy (v0) evals")
     # The --rich dashboard reads live v1 Rollout state, so it needs the in-process path; a
     # plain (non-rich) v1 run goes through the env server using `pool` (the path prime-rl
     # trains through). Legacy always runs in-process via the bridge.
@@ -72,7 +90,8 @@ def main(argv: list[str] | None = None) -> None:
     level = "DEBUG" if config.verbose else "INFO"
     if rich:
         setup_logging(level, log_file=log_file, console=False)
-        logging.lastResort = None  # drop stray stdlib records (else they print over the UI)
+        # drop stray stdlib records that bypass loguru (else they print over the UI)
+        logging.lastResort = None
     else:
         setup_logging(level, log_file=log_file, console=True)
     # Make SIGTERM behave like Ctrl-C (SIGINT) so a killed/timed-out eval still runs each

@@ -28,14 +28,21 @@ def output_path(config: EvalConfig) -> Path:
     return Path("outputs") / name / config.uuid
 
 
+def write_config(config: EvalConfig, results_dir: Path) -> Path:
+    """Write the run's resolved `config.toml` (re-readable via `@ config.toml`); return its
+    path. mode="json" makes values TOML-friendly (Path -> str, etc.); exclude_none drops the
+    nulls TOML can't represent."""
+    results_dir.mkdir(parents=True, exist_ok=True)
+    toml = tomli_w.dumps(config.model_dump(mode="json", exclude_none=True))
+    config_path = results_dir / "config.toml"
+    config_path.write_text(toml)
+    return config_path
+
+
 def save_config(config: EvalConfig, results_dir: Path) -> None:
     """Set up the run's output dir: write `config.toml` and start a fresh (empty)
     `results.jsonl`. Call once up front, before traces start landing."""
-    results_dir.mkdir(parents=True, exist_ok=True)
-    # mode="json" makes values TOML-friendly (Path -> str, etc.); exclude_none drops the
-    # nulls TOML can't represent.
-    toml = tomli_w.dumps(config.model_dump(mode="json", exclude_none=True))
-    (results_dir / "config.toml").write_text(toml)
+    write_config(config, results_dir)
     (results_dir / "results.jsonl").write_text(
         ""
     )  # fresh; appended to as traces complete
