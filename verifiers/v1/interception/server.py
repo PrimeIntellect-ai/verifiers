@@ -276,11 +276,9 @@ class InterceptionServer:
                     prompt, session.ctx.model, session.ctx.sampling, tools
                 )
             except OverlongPromptError:
-                # The prompt outgrew the model's context window — a budget limit, not a
-                # crash. End the rollout cleanly as a truncated trajectory: return the last
-                # turn if a simulated conversation already produced one, else refuse the call
-                # to halt the harness (its model call errors out; Harness.run treats an exit
-                # after a stop condition as expected) — same shape as `refused` above.
+                # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
+                # as a truncation — return the last turn if there is one, else refuse to halt
+                # the harness (same shape as `refused` above).
                 session.trace.stop("context_length")
                 logger.debug("prompt too long: id=%s", session.trace.id)
                 if last is None:
