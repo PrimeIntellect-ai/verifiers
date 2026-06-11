@@ -107,7 +107,7 @@ class Rollout:
         is the eval-level shared interception pool (None = a server per rollout)."""
         trace: Trace = Trace(task=self.task)
         self.trace = trace  # expose for the --rich dashboard
-        trace.timing.generation.start = time.time()
+        trace.timing.setup.start = time.time()
         self.runtime = make_runtime(
             self.runtime_config, name=trace.id
         )  # ref set first → always tearable-down; named after the rollout for traceability
@@ -145,9 +145,11 @@ class Rollout:
                         colocated=self.taskset.config.user.colocated,
                     ) as session.user,
                 ):
-                    self.phase = (
-                        Phase.RUNNING
-                    )  # setup done — the harness is now driving
+                    # setup done — the harness is now driving
+                    now = time.time()
+                    trace.timing.setup.end = now
+                    trace.timing.generation.start = now
+                    self.phase = Phase.RUNNING
                     try:
                         await asyncio.wait_for(
                             self.harness.run(
@@ -184,8 +186,11 @@ class Rollout:
             trace.capture_error(e)
         finally:
             trace.is_completed = True
-            if not trace.timing.generation.end:  # error path: harness didn't finish
-                trace.timing.generation.end = time.time()
+            now = time.time()
+            if not trace.timing.setup.end:  # error during setup: close the setup span
+                trace.timing.setup.end = now
+            if trace.timing.generation.start and not trace.timing.generation.end:
+                trace.timing.generation.end = now  # error mid-run: close generation
             # Tear down here — group rewards (later) need only the trace, not a live
             # runtime. `runtime` is always set: make_runtime() ran before the `try`.
             try:
