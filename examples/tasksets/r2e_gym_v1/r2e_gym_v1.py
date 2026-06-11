@@ -76,10 +76,10 @@ def parse_log_pytest(log: str | None) -> dict[str, str]:
         elif "FAILED" in line:
             out[".".join(line.split("::")[1:]).split(" - ")[0]] = "FAILED"
         elif "ERROR" in line:
-            try:
-                name = ".".join(line.split("::")[1:])
-            except IndexError:
-                name = line
+            parts = line.split("::")
+            # An ERROR line may have no "::" (e.g. a collection error names the file
+            # only) — fall back to the whole line rather than an empty key.
+            name = ".".join(parts[1:]) if len(parts) > 1 else line
             out[name.split(" - ")[0]] = "ERROR"
     return out
 
@@ -108,6 +108,8 @@ def extract_gold_patch(parsed_commit_content: str, only_python: bool = True) -> 
     ``parsed_commit_content`` JSON — used by validation/dummy rollouts to confirm the
     gold solution scores 1.0. Reimplements ``ParsedCommit.get_patch()`` without the
     r2egym package."""
+    if not parsed_commit_content:  # row without commit JSON — no gold patch to build
+        return ""
     data = json.loads(parsed_commit_content) if isinstance(parsed_commit_content, str) else parsed_commit_content
     patch = ""
     for fd in data.get("file_diffs", []):
@@ -149,8 +151,6 @@ class R2EGymTask(vf.Task):
     """JSON map of {test_id: PASSED|FAILED|ERROR} the gold solution produces; scoring matches against it."""
     parsed_commit_content: str = ""
     """R2E-Gym commit JSON; gold patch is reconstructed from it for validation/dummy rollouts."""
-    commit_hash: str = ""
-    repo_name: str = ""
 
 
 class R2EGymTaskset(vf.Taskset[R2EGymTask, vf.TasksetConfig]):
