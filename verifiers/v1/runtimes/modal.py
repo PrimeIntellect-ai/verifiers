@@ -15,7 +15,7 @@ from typing import Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import ProgramResult, Runtime, creation_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,10 @@ class ModalConfig(BaseConfig):
     disk: float = 5.0
     """Disk in GB. Modal sandboxes have no disk knob, so this is accepted (so a task can
     declare it without a warning) but not enforced."""
+    sandbox_creates_per_sec: float = 5.0
+    """Pace sandbox creation to stay under Modal's per-workspace creation rate limit (5/s on
+    a new account; raising it needs Modal support). A process-wide limiter shared across all
+    concurrent rollouts; <= 0 disables it."""
 
 
 class ModalRuntime(Runtime):
@@ -74,20 +78,23 @@ class ModalRuntime(Runtime):
         )
         try:
             app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
-            self._sandbox = await modal.Sandbox.create.aio(
-                "sleep",
-                "infinity",  # keep-alive entrypoint; the harness runs via `exec`
-                app=app,
-                name=self.name,
-                image=modal.Image.from_registry(self.config.image),
-                workdir=self.config.workdir,
-                cpu=self.config.cpu,
-                memory=int(self.config.memory * 1024),  # Modal memory is MB
-                gpu=self.config.gpu,
-                region=self.config.region,
-                block_network=not self.config.network_access,
-                timeout=timeout,
-            )
+            async with creation_limiter(
+                self.config.sandbox_creates_per_sec
+            ) or contextlib.nullcontext():
+                self._sandbox = await modal.Sandbox.create.aio(
+                    "sleep",
+                    "infinity",  # keep-alive entrypoint; the harness runs via `exec`
+                    app=app,
+                    name=self.name,
+                    image=modal.Image.from_registry(self.config.image),
+                    workdir=self.config.workdir,
+                    cpu=self.config.cpu,
+                    memory=int(self.config.memory * 1024),  # Modal memory is MB
+                    gpu=self.config.gpu,
+                    region=self.config.region,
+                    block_network=not self.config.network_access,
+                    timeout=timeout,
+                )
             self._sandbox_id = self._sandbox.object_id
             logger.info(
                 "modal: sandbox %s up (image=%s)", self._sandbox_id, self.config.image

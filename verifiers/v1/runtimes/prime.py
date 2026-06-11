@@ -7,26 +7,21 @@ import shlex
 from pathlib import PurePosixPath
 from typing import Literal
 
-from aiolimiter import AsyncLimiter
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import ProgramResult, Runtime, parse_gpu
+from verifiers.v1.runtimes.base import (
+    ProgramResult,
+    Runtime,
+    creation_limiter,
+    parse_gpu,
+)
 
 logger = logging.getLogger(__name__)
 
 
 # "auto" timeout requests the max prime allows (24h).
 _MAX_TIMEOUT_SECONDS = 24 * 60 * 60
-
-# Prime caps tunnel creation at 512/min per API token; past that `tunnel.start()`
-# returns 429 (per-token limit) and the rollout dies. One process-wide leaky bucket
-# paces tunnel issuing across all concurrent rollouts to stay under it. Phrased as
-# 1-every-(60/rate)s (capacity 1) rather than (rate, 60) on purpose: a full rate-capacity
-# bucket would let `rate` tunnels fire at once and then refill, ~doubling within the first
-# minute and still tripping the limit — capacity 1 keeps issuing evenly paced.
-_TUNNELS_PER_MIN = 512
-_TUNNEL_LIMITER = AsyncLimiter(1, 60 / _TUNNELS_PER_MIN)
 
 
 class PrimeConfig(BaseConfig):
@@ -57,6 +52,10 @@ class PrimeConfig(BaseConfig):
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
     disk: float = 5.0
     """Disk in GB."""
+    tunnel_creates_per_min: int = 512
+    """Pace tunnel creation to stay under Prime's per-token tunnel rate limit (512/min); past
+    it `tunnel.start()` returns 429. A process-wide limiter shared across all concurrent
+    rollouts, evenly paced; <= 0 disables it."""
 
 
 class PrimeRuntime(Runtime):
@@ -125,7 +124,9 @@ class PrimeRuntime(Runtime):
 
         tunnel = Tunnel(local_port=port, labels=self.config.labels or None)
         try:
-            async with _TUNNEL_LIMITER:  # stay under prime's per-token tunnel rate
+            async with creation_limiter(
+                self.config.tunnel_creates_per_min / 60
+            ) or contextlib.nullcontext():
                 url = str(await tunnel.start()).rstrip("/")
         except Exception as e:
             raise ProgramError(f"prime tunnel failed (host port {port}): {e}") from e

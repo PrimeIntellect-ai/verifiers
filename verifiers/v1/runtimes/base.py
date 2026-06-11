@@ -16,6 +16,7 @@ import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from aiolimiter import AsyncLimiter
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
@@ -69,6 +70,23 @@ def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
     if head.isdigit():
         return None, int(head)
     return head, 1
+
+
+# Process-wide leaky buckets pacing a remote runtime's resource creation (Modal sandboxes,
+# Prime tunnels) under the provider's per-account rate limit — shared across all concurrent
+# rollouts, keyed by rate. Capacity 1 (1 permit every `1/per_sec`s) keeps issuing evenly
+# paced rather than firing a full bucket at once, which would burst over the limit.
+_creation_limiters: dict[float, AsyncLimiter] = {}
+
+
+def creation_limiter(per_sec: float) -> AsyncLimiter | None:
+    """A shared limiter pacing resource creation to `per_sec` per second (<= 0 disables)."""
+    if per_sec <= 0:
+        return None
+    limiter = _creation_limiters.get(per_sec)
+    if limiter is None:
+        limiter = _creation_limiters[per_sec] = AsyncLimiter(1, 1 / per_sec)
+    return limiter
 
 
 # `stop()` frees a runtime's external resource on the normal path (the rollout's `finally`).
