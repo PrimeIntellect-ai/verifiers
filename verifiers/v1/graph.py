@@ -143,7 +143,8 @@ def _attribute_mm(
                 continue
             k = cursors.get(modality, 0)
             cursors[modality] = k + 1
-            if pos < num_reused:  # reused prefix: advance the cursor, don't re-attribute
+            # Reused prefix: advance the cursor over its media, don't re-attribute.
+            if pos < num_reused:
                 continue
             items = mmd.mm_items.get(modality) or []
             hashes = mmd.mm_hashes.get(modality) or []
