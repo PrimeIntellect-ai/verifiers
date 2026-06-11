@@ -90,8 +90,8 @@ MessageType = Literal["chat", "completion"]  # deprecated
 #   tokenization via the server's /tokenize route.
 # - "dynamo_chat": Dynamo's standard chat-completions route with
 #   pre-tokenized prompt carried in `nvext.token_data`. Server-side token
-#   IDs come back via `nvext.engine_data.completion_token_ids` (PR #8119
-#   canonical channel). Bridge tokenization runs locally via the
+#   IDs come back via `nvext.engine_data.completion_token_ids` (the
+#   canonical Dynamo channel). Bridge tokenization runs locally via the
 #   transformers fast tokenizer; no /tokenize HTTP round-trip.
 RendererTransport = Literal["vllm_generate", "dynamo_chat"]
 

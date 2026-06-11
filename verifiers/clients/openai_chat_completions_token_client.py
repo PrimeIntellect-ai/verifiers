@@ -155,8 +155,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             #   * dynamo_chat: `nvext.extra_fields=["engine_data"]`
             #     tells Dynamo's response builder to emit `response.nvext`
             #     `engine_data.{completion_token_ids, completion_logprobs,
-            #     prompt_token_ids}` (PR #8119 channel mirrored to vLLM in
-            #     ai-dynamo/dynamo `rl-sdk-2`). `from_native_response` grafts
+            #     prompt_token_ids}`. `from_native_response` grafts
             #     this onto the OpenAI-shaped response so `parse_tokens`
             #     works unmodified. `return_token_ids` is dropped because
             #     Dynamo's strict validator rejects it.

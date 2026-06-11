@@ -475,10 +475,10 @@ class OpenAIChatCompletionsClient(
             Three coexisting wire shapes from dynamo's vLLM/SGLang backends:
 
               1. ``response.nvext.engine_data.{completion_token_ids,
-                 completion_logprobs, prompt_token_ids}`` — PR #8119 channel
+                 completion_logprobs, prompt_token_ids}``
                  (opt-in: ``nvext.extra_fields=["engine_data"]``).
               2. ``response.nvext.completion_token_ids`` — top-level shape
-                 from rl-sdk-2 plan A4 (opt-in:
+                 (opt-in:
                  ``nvext.extra_fields=["completion_token_ids"]``). No
                  logprobs in this shape; logprobs ride the standard
                  ``choices[0].logprobs.content[*].logprob`` channel.
