@@ -12,7 +12,13 @@ class RolloutError(Exception):
 
 
 class ModelError(RolloutError):
-    """A model/provider call failed (bad request, auth, overlong prompt, ...)."""
+    """A model/provider call failed (bad request, auth, ...)."""
+
+
+class OverlongPromptError(ModelError):
+    """The prompt (plus the requested completion) exceeded the model's context window.
+    A budget limit, not a crash: the interception server ends the rollout as a clean,
+    truncated trajectory rather than recording it as an error."""
 
 
 class ToolError(RolloutError):
