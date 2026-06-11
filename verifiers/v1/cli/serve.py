@@ -74,5 +74,6 @@ def main(argv: list[str] | None = None) -> None:
         legacy=config.is_legacy,
         address=config.address,
         log_setup=partial(setup_logging, level),
+        multiplex=config.multiplex,
         **server_kwargs,
     )

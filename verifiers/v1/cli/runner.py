@@ -105,6 +105,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             address="tcp://127.0.0.1:0",
             address_queue=address_queue,
             log_setup=partial(setup_logging, level),
+            multiplex=config.multiplex,
             **server_kwargs,
         ),
         daemon=False,
