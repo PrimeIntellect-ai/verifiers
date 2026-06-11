@@ -205,16 +205,17 @@ class RetryingRuntime(Runtime):
     def __init__(self, inner: Runtime, max_attempts: int) -> None:
         super().__init__(inner.name)
         self.inner = inner
-        self.max_attempts = max_attempts
-
-    async def _retry(self, fn, *args):
-        retrying = AsyncRetrying(
-            stop=stop_after_attempt(self.max_attempts),
+        # One Retrying, reused across (and concurrent within) calls: the control flow runs
+        # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.
+        self._retrying = AsyncRetrying(
+            stop=stop_after_attempt(max_attempts),
             retry=retry_if_exception_type(Exception)
             & retry_if_not_exception_type(NotImplementedError),
             reraise=True,
         )
-        return await retrying(fn, *args)
+
+    async def _retry(self, fn, *args):
+        return await self._retrying(fn, *args)
 
     async def start(self) -> None:
         await self._retry(self.inner.start)

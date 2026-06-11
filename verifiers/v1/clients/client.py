@@ -40,7 +40,14 @@ class RetryingClient(Client):
 
     def __init__(self, inner: Client, max_attempts: int) -> None:
         self.inner = inner
-        self.max_attempts = max_attempts
+        # One Retrying, reused across (and concurrent within) calls: the control flow runs
+        # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.
+        self._retrying = AsyncRetrying(
+            stop=stop_after_attempt(max_attempts),
+            retry=retry_if_exception_type(ModelError)
+            & retry_if_not_exception_type(OverlongPromptError),
+            reraise=True,
+        )
 
     async def get_response(
         self,
@@ -49,13 +56,7 @@ class RetryingClient(Client):
         sampling_args: SamplingConfig,
         tools: list[Tool] | None = None,
     ) -> Response:
-        retrying = AsyncRetrying(
-            stop=stop_after_attempt(self.max_attempts),
-            retry=retry_if_exception_type(ModelError)
-            & retry_if_not_exception_type(OverlongPromptError),
-            reraise=True,
-        )
-        return await retrying(
+        return await self._retrying(
             self.inner.get_response, prompt, model, sampling_args, tools
         )
 
