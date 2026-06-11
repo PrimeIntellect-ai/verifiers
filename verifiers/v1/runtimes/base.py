@@ -9,6 +9,7 @@ import asyncio
 import atexit
 import contextlib
 import hashlib
+import logging
 import shlex
 import uuid
 import weakref
@@ -17,10 +18,13 @@ from dataclasses import dataclass
 
 from tenacity import (
     AsyncRetrying,
+    RetryCallState,
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
 )
+
+logger = logging.getLogger(__name__)
 
 # Ensure `uv` is available to run our PEP 723 scripts (the harness + tool servers): use it
 # if present, else bootstrap it — via pip; else via the standalone installer (curl/wget),
@@ -194,24 +198,35 @@ class Runtime(ABC):
 
 
 class RetryingRuntime(Runtime):
-    """Wraps a runtime to retry each call on a transient error (tenacity, `max_attempts`
-    total). A program's own failure surfaces as a `ProgramResult` (non-zero exit), not an
-    exception, so retries fire only on infra/transport faults — provisioning, exec
-    transport, file I/O across the runtime boundary. `CancelledError` (a `BaseException`)
-    and `NotImplementedError` (an unsupported op) are never retried. Sync teardown
-    (`cleanup`) and display (`descriptor`) delegate straight through; `run_uv_script` is
-    inherited, so it runs over the retrying `write`/`run`."""
+    """Wraps a runtime to retry each call on a transient error (tenacity, up to
+    `max_retries` retries). A program's own failure surfaces as a `ProgramResult` (non-zero
+    exit), not an exception, so retries fire only on infra/transport faults — provisioning,
+    exec transport, file I/O across the runtime boundary. `CancelledError` (a
+    `BaseException`) and `NotImplementedError` (an unsupported op) are never retried. Sync
+    teardown (`cleanup`) and display (`descriptor`) delegate straight through;
+    `run_uv_script` is inherited, so it runs over the retrying `write`/`run`."""
 
-    def __init__(self, inner: Runtime, max_attempts: int) -> None:
+    def __init__(self, inner: Runtime, max_retries: int) -> None:
         super().__init__(inner.name)
         self.inner = inner
+        self.max_retries = max_retries
         # One Retrying, reused across (and concurrent within) calls: the control flow runs
         # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.
         self._retrying = AsyncRetrying(
-            stop=stop_after_attempt(max_attempts),
+            stop=stop_after_attempt(max_retries + 1),
             retry=retry_if_exception_type(Exception)
             & retry_if_not_exception_type(NotImplementedError),
+            before_sleep=self._log_retry,
             reraise=True,
+        )
+
+    def _log_retry(self, state: RetryCallState) -> None:
+        logger.warning(
+            "retrying runtime.%s (attempt %d/%d) after error: %s",
+            getattr(state.fn, "__name__", "call"),
+            state.attempt_number,
+            self.max_retries + 1,
+            state.outcome.exception(),
         )
 
     async def _retry(self, fn, *args):

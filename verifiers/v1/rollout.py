@@ -63,8 +63,8 @@ class Rollout:
         harness_timeout: float | None = None,
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
-        model_retries: int = 1,
-        runtime_retries: int = 1,
+        model_retries: int = 0,
+        runtime_retries: int = 0,
     ) -> None:
         self.task = task
         self.taskset = taskset
@@ -75,9 +75,9 @@ class Rollout:
         self.scoring_timeout = scoring_timeout
         self.limits = limits or RolloutLimits()
         self.model_retries = model_retries
-        """Total attempts per model call (1 = no retry); wraps the client in `run()`."""
+        """Retries per model call (0 = no retry); wraps the client in `run()`."""
         self.runtime_retries = runtime_retries
-        """Total attempts per runtime call (1 = no retry); wraps the runtime in `run()`."""
+        """Retries per runtime call (0 = no retry); wraps the runtime in `run()`."""
         self.phase = Phase.SETUP
         """Lifecycle phase for display (see `Phase`); advanced through the rollout, and
         set to DONE by the Episode once group scoring has run."""
@@ -123,11 +123,11 @@ class Rollout:
         self.runtime = make_runtime(
             self.runtime_config, name=trace.id
         )  # ref set first → always tearable-down; named after the rollout for traceability
-        if self.runtime_retries > 1:
+        if self.runtime_retries > 0:
             self.runtime = RetryingRuntime(self.runtime, self.runtime_retries)
         runtime = self.runtime
         ctx = self.ctx
-        if self.model_retries > 1:
+        if self.model_retries > 0:
             ctx = replace(ctx, client=RetryingClient(ctx.client, self.model_retries))
         stops = discover_decorated(self.taskset, "stop")
         logger.info(

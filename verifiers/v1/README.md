@@ -42,8 +42,8 @@ wall-clock timeouts — are all CLI flags (or TOML):
 ```bash
 uv run eval gsm8k-v1 -n 5 -r 3 \
   --max-turns 8 --max-total-tokens 8192 \        # per-rollout budgets (also --max-{input,output}-tokens)
-  --retries.model.max-attempts 3 --retries.runtime.max-attempts 3 \  # retry a single model/runtime call
-  --retries.rollout.max-attempts 3 --retries.rollout.include ProgramError \  # retry a whole rollout, by exception type
+  --retries.model.max-retries 3 --retries.runtime.max-retries 3 \  # retry a single model/runtime call
+  --retries.rollout.max-retries 3 --retries.rollout.include ProgramError \  # retry a whole rollout, by exception type
   --timeout.rollout 600 --timeout.scoring 120        # wall-clock caps, in seconds
 ```
 
@@ -177,15 +177,16 @@ renderer required.)
 ### Limits & retries
 
 Framework-enforced budgets, applied between turns (so they hold for any harness), plus
-retries at two granularities: per-call (model + runtime, default 3 attempts — reruns just
-the failed call, keeping the rollout's progress) and whole-rollout (default off):
+retries at two granularities: per-call (model + runtime, default 3 retries — reruns just
+the failed call, keeping the rollout's progress) and whole-rollout (default 1 retry). A
+retry count of 0 turns a layer off.
 
 ```bash
 uv run eval gsm8k-v1 -n 1 --max-turns 8                  # cap model turns
 uv run eval gsm8k-v1 -n 1 --max-total-tokens 8192        # cap prompt+completion tokens
                                                           # (also --max-input-tokens / --max-output-tokens)
-uv run eval gsm8k-v1 -n 1 --retries.model.max-attempts 5 --retries.runtime.max-attempts 5  # per-call retries
-uv run eval gsm8k-v1 -n 1 --retries.rollout.max-attempts 3 --retries.rollout.include ProgramError  # whole-rollout, by exception type
+uv run eval gsm8k-v1 -n 1 --retries.model.max-retries 5 --retries.runtime.max-retries 5  # per-call retries
+uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.include ProgramError  # whole-rollout, by exception type
 ```
 
 ### First-class Harbor support
