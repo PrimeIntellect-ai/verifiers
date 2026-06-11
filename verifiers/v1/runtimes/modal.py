@@ -16,6 +16,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes.base import ProgramResult, Runtime
+from verifiers.v1.runtimes.limiters import _TUNNEL_LIMITER, creation_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,9 @@ class ModalConfig(BaseConfig):
     disk: float = 5.0
     """Disk in GB. Modal sandboxes have no disk knob, so this is accepted (so a task can
     declare it without a warning) but not enforced."""
+    creates_per_sec: float | None = 5.0
+    """Pace sandbox creation to this many per second, enforced host-wide across every
+    env-server worker process (None/<= 0 disables it) — Modal's per-workspace limit is 5/s."""
 
 
 class ModalRuntime(Runtime):
@@ -74,20 +78,24 @@ class ModalRuntime(Runtime):
         )
         try:
             app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
-            self._sandbox = await modal.Sandbox.create.aio(
-                "sleep",
-                "infinity",  # keep-alive entrypoint; the harness runs via `exec`
-                app=app,
-                name=self.name,
-                image=modal.Image.from_registry(self.config.image),
-                workdir=self.config.workdir,
-                cpu=self.config.cpu,
-                memory=int(self.config.memory * 1024),  # Modal memory is MB
-                gpu=self.config.gpu,
-                region=self.config.region,
-                block_network=not self.config.network_access,
-                timeout=timeout,
-            )
+            async with (
+                creation_limiter(self.config.creates_per_sec, "modal-sandbox")
+                or contextlib.nullcontext()
+            ):
+                self._sandbox = await modal.Sandbox.create.aio(
+                    "sleep",
+                    "infinity",  # keep-alive entrypoint; the harness runs via `exec`
+                    app=app,
+                    name=self.name,
+                    image=modal.Image.from_registry(self.config.image),
+                    workdir=self.config.workdir,
+                    cpu=self.config.cpu,
+                    memory=int(self.config.memory * 1024),  # Modal memory is MB
+                    gpu=self.config.gpu,
+                    region=self.config.region,
+                    block_network=not self.config.network_access,
+                    timeout=timeout,
+                )
             self._sandbox_id = self._sandbox.object_id
             logger.info(
                 "modal: sandbox %s up (image=%s)", self._sandbox_id, self.config.image
@@ -106,7 +114,10 @@ class ModalRuntime(Runtime):
 
         tunnel = Tunnel(local_port=port)
         try:
-            url = str(await tunnel.start()).rstrip("/")
+            async with (
+                _TUNNEL_LIMITER
+            ):  # shared prime_tunnel rate (512/min, runtime-independent)
+                url = str(await tunnel.start()).rstrip("/")
         except Exception as e:
             raise ProgramError(f"modal tunnel failed (host port {port}): {e}") from e
         self._tunnels.append(tunnel)

@@ -7,26 +7,17 @@ import shlex
 from pathlib import PurePosixPath
 from typing import Literal
 
-from aiolimiter import AsyncLimiter
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes.base import ProgramResult, Runtime, parse_gpu
+from verifiers.v1.runtimes.limiters import _TUNNEL_LIMITER, creation_limiter
 
 logger = logging.getLogger(__name__)
 
 
 # "auto" timeout requests the max prime allows (24h).
 _MAX_TIMEOUT_SECONDS = 24 * 60 * 60
-
-# Prime caps tunnel creation at 512/min per API token; past that `tunnel.start()`
-# returns 429 (per-token limit) and the rollout dies. One process-wide leaky bucket
-# paces tunnel issuing across all concurrent rollouts to stay under it. Phrased as
-# 1-every-(60/rate)s (capacity 1) rather than (rate, 60) on purpose: a full rate-capacity
-# bucket would let `rate` tunnels fire at once and then refill, ~doubling within the first
-# minute and still tripping the limit — capacity 1 keeps issuing evenly paced.
-_TUNNELS_PER_MIN = 512
-_TUNNEL_LIMITER = AsyncLimiter(1, 60 / _TUNNELS_PER_MIN)
 
 
 class PrimeConfig(BaseConfig):
@@ -57,6 +48,10 @@ class PrimeConfig(BaseConfig):
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
     disk: float = 5.0
     """Disk in GB."""
+    creates_per_min: int | None = None
+    """Pace sandbox creation to this many per minute, enforced host-wide across every
+    env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
+    and globally — see limiters._TUNNEL_LIMITER.)"""
 
 
 class PrimeRuntime(Runtime):
@@ -95,17 +90,23 @@ class PrimeRuntime(Runtime):
             "region": self.config.region,
         }
         try:
-            sandbox = await self._client.create(
-                CreateSandboxRequest(
-                    name=self.name,
-                    labels=self.config.labels,
-                    docker_image=self.config.image,
-                    network_access=self.config.network_access,
-                    vm=self.config.vm,
-                    guaranteed=self.config.guaranteed,
-                    **{k: v for k, v in options.items() if v is not None},
+            async with (
+                creation_limiter(
+                    (self.config.creates_per_min or 0) / 60, "prime-sandbox"
                 )
-            )
+                or contextlib.nullcontext()
+            ):
+                sandbox = await self._client.create(
+                    CreateSandboxRequest(
+                        name=self.name,
+                        labels=self.config.labels,
+                        docker_image=self.config.image,
+                        network_access=self.config.network_access,
+                        vm=self.config.vm,
+                        guaranteed=self.config.guaranteed,
+                        **{k: v for k, v in options.items() if v is not None},
+                    )
+                )
             self._sandbox_id = sandbox.id
             await self._client.wait_for_creation(self._sandbox_id)
             logger.info(
@@ -125,7 +126,9 @@ class PrimeRuntime(Runtime):
 
         tunnel = Tunnel(local_port=port, labels=self.config.labels or None)
         try:
-            async with _TUNNEL_LIMITER:  # stay under prime's per-token tunnel rate
+            async with (
+                _TUNNEL_LIMITER
+            ):  # shared prime_tunnel rate (512/min, runtime-independent)
                 url = str(await tunnel.start()).rstrip("/")
         except Exception as e:
             raise ProgramError(f"prime tunnel failed (host port {port}): {e}") from e
