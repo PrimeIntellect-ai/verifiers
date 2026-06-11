@@ -6,8 +6,6 @@ the taskset/harness flags stay typed (`--taskset.*`, `--harness.*`). The server 
 rollouts on request by task idx.
 """
 
-import asyncio
-import signal
 import sys
 
 from pydantic_config import cli
@@ -21,7 +19,7 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.serve import EnvServerConfig
-from verifiers.v1.serve.server import EnvServer
+from verifiers.v1.serve import serve_env
 
 USAGE = "usage: uv run serve [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
 
@@ -56,17 +54,20 @@ def main(argv: list[str] | None = None) -> None:
         return
     setup_logging("DEBUG" if config.verbose else "INFO")
 
-    if config.is_legacy:  # v0 env served through the legacy bridge
-        from verifiers.v1.legacy import LegacyEnvServer
-
-        server: EnvServer = LegacyEnvServer(
-            env_id=config.id,
-            env_args=config.args,
-            extra_env_kwargs=config.extra_env_kwargs,
-            address=config.address,
-        )
-    else:
-        server = EnvServer(config, address=config.address)
-    # SIGTERM behaves like Ctrl-C so a killed server runs its teardown (closes clients).
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
-    asyncio.run(server.run())
+    # A single in-process server (num_workers=1) or a router + worker pool (>1); the
+    # frontend speaks the same protocol either way. serve_env owns the SIGTERM teardown.
+    server_kwargs = (
+        {
+            "env_id": config.id,
+            "env_args": config.args,
+            "extra_env_kwargs": config.extra_env_kwargs,
+        }
+        if config.is_legacy
+        else {"config": config}
+    )
+    serve_env(
+        num_workers=config.num_workers,
+        legacy=config.is_legacy,
+        address=config.address,
+        **server_kwargs,
+    )

@@ -43,6 +43,10 @@ class EvalConfig(EnvConfig):
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )
     """Max rollouts in flight at once."""
+    num_workers: int = Field(0, validation_alias=AliasChoices("num_workers", "w"))
+    """Run the eval through an env-server worker pool of this many processes (0 = off,
+    in-process). >0 spawns the router + workers and drives rollouts over ZMQ — the same
+    path prime-rl trains through, so it exercises the pool e2e for v1 and legacy v0 envs."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = False
