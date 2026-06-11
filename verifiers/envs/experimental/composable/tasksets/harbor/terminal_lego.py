@@ -379,11 +379,11 @@ def _parse_size_gb(value: Any, default: int) -> int:
         return max(1, math.ceil(float(value)))
 
     raw = str(value).strip().lower()
-    if not raw:
-        return default
     for suffix in ("ib", "b"):
         if raw.endswith(suffix):
             raw = raw[: -len(suffix)]
+    if not raw:
+        return default
 
     multipliers = {
         "k": 1 / (1024 * 1024),

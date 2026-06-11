@@ -1,6 +1,5 @@
 import json
 import logging
-import shlex
 import tarfile
 import tempfile
 from pathlib import Path
@@ -165,23 +164,15 @@ class HarborTaskSet(SandboxTaskSet):
 
             remote_tar = "/tmp/harbor_tests.tar.gz"
             await sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
-            reserved_paths = ["/tests", "/logs/verifier"]
-            if not allow_existing_oracle:
-                reserved_paths.append("/oracle")
-            reserved_paths_str = " ".join(shlex.quote(path) for path in reserved_paths)
+            oracle_cleanup = "rm -rf /oracle; " if not allow_existing_oracle else ""
             setup_result = await sandbox_client.execute_command(
                 sandbox_id,
-                "for path in "
-                f"{reserved_paths_str}; do "
-                'if [ -e "$path" ] || [ -L "$path" ]; then '
-                'echo "reserved verifier path already exists: $path" >&2; '
-                "exit 1; "
-                "fi; "
-                "done; "
                 "if [ -e /logs ] && { [ ! -d /logs ] || [ -L /logs ]; }; then "
                 'echo "reserved verifier path already exists: /logs" >&2; '
                 "exit 1; "
                 "fi; "
+                "rm -rf /tests /logs/verifier; "
+                f"{oracle_cleanup}"
                 f"mkdir -p /tests /logs/verifier && tar -xzf {remote_tar} -C / && rm {remote_tar}",
                 timeout=900,
             )
@@ -411,9 +402,16 @@ class HarborDatasetTaskSet(SandboxTaskSet):
         sandbox_id: str,
         state: dict,
         test_timeout: int,
+        allow_existing_oracle: bool = False,
     ) -> str:
         task = HarborTaskSet(state["info"]["task_dir"])
-        return await task._run_tests(sandbox_client, sandbox_id, state, test_timeout)
+        return await task._run_tests(
+            sandbox_client,
+            sandbox_id,
+            state,
+            test_timeout,
+            allow_existing_oracle=allow_existing_oracle,
+        )
 
     def _calculate_reward(self, test_output: str, info: dict) -> float:
         task = HarborTaskSet(info["task_dir"])
