@@ -27,11 +27,6 @@ from verifiers.v1.types import (
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 
-# Case-folded substrings that mark a provider rejecting a prompt for exceeding the model's
-# context window — vLLM, OpenAI and friends each phrase it differently. An overlong prompt
-# is a budget limit, not a crash, so we surface it as a distinct `OverlongPromptError` that
-# the interception server turns into a clean, truncated rollout (see
-# `verifiers.v1.interception.server.handle_chat`).
 _CONTEXT_LENGTH_PHRASES = (
     "this model's maximum context length is",
     "is longer than the model's context length",
