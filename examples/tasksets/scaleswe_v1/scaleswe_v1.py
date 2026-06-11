@@ -16,7 +16,6 @@ from pathlib import Path
 import verifiers.v1 as vf
 
 DATASET = "AweAI-Team/Scale-SWE"
-REGISTRY = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
 
 # The testbed conda env (with the project + pytest installed) and quiet, non-interactive
 # tooling — exported for every command the taskset runs in the sandbox.
@@ -57,10 +56,6 @@ done
 PATCH = "/tmp/scaleswe_f2p.patch"
 SCORER = "/tmp/scaleswe_scorer.py"
 SCORER_SRC = (Path(__file__).parent / "score.py").read_bytes()
-
-
-def _image(image_url: str) -> str:
-    return image_url if image_url.startswith(REGISTRY) else f"{REGISTRY}/{image_url}"
 
 
 def _ids(raw: str | list[str] | None) -> list[str]:
@@ -104,7 +99,7 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, vf.TasksetConfig]):
                 idx=i,
                 name=row["instance_id"],
                 instruction=row["problem_statement"],
-                image=_image(row["image_url"]),
+                image=row["image_url"],
                 workdir=row["workdir"],
                 base_commit=row.get("parent_commit") or row.get("base_commit") or "",
                 pre_commands=(row.get("pre_commands") or "")
