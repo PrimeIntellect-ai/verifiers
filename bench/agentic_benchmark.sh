@@ -22,7 +22,8 @@ MAX_TURNS="${MAX_TURNS:-32}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-set -a; . "$HOME/.env" 2>/dev/null || true; set +a
+# Creds for the model endpoint (+ prime runtime); skip the FIFO read if already in the env.
+[ -n "${PRIME_API_KEY:-}" ] || { set -a; . "$HOME/.env" 2>/dev/null || true; set +a; }
 
 OUT="/tmp/vbench/agentic"
 rm -rf "$OUT"; mkdir -p "$OUT"; : > "$OUT/e2e.txt"
@@ -34,7 +35,8 @@ for rt in $RUNTIMES; do
     uv run eval "$TASKSET" --taskset.tasks "[\"$TASK\"]" \
       --harness.id default --harness.enable_bash true --harness.runtime.type "$rt" \
       --num_tasks 1 --num_rollouts "$r" \
-      --max_concurrent None --retry.attempts 1 --max_turns "$MAX_TURNS" \
+      --max_concurrent None --max_turns "$MAX_TURNS" \
+      --retries.rollout.max_retries 0 --retries.model.max_retries 0 --retries.runtime.max_retries 0 \
       --rich false --output_dir "$OUT/$label" \
       > "$OUT/$label.stdout" 2> "$OUT/$label.log"
     rc=$?

@@ -19,7 +19,8 @@ MODEL="${MODEL:-deepseek/deepseek-v4-flash}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-set -a; . "$HOME/.env" 2>/dev/null || true; set +a
+# Creds for the model endpoint (+ prime runtime); skip the FIFO read if already in the env.
+[ -n "${PRIME_API_KEY:-}" ] || { set -a; . "$HOME/.env" 2>/dev/null || true; set +a; }
 
 SAMPLING=()
 [ -n "$MAX_TOKENS" ] && SAMPLING+=(--sampling.max_tokens "$MAX_TOKENS")
@@ -33,7 +34,9 @@ for rt in $RUNTIMES; do
     start=$(date +%s)
     uv run eval "$TASKSET" --harness.id default --harness.enable_bash false \
       --harness.runtime.type "$rt" --num_tasks 1 --num_rollouts "$r" \
-      --max_concurrent None --retry.attempts 1 "${SAMPLING[@]}" \
+      --max_concurrent None \
+      --retries.rollout.max_retries 0 --retries.model.max_retries 0 --retries.runtime.max_retries 0 \
+      "${SAMPLING[@]}" \
       -m "$MODEL" --rich false --output_dir "$OUT/$label" \
       > "$OUT/$label.stdout" 2> "$OUT/$label.log"
     rc=$?
