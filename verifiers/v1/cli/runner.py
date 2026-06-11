@@ -77,7 +77,9 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
     `EnvClient` — the same path prime-rl trains through, so it exercises the
     router + workers end-to-end. Output matches `run_eval` (config.toml + results.jsonl)."""
     import multiprocessing as mp
+    from functools import partial
 
+    from verifiers.v1.cli.log import setup_logging
     from verifiers.v1.serve import EnvClient, env_config_data, serve_env
 
     legacy = config.is_legacy
@@ -90,6 +92,9 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         if legacy
         else {"config_data": env_config_data(config)}  # picklable across the spawn
     )
+    # The pool broker + workers are spawned (fresh interpreters, no logging) — hand them
+    # the same loguru setup the main process uses so their rollout logs come back.
+    level = "DEBUG" if config.verbose else "INFO"
     mpctx = mp.get_context("spawn")
     address_queue: mp.Queue = mpctx.Queue()
     proc = mpctx.Process(
@@ -99,6 +104,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             legacy=legacy,
             address="tcp://127.0.0.1:0",
             address_queue=address_queue,
+            log_setup=partial(setup_logging, level),
             **server_kwargs,
         ),
         daemon=False,
