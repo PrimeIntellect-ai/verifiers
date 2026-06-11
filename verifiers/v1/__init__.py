@@ -38,7 +38,7 @@ from verifiers.v1.loaders import (
     task_type,
     taskset_config_type,
 )
-from verifiers.v1.retries import RetryConfig
+from verifiers.v1.retries import CallRetryConfig, RetryConfig, RolloutRetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     DockerConfig,
@@ -149,7 +149,9 @@ __all__ = [
     "StaticPoolConfig",
     "ElasticPoolConfig",
     "pool_serve_kwargs",
+    "CallRetryConfig",
     "RetryConfig",
+    "RolloutRetryConfig",
     "TimeoutConfig",
     "Episode",
     "Rollout",
