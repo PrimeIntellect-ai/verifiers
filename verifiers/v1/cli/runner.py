@@ -43,8 +43,9 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     if config.resume is not None:
         group = bool(discover_decorated(env.taskset, "group_reward"))
         keep, owed = resume_.plan(out, [t.idx for t in tasks], config.num_rollouts, group)
-        if not owed:
-            raise resume_.nothing_to_resume(out, len(tasks), config.num_rollouts)
+        if not owed:  # already complete - report it and exit successfully
+            print(resume_.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
+            raise SystemExit(0)
         tasks = [task for task in tasks if owed.get(task.idx)]
         episodes = [env.episode(task, ctx, n=owed[task.idx]) for task in tasks]
         resume_.rewrite_results(out, keep)
@@ -149,8 +150,9 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             keep, owed = resume_.plan(
                 out, idxs, config.num_rollouts, info.requires_group_scoring
             )
-            if not owed:
-                raise resume_.nothing_to_resume(out, len(idxs), config.num_rollouts)
+            if not owed:  # already complete - report it and exit successfully
+                print(resume_.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
+                raise SystemExit(0)
             resume_.rewrite_results(out, keep)
             idxs = [idx for idx in idxs if owed.get(idx)]
             logger.info(

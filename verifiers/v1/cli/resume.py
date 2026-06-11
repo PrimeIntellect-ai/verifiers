@@ -94,9 +94,10 @@ def rewrite_results(resume_dir: Path, keep: list[dict]) -> None:
     tmp.replace(path)
 
 
-def nothing_to_resume(resume_dir: Path, num_tasks: int, num_rollouts: int) -> SystemExit:
-    """The error raised when every selected rollout already completed without error."""
-    return SystemExit(
+def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:
+    """The message shown (and then exit 0 - the run is already complete) when every selected
+    rollout already completed without error."""
+    return (
         f"nothing to resume in {resume_dir}: all {num_tasks}x{num_rollouts} rollouts "
         f"already completed without error"
     )
