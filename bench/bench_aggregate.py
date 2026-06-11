@@ -1,12 +1,13 @@
-"""Aggregate an agentic benchmark run into agentic_benchmark.json.
+"""Aggregate a worker-pool benchmark run (single-turn or agentic) into JSON.
 
-    python bench/agentic_aggregate.py <out_dir> <task> <max_turns>
+    python bench/bench_aggregate.py <out_dir> <label>
 
 `out_dir` holds one `w<workers>-r<rollouts>/` eval output dir per (workers, group size)
 plus `e2e.txt` (`<workers> <rollouts> <e2e_seconds>` lines). For each run we record the
 e2e wall clock, the full per-rollout `generation.duration` list (so p10/p50/p90 — e2e is
 straggler-gated, so the distribution is the honest comparator), reward, and error count.
-`workers=0` is the single in-process server; `>0` the worker pool.
+`workers=0` is the single in-process server; `>0` the worker pool. `label` is free-text
+run metadata (e.g. the taskset + runtime).
 """
 
 import glob
@@ -14,7 +15,7 @@ import json
 import os
 import sys
 
-out, task, max_turns = sys.argv[1], sys.argv[2], int(sys.argv[3])
+out, label = sys.argv[1], sys.argv[2]
 
 e2e: dict[tuple[int, int], int] = {}
 for line in open(os.path.join(out, "e2e.txt")):
@@ -40,4 +41,4 @@ for d in sorted(p for p in glob.glob(f"{out}/*") if os.path.isdir(p)):
         }
     )
 
-print(json.dumps({"task": task, "max_turns": max_turns, "runs": runs}, indent=2))
+print(json.dumps({"label": label, "runs": runs}, indent=2))

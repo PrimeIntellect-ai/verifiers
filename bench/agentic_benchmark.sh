@@ -45,7 +45,7 @@ for w in $WORKERS; do
   done
 done
 
-# Aggregate into bench/agentic_benchmark.json: per-(workers, rollouts) e2e + the per-rollout
+# Aggregate into agentic_benchmark.json: per-(workers, rollouts) e2e + the per-rollout
 # generation-duration list (p10/p50/p90), reward, and error count.
-uv run python bench/agentic_aggregate.py "$OUT" "$TASKSET/$TASK" "$MAX_TURNS" > bench/agentic_benchmark.json
-echo "wrote bench/agentic_benchmark.json"
+uv run python bench/bench_aggregate.py "$OUT" "$TASK ($RUNTIME, max_turns=$MAX_TURNS)" > "$OUT/agentic_benchmark.json"
+echo "wrote $OUT/agentic_benchmark.json"
