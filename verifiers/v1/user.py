@@ -14,17 +14,26 @@ side. `respond(message)` takes the model's last assistant text and returns the n
 messages plus whether the conversation is done.
 """
 
+import asyncio
 import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
+from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, make_runtime
 from verifiers.v1.tools import Tools, serve_tools
 from verifiers.v1.types import Messages
 
 logger = logging.getLogger(__name__)
+
+# The colocated user server is up once its in-runtime probe passes, but under high concurrency
+# it can still momentarily refuse a host connection. Retry the connect before giving up so a
+# transient refusal doesn't fail the rollout.
+_USER_CONNECT_ATTEMPTS = 12
+_USER_CONNECT_BACKOFF = 0.2  # seconds, exponential up to the cap
+_USER_CONNECT_MAX_BACKOFF = 2.0
 
 
 @dataclass(frozen=True)
@@ -38,16 +47,42 @@ class User(Tools):
 Respond = Callable[[str], Awaitable[tuple[Messages, bool]]]
 
 
+async def _await_user_ready(url: str) -> None:
+    """Poll the user server until it accepts a connection (any HTTP response — an MCP server
+    406s a bare GET — means up). Retries a transient refusal (the colocated server can be slow
+    to accept under high concurrency), and on exhaustion raises `ProgramError` — a captured,
+    retryable rollout error — so the failure flows through the rollout's error handling instead
+    of escaping as a raw transport exception that would crash the batch."""
+    import httpx
+
+    last_exc: Exception | None = None
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        for attempt in range(_USER_CONNECT_ATTEMPTS):
+            try:
+                await client.get(url)
+                return
+            except Exception as e:  # connection refused / timeout: retry
+                last_exc = e
+                await asyncio.sleep(
+                    min(_USER_CONNECT_BACKOFF * 2**attempt, _USER_CONNECT_MAX_BACKOFF)
+                )
+    raise ProgramError(
+        f"user server at {url} unreachable after {_USER_CONNECT_ATTEMPTS} attempts: {last_exc!r}"
+    )
+
+
 @contextlib.asynccontextmanager
 async def connect_user(url: str) -> AsyncIterator[Respond]:
     """Open an MCP client session to a user server at `url` and yield an async
     `respond(message)` that calls its `respond` tool, parsing the JSON it returns
-    (`{"messages": [...], "done": bool}`) into typed `(messages, done)`."""
+    (`{"messages": [...], "done": bool}`) into typed `(messages, done)`. Waits (with retry) for
+    the server to accept connections first, so a transient refusal under load is recovered."""
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
 
     from verifiers.v1.interception import parse_message
 
+    await _await_user_ready(url)
     async with contextlib.AsyncExitStack() as stack:
         read, write, *_ = await stack.enter_async_context(streamable_http_client(url))
         session = await stack.enter_async_context(ClientSession(read, write))
