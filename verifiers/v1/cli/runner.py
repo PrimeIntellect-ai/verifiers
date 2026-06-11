@@ -8,7 +8,7 @@ import time
 
 from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.cli import resume as resume_
+from verifiers.v1.cli import resume
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.decorators import discover_decorated
@@ -42,13 +42,15 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # concurrent rollouts in the one event loop.
     if config.resume is not None:
         group = bool(discover_decorated(env.taskset, "group_reward"))
-        keep, owed = resume_.plan(out, [t.idx for t in tasks], config.num_rollouts, group)
+        keep, owed = resume.plan(
+            out, [t.idx for t in tasks], config.num_rollouts, group
+        )
         if not owed:  # already complete - report it and exit successfully
-            print(resume_.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
+            print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
         tasks = [task for task in tasks if owed.get(task.idx)]
         episodes = [env.episode(task, ctx, n=owed[task.idx]) for task in tasks]
-        resume_.rewrite_results(out, keep)
+        resume.rewrite_results(out, keep)
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
             out,
@@ -147,16 +149,19 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             idxs = idxs[: config.num_tasks]
         out = output_path(config)
         if config.resume is not None:
-            keep, owed = resume_.plan(
+            keep, owed = resume.plan(
                 out, idxs, config.num_rollouts, info.requires_group_scoring
             )
             if not owed:  # already complete - report it and exit successfully
-                print(resume_.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
+                print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
                 raise SystemExit(0)
-            resume_.rewrite_results(out, keep)
+            resume.rewrite_results(out, keep)
             idxs = [idx for idx in idxs if owed.get(idx)]
             logger.info(
-                "resuming %s: %d task(s), %d rollout(s) owed", out, len(idxs), sum(owed.values())
+                "resuming %s: %d task(s), %d rollout(s) owed",
+                out,
+                len(idxs),
+                sum(owed.values()),
             )
         else:
             owed = {idx: config.num_rollouts for idx in idxs}
