@@ -114,7 +114,6 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             random.Random(_SHUFFLE_SEED).shuffle(idxs)
         if config.num_tasks is not None:
             idxs = idxs[: config.num_tasks]
-        group = info.requires_group_scoring or config.num_rollouts > 1
         logger.info(
             "running %dx%d rollouts via a %d-worker pool on %s",
             len(idxs),
@@ -129,32 +128,43 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
         )
 
-        async def one(idx: int) -> list[Trace]:
+        async def run_group_unit(idx: int) -> list[Trace]:
             async with semaphore or contextlib.nullcontext():
-                if group:
-                    traces = await client.run_group(
-                        task_idx=idx,
-                        n=config.num_rollouts,
-                        client=config.client,
-                        model=config.model,
-                        sampling=config.sampling,
-                    )
-                else:
-                    traces = [
-                        await client.run_rollout(
-                            task_idx=idx,
-                            client=config.client,
-                            model=config.model,
-                            sampling=config.sampling,
-                        )
-                    ]
+                traces = await client.run_group(
+                    task_idx=idx,
+                    n=config.num_rollouts,
+                    client=config.client,
+                    model=config.model,
+                    sampling=config.sampling,
+                )
             for trace in traces:
                 append_trace(out, trace)
             return traces
 
-        results = await asyncio.gather(*(one(i) for i in idxs))
+        async def run_rollout_unit(idx: int) -> list[Trace]:
+            async with semaphore or contextlib.nullcontext():
+                trace = await client.run_rollout(
+                    task_idx=idx,
+                    client=config.client,
+                    model=config.model,
+                    sampling=config.sampling,
+                )
+            append_trace(out, trace)
+            return [trace]
+
+        # A group-scored taskset must run each task's rollouts together (cross-rollout
+        # scoring) → one `run_group` request per task (one worker). Otherwise the rollouts
+        # are independent → one `run_rollout` request each, which the broker round-robins
+        # (least-busy) across workers — mirrors the prime-rl dispatcher.
+        if info.requires_group_scoring:
+            units = [run_group_unit(i) for i in idxs]
+        else:
+            units = [
+                run_rollout_unit(i) for i in idxs for _ in range(config.num_rollouts)
+            ]
+        results = await asyncio.gather(*units)
         await client.close()
-        return [trace for group_traces in results for trace in group_traces]
+        return [trace for unit_traces in results for trace in unit_traces]
     finally:
         proc.terminate()
         with contextlib.suppress(Exception):
