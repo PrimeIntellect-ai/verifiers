@@ -2,10 +2,10 @@
 
 Two open v1 refactors of verifiers (the `Taskset × Harness × Runtime` model), both against `main`.
 
-|  | **#1559** — `codex/v1-nano-refactor-draft` (willccbb) | **#1576** — `feat/nano-as-v1` (mika) |
+|  | **#1559** — `codex/v1-nano-refactor-draft` | **#1576** — `feat/nano-as-v1` |
 |---|---|---|
 | Size | +17.6k / −34.1k, 422 files | +11.5k / −50k, 401 files (re-vendors vf-nano) |
-| Thesis | Broad v1 surface — many harnesses, engine bridges, in-tree advantages, a bundled trainer | v0↔v1 bridge + training-readiness — legacy bridge, message graph, multiplexing, benchmarked |
+| Thesis | Broad v1 surface — many harnesses, in-tree advantages, nested subagents | v0↔v1 bridge + training-readiness — legacy bridge, message graph, multiplexing, benchmarked |
 | Rollout record | `State` + flat `Turn` list (serializable, no graph) | delta-native `MessageNode` graph (branches via leaves→root) |
 | RL contract | token-level **advantages computed in-lib** (`@advantage`) | trainer (prime-rl) computes advantages; lib exposes trainable `Trace` |
 
@@ -23,14 +23,10 @@ Two open v1 refactors of verifiers (the `Taskset × Harness × Runtime` model), 
 
 ## Only in #1559
 
-- Runtime configs for **modal + daytona** (stubs — `NotImplementedError`)
 - Harness ecosystem: **`CommandHarness`** (agentic-CLI base) + **MiniSWEAgent / OpenCode / Pi / Terminus2 / Replay / NeMoGym**
 - **In-tree token-level advantages** — `@advantage` (grpo / rloo / reinforce / sft) writing `Turn.tokens.*_advantages`; `advantage=None` defers to a trainer
 - **Nested harnesses / subagents** — `Harness.run(context=parent)` reuses the parent's runtime, clients, toolsets
 - **Richer MCP** — placement `dedicated` / `colocated` / `remote` × scope `rollout` / `env` (refcounted, start-once) + **bound-arg tools** (`args`/`sets`/`extends`) that hide state plumbing from the model
-- **External-engine tasksets** — OpenEnv, NeMo-Gym, OpenReward, TextArena, Harbor, Replay
-- **~30 bundled v1 example envs** (bfcl, tau2, dspy, openai-agents, langchain, self-judge, parallel-sandbox, …)
-- Bundled **"baby prime-rl" trainer** (`verifiers-rl`, `vf-rl`/`vf-train`) — targets the v0 `generate` API
 - **Replay harness** (SFT)
 
 ## Only in #1576
@@ -45,12 +41,6 @@ Two open v1 refactors of verifiers (the `Taskset × Harness × Runtime` model), 
 
 > Excluded from #1576's tip via reverts (in separate review — verifiers#1618): multimodal/VLM, user-sim colocation, color-codeword taskset.
 
-## Validation done
-
-**#1559** — CI green (ruff / ty / semgrep / codeql); ~110-test v1 unit suite (`test_v1_core.py`); live `prime eval` **reward matrix** (reverse-text 0.948, alphabet-sort 0.801, mcp-search 1.0, math-python 1.0, hello-group-reward 0.645, tau2 0.533; openenv echo/textarena sandbox-cleanup verified); prime-rl **smoke-load** of 2 envs. *No throughput benchmark; no RL reward-curve / parity numbers.*
-
-**#1576** — ruff / ty + v0 CPU suite; v1 unit (graph / legacy / configs) + **6-test e2e matrix** (harness × runtime, asserts `reward==1`); eval reward (gsm8k 1.0, code_golf 1.5, glossary 1.0); **runtime+multiplex benchmark** with committed results (prime gsm8k n=32/64/128, 0 errors, gen-p50/p90 methodology); **training validation with numbers** — prime-rl native + bridge **parity** (reverse-text: v0-bridge 0.14→0.79, v1-native 0.08→0.76, 20 steps, 128/128 trainable, 0% error) and **LoRA** (alphabet-sort r32/a64, 0.43→0.46, 0% error/truncation). SWE `scaleswe-v1` ~50% solve on glm-5.1 (validated post-merge of #1616).
-
 ---
 
-*Net:* **#1559** is the broader feature surface (harness/engine ecosystem, in-lib advantages, subagents, a bundled trainer), validated mainly by CI + an eval reward matrix. **#1576** is narrower but **bridges v0→v1 and is the more training/perf-validated** path (real reward curves, LoRA, throughput benchmark, e2e matrix).
+*Net:* **#1559** is the broader feature surface (harness ecosystem, in-lib advantages, nested subagents, richer MCP). **#1576** is narrower but is the only one that bridges v0→v1.
