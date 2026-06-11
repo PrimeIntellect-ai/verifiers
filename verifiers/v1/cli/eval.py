@@ -11,6 +11,7 @@ pydantic-config help — narrowed to whatever `--taskset.id` / `--harness.id` ar
 """
 
 import asyncio
+import logging
 import signal
 import sys
 
@@ -67,6 +68,11 @@ def main(argv: list[str] | None = None) -> None:
     rich = config.rich and not config.is_legacy
     # --rich owns the screen, so quiet the per-rollout INFO logs it would replace.
     setup_logging("DEBUG" if config.verbose else "WARNING" if rich else "INFO")
+    if rich and not config.verbose:
+        # The Live dashboard owns the screen — gag WARNING-and-below from every logger
+        # (library + third-party, which `setup_logging` doesn't route) so stray log lines
+        # don't flash over it. Errors still print; pass --verbose to see everything.
+        logging.disable(logging.WARNING)
     # Make SIGTERM behave like Ctrl-C (SIGINT) so a killed/timed-out eval still runs each
     # rollout's `finally` (tears down containers/sandboxes) and any worker pool it spawned.
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
