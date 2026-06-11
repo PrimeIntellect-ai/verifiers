@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from typing import Generic, TypeVar
 
 from pydantic import Field, PrivateAttr, computed_field
+from renderers.base import MultiModalData
 
 from verifiers.v1 import graph
 from verifiers.v1.graph import MessageNode
@@ -106,6 +107,25 @@ class Branch(StrictBaseModel):
                 else:
                     out.append(0.0)
         return out
+
+    @property
+    def multi_modal_data(self) -> MultiModalData | None:
+        """The branch's multimodal sidecar — every node's images concatenated in path (token)
+        order. None when the branch has no images. Drives the training `mm_kwargs` (the renderer
+        items per modality); the per-token `mm_token_type_ids` come from the token ids, so no
+        placeholder offsets are carried. Never persisted (node mm is transient)."""
+        merged = MultiModalData()
+        found = False
+        for node in self.nodes:
+            mmd = node.multi_modal_data
+            if mmd is None or mmd.is_empty():
+                continue
+            found = True
+            for modality, items in mmd.mm_items.items():
+                merged.mm_items.setdefault(modality, []).extend(items)
+            for modality, hashes in mmd.mm_hashes.items():
+                merged.mm_hashes.setdefault(modality, []).extend(hashes)
+        return merged if found else None
 
     @property
     def completion_len(self) -> int:

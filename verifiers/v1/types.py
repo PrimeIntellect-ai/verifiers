@@ -9,6 +9,7 @@ them into these models explicitly.
 from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from renderers.base import MultiModalData
 
 
 class StrictBaseModel(BaseModel):
@@ -20,18 +21,63 @@ class StrictBaseModel(BaseModel):
 # --- messages -----------------------------------------------------------------
 
 
+class TextContentPart(StrictBaseModel):
+    """A text span in a multimodal message body."""
+
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ImageUrlSource(StrictBaseModel):
+    """An image reference — a URL or a `data:` URI."""
+
+    url: str
+
+
+class ImageUrlContentPart(StrictBaseModel):
+    """An image in a multimodal message body (OpenAI `image_url` shape)."""
+
+    type: Literal["image_url"] = "image_url"
+    image_url: ImageUrlSource
+
+
+ContentPart = Annotated[
+    TextContentPart | ImageUrlContentPart, Field(discriminator="type")
+]
+MessageContent = str | list[ContentPart]
+"""A message body: plain text, or a list of content parts (text + images)."""
+
+
+def content_to_parts(content) -> MessageContent:
+    """Parse raw OpenAI message content into typed content — a `str` stays a `str`; a list of
+    parts becomes typed `ContentPart`s (text + image_url), dropping unknown part types. The
+    shared multimodal-ingress parser used by the interception server and the v0 legacy bridge."""
+    if not isinstance(content, list):
+        return content or ""
+    parts: list[ContentPart] = []
+    for p in content:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text":
+            parts.append(TextContentPart(text=p.get("text", "")))
+        elif p.get("type") == "image_url":
+            url = (p.get("image_url") or {}).get("url", "")
+            parts.append(ImageUrlContentPart(image_url=ImageUrlSource(url=url)))
+    return parts
+
+
 class SystemMessage(StrictBaseModel):
     """A system instruction message."""
 
     role: Literal["system"] = "system"
-    content: str
+    content: MessageContent
 
 
 class UserMessage(StrictBaseModel):
-    """A user message."""
+    """A user message (text, or text + images)."""
 
     role: Literal["user"] = "user"
-    content: str
+    content: MessageContent
 
 
 class ToolCall(StrictBaseModel):
@@ -101,17 +147,20 @@ class TurnTokens(StrictBaseModel):
     renderer client (client-side tokenization) or the chat client (parsed from vLLM's
     token ids); None when the provider returns neither."""
 
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
     prompt_ids: list[int] = Field(default_factory=list)
     completion_ids: list[int] = Field(default_factory=list)
     completion_logprobs: list[float] = Field(default_factory=list)
 
-    # Transient build carrier: per-prompt-message token spans into `prompt_ids`, produced by
-    # the renderer (`RenderedTokens.message_token_spans()`) and consumed by the graph builder
-    # to attribute tokens per message, then dropped — never persisted (it would reintroduce
-    # the quadratic data the graph removes).
+    # Transient carrier (excluded): per-message token spans into `prompt_ids` from the renderer,
+    # consumed by `graph.add_turn` to attribute tokens per message, then dropped.
     message_spans: list[tuple[int, int] | None] | None = Field(
         default=None, exclude=True
     )
+    # Transient carrier (excluded): the renderer's multimodal sidecar (image tensors + offsets),
+    # attributed per node by `graph.add_turn`, then dropped — never persisted.
+    multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
 
 
 class Response(StrictBaseModel):

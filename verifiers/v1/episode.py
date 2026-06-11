@@ -27,6 +27,7 @@ from verifiers.v1.retries import run_with_retry
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils import trim_memory_periodically
 
 if TYPE_CHECKING:
     from verifiers.v1.interception import InterceptionPool
@@ -66,6 +67,8 @@ class Episode:
             if not group_scored:  # reward already final → don't wait for the group
                 rollout.phase = Phase.DONE
                 on_complete(trace)
+            # hand freed per-turn request bodies (base64 images) back to the OS
+            await trim_memory_periodically()
             return trace
 
         traces = await asyncio.gather(*(run_one(r) for r in self.rollouts))
