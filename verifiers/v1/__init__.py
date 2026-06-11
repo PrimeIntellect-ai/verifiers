@@ -16,7 +16,14 @@ from verifiers.v1.clients import (
     resolve_client,
 )
 from verifiers.v1.decorators import group_reward, metric, reward, stop
-from verifiers.v1.env import EnvConfig, Environment, TimeoutConfig
+from verifiers.v1.env import (
+    ElasticPoolConfig,
+    EnvConfig,
+    EnvServerConfig,
+    Environment,
+    StaticPoolConfig,
+    TimeoutConfig,
+)
 from verifiers.v1.episode import Episode
 from verifiers.v1.errors import ModelError, ProgramError, RolloutError, ToolError
 from verifiers.v1.harness import Harness, HarnessConfig
@@ -137,6 +144,9 @@ __all__ = [
     "PrimeConfig",
     "Environment",
     "EnvConfig",
+    "EnvServerConfig",
+    "StaticPoolConfig",
+    "ElasticPoolConfig",
     "RetryConfig",
     "TimeoutConfig",
     "Episode",

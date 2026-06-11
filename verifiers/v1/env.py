@@ -13,6 +13,7 @@ compare a task's rollouts.
 
 import contextlib
 import logging
+from typing import Annotated, Literal
 
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
@@ -41,6 +42,42 @@ class TimeoutConfig(BaseConfig):
     """Max wall-clock for the rollout (the harness run)."""
     scoring: float | None = None
     """Max wall-clock for scoring — verify + rewards/metrics."""
+
+
+class StaticPoolConfig(BaseConfig):
+    """Fixed env-server pool: pre-spawn `num_workers` workers up front."""
+
+    type: Literal["static"] = "static"
+    num_workers: int = Field(4, ge=1)
+    """Worker processes to pre-spawn (1 = a single in-process server, no pool)."""
+
+
+class ElasticPoolConfig(BaseConfig):
+    """Elastic env-server pool: start at one worker and scale up on demand."""
+
+    type: Literal["elastic"] = "elastic"
+    max_workers: int | None = None
+    """Upper bound on workers (None = unbounded)."""
+    multiplex: int = Field(128, ge=1)
+    """Rollouts per worker for the scale-up trigger: add a worker once in-flight rollouts
+    reach 90% of `workers * multiplex`."""
+
+
+# Discriminated on `type` so the CLI selects with `--pool.type static|elastic`.
+PoolConfig = Annotated[
+    StaticPoolConfig | ElasticPoolConfig, Field(discriminator="type")
+]
+
+
+def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
+    """Unpack a pool config into `serve_env` kwargs (`max_workers` / `multiplex` / `elastic`)."""
+    if isinstance(pool, ElasticPoolConfig):
+        return {
+            "max_workers": pool.max_workers,
+            "multiplex": pool.multiplex,
+            "elastic": True,
+        }
+    return {"max_workers": pool.num_workers, "elastic": False}
 
 
 class EnvConfig(BaseConfig):
@@ -73,16 +110,6 @@ class EnvConfig(BaseConfig):
     """Rollouts that share one interception server (and, behind a remote runtime, one
     tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
     key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
-    elastic: bool = True
-    """Scale the env-server worker pool up on demand instead of pre-spawning it: start at
-    one worker and add another whenever in-flight rollouts reach 90% of
-    `workers * worker_multiplex`, up to the pool's worker cap. False pre-spawns the whole
-    pool. Only relevant when the env is served through a pool (`num_workers`/`max_workers`
-    > 1, or unbounded)."""
-    worker_multiplex: int = Field(128, ge=1)
-    """Rollouts per worker for the elastic scale-up trigger (distinct from `multiplex`,
-    which shares interception servers *within* a worker): the pool adds a worker once
-    in-flight rollouts reach 90% of `workers * worker_multiplex`."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
@@ -130,6 +157,16 @@ class EnvConfig(BaseConfig):
             if ident:
                 data[field] = resolve(ident).model_validate({**raw, "id": ident})
         return data
+
+
+class EnvServerConfig(EnvConfig):
+    """An env plus how it's *served*: the env definition (`EnvConfig`) and the worker-pool
+    sizing. Shared by the `serve` CLI, server-backed eval, and prime-rl's orchestrator, so
+    they all configure the pool the same way (`--pool.type elastic|static`)."""
+
+    pool: PoolConfig = ElasticPoolConfig()
+    """Worker-pool sizing for the env server. `elastic` (default) starts at one worker and
+    scales up on demand; `static` pre-spawns a fixed `num_workers`."""
 
 
 logger = logging.getLogger(__name__)

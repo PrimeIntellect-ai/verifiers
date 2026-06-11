@@ -80,6 +80,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
     from functools import partial
 
     from verifiers.v1.cli.log import setup_logging
+    from verifiers.v1.env import pool_serve_kwargs
     from verifiers.v1.serve import EnvClient, env_config_data, serve_env
 
     legacy = config.is_legacy
@@ -100,13 +101,11 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
     proc = mpctx.Process(
         target=serve_env,
         kwargs=dict(
-            max_workers=config.num_workers,
+            **pool_serve_kwargs(config.pool),
             legacy=legacy,
             address="tcp://127.0.0.1:0",
             address_queue=address_queue,
             log_setup=partial(setup_logging, level),
-            worker_multiplex=config.worker_multiplex,
-            elastic=config.elastic,
             **server_kwargs,
         ),
         daemon=False,
@@ -123,10 +122,10 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         if config.num_tasks is not None:
             idxs = idxs[: config.num_tasks]
         logger.info(
-            "running %dx%d rollouts via the env-server pool (max_workers=%s) on %s",
+            "running %dx%d rollouts via the env-server %s pool on %s",
             len(idxs),
             config.num_rollouts,
-            "inf" if config.num_workers is None else config.num_workers,
+            config.pool.type,
             config.model,
         )
         out = output_path(config)

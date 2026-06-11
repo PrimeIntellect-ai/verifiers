@@ -6,15 +6,16 @@ from uuid import uuid4
 from pydantic import AliasChoices, Field
 
 from verifiers.v1.clients import ClientConfig, OpenAIClientConfig
-from verifiers.v1.env import EnvConfig
+from verifiers.v1.env import EnvServerConfig
 from verifiers.v1.types import SamplingConfig
 
 
-class EvalConfig(EnvConfig):
+class EvalConfig(EnvServerConfig):
     """The eval run plus its environment: inherits the env's fields (`taskset`, `harness`,
-    `max_turns`, token limits, timeouts) so they're top-level flags (`--taskset.id`, `--harness.id`,
-    `--harness.runtime.*`, …) with no `--env.` prefix, and adds the run knobs (model,
-    sampling, counts, …)."""
+    `max_turns`, token limits, timeouts) and the worker `pool` so they're top-level flags
+    (`--taskset.id`, `--harness.id`, `--harness.runtime.*`, `--pool.*`, …) with no `--env.`
+    prefix, and adds the run knobs (model, sampling, counts, …). A non-`--rich` run drives
+    rollouts through the env server using `pool`; `--rich` runs them in-process."""
 
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id — the leaf of the output dir, so runs never overwrite.
@@ -43,13 +44,6 @@ class EvalConfig(EnvConfig):
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )
     """Max rollouts in flight at once."""
-    num_workers: int | None = Field(
-        0, validation_alias=AliasChoices("num_workers", "w")
-    )
-    """Drive the eval through an env server: 0 = off (run in-process); 1 = a single server
-    over ZMQ; >1 = a worker pool capped here; None = an unbounded pool. >0 exercises the
-    same path prime-rl trains through (v1 and legacy v0). With `elastic` (default) the pool
-    starts at one worker and scales up to this cap as load grows (see `worker_multiplex`)."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = False
