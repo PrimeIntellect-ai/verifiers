@@ -1,5 +1,6 @@
 import json
 import logging
+import shlex
 import tarfile
 import tempfile
 from pathlib import Path
@@ -136,7 +137,7 @@ class HarborTaskSet(SandboxTaskSet):
             await sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
             await sandbox_client.execute_command(
                 sandbox_id,
-                f"mkdir -p /task /logs/verifier /oracle /tests /app && tar -xzf {remote_tar} -C / && rm {remote_tar}",
+                f"mkdir -p /task /app && tar -xzf {remote_tar} -C / && rm {remote_tar}",
             )
         finally:
             tar_path.unlink(missing_ok=True)
@@ -147,10 +148,10 @@ class HarborTaskSet(SandboxTaskSet):
         sandbox_id: str,
         state: dict,
         test_timeout: int,
+        allow_existing_oracle: bool = False,
     ) -> str:
-        """Upload tests/ and solution/ then run test.sh. Return reward string."""
+        """Upload tests/, run test.sh, and return the verifier reward string."""
         task_dir = Path(state["info"]["task_dir"])
-        solution_dir = task_dir / "solution"
         tests_dir = task_dir / "tests"
 
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
@@ -158,18 +159,26 @@ class HarborTaskSet(SandboxTaskSet):
 
         try:
             with tarfile.open(tar_path, "w:gz") as tar:
-                if solution_dir.exists():
-                    for item in solution_dir.iterdir():
-                        tar.add(item, arcname=f"oracle/{item.name}")
                 if tests_dir.exists():
                     for item in tests_dir.iterdir():
                         tar.add(item, arcname=f"tests/{item.name}")
 
             remote_tar = "/tmp/harbor_tests.tar.gz"
             await sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
+            reserved_paths = ["/tests", "/logs", "/logs/verifier"]
+            if not allow_existing_oracle:
+                reserved_paths.append("/oracle")
+            reserved_paths_str = " ".join(shlex.quote(path) for path in reserved_paths)
             await sandbox_client.execute_command(
                 sandbox_id,
-                f"mkdir -p /oracle /tests && tar -xzf {remote_tar} -C / && rm {remote_tar}",
+                "for path in "
+                f"{reserved_paths_str}; do "
+                'if [ -e "$path" ] || [ -L "$path" ]; then '
+                'echo "reserved verifier path already exists: $path" >&2; '
+                "exit 1; "
+                "fi; "
+                "done; "
+                f"mkdir -p /tests /logs/verifier && tar -xzf {remote_tar} -C / && rm {remote_tar}",
                 timeout=900,
             )
         finally:
@@ -253,7 +262,11 @@ class HarborTaskSet(SandboxTaskSet):
         sandbox_id = state["sandbox_id"]
         await self._apply_gold_patch(sandbox_client, sandbox_id, state)
         test_output = await self._run_tests(
-            sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
+            sandbox_client,
+            sandbox_id,
+            state,
+            state.get("test_timeout", 900),
+            allow_existing_oracle=True,
         )
         state["test_output"] = test_output
         info = state.get("info") or {}
