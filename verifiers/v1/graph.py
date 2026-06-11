@@ -31,6 +31,7 @@ from verifiers.v1.types import (
     Response,
     StrictBaseModel,
     ToolMessage,
+    Usage,
 )
 
 if TYPE_CHECKING:
@@ -63,6 +64,10 @@ class MessageNode(StrictBaseModel):
     multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
     """The renderer items for the images this message's content introduces. Transient
     (excluded from wire/disk); `Branch.multi_modal_data` concatenates them along the path."""
+    usage: Usage | None = Field(default=None, exclude=True)
+    """Provider-reported token usage for this message's response (assistant nodes). Transient
+    (excluded from wire/disk); lets the live dashboard show token counts even when the endpoint
+    returns no token ids (so `token_ids` is empty)."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
@@ -222,6 +227,7 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
             mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
             logprobs=list(tokens.completion_logprobs) if tokens else [],
             finish_reason=response.finish_reason,
+            usage=response.usage,
         )
     )
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.
