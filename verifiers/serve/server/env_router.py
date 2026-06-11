@@ -35,6 +35,22 @@ OnResponseCallback = Callable[[bytes, bytes, bytes], Awaitable[None]]
 
 
 @dataclass
+
+def _default_worker_heartbeat_timeout() -> float:
+    """Worker heartbeat timeout: VF_WORKER_HEARTBEAT_TIMEOUT env var, else 90s.
+
+    90s default: loaded-but-healthy env workers were still being killed mid-
+    rollout at 60s under heavy multimodal load (screenshot-dense browser
+    rollouts pin the worker event loop long enough to miss a beat).
+    """
+
+    raw = os.environ.get("VF_WORKER_HEARTBEAT_TIMEOUT", "")
+    try:
+        value = float(raw) if raw.strip() else 90.0
+    except ValueError:
+        return 90.0
+    return value if value > 0 else 90.0
+
 class ActiveRequestInfo:
     client_id: bytes
     request_id: bytes
@@ -102,7 +118,7 @@ class EnvRouter:
         json_logging: bool = False,
         *,
         num_workers: int = 1,
-        worker_heartbeat_timeout: float = 60.0,
+        worker_heartbeat_timeout: float | None = None,
         stats_log_interval: float = 10.0,
         death_pipe: Connection | None = None,
     ):
@@ -118,7 +134,11 @@ class EnvRouter:
         self.json_logging = json_logging
 
         self.num_workers = num_workers
-        self.worker_heartbeat_timeout = worker_heartbeat_timeout
+        self.worker_heartbeat_timeout = (
+            worker_heartbeat_timeout
+            if worker_heartbeat_timeout is not None
+            else _default_worker_heartbeat_timeout()
+        )
         self.stats_log_interval = stats_log_interval
         self.death_pipe = death_pipe
 
