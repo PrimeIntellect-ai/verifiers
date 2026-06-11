@@ -754,6 +754,36 @@ class TestMaybeRetry:
         assert calls["n"] == 3  # 1 initial + 2 retries (InfraError is retryable)
         assert result["error"] == serialized  # last result returned after exhaustion
 
+    @pytest.mark.asyncio
+    async def test_group_retry_metadata_uses_retryable_state_index(self):
+        """Retry metadata should point at the state that actually triggered retry."""
+        from verifiers.utils.async_utils import maybe_retry
+
+        calls = {"n": 0}
+
+        async def attempt():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return [
+                    {"error": vf.ToolError("bad tool call")},
+                    {"error": vf.InfraError("worker timed out")},
+                ]
+            return [
+                {"error": None},
+                {"error": None},
+            ]
+
+        result = await maybe_retry(
+            attempt,
+            max_retries=1,
+            initial=0.0,
+            max_wait=0.0,
+        )()
+
+        assert calls["n"] == 2
+        assert result[0]["retry"]["events"][0]["state_index"] == "1"
+        assert result[1]["retry"]["events"][0]["state_index"] == "1"
+
 
 class TestEmptyModelResponseErrors:
     """Test cases for empty and invalid model response error handling."""

@@ -188,37 +188,39 @@ def maybe_retry(
             "error_chain_str": type(error).__name__,
         }
 
-    def reraise_one(err, error_types: tuple[type[Exception], ...]):
+    def retryable_error(
+        err, error_types: tuple[type[Exception], ...]
+    ) -> Exception | None:
         if not err:
-            return
+            return None
         if any(isinstance(err, err_type) for err_type in error_types):
-            raise err
+            return err
         # Rebuild serialized ErrorData so base types match (SandboxError -> InfraError).
         if isinstance(err, Mapping) and is_error_data(err):
             rebuilt = error_from_data(err)
             if isinstance(rebuilt, error_types):
-                raise rebuilt
+                return rebuilt
+        return None
 
-    def iter_state_errors(result) -> list[tuple[str, Mapping[str, Any] | BaseException]]:
+    def first_retryable_state_error(
+        result, error_types: tuple[type[Exception], ...]
+    ) -> tuple[str, Exception] | None:
         if isinstance(result, dict):
             err = result.get("error")
-            return [("", err)] if err else []
+            retryable = retryable_error(err, error_types)
+            return ("", retryable) if retryable is not None else None
         if isinstance(result, list):
-            errors = []
             for index, state in enumerate(result):
-                err = state.get("error")
-                if err:
-                    errors.append((str(index), err))
-            return errors
-        return []
+                retryable = retryable_error(state.get("error"), error_types)
+                if retryable is not None:
+                    return (str(index), retryable)
+        return None
 
     def reraise_error_from_state(result, error_types: tuple[type[Exception], ...]):
         """Re-raise specified errors from state(s) to trigger tenacity retry."""
-        if isinstance(result, dict):
-            reraise_one(result.get("error"), error_types)
-        elif isinstance(result, list):
-            for state in result:
-                reraise_one(state.get("error"), error_types)
+        retryable = first_retryable_state_error(result, error_types)
+        if retryable is not None:
+            raise retryable[1]
 
     def attach_retry_info(result, *, exhausted: bool = False) -> None:
         if not retry_events:
@@ -289,14 +291,18 @@ def maybe_retry(
         nonlocal last_result
         result = await func(*args, **kwargs)
         last_result = result  # store result
-        state_errors = iter_state_errors(result)
+        retryable_state_error = first_retryable_state_error(result, error_types)
         try:
             reraise_error_from_state(result, error_types)
         except error_types as error:
             retry_events.append(
                 {
                     "attempt": len(retry_events) + 1,
-                    "state_index": state_errors[0][0] if state_errors else "",
+                    "state_index": (
+                        retryable_state_error[0]
+                        if retryable_state_error is not None
+                        else ""
+                    ),
                     **summarize_error(error),
                 }
             )
