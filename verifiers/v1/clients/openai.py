@@ -28,6 +28,14 @@ from verifiers.v1.types import (
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 
 
+def _content_to_wire(content):
+    """Plain text passes through; a content-part list becomes OpenAI wire dicts (so the
+    provider / renderer sees the native `image_url` shape)."""
+    if isinstance(content, str):
+        return content
+    return [part.model_dump() for part in content]
+
+
 def message_to_wire(message: Message) -> dict:
     if message.role == "assistant":
         wire: dict = {"role": "assistant", "content": message.content}
@@ -47,7 +55,7 @@ def message_to_wire(message: Message) -> dict:
             "tool_call_id": message.tool_call_id,
             "content": message.content,
         }
-    return {"role": message.role, "content": message.content}
+    return {"role": message.role, "content": _content_to_wire(message.content)}
 
 
 def tool_to_wire(tool: Tool) -> dict:
