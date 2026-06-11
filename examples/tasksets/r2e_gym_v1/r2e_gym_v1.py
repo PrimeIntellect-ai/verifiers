@@ -188,8 +188,8 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, vf.TasksetConfig]):
                 workdir=REPO_PATH,
                 expected_output_json=row["expected_output_json"],
                 parsed_commit_content=row.get("parsed_commit_content") or "",
-                commit_hash=row.get("commit_hash") or "",
-                repo_name=row.get("repo_name") or "",
+                # Mirror the v0 ComposableEnv SandboxSpec defaults for R2E-Gym sandboxes.
+                resources=vf.Resources(cpu=4, memory=4, disk=10),
             )
             for i, row in enumerate(rows)
         ]
