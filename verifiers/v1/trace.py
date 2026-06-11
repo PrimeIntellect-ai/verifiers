@@ -354,6 +354,7 @@ class Trace(StrictBaseModel, Generic[TaskT]):
         gets written to disk."""
         exclude: dict = {field: True for field in type(self).model_computed_fields}
         exclude["timing"] = {
+            "setup": {"duration": True},
             "generation": {"duration": True},
             "scoring": {"duration": True},
         }
