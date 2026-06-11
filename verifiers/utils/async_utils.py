@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import time
 from collections import deque
 from collections.abc import Mapping
 from collections.abc import Coroutine
@@ -13,6 +14,7 @@ from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.error_utils import error_data
 from verifiers.utils.error_utils import error_from_data, is_error_data
 from verifiers.utils.logging_utils import print_time
 
@@ -161,6 +163,31 @@ def maybe_retry(
     if max_retries <= 0:
         return func
 
+    retry_started_at = 0.0
+    retry_events: list[dict[str, Any]] = []
+    last_result = None
+
+    def summarize_error(error: BaseException | Mapping[str, Any]) -> dict[str, str]:
+        """Build the JSON-safe part of a retry event."""
+        if isinstance(error, Mapping) and is_error_data(error):
+            return {
+                "error": error["error"],
+                "message": error["message"],
+                "error_chain_str": error["error_chain_str"],
+            }
+        if isinstance(error, BaseException):
+            data = error_data(error)
+            return {
+                "error": data["error"],
+                "message": data["message"],
+                "error_chain_str": data["error_chain_str"],
+            }
+        return {
+            "error": type(error).__name__,
+            "message": str(error),
+            "error_chain_str": type(error).__name__,
+        }
+
     def reraise_one(err, error_types: tuple[type[Exception], ...]):
         if not err:
             return
@@ -172,6 +199,19 @@ def maybe_retry(
             if isinstance(rebuilt, error_types):
                 raise rebuilt
 
+    def iter_state_errors(result) -> list[tuple[str, Mapping[str, Any] | BaseException]]:
+        if isinstance(result, dict):
+            err = result.get("error")
+            return [("", err)] if err else []
+        if isinstance(result, list):
+            errors = []
+            for index, state in enumerate(result):
+                err = state.get("error")
+                if err:
+                    errors.append((str(index), err))
+            return errors
+        return []
+
     def reraise_error_from_state(result, error_types: tuple[type[Exception], ...]):
         """Re-raise specified errors from state(s) to trigger tenacity retry."""
         if isinstance(result, dict):
@@ -180,24 +220,50 @@ def maybe_retry(
             for state in result:
                 reraise_one(state.get("error"), error_types)
 
+    def attach_retry_info(result, *, exhausted: bool = False) -> None:
+        if not retry_events:
+            return
+        attempts = len(retry_events) + (0 if exhausted else 1)
+        summary = {
+            "attempts": attempts,
+            "max_retries": max_retries,
+            "retry_count": min(max_retries, max(0, attempts - 1)),
+            "exhausted": exhausted,
+            "elapsed_seconds": time.time() - retry_started_at,
+            "events": retry_events,
+        }
+        if isinstance(result, dict):
+            result["retry"] = summary
+        elif isinstance(result, list):
+            for state in result:
+                state["retry"] = summary
+
+    def begin_retry_call(retry_state: tc.RetryCallState) -> None:
+        nonlocal last_result, retry_events, retry_started_at
+        if retry_state.attempt_number == 1:
+            last_result = None
+            retry_events = []
+            retry_started_at = time.time()
+
     def log_retry(retry_state: tc.RetryCallState) -> None:
         """Log a warning with the exception and the number of attempts."""
         caller = retry_state.fn.__name__ if retry_state.fn else "unknown function"
-        error_chain = (
-            repr(
-                ErrorChain(
-                    retry_state.outcome.exception() or Exception("Unknown exception")
-                )
-            )
-            if retry_state.outcome
-            else None
-        )
+        error = retry_state.outcome.exception() if retry_state.outcome else None
+        error_chain = repr(ErrorChain(error or Exception("Unknown exception")))
         next_action = retry_state.next_action.sleep if retry_state.next_action else 0
+        if retry_events and retry_events[-1]["attempt"] == retry_state.attempt_number:
+            retry_events[-1]["next_sleep_seconds"] = next_action
+        else:
+            retry_events.append(
+                {
+                    "attempt": retry_state.attempt_number,
+                    "next_sleep_seconds": next_action,
+                    **summarize_error(error or Exception("Unknown exception")),
+                }
+            )
         logger.warning(
             f"Caught {error_chain} in {caller}. Retrying in {print_time(next_action)} (retry {retry_state.attempt_number}/{max_retries})"
         )
-
-    last_result = None
 
     def return_last_result(retry_state: tc.RetryCallState):
         """Return the last result when retries are exhausted (instead of raising)."""
@@ -215,13 +281,27 @@ def maybe_retry(
             f"Retries exhausted for {caller} after {max_retries} attempts. "
             f"Last error: {error_chain}. Continuing with error in state."
         )
+        if last_result is not None:
+            attach_retry_info(last_result, exhausted=True)
         return last_result
 
     async def wrapper(*args, **kwargs):
         nonlocal last_result
         result = await func(*args, **kwargs)
         last_result = result  # store result
-        reraise_error_from_state(result, error_types)
+        state_errors = iter_state_errors(result)
+        try:
+            reraise_error_from_state(result, error_types)
+        except error_types as error:
+            retry_events.append(
+                {
+                    "attempt": len(retry_events) + 1,
+                    "state_index": state_errors[0][0] if state_errors else "",
+                    **summarize_error(error),
+                }
+            )
+            raise
+        attach_retry_info(result)
         return result
 
     wrapper.__name__ = getattr(func, "__name__", "unknown")
@@ -231,6 +311,7 @@ def maybe_retry(
         retry=tc.retry_if_exception_type(error_types),
         stop=tc.stop_after_attempt(max_retries + 1),
         wait=tc.wait_exponential_jitter(initial=initial, max=max_wait),
+        before=begin_retry_call,
         before_sleep=log_retry,
         retry_error_callback=return_last_result,
         reraise=True,

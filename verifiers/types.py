@@ -399,6 +399,24 @@ class ErrorData(TypedDict):
     error_chain_str: str
 
 
+class RetryEvent(TypedDict):
+    attempt: int
+    error: str
+    message: str
+    error_chain_str: str
+    next_sleep_seconds: NotRequired[float]
+    state_index: NotRequired[str]
+
+
+class RetryData(TypedDict):
+    attempts: int
+    max_retries: int
+    retry_count: int
+    exhausted: bool
+    elapsed_seconds: float
+    events: list[RetryEvent]
+
+
 class RolloutOutput(dict):
     """Serialized output from a rollout (mirrors RolloutInput).
 
@@ -409,7 +427,7 @@ class RolloutOutput(dict):
     Required fields: example_id, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
-                     token_usage
+                     token_usage, retry
     Additional fields: arbitrary serializable state_columns
     """
 
@@ -430,6 +448,7 @@ class RolloutOutput(dict):
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]
     token_usage: TokenUsage
+    retry: RetryData
 
 
 _MISSING = object()
