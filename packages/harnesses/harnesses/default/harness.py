@@ -36,10 +36,8 @@ class DefaultHarnessConfig(HarnessConfig):
 
 class DefaultHarness(Harness[DefaultHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
-    SUPPORTS_USER_SIM = True  # the chat loop drives a task's user simulator
-    SUPPORTS_MESSAGE_INSTRUCTION = (
-        True  # seeds the chat loop from a Messages instruction (e.g. images)
-    )
+    SUPPORTS_USER_SIM = True
+    SUPPORTS_MESSAGE_INSTRUCTION = True
 
     async def launch(
         self,

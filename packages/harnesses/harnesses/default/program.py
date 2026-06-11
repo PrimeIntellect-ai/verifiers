@@ -104,7 +104,6 @@ async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str:
 
 
 async def main() -> None:
-    instruction = sys.argv[1]
     config = json.loads(os.environ.get("MCP_CONFIG", "{}"))
     async with AsyncExitStack() as stack:
         mcp_tools, dispatch = (
@@ -122,7 +121,7 @@ async def main() -> None:
         if initial:
             messages.extend(initial)
         else:
-            messages.append({"role": "user", "content": instruction})
+            messages.append({"role": "user", "content": sys.argv[1]})
         while True:
             message = await chat(messages, tools)
             messages.append(message.model_dump(exclude_none=True))

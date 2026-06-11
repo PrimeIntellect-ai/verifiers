@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from typing import Generic, TypeVar
 
 from pydantic import Field, PrivateAttr, computed_field
-from renderers.base import MultiModalData, PlaceholderRange
+from renderers.base import MultiModalData
 
 from verifiers.v1 import graph
 from verifiers.v1.graph import MessageNode
@@ -110,31 +110,21 @@ class Branch(StrictBaseModel):
 
     @property
     def multi_modal_data(self) -> MultiModalData | None:
-        """The branch's multimodal sidecar — every node's images concatenated in token order,
-        each placeholder offset rebased from node-local to the branch-global token index
-        (aligned to `token_ids`). None when the branch has no images. Drives the training
-        `mm_kwargs` / `mm_token_type_ids`; never persisted (node mm is transient)."""
+        """The branch's multimodal sidecar — every node's images concatenated in path (token)
+        order. None when the branch has no images. Drives the training `mm_kwargs` (the renderer
+        items per modality); the per-token `mm_token_type_ids` come from the token ids, so no
+        placeholder offsets are carried. Never persisted (node mm is transient)."""
         merged = MultiModalData()
-        running = 0
         found = False
         for node in self.nodes:
             mmd = node.multi_modal_data
-            if mmd is not None and not mmd.is_empty():
-                found = True
-                for modality, placeholders in mmd.mm_placeholders.items():
-                    items = mmd.mm_items.get(modality, [])
-                    hashes = mmd.mm_hashes.get(modality, [])
-                    for k, ph in enumerate(placeholders):
-                        merged.mm_placeholders.setdefault(modality, []).append(
-                            PlaceholderRange(
-                                offset=running + ph.offset, length=ph.length
-                            )
-                        )
-                        if k < len(items):
-                            merged.mm_items.setdefault(modality, []).append(items[k])
-                        if k < len(hashes):
-                            merged.mm_hashes.setdefault(modality, []).append(hashes[k])
-            running += len(node.token_ids)
+            if mmd is None or mmd.is_empty():
+                continue
+            found = True
+            for modality, items in mmd.mm_items.items():
+                merged.mm_items.setdefault(modality, []).extend(items)
+            for modality, hashes in mmd.mm_hashes.items():
+                merged.mm_hashes.setdefault(modality, []).extend(hashes)
         return merged if found else None
 
     @property

@@ -22,7 +22,7 @@ import json
 from typing import TYPE_CHECKING
 
 from pydantic import ConfigDict, Field
-from renderers.base import MultiModalData, PlaceholderRange
+from renderers.base import MultiModalData
 
 from verifiers.v1.types import (
     AssistantMessage,
@@ -61,8 +61,8 @@ class MessageNode(StrictBaseModel):
     finish_reason: FinishReason = None
     """The response's finish reason (assistant nodes only) — kept for truncation detection."""
     multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
-    """Images this message introduces, offsets stored node-local. Transient (excluded from
-    wire/disk); `Branch.multi_modal_data` merges + rebases them to branch-global."""
+    """The renderer items for the images this message's content introduces. Transient
+    (excluded from wire/disk); `Branch.multi_modal_data` concatenates them along the path."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
@@ -111,44 +111,50 @@ def _head_index(trace: "Trace") -> dict[tuple[int | None, str], int]:
     return trace._head_index
 
 
-def _node_for_offset(
-    ranges: list[tuple[int, int, int]], offset: int
-) -> tuple[int | None, int]:
-    """The (node_id, start) whose prompt span `[start, start + prompt_len)` contains `offset`,
-    else (None, 0). An image in a reused-prefix node (already attributed) matches no range."""
-    for node_id, start, prompt_len in ranges:
-        if start <= offset < start + prompt_len:
-            return node_id, start
-    return None, 0
+def _part_modality(part) -> str | None:
+    """The multimodal modality a content part introduces (currently only images), or None."""
+    return "image" if getattr(part, "type", None) == "image_url" else None
 
 
 def _attribute_mm(
-    trace: "Trace", ranges: list[tuple[int, int, int]], mmd: MultiModalData | None
+    trace: "Trace",
+    path: "list[tuple[int, Message]]",
+    num_reused: int,
+    mmd: MultiModalData | None,
 ) -> None:
-    """Distribute a turn's `MultiModalData` (placeholder offsets global in this turn's
-    `prompt_ids`) onto the nodes created this turn — each offset stored node-local, with its
-    item / hash kept aligned. Images in a reused-prefix node match no new range and are
-    skipped (already attributed when that node was first created)."""
+    """Attach each new image's renderer item to the node whose message introduced it. The
+    renderer emits items per modality in prompt order (message order, then content-part order),
+    so we walk the path advancing a per-modality cursor over every message's media but write
+    only the nodes created this turn — `path[:num_reused]` is the reused prefix, already
+    attributed when first created. Item order is all training needs; placeholder offsets aren't
+    carried."""
     if mmd is None or mmd.is_empty():
         return
-    per_node: dict[int, MultiModalData] = {}
-    for modality, placeholders in mmd.mm_placeholders.items():
-        items = mmd.mm_items.get(modality, [])
-        hashes = mmd.mm_hashes.get(modality, [])
-        for k, ph in enumerate(placeholders):
-            node_id, start = _node_for_offset(ranges, ph.offset)
-            if node_id is None:
+    cursors: dict[str, int] = {}
+    for pos, (node_id, msg) in enumerate(path):
+        content = msg.content
+        if not isinstance(content, list):
+            continue
+        node_items: dict[str, list] = {}
+        node_hashes: dict[str, list] = {}
+        for part in content:
+            modality = _part_modality(part)
+            if modality is None:
                 continue
-            nd = per_node.setdefault(node_id, MultiModalData())
-            nd.mm_placeholders.setdefault(modality, []).append(
-                PlaceholderRange(offset=ph.offset - start, length=ph.length)
-            )
+            k = cursors.get(modality, 0)
+            cursors[modality] = k + 1
+            if pos < num_reused:  # reused prefix: advance the cursor, don't re-attribute
+                continue
+            items = mmd.mm_items.get(modality) or []
+            hashes = mmd.mm_hashes.get(modality) or []
             if k < len(items):
-                nd.mm_items.setdefault(modality, []).append(items[k])
+                node_items.setdefault(modality, []).append(items[k])
             if k < len(hashes):
-                nd.mm_hashes.setdefault(modality, []).append(hashes[k])
-    for node_id, nd in per_node.items():
-        trace.nodes[node_id].multi_modal_data = nd
+                node_hashes.setdefault(modality, []).append(hashes[k])
+        if node_items:
+            trace.nodes[node_id].multi_modal_data = MultiModalData(
+                mm_items=node_items, mm_hashes=node_hashes
+            )
 
 
 def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> None:
@@ -173,15 +179,18 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
     path_len = 0  # cumulative stored token length of the reused prefix
     # cursor: in prompt_ids, the end of the previous *new* message's tokens
     cursor: int | None = None
-    # (node_id, start, prompt_len) per node created this turn — the prompt_ids span each new
-    # node covers, used to attribute this turn's multimodal items to the node that owns them.
-    ranges: list[tuple[int, int, int]] = []
+    # (node_id, message) per prompt message (reused prefix first, then new), for multimodal
+    # attribution; `num_reused` marks where the newly-created nodes begin.
+    path: list[tuple[int, Message]] = []
+    num_reused = 0
     for i, msg in enumerate(prompt):
         key = (parent, message_hash(msg))
         existing = idx.get(key)
         if cursor is None and existing is not None:  # still extending the shared prefix
             parent = existing
             path_len += len(trace.nodes[existing].token_ids)
+            path.append((existing, msg))
+            num_reused += 1
             continue
         start = path_len if cursor is None else cursor
         span = spans[i] if spans and i < len(spans) else None
@@ -197,7 +206,7 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
         )
         parent = len(trace.nodes) - 1
         idx[key] = parent
-        ranges.append((parent, start, len(node_tokens)))
+        path.append((parent, msg))
         cursor = end
 
     # Assistant node: trailing scaffold (the generation prompt) + the sampled completion.
@@ -216,11 +225,9 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
     )
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.
     idx[(parent, message_hash(response.message))] = len(trace.nodes) - 1
-    ranges.append((len(trace.nodes) - 1, gen_start, len(gen_prompt)))
 
-    # Attribute this turn's images (placeholder offsets global in prompt_ids) onto the new
-    # nodes, stored node-local; reused-prefix nodes already carry theirs.
-    _attribute_mm(trace, ranges, tokens.multi_modal_data if tokens else None)
+    # Attribute this turn's images onto the input nodes that introduced them (by content part).
+    _attribute_mm(trace, path, num_reused, tokens.multi_modal_data if tokens else None)
 
 
 # --- walking the graph (views) ---------------------------------------------------------
