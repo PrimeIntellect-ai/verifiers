@@ -75,9 +75,7 @@ class Rollout:
         self.scoring_timeout = scoring_timeout
         self.limits = limits or RolloutLimits()
         self.model_retries = model_retries
-        """Retries per model call (0 = no retry); wraps the client in `run()`."""
         self.runtime_retries = runtime_retries
-        """Retries per runtime call (0 = no retry); wraps the runtime in `run()`."""
         self.phase = Phase.SETUP
         """Lifecycle phase for display (see `Phase`); advanced through the rollout, and
         set to DONE by the Episode once group scoring has run."""
