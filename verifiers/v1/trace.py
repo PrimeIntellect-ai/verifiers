@@ -353,9 +353,12 @@ class Trace(StrictBaseModel, Generic[TaskT]):
         trajectory on every reply. The full `model_dump` (with derived fields) is what
         gets written to disk."""
         exclude: dict = {field: True for field in type(self).model_computed_fields}
+        # Drop each timing span's computed `duration` — derived per `TimeSpan` field of
+        # `Timing` (setup/generation/scoring, and any future span) so none leaks to the wire.
         exclude["timing"] = {
-            "generation": {"duration": True},
-            "scoring": {"duration": True},
+            name: {f: True for f in TimeSpan.model_computed_fields}
+            for name, info in Timing.model_fields.items()
+            if info.annotation is TimeSpan
         }
         return self.model_dump(mode="json", exclude=exclude)
 
