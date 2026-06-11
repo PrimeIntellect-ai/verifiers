@@ -938,7 +938,7 @@ class Runtime:
             return prompt
         result = harness.prepare_prompt(prompt, state)
         if inspect.isawaitable(result):
-            result = await result
+            result = await cast(Awaitable[Messages], result)
         return result if result is not None else prompt
 
     async def _reserve_model_request(
