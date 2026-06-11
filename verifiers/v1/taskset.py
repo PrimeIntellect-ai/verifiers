@@ -125,6 +125,14 @@ class Taskset(Generic[TaskT, ConfigT]):
         a SWE row checking out its base commit). Errors propagate and fail the rollout."""
         return None
 
+    async def finalize(self, task: TaskT, trace: Trace, runtime: Runtime) -> None:
+        """Post-process the live runtime after the harness finishes, before scoring. No-op
+        by default; override to do per-rollout work the rewards depend on — apply/commit the
+        agent's diff, run a build, snapshot state, pull artifacts into the trace. Runs while
+        the runtime is still live (after generation, before `@reward`/`@metric`); the
+        symmetric counterpart to `setup`. Errors propagate and fail the rollout."""
+        return None
+
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Score one rollout: run all `@metric` then `@reward` over its trace,
         concurrently within each phase. Each metric is recorded in `trace.metrics`

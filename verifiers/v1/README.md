@@ -44,7 +44,7 @@ uv run eval gsm8k-v1 -n 5 -r 3 \
   --max-turns 8 --max-total-tokens 8192 \        # per-rollout budgets (also --max-{input,output}-tokens)
   --retries.model.max-retries 3 --retries.runtime.max-retries 3 \  # retry a single model/runtime call
   --retries.rollout.max-retries 3 --retries.rollout.include ProgramError \  # retry a whole rollout, by exception type
-  --timeout.rollout 600 --timeout.scoring 120        # wall-clock caps, in seconds
+  --timeout.setup 120 --timeout.rollout 600 --timeout.finalize 120 --timeout.scoring 120  # per-stage wall-clock caps, in seconds
 ```
 
 Common knobs have short aliases:

@@ -1,8 +1,8 @@
 """The `--rich` live dashboard: a config overview, a progress bar, and one line per rollout.
 
 Reads each `Rollout.trace`/`phase` every tick — no extra plumbing. Rows are colored by
-phase/outcome: setup (yellow ○), running (cyan ●), scoring (blue ◐), success (green ✓),
-error (red ✗) — the reward shows only once a rollout is fully scored (phase DONE), so it
+phase/outcome: setup (yellow ○), running (cyan ●), finalize (magenta ◑), scoring (blue ◐),
+success (green ✓), error (red ✗) — the reward shows only once a rollout is fully scored (phase DONE), so it
 never flips as scoring lands. A task's rollouts are grouped adjacently and joined by a
 left brace (╭│╰), so an episode (a task's n rollouts) reads as a unit. Every started
 rollout stays on screen (finished ones keep their result); the overview + progress sit on
@@ -29,11 +29,19 @@ from verifiers.v1.utils import format_count, format_reward, format_time
 _STYLE = {
     "setup": "yellow",
     "running": "cyan",
+    "finalize": "magenta",
     "scoring": "blue",
     "success": "green",
     "error": "red",
 }
-_MARK = {"setup": "○", "running": "●", "scoring": "◐", "success": "✓", "error": "✗"}
+_MARK = {
+    "setup": "○",
+    "running": "●",
+    "finalize": "◑",
+    "scoring": "◐",
+    "success": "✓",
+    "error": "✗",
+}
 
 
 def _config(config: EvalConfig) -> Table:
@@ -138,7 +146,12 @@ def _rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             runtime = f"{runtime_type}({descriptor})" if descriptor else runtime_type
             turns = t.num_turns
             start = t.timing.generation.start
-            end = t.timing.scoring.end or t.timing.generation.end or now
+            end = (
+                t.timing.scoring.end
+                or t.timing.finalize.end
+                or t.timing.generation.end
+                or now
+            )
             left = [
                 f"task {label}",
                 t.id[:8],

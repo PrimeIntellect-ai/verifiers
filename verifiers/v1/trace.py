@@ -45,11 +45,13 @@ class TimeSpan(StrictBaseModel):
 
 class Timing(StrictBaseModel):
     """Wall-clock timing for the phases of a rollout: provisioning the runtime + serving
-    (`setup`), the harness driving the conversation (`generation`), then scoring."""
+    (`setup`), the harness driving the conversation (`generation`), post-run work before
+    scoring (`finalize`), then scoring."""
 
     start: float = Field(default_factory=time.time)
     setup: TimeSpan = Field(default_factory=TimeSpan)
     generation: TimeSpan = Field(default_factory=TimeSpan)
+    finalize: TimeSpan = Field(default_factory=TimeSpan)
     scoring: TimeSpan = Field(default_factory=TimeSpan)
 
 
