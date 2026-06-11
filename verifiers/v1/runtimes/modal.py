@@ -54,9 +54,8 @@ class ModalConfig(BaseConfig):
     """Disk in GB. Modal sandboxes have no disk knob, so this is accepted (so a task can
     declare it without a warning) but not enforced."""
     creates_per_sec: float | None = 5.0
-    """Pace sandbox creation to this many per second, shared across concurrent rollouts in
-    this process (None/<= 0 disables it) — Modal's per-workspace limit is 5/s. Per-process,
-    so under the multi-worker env-server pool the global rate is this times the worker count."""
+    """Pace sandbox creation to this many per second, enforced host-wide across every
+    env-server worker process (None/<= 0 disables it) — Modal's per-workspace limit is 5/s."""
 
 
 class ModalRuntime(Runtime):
@@ -84,7 +83,7 @@ class ModalRuntime(Runtime):
         try:
             app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
             async with (
-                creation_limiter(self.config.creates_per_sec)
+                creation_limiter(self.config.creates_per_sec, "modal-sandbox")
                 or contextlib.nullcontext()
             ):
                 self._sandbox = await modal.Sandbox.create.aio(

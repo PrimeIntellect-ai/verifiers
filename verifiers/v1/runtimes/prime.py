@@ -54,10 +54,9 @@ class PrimeConfig(BaseConfig):
     disk: float = 5.0
     """Disk in GB."""
     creates_per_min: int | None = None
-    """Pace sandbox creation to this many per minute, shared across concurrent rollouts in
-    this process (None/<= 0 disables it). Per-process, so under the multi-worker env-server
-    pool the global rate is this times the worker count. (Tunnel creation is limited
-    separately and globally — see base._TUNNEL_LIMITER.)"""
+    """Pace sandbox creation to this many per minute, enforced host-wide across every
+    env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
+    and globally — see base._TUNNEL_LIMITER.)"""
 
 
 class PrimeRuntime(Runtime):
@@ -97,7 +96,9 @@ class PrimeRuntime(Runtime):
         }
         try:
             async with (
-                creation_limiter((self.config.creates_per_min or 0) / 60)
+                creation_limiter(
+                    (self.config.creates_per_min or 0) / 60, "prime-sandbox"
+                )
                 or contextlib.nullcontext()
             ):
                 sandbox = await self._client.create(
