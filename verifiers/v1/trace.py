@@ -255,13 +255,15 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     def is_truncated(self) -> bool:
         """Whether the rollout was cut off by a budget/limit rather than ending on its
         own terms: the framework halted it (`max_turns`, a token budget, or
-        `harness_timeout`), or the final turn hit the token cap (`finish_reason ==
+        `harness_timeout`), the prompt outgrew the model's context window
+        (`context_length`), or the final turn hit the token cap (`finish_reason ==
         "length"`)."""
         if self.stop_condition in (
             "max_turns",
             "max_input_tokens",
             "max_output_tokens",
             "max_total_tokens",
+            "context_length",
             "harness_timeout",
         ):
             return True

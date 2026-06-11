@@ -27,6 +27,7 @@ from aiohttp import web
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1 import graph
+from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -274,6 +275,19 @@ class InterceptionServer:
                 response = await session.ctx.client.get_response(
                     prompt, session.ctx.model, session.ctx.sampling, tools
                 )
+            except OverlongPromptError:
+                # The prompt outgrew the model's context window — a budget limit, not a
+                # crash. End the rollout cleanly as a truncated trajectory: return the last
+                # turn if a simulated conversation already produced one, else refuse the call
+                # to halt the harness (its model call errors out; Harness.run treats an exit
+                # after a stop condition as expected) — same shape as `refused` above.
+                session.trace.stop("context_length")
+                logger.debug("prompt too long: id=%s", session.trace.id)
+                if last is None:
+                    return web.json_response(
+                        {"error": "rollout stopped: context_length"}, status=400
+                    )
+                return web.json_response(serialize_completion(last, session.ctx.model))
             except Exception as e:  # surface to the program as an API error
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response({"error": str(e)}, status=502)
