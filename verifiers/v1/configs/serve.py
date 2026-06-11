@@ -16,12 +16,12 @@ class EnvServerConfig(EnvConfig):
         "tcp://127.0.0.1:5000", validation_alias=AliasChoices("address", "a")
     )
     """ZMQ address the ROUTER binds (and clients connect to)."""
-    num_workers: int = Field(1, validation_alias=AliasChoices("num_workers", "w"))
-    """Max worker processes in the pool (1 = a single in-process server, no pool). The pool
-    starts at one worker and scales up to this cap on demand."""
-    multiplex: int = 128
-    """Per-worker capacity for the pool's scale-up trigger: it spawns the next worker once
-    in-flight rollouts reach 90% of `workers * multiplex` (until `num_workers` is hit)."""
+    num_workers: int | None = Field(
+        1, validation_alias=AliasChoices("num_workers", "w")
+    )
+    """Max worker processes in the pool (1 = a single in-process server, no pool; None =
+    unbounded). With `elastic` (default) the pool starts at one worker and scales up to this
+    cap as load grows (see `worker_multiplex`); set `--no-elastic` to pre-spawn the pool."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of info."""
     dry_run: bool = False

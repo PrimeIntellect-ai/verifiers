@@ -73,6 +73,16 @@ class EnvConfig(BaseConfig):
     """Rollouts that share one interception server (and, behind a remote runtime, one
     tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
     key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
+    elastic: bool = True
+    """Scale the env-server worker pool up on demand instead of pre-spawning it: start at
+    one worker and add another whenever in-flight rollouts reach 90% of
+    `workers * worker_multiplex`, up to the pool's worker cap. False pre-spawns the whole
+    pool. Only relevant when the env is served through a pool (`num_workers`/`max_workers`
+    > 1, or unbounded)."""
+    worker_multiplex: int = Field(128, ge=1)
+    """Rollouts per worker for the elastic scale-up trigger (distinct from `multiplex`,
+    which shares interception servers *within* a worker): the pool adds a worker once
+    in-flight rollouts reach 90% of `workers * worker_multiplex`."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`

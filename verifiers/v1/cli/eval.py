@@ -61,18 +61,19 @@ def main(argv: list[str] | None = None) -> None:
     if config.dry_run:  # resolved + validated; dump it and skip the run
         print(config.model_dump_json(indent=2, exclude_none=True))
         return
+    # Drive rollouts through the env server unless num_workers is 0 (run in-process here).
+    # None = unbounded pool; >0 = up to that many workers.
+    server_backed = config.num_workers != 0
     # The --rich dashboard reads live v1 Rollout state, so it's off for a legacy or
     # server-backed (worker-pool) run — neither runs rollouts in this process.
-    rich = config.rich and not config.is_legacy and not config.num_workers
+    rich = config.rich and not config.is_legacy and not server_backed
     # --rich owns the screen, so quiet the per-rollout INFO logs it would replace.
     setup_logging("DEBUG" if config.verbose else "WARNING" if rich else "INFO")
     # Make SIGTERM behave like Ctrl-C (SIGINT) so a killed/timed-out eval still runs each
     # rollout's `finally` (tears down containers/sandboxes) and any worker pool it spawned.
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
 
-    if (
-        config.num_workers > 0
-    ):  # server-backed: a worker pool runs rollouts (v1 or legacy)
+    if server_backed:  # a worker pool runs rollouts (v1 or legacy)
         from verifiers.v1.cli.runner import run_eval_server
 
         traces = asyncio.run(run_eval_server(config))

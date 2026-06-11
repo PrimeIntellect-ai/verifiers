@@ -43,14 +43,13 @@ class EvalConfig(EnvConfig):
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )
     """Max rollouts in flight at once."""
-    num_workers: int = Field(0, validation_alias=AliasChoices("num_workers", "w"))
-    """Run the eval through an env-server worker pool of up to this many processes (0 = off,
-    in-process). >0 spawns the router + workers and drives rollouts over ZMQ — the same
-    path prime-rl trains through, so it exercises the pool e2e for v1 and legacy v0 envs.
-    The pool starts at one worker and scales up to this cap on demand."""
-    multiplex: int = 128
-    """Per-worker capacity for the pool's scale-up trigger: it spawns the next worker once
-    in-flight rollouts reach 90% of `workers * multiplex` (until `num_workers` is hit)."""
+    num_workers: int | None = Field(
+        0, validation_alias=AliasChoices("num_workers", "w")
+    )
+    """Drive the eval through an env server: 0 = off (run in-process); 1 = a single server
+    over ZMQ; >1 = a worker pool capped here; None = an unbounded pool. >0 exercises the
+    same path prime-rl trains through (v1 and legacy v0). With `elastic` (default) the pool
+    starts at one worker and scales up to this cap as load grows (see `worker_multiplex`)."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = False

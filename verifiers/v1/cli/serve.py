@@ -56,10 +56,10 @@ def main(argv: list[str] | None = None) -> None:
     level = "DEBUG" if config.verbose else "INFO"
     setup_logging(level)
 
-    # A single in-process server (num_workers=1) or a router + worker pool (>1); the
-    # frontend speaks the same protocol either way. serve_env owns the SIGTERM teardown.
-    # Pool workers are spawned with no logging, so hand serve_env the same setup to apply
-    # in each one.
+    # A single in-process server (num_workers<=1) or a router + worker pool (>1, or None for
+    # unbounded); the frontend speaks the same protocol either way. serve_env owns the
+    # SIGTERM teardown. Pool workers are spawned with no logging, so hand serve_env the same
+    # setup to apply in each one.
     server_kwargs = (
         {
             "env_id": config.id,
@@ -70,10 +70,11 @@ def main(argv: list[str] | None = None) -> None:
         else {"config": config}
     )
     serve_env(
-        num_workers=config.num_workers,
+        max_workers=config.num_workers,
         legacy=config.is_legacy,
         address=config.address,
         log_setup=partial(setup_logging, level),
-        multiplex=config.multiplex,
+        worker_multiplex=config.worker_multiplex,
+        elastic=config.elastic,
         **server_kwargs,
     )

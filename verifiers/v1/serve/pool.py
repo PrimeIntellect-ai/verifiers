@@ -14,7 +14,7 @@ the broker holds the real client identity in `pending` and routes the reply back
 worker.
 
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
-reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
+reach 90% of current capacity (`workers * worker_multiplex`). Workers are spawned `spawn`-style
 (own env, own loop) and monitor a death pipe so an orphaned worker self-exits if the
 broker dies. TODO: downscale idle workers, per-worker restart-on-death, stats/lag
 monitors (v0 had them; omitted here — rollout errors are returned as data, not crashes,
@@ -81,23 +81,27 @@ def _worker_entry(
 class EnvServerPool:
     """ROUTER broker that elastically scales worker processes (least-busy dispatch).
 
-    Starts with a single worker and spawns another whenever in-flight requests reach
-    90% of current capacity (`workers * multiplex`), up to `max_workers`. Upscale-only
-    for now — workers are never reclaimed. The broker forwards opaque request frames, so
-    workers can be `EnvServer` (v1) or `LegacyEnvServer` (v0) without the broker caring."""
+    With `elastic=True` (default) it starts with a single worker and spawns another
+    whenever in-flight requests reach 90% of current capacity (`workers * worker_multiplex`), up
+    to `max_workers`. Upscale-only for now — workers are never reclaimed. `elastic=False`
+    pre-spawns all `max_workers` upfront (the old fixed-pool behavior). The broker forwards
+    opaque request frames, so workers can be `EnvServer` (v1) or `LegacyEnvServer` (v0)
+    without the broker caring."""
 
     def __init__(
         self,
         server_kwargs: dict,
-        max_workers: int,
+        max_workers: int | None,
         address: str,
         legacy: bool,
         log_setup: Callable[[], None] | None = None,
-        multiplex: int = 128,
+        worker_multiplex: int = 128,
+        elastic: bool = True,
     ) -> None:
         self.server_kwargs = server_kwargs
         self.max_workers = max_workers
-        self.multiplex = multiplex
+        self.worker_multiplex = worker_multiplex
+        self.elastic = elastic
         self.legacy = legacy
         self.log_setup = log_setup
         self.session = uuid.uuid4().hex[:12]
@@ -154,28 +158,37 @@ class EnvServerPool:
 
         A new worker starts at `active=0`, so least-busy dispatch funnels the backlog to
         it as it comes online (a few seconds to load the env) — fine, since we only scale
-        up once already saturated."""
-        if len(self.workers) >= self.max_workers:
+        up once already saturated. `max_workers=None` scales without a cap."""
+        if self.max_workers is not None and len(self.workers) >= self.max_workers:
             return
-        if in_flight >= 0.9 * len(self.workers) * self.multiplex:
+        if in_flight >= 0.9 * len(self.workers) * self.worker_multiplex:
             self._spawn_worker()
             logger.info(
-                "EnvServerPool scaled up to %d/%d workers (in_flight=%d)",
+                "EnvServerPool scaled up to %d/%s workers (in_flight=%d)",
                 len(self.workers),
-                self.max_workers,
+                self._cap_str,
                 in_flight,
             )
+
+    @property
+    def _cap_str(self) -> str:
+        return "inf" if self.max_workers is None else str(self.max_workers)
 
     async def run(self) -> None:
         self._poller = zmq.asyncio.Poller()
         self._poller.register(self.frontend, zmq.POLLIN)
-        self._spawn_worker()  # start with one; scale up on demand
+        # Elastic: start with one and scale up on demand. Otherwise pre-spawn the lot
+        # (`max_workers` is a concrete count when elastic is off).
+        for _ in range(1 if self.elastic else (self.max_workers or 1)):
+            self._spawn_worker()
         pending: dict[bytes, dict] = {}  # request_id -> {client_id, worker}
         logger.info(
-            "EnvServerPool up: address=%s multiplex=%d max_workers=%d",
+            "EnvServerPool up: address=%s workers=%d/%s worker_multiplex=%d elastic=%s",
             self.address,
-            self.multiplex,
-            self.max_workers,
+            len(self.workers),
+            self._cap_str,
+            self.worker_multiplex,
+            self.elastic,
         )
         try:
             while True:
@@ -200,7 +213,8 @@ class EnvServerPool:
                         await worker["dealer"].send_multipart(
                             [request_id, method, payload]
                         )
-                        self._maybe_scale_up(len(pending))
+                        if self.elastic:
+                            self._maybe_scale_up(len(pending))
                 for w in self.workers:
                     if w["dealer"] in events:
                         request_id, data = await w["dealer"].recv_multipart()
@@ -248,21 +262,25 @@ def env_config_data(config) -> dict:
 
 def serve_env(
     *,
-    num_workers: int,
+    max_workers: int | None,
     legacy: bool = False,
     address: str = "tcp://127.0.0.1:5000",
     address_queue=None,
     log_setup: Callable[[], None] | None = None,
-    multiplex: int = 128,
+    worker_multiplex: int = 128,
+    elastic: bool = True,
     **server_kwargs,
 ) -> None:
-    """Serve one env over ZMQ: a single in-process `EnvServer` when `num_workers <= 1`,
-    else an `EnvServerPool` broker that scales from one worker up to `num_workers`. The
-    frontend speaks the same protocol either way, so the client is identical. Reports the
-    bound address on `address_queue` (for a spawner that passed an OS-assigned `:0`).
+    """Serve one env over ZMQ: a single in-process `EnvServer` when `max_workers <= 1`,
+    else an `EnvServerPool` broker over up to `max_workers` worker processes (`None` =
+    unbounded). The frontend speaks the same protocol either way, so the client is
+    identical. Reports the bound address on `address_queue` (for a spawner that passed an
+    OS-assigned `:0`).
 
-    `multiplex` is the per-worker capacity used by the pool's scale-up trigger (it spawns
-    the next worker at 90% of `workers * multiplex` in-flight).
+    `elastic` (default True) starts the pool at one worker and scales up to `max_workers`
+    as load grows; `worker_multiplex` is the per-worker capacity for the scale-up trigger (spawn
+    the next worker at 90% of `workers * worker_multiplex` in-flight). `elastic=False` pre-spawns
+    all `max_workers`.
 
     A native env config may be passed as `config` (an object) or `config_data` (the
     picklable dict from `env_config_data`, for callers that spawn this function and so
@@ -281,7 +299,7 @@ def serve_env(
     if log_setup is not None:
         log_setup()
     try:
-        if num_workers > 1:
+        if max_workers is None or max_workers > 1:
             if (
                 "config" in server_kwargs
             ):  # dict-ify for the workers (config_data is picklable)
@@ -289,7 +307,13 @@ def serve_env(
                     "config_data": env_config_data(server_kwargs["config"])
                 }
             pool = EnvServerPool(
-                server_kwargs, num_workers, address, legacy, log_setup, multiplex
+                server_kwargs,
+                max_workers,
+                address,
+                legacy,
+                log_setup,
+                worker_multiplex,
+                elastic,
             )
             if address_queue is not None:
                 address_queue.put(pool.address)

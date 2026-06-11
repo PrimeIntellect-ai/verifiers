@@ -100,12 +100,13 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
     proc = mpctx.Process(
         target=serve_env,
         kwargs=dict(
-            num_workers=config.num_workers,
+            max_workers=config.num_workers,
             legacy=legacy,
             address="tcp://127.0.0.1:0",
             address_queue=address_queue,
             log_setup=partial(setup_logging, level),
-            multiplex=config.multiplex,
+            worker_multiplex=config.worker_multiplex,
+            elastic=config.elastic,
             **server_kwargs,
         ),
         daemon=False,
@@ -122,10 +123,10 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         if config.num_tasks is not None:
             idxs = idxs[: config.num_tasks]
         logger.info(
-            "running %dx%d rollouts via a %d-worker pool on %s",
+            "running %dx%d rollouts via the env-server pool (max_workers=%s) on %s",
             len(idxs),
             config.num_rollouts,
-            config.num_workers,
+            "inf" if config.num_workers is None else config.num_workers,
             config.model,
         )
         out = output_path(config)
