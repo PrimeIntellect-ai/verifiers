@@ -42,6 +42,10 @@ BASH_TOOL = {
 # base_url + api_key come from OPENAI_BASE_URL / OPENAI_API_KEY.
 client = AsyncOpenAI()
 
+# The eval's sampling args, merged into every request body (the interception server
+# relays our requests verbatim, so the program carries them itself).
+SAMPLING = json.loads(os.environ.get("OPENAI_SAMPLING", "{}"))
+
 
 def run_bash(command: str) -> str:
     try:
@@ -55,7 +59,10 @@ def run_bash(command: str) -> str:
 
 async def chat(messages: list[dict], tools: list[dict]):
     completion = await client.chat.completions.create(
-        model=os.environ["OPENAI_MODEL"], messages=messages, tools=tools or None
+        model=os.environ["OPENAI_MODEL"],
+        messages=messages,
+        tools=tools or None,
+        extra_body=SAMPLING,  # extra_body: sampling keys go on the wire untyped
     )
     return completion.choices[0].message
 

@@ -39,7 +39,7 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         env = {
-            "OPENAI_BASE_URL": endpoint,
+            "OPENAI_BASE_URL": f"{endpoint}/v1",
             "OPENAI_API_KEY": secret,
             "OPENAI_MODEL": ctx.model,
         }

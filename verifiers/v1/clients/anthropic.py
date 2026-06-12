@@ -4,6 +4,7 @@ import json
 import time
 from typing import Any, cast
 
+import httpx
 from anthropic import AnthropicError, AsyncAnthropic
 from anthropic.types import (
     Base64ImageSourceParam,
@@ -22,7 +23,7 @@ from anthropic.types import (
     URLImageSourceParam,
 )
 
-from verifiers.v1.clients.client import Client
+from verifiers.v1.clients.client import Client, RelayReply, relay_headers, relay_post
 from verifiers.v1.errors import ModelError
 from verifiers.v1.types import (
     AssistantMessage,
@@ -190,8 +191,19 @@ def response_from_wire(response: AnthropicMessage) -> Response:
 
 
 class AnthropicMessagesClient(Client):
+    dialect = "anthropic"
+
     def __init__(self, anthropic: AsyncAnthropic) -> None:
         self.anthropic = anthropic
+        self._http: httpx.AsyncClient | None = None
+
+    async def relay(self, body: bytes, route: str) -> RelayReply:
+        # Anthropic base URLs are roots (the SDK appends /v1/...), so the ingress
+        # route maps on unchanged — including the count_tokens aux route.
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=None)
+        url = str(self.anthropic.base_url).rstrip("/") + route
+        return await relay_post(self._http, url, relay_headers(self.anthropic), body)
 
     async def get_response(
         self,
@@ -235,3 +247,5 @@ class AnthropicMessagesClient(Client):
 
     async def close(self) -> None:
         await self.anthropic.close()
+        if self._http is not None:
+            await self._http.aclose()

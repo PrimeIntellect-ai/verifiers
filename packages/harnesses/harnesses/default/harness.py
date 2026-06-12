@@ -53,10 +53,15 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             system_prompt = "\n\n".join(
                 p for p in (BASH_SYSTEM_PROMPT, system_prompt) if p
             )
+        # The program owns its request bodies (the interception server relays them as-is),
+        # so the eval's sampling rides along as env and the program merges it per call.
+        sampling = ctx.sampling.model_dump(exclude_none=True)
+        sampling.pop("stream", None)  # the program's chat loop never streams
         env = {
-            "OPENAI_BASE_URL": endpoint,
+            "OPENAI_BASE_URL": f"{endpoint}/v1",
             "OPENAI_API_KEY": secret,
             "OPENAI_MODEL": ctx.model,
+            "OPENAI_SAMPLING": json.dumps(sampling),
             "ENABLE_BASH": "1" if self.config.enable_bash else "0",
             "APPEND_SYSTEM_PROMPT": system_prompt or "",
         }

@@ -66,7 +66,8 @@ class InterceptionPool:
         exposer = make_runtime(
             self.runtime_config, name=f"interception-{len(self._servers)}"
         )
-        endpoint = f"{await exposer.expose(server.port)}/v1"
+        # The root endpoint — each harness appends what its program's SDK expects.
+        endpoint = await exposer.expose(server.port)
         entry = PooledServer(server, exposer, endpoint)
         self._servers.append(entry)
         logger.info(

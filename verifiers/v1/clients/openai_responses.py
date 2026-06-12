@@ -2,6 +2,7 @@
 
 from typing import Any, cast
 
+import httpx
 from openai import AsyncOpenAI, OpenAIError
 from openai.types.responses import (
     EasyInputMessageParam,
@@ -19,7 +20,7 @@ from openai.types.responses import (
 )
 from openai.types.responses.response_input_param import FunctionCallOutput
 
-from verifiers.v1.clients.client import Client
+from verifiers.v1.clients.client import Client, RelayReply, relay_headers, relay_post
 from verifiers.v1.clients.openai import model_error
 from verifiers.v1.errors import ModelError
 from verifiers.v1.types import (
@@ -151,8 +152,18 @@ def response_from_wire(response: OpenAIResponse) -> Response:
 
 
 class OpenAIResponsesClient(Client):
+    dialect = "responses"
+
     def __init__(self, openai: AsyncOpenAI) -> None:
         self.openai = openai
+        self._http: httpx.AsyncClient | None = None
+
+    async def relay(self, body: bytes, route: str) -> RelayReply:
+        # The SDK's base_url already carries `/v1` (the OpenAI convention).
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=None)
+        url = str(self.openai.base_url).rstrip("/") + route.removeprefix("/v1")
+        return await relay_post(self._http, url, relay_headers(self.openai), body)
 
     async def get_response(
         self,
@@ -209,3 +220,5 @@ class OpenAIResponsesClient(Client):
 
     async def close(self) -> None:
         await self.openai.close()
+        if self._http is not None:
+            await self._http.aclose()

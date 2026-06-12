@@ -20,8 +20,10 @@ from openai.types.chat import (
 from openai.types.chat.chat_completion import Choice
 from openai.types.shared_params import FunctionDefinition
 
-from verifiers.v1.clients.client import Client
-from verifiers.v1.errors import ModelError, OverlongPromptError
+import httpx
+
+from verifiers.v1.clients.client import Client, RelayReply, relay_headers, relay_post
+from verifiers.v1.errors import ModelError, classify_model_error
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -39,27 +41,11 @@ from verifiers.v1.types import (
     UserMessage,
 )
 
-_CONTEXT_LENGTH_PHRASES = (
-    "this model's maximum context length is",
-    "is longer than the model's context length",
-    "is longer than the maximum model length",
-    "exceeds the model's context length",
-    "exceed the configured limit",
-    "exceeds the configured limit",
-    "exceeded model",
-    "prompt_too_long",
-    "context length",
-    "maximum model length",
-)
-
 
 def model_error(e: OpenAIError) -> ModelError:
     """Map a provider client error to our error type, distinguishing an overlong prompt
     from any other model-call failure (auth, rate limit, a genuine bad request, ...)."""
-    text = str(e).casefold()
-    if any(phrase in text for phrase in _CONTEXT_LENGTH_PHRASES):
-        return OverlongPromptError(str(e))
-    return ModelError(str(e))
+    return classify_model_error(str(e))
 
 
 def content_to_wire(content) -> str | list[ChatCompletionContentPartParam]:
@@ -201,8 +187,19 @@ def response_from_wire(completion: ChatCompletion) -> Response:
 
 
 class OpenAIChatCompletionsClient(Client):
+    dialect = "chat"
+
     def __init__(self, openai: AsyncOpenAI) -> None:
         self.openai = openai
+        self._http: httpx.AsyncClient | None = None
+
+    async def relay(self, body: bytes, route: str) -> RelayReply:
+        # The SDK's base_url already carries `/v1` (the OpenAI convention), so the
+        # ingress route maps onto it with the prefix stripped.
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=None)
+        url = str(self.openai.base_url).rstrip("/") + route.removeprefix("/v1")
+        return await relay_post(self._http, url, relay_headers(self.openai), body)
 
     async def get_response(
         self,
@@ -238,3 +235,5 @@ class OpenAIChatCompletionsClient(Client):
 
     async def close(self) -> None:
         await self.openai.close()
+        if self._http is not None:
+            await self._http.aclose()

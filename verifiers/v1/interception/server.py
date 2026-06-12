@@ -1,22 +1,31 @@
-"""The interception server: harness chat-completions, caught and proxied.
+"""The interception server: a polyglot proxy for the harness program's model calls.
 
-Every rollout runs an harness program whose OpenAI-style calls are caught here: a small
-localhost server routes each `POST /v1/chat/completions` to our `Client`, records the turn
-into the trace's message graph, and returns the result in OpenAI shape. We inject
-`OPENAI_BASE_URL`/`OPENAI_API_KEY` so the program's SDK talks to us. Chat completions only,
-no streaming.
+Every rollout runs an harness program whose model calls are caught here. The server
+serves every registered dialect's routes (see `verifiers.v1.dialects`), so a request's
+wire format is resolved from the endpoint the program's SDK posts to — the harness
+declares nothing, and one rollout's processes may mix formats.
+
+Each request takes one of two arms:
+
+- **relay** — when the rollout's client natively speaks the request's dialect
+  (`Client.dialect == Dialect.name`), the request *bytes* are forwarded verbatim and the
+  response (JSON or SSE) is relayed back untouched; the dialect parses a copy only to
+  record the turn. No field is lost to a typed round-trip.
+- **translate** — otherwise (training via the renderer, or a cross-protocol pairing),
+  the request is parsed into typed messages, the client runs it in its own wire format,
+  and the typed `Response` is serialized back in the dialect the program spoke.
 
 One server multiplexes many rollouts: each rollout registers a `RolloutSession` under its
-own secret (the bearer token the harness already sends), and the server routes by that
-secret to the right session. So N rollouts need one server (and, behind a remote runtime,
-one tunnel) per pool member rather than one each — see `interception.pool`.
+own secret (read from the dialect's auth carrier), and the server routes by that secret.
+So N rollouts need one server (and, behind a remote runtime, one tunnel) per pool member
+rather than one each — see `interception.pool`.
 
 When a rollout sets a user simulator (see `verifiers.v1.user`), the session also drives it:
 after each model turn it injects the simulator's reply as a user turn and re-prompts the
 model, so a multi-turn exchange plays out within one program request, transparently to the
-harness. Tools are handled out-of-band (run by the harness).
-"""
+harness. Tools are handled out-of-band (run by the harness)."""
 
+import json
 import logging
 import secrets
 from collections.abc import Awaitable, Callable
@@ -27,117 +36,15 @@ from aiohttp import web
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1 import graph
+from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import (
-    AssistantMessage,
-    Message,
-    Messages,
-    Response,
-    SystemMessage,
-    Tool,
-    ToolCall,
-    ToolMessage,
-    UserMessage,
-    content_to_parts,
-)
+from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
     from verifiers.v1.user import Respond
 
 logger = logging.getLogger(__name__)
-
-
-def _content_text(content) -> str:
-    """Flatten content to text — for roles that never carry images (assistant, tool)."""
-    if isinstance(content, list):
-        return "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return content or ""
-
-
-def parse_message(raw: dict) -> Message:
-    """An OpenAI request message dict -> a typed Message. User/system bodies keep their
-    image parts (multimodal ingress); assistant/tool bodies flatten to text."""
-    role = raw.get("role")
-    content = raw.get("content")
-    if role == "system":
-        return SystemMessage(content=content_to_parts(content))
-    if role == "tool":
-        return ToolMessage(
-            tool_call_id=raw.get("tool_call_id", ""), content=_content_text(content)
-        )
-    if role == "assistant":
-        calls = [
-            ToolCall(
-                id=c["id"],
-                name=c["function"]["name"],
-                arguments=c["function"]["arguments"],
-            )
-            for c in (raw.get("tool_calls") or [])
-        ] or None
-        return AssistantMessage(
-            content=_content_text(content) or None,
-            reasoning_content=raw.get("reasoning_content") or raw.get("reasoning"),
-            tool_calls=calls,
-            provider_state=raw.get("reasoning_details") or raw.get("provider_state"),
-        )
-    return UserMessage(content=content_to_parts(content))
-
-
-def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
-    if not raw:
-        return None
-    return [
-        Tool(
-            name=t["function"]["name"],
-            description=t["function"].get("description", ""),
-            parameters=t["function"].get("parameters", {}),
-            strict=t["function"].get("strict"),
-        )
-        for t in raw
-        if t.get("type", "function") == "function"
-    ]
-
-
-def serialize_completion(response: Response, model: str) -> dict:
-    """A `Response` -> an OpenAI chat.completion dict the program's SDK expects."""
-    message: dict = {"role": "assistant", "content": response.message.content}
-    if response.message.reasoning_content is not None:
-        message["reasoning_content"] = response.message.reasoning_content
-    if response.message.provider_state is not None:
-        message["reasoning_details"] = response.message.provider_state
-    if response.message.tool_calls:
-        message["tool_calls"] = [
-            {
-                "id": c.id,
-                "type": "function",
-                "function": {"name": c.name, "arguments": c.arguments},
-            }
-            for c in response.message.tool_calls
-        ]
-    usage = (
-        {
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
-        if response.usage
-        else None
-    )
-    return {
-        "id": response.id or "vf-intercept",
-        "object": "chat.completion",
-        "created": response.created,
-        "model": response.model or model,
-        "choices": [
-            {
-                "index": 0,
-                "message": message,
-                "finish_reason": response.finish_reason or "stop",
-            }
-        ],
-        "usage": usage,
-    }
 
 
 # Each session proxies one rollout's own harness requests, so aiohttp's default 1 MiB body
@@ -218,11 +125,12 @@ class RolloutSession:
 
 
 class InterceptionServer:
-    """A localhost server that proxies chat-completions for one or more rollouts. Each
-    rollout `register`s a `RolloutSession` and gets back a secret; `handle_chat` routes every
-    request to the session whose secret matches the request's bearer token. A single server
-    can multiplex many rollouts (the basis for `interception.pool`); used 1:1 it's just a
-    server with one session."""
+    """A localhost server that proxies model calls for one or more rollouts. It serves
+    every registered dialect's routes, so a request's wire format is resolved from the
+    endpoint it arrived on. Each rollout `register`s a `RolloutSession` and gets back a
+    secret; every request routes to the session whose secret matches its auth. A single
+    server can multiplex many rollouts (the basis for `interception.pool`); used 1:1 it's
+    just a server with one session."""
 
     def __init__(self) -> None:
         self.sessions: dict[str, RolloutSession] = {}
@@ -230,8 +138,8 @@ class InterceptionServer:
         self.runner: web.AppRunner | None = None
 
     def register(self, session: RolloutSession) -> str:
-        """Add a session under a fresh secret (the bearer token the harness must send) and
-        return it."""
+        """Add a session under a fresh secret (the bearer token / api key the harness must
+        send) and return it."""
         secret = secrets.token_urlsafe(16)
         self.sessions[secret] = session
         return secret
@@ -239,9 +147,24 @@ class InterceptionServer:
     def unregister(self, secret: str) -> None:
         self.sessions.pop(secret, None)
 
+    def _bind_model(self, dialect: Dialect):
+        async def handler(request: web.Request) -> web.StreamResponse:
+            return await self.handle_model(request, dialect)
+
+        return handler
+
+    def _bind_aux(self, dialect: Dialect, route: str):
+        async def handler(request: web.Request) -> web.Response:
+            return await self.handle_aux(request, dialect, route)
+
+        return handler
+
     async def __aenter__(self) -> "InterceptionServer":
         app = web.Application(client_max_size=_MAX_REQUEST_BODY)
-        app.router.add_post("/v1/chat/completions", self.handle_chat)
+        for dialect in DIALECTS:
+            app.router.add_post(dialect.route, self._bind_model(dialect))
+            for aux in dialect.aux_routes:
+                app.router.add_post(aux, self._bind_aux(dialect, aux))
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -254,20 +177,53 @@ class InterceptionServer:
         if self.runner is not None:
             await self.runner.cleanup()
 
-    async def handle_chat(self, request: web.Request) -> web.Response:
-        auth = request.headers.get("Authorization", "")
-        session = self.sessions.get(auth.removeprefix("Bearer "))
+    def session_for(
+        self, request: web.Request, dialect: Dialect
+    ) -> RolloutSession | None:
+        return self.sessions.get(dialect.secret(request.headers))
+
+    async def handle_aux(
+        self, request: web.Request, dialect: Dialect, route: str
+    ) -> web.Response:
+        """A side endpoint that is not a model turn (e.g. Anthropic count_tokens):
+        relayed verbatim when the client speaks the dialect, answered locally otherwise.
+        Never recorded on the trace."""
+        session = self.session_for(request, dialect)
+        if session is None:
+            return web.json_response(dialect.error_body("unauthorized"), status=401)
+        raw = await request.read()
+        if session.ctx.client.dialect == dialect.name:
+            try:
+                reply = await session.ctx.client.relay(raw, route)
+            except Exception as e:
+                return web.json_response(dialect.error_body(str(e)), status=502)
+            data = b"".join([chunk async for chunk in reply.chunks])
+            return web.Response(body=data, content_type=reply.content_type)
+        return web.json_response(dialect.handle_aux(route, json.loads(raw)))
+
+    async def handle_model(
+        self, request: web.Request, dialect: Dialect
+    ) -> web.StreamResponse:
+        session = self.session_for(request, dialect)
         if session is None:
             logger.warning("interception: unauthorized request")
-            return web.json_response({"error": "unauthorized"}, status=401)
-        body = await request.json()
-        prompt: Messages = [parse_message(m) for m in body.get("messages", [])]
-        tools = parse_tools(body.get("tools"))
+            return web.json_response(dialect.error_body("unauthorized"), status=401)
+        raw = await request.read()
+        body = json.loads(raw)
+        # Relay when the client's endpoint natively speaks this dialect; translate
+        # through the typed middle otherwise (training, cross-protocol).
+        relaying = session.ctx.client.dialect == dialect.name
+        prompt, tools = dialect.parse_request(body)
+        if dialect.streaming(body):
+            return await self.stream_turn(
+                request, session, dialect, raw, prompt, tools, relaying
+            )
+
         # A user simulator turns one program request into a multi-turn exchange: after each
         # model turn the simulator's reply is injected as a user turn and the model is
         # re-prompted, so a whole game plays out here and only the final assistant message
         # returns to the (simulator-unaware) program. Without a simulator the loop runs once.
-        last: Response | None = None
+        last: bytes | None = None  # the last turn's payload, in the dialect's wire form
         while True:
             refused = await session.refused()
             if refused is not None:
@@ -275,13 +231,21 @@ class InterceptionServer:
                 # conversation is under way, just end it and return the last turn cleanly.
                 if last is None:
                     return web.json_response(
-                        {"error": f"rollout stopped: {refused}"}, status=400
+                        dialect.error_body(f"rollout stopped: {refused}"), status=400
                     )
-                return web.json_response(serialize_completion(last, session.ctx.model))
+                return web.Response(body=last, content_type="application/json")
             try:
-                response = await session.ctx.client.get_response(
-                    prompt, session.ctx.model, session.ctx.sampling, tools
-                )
+                if relaying:
+                    reply = await session.ctx.client.relay(raw, dialect.route)
+                    data = b"".join([chunk async for chunk in reply.chunks])
+                    completion = json.loads(data)
+                    response = dialect.parse_response(completion)
+                else:
+                    response = await session.ctx.client.get_response(
+                        prompt, session.ctx.model, session.ctx.sampling, tools
+                    )
+                    completion = dialect.serialize_response(response, session.ctx.model)
+                    data = json.dumps(completion).encode()
             except OverlongPromptError:
                 # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
                 # as a truncation — return the last turn if there is one, else refuse to halt
@@ -290,25 +254,80 @@ class InterceptionServer:
                 logger.debug("prompt too long: id=%s", session.trace.id)
                 if last is None:
                     return web.json_response(
-                        {"error": "rollout stopped: context_length"}, status=400
+                        dialect.error_body("rollout stopped: context_length"),
+                        status=400,
                     )
-                return web.json_response(serialize_completion(last, session.ctx.model))
+                return web.Response(body=last, content_type="application/json")
             except Exception as e:  # surface to the program as an API error
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
-                return web.json_response({"error": str(e)}, status=502)
+                return web.json_response(dialect.error_body(str(e)), status=502)
             graph.add_turn(session.trace, prompt, response)  # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
-            last = response
+            last = data
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
-                return web.json_response(
-                    serialize_completion(response, session.ctx.model)
-                )
+                return web.Response(body=data, content_type="application/json")
             user_messages, done = await session.user(response.message.content or "")
             if done:
                 session.trace.stop("user_completed")
-                return web.json_response(
-                    serialize_completion(response, session.ctx.model)
-                )
+                return web.Response(body=data, content_type="application/json")
             prompt = [*prompt, response.message, *user_messages]
+            if relaying:  # the continuation request is framework-authored
+                body = dialect.extend_request(body, completion, user_messages)
+                raw = json.dumps(body).encode()
+
+    async def stream_turn(
+        self,
+        request: web.Request,
+        session: RolloutSession,
+        dialect: Dialect,
+        raw: bytes,
+        prompt: Messages,
+        tools,
+        relaying: bool,
+    ) -> web.StreamResponse:
+        """One streamed (SSE) model turn. The relay arm pipes the upstream bytes through
+        as they arrive and tee-parses the accumulated stream for the trace; the translate
+        arm runs the typed client and fake-streams the completed response. Streamed turns
+        return directly to the program — a user simulator never drives them (no harness
+        contract combines the two)."""
+        refused = await session.refused()
+        if refused is not None:
+            return web.json_response(
+                dialect.error_body(f"rollout stopped: {refused}"), status=400
+            )
+        try:
+            # Both arms raise before any response byte is committed, so errors can
+            # still go back as a clean (retryable-by-the-program) JSON error.
+            if relaying:
+                reply = await session.ctx.client.relay(raw, dialect.route)
+            else:
+                typed = await session.ctx.client.get_response(
+                    prompt, session.ctx.model, session.ctx.sampling, tools
+                )
+        except OverlongPromptError:
+            session.trace.stop("context_length")
+            logger.debug("prompt too long: id=%s", session.trace.id)
+            return web.json_response(
+                dialect.error_body("rollout stopped: context_length"), status=400
+            )
+        except Exception as e:
+            logger.warning("model call failed: id=%s %s", session.trace.id, e)
+            return web.json_response(dialect.error_body(str(e)), status=502)
+        if relaying:
+            stream = web.StreamResponse()
+            stream.content_type = reply.content_type
+            await stream.prepare(request)
+            buffer = bytearray()
+            async for chunk in reply.chunks:
+                buffer.extend(chunk)
+                await stream.write(chunk)
+            await stream.write_eof()
+            graph.add_turn(session.trace, prompt, dialect.parse_stream(bytes(buffer)))
+            return stream
+        graph.add_turn(session.trace, prompt, typed)
+        return web.Response(
+            body=dialect.serialize_stream(typed, session.ctx.model),
+            content_type="text/event-stream",
+        )

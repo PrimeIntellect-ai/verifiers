@@ -101,14 +101,16 @@ class Rollout:
         session: RolloutSession,
     ):
         """Yield `(endpoint, secret)` for the harness — a slot on the shared `pool` if one
-        is given, else a per-rollout server exposed via this rollout's own runtime."""
+        is given, else a per-rollout server exposed via this rollout's own runtime. The
+        endpoint is the server's *root*: each harness appends what its program's SDK
+        expects (`/v1` for an OpenAI base URL; nothing for an Anthropic one)."""
         if pool is not None:
             async with pool.acquire(session) as (endpoint, secret):
                 yield endpoint, secret
         else:
             async with InterceptionServer() as server:
                 secret = server.register(session)
-                endpoint = f"{await runtime.expose(server.port)}/v1"
+                endpoint = await runtime.expose(server.port)
                 yield endpoint, secret
 
     async def run(
