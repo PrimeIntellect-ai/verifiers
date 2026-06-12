@@ -8,7 +8,9 @@ so MITO training needs no renderer. Routed-experts/audio handling stays dropped.
 This is the one place raw provider dicts cross into our typed `Response`.
 """
 
+import httpx
 from openai import AsyncOpenAI, OpenAIError
+from openai.types.chat import ChatCompletion
 
 from verifiers.v1.clients.client import Client
 from verifiers.v1.errors import ModelError, OverlongPromptError
@@ -139,8 +141,11 @@ def response_from_wire(completion) -> Response:
         created=completion.created,
         model=completion.model,
         message=AssistantMessage(
+            # Providers name the field differently: `reasoning_content` (DeepSeek/vLLM
+            # native), `reasoning` (OpenRouter-style aggregators, e.g. PI Inference).
             content=message.content,
-            reasoning_content=getattr(message, "reasoning_content", None),
+            reasoning_content=getattr(message, "reasoning_content", None)
+            or getattr(message, "reasoning", None),
             tool_calls=tool_calls,
         ),
         finish_reason=finish,
@@ -150,8 +155,24 @@ def response_from_wire(completion) -> Response:
 
 
 class OpenAIChatCompletionsClient(Client):
+    supports_proxy = True
+
     def __init__(self, openai: AsyncOpenAI) -> None:
         self.openai = openai
+
+    async def proxy(self, body: dict) -> tuple[dict, Response]:
+        """Forward `body` 1:1 to the provider (reusing the SDK's base URL / auth / retries)
+        and return its raw response dict untouched — so provider-specific fields the typed
+        wire form doesn't model (e.g. `reasoning` / `reasoning_details`) reach the program
+        intact — plus a `Response` parsed for the trace."""
+        try:
+            resp = await self.openai.post(
+                "/chat/completions", cast_to=httpx.Response, body=body
+            )
+        except OpenAIError as e:
+            raise model_error(e) from e
+        raw = resp.json()
+        return raw, response_from_wire(ChatCompletion.model_validate(raw))
 
     async def get_response(
         self,

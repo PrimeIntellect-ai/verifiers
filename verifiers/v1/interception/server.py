@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients.openai import message_to_wire
 from verifiers.v1 import graph
 from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.trace import Trace
@@ -260,54 +261,75 @@ class InterceptionServer:
             logger.warning("interception: unauthorized request")
             return web.json_response({"error": "unauthorized"}, status=401)
         body = await request.json()
-        prompt: Messages = [parse_message(m) for m in body.get("messages", [])]
+        # Two views of the conversation: `raw_messages` is what goes upstream — forwarded 1:1
+        # for a proxying client (so provider fields the typed wire form doesn't model, e.g.
+        # `reasoning`, are never lost), or rebuilt from `prompt` for the renderer (which must
+        # tokenize). `prompt` is the typed parse, used only to build the trace. `model` and
+        # sampling stay the eval's; a user simulator extends both views each turn.
+        raw_messages: list[dict] = list(body.get("messages", []))
+        prompt: Messages = [parse_message(m) for m in raw_messages]
         tools = parse_tools(body.get("tools"))
+        proxying = session.ctx.client.supports_proxy
         # A user simulator turns one program request into a multi-turn exchange: after each
         # model turn the simulator's reply is injected as a user turn and the model is
         # re-prompted, so a whole game plays out here and only the final assistant message
         # returns to the (simulator-unaware) program. Without a simulator the loop runs once.
-        last: Response | None = None
+        last_completion: dict | None = None
         while True:
             refused = await session.refused()
             if refused is not None:
                 # Refuse the first model call to halt the harness; once a simulated
                 # conversation is under way, just end it and return the last turn cleanly.
-                if last is None:
+                if last_completion is None:
                     return web.json_response(
                         {"error": f"rollout stopped: {refused}"}, status=400
                     )
-                return web.json_response(serialize_completion(last, session.ctx.model))
+                return web.json_response(last_completion)
             try:
-                response = await session.ctx.client.get_response(
-                    prompt, session.ctx.model, session.ctx.sampling, tools
-                )
+                if proxying:
+                    upstream = {
+                        **body,
+                        "messages": raw_messages,
+                        "model": session.ctx.model,
+                        **session.ctx.sampling.model_dump(exclude_none=True),
+                    }
+                    completion, response = await session.ctx.client.proxy(upstream)
+                else:
+                    response = await session.ctx.client.get_response(
+                        prompt, session.ctx.model, session.ctx.sampling, tools
+                    )
+                    completion = serialize_completion(response, session.ctx.model)
             except OverlongPromptError:
                 # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
                 # as a truncation — return the last turn if there is one, else refuse to halt
                 # the harness (same shape as `refused` above).
                 session.trace.stop("context_length")
                 logger.debug("prompt too long: id=%s", session.trace.id)
-                if last is None:
+                if last_completion is None:
                     return web.json_response(
                         {"error": "rollout stopped: context_length"}, status=400
                     )
-                return web.json_response(serialize_completion(last, session.ctx.model))
+                return web.json_response(last_completion)
             except Exception as e:  # surface to the program as an API error
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response({"error": str(e)}, status=502)
             graph.add_turn(session.trace, prompt, response)  # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
-            last = response
+            last_completion = completion
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
-                return web.json_response(
-                    serialize_completion(response, session.ctx.model)
-                )
+                return web.json_response(completion)
             user_messages, done = await session.user(response.message.content or "")
             if done:
                 session.trace.stop("user_completed")
-                return web.json_response(
-                    serialize_completion(response, session.ctx.model)
-                )
+                return web.json_response(completion)
+            # Extend the upstream wire history (proxy path, verbatim assistant turn) and the
+            # typed prompt (trace) with the model turn + the simulator's injected user turn(s).
+            if proxying:
+                raw_messages = [
+                    *raw_messages,
+                    completion["choices"][0]["message"],
+                    *(message_to_wire(m) for m in user_messages),
+                ]
             prompt = [*prompt, response.message, *user_messages]

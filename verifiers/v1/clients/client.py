@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 
 
 class Client(ABC):
+    supports_proxy: bool = False
+    """Whether `proxy` is implemented. Proxying clients (the chat client) forward the
+    program's request 1:1 to the provider, so no field is lost to a typed round-trip;
+    non-proxying ones (the renderer, which must tokenize the prompt for training) translate
+    via `get_response`."""
+
     @abstractmethod
     async def get_response(
         self,
@@ -32,6 +38,12 @@ class Client(ABC):
         tools: list[Tool] | None = None,
     ) -> Response:
         """Run one completion, translating to/from this client's wire format."""
+
+    async def proxy(self, body: dict) -> tuple[dict, Response]:
+        """Forward the program's raw request `body` 1:1 to the provider and return its raw
+        response dict (untouched, so every provider field — e.g. `reasoning` — survives) plus
+        a typed `Response` parsed for the trace. Only clients with `supports_proxy` set it."""
+        raise NotImplementedError
 
     async def close(self) -> None:
         """Release any underlying resources. Default no-op."""
@@ -63,6 +75,10 @@ class RetryingClient(Client):
             state.outcome.exception(),
         )
 
+    @property
+    def supports_proxy(self) -> bool:
+        return self.inner.supports_proxy
+
     async def get_response(
         self,
         prompt: Messages,
@@ -73,6 +89,9 @@ class RetryingClient(Client):
         return await self._retrying(
             self.inner.get_response, prompt, model, sampling_args, tools
         )
+
+    async def proxy(self, body: dict) -> tuple[dict, Response]:
+        return await self._retrying(self.inner.proxy, body)
 
     async def close(self) -> None:
         await self.inner.close()
