@@ -3460,6 +3460,77 @@ async def test_upload_program_dirs_reuses_runtime_archive_cache(
 
 
 @pytest.mark.asyncio
+async def test_program_staging_uploads_thread_env_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "module.py").write_text("VALUE = 1\n")
+
+    class UploadClient:
+        def __init__(self) -> None:
+            self.byte_timeouts: list[int | None] = []
+            self.file_timeouts: list[int | None] = []
+
+        async def upload_bytes(self, *args: object, **kwargs: object) -> None:
+            _ = args
+            self.byte_timeouts.append(cast(int | None, kwargs.get("timeout")))
+
+        async def upload_file(self, *args: object, **kwargs: object) -> None:
+            _ = args
+            self.file_timeouts.append(cast(int | None, kwargs.get("timeout")))
+
+        async def execute_command(
+            self, *args: object, **kwargs: object
+        ) -> FakeCommandResult:
+            _ = args, kwargs
+            return FakeCommandResult()
+
+    client = UploadClient()
+    runtime = Runtime()
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    async def stage_program_uploads(sandbox_id: str) -> None:
+        await sandbox_utils.upload_program_files(
+            cast(sandbox_utils.SandboxClient, client),
+            sandbox_id,
+            {"files": {"/remote/main.py": "print('ok')\n"}},
+            task,
+            vf.State.for_task(task),
+            runtime,
+        )
+        await upload_program_dirs(
+            cast(sandbox_utils.SandboxClient, client),
+            sandbox_id,
+            {"dirs": {"/remote/pkg": str(source_dir)}},
+            task,
+            vf.State.for_task(task),
+            runtime,
+        )
+        await sandbox_utils.upload_state_input(
+            cast(sandbox_utils.SandboxClient, client),
+            sandbox_id,
+            {VF_STATE_INPUT_PATH_KEY: "/tmp/vf_state_in.json"},
+            vf.State.for_task(task),
+        )
+
+    monkeypatch.setenv("VF_SANDBOX_UPLOAD_TIMEOUT", "777")
+    await stage_program_uploads("sbx-timeout")
+
+    monkeypatch.delenv("VF_SANDBOX_UPLOAD_TIMEOUT", raising=False)
+    await stage_program_uploads("sbx-default")
+
+    monkeypatch.setenv("VF_SANDBOX_UPLOAD_TIMEOUT", "not-an-int")
+    assert sandbox_utils.sandbox_upload_timeout() is None
+
+    await runtime.teardown()
+
+    assert client.byte_timeouts == [777, 777, None, None]
+    assert client.file_timeouts == [777, None]
+
+
+@pytest.mark.asyncio
 async def test_cached_upload_archive_cancelled_awaiter_still_cleans_archive(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

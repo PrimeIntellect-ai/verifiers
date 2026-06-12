@@ -3,6 +3,7 @@ import hashlib
 import importlib.resources as resources
 import json
 import logging
+import os
 import shlex
 import tarfile
 import tempfile
@@ -47,6 +48,16 @@ SANDBOX_RETRY_ATTEMPTS = 6
 SANDBOX_WAIT_FOR_CREATION_ATTEMPTS = 120
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
+
+
+def sandbox_upload_timeout() -> int | None:
+    value = os.getenv("VF_SANDBOX_UPLOAD_TIMEOUT")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 class SandboxRecord(Protocol):
@@ -101,6 +112,7 @@ class SandboxClient(Protocol):
         file_bytes: bytes,
         *,
         filename: str | None = None,
+        timeout: int | None = None,
     ) -> object: ...
 
     async def upload_file(
@@ -236,7 +248,11 @@ class SandboxLease:
         return cast(SandboxCommandResult, result)
 
     async def upload_bytes(
-        self, path: str, content: bytes, filename: str | None = None
+        self,
+        path: str,
+        content: bytes,
+        filename: str | None = None,
+        timeout: int | None = None,
     ) -> object:
         return await maybe_call_with_named_args(
             self.client.upload_bytes,
@@ -244,6 +260,7 @@ class SandboxLease:
             file_path=path,
             file_bytes=content,
             filename=filename or path.rsplit("/", 1)[-1] or "file",
+            timeout=timeout,
         )
 
     async def upload_file(
@@ -347,9 +364,13 @@ class SandboxHandle:
         return result
 
     async def upload_bytes(
-        self, path: str, content: bytes, filename: str | None = None
+        self,
+        path: str,
+        content: bytes,
+        filename: str | None = None,
+        timeout: int | None = None,
     ) -> object:
-        return await self.lease.upload_bytes(path, content, filename)
+        return await self.lease.upload_bytes(path, content, filename, timeout=timeout)
 
     async def upload_file(
         self, path: str, local_path: str, timeout: int | None = None
@@ -869,6 +890,7 @@ async def upload_program_files(
     files = program_option_mapping(
         cast(ProgramMappingInput, program.get("files")), "program.files"
     )
+    upload_timeout = sandbox_upload_timeout()
     for path, source in files.items():
         content = await resolve_program_value(source, task, state, runtime, program)
         if not isinstance(content, str):
@@ -880,6 +902,7 @@ async def upload_program_files(
                 file_path=path,
                 file_bytes=content.encode(),
                 filename=path.rsplit("/", 1)[-1] or "file",
+                timeout=upload_timeout,
             )
         except (APIError, UploadTimeoutError) as exc:
             raise SandboxError(
@@ -898,6 +921,7 @@ async def upload_program_dirs(
     dirs = program_option_mapping(
         cast(ProgramMappingInput, program.get("dirs")), "program.dirs"
     )
+    upload_timeout = sandbox_upload_timeout()
     for path, source in dirs.items():
         local_source = await resolve_program_value(
             source, task, state, runtime, program
@@ -915,6 +939,7 @@ async def upload_program_dirs(
             sandbox_id=sandbox_id,
             file_path=remote_tar,
             local_file_path=str(archive_path),
+            timeout=upload_timeout,
         )
         result = await maybe_call_with_named_args(
             client.execute_command,
@@ -1002,6 +1027,7 @@ async def upload_state_input(
         file_path=path,
         file_bytes=json.dumps(state).encode(),
         filename=path.rsplit("/", 1)[-1] or "file",
+        timeout=sandbox_upload_timeout(),
     )
 
 
