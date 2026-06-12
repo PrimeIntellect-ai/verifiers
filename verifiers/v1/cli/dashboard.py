@@ -12,6 +12,8 @@ top, above a rule.
 import asyncio
 import contextlib
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 from rich.console import Group
 from rich.live import Live
@@ -21,6 +23,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.configs.validate import ValidateConfig
 from verifiers.v1.cli.output import output_path
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
@@ -199,14 +202,15 @@ def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
 
 
 @contextlib.asynccontextmanager
-async def dashboard(rollouts: list[Rollout], config: EvalConfig, start: float):
-    """Refresh the live view until the `with` block exits, then a final frame."""
-    with Live(_render(rollouts, config, start), auto_refresh=False) as live:
+async def _live_view(render):
+    """Drive a rich `Live` from `render()` — refresh every 0.25s until the block exits, then a
+    final frame. Shared by the eval and validate dashboards."""
+    with Live(render(), auto_refresh=False) as live:
 
         async def loop() -> None:
             while True:
                 await asyncio.sleep(0.25)
-                live.update(_render(rollouts, config, start), refresh=True)
+                live.update(render(), refresh=True)
 
         task = asyncio.create_task(loop())
         try:
@@ -215,4 +219,114 @@ async def dashboard(rollouts: list[Rollout], config: EvalConfig, start: float):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-            live.update(_render(rollouts, config, start), refresh=True)  # final frame
+            live.update(render(), refresh=True)  # final frame
+
+
+@contextlib.asynccontextmanager
+async def dashboard(rollouts: list[Rollout], config: EvalConfig, start: float):
+    """Refresh the live eval view until the `with` block exits, then a final frame."""
+    async with _live_view(lambda: _render(rollouts, config, start)):
+        yield
+
+
+# -- validate dashboard ------------------------------------------------------
+# The model-free `validate` run: one row per task, colored by outcome (no rollout phases,
+# tokens, turns, or reward — just pending ○ / running ● / valid ✓ / invalid ✗ / error ✗ /
+# timeout ⏱). Reuses `_live_view` and the overview/progress/rows layout of the eval view.
+
+_VALIDATE_STYLE = {
+    "pending": "dim",
+    "running": "cyan",
+    "valid": "green",
+    "invalid": "yellow",
+    "error": "red",
+    "timeout": "red",
+}
+_VALIDATE_MARK = {
+    "pending": "○",
+    "running": "●",
+    "valid": "✓",
+    "invalid": "✗",
+    "error": "✗",
+    "timeout": "⏱",
+}
+_VALIDATE_DONE = ("valid", "invalid", "error", "timeout")
+
+
+@dataclass
+class TaskProgress:
+    """Live state of one task's validation, read by the dashboard each tick and advanced by
+    the runner (pending → running → its outcome)."""
+
+    idx: int
+    name: str | None
+    state: str = "pending"
+    start: float | None = None
+    end: float | None = None
+
+
+def _validate_overview(config: ValidateConfig, out: Path) -> Table:
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="dim")
+    grid.add_column()
+    grid.add_row("taskset", f"{config.taskset.name}  ·  {config.runtime.type} runtime")
+    grid.add_row("output", str(out))
+    return grid
+
+
+def _validate_progress(states: list[TaskProgress], start: float) -> Table:
+    done = [s for s in states if s.state in _VALIDATE_DONE]
+    valid = sum(1 for s in done if s.state == "valid")
+    bar = ProgressBar(total=len(states) or 1, completed=len(done), width=32)
+    stats = Text(
+        f" {len(done)}/{len(states)} · {format_time(time.time() - start)} · "
+        f"valid {valid} · invalid {len(done) - valid}"
+    )
+    row = Table.grid()
+    row.add_column()
+    row.add_column()
+    row.add_row(bar, stats)
+    return row
+
+
+def _validate_rows(states: list[TaskProgress], now: float) -> Table:
+    grid = Table.grid(expand=True, padding=(0, 1))
+    grid.add_column(ratio=1, no_wrap=True)  # mark + task label
+    grid.add_column(justify="right", no_wrap=True)  # outcome
+    grid.add_column(justify="right", no_wrap=True)  # time
+    for s in states:
+        if (
+            s.state == "pending"
+        ):  # not started — like eval, show only in-flight/done rows
+            continue
+        label = f"name={s.name[:40]}" if s.name else f"idx={s.idx}"
+        result = s.state if s.state in _VALIDATE_DONE else ""
+        elapsed = format_time((s.end or now) - s.start) if s.start else ""
+        grid.add_row(
+            f"{_VALIDATE_MARK[s.state]} task {label}",
+            f"{result} ·" if result else "",
+            elapsed,
+            style=_VALIDATE_STYLE[s.state],
+        )
+    return grid
+
+
+def _validate_render(
+    states: list[TaskProgress], config: ValidateConfig, out: Path, start: float
+) -> Group:
+    now = time.time()
+    return Group(
+        _validate_overview(config, out),
+        _validate_progress(states, start),
+        Rule(style="dim"),
+        _validate_rows(states, now),
+    )
+
+
+@contextlib.asynccontextmanager
+async def validate_dashboard(
+    states: list[TaskProgress], config: ValidateConfig, out: Path, start: float
+):
+    """Refresh the live validate view until the `with` block exits, then a final frame."""
+    async with _live_view(lambda: _validate_render(states, config, out, start)):
+        yield

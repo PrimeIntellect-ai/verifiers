@@ -50,6 +50,8 @@ class ValidateConfig(BaseConfig):
     """Max tasks validated in flight at once (and, for a container runtime, live sandboxes)."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
+    rich: bool = True
+    """Show a live dashboard (one row per task) instead of per-task log lines."""
     dry_run: bool = False
     """Resolve + validate the config, write it to the output dir, then exit."""
     output_dir: Path | None = Field(

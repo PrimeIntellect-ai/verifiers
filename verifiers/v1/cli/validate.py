@@ -24,6 +24,7 @@ import tomli_w
 from pydantic_config import cli
 
 import verifiers.v1 as vf
+from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
 from verifiers.v1.cli.log import setup_logging
 from verifiers.v1.cli.resolve import (
     extract_id,
@@ -35,11 +36,6 @@ from verifiers.v1.configs.validate import ValidateConfig
 from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import RetryingRuntime, make_runtime
 from verifiers.v1.taskset import Taskset
-
-try:
-    from tqdm.auto import tqdm
-except ImportError:  # pragma: no cover
-    tqdm = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -182,28 +178,20 @@ async def run_validate(config: ValidateConfig, out: Path) -> list[dict]:
     )
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+    states = [TaskProgress(idx=t.idx, name=t.name) for t in tasks]
+    state_by_idx = {s.idx: s for s in states}
 
     async def _one(task) -> dict:
+        st = state_by_idx[task.idx]
         async with sem or contextlib.nullcontext():
+            st.start = time.time()
+            st.state = "running"
             row = await _validate_task(taskset, task, config)
-        # Sync single-line append: race-free across rollouts in the one event loop.
+        st.end, st.state = time.time(), row["reason"]
+        # Sync single-line append: race-free across tasks in the one event loop.
         with results_path.open("a") as f:
             f.write(json.dumps(row) + "\n")
-        return row
-
-    results = list(prior)
-    bar = (
-        tqdm(total=len(tasks), desc="validate", dynamic_ncols=True)
-        if tqdm is not None
-        else None
-    )
-    for fut in asyncio.as_completed([_one(t) for t in tasks]):
-        row = await fut
-        results.append(row)
-        if bar is not None:
-            bar.update(1)
-            bar.set_postfix(valid=sum(r["valid"] for r in results))
-        else:
+        if not config.rich:  # the dashboard shows this live; otherwise log each task
             detail = f" - {row['error']}" if row["error"] else ""
             logger.info(
                 "idx=%s valid=%s reason=%s (%.1fs)%s",
@@ -213,8 +201,18 @@ async def run_validate(config: ValidateConfig, out: Path) -> list[dict]:
                 row["elapsed"],
                 detail,
             )
-    if bar is not None:
-        bar.close()
+        return row
+
+    start = time.time()
+    display = (
+        validate_dashboard(states, config, out, start)
+        if config.rich
+        else contextlib.nullcontext()
+    )
+    results = list(prior)
+    async with display:
+        for fut in asyncio.as_completed([_one(t) for t in tasks]):
+            results.append(await fut)
     return results
 
 
@@ -261,15 +259,20 @@ def main(argv: list[str] | None = None) -> None:
     sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
     config = cli(config_type)
     out = _output_path(config)
-    setup_logging(
-        "DEBUG" if config.verbose else "INFO",
-        log_file=str(out / "validate.log"),
-        console=True,
-    )
+    level = "DEBUG" if config.verbose else "INFO"
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
+        setup_logging(level)
         _write_config(config, out)
         logger.info("wrote config to %s", out / "config.toml")
         return
+    # Always tee logs to a file under the output dir. Under `--rich` the dashboard owns the
+    # screen, so keep logs off the console (else stray records print over the UI).
+    log_file = str(out / "validate.log")
+    if config.rich:
+        setup_logging(level, log_file=log_file, console=False)
+        logging.lastResort = None  # drop stdlib records that bypass loguru
+    else:
+        setup_logging(level, log_file=log_file, console=True)
     # Make SIGTERM behave like Ctrl-C so a killed run still runs each task's `finally`
     # (tears down containers/sandboxes) — and the atexit backstop catches the rest.
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
