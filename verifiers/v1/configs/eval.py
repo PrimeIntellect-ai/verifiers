@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from pydantic import AliasChoices, Field
 
-from verifiers.v1.clients import ClientConfig, OpenAIClientConfig
+from verifiers.v1.clients import ClientConfig, EvalClientConfig
 from verifiers.v1.env import EnvServerConfig
 from verifiers.v1.types import SamplingConfig
 
@@ -24,7 +24,7 @@ class EvalConfig(EnvServerConfig):
         "deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m")
     )
     """Model id."""
-    client: ClientConfig = OpenAIClientConfig()
+    client: ClientConfig = EvalClientConfig()
     sampling: SamplingConfig = SamplingConfig()
     num_tasks: int | None = Field(
         None,

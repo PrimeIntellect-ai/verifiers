@@ -4,8 +4,8 @@ from verifiers.v1.clients.client import Client, RetryingClient, RolloutContext
 from verifiers.v1.clients.config import (
     BaseClientConfig,
     ClientConfig,
-    OpenAIClientConfig,
-    RendererClientConfig,
+    EvalClientConfig,
+    TrainClientConfig,
     resolve_client,
 )
 from verifiers.v1.clients.eval import EvalClient
@@ -17,8 +17,8 @@ __all__ = [
     "RolloutContext",
     "BaseClientConfig",
     "ClientConfig",
-    "OpenAIClientConfig",
-    "RendererClientConfig",
+    "EvalClientConfig",
+    "TrainClientConfig",
     "resolve_client",
     "EvalClient",
     "TrainClient",

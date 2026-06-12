@@ -5,7 +5,7 @@ A `BaseClientConfig` is an OpenAI-compatible endpoint (base_url + API-key env va
 is baked in via a validator, so it's handled in one place. Both the eval entrypoint
 (its model client) and in-env LLM calls (e.g. a judge reward) build clients from
 these — inherit `BaseClientConfig` to get the endpoint/header handling for free.
-`ClientConfig` is the CLI-selectable discriminated union (openai | renderer).
+`ClientConfig` is the CLI-selectable discriminated union (eval | train).
 """
 
 import os
@@ -42,17 +42,17 @@ class BaseClientConfig(BaseConfig):
         return self
 
 
-class OpenAIClientConfig(BaseClientConfig):
-    """The default: an OpenAI-compatible chat-completions endpoint (text in/out)."""
+class EvalClientConfig(BaseClientConfig):
+    """The default (eval): forward each request to a matching endpoint via `EvalClient`."""
 
-    type: Literal["openai"] = "openai"
+    type: Literal["eval"] = "eval"
 
 
-class RendererClientConfig(BaseClientConfig):
-    """A vLLM `/inference/v1/generate` endpoint with client-side tokenization, so
-    responses carry token ids + logprobs. Needs a running vLLM engine."""
+class TrainClientConfig(BaseClientConfig):
+    """Training: a vLLM `/inference/v1/generate` endpoint with client-side tokenization (via
+    `TrainClient`), so responses carry token ids + logprobs. Needs a running vLLM engine."""
 
-    type: Literal["renderers"] = "renderers"
+    type: Literal["train"] = "train"
     renderer: RendererConfig | None = None
     """The `renderers.RendererConfig` to use (the same shared type prime-rl configures).
     `None` auto-resolves from the model — which falls back to the default renderer (no
@@ -66,15 +66,15 @@ class RendererClientConfig(BaseClientConfig):
     the per-request model when None."""
 
 
-# Discriminated union for a CLI-selectable client (`--client.type renderers`).
+# Discriminated union for a CLI-selectable client (`--client.type eval|train`).
 ClientConfig = Annotated[
-    OpenAIClientConfig | RendererClientConfig, Field(discriminator="type")
+    EvalClientConfig | TrainClientConfig, Field(discriminator="type")
 ]
 
 
 def resolve_client(config: BaseClientConfig) -> Client:
     api_key = os.environ.get(config.api_key_var, "EMPTY")
-    if isinstance(config, RendererClientConfig):
+    if isinstance(config, TrainClientConfig):
         # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
         openai = AsyncOpenAI(
             base_url=config.base_url,

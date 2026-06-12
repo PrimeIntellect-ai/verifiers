@@ -21,7 +21,7 @@ from typing import Any
 import zmq
 import zmq.asyncio
 
-from verifiers.v1.clients.config import ClientConfig, RendererClientConfig
+from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
     RunGroupRequest,
@@ -305,7 +305,7 @@ class LegacyEnvServer(EnvServer):
         sampling — never drives tokenizer loading. An OpenAI config (chat-completions, eval)
         builds a v0 chat-completions client. The per-request ``model`` selects the sampling
         target in ``run_rollout``."""
-        is_renderer = isinstance(client_config, RendererClientConfig)
+        is_renderer = isinstance(client_config, TrainClientConfig)
         renderer_model = (
             client_config.renderer_model_name if is_renderer else None
         ) or model
