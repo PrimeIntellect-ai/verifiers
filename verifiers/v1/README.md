@@ -126,7 +126,9 @@ guaranteed cleanup of its resources, even on exit/interrupt.
 A taskset may expose task-specific tools beyond the tools shipping natively with
 the harness as MCP servers. Its placement (separate runtime or colocated with
 harness) is configurable on `taskset.tools` and reachability is handled resolved
-automatically. The tool examples each show one placement:
+automatically. Tools only run under a harness with `SUPPORTS_TASK_TOOLS` (the `default`
+harness has it; `rlm` doesn't) — an incompatible pairing is refused at load. The tool examples
+each show one placement:
 
 ```bash
 uv run eval glossary-v1 -n 1     # colocated — in the harness's own runtime, localhost (default)
@@ -140,7 +142,8 @@ uv run eval deepwiki-v1 -n 1     # an existing remote server, by URL
 A stateful, multi-turn task can drive the *user* side of the conversation itself: a taskset's
 `user(task)` returns a `vf.User` — structurally a tool server, but the framework drives it,
 calling it after each assistant turn for the next user message(s) plus a done flag, then
-re-prompting. The harness never knows; it just sees another user turn. Placement is config on
+re-prompting. The harness never knows — it just sees another user turn — but it must support
+one (`SUPPORTS_USER_SIM`; the `default` harness has it, `rlm` doesn't). Placement is config on
 `taskset.user` — colocated in the harness's runtime by default, or its own via
 `--taskset.user.runtime`:
 
@@ -178,12 +181,16 @@ ready training sample, straight from an agentic rollout with zero agent changes.
 engine returns ids on the response itself, the openai client picks them up too — no
 renderer required.)
 
-### Limits & retries
+### Budgets
 
-Framework-enforced budgets, applied between turns (so they hold for any harness), plus
-retries at two granularities: per-call (model + runtime, default 3 retries — reruns just
-the failed call, keeping the rollout's progress) and whole-rollout (default 1 retry). A
-retry count of 0 turns a layer off.
+Per-rollout budgets are framework-enforced and checked between turns, so they hold for any
+harness: a cap on model turns (`--max-turns`) and three on tokens — `--max-input-tokens`,
+`--max-output-tokens`, `--max-total-tokens` (prompt, completion, and the sum). Hitting a cap
+cleanly truncates the rollout (`trace.is_truncated`) instead of erroring.
+
+Alongside them, retries at two granularities: per-call (model + runtime, default 3 retries —
+reruns just the failed call, keeping the rollout's progress) and whole-rollout (default 1
+retry). A retry count of 0 turns a layer off.
 
 ```bash
 uv run eval gsm8k-v1 -n 1 --max-turns 8                  # cap model turns
