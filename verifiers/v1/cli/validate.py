@@ -4,21 +4,20 @@ Registered as the `validate` console script — the model-free sibling of `eval`
 runs a model rollout per task, `validate` runs each task's `validate` hook: a per-task check
 that the ground truth holds (a SWE row's gold patch makes its tests pass, gsm8k's verifier
 accepts the gold answer), in a runtime with the taskset's `setup` already applied. Each task
-is provisioned, set up, validated, and torn down independently with bounded concurrency;
-results stream to `results.jsonl` as they land (so a crash keeps partial work).
+is provisioned, set up, validated, and torn down independently with bounded concurrency.
+
+Fire-and-forget: progress is shown live (the `--rich` dashboard, or per-task log lines) and
+nothing is written to disk.
 """
 
 import asyncio
 import contextlib
-import json
 import logging
 import random
 import signal
 import sys
 import time
-from pathlib import Path
 
-import tomli_w
 from pydantic_config import cli
 
 import verifiers.v1 as vf
@@ -55,20 +54,6 @@ def _narrow(argv: list[str]) -> type[ValidateConfig]:
         ValidateConfig.__name__,
         (ValidateConfig,),
         {"__annotations__": {"taskset": ftype}, "taskset": ftype(id=taskset_id)},
-    )
-
-
-def _output_path(config: ValidateConfig) -> Path:
-    """Where this run writes: `outputs/<taskset>--validate/<uuid>` (or `--output-dir`)."""
-    if config.output_dir is not None:
-        return config.output_dir
-    return Path("outputs") / f"{config.name}--validate" / config.uuid
-
-
-def _write_config(config: ValidateConfig, out: Path) -> None:
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "config.toml").write_text(
-        tomli_w.dumps(config.model_dump(mode="json", exclude_none=True))
     )
 
 
@@ -122,26 +107,9 @@ async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> dict
     }
 
 
-def _read_prior(path: Path) -> tuple[list[dict], set[int]]:
-    """Parse a prior `results.jsonl` into `(rows, validated_indices)` for `--resume`. Malformed
-    lines and rows without an integer `index` are skipped."""
-    rows, done = [], set()
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(row.get("index"), int):
-            rows.append(row)
-            done.add(row["index"])
-    return rows, done
-
-
-async def run_validate(config: ValidateConfig, out: Path) -> list[dict]:
-    """Run each task's `validate` hook with bounded concurrency, streaming rows to
-    `results.jsonl` as they complete. Returns all rows (prior + new on `--resume`)."""
+async def run_validate(config: ValidateConfig) -> list[dict]:
+    """Run each task's `validate` hook with bounded concurrency, showing progress live. Returns
+    the result rows in memory — nothing is persisted."""
     taskset = vf.load_taskset(config.taskset)
     tasks = taskset.load_tasks()
     if config.shuffle:
@@ -154,20 +122,6 @@ async def run_validate(config: ValidateConfig, out: Path) -> list[dict]:
         raise SystemExit(
             "taskset needs a container runtime to validate - pass --runtime.type docker (or prime)"
         )
-
-    results_path = out / "results.jsonl"
-    prior: list[dict] = []
-    if config.resume and results_path.exists():
-        prior, done = _read_prior(results_path)
-        tasks = [t for t in tasks if t.idx not in done]
-        logger.info(
-            "resuming %s - %d already validated, %d to go",
-            results_path,
-            len(done),
-            len(tasks),
-        )
-    else:
-        results_path.write_text("")
     logger.info(
         "validating %d task(s) from %s on the %s runtime",
         len(tasks),
@@ -186,9 +140,6 @@ async def run_validate(config: ValidateConfig, out: Path) -> list[dict]:
             st.state = "running"
             row = await _validate_task(taskset, task, config)
         st.end, st.state = time.time(), row["reason"]
-        # Sync single-line append: race-free across tasks in the one event loop.
-        with results_path.open("a") as f:
-            f.write(json.dumps(row) + "\n")
         if not config.rich:  # the dashboard shows this live; otherwise log each task
             detail = f" - {row['error']}" if row["error"] else ""
             logger.info(
@@ -201,17 +152,13 @@ async def run_validate(config: ValidateConfig, out: Path) -> list[dict]:
             )
         return row
 
-    start = time.time()
     display = (
-        validate_dashboard(states, config, out, start)
+        validate_dashboard(states, config, time.time())
         if config.rich
         else contextlib.nullcontext()
     )
-    results = list(prior)
     async with display:
-        for fut in asyncio.as_completed([_one(t) for t in tasks]):
-            results.append(await fut)
-    return results
+        return await asyncio.gather(*(_one(t) for t in tasks))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -233,27 +180,15 @@ def main(argv: list[str] | None = None) -> None:
     config_type = _narrow(argv)
     sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
     config = cli(config_type)
-    out = _output_path(config)
-    level = "DEBUG" if config.verbose else "INFO"
-    if config.dry_run:  # resolved + validated; write it to the output dir and exit
-        setup_logging(level)
-        _write_config(config, out)
-        logger.info("wrote config to %s", out / "config.toml")
-        return
-    # Always tee logs to a file under the output dir. Under `--rich` the dashboard owns the
+    # Nothing is persisted, so logs are the whole output. Under `--rich` the dashboard owns the
     # screen, so keep logs off the console (else stray records print over the UI).
-    log_file = str(out / "validate.log")
+    setup_logging("DEBUG" if config.verbose else "INFO", console=not config.rich)
     if config.rich:
-        setup_logging(level, log_file=log_file, console=False)
         logging.lastResort = None  # drop stdlib records that bypass loguru
-    else:
-        setup_logging(level, log_file=log_file, console=True)
     # Make SIGTERM behave like Ctrl-C so a killed run still runs each task's `finally`
     # (tears down containers/sandboxes) — and the atexit backstop catches the rest.
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
-    _write_config(config, out)
-    logger.info("results: %s", out)
-    asyncio.run(run_validate(config, out))
+    asyncio.run(run_validate(config))
 
 
 if __name__ == "__main__":

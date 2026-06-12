@@ -8,7 +8,6 @@ error ✗ / timeout ⏱. The runner advances a `TaskProgress` per task; this rea
 import contextlib
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 from rich.console import Group
 from rich.progress_bar import ProgressBar
@@ -51,12 +50,11 @@ class TaskProgress:
     end: float | None = None
 
 
-def _overview(config: ValidateConfig, out: Path) -> Table:
+def _overview(config: ValidateConfig) -> Table:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim")
     grid.add_column()
     grid.add_row("taskset", f"{config.taskset.name}  ·  {config.runtime.type} runtime")
-    grid.add_row("output", str(out))
     return grid
 
 
@@ -98,11 +96,9 @@ def _rows(states: list[TaskProgress], now: float) -> Table:
     return grid
 
 
-def _render(
-    states: list[TaskProgress], config: ValidateConfig, out: Path, start: float
-) -> Group:
+def _render(states: list[TaskProgress], config: ValidateConfig, start: float) -> Group:
     return Group(
-        _overview(config, out),
+        _overview(config),
         _progress(states, start),
         Rule(style="dim"),
         _rows(states, time.time()),
@@ -111,8 +107,8 @@ def _render(
 
 @contextlib.asynccontextmanager
 async def validate_dashboard(
-    states: list[TaskProgress], config: ValidateConfig, out: Path, start: float
+    states: list[TaskProgress], config: ValidateConfig, start: float
 ):
     """Refresh the live validate view until the `with` block exits, then a final frame."""
-    async with live_view(lambda: _render(states, config, out, start)):
+    async with live_view(lambda: _render(states, config, start)):
         yield

@@ -3,11 +3,9 @@
 Validation is per-task and model-free — it runs the taskset's `validate` hook (apply a gold
 solution, run a verifier) in a runtime, not a harness rollout. So the config carries just the
 taskset, the `runtime` its hook runs in (docker by default, like `eval`), the stage timeouts,
-and the run knobs. No harness, model, or sampling.
+and the run knobs. No harness, model, or sampling — and it's fire-and-forget: nothing is
+written to disk, so there's no output dir / resume / dry-run.
 """
-
-from pathlib import Path
-from uuid import uuid4
 
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
@@ -23,8 +21,6 @@ class ValidateConfig(BaseConfig):
     via dotted flags (`--taskset.split test`). The `validate` hook runs in `--runtime.*`
     (docker by default, like `eval`; SWE rows carry their own per-task image)."""
 
-    uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
-    """Auto-generated run id — the leaf of the output dir, so runs never overwrite."""
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     runtime: RuntimeConfig = DockerConfig()
     """Where each task's `validate` hook runs. Docker by default (like `eval`); a SWE task
@@ -52,16 +48,6 @@ class ValidateConfig(BaseConfig):
     """Log at debug level instead of the default info."""
     rich: bool = True
     """Show a live dashboard (one row per task) instead of per-task log lines."""
-    dry_run: bool = False
-    """Resolve + validate the config, write it to the output dir, then exit."""
-    output_dir: Path | None = Field(
-        None, validation_alias=AliasChoices("output_dir", "o")
-    )
-    """Where to write the run (config.toml + results.jsonl). None = a fresh per-run dir under
-    `outputs/<taskset>--validate/<uuid>` (so runs never overwrite)."""
-    resume: bool = Field(False, validation_alias=AliasChoices("resume"))
-    """Skip tasks already recorded in `output_dir/results.jsonl` and append the rest (needs an
-    explicit `--output-dir`, since the default per-run dir is always fresh)."""
 
     @property
     def name(self) -> str:
