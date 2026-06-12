@@ -25,10 +25,10 @@ from verifiers.utils.client_utils import (
 
 # Sentinel for the default (legacy vLLM) transport. Lets callers route
 # around the legacy /tokenize body shape without changing the signature.
-_DEFAULT_TRANSPORT: RendererTransport = "vllm_generate"
+_DEFAULT_TRANSPORT: RendererTransport = "vllm"
 
 # vLLM/prime-only sampling keys Dynamo's strict validator rejects — scrubbed
-# from every dynamo_chat request body (both MITO and TITO paths).
+# from every dynamo request body (both MITO and TITO paths).
 _DYNAMO_DROP_KEYS = frozenset(
     {"return_token_ids", "spaces_between_special_tokens", "priority"}
 )
@@ -66,12 +66,12 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
     Two transports share this class, selected via
     ``ClientConfig.renderer_transport``:
 
-    * ``vllm_generate`` (default): vLLM's TITO surface.
+    * ``vllm`` (default): vLLM's TITO surface.
       Posts to ``/v1/chat/completions/tokens`` with ``tokens=prompt_ids``
       and uses the server's ``/tokenize`` endpoint for bridge tokens.
       Requires vLLM ``>=0.20``.
 
-    * ``dynamo_chat``: Dynamo's standard ``/v1/chat/completions``
+    * ``dynamo``: Dynamo's standard ``/v1/chat/completions``
       route with ``nvext.token_data=prompt_ids``. Server-side response
       token IDs come back via ``response.nvext.engine_data.*``
       (`OpenAIChatCompletionsClient.from_native_response` grafts them
@@ -102,7 +102,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         )
 
     def _get_local_tokenizer(self, model: str):
-        """Lazy, per-model HF fast tokenizer for the ``dynamo_chat``
+        """Lazy, per-model HF fast tokenizer for the ``dynamo``
         transport. Bridge tokens are stitched locally — no ``/tokenize``
         round-trip. Cached so we pay the ``AutoTokenizer.from_pretrained``
         cost once.
@@ -123,7 +123,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         except ImportError as exc:  # pragma: no cover - dependency surface
             raise ImportError(
                 "OpenAIChatCompletionsTokenClient with "
-                "renderer_transport='dynamo_chat' requires "
+                "renderer_transport='dynamo' requires "
                 "`transformers`. Install with `pip install transformers`."
             ) from exc
         cache[model] = AutoTokenizer.from_pretrained(model)
@@ -147,19 +147,19 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             # Transport-specific opt-ins. Both transports get response-side
             # token IDs, just via different fields:
             #
-            #   * vllm_generate (vLLM): `extra_body.return_token_ids=True`
+            #   * vllm (vLLM): `extra_body.return_token_ids=True`
             #     tells vLLM to set the non-standard `choices[0].token_ids` and
             #     `response.prompt_token_ids` fields. `parse_tokens` reads them
             #     directly.
             #
-            #   * dynamo_chat: `nvext.extra_fields=["engine_data"]`
+            #   * dynamo: `nvext.extra_fields=["engine_data"]`
             #     tells Dynamo's response builder to emit `response.nvext`
             #     `engine_data.{completion_token_ids, completion_logprobs,
             #     prompt_token_ids}`. `from_native_response` grafts
             #     this onto the OpenAI-shaped response so `parse_tokens`
             #     works unmodified. `return_token_ids` is dropped because
             #     Dynamo's strict validator rejects it.
-            if self.renderer_transport == "dynamo_chat":
+            if self.renderer_transport == "dynamo":
                 extra_body: dict[str, Any] = {
                     "nvext": {"extra_fields": ["engine_data"]}
                 }
@@ -187,7 +187,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                     sampling_args["extra_body"] = {**merged, **extra_body}
             else:
                 sampling_args["extra_body"] = extra_body
-            if self.renderer_transport == "dynamo_chat":
+            if self.renderer_transport == "dynamo":
                 # Drop vLLM/prime-only keys Dynamo rejects from both top-level
                 # args and extra_body, so MITO + TITO paths send a clean body.
                 eb = sampling_args.get("extra_body")
@@ -239,8 +239,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
 
-        if self.renderer_transport == "dynamo_chat":
-            return await self._post_dynamo_chat(
+        if self.renderer_transport == "dynamo":
+            return await self._post_dynamo(
                 prompt=prompt,
                 prompt_ids=prompt_ids,
                 model=model,
@@ -266,7 +266,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             extra_headers=extra_headers,
         )
 
-    async def _post_dynamo_chat(
+    async def _post_dynamo(
         self,
         prompt: OpenAIChatMessages,
         prompt_ids: list[int],
@@ -317,7 +317,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 body[key] = value
 
         # Use the sidecar-aware post (same as the vLLM TITO + MITO paths) so any
-        # routed_experts blob is streamed, not JSON-parsed. dynamo_chat opts into
+        # routed_experts blob is streamed, not JSON-parsed. dynamo opts into
         # extra_fields=["engine_data"] only, so routed_experts is normally absent.
         return await post_chat_completion_with_routed_experts_sidecar(
             self.client,
@@ -565,8 +565,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
 
         Dispatched by ``renderer_transport``:
 
-        * ``vllm_generate`` (default): POST to vLLM's ``/tokenize`` route.
-        * ``dynamo_chat``: local HF fast-tokenizer call. Dynamo doesn't
+        * ``vllm`` (default): POST to vLLM's ``/tokenize`` route.
+        * ``dynamo``: local HF fast-tokenizer call. Dynamo doesn't
           expose ``/tokenize``; running locally also saves two HTTP RTTs per
           turn (the bridge computes both ``add_generation_prompt=True`` and
           ``False`` views). The HF Rust encode releases the GIL so the
@@ -575,7 +575,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         if extra_kwargs is None:
             extra_kwargs = {}
 
-        if self.renderer_transport == "dynamo_chat":
+        if self.renderer_transport == "dynamo":
             return await self._local_tokenize(
                 messages=messages,
                 tools=tools,
@@ -611,7 +611,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         model: str,
         extra_kwargs: dict,
     ) -> list[int]:
-        """Local in-process tokenization for the ``dynamo_chat`` transport.
+        """Local in-process tokenization for the ``dynamo`` transport.
 
         Bridge tokenization under TITO calls this twice per turn (once for
         ``add_generation_prompt=True`` and once for ``False``). Both runs

@@ -1078,7 +1078,7 @@ with `MyConfig.model_validate(...)` or use the typed object directly.
 class ClientConfig(BaseModel):
     client_idx: int = 0
     client_type: ClientType = "openai_chat_completions"
-    renderer_transport: RendererTransport = "vllm_generate"
+    renderer_transport: RendererTransport = "vllm"
     renderer_model_name: str | None = None
     preserve_all_thinking: bool = False
     preserve_thinking_between_tool_calls: bool = False
@@ -1098,7 +1098,7 @@ class ClientConfig(BaseModel):
 
 `client_type` selects which `Client` implementation to instantiate (see [Client Classes](#client-classes)). Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
 
-`renderer_transport` selects the token-in/token-out wire format used by `client_type == "openai_chat_completions_token"` and `client_type == "renderer"`. The default `"vllm_generate"` uses vLLM's token routes. Set `"dynamo_chat"` for Dynamo backends that accept pre-tokenized prompts in `nvext.token_data` on `/v1/chat/completions` and return token IDs in `nvext.engine_data`.
+`renderer_transport` selects the token-in/token-out wire format used by `client_type == "openai_chat_completions_token"` and `client_type == "renderer"`. The default `"vllm"` uses vLLM's token routes. Set `"dynamo"` for Dynamo backends that accept pre-tokenized prompts in `nvext.token_data` on `/v1/chat/completions` and return token IDs in `nvext.engine_data`.
 
 `renderer_model_name` overrides the tokenizer/renderer model name used for local bridge tokenization and renderer construction. It is useful when the served API model name is an alias but the tokenizer should be loaded from the underlying Hugging Face model.
 

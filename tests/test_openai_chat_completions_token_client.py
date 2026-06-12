@@ -333,13 +333,13 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
 
 
 @pytest.mark.asyncio
-async def test_post_dynamo_chat_scrubs_vllm_only_and_forwards_sampling():
-    """dynamo_chat wire body: vLLM-only keys scrubbed, standard sampling args
+async def test_post_dynamo_scrubs_vllm_only_and_forwards_sampling():
+    """dynamo wire body: vLLM-only keys scrubbed, standard sampling args
     forwarded, nvext token_data + passthrough preserved."""
     recording_client = _RecordingClient()
     client = OpenAIChatCompletionsTokenClient(recording_client)
 
-    await client._post_dynamo_chat(
+    await client._post_dynamo(
         prompt=cast(Any, [{"role": "user", "content": ""}]),
         prompt_ids=[1, 2, 3],
         model="test-model",
@@ -370,11 +370,11 @@ async def test_post_dynamo_chat_scrubs_vllm_only_and_forwards_sampling():
 
 
 @pytest.mark.asyncio
-async def test_post_dynamo_chat_uses_placeholder_messages():
+async def test_post_dynamo_uses_placeholder_messages():
     recording_client = _RecordingClient()
     client = OpenAIChatCompletionsTokenClient(recording_client)
 
-    await client._post_dynamo_chat(
+    await client._post_dynamo(
         prompt=cast(Any, [{"role": "user", "content": "real prompt"}]),
         prompt_ids=[1, 2, 3],
         model="test-model",
