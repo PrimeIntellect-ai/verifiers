@@ -21,7 +21,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import ProgramError, RolloutError
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, make_runtime
 from verifiers.v1.tools import Tools, serve_tools
 from verifiers.v1.types import Messages
@@ -47,57 +47,64 @@ class User(Tools):
 Respond = Callable[[str], Awaitable[tuple[Messages, bool]]]
 
 
-async def _await_user_ready(url: str) -> None:
-    """Poll the user server until it accepts a connection (any HTTP response — an MCP server
-    406s a bare GET — means up). Retries a transient refusal (the colocated server can be slow
-    to accept under high concurrency), and on exhaustion raises `ProgramError` — a captured,
-    retryable rollout error — so the failure flows through the rollout's error handling instead
-    of escaping as a raw transport exception that would crash the batch."""
-    import httpx
-
-    last_exc: Exception | None = None
-    async with httpx.AsyncClient(timeout=2.0) as client:
-        for attempt in range(_USER_CONNECT_ATTEMPTS):
-            try:
-                await client.get(url)
-                return
-            except Exception as e:  # connection refused / timeout: retry
-                last_exc = e
-                await asyncio.sleep(
-                    min(_USER_CONNECT_BACKOFF * 2**attempt, _USER_CONNECT_MAX_BACKOFF)
-                )
-    raise ProgramError(
-        f"user server at {url} unreachable after {_USER_CONNECT_ATTEMPTS} attempts: {last_exc!r}"
-    )
-
-
 @contextlib.asynccontextmanager
 async def connect_user(url: str) -> AsyncIterator[Respond]:
     """Open an MCP client session to a user server at `url` and yield an async
     `respond(message)` that calls its `respond` tool, parsing the JSON it returns
-    (`{"messages": [...], "done": bool}`) into typed `(messages, done)`. Waits (with retry) for
-    the server to accept connections first, so a transient refusal under load is recovered."""
+    (`{"messages": [...], "done": bool}`) into typed `(messages, done)`.
+
+    Retries the connect — under high concurrency the colocated user server can be slow to
+    accept (or briefly refuse) a connection. A server that stays unreachable raises
+    `ProgramError` (a captured, retryable rollout error), so a transport failure never escapes
+    as a raw `ExceptionGroup`/`ConnectError` that would bypass rollout error handling and crash
+    the batch. The connect is entered and exited in this one frame so anyio's cancel scopes stay
+    correctly nested."""
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
 
     from verifiers.v1.interception import parse_message
 
-    await _await_user_ready(url)
-    async with contextlib.AsyncExitStack() as stack:
-        read, write, *_ = await stack.enter_async_context(streamable_http_client(url))
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
+    last_exc: Exception | None = None
+    for attempt in range(_USER_CONNECT_ATTEMPTS):
+        connected = False
+        try:
+            async with (
+                streamable_http_client(url) as (read, write, *_),
+                ClientSession(read, write) as session,
+            ):
+                await session.initialize()
+                connected = True
 
-        async def respond(message: str) -> tuple[Messages, bool]:
-            result = await session.call_tool("respond", {"message": message})
-            texts = [
-                b.text for b in result.content if getattr(b, "type", None) == "text"
-            ]
-            data = json.loads("\n".join(texts))
-            messages = [parse_message(m) for m in data["messages"]]
-            return messages, bool(data["done"])
+                async def respond(message: str) -> tuple[Messages, bool]:
+                    result = await session.call_tool("respond", {"message": message})
+                    texts = [
+                        b.text
+                        for b in result.content
+                        if getattr(b, "type", None) == "text"
+                    ]
+                    data = json.loads("\n".join(texts))
+                    messages = [parse_message(m) for m in data["messages"]]
+                    return messages, bool(data["done"])
 
-        yield respond
+                yield respond
+            return
+        except RolloutError:
+            raise  # a real rollout error surfaced after connecting: propagate as-is
+        except Exception as e:
+            if connected:
+                # the user-sim connection broke mid-rollout/teardown (e.g. the colocated server
+                # was killed under memory pressure): capture it as a retryable rollout error
+                # instead of letting the raw transport ExceptionGroup escape and crash the batch
+                raise ProgramError(
+                    f"user server at {url} connection lost: {e!r}"
+                ) from e
+            last_exc = e  # the connect itself failed: back off and retry
+            await asyncio.sleep(
+                min(_USER_CONNECT_BACKOFF * 2**attempt, _USER_CONNECT_MAX_BACKOFF)
+            )
+    raise ProgramError(
+        f"user server at {url} unreachable after {_USER_CONNECT_ATTEMPTS} attempts: {last_exc!r}"
+    )
 
 
 @contextlib.asynccontextmanager
