@@ -133,6 +133,16 @@ class Taskset(Generic[TaskT, ConfigT]):
         symmetric counterpart to `setup`. Errors propagate and fail the rollout."""
         return None
 
+    async def validate(self, task: TaskT, runtime: Runtime) -> bool:
+        """Check a task is well-formed and solvable, independent of any model rollout — run
+        by the `validate` entrypoint, never during a rollout. Valid (True) by default;
+        override to assert the ground truth holds (e.g. a SWE row applying its gold patch and
+        running its tests, or gsm8k confirming the verifier accepts the gold answer). Runs in
+        a live runtime started for the task with `setup` already applied (a pure-data check
+        can ignore it). Return False — or raise — to mark the task invalid; the entrypoint
+        records the reason (the raised error's message)."""
+        return True
+
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Score one rollout: run all `@metric` then `@reward` over its trace,
         concurrently within each phase. Each metric is recorded in `trace.metrics`

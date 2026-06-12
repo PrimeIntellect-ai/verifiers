@@ -83,6 +83,9 @@ class ScaleSWETask(vf.Task):
     """Optional patch adding the fail-to-pass test (applied before scoring)."""
     f2p_script: str = ""
     """Optional test file uploaded as `test_fail_to_pass.py` before scoring."""
+    patch: str = ""
+    """The gold source patch (reference solution); `validate` applies it to confirm the task
+    is solvable. Not used during rollouts."""
     fail_to_pass: list[str] = []
     pass_to_pass: list[str] = []
 
@@ -108,6 +111,7 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, vf.TasksetConfig]):
                 .removesuffix("\\n"),
                 f2p_patch=row.get("f2p_patch") or "",
                 f2p_script=row.get("f2p_script") or "",
+                patch=row.get("patch") or "",
                 fail_to_pass=_ids(row.get("FAIL_TO_PASS")),
                 pass_to_pass=_ids(row.get("PASS_TO_PASS")),
             )
@@ -128,7 +132,7 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, vf.TasksetConfig]):
             return 0.0
         await runtime.run(["sh", "-c", RESTORE], {**ENV, "base": task.base_commit})
         if task.f2p_patch.strip():
-            await self._apply_f2p_patch(runtime, task.f2p_patch)
+            await self._apply_patch(runtime, task.f2p_patch)
         if task.f2p_script:
             await runtime.write("test_fail_to_pass.py", task.f2p_script.encode())
         await runtime.write(SCORER, SCORER_SRC)
@@ -136,19 +140,34 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, vf.TasksetConfig]):
         lines = result.stdout.strip().splitlines()
         return float(lines[-1]) if lines else 0.0
 
-    async def _apply_f2p_patch(self, runtime: vf.Runtime, patch: str) -> None:
-        # Try strict, then whitespace-tolerant, then a fuzzy `patch`; tolerate a partial
-        # `--reject` apply last (mirrors the v0 multi-strategy helper). Scoring catches a
-        # patch that didn't take — a missing test id fails the reward.
+    async def validate(self, task: ScaleSWETask, runtime: vf.Runtime) -> bool:
+        """Valid iff the gold solution scores 1.0: apply the reference source patch, then run
+        the same `solved` reward the agent is graded by (setup has reset the repo to base)."""
+        await self.apply_gold_patch(task, runtime)
+        return await self.solved(task, runtime) == 1.0
+
+    async def apply_gold_patch(self, task: ScaleSWETask, runtime: vf.Runtime) -> None:
+        """Apply the gold source patch (for validation), raising if no strategy takes."""
+        if not task.patch.strip():
+            raise vf.ProgramError(f"empty gold patch for {task.name}")
+        if not await self._apply_patch(runtime, task.patch):
+            raise vf.ProgramError(f"gold apply failed ({task.name})")
+
+    async def _apply_patch(self, runtime: vf.Runtime, patch: str) -> bool:
+        # Try strict, then whitespace-tolerant, then a fuzzy `patch`, then a partial
+        # `--reject` apply (mirrors the v0 multi-strategy helper). Returns whether a strategy
+        # applied cleanly: `solved` applies the test patch best-effort (scoring catches a
+        # patch that didn't take), `apply_gold_patch` requires a clean apply.
         await runtime.write(PATCH, patch.encode())
         for cmd in (
             f"git apply --verbose {PATCH}",
             f"git apply --verbose --ignore-space-change --ignore-whitespace {PATCH}",
             f"patch --batch --fuzz=5 -p1 -i {PATCH}",
-            f"git apply --verbose --reject --ignore-whitespace {PATCH} || true",
+            f"git apply --verbose --reject --ignore-whitespace {PATCH}",
         ):
             if (await runtime.run(["sh", "-c", cmd], ENV)).exit_code == 0:
-                return
+                return True
+        return False
 
 
 def load_taskset(config: vf.TasksetConfig) -> ScaleSWETaskset:
