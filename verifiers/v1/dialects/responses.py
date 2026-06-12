@@ -9,7 +9,7 @@ endpoint and this dialect parses a copy for the trace. Server-side statefulness
 
 import json
 
-from openai.types.responses import Response as OpenAIResponse
+from pydantic import BaseModel, ConfigDict
 
 from verifiers.v1.dialects.base import Dialect, iter_sse
 from verifiers.v1.types import (
@@ -34,6 +34,14 @@ FINAL_EVENTS = ("response.completed", "response.incomplete", "response.failed")
 ASSISTANT_ITEMS = ("reasoning", "function_call")
 # Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
+
+
+class OpenAIResponse(BaseModel):
+    """Permissive parse-only view of a Responses object: `extra='allow'` keeps it a plain dict
+    for the trace (read via `model_dump`), so a strict SDK model can't crash the rollout on a
+    provider/SDK enum skew (e.g. a value the pinned `openai` rejects)."""
+
+    model_config = ConfigDict(extra="allow")
 
 
 def parse_content(content) -> str | list[ContentPart]:

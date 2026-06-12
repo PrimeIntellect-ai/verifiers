@@ -17,6 +17,7 @@ model, so a multi-turn exchange plays out within one program request, transparen
 harness. Tools are handled out-of-band (run by the harness).
 """
 
+import contextlib
 import logging
 import secrets
 from collections.abc import Awaitable, Callable
@@ -272,16 +273,16 @@ class InterceptionServer:
         except Exception as e:  # surface to the program as an API error
             logger.warning("model call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
-        resp = web.StreamResponse()
-        resp.content_type = reply.content_type.split(";")[0].strip()
-        await resp.prepare(request)
         buffer = bytearray()
         async for chunk in reply.chunks:
             buffer += chunk
-            await resp.write(chunk)
-        await resp.write_eof()
-        # Record the streamed turn: assemble the accumulated SSE into a typed Response.
         graph.add_turn(session.trace, prompt, dialect.parse_stream(bytes(buffer)))
+        resp = web.StreamResponse()
+        resp.content_type = reply.content_type.split(";")[0].strip()
+        await resp.prepare(request)
+        with contextlib.suppress(ConnectionResetError):
+            await resp.write(bytes(buffer))
+            await resp.write_eof()
         return resp
 
     async def handle_aux(
