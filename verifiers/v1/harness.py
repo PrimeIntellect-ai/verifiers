@@ -220,6 +220,18 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
     def load_system_prompt(self, config: ConfigT) -> SystemPrompt:
         return config.system_prompt
 
+    def prepare_prompt(self, prompt: Messages, state: State) -> Messages:
+        """Hook to prepare the prompt before each model request.
+
+        Default identity — vf applies no transform of its own. Override in a
+        subclass to return a modified prompt. Applied at the single point every
+        model request passes through (``Runtime.submit_model_request``), so it
+        covers base-program, fn-mode, and host-loop rollouts uniformly. May be
+        sync or async. The returned messages are what the host tokenizes, sends
+        to the model, and records as the trajectory step.
+        """
+        return prompt
+
     def load_program_config(self, config: ConfigT) -> ProgramConfig:
         return config.program.resolve()
 
@@ -521,6 +533,20 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 tool_defs=self.runtime.tool_defs(state),
             )
             turn += 1
+            # Align the local host-loop thread with the exact prompt sent to the model
+            # (which may have been modified by the harness's prepare_prompt hook).
+            trajectory = state.get("trajectory")
+            if isinstance(trajectory, list) and trajectory:
+                last_step = trajectory[-1]
+                if isinstance(last_step, dict):
+                    used_prompt = last_step.get("prompt")
+                    if isinstance(used_prompt, list):
+                        messages = normalize_messages(
+                            cast(Messages, used_prompt), field_name="used_prompt"
+                        )
+                        prompt_messages = [
+                            m.model_dump(exclude_none=True) for m in messages
+                        ]
             messages.extend(await parse_response_message(response))
             rendered_messages = sync_completion()
             tool_calls = list(response.message.tool_calls or [])
