@@ -724,59 +724,82 @@ async def create_sandbox(
         else None,
         guaranteed=bool(sandbox_config.get("guaranteed", False)),
     )
-    create_task = asyncio.create_task(
-        with_sandbox_retry(lambda: client.create(request))
-    )
-    try:
-        create_waiter = asyncio.shield(create_task)
-        if sandbox_config.get("create_timeout") is not None:
-            sandbox = await asyncio.wait_for(
-                create_waiter, int_config(sandbox_config, "create_timeout", 0)
-            )
-        else:
-            sandbox = await create_waiter
-    except (asyncio.CancelledError, TimeoutError):
+    for readiness_attempt in range(SANDBOX_RETRY_ATTEMPTS):
+        create_task = asyncio.create_task(
+            with_sandbox_retry(lambda: client.create(request))
+        )
         try:
-            sandbox = cast(SandboxRecord, await asyncio.shield(create_task))
+            create_waiter = asyncio.shield(create_task)
+            if sandbox_config.get("create_timeout") is not None:
+                sandbox = await asyncio.wait_for(
+                    create_waiter, int_config(sandbox_config, "create_timeout", 0)
+                )
+            else:
+                sandbox = await create_waiter
+        except (asyncio.CancelledError, TimeoutError):
+            try:
+                sandbox = cast(SandboxRecord, await asyncio.shield(create_task))
+            except BaseException:
+                if owns_client:
+                    await close_sandbox_client(client)
+                raise
+            await asyncio.shield(
+                delete_sandbox_id(
+                    client,
+                    str(sandbox.id),
+                    close_client=owns_client,
+                    reason="cancelled creation",
+                )
+            )
+            raise
         except BaseException:
             if owns_client:
                 await close_sandbox_client(client)
             raise
-        await asyncio.shield(
-            delete_sandbox_id(
+        sandbox_id = str(sandbox.id)
+        try:
+            wait_for_creation = getattr(
                 client,
-                str(sandbox.id),
-                close_client=owns_client,
-                reason="cancelled creation",
+                "wait_for_creation_resilient",
+                client.wait_for_creation,
             )
-        )
-        raise
-    except BaseException:
-        if owns_client:
-            await close_sandbox_client(client)
-        raise
-    sandbox_id = str(sandbox.id)
-    try:
-        wait = client.wait_for_creation(
-            sandbox_id,
-            max_attempts=SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
-        )
-        if sandbox_config.get("wait_timeout") is not None:
-            await asyncio.wait_for(wait, int_config(sandbox_config, "wait_timeout", 0))
-        else:
-            await wait
-    except BaseException:
-        delete_task = asyncio.create_task(
-            delete_sandbox_id(
-                client,
+            wait = wait_for_creation(
                 sandbox_id,
-                close_client=owns_client,
-                reason="creation failure",
+                max_attempts=SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
             )
-        )
-        await asyncio.shield(delete_task)
-        raise
-    return sandbox_id
+            if sandbox_config.get("wait_timeout") is not None:
+                await asyncio.wait_for(
+                    wait, int_config(sandbox_config, "wait_timeout", 0)
+                )
+            else:
+                await wait
+        except BaseException as exc:
+            replace_sandbox = (
+                type(exc).__name__ == "SandboxNotRunningError"
+                and getattr(exc, "status", None) == "RUNNING"
+            )
+            final_attempt = readiness_attempt == SANDBOX_RETRY_ATTEMPTS - 1
+            await asyncio.shield(
+                delete_sandbox_id(
+                    client,
+                    sandbox_id,
+                    close_client=owns_client and (final_attempt or not replace_sandbox),
+                    reason="readiness failure",
+                )
+            )
+            if final_attempt or not replace_sandbox:
+                raise
+            logger.warning(
+                "Replacing unreachable sandbox %s after readiness failure: %s "
+                "(attempt %s/%s)",
+                sandbox_id,
+                exc,
+                readiness_attempt + 1,
+                SANDBOX_RETRY_ATTEMPTS,
+            )
+            continue
+        return sandbox_id
+    raise AssertionError("sandbox readiness retry loop exited without running")
 
 
 async def delete_sandbox_id(

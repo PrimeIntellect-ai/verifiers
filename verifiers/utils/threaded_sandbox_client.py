@@ -5,7 +5,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
-from prime_sandboxes import AsyncSandboxClient, CommandTimeoutError
+from prime_sandboxes import (
+    AsyncSandboxClient,
+    CommandTimeoutError,
+    SandboxImagePullError,
+    SandboxNotRunningError,
+    SandboxOOMError,
+    SandboxTimeoutError,
+)
 
 from verifiers.utils.thread_utils import (
     get_or_create_thread_attr,
@@ -22,6 +29,7 @@ class ThreadedAsyncSandboxClient:
     """
 
     DEFAULT_MAX_WORKERS = 50
+    READINESS_FAILURE_ATTEMPTS = 5
 
     def __init__(
         self,
@@ -74,6 +82,72 @@ class ThreadedAsyncSandboxClient:
             return await loop.run_in_executor(self.executor, run_in_thread)
 
         return wrapper
+
+    async def wait_for_creation_resilient(
+        self,
+        sandbox_id: str,
+        max_attempts: int = 60,
+        stability_checks: int = 1,
+    ) -> None:
+        """Wait for readiness without occupying one worker for the entire poll loop."""
+        consecutive_successes = 0
+        readiness_failures = 0
+        last_readiness_error: Exception | None = None
+        for attempt in range(max_attempts):
+            sandbox = await self.get(sandbox_id)
+            if sandbox.status == "RUNNING":
+                try:
+                    await self.execute_command(
+                        sandbox_id,
+                        "echo 'sandbox ready'",
+                        timeout=10,
+                    )
+                except Exception as exc:
+                    consecutive_successes = 0
+                    readiness_failures += 1
+                    last_readiness_error = exc
+                    if readiness_failures >= self.READINESS_FAILURE_ATTEMPTS:
+                        raise SandboxNotRunningError(
+                            sandbox_id,
+                            status="RUNNING",
+                            message=(
+                                f"Sandbox {sandbox_id} stayed unreachable after "
+                                f"{readiness_failures} readiness checks: {exc}"
+                            ),
+                        ) from exc
+                else:
+                    readiness_failures = 0
+                    consecutive_successes += 1
+                    if consecutive_successes >= stability_checks:
+                        return
+                    await asyncio.sleep(0.5)
+                    continue
+            elif sandbox.status in {"ERROR", "TERMINATED", "TIMEOUT"}:
+                error_type = sandbox.error_type
+                error_class = {
+                    "OOM_KILLED": SandboxOOMError,
+                    "TIMEOUT": SandboxTimeoutError,
+                    "IMAGE_PULL_FAILED": SandboxImagePullError,
+                }.get(error_type, SandboxNotRunningError)
+                message = (
+                    f"Sandbox {sandbox_id} failed ({error_type}): "
+                    f"{sandbox.error_message}"
+                    if sandbox.error_message
+                    else None
+                )
+                raise error_class(
+                    sandbox_id,
+                    status=sandbox.status,
+                    error_type=error_type,
+                    message=message,
+                )
+
+            await asyncio.sleep(1 if attempt < 5 else 2)
+
+        message = "Timeout during sandbox creation"
+        if last_readiness_error is not None:
+            message += f": {last_readiness_error}"
+        raise SandboxNotRunningError(sandbox_id, status=message)
 
     async def run_background_job(
         self,
