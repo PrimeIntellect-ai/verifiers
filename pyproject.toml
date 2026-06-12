@@ -225,6 +225,11 @@ vf-vllm = "verifiers.scripts.vllm:main"
 # hatchling configuration
 [tool.hatch.version]
 source = "vcs"
+# Resolve a version when building without VCS metadata (e.g. the prime-rl
+# Docker build copies the source but not a usable .git for the submodule).
+# Mirrors renderers; without it hatch-vcs raises LookupError and the editable
+# build fails.
+fallback-version = "0.0.0"
 
 [tool.hatch.version.raw-options]
 local_scheme = "no-local-version"
