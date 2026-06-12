@@ -13,6 +13,7 @@ chat-completions dialect; OpenAI Responses / Anthropic Messages become new modul
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel
@@ -38,6 +39,13 @@ class Dialect(ABC, Generic[ReqT, RespT]):
 
     upstream_path: ClassVar[str]
     """The provider endpoint the proxy forwards to for this format (e.g. `/chat/completions`)."""
+
+    streams: ClassVar[bool] = False
+    """Whether this format's clients require `stream: true` and so must be fake-streamed: the
+    proxy still fetches the whole completion unary (the dialect forces streaming off upstream in
+    `apply_overrides`), and the interception server replays it as the SSE events `stream_events`
+    yields. Off by default (chat completions returns a JSON body); the Responses dialect sets it
+    (codex only speaks streaming Responses)."""
 
     response_type: type[RespT]
     """The native response model — used to validate the provider's raw JSON before parsing."""
@@ -72,3 +80,11 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         """For user-sim multi-turn: return `body` with the model's turn (`completion`, native
         wire) and the simulator's `user_messages` appended to the conversation, in this
         protocol's shape — so a multi-turn exchange plays out within one program request."""
+
+    def stream_events(self, completion: dict) -> Iterable[dict]:
+        """Fake-streaming (only for dialects with `streams = True`): given the full buffered wire
+        response `completion`, yield the ordered SSE event objects (each a dict with a `type`)
+        that replay it for a client that asked for `stream: true`. The interception server
+        serializes each as one `event:`/`data:` SSE frame. We hold the whole response already, so
+        this is a straight replay — no partial deltas to reassemble."""
+        raise NotImplementedError(f"{type(self).__name__} does not support streaming")

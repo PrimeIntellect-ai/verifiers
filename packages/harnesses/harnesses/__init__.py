@@ -2,10 +2,13 @@
 
 Re-exports each harness's class + config off the package."""
 
+from harnesses.codex import CodexHarness, CodexHarnessConfig
 from harnesses.default import DefaultHarness, DefaultHarnessConfig
 from harnesses.rlm import RLMHarness, RLMHarnessConfig
 
 __all__ = [
+    "CodexHarness",
+    "CodexHarnessConfig",
     "DefaultHarness",
     "DefaultHarnessConfig",
     "RLMHarness",

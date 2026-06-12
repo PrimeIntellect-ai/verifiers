@@ -1,10 +1,15 @@
-"""The interception server: harness chat-completions, caught and proxied.
+"""The interception server: harness model calls, caught and proxied.
 
 Every rollout runs an harness program whose OpenAI-style calls are caught here: a small
-localhost server routes each `POST /v1/chat/completions` to our `Client`, records the turn
-into the trace's message graph, and returns the result in OpenAI shape. We inject
-`OPENAI_BASE_URL`/`OPENAI_API_KEY` so the program's SDK talks to us. Chat completions only,
-no streaming.
+localhost server serves each registered dialect's routes (`/v1/chat/completions`,
+`/v1/responses`), routes each to our `Client`, records the turn into the trace's message graph,
+and returns the result in that wire format. We inject `OPENAI_BASE_URL`/`OPENAI_API_KEY` so the
+program's SDK talks to us.
+
+The proxy always fetches the completion unary; a dialect whose clients require `stream: true`
+(the Responses dialect, for codex) is fake-streamed back — `_reply` replays the whole buffered
+completion as the dialect's SSE event sequence in one write. We hold the entire response, so
+there's no chunk queue, keepalive, or partial-flush to get wrong.
 
 One server multiplexes many rollouts: each rollout registers a `RolloutSession` under its
 own secret (the bearer token the harness already sends), and the server routes by that
@@ -17,6 +22,7 @@ model, so a multi-turn exchange plays out within one program request, transparen
 harness. Tools are handled out-of-band (run by the harness).
 """
 
+import json
 import logging
 import secrets
 from collections.abc import Awaitable, Callable
@@ -142,7 +148,7 @@ class InterceptionServer:
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
         selects the wire format (see `dialects.DIALECTS`)."""
 
-        async def handler(request: web.Request) -> web.Response:
+        async def handler(request: web.Request) -> web.StreamResponse:
             return await self.handle_request(request, dialect)
 
         return handler
@@ -166,13 +172,16 @@ class InterceptionServer:
 
     async def handle_request(
         self, request: web.Request, dialect: Dialect
-    ) -> web.Response:
+    ) -> web.StreamResponse:
         auth = request.headers.get("Authorization", "")
         session = self.sessions.get(auth.removeprefix("Bearer "))
         if session is None:
             logger.warning("interception: unauthorized request")
             return web.json_response({"error": "unauthorized"}, status=401)
         body = await request.json()
+        # The program's `stream` flag (from the first request) selects how each turn's completion
+        # is returned; it takes effect only if the dialect can fake-stream (`streams`).
+        wants_stream = bool(body.get("stream")) and dialect.streams
         # `body` is forwarded to the model 1:1 (the proxy mutates only model + sampling), so no
         # provider field is lost. `prompt` is the dialect's typed parse, kept only to build the
         # trace (the renderer re-derives its own from the body it's handed). A user simulator
@@ -195,7 +204,7 @@ class InterceptionServer:
                     return web.json_response(
                         {"error": f"rollout stopped: {refused}"}, status=400
                     )
-                return web.json_response(completion)
+                return await self._reply(request, completion, wants_stream, dialect)
             try:
                 response = await session.ctx.client.get_response(
                     body, dialect, session.ctx.model, session.ctx.sampling
@@ -210,7 +219,7 @@ class InterceptionServer:
                     return web.json_response(
                         {"error": "rollout stopped: context_length"}, status=400
                     )
-                return web.json_response(completion)
+                return await self._reply(request, completion, wants_stream, dialect)
             except Exception as e:  # surface to the program as an API error
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response({"error": str(e)}, status=502)
@@ -226,13 +235,39 @@ class InterceptionServer:
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
-                return web.json_response(completion)
+                return await self._reply(request, completion, wants_stream, dialect)
             user_messages, done = await session.user(response.message.content or "")
             if done:
                 session.trace.stop("user_completed")
-                return web.json_response(completion)
+                return await self._reply(request, completion, wants_stream, dialect)
             # Inject the model turn + the simulator's user turn(s): into the wire request for the
             # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
             # survives) and into the typed prompt for the trace.
             body = dialect.extend(body, completion, user_messages)
             prompt = [*prompt, response.message, *user_messages]
+
+    async def _reply(
+        self,
+        request: web.Request,
+        completion: dict,
+        wants_stream: bool,
+        dialect: Dialect,
+    ) -> web.StreamResponse:
+        """Return the model's `completion` to the program: a JSON body, or — when the program
+        asked for `stream: true` and the dialect fake-streams — the dialect's SSE event replay.
+        We hold the whole completion, so the SSE frames are built and written in one shot, then
+        closed: no chunk queue, keepalive, or partial-flush races."""
+        if not wants_stream:
+            return web.json_response(completion)
+        response = web.StreamResponse(
+            status=200,
+            headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"},
+        )
+        await response.prepare(request)
+        frames = "".join(
+            f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+            for event in dialect.stream_events(completion)
+        )
+        await response.write(frames.encode())
+        await response.write_eof()
+        return response
