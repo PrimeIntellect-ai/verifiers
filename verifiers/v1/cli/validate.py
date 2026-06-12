@@ -5,8 +5,7 @@ runs a model rollout per task, `validate` runs each task's `validate` hook: a pe
 that the ground truth holds (a SWE row's gold patch makes its tests pass, gsm8k's verifier
 accepts the gold answer), in a runtime with the taskset's `setup` already applied. Each task
 is provisioned, set up, validated, and torn down independently with bounded concurrency;
-results stream to `results.jsonl` as they land (so a crash keeps partial work), with a
-`summary.json` at the end.
+results stream to `results.jsonl` as they land (so a crash keeps partial work).
 """
 
 import asyncio
@@ -17,7 +16,6 @@ import random
 import signal
 import sys
 import time
-from collections import Counter
 from pathlib import Path
 
 import tomli_w
@@ -216,29 +214,6 @@ async def run_validate(config: ValidateConfig, out: Path) -> list[dict]:
     return results
 
 
-def _summarize(results: list[dict], out: Path) -> dict:
-    total = len(results)
-    valid = sum(1 for r in results if r["valid"])
-    by_reason = dict(Counter(r["reason"] for r in results))
-    summary = {
-        "total": total,
-        "valid": valid,
-        "invalid": total - valid,
-        "pass_rate": round(valid / total, 4) if total else 0.0,
-        "by_reason": by_reason,
-    }
-    (out / "summary.json").write_text(json.dumps(summary, indent=2))
-    logger.info(
-        "validated %d task(s) - %d valid, %d invalid (%.1f%%) - reasons: %s",
-        total,
-        valid,
-        total - valid,
-        100 * summary["pass_rate"],
-        by_reason,
-    )
-    return summary
-
-
 def main(argv: list[str] | None = None) -> None:
     argv = with_positional_taskset(list(sys.argv[1:]) if argv is None else list(argv))
 
@@ -278,8 +253,7 @@ def main(argv: list[str] | None = None) -> None:
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     _write_config(config, out)
     logger.info("results: %s", out)
-    results = asyncio.run(run_validate(config, out))
-    _summarize(results, out)
+    asyncio.run(run_validate(config, out))
 
 
 if __name__ == "__main__":

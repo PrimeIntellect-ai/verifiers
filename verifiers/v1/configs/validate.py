@@ -57,8 +57,8 @@ class ValidateConfig(BaseConfig):
     output_dir: Path | None = Field(
         None, validation_alias=AliasChoices("output_dir", "o")
     )
-    """Where to write the run (config.toml + results.jsonl + summary.json). None = a fresh
-    per-run dir under `outputs/<taskset>--validate/<uuid>` (so runs never overwrite)."""
+    """Where to write the run (config.toml + results.jsonl). None = a fresh per-run dir under
+    `outputs/<taskset>--validate/<uuid>` (so runs never overwrite)."""
     resume: bool = Field(False, validation_alias=AliasChoices("resume"))
     """Skip tasks already recorded in `output_dir/results.jsonl` and append the rest (needs an
     explicit `--output-dir`, since the default per-run dir is always fresh)."""
