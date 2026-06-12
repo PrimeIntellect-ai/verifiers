@@ -198,7 +198,7 @@ class InterceptionServer:
                 return web.json_response(completion)
             try:
                 response = await session.ctx.client.get_response(
-                    body, dialect, session.ctx.model, session.ctx.sampling
+                    dialect, body, session.ctx.model, session.ctx.sampling
                 )
             except OverlongPromptError:
                 # An overlong prompt is a budget limit, not a crash: end the rollout cleanly

@@ -27,8 +27,8 @@ class Client(ABC):
     @abstractmethod
     async def get_response(
         self,
-        body: dict,
         dialect: Dialect,
+        body: dict,
         model: str,
         sampling_args: SamplingConfig,
     ) -> Response:
@@ -68,13 +68,13 @@ class RetryingClient(Client):
 
     async def get_response(
         self,
-        body: dict,
         dialect: Dialect,
+        body: dict,
         model: str,
         sampling_args: SamplingConfig,
     ) -> Response:
         return await self._retrying(
-            self.inner.get_response, body, dialect, model, sampling_args
+            self.inner.get_response, dialect, body, model, sampling_args
         )
 
     async def close(self) -> None:

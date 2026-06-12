@@ -42,8 +42,8 @@ class ProxyClient(Client):
 
     async def get_response(
         self,
-        body: dict,
         dialect: Dialect,
+        body: dict,
         model: str,
         sampling_args: SamplingConfig,
     ) -> Response:
