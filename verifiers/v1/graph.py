@@ -17,12 +17,14 @@ the exact `prompt_ids + completion_ids` the model saw.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from pydantic import ConfigDict, Field
-from renderers.base import MultiModalData
+import numpy as np
+from pydantic import ConfigDict, Field, field_serializer, field_validator
+from renderers.base import MultiModalData, PlaceholderRange
 
 from verifiers.v1.types import (
     AssistantMessage,
@@ -36,6 +38,23 @@ from verifiers.v1.types import (
 
 if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
+
+
+def _encode_ndarray(arr: np.ndarray) -> dict:
+    """A numpy array as a JSON/msgpack-safe dict (dtype + shape + base64 bytes)."""
+    arr = np.ascontiguousarray(arr)
+    return {
+        "__nd__": True,
+        "dtype": str(arr.dtype),
+        "shape": list(arr.shape),
+        "data": base64.b64encode(arr.tobytes()).decode("ascii"),
+    }
+
+
+def _decode_ndarray(d: dict) -> np.ndarray:
+    """Reverse :func:`_encode_ndarray`."""
+    raw = base64.b64decode(d["data"])
+    return np.frombuffer(raw, dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
 class MessageNode(StrictBaseModel):
@@ -65,15 +84,62 @@ class MessageNode(StrictBaseModel):
     `mask`; empty for input messages."""
     finish_reason: FinishReason = None
     """The response's finish reason (assistant nodes only) — kept for truncation detection."""
-    multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
-    """The renderer items for the images this message's content introduces. Transient
-    (excluded from wire/disk); `Branch.multi_modal_data` concatenates them along the path."""
+    multi_modal_data: MultiModalData | None = None
+    """The renderer items for the images this message's content introduces (pixel tensors,
+    grids, hashes, placeholders) — the only carrier of the pixels from the env server to the
+    trainer. `Branch.multi_modal_data` concatenates them along the path into the training
+    `mm_kwargs`. Rides the wire via a base64 (de)serializer since pydantic can't JSON the numpy;
+    kept off disk by the dump-site `exclude` in prime-rl (the tensors bloat the rollout jsonl)."""
     usage: Usage | None = Field(default=None, exclude=True)
     """Provider-reported token usage for this message's response (assistant nodes). Transient
     (excluded from wire/disk); lets the live dashboard show token counts even when the endpoint
     returns no token ids (so `token_ids` is empty)."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    @field_serializer("multi_modal_data")
+    def _ser_multi_modal_data(self, mmd: MultiModalData | None) -> dict | None:
+        """`MultiModalData` -> JSON/msgpack-safe dict so the pixel tensors ride the wire; numpy
+        `mm_items` values become base64 `__nd__` dicts (every renderer emits `return_tensors="np"`)."""
+        if mmd is None:
+            return None
+        return {
+            "mm_hashes": {k: list(v) for k, v in mmd.mm_hashes.items()},
+            "mm_placeholders": {
+                modality: [{"offset": p.offset, "length": p.length} for p in ranges]
+                for modality, ranges in mmd.mm_placeholders.items()
+            },
+            "mm_items": {
+                modality: [
+                    {k: _encode_ndarray(v) for k, v in item.items()} for item in items
+                ]
+                for modality, items in mmd.mm_items.items()
+            },
+        }
+
+    @field_validator("multi_modal_data", mode="before")
+    @classmethod
+    def _val_multi_modal_data(cls, value: Any) -> MultiModalData | None:
+        if value is None or isinstance(value, MultiModalData):
+            return value
+        if not isinstance(value, dict):
+            raise TypeError(f"cannot build MultiModalData from {type(value).__name__}")
+        return MultiModalData(
+            mm_hashes={k: list(v) for k, v in (value.get("mm_hashes") or {}).items()},
+            mm_placeholders={
+                modality: [
+                    PlaceholderRange(offset=p["offset"], length=p["length"])
+                    for p in ranges
+                ]
+                for modality, ranges in (value.get("mm_placeholders") or {}).items()
+            },
+            mm_items={
+                modality: [
+                    {k: _decode_ndarray(v) for k, v in item.items()} for item in items
+                ]
+                for modality, items in (value.get("mm_items") or {}).items()
+            },
+        )
 
 
 def _content_str(content) -> str:
