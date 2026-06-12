@@ -180,8 +180,10 @@ def response_from_wire(response: types.GenerateContentResponse, model: str) -> R
 
     content = ""
     reasoning = ""
+    has_reasoning = False
     tool_calls: list[ToolCall] = []
     for part in parts:
+        has_reasoning = has_reasoning or bool(part.thought or part.thought_signature)
         if part.text:
             if part.thought:
                 reasoning += part.text
@@ -195,8 +197,8 @@ def response_from_wire(response: types.GenerateContentResponse, model: str) -> R
                     arguments=json.dumps(part.function_call.args or {}),
                 )
             )
-    if not content and not tool_calls:
-        raise ModelError("Google returned no content or tool calls")
+    if not content and not has_reasoning and not tool_calls:
+        raise ModelError("Google returned no output")
 
     finish_reason: FinishReason = None
     if tool_calls:

@@ -169,8 +169,8 @@ def response_from_wire(response: AnthropicMessage) -> Response:
                     arguments=json.dumps(block.input),
                 )
             )
-    if not content and not tool_calls:
-        raise ModelError("Anthropic Messages returned no content or tool calls")
+    if not content and not thinking and not tool_calls:
+        raise ModelError("Anthropic Messages returned no output")
     return Response(
         id=response.id,
         created=int(time.time()),

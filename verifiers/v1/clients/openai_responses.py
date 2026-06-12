@@ -97,6 +97,7 @@ def message_to_wire(message: Message) -> list[ResponseInputItemParam]:
 def response_from_wire(response: OpenAIResponse) -> Response:
     content = response.output_text
     reasoning: list[str] = []
+    has_reasoning = False
     tool_calls: list[ToolCall] = []
     # `output_text` is only the visible text. Inspect output items for refusals,
     # reasoning summaries, tool calls, and the provider state needed for continuation.
@@ -108,6 +109,7 @@ def response_from_wire(response: OpenAIResponse) -> Response:
                 if isinstance(part, ResponseOutputRefusal)
             )
         elif isinstance(item, ResponseReasoningItem):
+            has_reasoning = True
             reasoning += [part.text for part in item.summary]
             reasoning += [part.text for part in item.content or []]
         elif isinstance(item, ResponseFunctionToolCall):
@@ -118,8 +120,8 @@ def response_from_wire(response: OpenAIResponse) -> Response:
                     arguments=item.arguments,
                 )
             )
-    if not content and not tool_calls:
-        raise ModelError("OpenAI Responses returned no content or tool calls")
+    if not content and not has_reasoning and not tool_calls:
+        raise ModelError("OpenAI Responses returned no output")
 
     return Response(
         id=response.id,

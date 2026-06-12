@@ -36,6 +36,7 @@ from verifiers.v1.clients.openai_responses import message_to_wire as responses_m
 from verifiers.v1.clients.openai_responses import (
     response_from_wire as responses_response,
 )
+from verifiers.v1.interception.server import parse_message, serialize_completion
 from verifiers.v1.types import content_to_parts
 
 
@@ -203,6 +204,106 @@ def test_openai_responses_preserves_native_output():
 
     assert responses_message(assistant) == output
     assert response.finish_reason == "tool_calls"
+
+
+def test_openai_responses_accepts_reasoning_only():
+    output = [
+        {
+            "id": "reasoning_1",
+            "type": "reasoning",
+            "status": "incomplete",
+            "summary": [],
+        }
+    ]
+    response = responses_response(
+        OpenAIResponse.model_validate(
+            {
+                "id": "resp_1",
+                "created_at": 0,
+                "model": "gpt-test",
+                "object": "response",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": output,
+                "parallel_tool_calls": False,
+                "tool_choice": "auto",
+                "tools": [],
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 5},
+                },
+            }
+        )
+    )
+
+    assert response.message.content is None
+    assert response.message.reasoning_content is None
+    assert response.message.tool_calls is None
+    assert response.message.provider_state == output
+    assert response.finish_reason == "length"
+
+
+def test_interception_preserves_reasoning_state():
+    response = vf.Response(
+        id="response_1",
+        created=0,
+        model="model",
+        message=vf.AssistantMessage(
+            reasoning_content="Still working.",
+            provider_state=[{"type": "reasoning", "id": "reasoning_1"}],
+        ),
+        finish_reason="length",
+    )
+
+    completion = ChatCompletion.model_validate(serialize_completion(response, "model"))
+    raw = completion.choices[0].message.model_dump(mode="json", exclude_none=True)
+    message = parse_message(raw)
+
+    assert isinstance(message, vf.AssistantMessage)
+    assert message.content is None
+    assert message.reasoning_content == "Still working."
+    assert message.provider_state == [{"type": "reasoning", "id": "reasoning_1"}]
+    assert message.tool_calls is None
+
+
+def test_interception_preserves_provider_state_for_tool_continuation():
+    provider_state = [
+        {"type": "reasoning", "id": "reasoning_1", "summary": []},
+        {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "weather",
+            "arguments": '{"city":"Berlin"}',
+        },
+    ]
+    response = vf.Response(
+        id="response_1",
+        created=0,
+        model="model",
+        message=vf.AssistantMessage(
+            provider_state=provider_state,
+            tool_calls=[
+                vf.ToolCall(
+                    id="call_1",
+                    name="weather",
+                    arguments='{"city":"Berlin"}',
+                )
+            ],
+        ),
+        finish_reason="tool_calls",
+    )
+
+    completion = ChatCompletion.model_validate(serialize_completion(response, "model"))
+    raw = completion.choices[0].message.model_dump(mode="json", exclude_none=True)
+    message = parse_message(raw)
+
+    assert isinstance(message, vf.AssistantMessage)
+    assert message.provider_state == provider_state
+    assert message.tool_calls == response.message.tool_calls
+    assert responses_message(message) == provider_state
 
 
 @pytest.mark.asyncio
@@ -512,6 +613,42 @@ def test_anthropic_preserves_thinking_blocks():
     assert list(prompt[1]["content"])[0]["tool_use_id"] == "call_1"
 
 
+@pytest.mark.parametrize(
+    ("block", "expected_reasoning"),
+    [
+        (
+            {
+                "type": "thinking",
+                "thinking": "Still working.",
+                "signature": "signed-thinking",
+            },
+            "Still working.",
+        ),
+        ({"type": "redacted_thinking", "data": "opaque"}, None),
+    ],
+)
+def test_anthropic_accepts_reasoning_only(block, expected_reasoning):
+    response = anthropic_response(
+        AnthropicMessage.model_validate(
+            {
+                "id": "msg_1",
+                "model": "claude-test",
+                "role": "assistant",
+                "type": "message",
+                "stop_reason": "max_tokens",
+                "content": [block],
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            }
+        )
+    )
+
+    assert response.message.content is None
+    assert response.message.reasoning_content == expected_reasoning
+    assert response.message.tool_calls is None
+    assert response.message.provider_state == [block]
+    assert response.finish_reason == "length"
+
+
 @pytest.mark.asyncio
 async def test_anthropic_requires_max_tokens():
     anthropic = Mock()
@@ -651,6 +788,37 @@ def test_google_preserves_thought_signatures():
     assert prompt[1].parts is not None
     assert prompt[1].parts[0].function_response is not None
     assert prompt[1].parts[0].function_response.name == "weather"
+
+
+@pytest.mark.parametrize(
+    ("part", "expected_reasoning"),
+    [
+        ({"text": "Still working.", "thought": True}, "Still working."),
+        ({"thoughtSignature": "c2lnbmVkLXRob3VnaHQ="}, None),
+    ],
+)
+def test_google_accepts_reasoning_only(part, expected_reasoning):
+    response = google_response(
+        google_types.GenerateContentResponse.model_validate(
+            {
+                "responseId": "response_1",
+                "modelVersion": "gemini-test",
+                "candidates": [
+                    {
+                        "finishReason": "MAX_TOKENS",
+                        "content": {"role": "model", "parts": [part]},
+                    }
+                ],
+            }
+        ),
+        "gemini-test",
+    )
+
+    assert response.message.content is None
+    assert response.message.reasoning_content == expected_reasoning
+    assert response.message.tool_calls is None
+    assert response.message.provider_state == [part]
+    assert response.finish_reason == "length"
 
 
 @pytest.mark.asyncio
