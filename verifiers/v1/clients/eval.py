@@ -18,11 +18,6 @@ from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import Response, SamplingConfig
 
-# Generous transport defaults (mirroring the v0 client): a long read timeout for slow agentic
-# completions, and a high connection ceiling so one process can fan out many concurrent rollouts.
-_TIMEOUT = httpx.Timeout(3600.0, connect=10.0)
-_LIMITS = httpx.Limits(max_connections=28000, max_keepalive_connections=28000)
-
 
 class EvalClient(Client):
     """The default client: forward the program's request 1:1 to the provider, parse the response
@@ -34,11 +29,10 @@ class EvalClient(Client):
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        # No timeout: agentic completions are slow and the rollout timeout is the real backstop.
         # Build full URLs ourselves (base_url + dialect.upstream_path) rather than relying on
         # httpx base-url joining, which drops the base path for a leading-slash request path.
-        self.http = httpx.AsyncClient(
-            timeout=_TIMEOUT, limits=_LIMITS, headers=headers or {}
-        )
+        self.http = httpx.AsyncClient(timeout=None, headers=headers or {})
 
     async def get_response(
         self,
@@ -48,13 +42,9 @@ class EvalClient(Client):
         sampling_args: SamplingConfig,
     ) -> Response:
         # Byte-exact forward, save for the eval's model + sampling (imposed by the dialect).
-        upstream = dialect.apply_overrides(body, model, sampling_args)
+        url, headers, upstream = self._upstream(dialect, body, model, sampling_args)
         try:
-            resp = await self.http.post(
-                self.base_url + dialect.upstream_path,
-                json=upstream,
-                headers=dialect.auth_headers(self.api_key),
-            )
+            resp = await self.http.post(url, json=upstream, headers=headers)
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             # The provider's error body carries the message (e.g. a context-length 400); the
@@ -95,8 +85,10 @@ class EvalClient(Client):
         except httpx.HTTPError as e:
             raise model_error(str(e)) from e
         if resp.status_code >= 400:
-            text = (await resp.aread()).decode("utf-8", errors="replace")
-            await resp.aclose()
+            try:
+                text = (await resp.aread()).decode("utf-8", errors="replace")
+            finally:
+                await resp.aclose()
             raise model_error(f"upstream {resp.status_code}: {text}")
 
         async def chunks():
