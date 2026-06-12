@@ -102,26 +102,19 @@ class SubprocessRuntime(Runtime):
                 if sha not in self._interpreters:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(data)
-                    self._interpreters[sha] = await self._provision(path)
+                    # `uv sync` locks its own cache, so concurrent workers building the same
+                    # script are safe; `uv python find` prints the resolved env's interpreter.
+                    s = shlex.quote(str(path))
+                    cmd = f"{_ENSURE_UV}; uv sync --script {s} -q && uv python find --script {s}"
+                    provision = await self.run(["sh", "-c", cmd], {})
+                    if provision.exit_code != 0:
+                        raise RuntimeError(
+                            f"failed to provision env for {path}: {provision.stderr}"
+                        )
+                    self._interpreters[sha] = provision.stdout.strip().splitlines()[-1]
         return await self.run(
             [self._interpreters[sha], str(path), *(args or [])], env or {}
         )
-
-    async def _provision(self, path: Path) -> str:
-        """uv syncs the script's persistent env (it locks its own cache, so this is safe across
-        workers building the same script) and prints that env's interpreter."""
-        s = shlex.quote(str(path))
-        result = await self.run(
-            [
-                "sh",
-                "-c",
-                f"{_ENSURE_UV}; uv sync --script {s} -q && uv python find --script {s}",
-            ],
-            {},
-        )
-        if result.exit_code != 0:
-            raise RuntimeError(f"failed to provision env for {path}: {result.stderr}")
-        return result.stdout.strip().splitlines()[-1]
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
