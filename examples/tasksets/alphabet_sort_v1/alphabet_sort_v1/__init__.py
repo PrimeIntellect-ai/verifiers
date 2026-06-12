@@ -16,7 +16,7 @@ import difflib
 import json
 import random
 import re
-import sys
+from pathlib import Path
 from typing import Literal
 
 from datasets import load_dataset
@@ -25,6 +25,9 @@ import verifiers.v1 as vf
 
 DATASET = "kalomaze/alphabetic-arxiv-authors-it1"
 SEED = 1337420
+# The user simulator is shipped as a self-contained uv script so it runs in any runtime
+# (host, or a docker/prime/modal sandbox), not just the host's subprocess.
+USER_SCRIPT = (Path(__file__).parent / "user.py").read_bytes()
 
 
 class AlphabetSortConfig(vf.TasksetConfig):
@@ -144,7 +147,7 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
         }
         return vf.User(
             name="user",
-            command=[sys.executable, "-m", "alphabet_sort_v1.user"],
+            script=USER_SCRIPT,
             env={"ALPHABET_SORT_INFO": json.dumps(info)},
         )
 
