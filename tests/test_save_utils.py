@@ -289,6 +289,29 @@ class TestSavingResults:
         assert result[0].get("foo") == "bar"  # custom field from make_state fixture
         assert result[0]["reward"] == 1.0
 
+    def test_states_to_outputs_includes_retry_metadata(self, make_state):
+        state = make_state()
+        state["retry"] = {
+            "attempts": 3,
+            "max_retries": 2,
+            "retry_count": 2,
+            "exhausted": True,
+            "elapsed_seconds": 0.42,
+            "events": [
+                {
+                    "attempt": 1,
+                    "error": "InfraError",
+                    "message": "sandbox timed out",
+                    "error_chain_str": "InfraError",
+                    "next_sleep_seconds": 1.0,
+                }
+            ],
+        }
+
+        outputs = states_to_outputs([state], state_columns=[])
+
+        assert outputs[0]["retry"] == state["retry"]
+
     def test_states_to_outputs_requires_example_id(self, make_state):
         state = make_state()
         del state["example_id"]

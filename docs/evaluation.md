@@ -255,6 +255,8 @@ By default, scoring runs interleaved with generation. Use `--no-interleave-scori
 
 The `--max-retries` flag enables automatic retry with exponential backoff when rollouts fail due to transient infrastructure errors (e.g., sandbox timeouts, API failures).
 
+When a rollout retries, its saved output includes a `retry` block. It records attempt count, exhaustion status, elapsed retry time, and the retryable errors that triggered each attempt. This keeps transient provider or sandbox instability visible in `results.jsonl`, not only in logs.
+
 The `--num-workers` flag controls how many worker processes the env server spawns. Each worker owns its own environment instance and runs rollouts independently. The default `auto` scales with concurrency.
 
 ### Display

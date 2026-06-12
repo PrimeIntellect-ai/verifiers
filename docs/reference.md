@@ -185,11 +185,14 @@ class RolloutOutput(dict):
     error: str | None
     stop_condition: str | None
     token_usage: TokenUsage
+    retry: RetryData
     trajectory: list[TrajectoryStep]
     tool_defs: list[Tool] | None
 ```
 
 Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk.
+
+The `retry` field is present only when `max_retries` caused at least one retry. It records attempts, retry count, exhaustion status, elapsed retry time, and per-attempt error summaries.
 
 ### TrajectoryStep
 

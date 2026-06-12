@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import time
 from collections import deque
 from collections.abc import Mapping
 from collections.abc import Coroutine
@@ -13,6 +14,7 @@ from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.error_utils import error_data
 from verifiers.utils.error_utils import error_from_data, is_error_data
 from verifiers.utils.logging_utils import print_time
 
@@ -161,43 +163,109 @@ def maybe_retry(
     if max_retries <= 0:
         return func
 
-    def reraise_one(err, error_types: tuple[type[Exception], ...]):
+    retry_started_at = 0.0
+    retry_events: list[dict[str, Any]] = []
+    last_result = None
+
+    def summarize_error(error: BaseException | Mapping[str, Any]) -> dict[str, str]:
+        """Build the JSON-safe part of a retry event."""
+        if isinstance(error, Mapping) and is_error_data(error):
+            return {
+                "error": error["error"],
+                "message": error["message"],
+                "error_chain_str": error["error_chain_str"],
+            }
+        if isinstance(error, BaseException):
+            data = error_data(error)
+            return {
+                "error": data["error"],
+                "message": data["message"],
+                "error_chain_str": data["error_chain_str"],
+            }
+        return {
+            "error": type(error).__name__,
+            "message": str(error),
+            "error_chain_str": type(error).__name__,
+        }
+
+    def retryable_error(
+        err, error_types: tuple[type[Exception], ...]
+    ) -> Exception | None:
         if not err:
-            return
+            return None
         if any(isinstance(err, err_type) for err_type in error_types):
-            raise err
+            return err
         # Rebuild serialized ErrorData so base types match (SandboxError -> InfraError).
         if isinstance(err, Mapping) and is_error_data(err):
             rebuilt = error_from_data(err)
             if isinstance(rebuilt, error_types):
-                raise rebuilt
+                return rebuilt
+        return None
+
+    def first_retryable_state_error(
+        result, error_types: tuple[type[Exception], ...]
+    ) -> tuple[str, Exception] | None:
+        if isinstance(result, dict):
+            err = result.get("error")
+            retryable = retryable_error(err, error_types)
+            return ("", retryable) if retryable is not None else None
+        if isinstance(result, list):
+            for index, state in enumerate(result):
+                retryable = retryable_error(state.get("error"), error_types)
+                if retryable is not None:
+                    return (str(index), retryable)
+        return None
 
     def reraise_error_from_state(result, error_types: tuple[type[Exception], ...]):
         """Re-raise specified errors from state(s) to trigger tenacity retry."""
+        retryable = first_retryable_state_error(result, error_types)
+        if retryable is not None:
+            raise retryable[1]
+
+    def attach_retry_info(result, *, exhausted: bool = False) -> None:
+        if not retry_events:
+            return
+        attempts = len(retry_events) + (0 if exhausted else 1)
+        summary = {
+            "attempts": attempts,
+            "max_retries": max_retries,
+            "retry_count": min(max_retries, max(0, attempts - 1)),
+            "exhausted": exhausted,
+            "elapsed_seconds": time.time() - retry_started_at,
+            "events": retry_events,
+        }
         if isinstance(result, dict):
-            reraise_one(result.get("error"), error_types)
+            result["retry"] = summary
         elif isinstance(result, list):
             for state in result:
-                reraise_one(state.get("error"), error_types)
+                state["retry"] = summary
+
+    def begin_retry_call(retry_state: tc.RetryCallState) -> None:
+        nonlocal last_result, retry_events, retry_started_at
+        if retry_state.attempt_number == 1:
+            last_result = None
+            retry_events = []
+            retry_started_at = time.time()
 
     def log_retry(retry_state: tc.RetryCallState) -> None:
         """Log a warning with the exception and the number of attempts."""
         caller = retry_state.fn.__name__ if retry_state.fn else "unknown function"
-        error_chain = (
-            repr(
-                ErrorChain(
-                    retry_state.outcome.exception() or Exception("Unknown exception")
-                )
-            )
-            if retry_state.outcome
-            else None
-        )
+        error = retry_state.outcome.exception() if retry_state.outcome else None
+        error_chain = repr(ErrorChain(error or Exception("Unknown exception")))
         next_action = retry_state.next_action.sleep if retry_state.next_action else 0
+        if retry_events and retry_events[-1]["attempt"] == retry_state.attempt_number:
+            retry_events[-1]["next_sleep_seconds"] = next_action
+        else:
+            retry_events.append(
+                {
+                    "attempt": retry_state.attempt_number,
+                    "next_sleep_seconds": next_action,
+                    **summarize_error(error or Exception("Unknown exception")),
+                }
+            )
         logger.warning(
             f"Caught {error_chain} in {caller}. Retrying in {print_time(next_action)} (retry {retry_state.attempt_number}/{max_retries})"
         )
-
-    last_result = None
 
     def return_last_result(retry_state: tc.RetryCallState):
         """Return the last result when retries are exhausted (instead of raising)."""
@@ -215,13 +283,31 @@ def maybe_retry(
             f"Retries exhausted for {caller} after {max_retries} attempts. "
             f"Last error: {error_chain}. Continuing with error in state."
         )
+        if last_result is not None:
+            attach_retry_info(last_result, exhausted=True)
         return last_result
 
     async def wrapper(*args, **kwargs):
         nonlocal last_result
         result = await func(*args, **kwargs)
         last_result = result  # store result
-        reraise_error_from_state(result, error_types)
+        retryable_state_error = first_retryable_state_error(result, error_types)
+        try:
+            reraise_error_from_state(result, error_types)
+        except error_types as error:
+            retry_events.append(
+                {
+                    "attempt": len(retry_events) + 1,
+                    "state_index": (
+                        retryable_state_error[0]
+                        if retryable_state_error is not None
+                        else ""
+                    ),
+                    **summarize_error(error),
+                }
+            )
+            raise
+        attach_retry_info(result)
         return result
 
     wrapper.__name__ = getattr(func, "__name__", "unknown")
@@ -231,6 +317,7 @@ def maybe_retry(
         retry=tc.retry_if_exception_type(error_types),
         stop=tc.stop_after_attempt(max_retries + 1),
         wait=tc.wait_exponential_jitter(initial=initial, max=max_wait),
+        before=begin_retry_call,
         before_sleep=log_retry,
         retry_error_callback=return_last_result,
         reraise=True,

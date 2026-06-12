@@ -219,6 +219,7 @@ prime eval list
 prime eval get <eval-id>
 prime eval samples <eval-id>
 ```
+4. When debugging transient failures from runs that used `--max-retries`, inspect each sample's saved `retry` block. It shows attempt count, whether retries were exhausted, elapsed retry time, and the retryable errors that triggered each retry.
 
 ## Metrics Interpretation
 1. Treat binary and continuous rewards differently.
