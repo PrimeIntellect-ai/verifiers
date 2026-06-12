@@ -31,13 +31,6 @@ from verifiers.v1.types import (
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 
-# Sampling knobs the eval owns: stripped from the program's request before the eval's are
-# applied, so its sampling is authoritative (see `apply_overrides`). The chat wire names,
-# including the `max_tokens` alias the OpenAI SDK also accepts.
-_SAMPLING_KEYS = frozenset(
-    {"temperature", "top_p", "max_tokens", "max_completion_tokens"}
-)
-
 # Providers name the model's reasoning differently; read them in the v0 client's precedence.
 # `reasoning` (vLLM / Together / OpenRouter), `reasoning_content` (DeepSeek / Qwen / SGLang /
 # Fireworks / Kimi), `reasoning_details` (OpenRouter / MiniMax — usually structured, kept here
@@ -295,15 +288,9 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
         )
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
-        # Forward the program's body verbatim except what the eval owns: model (overlay) and
-        # sampling (authoritative — drop the program's sampling keys, then apply the eval's).
-        overrides = sampling.model_dump(exclude_none=True)
-        steered = {
-            k: v
-            for k, v in body.items()
-            if k not in _SAMPLING_KEYS and k not in overrides
-        }
-        return {**steered, "model": model, **overrides}
+        # Forward the program's body verbatim, overlaying only what the eval owns: the model and
+        # the sampling knobs it set (later keys win, so the eval's override the program's).
+        return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
 
     def extend(self, body: dict, completion: dict, user_messages: Messages) -> dict:
         # Append the model's turn (the verbatim assistant message, so its reasoning survives for
