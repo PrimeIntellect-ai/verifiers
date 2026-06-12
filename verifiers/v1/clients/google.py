@@ -208,7 +208,7 @@ def response_from_wire(response: types.GenerateContentResponse, model: str) -> R
 
     usage = response.usage_metadata
     prompt_tokens = usage.prompt_token_count if usage else None
-    total_tokens = usage.total_token_count if usage else None
+    completion_tokens = usage.candidates_token_count if usage else None
     return Response(
         id=response.response_id or "",
         created=(
@@ -230,9 +230,9 @@ def response_from_wire(response: types.GenerateContentResponse, model: str) -> R
         usage=(
             Usage(
                 prompt_tokens=prompt_tokens,
-                completion_tokens=total_tokens - prompt_tokens,
+                completion_tokens=completion_tokens,
             )
-            if prompt_tokens is not None and total_tokens is not None
+            if prompt_tokens is not None and completion_tokens is not None
             else None
         ),
     )

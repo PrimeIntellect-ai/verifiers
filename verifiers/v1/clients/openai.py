@@ -149,7 +149,7 @@ def tokens_from_wire(completion: ChatCompletion, choice: Choice) -> TurnTokens |
     content = choice.logprobs.content if choice.logprobs else None
     return TurnTokens(
         prompt_ids=cast(
-            list[int], (completion.model_extra or {}).get("prompt_token_ids", [])
+            list[int], (completion.model_extra or {}).get("prompt_token_ids") or []
         ),
         completion_ids=completion_ids,
         completion_logprobs=[lp.logprob for lp in content] if content else [],

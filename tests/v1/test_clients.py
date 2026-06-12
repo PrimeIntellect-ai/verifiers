@@ -206,14 +206,20 @@ def test_openai_responses_preserves_native_output():
 
 
 @pytest.mark.asyncio
-async def test_openai_chat_preserves_tokens_and_logprobs():
+@pytest.mark.parametrize(
+    ("prompt_token_ids", "expected_prompt_ids"),
+    [([1, 2], [1, 2]), (None, [])],
+)
+async def test_openai_chat_preserves_tokens_and_logprobs(
+    prompt_token_ids, expected_prompt_ids
+):
     completion = ChatCompletion.model_validate(
         {
             "id": "chatcmpl_1",
             "created": 0,
             "model": "vllm-test",
             "object": "chat.completion",
-            "prompt_token_ids": [1, 2],
+            "prompt_token_ids": prompt_token_ids,
             "choices": [
                 {
                     "index": 0,
@@ -282,7 +288,7 @@ async def test_openai_chat_preserves_tokens_and_logprobs():
         response.message.provider_state
     )
     assert response.tokens is not None
-    assert response.tokens.prompt_ids == [1, 2]
+    assert response.tokens.prompt_ids == expected_prompt_ids
     assert response.tokens.completion_ids == [3, 4]
     assert response.tokens.completion_logprobs == [-0.1, -0.2]
 
@@ -763,7 +769,10 @@ async def test_google_aggregates_stream():
                 ],
                 "usageMetadata": {
                     "promptTokenCount": 1,
-                    "totalTokenCount": 2,
+                    "candidatesTokenCount": 1,
+                    "thoughtsTokenCount": 2,
+                    "toolUsePromptTokenCount": 3,
+                    "totalTokenCount": 7,
                 },
             }
         ),
