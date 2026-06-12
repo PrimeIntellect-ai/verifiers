@@ -1,22 +1,17 @@
-"""Wire dialects: translate one native API's request/response into vf types.
+"""The OpenAI chat-completions dialect (the only dialect today).
 
-A `Dialect[ReqT, RespT]` is the per-format translator the interception server uses to build
-the trace from the program's native request + the provider's native response. It is one-way
-(wire -> vf): the proxy relays the provider's raw response to the harness verbatim, so there
-is no vf -> wire. Generic over the native request (`ReqT`) and response (`RespT`) types so
-each dialect is self-typed.
-
-A harness declares which dialect it speaks (`Harness.DIALECT`) — there is no auto-detection
-(a follow-up, for harnesses that support several native clients). `ChatCompletionsDialect` is
-the only dialect today; OpenAI Responses / Anthropic Messages become new `Dialect`s.
+Translates the OpenAI chat-completions wire format into vf types: requests (`parse_request`)
+and responses (`parse_response`). Reasoning extraction mirrors the v0 chat client's
+`parse_reasoning_content` — providers expose the model's reasoning under different keys, so
+read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning_details`).
 """
 
-from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from collections.abc import Mapping
+from typing import Any
 
 from openai.types.chat import ChatCompletion
-from pydantic import BaseModel
 
+from verifiers.v1.clients.dialects.base import Dialect
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -35,28 +30,20 @@ from verifiers.v1.types import (
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 
-ReqT = TypeVar("ReqT")
-RespT = TypeVar("RespT", bound=BaseModel)
+# Providers name the model's reasoning differently; read them in the v0 client's precedence.
+# `reasoning` (vLLM / Together / OpenRouter), `reasoning_content` (DeepSeek / Qwen / SGLang /
+# Fireworks / Kimi), `reasoning_details` (OpenRouter / MiniMax — usually structured, kept here
+# for the rare provider that returns it as a plain string).
+REASONING_FIELDS = ("reasoning", "reasoning_content", "reasoning_details")
 
 
-class Dialect(ABC, Generic[ReqT, RespT]):
-    """Translate ONE native API's wire format into vf, fully typed over its native request
-    (`ReqT`) and response (`RespT`). One-way (wire -> vf): the proxy relays the raw response to
-    the harness verbatim, so there is no vf -> wire."""
-
-    response_type: type[RespT]
-    """The native response model — used to validate the provider's raw JSON before parsing."""
-
-    @abstractmethod
-    def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:
-        """The native request -> vf prompt + tools (for the trace)."""
-
-    @abstractmethod
-    def parse_response(self, response: RespT) -> Response:
-        """The native response -> the vf `Response` we consume."""
-
-
-# --- chat completions ---------------------------------------------------------
+def reasoning_text(data: Mapping[str, Any]) -> str | None:
+    """The model's reasoning string, from whichever field the provider used."""
+    for field in REASONING_FIELDS:
+        value = data.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _content_text(content) -> str:
@@ -68,9 +55,7 @@ def _content_text(content) -> str:
 
 def parse_message(raw: dict) -> Message:
     """An OpenAI chat request message dict -> a typed Message. User/system bodies keep their
-    image parts (multimodal ingress); assistant/tool bodies flatten to text. Providers name
-    reasoning differently — `reasoning_content` (DeepSeek/vLLM) or `reasoning` (OpenRouter-
-    style); accept either."""
+    image parts (multimodal ingress); assistant/tool bodies flatten to text."""
     role = raw.get("role")
     content = raw.get("content")
     if role == "system":
@@ -90,7 +75,7 @@ def parse_message(raw: dict) -> Message:
         ] or None
         return AssistantMessage(
             content=_content_text(content) or None,
-            reasoning_content=raw.get("reasoning_content") or raw.get("reasoning"),
+            reasoning_content=reasoning_text(raw),
             tool_calls=calls,
         )
     return UserMessage(content=content_to_parts(content))
@@ -128,8 +113,7 @@ def _tokens_from_wire(completion: ChatCompletion, choice) -> TurnTokens | None:
 
 def response_from_wire(completion: ChatCompletion) -> Response:
     """An OpenAI chat.completion -> a vf `Response` (the one place raw provider objects cross
-    into our typed `Response`). Providers name reasoning `reasoning_content` (DeepSeek/vLLM) or
-    `reasoning` (OpenRouter-style); accept either."""
+    into our typed `Response`)."""
     choice = completion.choices[0]
     message = choice.message
     tool_calls = [
@@ -153,8 +137,7 @@ def response_from_wire(completion: ChatCompletion) -> Response:
         model=completion.model,
         message=AssistantMessage(
             content=message.content,
-            reasoning_content=getattr(message, "reasoning_content", None)
-            or getattr(message, "reasoning", None),
+            reasoning_content=reasoning_text(message.model_dump()),
             tool_calls=tool_calls,
         ),
         finish_reason=finish,
