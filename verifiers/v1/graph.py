@@ -57,46 +57,6 @@ def _decode_ndarray(d: dict) -> np.ndarray:
     return np.frombuffer(raw, dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
-def _encode_multi_modal_data(mmd: MultiModalData) -> dict:
-    """`MultiModalData` → a JSON/msgpack-safe dict. `mm_hashes` rides as-is; `mm_placeholders`
-    become `{offset,length}` dicts; each `mm_items` value is a numpy array (every renderer emits
-    `return_tensors="np"`) encoded to a base64 `__nd__` dict."""
-    return {
-        "mm_hashes": {k: list(v) for k, v in mmd.mm_hashes.items()},
-        "mm_placeholders": {
-            modality: [{"offset": p.offset, "length": p.length} for p in ranges]
-            for modality, ranges in mmd.mm_placeholders.items()
-        },
-        "mm_items": {
-            modality: [
-                {key: _encode_ndarray(val) for key, val in item.items()}
-                for item in items
-            ]
-            for modality, items in mmd.mm_items.items()
-        },
-    }
-
-
-def _decode_multi_modal_data(d: dict) -> MultiModalData:
-    """Reverse :func:`_encode_multi_modal_data`."""
-    return MultiModalData(
-        mm_hashes={k: list(v) for k, v in (d.get("mm_hashes") or {}).items()},
-        mm_placeholders={
-            modality: [
-                PlaceholderRange(offset=p["offset"], length=p["length"]) for p in ranges
-            ]
-            for modality, ranges in (d.get("mm_placeholders") or {}).items()
-        },
-        mm_items={
-            modality: [
-                {key: _decode_ndarray(val) for key, val in item.items()}
-                for item in items
-            ]
-            for modality, items in (d.get("mm_items") or {}).items()
-        },
-    )
-
-
 class MessageNode(StrictBaseModel):
     """One message in the graph: a message plus the tokens it adds to the cumulative
     sequence. Concatenating a root→leaf path's nodes reconstructs that branch's full token
@@ -139,16 +99,47 @@ class MessageNode(StrictBaseModel):
 
     @field_serializer("multi_modal_data")
     def _ser_multi_modal_data(self, mmd: MultiModalData | None) -> dict | None:
-        return _encode_multi_modal_data(mmd) if mmd is not None else None
+        """`MultiModalData` -> JSON/msgpack-safe dict so the pixel tensors ride the wire; numpy
+        `mm_items` values become base64 `__nd__` dicts (every renderer emits `return_tensors="np"`)."""
+        if mmd is None:
+            return None
+        return {
+            "mm_hashes": {k: list(v) for k, v in mmd.mm_hashes.items()},
+            "mm_placeholders": {
+                modality: [{"offset": p.offset, "length": p.length} for p in ranges]
+                for modality, ranges in mmd.mm_placeholders.items()
+            },
+            "mm_items": {
+                modality: [
+                    {k: _encode_ndarray(v) for k, v in item.items()} for item in items
+                ]
+                for modality, items in mmd.mm_items.items()
+            },
+        }
 
     @field_validator("multi_modal_data", mode="before")
     @classmethod
     def _val_multi_modal_data(cls, value: Any) -> MultiModalData | None:
         if value is None or isinstance(value, MultiModalData):
             return value
-        if isinstance(value, dict):
-            return _decode_multi_modal_data(value)
-        raise TypeError(f"cannot build MultiModalData from {type(value).__name__}")
+        if not isinstance(value, dict):
+            raise TypeError(f"cannot build MultiModalData from {type(value).__name__}")
+        return MultiModalData(
+            mm_hashes={k: list(v) for k, v in (value.get("mm_hashes") or {}).items()},
+            mm_placeholders={
+                modality: [
+                    PlaceholderRange(offset=p["offset"], length=p["length"])
+                    for p in ranges
+                ]
+                for modality, ranges in (value.get("mm_placeholders") or {}).items()
+            },
+            mm_items={
+                modality: [
+                    {k: _decode_ndarray(v) for k, v in item.items()} for item in items
+                ]
+                for modality, items in (value.get("mm_items") or {}).items()
+            },
+        )
 
 
 def _content_str(content) -> str:
