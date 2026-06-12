@@ -219,12 +219,13 @@ uv run eval gsm8k-v1 -n 1 --retries.model.max-retries 5 --retries.runtime.max-re
 uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.include ProgramError  # whole-rollout, by exception type
 ```
 
-### First-class Harbor support
+### Integrations
 
-Common agentic benchmarks run out of the box: the shipped `harbor-v1` taskset (installed by
-default) pulls tasks straight from the Harbor registry via the `harbor` CLI
-(`uv tool install harbor`), each in its own declared, pullable
-container image — e.g. Terminal-Bench 2 (the `terminal-bench-2-v1` example just pins this):
+Some tasksets wrap a whole benchmark family rather than a single task — shipped, installed by
+default, used by id: e.g. `textarena-v1` (TextArena games) and `harbor-v1` (the agentic-
+benchmark registry). Harbor is the showcase: it pulls tasks straight from the Harbor registry
+via the `harbor` CLI (`uv tool install harbor`), each in its own declared, pullable container
+image — e.g. Terminal-Bench 2 (the `terminal-bench-2-v1` example just pins this):
 
 ```bash
 uv run eval harbor-v1 --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.enable-bash true
