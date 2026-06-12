@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.clients.openai import message_to_wire
+from verifiers.v1.clients.proxy import message_to_wire
 from verifiers.v1 import graph
 from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.trace import Trace

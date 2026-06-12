@@ -32,10 +32,8 @@ class Client(ABC):
         sampling_args: SamplingConfig,
         tools: list[Tool] | None = None,
     ) -> tuple[dict, Response]:
-        """Run one completion for the program. Returns the OpenAI chat.completion dict to hand
-        back and the typed `Response` for the trace. The default (proxy) client forwards `body`
-        1:1 — so no provider field is lost — and ignores `prompt`/`tools` (already in `body`);
-        the renderer ignores `body` and translates the typed `prompt` (it must tokenize)."""
+        """Run one completion: the OpenAI chat.completion dict to hand the program, and the
+        typed `Response` for the trace."""
 
     async def close(self) -> None:
         """Release any underlying resources. Default no-op."""

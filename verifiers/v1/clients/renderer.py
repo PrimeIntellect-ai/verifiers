@@ -15,8 +15,8 @@ from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.openai import FINISH_REASONS, message_to_wire, model_error
-from verifiers.v1.clients.openai import serialize_completion, tool_to_wire
+from verifiers.v1.clients.proxy import FINISH_REASONS, message_to_wire, model_error
+from verifiers.v1.clients.proxy import serialize_completion, tool_to_wire
 from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.types import (
     AssistantMessage,

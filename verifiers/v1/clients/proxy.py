@@ -1,11 +1,12 @@
-"""OpenAI-compatible chat-completions client.
+"""The proxy client + OpenAI wire translation.
 
-Distilled from v1's 545-line client: message<->wire translation, tool schemas,
-best-effort reasoning_content. Sampling args pass straight through; when the
-response carries vLLM's token ids + sampling logprobs (the caller asked for
-`logprobs` and `return_token_ids`), we parse them into the response's `tokens`
-so MITO training needs no renderer. Routed-experts/audio handling stays dropped.
-This is the one place raw provider dicts cross into our typed `Response`.
+`ProxyClient` (the default) forwards the program's chat-completions request 1:1 to an
+OpenAI-compatible endpoint and hands back the provider's raw response untouched, so no field
+(e.g. `reasoning`) is lost to a typed round-trip. The wire helpers here — message/tool
+serialization, response parsing (the one place raw provider dicts cross into our typed
+`Response`; when the response carries vLLM token ids + sampling logprobs it parses them into
+`tokens` so MITO training needs no renderer), and `serialize_completion` — are shared with the
+renderer client, which translates the typed prompt instead of proxying.
 """
 
 import httpx
