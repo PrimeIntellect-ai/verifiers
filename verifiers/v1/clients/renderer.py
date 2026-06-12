@@ -21,10 +21,8 @@ from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
-    Messages,
     Response,
     SamplingConfig,
-    Tool,
     ToolCall,
     TurnTokens,
     Usage,
@@ -110,15 +108,14 @@ class RendererClient(Client):
         self,
         body: dict,
         dialect: Dialect,
-        prompt: Messages,
         model: str,
         sampling_args: SamplingConfig,
-        tools: list[Tool] | None = None,
     ) -> Response:
-        # `body`/`dialect` are ignored: the renderer tokenizes the typed `prompt` for training
-        # (it needs per-token ids + logprobs back), so it can't forward the raw request. It
-        # leaves `Response.raw` unset; the interception server serializes its `Response` for the
-        # program instead of relaying provider bytes.
+        # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
+        # back), so it can't forward the raw request — it parses `body` via the dialect and renders
+        # it. It leaves `Response.raw` unset; the interception server serializes its `Response` for
+        # the program instead of relaying provider bytes.
+        prompt, tools = dialect.parse_request(body)
         renderer = self._renderer_pool(model)
         from renderers.client import generate
 

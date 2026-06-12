@@ -1,9 +1,9 @@
 """Wire dialects: per-native-format translators (wire -> vf) for the interception trace.
 
-`Dialect` is the abstraction; `chat_completions` is the only dialect today (OpenAI Responses
-/ Anthropic Messages become new modules). The interception server serves each registered
-dialect's `routes`, so the wire format is resolved from the endpoint the program's SDK posts to
-— no per-harness declaration.
+`Dialect` is the abstraction; `chat_completions` is the OpenAI chat-completions dialect (OpenAI
+Responses / Anthropic Messages become new modules). The interception server serves each
+registered dialect's `routes`, so the wire format is resolved from the endpoint the program's
+SDK posts to — no per-harness declaration.
 """
 
 from verifiers.v1.dialects.base import Dialect

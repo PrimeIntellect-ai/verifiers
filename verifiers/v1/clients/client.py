@@ -18,7 +18,7 @@ from tenacity import (
 
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import ModelError, OverlongPromptError
-from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
+from verifiers.v1.types import Response, SamplingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +29,12 @@ class Client(ABC):
         self,
         body: dict,
         dialect: Dialect,
-        prompt: Messages,
         model: str,
         sampling_args: SamplingConfig,
-        tools: list[Tool] | None = None,
     ) -> Response:
         """Run one completion -> a vf `Response`. The proxy client forwards `body` 1:1 and
         parses the provider response via `dialect` (carrying the raw on `Response.raw`); the
-        renderer ignores `body`/`dialect` and translates the typed `prompt` (it must tokenize)."""
+        renderer derives the typed prompt from `body` via `dialect` and tokenizes it."""
 
     async def close(self) -> None:
         """Release any underlying resources. Default no-op."""
@@ -72,13 +70,11 @@ class RetryingClient(Client):
         self,
         body: dict,
         dialect: Dialect,
-        prompt: Messages,
         model: str,
         sampling_args: SamplingConfig,
-        tools: list[Tool] | None = None,
     ) -> Response:
         return await self._retrying(
-            self.inner.get_response, body, dialect, prompt, model, sampling_args, tools
+            self.inner.get_response, body, dialect, model, sampling_args
         )
 
     async def close(self) -> None:

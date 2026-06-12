@@ -16,7 +16,7 @@ from openai import AsyncOpenAI, OpenAIError
 from verifiers.v1.clients.client import Client
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import ModelError, OverlongPromptError
-from verifiers.v1.types import Message, Messages, Response, SamplingConfig, Tool
+from verifiers.v1.types import Message, Response, SamplingConfig, Tool
 
 _CONTEXT_LENGTH_PHRASES = (
     "this model's maximum context length is",
@@ -132,10 +132,8 @@ def serialize_completion(response: Response, model: str) -> dict:
 
 class ProxyClient(Client):
     """The default client: forward the program's request 1:1 to an OpenAI-compatible endpoint,
-    parse the provider's response into a vf `Response` (via the harness's dialect) for the
-    trace, and carry the raw response on `Response.raw` so it reaches the program untouched.
-    `prompt`/`tools` are already in `body` and unused here — they're on the signature only so
-    the renderer (which must tokenize) can translate the typed prompt instead of forwarding."""
+    parse the provider's response into a vf `Response` (via the request's dialect) for the trace,
+    and carry the raw response on `Response.raw` so it reaches the program untouched."""
 
     def __init__(self, openai: AsyncOpenAI) -> None:
         self.openai = openai
@@ -144,10 +142,8 @@ class ProxyClient(Client):
         self,
         body: dict,
         dialect: Dialect,
-        prompt: Messages,
         model: str,
         sampling_args: SamplingConfig,
-        tools: list[Tool] | None = None,
     ) -> Response:
         # Forward verbatim; the eval owns model + sampling (override whatever the program set).
         upstream = {

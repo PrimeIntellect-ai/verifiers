@@ -174,15 +174,14 @@ class InterceptionServer:
             logger.warning("interception: unauthorized request")
             return web.json_response({"error": "unauthorized"}, status=401)
         body = await request.json()
-        # `raw_messages` is what goes upstream — the default (proxy) client forwards it 1:1, so
-        # provider fields the typed wire form doesn't model (e.g. `reasoning`) are never lost;
-        # the renderer ignores it and tokenizes `prompt` instead. `prompt`/`tools` are the
-        # dialect's typed parse, used to build the trace (and to tokenize, for the renderer).
-        # `model`/sampling stay the eval's (the client overrides them); a user simulator
-        # extends both views each turn.
+        # `raw_messages` is what goes upstream — the proxy client forwards it 1:1, so provider
+        # fields the typed wire form doesn't model (e.g. `reasoning`) are never lost. `prompt` is
+        # the dialect's typed parse, used to build the trace (the renderer re-derives its own from
+        # the body it's handed). `model`/sampling stay the eval's (the client overrides them); a
+        # user simulator extends both views each turn.
         raw_messages: list[dict] = list(body.get("messages", []))
         prompt: Messages
-        prompt, tools = dialect.parse_request(body)
+        prompt, _ = dialect.parse_request(body)
         # A user simulator turns one program request into a multi-turn exchange: after each
         # model turn the simulator's reply is injected as a user turn and the model is
         # re-prompted, so a whole game plays out here and only the final assistant message
@@ -204,10 +203,8 @@ class InterceptionServer:
                 response = await session.ctx.client.get_response(
                     {**body, "messages": raw_messages},
                     dialect,
-                    prompt,
                     session.ctx.model,
                     session.ctx.sampling,
-                    tools,
                 )
             except OverlongPromptError:
                 # An overlong prompt is a budget limit, not a crash: end the rollout cleanly

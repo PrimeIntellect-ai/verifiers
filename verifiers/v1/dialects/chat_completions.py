@@ -1,4 +1,4 @@
-"""The OpenAI chat-completions dialect (the only dialect today).
+"""The OpenAI chat-completions dialect.
 
 Translates the OpenAI chat-completions wire format into vf types: requests (`parse_request`)
 and responses (`parse_response`). Reasoning extraction mirrors the v0 chat client's
@@ -22,7 +22,6 @@ from verifiers.v1.types import (
     Tool,
     ToolCall,
     ToolMessage,
-    TurnTokens,
     Usage,
     UserMessage,
     content_to_parts,
@@ -96,24 +95,9 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
     ]
 
 
-def _tokens_from_wire(completion: ChatCompletion, choice) -> TurnTokens | None:
-    """Parse vLLM's token ids + sampling logprobs into `TurnTokens` (best-effort): vLLM
-    surfaces the completion ids on the choice (`return_token_ids`), the prompt ids on the
-    completion, and sampled logprobs as one `logprobs.content` entry per generated token."""
-    completion_ids = getattr(choice, "token_ids", None)
-    if not completion_ids:
-        return None
-    content = choice.logprobs.content if choice.logprobs else None
-    return TurnTokens(
-        prompt_ids=list(getattr(completion, "prompt_token_ids", None) or []),
-        completion_ids=list(completion_ids),
-        completion_logprobs=[lp.logprob for lp in content] if content else [],
-    )
-
-
 def response_from_wire(completion: ChatCompletion) -> Response:
     """An OpenAI chat.completion -> a vf `Response` (the one place raw provider objects cross
-    into our typed `Response`)."""
+    into our typed `Response`). No token ids: training tokens come from the renderer client."""
     choice = completion.choices[0]
     message = choice.message
     tool_calls = [
@@ -142,12 +126,11 @@ def response_from_wire(completion: ChatCompletion) -> Response:
         ),
         finish_reason=finish,
         usage=usage,
-        tokens=_tokens_from_wire(completion, choice),
     )
 
 
 class ChatCompletionsDialect(Dialect[dict, ChatCompletion]):
-    """The OpenAI chat-completions wire format (the only dialect today)."""
+    """The OpenAI chat-completions wire format."""
 
     routes = ("/v1/chat/completions",)
     response_type = ChatCompletion
