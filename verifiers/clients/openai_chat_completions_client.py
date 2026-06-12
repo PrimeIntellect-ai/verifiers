@@ -606,13 +606,22 @@ class OpenAIChatCompletionsClient(
                 return None
 
             choice_extra = choice.model_extra or {}
+            routed_experts = choice_extra.get("routed_experts")
+            if routed_experts is None:
+                top_extra = response.model_extra or {}
+                nvext = top_extra.get("nvext") if isinstance(top_extra, dict) else None
+                if isinstance(nvext, dict):
+                    routed_experts = nvext.get("routed_experts")
+                    engine_data = nvext.get("engine_data")
+                    if routed_experts is None and isinstance(engine_data, dict):
+                        routed_experts = engine_data.get("routed_experts")
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
                 completion_ids=completion_ids,
                 completion_mask=completion_mask,
                 completion_logprobs=completion_logprobs,
-                routed_experts=choice_extra.get("routed_experts"),
+                routed_experts=routed_experts,
             )
 
         response_id = getattr(response, "id", "")

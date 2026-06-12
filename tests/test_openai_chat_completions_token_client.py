@@ -438,3 +438,59 @@ async def test_graft_engine_data_synthesizes_logprobs_when_content_less():
     assert tokens.completion_ids == [10, 11]
     assert tokens.prompt_ids == [1, 2, 3]
     assert tokens.completion_logprobs == [-0.1, -0.2]
+
+
+@pytest.mark.asyncio
+async def test_parse_tokens_reads_dynamo_engine_routed_experts():
+    from openai.types.chat import ChatCompletion
+
+    client = OpenAIChatCompletionsClient(_NoopClient())
+    native = ChatCompletion.model_validate(
+        {
+            "id": "x",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                    "logprobs": {
+                        "content": [
+                            {
+                                "token": "ok",
+                                "logprob": -0.1,
+                                "bytes": [111, 107],
+                                "top_logprobs": [],
+                            }
+                        ]
+                    },
+                }
+            ],
+            "nvext": {
+                "engine_data": {
+                    "completion_token_ids": [10],
+                    "prompt_token_ids": [1, 2, 3],
+                    "completion_logprobs": [-0.1],
+                    "routed_experts": {
+                        "data": "QUJD",
+                        "shape": [3, 1, 1],
+                        "start": 0,
+                        "dtype": "uint8",
+                    },
+                }
+            },
+        }
+    )
+
+    vf_response = await client.from_native_response(native)
+    tokens = vf_response.message.tokens
+
+    assert tokens is not None
+    assert tokens.routed_experts == {
+        "data": "QUJD",
+        "shape": [3, 1, 1],
+        "start": 0,
+        "dtype": "uint8",
+    }
