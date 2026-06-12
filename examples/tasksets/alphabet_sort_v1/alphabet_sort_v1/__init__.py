@@ -6,28 +6,28 @@ on each follow-up turn re-sorts the cumulative list — tagging the newly added 
 `<combined_alphabetical_sorted>` tags. The reward is the per-turn sequence similarity to the
 ground truth, power-scaled.
 
-The follow-up turns are colocated with the agent as a `vf.User` (see `user.py`): the
-interception server drives the simulator after every assistant turn and injects the next
-follow-up as a user message, so the whole episode is one rollout the harness only ever sees as
-a single exchange. The episodes are pre-generated in `load_tasks`; the simulator replays them.
+The follow-up turns are supplied by a `vf.User` simulator (see `user.py`): the interception
+server drives the simulator after every assistant turn and injects the next follow-up as a
+user message, so the whole episode is one rollout the harness only ever sees as a single
+exchange. The simulator runs on the host (not colocated in the agent's runtime), so the
+host-driven loop reaches it on every runtime. The episodes are pre-generated in `load_tasks`;
+the simulator replays them.
 """
 
 import difflib
 import json
 import random
 import re
-from pathlib import Path
+import sys
 from typing import Literal
 
 from datasets import load_dataset
 
 import verifiers.v1 as vf
+from verifiers.v1.taskset import UserConfig
 
 DATASET = "kalomaze/alphabetic-arxiv-authors-it1"
 SEED = 1337420
-# The user simulator is shipped as a self-contained uv script so it runs in any runtime
-# (host, or a docker/prime/modal sandbox), not just the host's subprocess.
-USER_SCRIPT = (Path(__file__).parent / "user.py").read_bytes()
 
 
 class AlphabetSortConfig(vf.TasksetConfig):
@@ -45,6 +45,11 @@ class AlphabetSortConfig(vf.TasksetConfig):
     """Power-scale each turn then average (True), or average raw similarities then power once (False)."""
     split: Literal["train"] = "train"
     """Split of the source author-names dataset to build the episodes from."""
+    user: UserConfig = UserConfig(colocated=False)
+    """Run the user simulator on the host (its own subprocess runtime), not colocated in the
+    agent's runtime. The framework drives the simulator from the host, and a remote agent
+    runtime (prime/modal) can't publish a colocated server's port back to the host — so
+    running it host-side keeps it reachable on every runtime."""
 
 
 class AlphabetSortTask(vf.Task):
@@ -147,7 +152,7 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
         }
         return vf.User(
             name="user",
-            script=USER_SCRIPT,
+            command=[sys.executable, "-m", "alphabet_sort_v1.user"],
             env={"ALPHABET_SORT_INFO": json.dumps(info)},
         )
 
