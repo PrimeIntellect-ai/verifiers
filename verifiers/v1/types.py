@@ -173,7 +173,11 @@ class Response(StrictBaseModel):
     finish_reason: FinishReason
     usage: Usage | None = None
     tokens: TurnTokens | None = None
-    """Token ids + logprobs for training (renderer client, or chat client via vLLM)."""
+    """Token ids + logprobs for training (set by the renderer client)."""
+    raw: dict | None = Field(default=None, exclude=True, repr=False)
+    """The wire response the interception server hands back to the program 1:1: the provider's
+    verbatim bytes (proxy, so no field is lost) or the client's serialized completion (renderer,
+    which generates and has none to relay). Transient: excluded from the trace dump."""
 
 
 # --- sampling -----------------------------------------------------------------

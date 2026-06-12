@@ -15,15 +15,12 @@ from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.openai import FINISH_REASONS, model_error
-from verifiers.v1.clients.openai import message_to_wire as chat_message_to_wire
-from verifiers.v1.clients.openai import tool_to_wire
-from verifiers.v1.errors import OverlongPromptError
+from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
+from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
-    Message,
-    Messages,
     Response,
     SamplingConfig,
     Tool,
@@ -33,13 +30,56 @@ from verifiers.v1.types import (
 )
 
 
-def message_to_wire(message: Message) -> dict:
-    """The chat-completions wire form, plus `reasoning_content` (the chat template
-    renders it back in), which the renderer needs but the chat client drops."""
-    wire = chat_message_to_wire(message)
-    if message.role == "assistant" and message.reasoning_content is not None:
-        wire["reasoning_content"] = message.reasoning_content
-    return wire
+def tool_to_wire(tool: Tool) -> dict:
+    """A vf tool -> the OpenAI chat wire dict (the renderer's generate request)."""
+    function: dict = {
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.parameters,
+    }
+    if tool.strict is not None:
+        function["strict"] = tool.strict
+    return {"type": "function", "function": function}
+
+
+def serialize_completion(response: Response, model: str) -> dict:
+    """A vf `Response` -> an OpenAI chat.completion dict the program's SDK expects. The renderer
+    sets this on `Response.raw` (it generates, so has no provider response to relay)."""
+    message: dict = {"role": "assistant", "content": response.message.content}
+    if response.message.reasoning_content is not None:
+        message["reasoning_content"] = response.message.reasoning_content
+    if response.message.tool_calls:
+        message["tool_calls"] = [
+            {
+                "id": c.id,
+                "type": "function",
+                "function": {"name": c.name, "arguments": c.arguments},
+            }
+            for c in response.message.tool_calls
+        ]
+    usage = (
+        {
+            "prompt_tokens": response.usage.prompt_tokens,
+            "completion_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+        if response.usage
+        else None
+    )
+    return {
+        "id": response.id or "vf-intercept",
+        "object": "chat.completion",
+        "created": response.created,
+        "model": response.model or model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": response.finish_reason or "stop",
+            }
+        ],
+        "usage": usage,
+    }
 
 
 def response_from_generate(result: dict, model: str) -> Response:
@@ -92,7 +132,7 @@ def response_from_generate(result: dict, model: str) -> Response:
     )
 
 
-class RendererClient(Client):
+class TrainClient(Client):
     """Renders prompts to token ids and calls a vLLM `/inference/v1/generate` engine."""
 
     def __init__(
@@ -119,11 +159,25 @@ class RendererClient(Client):
 
     async def get_response(
         self,
-        prompt: Messages,
+        dialect: Dialect,
+        body: dict,
         model: str,
         sampling_args: SamplingConfig,
-        tools: list[Tool] | None = None,
     ) -> Response:
+        # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
+        # back), so it can't forward the raw request — it parses `body` via the dialect and renders
+        # it with a chat template. It leaves `Response.raw` unset; the interception server serializes
+        # its `Response` for the program instead of relaying provider bytes.
+        if not isinstance(dialect, ChatDialect):
+            # The renderer renders a chat template, so it's only validated for chat-completions
+            # input; other dialects' semantics (Responses reasoning items, Anthropic thinking) may
+            # not round-trip faithfully through chat-template tokenization. Refuse them explicitly.
+            raise NotImplementedError(
+                f"The renderer client only supports the chat-completions dialect, got "
+                f"{type(dialect).__name__}. Use the proxy client for this dialect, or add "
+                f"renderer support for it."
+            )
+        prompt, tools = dialect.parse_request(body)
         renderer = self._renderer_pool(model)
         from renderers.client import generate
 
@@ -140,7 +194,11 @@ class RendererClient(Client):
             raise OverlongPromptError(str(e)) from e
         except OpenAIError as e:
             raise model_error(e) from e
-        return response_from_generate(result, model)
+        response = response_from_generate(result, model)
+        # No provider response to relay (we generated), so serialize one for the program; the
+        # interception server hands `Response.raw` back regardless of client.
+        response.raw = serialize_completion(response, model)
+        return response
 
     async def close(self) -> None:
         await self.openai.close()

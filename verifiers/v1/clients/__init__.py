@@ -4,12 +4,12 @@ from verifiers.v1.clients.client import Client, RetryingClient, RolloutContext
 from verifiers.v1.clients.config import (
     BaseClientConfig,
     ClientConfig,
-    OpenAIClientConfig,
-    RendererClientConfig,
+    EvalClientConfig,
+    TrainClientConfig,
     resolve_client,
 )
-from verifiers.v1.clients.openai import OpenAIChatCompletionsClient
-from verifiers.v1.clients.renderer import RendererClient
+from verifiers.v1.clients.eval import EvalClient
+from verifiers.v1.clients.train import TrainClient
 
 __all__ = [
     "Client",
@@ -17,9 +17,9 @@ __all__ = [
     "RolloutContext",
     "BaseClientConfig",
     "ClientConfig",
-    "OpenAIClientConfig",
-    "RendererClientConfig",
+    "EvalClientConfig",
+    "TrainClientConfig",
     "resolve_client",
-    "OpenAIChatCompletionsClient",
-    "RendererClient",
+    "EvalClient",
+    "TrainClient",
 ]
