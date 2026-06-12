@@ -118,17 +118,15 @@ uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sand
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox (requires auth)
 ```
 
-Remote sandboxes are named after the rollout id (greppable in `prime sandbox list` /
-`modal`), and the framework manages each runtime's full lifecycle — provisioning through
+The framework manages each runtime's full lifecycle — provisioning through
 guaranteed cleanup of its resources, even on exit/interrupt.
 
 ### Tools
 
-A taskset exposes a task's tools via `tools` (MCP servers launched in the runtime);
-**placement** is config on `taskset.tools` and reachability (localhost / tunnel / native
-sandbox expose) is resolved automatically. A tool server is a single-file uv script (only runtime dep: `uv`), so a
-colocated or own-runtime tool runs in any runtime. The tool examples each show one
-placement:
+A taskset may expose task-specific tools beyond the tools shipping natively with
+the harness as MCP servers. Its placement (separate runtime or colocated with
+harness) is configurable on `taskset.tools` and reachability is handled resolved
+automatically. The tool examples each show one placement:
 
 ```bash
 uv run eval glossary-v1 -n 1     # colocated — in the harness's own runtime, localhost (default)
@@ -137,14 +135,18 @@ uv run eval wiki-search-v1 -n 1  # shared — one instance built once for the wh
 uv run eval deepwiki-v1 -n 1     # an existing remote server, by URL
 ```
 
-### Scoring
+### User simulator
 
-Rewards / metrics are decorated methods on the taskset:
+A stateful, multi-turn task can drive the *user* side of the conversation itself: a taskset's
+`user(task)` returns a `vf.User` — structurally a tool server, but the framework drives it,
+calling it after each assistant turn for the next user message(s) plus a done flag, then
+re-prompting. The harness never knows; it just sees another user turn. Placement is config on
+`taskset.user` — colocated in the harness's runtime by default, or its own via
+`--taskset.user.runtime`:
 
 ```bash
-uv run eval gsm8k-v1 -n 1            # runtime scoring: a @vf.reward runs a math-verify uv script
-                                     # IN the rollout's runtime (its deps never touch the eval process)
-uv run eval code-golf-v1 -n 1 -r 2  # group rewards: a @vf.group_reward scores N rollouts together
+uv run eval alphabet-sort-v1 -n 1   # stateful multi-turn — the user sim injects each next turn
+uv run eval wordle-v1 -n 1          # a TextArena game, driven by the same user-sim machinery
 ```
 
 ### Branching trajectories
