@@ -12,7 +12,6 @@ from verifiers.v1.interception.server import (
     RolloutSession,
     parse_message,
     parse_tools,
-    serialize_completion,
 )
 
 __all__ = [
@@ -23,5 +22,4 @@ __all__ = [
     "RolloutSession",
     "parse_message",
     "parse_tools",
-    "serialize_completion",
 ]

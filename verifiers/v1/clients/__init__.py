@@ -8,7 +8,7 @@ from verifiers.v1.clients.config import (
     RendererClientConfig,
     resolve_client,
 )
-from verifiers.v1.clients.openai import OpenAIChatCompletionsClient
+from verifiers.v1.clients.openai import ProxyClient
 from verifiers.v1.clients.renderer import RendererClient
 
 __all__ = [
@@ -20,6 +20,6 @@ __all__ = [
     "OpenAIClientConfig",
     "RendererClientConfig",
     "resolve_client",
-    "OpenAIChatCompletionsClient",
+    "ProxyClient",
     "RendererClient",
 ]

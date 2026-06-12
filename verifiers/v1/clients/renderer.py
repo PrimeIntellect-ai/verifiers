@@ -16,7 +16,7 @@ from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.openai import FINISH_REASONS, message_to_wire, model_error
-from verifiers.v1.clients.openai import tool_to_wire
+from verifiers.v1.clients.openai import serialize_completion, tool_to_wire
 from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.types import (
     AssistantMessage,
@@ -108,11 +108,14 @@ class RendererClient(Client):
 
     async def get_response(
         self,
+        body: dict,
         prompt: Messages,
         model: str,
         sampling_args: SamplingConfig,
         tools: list[Tool] | None = None,
-    ) -> Response:
+    ) -> tuple[dict, Response]:
+        # `body` is ignored: the renderer tokenizes the typed `prompt` for training, so it
+        # can't forward the raw request (it needs per-token ids + logprobs back).
         renderer = self._renderer_pool(model)
         from renderers.client import generate
 
@@ -129,7 +132,8 @@ class RendererClient(Client):
             raise OverlongPromptError(str(e)) from e
         except OpenAIError as e:
             raise model_error(e) from e
-        return response_from_generate(result, model)
+        response = response_from_generate(result, model)
+        return serialize_completion(response, model), response
 
     async def close(self) -> None:
         await self.openai.close()

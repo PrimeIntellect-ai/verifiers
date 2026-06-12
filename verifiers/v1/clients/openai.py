@@ -154,45 +154,79 @@ def response_from_wire(completion) -> Response:
     )
 
 
-class OpenAIChatCompletionsClient(Client):
-    supports_proxy = True
+def serialize_completion(response: Response, model: str) -> dict:
+    """A `Response` -> an OpenAI chat.completion dict the program's SDK expects. Used by the
+    renderer client, whose typed `get_response` builds the program-facing completion (the proxy
+    client returns the provider's raw dict instead)."""
+    message: dict = {"role": "assistant", "content": response.message.content}
+    if response.message.reasoning_content is not None:
+        message["reasoning_content"] = response.message.reasoning_content
+    if response.message.tool_calls:
+        message["tool_calls"] = [
+            {
+                "id": c.id,
+                "type": "function",
+                "function": {"name": c.name, "arguments": c.arguments},
+            }
+            for c in response.message.tool_calls
+        ]
+    usage = (
+        {
+            "prompt_tokens": response.usage.prompt_tokens,
+            "completion_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+        if response.usage
+        else None
+    )
+    return {
+        "id": response.id or "vf-intercept",
+        "object": "chat.completion",
+        "created": response.created,
+        "model": response.model or model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": response.finish_reason or "stop",
+            }
+        ],
+        "usage": usage,
+    }
+
+
+class ProxyClient(Client):
+    """The default client: forwards the program's chat-completions request 1:1 to an
+    OpenAI-compatible endpoint and hands back the provider's raw response untouched, so no
+    field (e.g. `reasoning` / `reasoning_details`) is lost to a typed round-trip. `prompt` and
+    `tools` are already in `body` and unused here — they're on the signature only so the
+    renderer (which must tokenize) can translate the typed prompt instead of forwarding."""
 
     def __init__(self, openai: AsyncOpenAI) -> None:
         self.openai = openai
 
-    async def proxy(self, body: dict) -> tuple[dict, Response]:
-        """Forward `body` 1:1 to the provider (reusing the SDK's base URL / auth / retries)
-        and return its raw response dict untouched — so provider-specific fields the typed
-        wire form doesn't model (e.g. `reasoning` / `reasoning_details`) reach the program
-        intact — plus a `Response` parsed for the trace."""
+    async def get_response(
+        self,
+        body: dict,
+        prompt: Messages,
+        model: str,
+        sampling_args: SamplingConfig,
+        tools: list[Tool] | None = None,
+    ) -> tuple[dict, Response]:
+        # Forward verbatim; the eval owns model + sampling (override whatever the program set).
+        upstream = {
+            **body,
+            "model": model,
+            **sampling_args.model_dump(exclude_none=True),
+        }
         try:
             resp = await self.openai.post(
-                "/chat/completions", cast_to=httpx.Response, body=body
+                "/chat/completions", cast_to=httpx.Response, body=upstream
             )
         except OpenAIError as e:
             raise model_error(e) from e
         raw = resp.json()
         return raw, response_from_wire(ChatCompletion.model_validate(raw))
-
-    async def get_response(
-        self,
-        prompt: Messages,
-        model: str,
-        sampling_args: SamplingConfig,
-        tools: list[Tool] | None = None,
-    ) -> Response:
-        body: dict = {
-            "model": model,
-            "messages": [message_to_wire(m) for m in prompt],
-            **sampling_args.model_dump(exclude_none=True),
-        }
-        if tools:
-            body["tools"] = [tool_to_wire(t) for t in tools]
-        try:
-            completion = await self.openai.chat.completions.create(**body)
-        except OpenAIError as e:
-            raise model_error(e) from e
-        return response_from_wire(completion)
 
     async def close(self) -> None:
         await self.openai.close()

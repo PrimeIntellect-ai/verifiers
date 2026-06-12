@@ -17,7 +17,7 @@ from pydantic_config import BaseConfig
 from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.openai import OpenAIChatCompletionsClient
+from verifiers.v1.clients.openai import ProxyClient
 from verifiers.v1.clients.renderer import RendererClient
 
 PRIME_INFERENCE_HOST = "pinference.ai"
@@ -87,4 +87,4 @@ def resolve_client(config: BaseClientConfig) -> Client:
             config=config.renderer,
             renderer_model_name=config.renderer_model_name,
         )
-    return OpenAIChatCompletionsClient(make_openai_client(config))
+    return ProxyClient(make_openai_client(config))
