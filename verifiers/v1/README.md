@@ -12,6 +12,9 @@ end to end. `import verifiers.v1 as vf`.
   (`default` / `rlm` / `compact` / your own), selected by id.
 - **Swappable runtime** — the harness, its tools, and the user simulator all run behind one
   `Runtime` contract, in `subprocess` / `docker` / `prime` / `modal`.
+- **First-class branching rollouts** — a rollout isn't assumed linear: context compaction and
+  subagents are native. Each branch (a root→leaf path through the trace graph) is its own
+  training sample, so a compacting or multi-agent rollout trains end to end.
 - **Fully typed** — pydantic end-to-end (`Task` / `Trace` / configs); no loose
   `dict` / `object` / `cast`.
 - **Minimal & pythonic** — the high-level abstractions without the implementation bulk;
