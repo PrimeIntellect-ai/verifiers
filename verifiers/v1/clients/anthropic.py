@@ -41,6 +41,15 @@ from verifiers.v1.types import (
 )
 
 
+FINISH_REASONS: dict[str, FinishReason] = {
+    "end_turn": "stop",
+    "stop_sequence": "stop",
+    "max_tokens": "length",
+    "tool_use": "tool_calls",
+    "refusal": "stop",
+}
+
+
 def content_to_wire(content) -> str | list[ContentBlockParam]:
     if isinstance(content, str):
         return content
@@ -49,25 +58,42 @@ def content_to_wire(content) -> str | list[ContentBlockParam]:
         if isinstance(part, TextContentPart):
             parts.append(TextBlockParam(type="text", text=part.text))
             continue
-        if part.image_url.url.startswith("data:"):
-            metadata, data = part.image_url.url.removeprefix("data:").split(",", 1)
+        url = part.image_url.url
+        if url.startswith("data:"):
+            metadata, data = url.removeprefix("data:").split(",", 1)
             media_type, *parameters = metadata.split(";")
             if not any(parameter.lower() == "base64" for parameter in parameters):
                 raise ValueError("Anthropic image data URIs must be base64 encoded")
-            source = Base64ImageSourceParam(
-                type="base64",
-                media_type=cast(Any, media_type.lower()),
-                data=data,
+            source: Base64ImageSourceParam | URLImageSourceParam = (
+                Base64ImageSourceParam(
+                    type="base64", media_type=cast(Any, media_type.lower()), data=data
+                )
             )
         else:
-            source = URLImageSourceParam(type="url", url=part.image_url.url)
-        parts.append(
-            ImageBlockParam(
-                type="image",
-                source=source,
-            )
-        )
+            source = URLImageSourceParam(type="url", url=url)
+        parts.append(ImageBlockParam(type="image", source=source))
     return parts
+
+
+def system_to_wire(messages: Messages) -> str:
+    """Join system messages into Anthropic's top-level `system` string."""
+    texts: list[str] = []
+    for message in messages:
+        if not isinstance(message, SystemMessage):
+            continue
+        if isinstance(message.content, str):
+            texts.append(message.content)
+        elif all(isinstance(part, TextContentPart) for part in message.content):
+            texts.append(
+                "".join(
+                    part.text
+                    for part in message.content
+                    if isinstance(part, TextContentPart)
+                )
+            )
+        else:
+            raise ValueError("Anthropic system messages do not support images")
+    return "\n\n".join(texts)
 
 
 def message_to_wire(message: Message) -> MessageParam | None:
@@ -103,22 +129,20 @@ def message_to_wire(message: Message) -> MessageParam | None:
 
 
 def messages_to_wire(messages: Messages) -> list[MessageParam]:
+    """Convert the prompt, folding consecutive tool results into one user message
+    (Anthropic requires tool results as blocks of the following user turn)."""
     prompt: list[MessageParam] = []
     for message in messages:
         wire = message_to_wire(message)
-        if wire is None:
+        if wire is None:  # system messages go in the top-level `system` field
             continue
-        previous_content = prompt[-1]["content"] if prompt else None
+        last_content = prompt[-1]["content"] if prompt else None
         if (
             isinstance(message, ToolMessage)
+            and isinstance(last_content, list)
             and prompt[-1]["role"] == "user"
-            and isinstance(previous_content, list)
         ):
-            content = wire["content"]
-            assert not isinstance(content, str)
-            cast(list[ContentBlockParam], previous_content).extend(
-                cast(list[ContentBlockParam], content)
-            )
+            last_content.extend(cast(list[ContentBlockParam], wire["content"]))
         else:
             prompt.append(wire)
     return prompt
@@ -147,14 +171,6 @@ def response_from_wire(response: AnthropicMessage) -> Response:
             )
     if not content and not tool_calls:
         raise ModelError("Anthropic Messages returned no content or tool calls")
-
-    finish_reasons: dict[str, FinishReason] = {
-        "end_turn": "stop",
-        "stop_sequence": "stop",
-        "max_tokens": "length",
-        "tool_use": "tool_calls",
-        "refusal": "stop",
-    }
     return Response(
         id=response.id,
         created=int(time.time()),
@@ -165,7 +181,7 @@ def response_from_wire(response: AnthropicMessage) -> Response:
             tool_calls=tool_calls or None,
             provider_state=thinking or None,
         ),
-        finish_reason=finish_reasons.get(response.stop_reason or ""),
+        finish_reason=FINISH_REASONS.get(response.stop_reason or ""),
         usage=Usage(
             prompt_tokens=response.usage.input_tokens,
             completion_tokens=response.usage.output_tokens,
@@ -185,35 +201,18 @@ class AnthropicMessagesClient(Client):
         tools: list[Tool] | None = None,
     ) -> Response:
         sampling: dict[str, Any] = sampling_args.model_dump(exclude_none=True)
-        sampling.pop("n", None)
+        streaming = bool(sampling.pop("stream", False))
+        sampling.pop("n", None)  # Anthropic has no n parameter
+        if "max_tokens" not in sampling:
+            raise ValueError("Anthropic Messages requires max_tokens")
         if stop := sampling.pop("stop", None):
             sampling["stop_sequences"] = [stop] if isinstance(stop, str) else stop
-        max_tokens = sampling.pop("max_tokens", None)
-        if max_tokens is None:
-            raise ValueError("Anthropic Messages requires max_tokens")
-        if any(
-            isinstance(message, SystemMessage)
-            and not isinstance(message.content, str)
-            and any(not isinstance(part, TextContentPart) for part in message.content)
-            for message in prompt
-        ):
-            raise ValueError("Anthropic system messages do not support images")
         body: dict[str, Any] = {
             "model": model,
             "messages": messages_to_wire(prompt),
-            "max_tokens": max_tokens,
             **sampling,
         }
-        system = "\n\n".join(
-            (
-                message.content
-                if isinstance(message.content, str)
-                else "".join(part.text for part in message.content)
-            )
-            for message in prompt
-            if isinstance(message, SystemMessage)
-        )
-        if system:
+        if system := system_to_wire(prompt):
             body["system"] = system
         if tools:
             body["tools"] = [
@@ -224,7 +223,6 @@ class AnthropicMessagesClient(Client):
                 )
                 for tool in tools
             ]
-        streaming = bool(body.pop("stream", False))
         try:
             if streaming:
                 async with self.anthropic.messages.stream(**body) as stream:

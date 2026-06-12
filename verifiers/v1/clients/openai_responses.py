@@ -24,6 +24,7 @@ from verifiers.v1.clients.openai import model_error
 from verifiers.v1.errors import ModelError
 from verifiers.v1.types import (
     AssistantMessage,
+    FinishReason,
     Message,
     Messages,
     Response,
@@ -35,6 +36,9 @@ from verifiers.v1.types import (
     Usage,
     UserMessage,
 )
+
+FINISH_REASONS: dict[str, FinishReason] = {"completed": "stop", "incomplete": "length"}
+FINAL_EVENTS = ("response.completed", "response.incomplete", "response.failed")
 
 
 def content_to_wire(content) -> str | list[ResponseInputContentParam]:
@@ -131,13 +135,7 @@ def response_from_wire(response: OpenAIResponse) -> Response:
             ],
         ),
         finish_reason=(
-            "tool_calls"
-            if tool_calls
-            else "length"
-            if response.status == "incomplete"
-            else "stop"
-            if response.status == "completed"
-            else None
+            "tool_calls" if tool_calls else FINISH_REASONS.get(response.status or "")
         ),
         usage=(
             Usage(
@@ -162,6 +160,7 @@ class OpenAIResponsesClient(Client):
         tools: list[Tool] | None = None,
     ) -> Response:
         sampling: dict[str, Any] = sampling_args.model_dump(exclude_none=True)
+        streaming = bool(sampling.pop("stream", False))
         if max_tokens := sampling.pop("max_tokens", None):
             sampling["max_output_tokens"] = max_tokens
         if sampling.pop("stop", None):
@@ -184,19 +183,16 @@ class OpenAIResponsesClient(Client):
                 )
                 for tool in tools
             ]
-        streaming = bool(body.pop("stream", False))
         try:
             if streaming:
-                events = await self.openai.responses.create(**body, stream=True)
+                # The SDK's final-response helper rejects valid incomplete
+                # responses, so pick the terminal event out of the stream ourselves.
                 response = None
-                async with events:
-                    # The SDK final-response helper rejects valid incomplete responses.
+                async with await self.openai.responses.create(
+                    **body, stream=True
+                ) as events:
                     async for event in events:
-                        if event.type in {
-                            "response.completed",
-                            "response.incomplete",
-                            "response.failed",
-                        }:
+                        if event.type in FINAL_EVENTS:
                             response = event.response
                             break
                 if response is None:

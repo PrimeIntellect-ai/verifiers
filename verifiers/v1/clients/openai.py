@@ -65,20 +65,22 @@ def model_error(e: OpenAIError) -> ModelError:
 def content_to_wire(content) -> str | list[ChatCompletionContentPartParam]:
     if isinstance(content, str):
         return content
-    if any(
-        not isinstance(part, TextContentPart) and part.image_url.detail == "original"
-        for part in content
-    ):
-        raise ValueError("OpenAI Chat does not support image detail='original'")
-    return [
-        ChatCompletionContentPartTextParam(type="text", text=part.text)
-        if isinstance(part, TextContentPart)
-        else ChatCompletionContentPartImageParam(
-            type="image_url",
-            image_url=cast(Any, part.image_url.model_dump(exclude_none=True)),
-        )
-        for part in content
-    ]
+    parts: list[ChatCompletionContentPartParam] = []
+    for part in content:
+        if isinstance(part, TextContentPart):
+            parts.append(
+                ChatCompletionContentPartTextParam(type="text", text=part.text)
+            )
+        elif part.image_url.detail == "original":
+            raise ValueError("OpenAI Chat does not support image detail='original'")
+        else:
+            parts.append(
+                ChatCompletionContentPartImageParam(
+                    type="image_url",
+                    image_url=cast(Any, part.image_url.model_dump(exclude_none=True)),
+                )
+            )
+    return parts
 
 
 def message_to_wire(message: Message) -> ChatCompletionMessageParam:
@@ -105,19 +107,16 @@ def message_to_wire(message: Message) -> ChatCompletionMessageParam:
             content=message.content,
         )
     if isinstance(message, SystemMessage):
-        if isinstance(message.content, str):
-            content = message.content
-        elif all(isinstance(part, TextContentPart) for part in message.content):
+        content = message.content
+        if not isinstance(content, str):
+            if any(not isinstance(part, TextContentPart) for part in content):
+                raise ValueError("OpenAI Chat system messages do not support images")
             content = [
                 ChatCompletionContentPartTextParam(type="text", text=part.text)
-                for part in message.content
+                for part in content
+                if isinstance(part, TextContentPart)
             ]
-        else:
-            raise ValueError("OpenAI Chat system messages do not support images")
-        return ChatCompletionSystemMessageParam(
-            role="system",
-            content=content,
-        )
+        return ChatCompletionSystemMessageParam(role="system", content=content)
     assert isinstance(message, UserMessage)
     return ChatCompletionUserMessageParam(
         role="user",
@@ -212,19 +211,23 @@ class OpenAIChatCompletionsClient(Client):
         sampling_args: SamplingConfig,
         tools: list[Tool] | None = None,
     ) -> Response:
+        sampling: dict[str, Any] = sampling_args.model_dump(exclude_none=True)
+        streaming = bool(sampling.pop("stream", False))
+        if streaming:
+            # Usage only arrives on the final chunk if asked for.
+            sampling["stream_options"] = {
+                "include_usage": True,
+                **(sampling.get("stream_options") or {}),
+            }
         body: dict[str, Any] = {
             "model": model,
             "messages": [message_to_wire(m) for m in prompt],
-            **sampling_args.model_dump(exclude_none=True),
+            **sampling,
         }
         if tools:
             body["tools"] = [tool_to_wire(t) for t in tools]
-        streaming = bool(body.pop("stream", False))
         try:
             if streaming:
-                stream_options = dict(body.get("stream_options") or {})
-                stream_options.setdefault("include_usage", True)
-                body["stream_options"] = stream_options
                 async with self.openai.chat.completions.stream(**body) as stream:
                     completion = await stream.get_final_completion()
             else:
