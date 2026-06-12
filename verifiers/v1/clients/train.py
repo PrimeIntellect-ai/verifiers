@@ -16,21 +16,70 @@ from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
-from verifiers.v1.dialects.chat import (
-    message_to_wire,
-    serialize_completion,
-    tool_to_wire,
-)
+from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     Response,
     SamplingConfig,
+    Tool,
     ToolCall,
     TurnTokens,
     Usage,
 )
+
+
+def tool_to_wire(tool: Tool) -> dict:
+    """A vf tool -> the OpenAI chat wire dict (the renderer's generate request)."""
+    function: dict = {
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.parameters,
+    }
+    if tool.strict is not None:
+        function["strict"] = tool.strict
+    return {"type": "function", "function": function}
+
+
+def serialize_completion(response: Response, model: str) -> dict:
+    """A vf `Response` -> an OpenAI chat.completion dict the program's SDK expects. The renderer
+    sets this on `Response.raw` (it generates, so has no provider response to relay)."""
+    message: dict = {"role": "assistant", "content": response.message.content}
+    if response.message.reasoning_content is not None:
+        message["reasoning_content"] = response.message.reasoning_content
+    if response.message.tool_calls:
+        message["tool_calls"] = [
+            {
+                "id": c.id,
+                "type": "function",
+                "function": {"name": c.name, "arguments": c.arguments},
+            }
+            for c in response.message.tool_calls
+        ]
+    usage = (
+        {
+            "prompt_tokens": response.usage.prompt_tokens,
+            "completion_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+        if response.usage
+        else None
+    )
+    return {
+        "id": response.id or "vf-intercept",
+        "object": "chat.completion",
+        "created": response.created,
+        "model": response.model or model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": response.finish_reason or "stop",
+            }
+        ],
+        "usage": usage,
+    }
 
 
 def response_from_generate(result: dict, model: str) -> Response:
