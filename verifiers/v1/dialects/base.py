@@ -9,7 +9,7 @@ each dialect is self-typed.
 Each dialect declares the `routes` its native client posts to; the interception server serves
 those routes (see `dialects.DIALECTS`), so the wire format is resolved from the endpoint a
 request arrives on — the harness declares nothing. Today the only dialect is
-`oai_chat_completions`; OpenAI Responses / Anthropic Messages become new modules here.
+`chat_completions`; OpenAI Responses / Anthropic Messages become new modules here.
 """
 
 from abc import ABC, abstractmethod
