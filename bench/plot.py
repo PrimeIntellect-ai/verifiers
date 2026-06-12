@@ -45,9 +45,11 @@ stages = [
     ("scoring", "scoring_durations", "#6fae6f"),
     ("total", "total_durations", "#8a6fae"),
 ]
+n = len(rollouts)
+# Lighter bar for smaller rollout counts, darkening with concurrency.
 shades = {
-    r: a for r, a in zip(rollouts, [0.55, 1.0])
-}  # lighter bar for the smaller group
+    r: (0.45 + 0.55 * i / (n - 1) if n > 1 else 1.0) for i, r in enumerate(rollouts)
+}
 
 fig, axes = plt.subplots(2, 2, figsize=(13, 9))
 x = list(range(len(runtimes)))
