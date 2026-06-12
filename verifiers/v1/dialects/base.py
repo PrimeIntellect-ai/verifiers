@@ -28,8 +28,7 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     (`RespT`). The single place a protocol lives: implement a `Dialect` + register it in
     `dialects.DIALECTS` and a harness speaking that format works end-to-end (the proxy and
     interception server are generic over this interface). Mostly one-way (wire -> vf, to build
-    the trace) — the only vf -> wire is `serialize_response`/`extend`, needed where there's no
-    raw provider response to relay (the renderer, and user-sim turn injection)."""
+    the trace); the one vf -> wire is `extend` (appending user-sim turns to a request)."""
 
     routes: ClassVar[tuple[str, ...]]
     """The endpoint path(s) a program's SDK posts to for this format. The interception server
@@ -61,11 +60,6 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         """Return `body` with the eval's `model` + `sampling` imposed in this protocol's shape —
         the only mutation the proxy makes to an otherwise byte-exact forward. Model overlays;
         sampling is authoritative (the program's sampling keys are dropped, the eval's applied)."""
-
-    @abstractmethod
-    def serialize_response(self, response: Response, model: str) -> dict:
-        """A vf `Response` -> a native wire response dict for the program — used only when there
-        is no raw provider response to relay 1:1 (the renderer generates one)."""
 
     @abstractmethod
     def extend(self, body: ReqT, completion: dict, user_messages: Messages) -> ReqT:

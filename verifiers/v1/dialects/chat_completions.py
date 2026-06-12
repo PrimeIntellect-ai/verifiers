@@ -155,6 +155,46 @@ def tool_to_wire(tool: Tool) -> dict:
     return {"type": "function", "function": function}
 
 
+def serialize_completion(response: Response, model: str) -> dict:
+    """A vf `Response` -> an OpenAI chat.completion dict the program's SDK expects. The renderer
+    sets this on `Response.raw` (it generates, so has no provider response to relay)."""
+    message: dict = {"role": "assistant", "content": response.message.content}
+    if response.message.reasoning_content is not None:
+        message["reasoning_content"] = response.message.reasoning_content
+    if response.message.tool_calls:
+        message["tool_calls"] = [
+            {
+                "id": c.id,
+                "type": "function",
+                "function": {"name": c.name, "arguments": c.arguments},
+            }
+            for c in response.message.tool_calls
+        ]
+    usage = (
+        {
+            "prompt_tokens": response.usage.prompt_tokens,
+            "completion_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+        if response.usage
+        else None
+    )
+    return {
+        "id": response.id or "vf-intercept",
+        "object": "chat.completion",
+        "created": response.created,
+        "model": response.model or model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": response.finish_reason or "stop",
+            }
+        ],
+        "usage": usage,
+    }
+
+
 def response_from_wire(completion: ChatCompletion) -> Response:
     """An OpenAI chat.completion -> a vf `Response` (the one place raw provider objects cross
     into our typed `Response`). No token ids: training tokens come from the renderer client."""
@@ -214,44 +254,6 @@ class ChatCompletionsDialect(Dialect[dict, ChatCompletion]):
             if k not in _SAMPLING_KEYS and k not in overrides
         }
         return {**steered, "model": model, **overrides}
-
-    def serialize_response(self, response: Response, model: str) -> dict:
-        """A vf `Response` -> an OpenAI chat.completion dict the program's SDK expects."""
-        message: dict = {"role": "assistant", "content": response.message.content}
-        if response.message.reasoning_content is not None:
-            message["reasoning_content"] = response.message.reasoning_content
-        if response.message.tool_calls:
-            message["tool_calls"] = [
-                {
-                    "id": c.id,
-                    "type": "function",
-                    "function": {"name": c.name, "arguments": c.arguments},
-                }
-                for c in response.message.tool_calls
-            ]
-        usage = (
-            {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens,
-            }
-            if response.usage
-            else None
-        )
-        return {
-            "id": response.id or "vf-intercept",
-            "object": "chat.completion",
-            "created": response.created,
-            "model": response.model or model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": message,
-                    "finish_reason": response.finish_reason or "stop",
-                }
-            ],
-            "usage": usage,
-        }
 
     def extend(self, body: dict, completion: dict, user_messages: Messages) -> dict:
         # Append the model's turn (the verbatim assistant message, so its reasoning survives for

@@ -214,13 +214,9 @@ class InterceptionServer:
             except Exception as e:  # surface to the program as an API error
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response({"error": str(e)}, status=502)
-            # The proxy carries the provider's verbatim bytes on `Response.raw` (returned to the
-            # program 1:1); the renderer has none (it generates), so serialize its `Response`.
-            completion = (
-                response.raw
-                if response.raw is not None
-                else dialect.serialize_response(response, session.ctx.model)
-            )
+            # `Response.raw` is the wire response handed to the program 1:1 — the provider's
+            # verbatim bytes (proxy) or the client's serialized completion (renderer).
+            completion = response.raw
             graph.add_turn(session.trace, prompt, response)  # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
             # Hand back to the program when the model wants a tool (the program runs it) or

@@ -16,7 +16,11 @@ from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatCompletionsDialect, Dialect
-from verifiers.v1.dialects.chat_completions import message_to_wire, tool_to_wire
+from verifiers.v1.dialects.chat_completions import (
+    message_to_wire,
+    serialize_completion,
+    tool_to_wire,
+)
 from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.types import (
     AssistantMessage,
@@ -141,7 +145,11 @@ class RendererClient(Client):
             raise OverlongPromptError(str(e)) from e
         except OpenAIError as e:
             raise model_error(e) from e
-        return response_from_generate(result, model)
+        response = response_from_generate(result, model)
+        # No provider response to relay (we generated), so serialize one for the program; the
+        # interception server hands `Response.raw` back regardless of client.
+        response.raw = serialize_completion(response, model)
+        return response
 
     async def close(self) -> None:
         await self.openai.close()
