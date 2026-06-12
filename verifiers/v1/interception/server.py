@@ -142,8 +142,14 @@ class InterceptionServer:
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
         selects the wire format (see `dialects.DIALECTS`)."""
 
-        async def handler(request: web.Request) -> web.Response:
+        async def handler(request: web.Request) -> web.StreamResponse:
             return await self.handle_request(request, dialect)
+
+        return handler
+
+    def _aux_handler_for(self, dialect: Dialect, route: str):
+        async def handler(request: web.Request) -> web.Response:
+            return await self.handle_aux(request, dialect, route)
 
         return handler
 
@@ -152,6 +158,8 @@ class InterceptionServer:
         for dialect in DIALECTS:
             for route in dialect.routes:
                 app.router.add_post(route, self._handler_for(dialect))
+            for aux in dialect.aux_routes:
+                app.router.add_post(aux, self._aux_handler_for(dialect, aux))
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -275,3 +283,20 @@ class InterceptionServer:
         # Record the streamed turn: assemble the accumulated SSE into a typed Response.
         graph.add_turn(session.trace, prompt, dialect.parse_stream(bytes(buffer)))
         return resp
+
+    async def handle_aux(
+        self, request: web.Request, dialect: Dialect, route: str
+    ) -> web.Response:
+        """A non-model-turn side request (an `aux_route`, e.g. Anthropic's `count_tokens`):
+        relayed verbatim to the provider, never recorded on the trace."""
+        session = self.sessions.get(dialect.secret(request.headers))
+        if session is None:
+            return web.json_response(dialect.error_body("unauthorized"), status=401)
+        try:
+            result = await session.ctx.client.relay_aux(
+                dialect, route, await request.json()
+            )
+        except Exception as e:
+            logger.warning("aux call failed: id=%s %s", session.trace.id, e)
+            return web.json_response(dialect.error_body(str(e)), status=502)
+        return web.json_response(result)

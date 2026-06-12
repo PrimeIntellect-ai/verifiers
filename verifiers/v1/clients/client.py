@@ -58,6 +58,11 @@ class Client(ABC):
         generates and cannot stream."""
         raise NotImplementedError(f"{type(self).__name__} does not support streaming")
 
+    async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
+        """Relay a non-model-turn side request (an `aux_route`, e.g. Anthropic's `count_tokens`)
+        verbatim to the provider and return its JSON. Only the relay (eval) client supports it."""
+        raise NotImplementedError(f"{type(self).__name__} does not relay aux routes")
+
     async def close(self) -> None:
         """Release any underlying resources. Default no-op."""
 

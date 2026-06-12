@@ -111,5 +111,20 @@ class EvalClient(Client):
             chunks=chunks(),
         )
 
+    async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
+        # A side request (e.g. count_tokens): forward verbatim to the provider, return its JSON.
+        try:
+            resp = await self.http.post(
+                self.base_url + route,
+                json=body,
+                headers=dialect.auth_headers(self.api_key),
+            )
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise model_error(e.response.text) from e
+        except httpx.HTTPError as e:
+            raise model_error(str(e)) from e
+        return resp.json()
+
     async def close(self) -> None:
         await self.http.aclose()
