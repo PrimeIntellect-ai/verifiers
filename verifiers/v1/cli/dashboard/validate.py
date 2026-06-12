@@ -54,7 +54,7 @@ def _overview(config: ValidateConfig) -> Table:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim")
     grid.add_column()
-    grid.add_row("taskset", f"{config.taskset.name}  ·  {config.runtime.type} runtime")
+    grid.add_row("Taskset", f"{config.taskset.name}  ·  {config.runtime.type} runtime")
     return grid
 
 

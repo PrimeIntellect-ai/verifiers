@@ -54,11 +54,11 @@ def _overview(config: EvalConfig) -> Table:
     grid.add_column(style="dim")
     grid.add_column()
     grid.add_row(
-        "env",
+        "Env",
         f"{config.taskset.name}  ·  {config.harness.name} harness  ·  {config.harness.runtime.type} runtime",
     )
-    grid.add_row("model", f"{config.model}  ({sampling})")
-    grid.add_row("output", str(output_path(config)))
+    grid.add_row("Model", f"{config.model}  ({sampling})")
+    grid.add_row("Output", str(output_path(config)))
     return grid
 
 
