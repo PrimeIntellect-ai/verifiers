@@ -50,15 +50,15 @@ class TaskProgress:
     end: float | None = None
 
 
-def _overview(config: ValidateConfig) -> Table:
+def Overview(config: ValidateConfig) -> Table:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim")
     grid.add_column()
-    grid.add_row("Taskset", f"{config.taskset.name}  ·  {config.runtime.type} runtime")
+    grid.add_row("taskset", f"{config.taskset.name}  ·  {config.runtime.type} runtime")
     return grid
 
 
-def _progress(states: list[TaskProgress], start: float) -> Table:
+def Progress(states: list[TaskProgress], start: float) -> Table:
     done = [s for s in states if s.state in _DONE]
     valid = sum(1 for s in done if s.state == "valid")
     stats = (
@@ -74,7 +74,7 @@ def _progress(states: list[TaskProgress], start: float) -> Table:
     return row
 
 
-def _rows(states: list[TaskProgress], now: float) -> Table:
+def Rows(states: list[TaskProgress], now: float) -> Table:
     grid = Table.grid(expand=True, padding=(0, 1))
     grid.add_column(ratio=1, no_wrap=True)  # mark + task label
     grid.add_column(justify="right", no_wrap=True)  # outcome
@@ -98,10 +98,10 @@ def _rows(states: list[TaskProgress], now: float) -> Table:
 
 def _render(states: list[TaskProgress], config: ValidateConfig, start: float) -> Group:
     return Group(
-        _overview(config),
-        _progress(states, start),
+        Overview(config),
+        Progress(states, start),
         Rule(style="dim"),
-        _rows(states, time.time()),
+        Rows(states, time.time()),
     )
 
 

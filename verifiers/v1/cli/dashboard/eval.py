@@ -43,7 +43,7 @@ _MARK = {
 }
 
 
-def _overview(config: EvalConfig) -> Table:
+def Overview(config: EvalConfig) -> Table:
     sampling = (
         ", ".join(
             f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items()
@@ -54,15 +54,15 @@ def _overview(config: EvalConfig) -> Table:
     grid.add_column(style="dim")
     grid.add_column()
     grid.add_row(
-        "Env",
+        "env",
         f"{config.taskset.name}  ·  {config.harness.name} harness  ·  {config.harness.runtime.type} runtime",
     )
-    grid.add_row("Model", f"{config.model}  ({sampling})")
-    grid.add_row("Output", str(output_path(config)))
+    grid.add_row("model", f"{config.model}  ({sampling})")
+    grid.add_row("output", str(output_path(config)))
     return grid
 
 
-def _progress(rollouts: list[Rollout], start: float) -> Table:
+def Progress(rollouts: list[Rollout], start: float) -> Table:
     done = [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
     # Headline reward = mean over non-errored; when any errored, `format_reward` appends the
     # global avg (errored count as 0) in parens. `err` is the share that errored.
@@ -123,7 +123,7 @@ def _brace(i: int, size: int) -> str:
     return "╭" if i == 0 else "╰" if i == size - 1 else "│"
 
 
-def _rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
+def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
     # (brace, state, left sections, result, time)
     rows: list[tuple[str, str, list[str], str, str]] = []
     for group in groups:
@@ -184,10 +184,10 @@ def _rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
 
 def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
     return Group(
-        _overview(config),
-        _progress(rollouts, start),
+        Overview(config),
+        Progress(rollouts, start),
         Rule(style="dim"),
-        _rows(_groups(rollouts), time.time(), config.harness.runtime.type),
+        Rows(_groups(rollouts), time.time(), config.harness.runtime.type),
     )
 
 
