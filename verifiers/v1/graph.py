@@ -47,6 +47,10 @@ class MessageNode(StrictBaseModel):
     """Index into `Trace.nodes` of the predecessor message; None for a root."""
     message: Message
     """The message this node carries (system / user / assistant / tool)."""
+    sampled: bool = False
+    """True iff a model call produced this message (the response in `add_turn`); False for
+    every prompt-supplied message — including assistant/tool messages fabricated as context
+    the model never generated, which role alone can't tell apart from real turns."""
     token_ids: list[int] = Field(default_factory=list)
     """This message's delta contribution to the cumulative token sequence: its leading
     template scaffold + its own tokens — for an assistant, the generation-prompt scaffold
@@ -223,6 +227,7 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
         MessageNode(
             parent=parent,
             message=response.message,
+            sampled=True,
             token_ids=[*gen_prompt, *comp_ids],
             mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
             logprobs=list(tokens.completion_logprobs) if tokens else [],
