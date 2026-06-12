@@ -209,6 +209,13 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, vf.TasksetConfig]):
         result = await runtime.run(["sh", "-c", "/bin/bash run_tests.sh 2>&1"], ENV)
         return calculate_reward(result.stdout or "", task.expected_output_json)
 
+    async def validate(self, task: R2EGymTask, runtime: vf.Runtime) -> bool:
+        """Valid iff the gold solution scores 1.0: apply the reconstructed gold patch, then
+        run the same `solved` reward the agent is graded by (setup has already staged the
+        hidden tests)."""
+        await self.apply_gold_patch(task, runtime)
+        return await self.solved(task, runtime) == 1.0
+
     async def apply_gold_patch(self, task: R2EGymTask, runtime: vf.Runtime) -> None:
         """Reconstruct + apply the gold source patch (for validation/dummy rollouts)."""
         patch = extract_gold_patch(task.parsed_commit_content)

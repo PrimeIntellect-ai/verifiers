@@ -178,6 +178,49 @@ class EnvServerConfig(EnvConfig):
 logger = logging.getLogger(__name__)
 
 
+def resolve_runtime_config(
+    base: RuntimeConfig, task: Task, warned: set[tuple[str, str]] | None = None
+) -> RuntimeConfig:
+    """Resolve a task's runtime config from a `base`: inject the task's `image` (a task with
+    an image must run in a container — refuse subprocess), and apply its `workdir` and
+    requested `resources` to the fields the runtime supports. Precedence is cli/toml > task >
+    default; a resource the runtime doesn't support warns once (deduped via `warned`). Shared
+    by `Environment.runtime_for` (rollouts) and the `validate` entrypoint."""
+    config = base
+    updates: dict = {}
+    if task.image is not None:
+        if isinstance(config, SubprocessConfig):
+            raise ValueError(
+                f"task {task.idx!r} requires image {task.image!r}, but the subprocess "
+                "runtime has no container; use the docker or prime runtime"
+            )
+        updates["image"] = task.image
+    workdir_spec = type(config).model_fields.get("workdir")
+    if (
+        task.workdir is not None
+        and workdir_spec is not None
+        and getattr(config, "workdir") == workdir_spec.default
+    ):
+        updates["workdir"] = task.workdir
+    for field, value in task.resources.model_dump(exclude_none=True).items():
+        spec = type(config).model_fields.get(field)
+        if spec is None:
+            key = (config.type, field)
+            if warned is not None and key not in warned:
+                warned.add(key)
+                logger.warning(
+                    "runtime %r doesn't support resource %r; ignoring it",
+                    config.type,
+                    field,
+                )
+        elif (
+            getattr(config, field) == spec.default
+        ):  # still the default → task may set it
+            updates[field] = value
+        # else: cli/toml changed it from the default → it wins over the task
+    return config.model_copy(update=updates) if updates else config
+
+
 class Environment:
     def __init__(self, config: EnvConfig) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
@@ -216,43 +259,11 @@ class Environment:
         self._warned_resources: set[tuple[str, str]] = set()
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
-        """Resolve the runtime config for a task: inject the task's `image` (a task
-        with an image must run in a container — refuse subprocess), and apply the
-        task's requested `resources` to fields the runtime supports. Precedence is
-        cli/toml > task > default; a resource the runtime doesn't support warns once."""
-        config = self.harness.config.runtime
-        updates: dict = {}
-        if task.image is not None:
-            if isinstance(config, SubprocessConfig):
-                raise ValueError(
-                    f"task {task.idx!r} requires image {task.image!r}, but the subprocess "
-                    "runtime has no container; use the docker or prime runtime"
-                )
-            updates["image"] = task.image
-        workdir_spec = type(config).model_fields.get("workdir")
-        if (
-            task.workdir is not None
-            and workdir_spec is not None
-            and getattr(config, "workdir") == workdir_spec.default
-        ):
-            updates["workdir"] = task.workdir
-        for field, value in task.resources.model_dump(exclude_none=True).items():
-            spec = type(config).model_fields.get(field)
-            if spec is None:
-                key = (config.type, field)
-                if key not in self._warned_resources:
-                    self._warned_resources.add(key)
-                    logger.warning(
-                        "runtime %r doesn't support resource %r; ignoring it",
-                        config.type,
-                        field,
-                    )
-            elif (
-                getattr(config, field) == spec.default
-            ):  # still the default → task may set it
-                updates[field] = value
-            # else: cli/toml changed it from the default → it wins over the task
-        return config.model_copy(update=updates) if updates else config
+        """Resolve the runtime config for a task off the harness's runtime (see
+        `resolve_runtime_config`)."""
+        return resolve_runtime_config(
+            self.harness.config.runtime, task, self._warned_resources
+        )
 
     def episode(self, task: Task, ctx: RolloutContext, n: int = 1) -> Episode:
         """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime
