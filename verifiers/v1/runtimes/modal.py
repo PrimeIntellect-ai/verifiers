@@ -51,8 +51,7 @@ class ModalConfig(BaseConfig):
     declare it without a warning) but not enforced."""
     creates_per_sec: float | None = 40.0
     """Pace sandbox creation to this many per second, enforced host-wide across every
-    env-server worker process (None/<= 0 disables it) — kept under Modal's per-workspace
-    sandbox-creation rate limit."""
+    env-server worker process (None/<= 0 disables it)."""
 
 
 class ModalRuntime(Runtime):
