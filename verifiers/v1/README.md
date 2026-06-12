@@ -2,16 +2,16 @@
 
 The next version of [verifiers](https://github.com/PrimeIntellect-ai/verifiers) —
 **agentic-native, with a composable taskset × harness × runtime core**. A clean-slate,
-heavily-typed rewrite that carries forward the proven high-level abstractions, pydantic-typed
-end to end. `import verifiers.v1 as vf`.
+heavily-typed rewrite that carries forward the proven high-level abstractions, with a 
+tighter type contract. `import verifiers.v1 as vf`.
 
 ## Highlights
 
 - **Composable taskset × harness** — a taskset (data + scoring) is fully decoupled from the
-  harness (the program that drives the rollout); any taskset runs under any harness
-  (`default` / `rlm` / `compact` / your own), selected by id.
-- **Swappable runtime** — the harness, its tools, and the user simulator all run behind one
-  `Runtime` contract, in `subprocess` / `docker` / `prime` / `modal`.
+  harness (the program driving the rollout); any taskset runs under any harness
+  (`default` / `rlm` / `codex` / your own)
+- **Swappable runtime** — the harness, tools, and user simulators all run behind one
+  `Runtime` contract, in `subprocess` / `docker` / `prime` / `modal` / ...
 - **First-class branching rollouts** — a rollout isn't assumed linear: context compaction and
   subagents are native. Each branch (a root→leaf path through the trace graph) is its own
   training sample, so a compacting or multi-agent rollout trains end to end.
@@ -21,9 +21,6 @@ end to end. `import verifiers.v1 as vf`.
   plain classes + decorators (`@vf.reward` / `@vf.metric` / ...).
 - **Training-ready traces** — exact token ids + logprobs straight from an agentic rollout
   (renderer client); one training sample per branch, recovered for compaction / subagents.
-- **Delta-native trace graph** — each message is stored once as a node linked to its
-  predecessor, so a trace's size is linear in turns, not quadratic; branches fall out of
-  walking the graph, and a training sample is a cheap concat of node tokens along a path.
 - **Hub-native + v0-compatible** — ids install on demand from the Environments Hub, and
   classic v0 envs run through the same CLIs via a bridge.
 
@@ -40,15 +37,15 @@ uv run eval gsm8k-v1 -n 5 -r 3   # single-turn math; default harness; docker run
 uv run eval -h                   # typed help (+ the local example tasksets/harnesses)
 ```
 
-Everything is typed config, so the advanced knobs — per-rollout budgets, retries, and
-wall-clock timeouts — are all CLI flags (or TOML):
+Everything is typed config, so the advanced knobs — budgets, retries, and
+wall-clock timeouts — are all framework-enforced and apply to any environment: 
 
 ```bash
 uv run eval gsm8k-v1 -n 5 -r 3 \
-  --max-turns 8 --max-total-tokens 8192 \        # per-rollout budgets (also --max-{input,output}-tokens)
-  --retries.model.max-retries 3 --retries.runtime.max-retries 3 \  # retry a single model/runtime call
-  --retries.rollout.max-retries 3 --retries.rollout.include ProgramError \  # retry a whole rollout, by exception type
-  --timeout.setup 120 --timeout.rollout 600 --timeout.finalize 120 --timeout.scoring 120  # per-stage wall-clock caps, in seconds
+  --max-turns 8 --max-total-tokens 8192 \
+  --retries.model.max-retries 3 --retries.runtime.max-retries 3 \
+  --retries.rollout.max-retries 3 --retries.rollout.include ProgramError \
+  --timeout.setup 120 --timeout.rollout 600 --timeout.finalize 120 --timeout.scoring 120
 ```
 
 Common knobs have short aliases:
@@ -66,12 +63,12 @@ Common knobs have short aliases:
 
 ## Tasksets & harnesses
 
-Tasksets (data + scoring) and harnesses (the rollout driver) are packages selected by `id`,
+Tasksets (data + scoring) and harnesses (the rollout driver) are Python packages 
 and live in two places:
 
 - **`packages/`** — shipped, installed by default. Commonly-used **harnesses** (`default`,
-  `rlm`) and **taskset integrations** that wrap a whole benchmark family (`harbor-v1` — the
-  agentic-benchmark registry; `textarena-v1` — TextArena games). Use them by id.
+  `rlm`, `codex`, ...) and **taskset integrations** that wrap a whole benchmark family (`harbor-v1` — 
+  the agentic-benchmark registry; `textarena-v1` — TextArena games).
 - **`examples/`** — small reference implementations to copy when **authoring your own**,
   split by kind into `examples/tasksets/` and `examples/harnesses/`. Each shows one pattern.
 
@@ -80,14 +77,14 @@ Taskset examples (`examples/tasksets/`):
 | example | pattern it shows |
 | --- | --- |
 | `reverse-text-v1` | the minimal single-turn taskset |
-| `gsm8k-v1`, `aime24-v1`, `math-env-v1` | single-turn + in-runtime scoring (a `@reward` uv script) |
+| `gsm8k-v1`, `aime24-v1`, `math-env-v1` | single-turn + in-runtime scoring |
 | `code-golf-v1` | group rewards (`@group_reward` over a task's N rollouts) |
 | `alphabet-sort-v1` | a multi-turn, stateful task driven by a `vf.User` simulator |
 | `glossary-v1` | a custom **colocated** tool server |
 | `wikispeedia-v1` | a tool server in its **own per-rollout** runtime |
 | `wiki-search-v1` | a **shared** tool server (built once for the eval) + an LLM judge |
 | `deepwiki-v1` | an **existing remote** tool server, by URL |
-| `wordle-v1` | configuring the vendored `textarena-v1` integration (user simulator) |
+| `wordle-v1` | configuring the vendored `textarena-v1` integration |
 | `terminal-bench-2-v1` | configuring the vendored `harbor-v1` integration |
 
 Harness examples (`examples/harnesses/`):
@@ -103,21 +100,22 @@ Harness examples (`examples/harnesses/`):
 The program that drives the rollout — same taskset, different driver:
 
 ```bash
-uv run eval gsm8k-v1 -n 1                   # default: a tiny OpenAI chat loop (bash tool opt-in)
-uv run eval gsm8k-v1 -n 1 --harness.id rlm  # the rlm harness
+uv run eval gsm8k-v1 -n 1                     # default: a tiny OpenAI chat loop (bash tool opt-in)
+uv run eval gsm8k-v1 -n 1 --harness.id rlm    # the rlm harness
+uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
 ```
 
 ### Swappable runtime
 
 *Where* code runs, behind one `Runtime` contract — the same contract backs the harness
 (`--harness.runtime`), a task's own tool servers (`--taskset.tools.runtime`), and the user
-simulator (all structurally MCP servers in a runtime):
+simulator (`--taskset.user.runtime`) — all structurally MCP servers in a runtime:
 
 ```bash
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # harness: local process
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # harness: local container (default)
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # harness: remote Prime sandbox
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # harness: remote Modal sandbox
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container (default)
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sandbox (requires auth)
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox (requires auth)
 ```
 
 Remote sandboxes are named after the rollout id (greppable in `prime sandbox list` /
