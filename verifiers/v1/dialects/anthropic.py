@@ -231,7 +231,11 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
                     ) + delta.get("partial_json", "")
             elif kind == "message_delta":
                 message.update(
-                    {k: v for k, v in (event.get("delta") or {}).items() if v is not None}
+                    {
+                        k: v
+                        for k, v in (event.get("delta") or {}).items()
+                        if v is not None
+                    }
                 )
                 message["usage"] = {
                     **(message.get("usage") or {}),
