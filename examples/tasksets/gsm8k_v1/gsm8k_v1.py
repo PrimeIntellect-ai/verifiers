@@ -58,6 +58,18 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
         lines = result.stdout.strip().splitlines()
         return float(lines[-1]) if lines else 0.0
 
+    async def validate(self, task: GSM8KTask, runtime: vf.Runtime) -> bool:
+        """Valid iff the verifier accepts the ground-truth answer: run `verify.py` on the gold
+        answer as a well-formed `#### N` prediction and require a 1.0 score — catching rows the
+        verifier can't parse or grade (the model-free counterpart of the `correct` reward)."""
+        result = await runtime.run_uv_script(
+            VERIFY, args=[task.answer, f"#### {task.answer}"]
+        )
+        if result.exit_code != 0:
+            raise vf.ProgramError(f"verify.py failed: {result.stderr.strip()[-500:]}")
+        lines = result.stdout.strip().splitlines()
+        return bool(lines) and float(lines[-1]) == 1.0
+
 
 def load_taskset(config: GSM8KConfig) -> GSM8KTaskset:
     return GSM8KTaskset(config)
