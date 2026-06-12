@@ -2,11 +2,11 @@
 
     uv run --with matplotlib python bench/plot.py [results_dir] [out.png]
 
-Reads one JSON per cell from `<results_dir>` (default bench/results/single_turn). A 2x2 of
-the rollout stages — setup (provisioning), generation, scoring, total — each a per-runtime
-grouped bar at p50 with a p10..p90 whisker, grouped by rollout count. The distribution (not
-the straggler-gated e2e) is the honest comparator; the panels show where each runtime spends
-its time and how that scales with concurrency. PNG is committed (the gitignore excepts it).
+Reads one JSON per cell from `<results_dir>` (default bench/results/single_turn). Three
+panels — setup (provisioning), generation, scoring — each a per-runtime grouped bar at p50
+with a p10..p90 whisker, grouped by rollout count. The distribution (not the straggler-gated
+e2e) is the honest comparator; the panels show where each runtime spends its time and how
+that scales with concurrency. PNG is committed (the gitignore excepts it).
 """
 
 import glob
@@ -43,7 +43,6 @@ stages = [
     ("setup", "setup_durations", "#d98c5f"),
     ("generation", "gen_durations", "#5f8cd9"),
     ("scoring", "scoring_durations", "#6fae6f"),
-    ("total", "total_durations", "#8a6fae"),
 ]
 n = len(rollouts)
 # Lighter bar for smaller rollout counts, darkening with concurrency.
@@ -51,7 +50,7 @@ shades = {
     r: (0.45 + 0.55 * i / (n - 1) if n > 1 else 1.0) for i, r in enumerate(rollouts)
 }
 
-fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+fig, axes = plt.subplots(1, len(stages), figsize=(5.5 * len(stages), 5.5))
 x = list(range(len(runtimes)))
 width = 0.8 / len(rollouts)
 for ax, (title, field, color) in zip(axes.flat, stages):
