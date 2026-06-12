@@ -152,10 +152,18 @@ class ZMQEnvClient(EnvClient):
             # propagate (they are not `Exception` subclasses).
             pass
 
+    async def send_ack(self, request_id: str) -> None:
+        """Acknowledge receipt so the server can drop cached responses."""
+        try:
+            await self.socket.send_multipart([request_id.encode(), b"ack"])
+        except Exception:
+            pass
+
     async def cancel_all_pending(
         self,
         reason: str = "Request cancelled",
         use_cancelled: bool = False,
+        notify_server: bool = True,
     ) -> list[PendingRequest]:
         """Cancel all pending requests and return their metadata.
 
@@ -184,9 +192,9 @@ class ZMQEnvClient(EnvClient):
             # Clear tracking dict
             self.pending_requests.clear()
 
-        # Best-effort: notify server to cancel these requests
-        for pending_req in cancelled_requests:
-            await self.send_cancel(pending_req.request_id)
+        if notify_server:
+            for pending_req in cancelled_requests:
+                await self.send_cancel(pending_req.request_id)
 
         return cancelled_requests
 
@@ -210,22 +218,21 @@ class ZMQEnvClient(EnvClient):
                 async with self.pending_lock:
                     pending_req = self.pending_requests.pop(request_id, None)
 
-                if pending_req is not None and not pending_req.future.done():
-                    try:
-                        response = msgpack.unpackb(response_data, raw=False)
-                        pending_req.future.set_result(response)
-                    except Exception as unpack_error:
-                        # Unpacking failed - fail the specific future
-                        self.logger.error(
-                            f"Request {request_id[:7]} failed to unpack response from env server {self.name} ({unpack_error})"
-                        )
-                        pending_req.future.set_exception(
-                            RuntimeError(
-                                f"Failed to deserialize response: {unpack_error}"
-                            )
-                        )
-                elif pending_req is None:
-                    pass  # ignore responses for requests we already popped (e.g. timed out)
+                if pending_req is None or pending_req.future.done():
+                    continue
+
+                await self.send_ack(request_id)
+                try:
+                    response = msgpack.unpackb(response_data, raw=False)
+                    pending_req.future.set_result(response)
+                except Exception as unpack_error:
+                    # Unpacking failed - fail the specific future
+                    self.logger.error(
+                        f"Request {request_id[:7]} failed to unpack response from env server {self.name} ({unpack_error})"
+                    )
+                    pending_req.future.set_exception(
+                        RuntimeError(f"Failed to deserialize response: {unpack_error}")
+                    )
 
             except asyncio.CancelledError:
                 break
@@ -279,10 +286,9 @@ class ZMQEnvClient(EnvClient):
                 use_bin_type=True,
             ),
         )
+        request_id = uuid.uuid4().hex
 
         while True:
-            request_id = uuid.uuid4().hex
-
             # Create future and pending request atomically
             future: Future = asyncio.Future()
             pending_req = PendingRequest(
@@ -422,5 +428,5 @@ class ZMQEnvClient(EnvClient):
         self.server_state = ServerState.UNHEALTHY
         self.healthy_event.clear()
         msg = f"Env server {self.name} became unhealthy ({failed_checks} consecutive health check failures)"
-        asyncio.ensure_future(self.cancel_all_pending(msg))
+        asyncio.ensure_future(self.cancel_all_pending(msg, notify_server=False))
         self.logger.warning(msg)
