@@ -16,6 +16,7 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients.dialects import ChatCompletionsDialect, Dialect
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.ids import EnvId, env_name
@@ -61,6 +62,11 @@ class Harness(ABC, Generic[ConfigT]):
     """Drive a task's user simulator (multi-turn user injection); opt in per harness."""
     SUPPORTS_MESSAGE_INSTRUCTION: ClassVar[bool] = False
     """Accept a Messages-list task.instruction (e.g. an image-bearing prompt); opt in per harness."""
+    DIALECT: ClassVar[Dialect] = ChatCompletionsDialect()
+    """The native wire format the harness's program speaks — the interception server uses it to
+    translate the program's requests/responses for the trace. Defaults to OpenAI chat
+    completions; override per harness for a different native client (e.g. Responses / Anthropic
+    Messages, once those dialects exist)."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config

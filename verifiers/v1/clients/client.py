@@ -16,6 +16,7 @@ from tenacity import (
     stop_after_attempt,
 )
 
+from verifiers.v1.clients.dialects import Dialect
 from verifiers.v1.errors import ModelError, OverlongPromptError
 from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
 
@@ -27,13 +28,15 @@ class Client(ABC):
     async def get_response(
         self,
         body: dict,
+        dialect: Dialect,
         prompt: Messages,
         model: str,
         sampling_args: SamplingConfig,
         tools: list[Tool] | None = None,
-    ) -> tuple[dict, Response]:
-        """Run one completion: the OpenAI chat.completion dict to hand the program, and the
-        typed `Response` for the trace."""
+    ) -> Response:
+        """Run one completion -> a vf `Response`. The proxy client forwards `body` 1:1 and
+        parses the provider response via `dialect` (carrying the raw on `Response.raw`); the
+        renderer ignores `body`/`dialect` and translates the typed `prompt` (it must tokenize)."""
 
     async def close(self) -> None:
         """Release any underlying resources. Default no-op."""
@@ -68,13 +71,14 @@ class RetryingClient(Client):
     async def get_response(
         self,
         body: dict,
+        dialect: Dialect,
         prompt: Messages,
         model: str,
         sampling_args: SamplingConfig,
         tools: list[Tool] | None = None,
-    ) -> tuple[dict, Response]:
+    ) -> Response:
         return await self._retrying(
-            self.inner.get_response, body, prompt, model, sampling_args, tools
+            self.inner.get_response, body, dialect, prompt, model, sampling_args, tools
         )
 
     async def close(self) -> None:

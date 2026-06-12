@@ -174,6 +174,10 @@ class Response(StrictBaseModel):
     usage: Usage | None = None
     tokens: TurnTokens | None = None
     """Token ids + logprobs for training (renderer client, or chat client via vLLM)."""
+    raw: dict | None = Field(default=None, exclude=True, repr=False)
+    """The provider's verbatim wire response, set by the proxy client so the interception
+    server hands it back to the program 1:1 (no field lost). `None` for the renderer (it has
+    no wire response — it generates). Transient: excluded from the trace dump."""
 
 
 # --- sampling -----------------------------------------------------------------

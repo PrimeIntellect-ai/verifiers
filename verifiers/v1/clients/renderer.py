@@ -15,8 +15,8 @@ from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.proxy import FINISH_REASONS, message_to_wire, model_error
-from verifiers.v1.clients.proxy import serialize_completion, tool_to_wire
+from verifiers.v1.clients.dialects import FINISH_REASONS, Dialect
+from verifiers.v1.clients.proxy import message_to_wire, model_error, tool_to_wire
 from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.types import (
     AssistantMessage,
@@ -109,13 +109,16 @@ class RendererClient(Client):
     async def get_response(
         self,
         body: dict,
+        dialect: Dialect,
         prompt: Messages,
         model: str,
         sampling_args: SamplingConfig,
         tools: list[Tool] | None = None,
-    ) -> tuple[dict, Response]:
-        # `body` is ignored: the renderer tokenizes the typed `prompt` for training, so it
-        # can't forward the raw request (it needs per-token ids + logprobs back).
+    ) -> Response:
+        # `body`/`dialect` are ignored: the renderer tokenizes the typed `prompt` for training
+        # (it needs per-token ids + logprobs back), so it can't forward the raw request. It
+        # leaves `Response.raw` unset; the interception server serializes its `Response` for the
+        # program instead of relaying provider bytes.
         renderer = self._renderer_pool(model)
         from renderers.client import generate
 
@@ -132,8 +135,7 @@ class RendererClient(Client):
             raise OverlongPromptError(str(e)) from e
         except OpenAIError as e:
             raise model_error(e) from e
-        response = response_from_generate(result, model)
-        return serialize_completion(response, model), response
+        return response_from_generate(result, model)
 
     async def close(self) -> None:
         await self.openai.close()

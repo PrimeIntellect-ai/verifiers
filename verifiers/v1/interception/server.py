@@ -26,76 +26,17 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.clients.proxy import message_to_wire
+from verifiers.v1.clients.dialects import ChatCompletionsDialect, Dialect
+from verifiers.v1.clients.proxy import message_to_wire, serialize_completion
 from verifiers.v1 import graph
 from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import (
-    AssistantMessage,
-    Message,
-    Messages,
-    SystemMessage,
-    Tool,
-    ToolCall,
-    ToolMessage,
-    UserMessage,
-    content_to_parts,
-)
+from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
     from verifiers.v1.user import Respond
 
 logger = logging.getLogger(__name__)
-
-
-def _content_text(content) -> str:
-    """Flatten content to text — for roles that never carry images (assistant, tool)."""
-    if isinstance(content, list):
-        return "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return content or ""
-
-
-def parse_message(raw: dict) -> Message:
-    """An OpenAI request message dict -> a typed Message. User/system bodies keep their
-    image parts (multimodal ingress); assistant/tool bodies flatten to text."""
-    role = raw.get("role")
-    content = raw.get("content")
-    if role == "system":
-        return SystemMessage(content=content_to_parts(content))
-    if role == "tool":
-        return ToolMessage(
-            tool_call_id=raw.get("tool_call_id", ""), content=_content_text(content)
-        )
-    if role == "assistant":
-        calls = [
-            ToolCall(
-                id=c["id"],
-                name=c["function"]["name"],
-                arguments=c["function"]["arguments"],
-            )
-            for c in (raw.get("tool_calls") or [])
-        ] or None
-        return AssistantMessage(
-            content=_content_text(content) or None,
-            reasoning_content=raw.get("reasoning_content"),
-            tool_calls=calls,
-        )
-    return UserMessage(content=content_to_parts(content))
-
-
-def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
-    if not raw:
-        return None
-    return [
-        Tool(
-            name=t["function"]["name"],
-            description=t["function"].get("description", ""),
-            parameters=t["function"].get("parameters", {}),
-            strict=t["function"].get("strict"),
-        )
-        for t in raw
-        if t.get("type", "function") == "function"
-    ]
 
 
 # Each session proxies one rollout's own harness requests, so aiohttp's default 1 MiB body
@@ -153,6 +94,9 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    dialect: Dialect = field(default_factory=ChatCompletionsDialect)
+    """The harness's native wire dialect (`Harness.DIALECT`), used to parse the program's
+    requests/responses for the trace. Defaults to OpenAI chat completions."""
     user: "Respond | None" = None
     """A user simulator the rollout sets before the harness runs (see `verifiers.v1.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
@@ -221,12 +165,13 @@ class InterceptionServer:
         body = await request.json()
         # `raw_messages` is what goes upstream — the default (proxy) client forwards it 1:1, so
         # provider fields the typed wire form doesn't model (e.g. `reasoning`) are never lost;
-        # the renderer ignores it and tokenizes `prompt` instead. `prompt` is the typed parse,
-        # used only to build the trace. `model`/sampling stay the eval's (the client overrides
-        # them); a user simulator extends both views each turn.
+        # the renderer ignores it and tokenizes `prompt` instead. `prompt`/`tools` are the
+        # dialect's typed parse, used to build the trace (and to tokenize, for the renderer).
+        # `model`/sampling stay the eval's (the client overrides them); a user simulator
+        # extends both views each turn.
         raw_messages: list[dict] = list(body.get("messages", []))
-        prompt: Messages = [parse_message(m) for m in raw_messages]
-        tools = parse_tools(body.get("tools"))
+        prompt: Messages
+        prompt, tools = session.dialect.parse_request(body)
         # A user simulator turns one program request into a multi-turn exchange: after each
         # model turn the simulator's reply is injected as a user turn and the model is
         # re-prompted, so a whole game plays out here and only the final assistant message
@@ -245,8 +190,9 @@ class InterceptionServer:
                     )
                 return web.json_response(completion)
             try:
-                completion, response = await session.ctx.client.get_response(
+                response = await session.ctx.client.get_response(
                     {**body, "messages": raw_messages},
+                    session.dialect,
                     prompt,
                     session.ctx.model,
                     session.ctx.sampling,
@@ -266,6 +212,13 @@ class InterceptionServer:
             except Exception as e:  # surface to the program as an API error
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response({"error": str(e)}, status=502)
+            # The proxy carries the provider's verbatim bytes on `Response.raw` (returned to the
+            # program 1:1); the renderer has none (it generates), so serialize its `Response`.
+            completion = (
+                response.raw
+                if response.raw is not None
+                else serialize_completion(response, session.ctx.model)
+            )
             graph.add_turn(session.trace, prompt, response)  # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
             # Hand back to the program when the model wants a tool (the program runs it) or

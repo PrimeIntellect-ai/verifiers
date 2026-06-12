@@ -1,34 +1,22 @@
-"""The proxy client + OpenAI wire translation.
+"""The proxy client: forward the program's request to the provider 1:1.
 
-`ProxyClient` (the default) forwards the program's chat-completions request 1:1 to an
-OpenAI-compatible endpoint and hands back the provider's raw response untouched, so no field
-(e.g. `reasoning`) is lost to a typed round-trip. The wire helpers here — message/tool
-serialization, response parsing (the one place raw provider dicts cross into our typed
-`Response`; when the response carries vLLM token ids + sampling logprobs it parses them into
-`tokens` so MITO training needs no renderer), and `serialize_completion` — are shared with the
-renderer client, which translates the typed prompt instead of proxying.
+`ProxyClient` (the default) forwards the program's request body verbatim to an OpenAI-
+compatible endpoint and parses the provider's response into a vf `Response` (via the harness's
+`Dialect`) for the trace — carrying the raw response on `Response.raw` so the interception
+server hands it back to the program untouched, no field lost to a typed round-trip.
+
+Also holds the vf -> wire serializers (`message_to_wire` / `serialize_completion`) the renderer
+and the interception server (user-sim injection) need, plus `model_error` (shared error
+mapping). The wire -> vf parsing lives in `dialects` (per native format).
 """
 
 import httpx
 from openai import AsyncOpenAI, OpenAIError
-from openai.types.chat import ChatCompletion
 
 from verifiers.v1.clients.client import Client
+from verifiers.v1.clients.dialects import Dialect
 from verifiers.v1.errors import ModelError, OverlongPromptError
-from verifiers.v1.types import (
-    AssistantMessage,
-    FinishReason,
-    Message,
-    Messages,
-    Response,
-    SamplingConfig,
-    Tool,
-    ToolCall,
-    TurnTokens,
-    Usage,
-)
-
-FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
+from verifiers.v1.types import Message, Messages, Response, SamplingConfig, Tool
 
 _CONTEXT_LENGTH_PHRASES = (
     "this model's maximum context length is",
@@ -62,12 +50,13 @@ def _content_to_wire(content):
 
 
 def message_to_wire(message: Message) -> dict:
+    """A vf message -> the OpenAI chat wire dict. Used to build the renderer's request and to
+    inject a user simulator's turns into the wire history (the proxy forwards verbatim, so it
+    doesn't use this)."""
     if message.role == "assistant":
         wire: dict = {"role": "assistant", "content": message.content}
         # Reasoning models (DeepSeek V4, Kimi K2 Thinking, ...) require the prior turns'
-        # `reasoning_content` to be sent back as a message-level field — stripping it breaks
-        # multi-turn ("reasoning_content ... must be passed back to the API"). Carry it
-        # through whenever the model produced it; providers that don't use it ignore it.
+        # `reasoning_content` sent back as a message-level field; carry it when present.
         if message.reasoning_content is not None:
             wire["reasoning_content"] = message.reasoning_content
         if message.tool_calls:
@@ -100,65 +89,10 @@ def tool_to_wire(tool: Tool) -> dict:
     return {"type": "function", "function": function}
 
 
-def tokens_from_wire(completion, choice) -> TurnTokens | None:
-    """Parse vLLM's token ids + sampling logprobs into `TurnTokens`, for training.
-
-    vLLM surfaces the completion ids on the choice (`return_token_ids`), the prompt
-    ids on the completion, and the sampled logprobs as one `logprobs.content` entry
-    per generated token (`logprobs=True`). All are absent on providers that don't
-    return them, so this is best-effort: no completion ids means no `tokens`.
-    """
-    completion_ids = getattr(choice, "token_ids", None)
-    if not completion_ids:
-        return None
-    content = choice.logprobs.content if choice.logprobs else None
-    return TurnTokens(
-        prompt_ids=list(getattr(completion, "prompt_token_ids", None) or []),
-        completion_ids=list(completion_ids),
-        completion_logprobs=[lp.logprob for lp in content] if content else [],
-    )
-
-
-def response_from_wire(completion) -> Response:
-    choice = completion.choices[0]
-    message = choice.message
-    tool_calls = [
-        ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
-        for tc in (message.tool_calls or [])
-    ] or None
-    finish: FinishReason = (
-        choice.finish_reason if choice.finish_reason in FINISH_REASONS else None
-    )
-    usage = (
-        Usage(
-            prompt_tokens=completion.usage.prompt_tokens,
-            completion_tokens=completion.usage.completion_tokens,
-        )
-        if completion.usage
-        else None
-    )
-    return Response(
-        id=completion.id,
-        created=completion.created,
-        model=completion.model,
-        message=AssistantMessage(
-            # Providers name the field differently: `reasoning_content` (DeepSeek/vLLM
-            # native), `reasoning` (OpenRouter-style aggregators, e.g. PI Inference).
-            content=message.content,
-            reasoning_content=getattr(message, "reasoning_content", None)
-            or getattr(message, "reasoning", None),
-            tool_calls=tool_calls,
-        ),
-        finish_reason=finish,
-        usage=usage,
-        tokens=tokens_from_wire(completion, choice),
-    )
-
-
 def serialize_completion(response: Response, model: str) -> dict:
-    """A `Response` -> an OpenAI chat.completion dict the program's SDK expects. Used by the
-    renderer client, whose typed `get_response` builds the program-facing completion (the proxy
-    client returns the provider's raw dict instead)."""
+    """A vf `Response` -> an OpenAI chat.completion dict the program's SDK expects. Used by the
+    renderer (which generates a `Response` and has no raw wire to relay); the proxy returns the
+    provider's raw dict instead."""
     message: dict = {"role": "assistant", "content": response.message.content}
     if response.message.reasoning_content is not None:
         message["reasoning_content"] = response.message.reasoning_content
@@ -197,11 +131,11 @@ def serialize_completion(response: Response, model: str) -> dict:
 
 
 class ProxyClient(Client):
-    """The default client: forwards the program's chat-completions request 1:1 to an
-    OpenAI-compatible endpoint and hands back the provider's raw response untouched, so no
-    field (e.g. `reasoning` / `reasoning_details`) is lost to a typed round-trip. `prompt` and
-    `tools` are already in `body` and unused here — they're on the signature only so the
-    renderer (which must tokenize) can translate the typed prompt instead of forwarding."""
+    """The default client: forward the program's request 1:1 to an OpenAI-compatible endpoint,
+    parse the provider's response into a vf `Response` (via the harness's dialect) for the
+    trace, and carry the raw response on `Response.raw` so it reaches the program untouched.
+    `prompt`/`tools` are already in `body` and unused here — they're on the signature only so
+    the renderer (which must tokenize) can translate the typed prompt instead of forwarding."""
 
     def __init__(self, openai: AsyncOpenAI) -> None:
         self.openai = openai
@@ -209,11 +143,12 @@ class ProxyClient(Client):
     async def get_response(
         self,
         body: dict,
+        dialect: Dialect,
         prompt: Messages,
         model: str,
         sampling_args: SamplingConfig,
         tools: list[Tool] | None = None,
-    ) -> tuple[dict, Response]:
+    ) -> Response:
         # Forward verbatim; the eval owns model + sampling (override whatever the program set).
         upstream = {
             **body,
@@ -227,7 +162,9 @@ class ProxyClient(Client):
         except OpenAIError as e:
             raise model_error(e) from e
         raw = resp.json()
-        return raw, response_from_wire(ChatCompletion.model_validate(raw))
+        response = dialect.parse_response(dialect.response_type.model_validate(raw))
+        response.raw = raw  # the program gets the provider's bytes back 1:1
+        return response
 
     async def close(self) -> None:
         await self.openai.close()
