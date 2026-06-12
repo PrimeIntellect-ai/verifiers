@@ -77,8 +77,9 @@ class Branch(StrictBaseModel):
     @computed_field
     @property
     def num_turns(self) -> int:
-        """Model turns (assistant messages) in this branch."""
-        return sum(1 for n in self.nodes if isinstance(n.message, AssistantMessage))
+        """Model turns (sampled responses) in this branch — prompt-supplied assistant
+        messages don't count."""
+        return sum(1 for n in self.nodes if n.sampled)
 
     @property
     def messages(self) -> Messages:
@@ -209,15 +210,9 @@ class Trace(StrictBaseModel, Generic[TaskT]):
         return bool(self.errors)
 
     def _last_assistant(self) -> "MessageNode | None":
-        """The most recent assistant node, or None for a trace with no responses."""
-        return next(
-            (
-                n
-                for n in reversed(self.nodes)
-                if isinstance(n.message, AssistantMessage)
-            ),
-            None,
-        )
+        """The most recent sampled (model-produced) node, or None for a trace with no
+        responses."""
+        return next((n for n in reversed(self.nodes) if n.sampled), None)
 
     @property
     def prompt_len(self) -> int:
@@ -266,8 +261,9 @@ class Trace(StrictBaseModel, Generic[TaskT]):
 
     @property
     def num_turns(self) -> int:
-        """Total model turns (assistant nodes) across all branches."""
-        return sum(1 for n in self.nodes if isinstance(n.message, AssistantMessage))
+        """Total model turns (sampled responses) across all branches — prompt-supplied
+        assistant messages don't count."""
+        return sum(1 for n in self.nodes if n.sampled)
 
     @computed_field
     @property
@@ -291,9 +287,12 @@ class Trace(StrictBaseModel, Generic[TaskT]):
 
     @property
     def assistant_messages(self) -> list[AssistantMessage]:
-        """Every model response, in order — one per turn, branch-independent."""
+        """Every model response, in order — one per turn, branch-independent. Excludes
+        prompt-supplied assistant messages (`sampled` is the provenance signal)."""
         return [
-            n.message for n in self.nodes if isinstance(n.message, AssistantMessage)
+            n.message
+            for n in self.nodes
+            if n.sampled and isinstance(n.message, AssistantMessage)
         ]
 
     @property

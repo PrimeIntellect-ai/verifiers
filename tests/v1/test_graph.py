@@ -64,3 +64,27 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
         if isinstance(node.message, vf.AssistantMessage) and node.message.tool_calls
     ]
     assert len(tool_call_nodes) == 2
+
+
+def test_prompt_supplied_assistant_messages_are_not_sampled_turns():
+    task = vf.Task(idx=0, instruction="few-shot")
+    trace = vf.Trace(task=task)
+    fabricated = vf.AssistantMessage(
+        content=None,
+        tool_calls=[vf.ToolCall(id="call_0", name="lookup", arguments="{}")],
+    )
+    response = vf.AssistantMessage(content="real answer")
+
+    graph.add_turn(
+        trace,
+        [
+            vf.UserMessage(content="question"),
+            fabricated,
+            vf.ToolMessage(content="fabricated result", tool_call_id="call_0"),
+        ],
+        _response(response),
+    )
+
+    assert [n.sampled for n in trace.nodes] == [False, False, False, True]
+    assert trace.num_turns == 1
+    assert trace.assistant_messages == [response]
