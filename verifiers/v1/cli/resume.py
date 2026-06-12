@@ -53,7 +53,7 @@ def _read_results(results_path: Path) -> list[dict]:
         return []
     return [
         json.loads(line)
-        for line in results_path.read_text().splitlines()
+        for line in results_path.read_text().split("\n")
         if line.strip()
     ]
 
