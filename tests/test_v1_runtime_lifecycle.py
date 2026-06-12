@@ -3524,6 +3524,12 @@ async def test_program_staging_uploads_thread_env_timeout(
     monkeypatch.setenv("VF_SANDBOX_UPLOAD_TIMEOUT", "not-an-int")
     assert sandbox_utils.sandbox_upload_timeout() is None
 
+    monkeypatch.setenv("VF_SANDBOX_UPLOAD_TIMEOUT", "0")
+    assert sandbox_utils.sandbox_upload_timeout() is None
+
+    monkeypatch.setenv("VF_SANDBOX_UPLOAD_TIMEOUT", "-5")
+    assert sandbox_utils.sandbox_upload_timeout() is None
+
     await runtime.teardown()
 
     assert client.byte_timeouts == [777, 777, None, None]

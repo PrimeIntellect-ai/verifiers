@@ -51,13 +51,20 @@ logger = logging.getLogger(__name__)
 
 
 def sandbox_upload_timeout() -> int | None:
+    """Seconds for program-staging uploads from VF_SANDBOX_UPLOAD_TIMEOUT.
+
+    Unset, non-integer, or non-positive values fall back to the sandbox SDK
+    default by returning None.
+    """
+
     value = os.getenv("VF_SANDBOX_UPLOAD_TIMEOUT")
     if value is None:
         return None
     try:
-        return int(value)
+        timeout = int(value)
     except ValueError:
         return None
+    return timeout if timeout > 0 else None
 
 
 class SandboxRecord(Protocol):
