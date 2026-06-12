@@ -73,18 +73,19 @@ ClientConfig = Annotated[
 
 
 def resolve_client(config: BaseClientConfig) -> Client:
-    def make_openai_client(config: BaseClientConfig) -> AsyncOpenAI:
-        return AsyncOpenAI(
+    api_key = os.environ.get(config.api_key_var, "EMPTY")
+    if isinstance(config, RendererClientConfig):
+        # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
+        openai = AsyncOpenAI(
             base_url=config.base_url,
-            api_key=os.environ.get(config.api_key_var, "EMPTY"),
+            api_key=api_key,
             default_headers=config.headers or None,
         )
-
-    if isinstance(config, RendererClientConfig):
         return RendererClient(
-            make_openai_client(config),
+            openai,
             pool_size=config.pool_size,
             config=config.renderer,
             renderer_model_name=config.renderer_model_name,
         )
-    return ProxyClient(make_openai_client(config))
+    # The proxy is a raw httpx forwarder; the dialect supplies the auth scheme + upstream path.
+    return ProxyClient(config.base_url, api_key, headers=config.headers or None)

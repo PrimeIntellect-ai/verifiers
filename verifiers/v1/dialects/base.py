@@ -42,6 +42,12 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     response_type: type[RespT]
     """The native response model — used to validate the provider's raw JSON before parsing."""
 
+    def auth_headers(self, api_key: str) -> dict[str, str]:
+        """The provider auth headers for this format. Defaults to OAuth2 Bearer (every
+        OpenAI-compatible provider); override for a different scheme (e.g. Anthropic's
+        `x-api-key` + `anthropic-version`)."""
+        return {"Authorization": f"Bearer {api_key}"}
+
     @abstractmethod
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:
         """The native request -> vf prompt + tools (for the trace)."""

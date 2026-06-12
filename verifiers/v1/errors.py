@@ -45,9 +45,10 @@ _CONTEXT_LENGTH_PHRASES = (
 )
 
 
-def model_error(e: OpenAIError) -> ModelError:
-    """Map a provider client error to our error type, distinguishing an overlong prompt
-    from any other model-call failure (auth, rate limit, a genuine bad request, ...)."""
+def model_error(e: OpenAIError | str) -> ModelError:
+    """Map a provider failure to our error type, distinguishing an overlong prompt from any
+    other model-call failure (auth, rate limit, a genuine bad request, ...). Accepts either an
+    SDK error (the renderer) or the provider's raw error body (the httpx proxy)."""
     text = str(e).casefold()
     if any(phrase in text for phrase in _CONTEXT_LENGTH_PHRASES):
         return OverlongPromptError(str(e))
