@@ -1,8 +1,9 @@
 # verifiers.v1
 
-The next version of [verifiers](https://github.com/PrimeIntellect-ai/verifiers) — a
-clean-slate, heavily-typed, minimal core that carries forward the proven high-level
-abstractions and on-disk output. Everything is pydantic-typed; `import verifiers.v1 as vf`.
+The next version of [verifiers](https://github.com/PrimeIntellect-ai/verifiers) —
+**agentic-native, with a composable taskset × harness × runtime core**. A clean-slate,
+heavily-typed rewrite that carries forward the proven high-level abstractions and on-disk
+output, pydantic-typed end to end. `import verifiers.v1 as vf`.
 
 ## Highlights
 
