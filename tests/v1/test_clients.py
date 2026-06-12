@@ -36,7 +36,7 @@ from verifiers.v1.clients.openai_responses import message_to_wire as responses_m
 from verifiers.v1.clients.openai_responses import (
     response_from_wire as responses_response,
 )
-from verifiers.v1.interception.server import parse_message, serialize_completion
+from verifiers.v1.dialects import parse_message, serialize_completion
 from verifiers.v1.types import content_to_parts
 
 

@@ -51,7 +51,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         # rlm reaches the interception server via OPENAI_BASE_URL/API_KEY (its
         # provider precedence falls back to OPENAI_*), and reads RLM_* for itself.
         env = {
-            "OPENAI_BASE_URL": endpoint,
+            "OPENAI_BASE_URL": f"{endpoint}/v1",
             "OPENAI_API_KEY": secret,
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),

@@ -142,7 +142,10 @@ class Harness(ABC, Generic[ConfigT]):
     ) -> ProgramResult:
         """Run the harness program in `runtime` to completion and return its result. The
         task is `trace.task`; model calls should reach the interception server at
-        `endpoint` (bearer token `secret`); `mcp_urls` are the task's tool servers
+        `endpoint` — the server's *root*, serving every registered dialect's routes, so
+        each harness appends what its program's SDK expects (`{endpoint}/v1` for an
+        OpenAI base URL, `endpoint` itself for an Anthropic one) and authenticates with
+        `secret` (bearer token / api key); `mcp_urls` are the task's tool servers
         (name -> URL) to wire in. Each harness owns the env its program needs — read
         `ctx.model` for the model id (the default/compact harnesses set OPENAI_*; rlm sets
         RLM_* too). The uv-script harnesses just `runtime.run_uv_script(...)`."""
