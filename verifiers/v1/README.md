@@ -2,8 +2,8 @@
 
 The next version of [verifiers](https://github.com/PrimeIntellect-ai/verifiers) —
 **agentic-native, with a composable taskset × harness × runtime core**. A clean-slate,
-heavily-typed rewrite that carries forward the proven high-level abstractions and on-disk
-output, pydantic-typed end to end. `import verifiers.v1 as vf`.
+heavily-typed rewrite that carries forward the proven high-level abstractions, pydantic-typed
+end to end. `import verifiers.v1 as vf`.
 
 ## Highlights
 
