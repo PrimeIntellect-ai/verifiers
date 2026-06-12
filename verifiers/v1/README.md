@@ -160,10 +160,13 @@ uv run eval wiki-search-v1 -n 1 --harness.id compact  # fresh prompt each turn â
 ### Clients
 
 The client sits *behind* the interception server, so the harness only ever speaks plain
-chat-completions:
+chat-completions. The model endpoint can use any built-in provider protocol:
 
 ```bash
-uv run eval gsm8k-v1 -n 1                          # openai (default): text in / text out
+uv run eval gsm8k-v1 -n 1                          # OpenAI chat completions (default)
+uv run eval gsm8k-v1 -n 1 --client.type openai_responses
+uv run eval gsm8k-v1 -n 1 --client.type anthropic_messages --sampling.max-tokens 16384
+uv run eval gsm8k-v1 -n 1 --client.type google_responses
 uv run eval gsm8k-v1 -n 1 --client.type renderers \  # renderers: client-side tokenization â†’
   --client.base-url http://localhost:8000/v1          # token-in/out traces (needs a vLLM engine)
 ```

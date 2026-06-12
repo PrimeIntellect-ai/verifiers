@@ -32,6 +32,7 @@ class ImageUrlSource(StrictBaseModel):
     """An image reference — a URL or a `data:` URI."""
 
     url: str
+    detail: Literal["auto", "low", "high", "original"] | None = None
 
 
 class ImageUrlContentPart(StrictBaseModel):
@@ -61,8 +62,15 @@ def content_to_parts(content) -> MessageContent:
         if p.get("type") == "text":
             parts.append(TextContentPart(text=p.get("text", "")))
         elif p.get("type") == "image_url":
-            url = (p.get("image_url") or {}).get("url", "")
-            parts.append(ImageUrlContentPart(image_url=ImageUrlSource(url=url)))
+            image_url = p.get("image_url") or {}
+            parts.append(
+                ImageUrlContentPart(
+                    image_url=ImageUrlSource(
+                        url=image_url.get("url", ""),
+                        detail=image_url.get("detail"),
+                    )
+                )
+            )
     return parts
 
 
@@ -96,6 +104,8 @@ class AssistantMessage(StrictBaseModel):
     content: str | None = None
     reasoning_content: str | None = None
     tool_calls: list[ToolCall] | None = None
+    provider_state: list[dict[str, Any]] | None = None
+    """JSON provider data required to continue a native multi-turn exchange."""
 
 
 class ToolMessage(StrictBaseModel):
