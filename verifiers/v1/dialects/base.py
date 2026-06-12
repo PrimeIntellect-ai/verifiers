@@ -17,21 +17,27 @@ from typing import ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel
 
-from verifiers.v1.types import Messages, Response, Tool
+from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
 
 ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
 
 
 class Dialect(ABC, Generic[ReqT, RespT]):
-    """Translate ONE native API's wire format into vf, fully typed over its native request
-    (`ReqT`) and response (`RespT`). One-way (wire -> vf): the proxy relays the raw response to
-    the harness verbatim, so there is no vf -> wire."""
+    """One native API's wire format, fully typed over its request (`ReqT`) and response
+    (`RespT`). The single place a protocol lives: implement a `Dialect` + register it in
+    `dialects.DIALECTS` and a harness speaking that format works end-to-end (the proxy and
+    interception server are generic over this interface). Mostly one-way (wire -> vf, to build
+    the trace) — the only vf -> wire is `serialize_response`/`extend`, needed where there's no
+    raw provider response to relay (the renderer, and user-sim turn injection)."""
 
     routes: ClassVar[tuple[str, ...]]
     """The endpoint path(s) a program's SDK posts to for this format. The interception server
     serves one handler per route, so the wire format is resolved from the route the SDK chose
     (it commits to one when the client is picked) rather than declared by the harness."""
+
+    upstream_path: ClassVar[str]
+    """The provider endpoint the proxy forwards to for this format (e.g. `/chat/completions`)."""
 
     response_type: type[RespT]
     """The native response model — used to validate the provider's raw JSON before parsing."""
@@ -43,3 +49,20 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     @abstractmethod
     def parse_response(self, response: RespT) -> Response:
         """The native response -> the vf `Response` we consume."""
+
+    @abstractmethod
+    def apply_overrides(self, body: ReqT, model: str, sampling: SamplingConfig) -> ReqT:
+        """Return `body` with the eval's `model` + `sampling` imposed in this protocol's shape —
+        the only mutation the proxy makes to an otherwise byte-exact forward. Model overlays;
+        sampling is authoritative (the program's sampling keys are dropped, the eval's applied)."""
+
+    @abstractmethod
+    def serialize_response(self, response: Response, model: str) -> dict:
+        """A vf `Response` -> a native wire response dict for the program — used only when there
+        is no raw provider response to relay 1:1 (the renderer generates one)."""
+
+    @abstractmethod
+    def extend(self, body: ReqT, completion: dict, user_messages: Messages) -> ReqT:
+        """For user-sim multi-turn: return `body` with the model's turn (`completion`, native
+        wire) and the simulator's `user_messages` appended to the conversation, in this
+        protocol's shape — so a multi-turn exchange plays out within one program request."""

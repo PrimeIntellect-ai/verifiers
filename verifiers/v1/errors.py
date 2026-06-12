@@ -6,6 +6,8 @@ built-in traceback — we own the code, so we don't wrap internal invariants in
 custom messages.
 """
 
+from openai import OpenAIError
+
 
 class RolloutError(Exception):
     """Base for errors recorded into the trace rather than crashing the rollout."""
@@ -27,3 +29,26 @@ class ToolError(RolloutError):
 
 class ProgramError(RolloutError):
     """A program failed (non-zero exit or timeout)."""
+
+
+_CONTEXT_LENGTH_PHRASES = (
+    "this model's maximum context length is",
+    "is longer than the model's context length",
+    "is longer than the maximum model length",
+    "exceeds the model's context length",
+    "exceed the configured limit",
+    "exceeds the configured limit",
+    "exceeded model",
+    "prompt_too_long",
+    "context length",
+    "maximum model length",
+)
+
+
+def model_error(e: OpenAIError) -> ModelError:
+    """Map a provider client error to our error type, distinguishing an overlong prompt
+    from any other model-call failure (auth, rate limit, a genuine bad request, ...)."""
+    text = str(e).casefold()
+    if any(phrase in text for phrase in _CONTEXT_LENGTH_PHRASES):
+        return OverlongPromptError(str(e))
+    return ModelError(str(e))

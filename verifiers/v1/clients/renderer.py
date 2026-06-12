@@ -16,8 +16,8 @@ from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatCompletionsDialect, Dialect
-from verifiers.v1.clients.proxy import message_to_wire, model_error, tool_to_wire
-from verifiers.v1.errors import OverlongPromptError
+from verifiers.v1.dialects.chat_completions import message_to_wire, tool_to_wire
+from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,

@@ -18,6 +18,7 @@ from verifiers.v1.types import (
     Message,
     Messages,
     Response,
+    SamplingConfig,
     SystemMessage,
     Tool,
     ToolCall,
@@ -28,6 +29,13 @@ from verifiers.v1.types import (
 )
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
+
+# Sampling knobs the eval owns: stripped from the program's request before the eval's are
+# applied, so its sampling is authoritative (see `apply_overrides`). The chat wire names,
+# including the `max_tokens` alias the OpenAI SDK also accepts.
+_SAMPLING_KEYS = frozenset(
+    {"temperature", "top_p", "max_tokens", "max_completion_tokens"}
+)
 
 # Providers name the model's reasoning differently; read them in the v0 client's precedence.
 # `reasoning` (vLLM / Together / OpenRouter), `reasoning_content` (DeepSeek / Qwen / SGLang /
@@ -95,6 +103,58 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
     ]
 
 
+# --- vf -> chat wire ----------------------------------------------------------
+# The proxy relays the provider's raw response, so it never serializes; these are for the
+# renderer (which builds its generate request and has no raw to relay) and user-sim turn
+# injection. Public so the (chat-only) renderer can reuse them.
+
+
+def _content_to_wire(content):
+    """Plain text passes through; a content-part list becomes OpenAI wire dicts (so the
+    provider / renderer sees the native `image_url` shape)."""
+    if isinstance(content, str):
+        return content
+    return [part.model_dump() for part in content]
+
+
+def message_to_wire(message: Message) -> dict:
+    """A vf message -> the OpenAI chat wire dict."""
+    if message.role == "assistant":
+        wire: dict = {"role": "assistant", "content": message.content}
+        # Reasoning models (DeepSeek V4, Kimi K2 Thinking, ...) require the prior turns'
+        # `reasoning_content` sent back as a message-level field; carry it when present.
+        if message.reasoning_content is not None:
+            wire["reasoning_content"] = message.reasoning_content
+        if message.tool_calls:
+            wire["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": call.arguments},
+                }
+                for call in message.tool_calls
+            ]
+        return wire
+    if message.role == "tool":
+        return {
+            "role": "tool",
+            "tool_call_id": message.tool_call_id,
+            "content": message.content,
+        }
+    return {"role": message.role, "content": _content_to_wire(message.content)}
+
+
+def tool_to_wire(tool: Tool) -> dict:
+    function: dict = {
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": tool.parameters,
+    }
+    if tool.strict is not None:
+        function["strict"] = tool.strict
+    return {"type": "function", "function": function}
+
+
 def response_from_wire(completion: ChatCompletion) -> Response:
     """An OpenAI chat.completion -> a vf `Response` (the one place raw provider objects cross
     into our typed `Response`). No token ids: training tokens come from the renderer client."""
@@ -133,6 +193,7 @@ class ChatCompletionsDialect(Dialect[dict, ChatCompletion]):
     """The OpenAI chat-completions wire format."""
 
     routes = ("/v1/chat/completions",)
+    upstream_path = "/chat/completions"
     response_type = ChatCompletion
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
@@ -142,3 +203,62 @@ class ChatCompletionsDialect(Dialect[dict, ChatCompletion]):
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
+
+    def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
+        # Forward the program's body verbatim except what the eval owns: model (overlay) and
+        # sampling (authoritative — drop the program's sampling keys, then apply the eval's).
+        overrides = sampling.model_dump(exclude_none=True)
+        steered = {
+            k: v
+            for k, v in body.items()
+            if k not in _SAMPLING_KEYS and k not in overrides
+        }
+        return {**steered, "model": model, **overrides}
+
+    def serialize_response(self, response: Response, model: str) -> dict:
+        """A vf `Response` -> an OpenAI chat.completion dict the program's SDK expects."""
+        message: dict = {"role": "assistant", "content": response.message.content}
+        if response.message.reasoning_content is not None:
+            message["reasoning_content"] = response.message.reasoning_content
+        if response.message.tool_calls:
+            message["tool_calls"] = [
+                {
+                    "id": c.id,
+                    "type": "function",
+                    "function": {"name": c.name, "arguments": c.arguments},
+                }
+                for c in response.message.tool_calls
+            ]
+        usage = (
+            {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+            if response.usage
+            else None
+        )
+        return {
+            "id": response.id or "vf-intercept",
+            "object": "chat.completion",
+            "created": response.created,
+            "model": response.model or model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": response.finish_reason or "stop",
+                }
+            ],
+            "usage": usage,
+        }
+
+    def extend(self, body: dict, completion: dict, user_messages: Messages) -> dict:
+        # Append the model's turn (the verbatim assistant message, so its reasoning survives for
+        # the next turn's passback) and the simulator's injected user turn(s) to the wire history.
+        messages = [
+            *body.get("messages", []),
+            completion["choices"][0]["message"],
+            *(message_to_wire(m) for m in user_messages),
+        ]
+        return {**body, "messages": messages}

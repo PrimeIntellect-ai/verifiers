@@ -27,7 +27,6 @@ from aiohttp import web
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
-from verifiers.v1.clients.proxy import message_to_wire, serialize_completion
 from verifiers.v1 import graph
 from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.trace import Trace
@@ -174,12 +173,10 @@ class InterceptionServer:
             logger.warning("interception: unauthorized request")
             return web.json_response({"error": "unauthorized"}, status=401)
         body = await request.json()
-        # `raw_messages` is what goes upstream — the proxy client forwards it 1:1, so provider
-        # fields the typed wire form doesn't model (e.g. `reasoning`) are never lost. `prompt` is
-        # the dialect's typed parse, used to build the trace (the renderer re-derives its own from
-        # the body it's handed). `model`/sampling stay the eval's (the client overrides them); a
-        # user simulator extends both views each turn.
-        raw_messages: list[dict] = list(body.get("messages", []))
+        # `body` is forwarded to the model 1:1 (the proxy mutates only model + sampling), so no
+        # provider field is lost. `prompt` is the dialect's typed parse, kept only to build the
+        # trace (the renderer re-derives its own from the body it's handed). A user simulator
+        # extends both each turn (`dialect.extend` for the wire, `prompt` for the trace).
         prompt: Messages
         prompt, _ = dialect.parse_request(body)
         # A user simulator turns one program request into a multi-turn exchange: after each
@@ -201,10 +198,7 @@ class InterceptionServer:
                 return web.json_response(completion)
             try:
                 response = await session.ctx.client.get_response(
-                    {**body, "messages": raw_messages},
-                    dialect,
-                    session.ctx.model,
-                    session.ctx.sampling,
+                    body, dialect, session.ctx.model, session.ctx.sampling
                 )
             except OverlongPromptError:
                 # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
@@ -225,7 +219,7 @@ class InterceptionServer:
             completion = (
                 response.raw
                 if response.raw is not None
-                else serialize_completion(response, session.ctx.model)
+                else dialect.serialize_response(response, session.ctx.model)
             )
             graph.add_turn(session.trace, prompt, response)  # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
@@ -237,12 +231,8 @@ class InterceptionServer:
             if done:
                 session.trace.stop("user_completed")
                 return web.json_response(completion)
-            # Extend both views with the model turn + the simulator's injected user turn(s):
-            # the upstream wire history with the verbatim assistant message (so the proxy keeps
-            # its reasoning), and the typed prompt for the trace.
-            raw_messages = [
-                *raw_messages,
-                completion["choices"][0]["message"],
-                *(message_to_wire(m) for m in user_messages),
-            ]
+            # Inject the model turn + the simulator's user turn(s): into the wire request for the
+            # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
+            # survives) and into the typed prompt for the trace.
+            body = dialect.extend(body, completion, user_messages)
             prompt = [*prompt, response.message, *user_messages]
