@@ -48,13 +48,7 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
 def _read_results(results_path: Path) -> list[dict]:
     """The previous run's traces as raw dicts. The on-disk dump carries computed fields a
     strict `Trace` can't re-validate, so we read the JSON directly — resume only needs each
-    trace's `task.idx` and whether it `errors`ed.
-
-    Split on "\\n" only, NOT str.splitlines(): a trace's model/terminal output can contain
-    other Unicode line separators (U+0085 NEL, U+2028, U+0B/0C, ...) that are left literal in
-    the JSON (legal unescaped, and `model_dump_json` doesn't escape them), and splitlines()
-    would break a single record on them — shredding valid records into unparseable fragments.
-    `append_trace` only ever delimits records with "\\n"."""
+    trace's `task.idx` and whether it `errors`ed."""
     if not results_path.exists():
         return []
     return [
