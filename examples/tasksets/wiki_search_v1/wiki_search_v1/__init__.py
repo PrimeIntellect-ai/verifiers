@@ -10,6 +10,7 @@ whether the harness's answer matches the ground truth.
 import sys
 
 import verifiers.v1 as vf
+from verifiers.v1.dialects import ChatDialect
 
 SYSTEM = (
     "Use the Wikipedia search tools — `wiki_search_pages` to find relevant pages, "
@@ -98,7 +99,8 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
         client = vf.resolve_client(self.config.judge)
         try:
             verdict = await client.get_response(
-                [vf.UserMessage(content=prompt)],
+                ChatDialect(),
+                {"messages": [{"role": "user", "content": prompt}]},
                 self.config.judge.model,
                 vf.SamplingConfig(),
             )

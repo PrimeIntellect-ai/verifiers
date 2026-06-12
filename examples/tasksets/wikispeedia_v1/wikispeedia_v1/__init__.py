@@ -120,7 +120,7 @@ class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
         reached = any(
             "TARGET REACHED" in (m.content or "") for m in trace.tool_messages
         )
-        return reached or len(trace.trajectory) >= self.config.max_turns
+        return reached or trace.num_turns >= self.config.max_turns
 
     @vf.reward(weight=1.0)
     async def reached_target(
@@ -139,8 +139,8 @@ class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
         return float(
             sum(
                 tc.name == "wiki_click_link"
-                for turn in trace.trajectory
-                for tc in (turn.response.message.tool_calls or [])
+                for m in trace.assistant_messages
+                for tc in (m.tool_calls or [])
             )
         )
 
