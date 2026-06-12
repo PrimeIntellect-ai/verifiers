@@ -137,7 +137,7 @@ uv run eval wiki-search-v1 -n 1  # shared — one instance built once for the wh
 uv run eval deepwiki-v1 -n 1     # an existing remote server, by URL
 ```
 
-### User simulator
+### User
 
 A stateful, multi-turn task can drive the *user* side of the conversation itself: a taskset's
 `user(task)` returns a `vf.User` — structurally a tool server, but the framework drives it,
@@ -166,20 +166,23 @@ uv run eval wiki-search-v1 -n 1 --harness.id compact  # fresh prompt each turn �
 
 ### Clients
 
-The client sits *behind* the interception server, so the harness only ever speaks plain
-chat-completions:
+The model sits *behind* the interception server: a harness just points an OpenAI- or
+Anthropic-style SDK at a localhost endpoint, and the framework intercepts every call. A
+**dialect** layer route-detects the wire format the harness speaks — chat-completions,
+Responses, or Anthropic messages (streaming and reasoning preserved) — so an off-the-shelf
+agent or CLI integrates unchanged whatever SDK it's built on (the `codex` harness, for one,
+drives the Responses dialect).
+
+Behind that endpoint sit two **clients**, switched with `--client.type`:
 
 ```bash
-uv run eval gsm8k-v1 -n 1                          # eval (default): relay, text in / text out
-uv run eval gsm8k-v1 -n 1 --client.type train \      # train: client-side tokenization →
-  --client.base-url http://localhost:8000/v1          # token-in/out traces (needs a vLLM engine)
+uv run eval gsm8k-v1 -n 1                            # eval (default): a 1:1 relay, text in / text out
+uv run eval gsm8k-v1 -n 1 --client.type train \      # train: client-side tokenization via the renderer
+  --client.base-url http://localhost:8000/v1          #        → token-in/out traces (needs a vLLM engine)
 ```
 
-With `train`, each graph node carries the exact tokens the engine saw — `token_ids`
-plus a per-token trainable `mask` and `logprobs` — so concatenating a branch's nodes is a
-ready training sample, straight from an agentic rollout with zero agent changes. (When the
-engine returns ids on the response itself, the openai client picks them up too — no
-renderer required.)
+- **eval** — forwards the harness's request to the provider verbatim and parses the reply; the default for evals.
+- **train** — tokenizes each turn client-side, so every graph node carries the exact `token_ids` the engine saw plus a per-token trainable `mask` and `logprobs`. Concatenating a branch's nodes is then a ready training sample, straight from an agentic rollout with zero agent changes.
 
 ### Budgets
 
