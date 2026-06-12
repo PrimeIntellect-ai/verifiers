@@ -1,4 +1,4 @@
-"""The validate entrypoint: `uv run validate <taskset-id> [--runtime.type docker] [options]`.
+"""The validate entrypoint: `uv run validate <taskset-id> [--runtime.type subprocess] [options]`.
 
 Registered as the `validate` console script — the model-free sibling of `eval`. Where `eval`
 runs a model rollout per task, `validate` runs each task's `validate` hook: a per-task check
@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 USAGE = (
-    "usage: uv run validate [<taskset-id>] [--runtime.type docker] [options] [@ file.toml]\n"
+    "usage: uv run validate [<taskset-id>] [--runtime.type subprocess] [options] [@ file.toml]\n"
     "       runs each task's `validate` hook (per-task validation, no model)"
 )
 
@@ -145,10 +145,11 @@ def _read_prior(path: Path) -> tuple[list[dict], set[int]]:
     return rows, done
 
 
-async def run_validate(config: ValidateConfig, out: Path) -> list[dict]:
+async def run_validate(
+    taskset: Taskset, config: ValidateConfig, out: Path
+) -> list[dict]:
     """Run each task's `validate` hook with bounded concurrency, streaming rows to
     `results.jsonl` as they complete. Returns all rows (prior + new on `--resume`)."""
-    taskset = vf.load_taskset(config.taskset)
     tasks = taskset.load_tasks()
     if config.shuffle:
         random.Random(0).shuffle(tasks)
@@ -260,6 +261,15 @@ def main(argv: list[str] | None = None) -> None:
     config_type = _narrow(argv)
     sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
     config = cli(config_type)
+    # Load + check the taskset before any side effects (no output dir for a bad run): an
+    # un-overridden `validate` would report every task valid without checking anything, so
+    # refuse it (see Taskset.validate).
+    taskset = vf.load_taskset(config.taskset)
+    if type(taskset).validate is Taskset.validate:
+        raise SystemExit(
+            f"taskset {config.name!r} does not implement a `validate` hook - nothing to "
+            "validate (override `Taskset.validate` to make it validatable)"
+        )
     out = _output_path(config)
     setup_logging(
         "DEBUG" if config.verbose else "INFO",
@@ -275,7 +285,7 @@ def main(argv: list[str] | None = None) -> None:
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     _write_config(config, out)
     logger.info("results: %s", out)
-    results = asyncio.run(run_validate(config, out))
+    results = asyncio.run(run_validate(taskset, config, out))
     _summarize(results, out)
 
 

@@ -149,19 +149,14 @@ class EnvConfig(BaseConfig):
     def _resolve_plugins(cls, data):
         """Resolve the generic `taskset` / `harness` to its specific config type by `id`, so
         env-specific fields validate against the real plugin config (no untyped args dict)."""
-        from verifiers.v1.loaders import harness_config_type, taskset_config_type
+        from verifiers.v1.loaders import (
+            harness_config_type,
+            narrow_plugin_field,
+            taskset_config_type,
+        )
 
-        for field, resolve, default_id in (
-            ("taskset", taskset_config_type, None),
-            ("harness", harness_config_type, "default"),
-        ):
-            raw = data.get(field)
-            if isinstance(raw, BaseConfig):
-                raw = raw.model_dump()
-            raw = dict(raw or {})
-            ident = raw.get("id") or default_id
-            if ident:
-                data[field] = resolve(ident).model_validate({**raw, "id": ident})
+        narrow_plugin_field(data, "taskset", taskset_config_type)
+        narrow_plugin_field(data, "harness", harness_config_type, "default")
         return data
 
 
