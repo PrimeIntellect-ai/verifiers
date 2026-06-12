@@ -16,12 +16,34 @@ import importlib
 import importlib.util
 import inspect
 from types import ModuleType
-from typing import get_args
+from typing import Callable, get_args
+
+from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.ids import ensure_installed
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
+
+
+def narrow_plugin_field(
+    data: dict,
+    field: str,
+    resolve: Callable[[str], type],
+    default_id: str | None = None,
+) -> None:
+    """Narrow `data[field]` (a plugin config, as a dict or BaseConfig) in place to the specific
+    config type its `id` resolves to via `resolve` (`taskset_config_type` / `harness_config_type`),
+    so plugin-specific fields validate against the real config instead of an untyped dict.
+    `default_id` supplies the id when the field omits one (the harness default); a no-op when
+    neither is set. Shared by `EnvConfig._resolve_plugins` and `ValidateConfig`."""
+    raw = data.get(field)
+    if isinstance(raw, BaseConfig):
+        raw = raw.model_dump()
+    raw = dict(raw or {})
+    ident = raw.get("id") or default_id
+    if ident:
+        data[field] = resolve(ident).model_validate({**raw, "id": ident})
 
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
