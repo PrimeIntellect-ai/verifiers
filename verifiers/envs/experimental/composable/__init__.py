@@ -7,6 +7,10 @@ from verifiers.envs.experimental.composable.task import (
 )
 from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.composable_env import ComposableEnv
+from verifiers.envs.experimental.composable.sandbox_debug_env import (
+    SandboxDebugEnv,
+    SandboxDebugRubric,
+)
 from verifiers.envs.experimental.composable.swe_debug_env import SWEDebugEnv
 
 __all__ = [
@@ -16,6 +20,8 @@ __all__ = [
     "SandboxTaskSet",
     "Harness",
     "ComposableEnv",
+    "SandboxDebugEnv",
+    "SandboxDebugRubric",
     "SWEDebugEnv",
     "discover_sibling_dir",
 ]

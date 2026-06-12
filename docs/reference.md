@@ -559,10 +559,10 @@ class OpenEnvEnv(MultiTurnEnv):
 
 OpenEnv integration that runs OpenEnv projects in Prime Sandboxes using a prebuilt image manifest (`.build.json`), supports both gym and MCP contracts, and requires a `prompt_renderer` to convert observations into chat messages.
 
-#### SWEDebugEnv
+#### SandboxDebugEnv
 
 ```python
-class SWEDebugEnv(SandboxMixin, MultiTurnEnv):
+class SandboxDebugEnv(SandboxMixin, MultiTurnEnv):
     def __init__(
         self,
         taskset: SandboxTaskSet,
@@ -586,7 +586,7 @@ class SWEDebugEnv(SandboxMixin, MultiTurnEnv):
     ): ...
 ```
 
-No-agent debugger for SWE-style `SandboxTaskSet` instances. It creates the task sandbox, optionally runs task setup, runs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs tests and scores the result.
+No-agent debugger for sandbox-backed `SandboxTaskSet` instances. It creates the task sandbox, optionally runs task setup, runs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs tests and scores the result. `SWEDebugEnv` remains as a deprecated wrapper for older callers.
 
 #### EnvGroup
 
