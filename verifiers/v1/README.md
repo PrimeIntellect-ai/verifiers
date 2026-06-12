@@ -154,11 +154,23 @@ uv run eval wordle-v1 -n 1          # a TextArena game, driven by the same user-
 
 ### Branching trajectories
 
-A rollout isn't always linear. The `compact` harness rewrites its context every turn — a
-fresh `[system, user]` carrying its running notes plus the last tool output — so each turn
-is its own *branch*. Branches fall out of the message graph — each leaf's root→leaf path is
-one branch, exposed by `trace.branches` / `num_branches` (a linear harness is one branch;
-the compact harness is one per turn — it also handles subagents):
+Real agents rarely keep one ever-growing context — and the two patterns they use both break
+a linear trace:
+
+- **Compaction** — when context grows too long, the agent summarizes the history into notes
+  and continues from a fresh prompt; each compaction is a new context window.
+- **Subagents** — the agent spawns a child to work a subtask on its own context, then folds
+  the result back.
+
+v1 handles both natively because the trace is a *graph*, not a list: each fresh context
+window (a compaction) or child run (a subagent) is just another **branch** — a root→leaf
+path, surfaced as `trace.branches` / `trace.num_branches` (a linear rollout is one branch).
+And every branch is an independent training sample, so a compacting or multi-agent rollout
+trains end to end with no agent-side changes.
+
+The `compact` example harness is the deliberate stress test: it rewrites its prompt every
+turn — a fresh `[system, user]` with only its carried-over notes plus the last tool output —
+so each turn becomes its own branch:
 
 ```bash
 uv run eval wiki-search-v1 -n 1 --harness.id compact  # fresh prompt each turn → num_branches == turns
@@ -170,15 +182,14 @@ The model sits *behind* the interception server: a harness just points an OpenAI
 Anthropic-style SDK at a localhost endpoint, and the framework intercepts every call. A
 **dialect** layer route-detects the wire format the harness speaks — chat-completions,
 Responses, or Anthropic messages (streaming and reasoning preserved) — so an off-the-shelf
-agent or CLI integrates unchanged whatever SDK it's built on (the `codex` harness, for one,
-drives the Responses dialect).
+agent or CLI integrates unchanged whatever SDK it's built on .
 
 Behind that endpoint sit two **clients**, switched with `--client.type`:
 
 ```bash
 uv run eval gsm8k-v1 -n 1                            # eval (default): a 1:1 relay, text in / text out
-uv run eval gsm8k-v1 -n 1 --client.type train \      # train: client-side tokenization via the renderer
-  --client.base-url http://localhost:8000/v1          #        → token-in/out traces (needs a vLLM engine)
+uv run eval gsm8k-v1 -n 1 --client.type train \      # train: client-side tokenization via the renderer (requires vllm)
+  --client.base-url http://localhost:8000/v1
 ```
 
 - **eval** — forwards the harness's request to the provider verbatim and parses the reply; the default for evals.
