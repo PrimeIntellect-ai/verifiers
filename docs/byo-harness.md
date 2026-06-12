@@ -162,7 +162,7 @@ Examples:
 - Wikispeedia link tools belong to the Wikispeedia taskset.
 - TextArena game state and user responses belong to the TextArena taskset.
 - Harbor task directories, uploads, and tests belong to `HarborTaskset`.
-- OpenCode, Pi, mini-swe-agent, Terminus, and RLM execution belong to harness
+- CodexCLI, OpenCode, Pi, mini-swe-agent, Terminus, and RLM execution belong to harness
   classes.
 - Endpoint routing and interception belong to the harness/runtime, not task
   rows.
@@ -552,7 +552,7 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
 ```
 
 Tasksets include Harbor, OpenEnv, OpenReward, ReplayTaskset, TextArena, and
-NeMoGym. Harnesses include OpenCode, Pi, mini-swe-agent, Terminus, RLM,
+NeMoGym. Harnesses include CodexCLI, OpenCode, Pi, mini-swe-agent, Terminus, RLM,
 ReplayHarness, and NeMoGymHarness.
 
 ## TOML And CLI
@@ -595,7 +595,7 @@ id = "tasksets.harbor"
 tasks_dir = "tasks"
 
 [eval.harness]
-id = "harnesses.opencode"
+id = "harnesses.codex_cli"
 max_turns = 8
 ```
 

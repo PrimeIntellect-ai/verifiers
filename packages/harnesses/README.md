@@ -49,6 +49,7 @@ own a reusable execution mechanism.
 
 | Harness | Purpose |
 | --- | --- |
+| `CodexCLI` | Codex CLI agent. |
 | `OpenCode` | OpenCode CLI agent. |
 | `Pi` | Pi Coding Agent. |
 | `MiniSWEAgent` | mini-swe-agent. |
@@ -101,6 +102,12 @@ versioned package or release. Use `@latest` for a moving latest install:
 
 ```toml
 [eval.harness]
+id = "harnesses.codex_cli"
+version = "codex@latest"
+```
+
+```toml
+[eval.harness]
 id = "harnesses.opencode"
 version = "PrimeIntellect-ai/opencode@latest"
 ```
@@ -109,4 +116,20 @@ version = "PrimeIntellect-ai/opencode@latest"
 [eval.harness]
 id = "harnesses.mini_swe_agent"
 version = "mini-swe-agent@2.2.8"
+```
+
+`CodexCLI` defaults to OpenAI API-key auth, using the Verifiers runtime
+endpoint. To run against a personal ChatGPT subscription, pass the logged-in
+Codex `auth.json` content as a secret environment variable:
+
+```bash
+export CODEX_AUTH_JSON="$(tr -d '\n' < ~/.codex/auth.json)"
+```
+
+```toml
+[eval.harness]
+id = "harnesses.codex_cli"
+
+[eval.harness.program]
+auth_mode = "chatgpt"
 ```
