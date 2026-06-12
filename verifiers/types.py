@@ -78,6 +78,23 @@ EndpointApi = Literal[
 EndpointClient: TypeAlias = AsyncOpenAI | OpenAI | AsyncAnthropic | Anthropic
 MessageType = Literal["chat", "completion"]  # deprecated
 
+# Wire-shape selector shared between RendererClient and
+# OpenAIChatCompletionsTokenClient. Picks which inference-server surface the
+# client targets at request-build time. Same flag drives both clients so a
+# single `ClientConfig.renderer_transport` setting routes consistently.
+#
+# - "vllm" (default): vLLM's TITO surface. For RendererClient
+#   that's POST /v1/chat/completions with a renderer-flavored request body.
+#   For OpenAIChatCompletionsTokenClient that's POST
+#   /v1/chat/completions/tokens with `tokens=prompt_ids` and bridge
+#   tokenization via the server's /tokenize route.
+# - "dynamo": Dynamo's standard chat-completions route with
+#   pre-tokenized prompt carried in `nvext.token_data`. Server-side token
+#   IDs come back via `nvext.engine_data.completion_token_ids` (the
+#   canonical Dynamo channel). Bridge tokenization runs locally via the
+#   transformers fast tokenizer; no /tokenize HTTP round-trip.
+RendererTransport = Literal["vllm", "dynamo"]
+
 
 # Provider-agnostic message + response types
 class CustomBaseModel(BaseModel):
@@ -211,6 +228,10 @@ class RoutedExpertsPayload(TypedDict):
     data: Any
     shape: list[int]
     start: int
+    # Element dtype of the decoded expert-id buffer. NotRequired so payloads
+    # serialized before this field still validate; a decoder that doesn't see
+    # it falls back to "uint8" (the historical encoding).
+    dtype: NotRequired[Literal["uint8", "uint16", "int16", "int32"]]
 
 
 class ResponseTokens(CustomBaseModel):
@@ -1269,6 +1290,7 @@ class ClientConfig(BaseModel):
     Drives the renderer pool when ``client_type == "renderer"``. Defaults
     to ``None`` so non-renderer clients aren't forced to declare it; the
     renderer client treats ``None`` as ``AutoRendererConfig()``."""
+    renderer_transport: RendererTransport = "vllm"
     renderer_model_name: str | None = None
     """Override the tokenizer model name used to instantiate the renderer
     pool. Defaults to the model used in API requests."""

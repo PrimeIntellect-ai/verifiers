@@ -483,3 +483,32 @@ def test_trajectory_step_mask_combining():
     assert token_ids == [1, 2, 3, 4, 5]
     assert mask == [0, 0, 0, 1, 1]
     assert logprobs == [0.0, 0.0, 0.0, -0.1, -0.2]
+
+
+def test_strip_routed_experts_data_key_order_robust():
+    """The zero-copy stripper must find ``data`` regardless of key order
+    (``dtype``/``shape``/``start`` may precede it) and no-op when absent."""
+    from verifiers.utils.response_utils import strip_routed_experts_data
+
+    # data first (fast path)
+    raw = b'{"routed_experts":{"data":"QUJD","shape":[3],"start":0,"dtype":"uint8"}}'
+    stripped, blob = strip_routed_experts_data(raw)
+    assert blob is not None and blob.tobytes() == b"QUJD"
+    assert b'"data":""' in stripped
+
+    # dtype/shape/start before data — must still strip the blob
+    raw2 = b'{"routed_experts":{"dtype":"uint16","shape":[3],"start":0,"data":"WFla"}}'
+    stripped2, blob2 = strip_routed_experts_data(raw2)
+    assert blob2 is not None and blob2.tobytes() == b"WFla"
+    assert b'"data":""' in stripped2
+
+    # routed_experts object lacks data; an unrelated sibling has data — must
+    # NOT be mistaken for routed experts (search bounded to the object).
+    raw4 = b'{"routed_experts":{"shape":[3],"start":0},"other":{"data":"UNRELATED"}}'
+    stripped4, blob4 = strip_routed_experts_data(raw4)
+    assert blob4 is None and stripped4 == raw4
+
+    # absent — no-op passthrough
+    raw3 = b'{"choices":[{"token_ids":[1,2]}]}'
+    stripped3, blob3 = strip_routed_experts_data(raw3)
+    assert blob3 is None and stripped3 == raw3

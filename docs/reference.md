@@ -215,6 +215,7 @@ class RoutedExpertsPayload(TypedDict):
     data: Any  # actually memoryview; kept opaque so Pydantic skips schema validation
     shape: list[int]
     start: int
+    dtype: NotRequired[Literal["uint8", "uint16", "int16", "int32"]]  # optional; absent → uint8
 ```
 
 ### TrajectoryStepTokens
@@ -1077,6 +1078,8 @@ with `MyConfig.model_validate(...)` or use the typed object directly.
 class ClientConfig(BaseModel):
     client_idx: int = 0
     client_type: ClientType = "openai_chat_completions"
+    renderer_transport: RendererTransport = "vllm"
+    renderer_model_name: str | None = None
     preserve_all_thinking: bool = False
     preserve_thinking_between_tool_calls: bool = False
     api_key_var: str = "PRIME_API_KEY"
@@ -1094,6 +1097,10 @@ class ClientConfig(BaseModel):
 `extra_headers_from_state` maps HTTP header names to state field names. For each inference request, the header value is dynamically read from the rollout state dict. For example, `{"X-Session-ID": "trajectory_id"}` adds a `X-Session-ID` header with the value of `state["trajectory_id"]`, enabling sticky routing at the inference router level.
 
 `client_type` selects which `Client` implementation to instantiate (see [Client Classes](#client-classes)). Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
+
+`renderer_transport` selects the token-in/token-out wire format used by `client_type == "openai_chat_completions_token"` and `client_type == "renderer"`. The default `"vllm"` uses vLLM's token routes. Set `"dynamo"` for Dynamo backends that accept pre-tokenized prompts in `nvext.token_data` on `/v1/chat/completions` and return token IDs in `nvext.engine_data`.
+
+`renderer_model_name` overrides the tokenizer/renderer model name used for local bridge tokenization and renderer construction. It is useful when the served API model name is an alias but the tokenizer should be loaded from the underlying Hugging Face model.
 
 `preserve_all_thinking` and `preserve_thinking_between_tool_calls` are forwarded to the underlying renderer when `client_type == "renderer"`. They control whether past-assistant `reasoning_content` is re-emitted on subsequent renders — `preserve_all_thinking` keeps every past-assistant turn's thinking, and `preserve_thinking_between_tool_calls` keeps thinking only inside the in-flight assistant→tool→…→assistant block after the most recent user turn (when that block contains at least one tool response). Both default to `False` (template default applies).
 

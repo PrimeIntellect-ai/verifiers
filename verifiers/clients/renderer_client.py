@@ -603,15 +603,22 @@ class RendererClient(
             multi_modal_data = None
             prompt_attribution = None
 
-        # ``renderers.client.generate`` discovers the engine's context-length
-        # cap on its own (via ``GET /v1/models``, cached) and raises
-        # ``renderers.OverlongPromptError`` on pre-flight overflow. Rebadge
-        # that into the verifiers-native ``OverlongPromptError`` so the
-        # ``MultiTurnEnv.prompt_too_long`` stop condition picks it up via
-        # the ``vf.Error`` hierarchy. The ``@handle_openai_overlong_prompt``
-        # decorator still handles the fallback case (cap unknown → engine
-        # 4xx → vf.OverlongPromptError) for engines whose ``/v1/models``
-        # doesn't expose ``max_model_len``.
+        # Thread renderer_transport from ClientConfig into generate() so the
+        # renderer client works against Dynamo's /v1/chat/completions surface
+        # as well as vLLM's /inference/v1/generate. setup_clients auto-picks
+        # "dynamo" when client_config.backend == "dynamo".
+        # ``renderers.client.generate`` raises ``renderers.OverlongPromptError``
+        # on pre-flight overflow; rebadge to verifiers-native so MultiTurnEnv stops.
+        transport = (
+            self._config.renderer_transport
+            if self._config is not None
+            else "vllm"
+        )
+        # Only pass transport= when non-default: a pinned ``renderers`` may
+        # predate the kwarg, so the default path must use the upstream signature.
+        generate_kwargs: dict[str, Any] = {}
+        if transport != "vllm":
+            generate_kwargs["transport"] = transport
         try:
             return await generate(
                 client=self.client,
@@ -627,6 +634,7 @@ class RendererClient(
                 or sampling_params.pop("cache_salt", None),
                 priority=args.get("priority") or sampling_params.pop("priority", None),
                 extra_headers=extra_headers or None,
+                **generate_kwargs,
             )
         except RendererOverlongPromptError as exc:
             raise OverlongPromptError(str(exc)) from exc

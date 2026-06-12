@@ -9,15 +9,32 @@ from verifiers.types import (
     TrajectoryStepTokens,
 )
 
-ROUTED_EXPERTS_DATA_PREFIX = b'"routed_experts":{"data":"'
+ROUTED_EXPERTS_OBJ_PREFIX = b'"routed_experts":{'
+ROUTED_EXPERTS_DATA_KEY = b'"data":"'
 
 
 def strip_routed_experts_data(raw: bytes) -> tuple[bytes, memoryview | None]:
-    data_start = raw.find(ROUTED_EXPERTS_DATA_PREFIX)
-    if data_start < 0:
+    # Zero-copy fast path for the large base64 routed_experts blob: find the
+    # "data" value inside the routed_experts object regardless of key order
+    # (shape/start/dtype may precede it), slice it out before JSON parsing.
+    # No-op fallback (consumer b64-decodes the string) if the shape isn't found.
+    obj_start = raw.find(ROUTED_EXPERTS_OBJ_PREFIX)
+    if obj_start < 0:
         return raw, None
 
-    data_start += len(ROUTED_EXPERTS_DATA_PREFIX)
+    # Bound the search to the routed_experts object so a missing `data` here
+    # can't match an unrelated sibling's `data` later in the response. The
+    # object's values (base64 string, int shape/start, dtype) contain no `}`,
+    # so the first `}` after the prefix closes it.
+    obj_end = raw.find(b"}", obj_start)
+    if obj_end < 0:
+        return raw, None
+
+    data_key = raw.find(ROUTED_EXPERTS_DATA_KEY, obj_start, obj_end)
+    if data_key < 0:
+        return raw, None
+
+    data_start = data_key + len(ROUTED_EXPERTS_DATA_KEY)
     data_end = raw.index(b'"', data_start)
     routed_data = memoryview(raw)[data_start:data_end]
     stripped = raw[:data_start] + raw[data_end:]

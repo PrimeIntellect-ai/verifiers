@@ -469,8 +469,100 @@ class OpenAIChatCompletionsClient(
                 case _:
                     return None
 
+        def _graft_engine_data(response: OpenAIChatResponse) -> None:
+            """Graft engine-side token IDs onto top-level response fields.
+
+            Three coexisting wire shapes from dynamo's vLLM/SGLang backends:
+
+              1. ``response.nvext.engine_data.{completion_token_ids,
+                 completion_logprobs, prompt_token_ids}``
+                 (opt-in: ``nvext.extra_fields=["engine_data"]``).
+              2. ``response.nvext.completion_token_ids`` — top-level shape
+                 (opt-in:
+                 ``nvext.extra_fields=["completion_token_ids"]``). No
+                 logprobs in this shape; logprobs ride the standard
+                 ``choices[0].logprobs.content[*].logprob`` channel.
+              3. Older vLLM-native paths set ``response.choices[0].token_ids``
+                 / ``response.prompt_token_ids`` directly (no grafting needed).
+
+            This helper bridges (1) and (2) onto the top-level fields the
+            rest of ``parse_tokens`` reads via the standard openai SDK
+            attribute path. ``engine_data`` wins when both are present (it
+            carries more — including logprobs + prompt_token_ids).
+            """
+            nvext = getattr(response, "nvext", None)
+            if nvext is None and hasattr(response, "model_dump"):
+                nvext = response.model_dump().get("nvext")
+            if not isinstance(nvext, dict):
+                return
+            choice = response.choices[0]
+
+            engine_data = nvext.get("engine_data")
+            completion_token_ids_top = nvext.get("completion_token_ids")
+            prompt_token_ids_top = nvext.get("prompt_token_ids")
+
+            # Prefer engine_data over top-level when both arrive: engine_data
+            # bundles logprobs + prompt_token_ids in one place.
+            completion_token_ids: list[int] | None = None
+            prompt_token_ids: list[int] | None = None
+            completion_logprobs: list[float] | None = None
+            if isinstance(engine_data, dict):
+                if engine_data.get("completion_token_ids") is not None:
+                    completion_token_ids = list(engine_data["completion_token_ids"])
+                if engine_data.get("prompt_token_ids") is not None:
+                    prompt_token_ids = list(engine_data["prompt_token_ids"])
+                if engine_data.get("completion_logprobs") is not None:
+                    completion_logprobs = [
+                        float(x) for x in engine_data["completion_logprobs"]
+                    ]
+            if completion_token_ids is None and completion_token_ids_top is not None:
+                completion_token_ids = list(completion_token_ids_top)
+            if prompt_token_ids is None and prompt_token_ids_top is not None:
+                prompt_token_ids = list(prompt_token_ids_top)
+
+            if (
+                getattr(choice, "token_ids", None) is None
+                and completion_token_ids is not None
+            ):
+                try:
+                    choice.token_ids = completion_token_ids
+                except Exception:
+                    object.__setattr__(choice, "token_ids", completion_token_ids)
+            if (
+                getattr(response, "prompt_token_ids", None) is None
+                and prompt_token_ids is not None
+            ):
+                try:
+                    response.prompt_token_ids = prompt_token_ids
+                except Exception:
+                    object.__setattr__(response, "prompt_token_ids", prompt_token_ids)
+            # Dynamo returns logprobs only under engine_data, not
+            # choices[0].logprobs. Synthesize the standard shape so parse_tokens
+            # (which requires choices[0].logprobs.content) can read them. Graft
+            # whenever the choice has no usable logprobs content — i.e. logprobs
+            # is missing OR present-but-content-less (empty/None content) — not
+            # only when it is absent entirely.
+            existing_lp = getattr(choice, "logprobs", None)
+            existing_content = (
+                existing_lp.get("content")
+                if isinstance(existing_lp, dict)
+                else getattr(existing_lp, "content", None)
+            )
+            if (
+                completion_logprobs is not None
+                and completion_token_ids is not None
+                and len(completion_logprobs) == len(completion_token_ids)
+                and not existing_content
+            ):
+                synthesized = {"content": [{"logprob": lp} for lp in completion_logprobs]}
+                try:
+                    choice.logprobs = synthesized
+                except Exception:
+                    object.__setattr__(choice, "logprobs", synthesized)
+
         def parse_tokens(response: OpenAIChatResponse) -> ResponseTokens | None:
             assert len(response.choices) == 1, "Response should always have one choice"
+            _graft_engine_data(response)
             choice = response.choices[0]
             if not hasattr(choice, "token_ids"):
                 return None
@@ -508,14 +600,28 @@ class OpenAIChatCompletionsClient(
                 logprobs_content = response.choices[0].logprobs["content"]
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
 
+            if len(completion_logprobs) != len(completion_ids):
+                # Engine returned mismatched logprobs/ids — drop rather than emit
+                # out-of-sync ResponseTokens.
+                return None
+
             choice_extra = choice.model_extra or {}
+            routed_experts = choice_extra.get("routed_experts")
+            if routed_experts is None:
+                top_extra = response.model_extra or {}
+                nvext = top_extra.get("nvext") if isinstance(top_extra, dict) else None
+                if isinstance(nvext, dict):
+                    routed_experts = nvext.get("routed_experts")
+                    engine_data = nvext.get("engine_data")
+                    if routed_experts is None and isinstance(engine_data, dict):
+                        routed_experts = engine_data.get("routed_experts")
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
                 completion_ids=completion_ids,
                 completion_mask=completion_mask,
                 completion_logprobs=completion_logprobs,
-                routed_experts=choice_extra.get("routed_experts"),
+                routed_experts=routed_experts,
             )
 
         response_id = getattr(response, "id", "")
