@@ -3,7 +3,6 @@ import os
 import shlex
 from typing import TypeAlias, cast
 
-from verifiers.errors import InfraError
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
 from .config_utils import resolve_config_object, string_mapping
@@ -76,10 +75,6 @@ async def run_local_command(
     state["completion"] = [
         {"role": "assistant", "content": state["command"]["stdout"].strip()}
     ]
-    if proc.returncode:
-        raise InfraError(
-            f"Command exited with {proc.returncode}: {state['command']['stderr']}"
-        )
     state._set_stop_condition("command_completed")
     return state
 

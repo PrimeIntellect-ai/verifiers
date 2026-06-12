@@ -547,10 +547,6 @@ async def run_sandbox_command(
         state["completion"] = [
             {"role": "assistant", "content": state["command"]["stdout"].strip()}
         ]
-        if result.exit_code:
-            raise SandboxError(
-                f"Sandbox command exited with {result.exit_code}: {result.stderr}"
-            )
         state._set_stop_condition("command_completed")
         return state
 
