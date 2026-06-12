@@ -201,6 +201,11 @@ harness or task: a cap on model turns (`--max-turns`) and three on tokens — `-
 `--max-output-tokens`, `--max-total-tokens` (prompt, completion, and the sum). Hitting a cap
 cleanly truncates the rollout (`trace.is_truncated`) instead of erroring.
 
+Wall-clock **timeouts** bound each rollout stage independently — `--timeout.setup`,
+`--timeout.rollout` (the harness run), `--timeout.finalize`, `--timeout.scoring` (seconds;
+default no limit). A `rollout` timeout scores what the harness produced so far (like a turn
+cap); `setup` / `finalize` / `scoring` timeouts error the rollout.
+
 Alongside them, retries at two granularities: per-call (model + runtime, default 3 retries —
 reruns just the failed call, keeping the rollout's progress) and whole-rollout (default 1
 retry). A retry count of 0 turns a layer off.
@@ -209,6 +214,7 @@ retry). A retry count of 0 turns a layer off.
 uv run eval gsm8k-v1 -n 1 --max-turns 8                  # cap model turns
 uv run eval gsm8k-v1 -n 1 --max-total-tokens 8192        # cap prompt+completion tokens
                                                           # (also --max-input-tokens / --max-output-tokens)
+uv run eval gsm8k-v1 -n 1 --timeout.rollout 600 --timeout.scoring 120  # per-stage wall-clock caps (s)
 uv run eval gsm8k-v1 -n 1 --retries.model.max-retries 5 --retries.runtime.max-retries 5  # per-call retries
 uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.include ProgramError  # whole-rollout, by exception type
 ```
