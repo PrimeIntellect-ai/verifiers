@@ -67,6 +67,70 @@ def sandbox_upload_timeout() -> int | None:
     return timeout if timeout > 0 else None
 
 
+# Grading-only metadata that the in-sandbox program runner never reads (it uses
+# only the prompt/messages + tool defs). Staging these into the sandbox lets a
+# solver `cat /tmp/vf_task.json` and read the answer key, so they are stripped
+# from the task/state copies written into the sandbox. The host-side scorer is
+# unaffected: it reads `expected` from the env's task object / task dir, not from
+# the sandbox copy.
+SANDBOX_PRIVATE_TASK_FIELDS = frozenset(
+    {
+        "expected",
+        "expected_ref",
+        "expected_result",
+        "expected_diff",
+        "rubric",
+        "rubrics",
+        "verifier",
+        "verifier_ref",
+        "solution",
+        "solutions",
+        "reference_solution",
+        "reference_solutions",
+        "answer_key",
+        "gold_answer",
+    }
+)
+# Conversation/tool subtrees the runner DOES need verbatim — never scrubbed, so a
+# legitimate prompt or tool schema that happens to contain a denied key name is
+# preserved intact.
+SANDBOX_SCRUB_SKIP_SUBTREES = frozenset(
+    {
+        "prompt",
+        "messages",
+        "input",
+        "completion",
+        "tools",
+        "tool_defs",
+        "tool_calls",
+    }
+)
+
+
+def scrub_sandbox_private_fields(value: object) -> object:
+    """Deep-copy ``value`` with grading-only keys removed.
+
+    Strips ``SANDBOX_PRIVATE_TASK_FIELDS`` at every nesting level so the answer
+    key cannot reach the sandbox, while leaving conversation/tool subtrees
+    (``SANDBOX_SCRUB_SKIP_SUBTREES``) untouched so prompt/tool content is never
+    corrupted.
+    """
+
+    if isinstance(value, dict):
+        scrubbed: dict[object, object] = {}
+        for key, item in value.items():
+            if isinstance(key, str) and key in SANDBOX_PRIVATE_TASK_FIELDS:
+                continue
+            if isinstance(key, str) and key in SANDBOX_SCRUB_SKIP_SUBTREES:
+                scrubbed[key] = item
+            else:
+                scrubbed[key] = scrub_sandbox_private_fields(item)
+        return scrubbed
+    if isinstance(value, (list, tuple)):
+        return [scrub_sandbox_private_fields(item) for item in value]
+    return value
+
+
 class SandboxRecord(Protocol):
     id: object
 
@@ -1032,7 +1096,7 @@ async def upload_state_input(
         client.upload_bytes,
         sandbox_id=sandbox_id,
         file_path=path,
-        file_bytes=json.dumps(state).encode(),
+        file_bytes=json.dumps(scrub_sandbox_private_fields(state)).encode(),
         filename=path.rsplit("/", 1)[-1] or "file",
         timeout=sandbox_upload_timeout(),
     )

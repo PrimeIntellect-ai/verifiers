@@ -3536,6 +3536,38 @@ async def test_program_staging_uploads_thread_env_timeout(
     assert client.file_timeouts == [777, None]
 
 
+def test_scrub_sandbox_private_fields_removes_answer_key_keeps_prompt() -> None:
+    from verifiers.v1.utils import sandbox_program_utils, sandbox_utils
+
+    task = {
+        "task_id": "t1",
+        "prompt": [{"role": "user", "content": "audit; the word expected appears"}],
+        "world_task": {
+            "id": "t1",
+            "expected": {"expected_result": {"answer": "SECRET"}, "rubric": "r"},
+        },
+        "expected_ref": "task:EXPECTED",
+        "verifier_ref": "task:verify",
+        "tools": [{"name": "submit", "parameters": {"expected": "keep-this-arg"}}],
+    }
+    scrubbed = sandbox_utils.scrub_sandbox_private_fields(task)
+
+    serialized = json.dumps(scrubbed)
+    assert "SECRET" not in serialized
+    assert "expected" not in scrubbed["world_task"]
+    assert "expected_ref" not in scrubbed and "verifier_ref" not in scrubbed
+    # Conversation + tool subtrees are preserved verbatim.
+    assert scrubbed["prompt"] == task["prompt"]
+    assert scrubbed["tools"] == task["tools"]
+    # Original object is not mutated.
+    assert "expected" in task["world_task"]
+    # The program module re-exports the same helper for the TASK_PATH write.
+    assert (
+        sandbox_program_utils.scrub_sandbox_private_fields
+        is sandbox_utils.scrub_sandbox_private_fields
+    )
+
+
 @pytest.mark.asyncio
 async def test_cached_upload_archive_cancelled_awaiter_still_cleans_archive(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
