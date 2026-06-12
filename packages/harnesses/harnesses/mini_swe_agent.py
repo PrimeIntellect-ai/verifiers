@@ -141,7 +141,7 @@ if [ -s {system_prompt_file} ]; then
   CONFIG_ARGS+=(-c "agent.system_template=$(cat {system_prompt_file})")
 fi
 cd "$MINI_SWE_AGENT_WORKDIR"
-timeout --kill-after=30s "${{AGENT_TIMEOUT_SECONDS:-3600}}" {shlex.quote(DEFAULT_MINI_BINARY)} \\
+{shlex.quote(DEFAULT_MINI_BINARY)} \\
   --model "$OPENAI_MODEL" \\
   --task "$MINI_SWE_AGENT_TASK" \\
   --output {shlex.quote(self.trajectory_path)} \\
