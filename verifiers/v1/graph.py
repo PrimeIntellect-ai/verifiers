@@ -57,25 +57,10 @@ def _decode_ndarray(d: dict) -> np.ndarray:
     return np.frombuffer(raw, dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
-def _encode_mm_value(val: Any) -> Any:
-    """Encode one mm-item value: numpy arrays (or torch tensors) → the `__nd__` dict, anything
-    else (already-JSON-safe scalars/lists) passed through."""
-    if hasattr(val, "detach"):  # torch tensor
-        val = val.detach().cpu().numpy()
-    if isinstance(val, np.ndarray):
-        return _encode_ndarray(val)
-    return val
-
-
-def _decode_mm_value(val: Any) -> Any:
-    if isinstance(val, dict) and val.get("__nd__"):
-        return _decode_ndarray(val)
-    return val
-
-
 def _encode_multi_modal_data(mmd: MultiModalData) -> dict:
     """`MultiModalData` → a JSON/msgpack-safe dict. `mm_hashes` rides as-is; `mm_placeholders`
-    become `{offset,length}` dicts; each `mm_items` value is `_encode_mm_value`d (numpy → base64)."""
+    become `{offset,length}` dicts; each `mm_items` value is a numpy array (every renderer emits
+    `return_tensors="np"`) encoded to a base64 `__nd__` dict."""
     return {
         "mm_hashes": {k: list(v) for k, v in mmd.mm_hashes.items()},
         "mm_placeholders": {
@@ -84,7 +69,7 @@ def _encode_multi_modal_data(mmd: MultiModalData) -> dict:
         },
         "mm_items": {
             modality: [
-                {key: _encode_mm_value(val) for key, val in item.items()}
+                {key: _encode_ndarray(val) for key, val in item.items()}
                 for item in items
             ]
             for modality, items in mmd.mm_items.items()
@@ -104,7 +89,7 @@ def _decode_multi_modal_data(d: dict) -> MultiModalData:
         },
         mm_items={
             modality: [
-                {key: _decode_mm_value(val) for key, val in item.items()}
+                {key: _decode_ndarray(val) for key, val in item.items()}
                 for item in items
             ]
             for modality, items in (d.get("mm_items") or {}).items()
