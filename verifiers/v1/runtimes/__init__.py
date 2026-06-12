@@ -2,9 +2,9 @@
 
 Each runtime decides WHERE the program runs and HOW it reaches the host
 interception server: subprocess (local), docker (local container), or prime /
-modal (remote sandbox). They share the `Runtime` contract, so the Environment is
-runtime-agnostic. `RuntimeConfig` is the discriminated config union and
-`make_runtime` builds the runtime matching a config.
+modal / daytona (remote sandbox). They share the `Runtime` contract, so the
+Environment is runtime-agnostic. `RuntimeConfig` is the discriminated config
+union and `make_runtime` builds the runtime matching a config.
 """
 
 from typing import Annotated
@@ -17,13 +17,14 @@ from verifiers.v1.runtimes.base import (
     Runtime,
     register,
 )
+from verifiers.v1.runtimes.daytona import DaytonaConfig, DaytonaRuntime
 from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
 from verifiers.v1.runtimes.subprocess import SubprocessConfig, SubprocessRuntime
 
 RuntimeConfig = Annotated[
-    SubprocessConfig | DockerConfig | PrimeConfig | ModalConfig,
+    SubprocessConfig | DockerConfig | PrimeConfig | ModalConfig | DaytonaConfig,
     Field(discriminator="type"),
 ]
 
@@ -33,6 +34,8 @@ def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
         runtime: Runtime = PrimeRuntime(config, name)
     elif isinstance(config, ModalConfig):
         runtime = ModalRuntime(config, name)
+    elif isinstance(config, DaytonaConfig):
+        runtime = DaytonaRuntime(config, name)
     elif isinstance(config, DockerConfig):
         runtime = DockerRuntime(config, name)
     else:
@@ -55,4 +58,6 @@ __all__ = [
     "PrimeRuntime",
     "ModalConfig",
     "ModalRuntime",
+    "DaytonaConfig",
+    "DaytonaRuntime",
 ]
