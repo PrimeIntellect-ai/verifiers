@@ -101,6 +101,27 @@ async def post_chat_completion_with_routed_experts_sidecar(
     body: dict[str, Any],
     extra_headers: Mapping[str, str] | None = None,
 ) -> ChatCompletion:
+    def _routed_experts_container(response: ChatCompletion) -> dict[str, Any] | None:
+        """Return the parsed routed_experts dict, wherever the backend put it."""
+        candidates: list[Any] = []
+        if response.choices:
+            choice_extra = response.choices[0].model_extra or {}
+            if isinstance(choice_extra, dict):
+                candidates.append(choice_extra.get("routed_experts"))
+
+        top_extra = response.model_extra or {}
+        nvext = top_extra.get("nvext") if isinstance(top_extra, dict) else None
+        if isinstance(nvext, dict):
+            candidates.append(nvext.get("routed_experts"))
+            engine_data = nvext.get("engine_data")
+            if isinstance(engine_data, dict):
+                candidates.append(engine_data.get("routed_experts"))
+
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                return candidate
+        return None
+
     raw_response = await client.post(
         path,
         body=body,
@@ -110,9 +131,13 @@ async def post_chat_completion_with_routed_experts_sidecar(
     stripped, routed_data = strip_routed_experts_data(raw_response.content)
     response = ChatCompletion.model_validate_json(stripped)
     if routed_data is not None:
-        choice_extra = response.choices[0].model_extra
-        assert choice_extra is not None
-        choice_extra["routed_experts"]["data"] = routed_data
+        routed_experts = _routed_experts_container(response)
+        if routed_experts is None:
+            raise RuntimeError(
+                "routed_experts data was stripped from the raw response, but no "
+                "parsed routed_experts object was found to reattach it."
+            )
+        routed_experts["data"] = routed_data
     return response
 
 

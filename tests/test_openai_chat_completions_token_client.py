@@ -1,3 +1,5 @@
+import base64
+import json
 from typing import Any, cast
 
 import httpx
@@ -8,6 +10,7 @@ from verifiers.clients.openai_chat_completions_token_client import (
     OpenAIChatCompletionsTokenClient,
 )
 from verifiers.types import State
+from verifiers.utils.client_utils import post_chat_completion_with_routed_experts_sidecar
 
 
 class _NoopClient:
@@ -43,6 +46,40 @@ class _RecordingClient(_NoopClient):
                 "path": path,
                 "body": body,
             },
+        )
+
+
+class _DynamoRoutedExpertsClient(_NoopClient):
+    async def post(
+        self, path: str, body: dict[str, Any], cast_to: type, **kwargs: Any
+    ) -> Any:
+        payload = {
+            "id": "x",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "nvext": {
+                "engine_data": {
+                    "completion_token_ids": [10],
+                    "routed_experts": {
+                        "data": base64.b64encode(b"abc").decode("ascii"),
+                        "shape": [3, 1, 1],
+                        "start": 0,
+                        "dtype": "uint8",
+                    },
+                }
+            },
+        }
+        return httpx.Response(
+            200,
+            content=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
         )
 
 
@@ -330,6 +367,38 @@ async def test_post_dynamo_chat_scrubs_vllm_only_and_forwards_sampling():
     assert body["nvext"]["token_data"] == [1, 2, 3]
     assert body["nvext"]["extra_fields"] == ["engine_data"]
     assert body["cache_salt"] == "ckpt-1"
+
+
+@pytest.mark.asyncio
+async def test_post_dynamo_chat_uses_placeholder_messages():
+    recording_client = _RecordingClient()
+    client = OpenAIChatCompletionsTokenClient(recording_client)
+
+    await client._post_dynamo_chat(
+        prompt=cast(Any, [{"role": "user", "content": "real prompt"}]),
+        prompt_ids=[1, 2, 3],
+        model="test-model",
+        tools=None,
+        sampling_args={"extra_body": {"nvext": {"extra_fields": ["engine_data"]}}},
+        extra_headers=None,
+    )
+
+    assert recording_client.calls[0]["body"]["messages"] == [
+        {"role": "user", "content": ""}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sidecar_helper_reattaches_dynamo_engine_routed_experts():
+    response = await post_chat_completion_with_routed_experts_sidecar(
+        _DynamoRoutedExpertsClient(),
+        "/chat/completions",
+        body={},
+    )
+
+    routed = response.model_extra["nvext"]["engine_data"]["routed_experts"]
+    assert isinstance(routed["data"], memoryview)
+    assert routed["data"].tobytes() == base64.b64encode(b"abc")
 
 
 @pytest.mark.asyncio

@@ -298,7 +298,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
 
         body: dict[str, Any] = {
             "model": model,
-            "messages": prompt,  # placeholder; engine ignores when token_data present
+            "messages": [{"role": "user", "content": ""}],
             "stream": False,
             "nvext": nvext,
         }
