@@ -15,7 +15,7 @@ from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.dialects import FINISH_REASONS, Dialect
+from verifiers.v1.dialects import FINISH_REASONS, ChatCompletionsDialect, Dialect
 from verifiers.v1.clients.proxy import message_to_wire, model_error, tool_to_wire
 from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.types import (
@@ -113,8 +113,17 @@ class RendererClient(Client):
     ) -> Response:
         # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
         # back), so it can't forward the raw request — it parses `body` via the dialect and renders
-        # it. It leaves `Response.raw` unset; the interception server serializes its `Response` for
-        # the program instead of relaying provider bytes.
+        # it with a chat template. It leaves `Response.raw` unset; the interception server serializes
+        # its `Response` for the program instead of relaying provider bytes.
+        if not isinstance(dialect, ChatCompletionsDialect):
+            # The renderer renders a chat template, so it's only validated for chat-completions
+            # input; other dialects' semantics (Responses reasoning items, Anthropic thinking) may
+            # not round-trip faithfully through chat-template tokenization. Refuse them explicitly.
+            raise NotImplementedError(
+                f"The renderer client only supports the chat-completions dialect, got "
+                f"{type(dialect).__name__}. Use the proxy client for this dialect, or add "
+                f"renderer support for it."
+            )
         prompt, tools = dialect.parse_request(body)
         renderer = self._renderer_pool(model)
         from renderers.client import generate
