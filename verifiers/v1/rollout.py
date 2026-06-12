@@ -142,9 +142,7 @@ class Rollout:
             self.runtime_config.type,
         )
         try:
-            session = RolloutSession(
-                ctx, trace, stops, self.limits, dialect=self.harness.DIALECT
-            )
+            session = RolloutSession(ctx, trace, stops, self.limits)
             await runtime.start()
             try:
                 await asyncio.wait_for(

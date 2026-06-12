@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.clients.dialects import ChatCompletionsDialect, Dialect
+from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.clients.proxy import message_to_wire, serialize_completion
 from verifiers.v1 import graph
 from verifiers.v1.errors import OverlongPromptError
@@ -94,9 +94,6 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
-    dialect: Dialect = field(default_factory=ChatCompletionsDialect)
-    """The harness's native wire dialect (`Harness.DIALECT`), used to parse the program's
-    requests/responses for the trace. Defaults to OpenAI chat completions."""
     user: "Respond | None" = None
     """A user simulator the rollout sets before the harness runs (see `verifiers.v1.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
@@ -120,11 +117,12 @@ class RolloutSession:
 
 
 class InterceptionServer:
-    """A localhost server that proxies chat-completions for one or more rollouts. Each
-    rollout `register`s a `RolloutSession` and gets back a secret; `handle_chat` routes every
-    request to the session whose secret matches the request's bearer token. A single server
-    can multiplex many rollouts (the basis for `interception.pool`); used 1:1 it's just a
-    server with one session."""
+    """A localhost server that proxies model calls for one or more rollouts. It serves every
+    registered dialect's routes (see `dialects.DIALECTS`), so a request's wire format is resolved
+    from the endpoint it arrived on — not declared by the harness. Each rollout `register`s a
+    `RolloutSession` and gets back a secret; each request is routed to the session whose secret
+    matches its bearer token. A single server can multiplex many rollouts (the basis for
+    `interception.pool`); used 1:1 it's just a server with one session."""
 
     def __init__(self) -> None:
         self.sessions: dict[str, RolloutSession] = {}
@@ -141,9 +139,20 @@ class InterceptionServer:
     def unregister(self, secret: str) -> None:
         self.sessions.pop(secret, None)
 
+    def _handler_for(self, dialect: Dialect):
+        """Bind a route's dialect to the request handler — the route the SDK posts to is what
+        selects the wire format (see `dialects.DIALECTS`)."""
+
+        async def handler(request: web.Request) -> web.Response:
+            return await self.handle_request(request, dialect)
+
+        return handler
+
     async def __aenter__(self) -> "InterceptionServer":
         app = web.Application(client_max_size=_MAX_REQUEST_BODY)
-        app.router.add_post("/v1/chat/completions", self.handle_chat)
+        for dialect in DIALECTS:
+            for route in dialect.routes:
+                app.router.add_post(route, self._handler_for(dialect))
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -156,7 +165,9 @@ class InterceptionServer:
         if self.runner is not None:
             await self.runner.cleanup()
 
-    async def handle_chat(self, request: web.Request) -> web.Response:
+    async def handle_request(
+        self, request: web.Request, dialect: Dialect
+    ) -> web.Response:
         auth = request.headers.get("Authorization", "")
         session = self.sessions.get(auth.removeprefix("Bearer "))
         if session is None:
@@ -171,7 +182,7 @@ class InterceptionServer:
         # extends both views each turn.
         raw_messages: list[dict] = list(body.get("messages", []))
         prompt: Messages
-        prompt, tools = session.dialect.parse_request(body)
+        prompt, tools = dialect.parse_request(body)
         # A user simulator turns one program request into a multi-turn exchange: after each
         # model turn the simulator's reply is injected as a user turn and the model is
         # re-prompted, so a whole game plays out here and only the final assistant message
@@ -192,7 +203,7 @@ class InterceptionServer:
             try:
                 response = await session.ctx.client.get_response(
                     {**body, "messages": raw_messages},
-                    session.dialect,
+                    dialect,
                     prompt,
                     session.ctx.model,
                     session.ctx.sampling,

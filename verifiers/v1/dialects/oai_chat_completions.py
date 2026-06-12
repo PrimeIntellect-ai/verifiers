@@ -11,7 +11,7 @@ from typing import Any
 
 from openai.types.chat import ChatCompletion
 
-from verifiers.v1.clients.dialects.base import Dialect
+from verifiers.v1.dialects.base import Dialect
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -149,6 +149,7 @@ def response_from_wire(completion: ChatCompletion) -> Response:
 class ChatCompletionsDialect(Dialect[dict, ChatCompletion]):
     """The OpenAI chat-completions wire format (the only dialect today)."""
 
+    routes = ("/v1/chat/completions",)
     response_type = ChatCompletion
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:

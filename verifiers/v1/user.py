@@ -62,7 +62,7 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
     from mcp import ClientSession
     from mcp.client.streamable_http import streamable_http_client
 
-    from verifiers.v1.clients.dialects import parse_message
+    from verifiers.v1.dialects import parse_message
 
     last_exc: Exception | None = None
     for attempt in range(_USER_CONNECT_ATTEMPTS):

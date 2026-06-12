@@ -16,7 +16,7 @@ from tenacity import (
     stop_after_attempt,
 )
 
-from verifiers.v1.clients.dialects import Dialect
+from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import ModelError, OverlongPromptError
 from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
 

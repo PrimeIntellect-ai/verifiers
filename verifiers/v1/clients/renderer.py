@@ -15,7 +15,7 @@ from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.dialects import FINISH_REASONS, Dialect
+from verifiers.v1.dialects import FINISH_REASONS, Dialect
 from verifiers.v1.clients.proxy import message_to_wire, model_error, tool_to_wire
 from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.types import (

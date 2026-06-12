@@ -14,7 +14,7 @@ import httpx
 from openai import AsyncOpenAI, OpenAIError
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.dialects import Dialect
+from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import ModelError, OverlongPromptError
 from verifiers.v1.types import Message, Messages, Response, SamplingConfig, Tool
 
