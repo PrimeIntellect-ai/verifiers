@@ -13,7 +13,7 @@ change. Endpoint config (base url, api key, billing headers) comes from the clie
 
 import httpx
 
-from verifiers.v1.clients.client import Client
+from verifiers.v1.clients.client import Client, RelayReply
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import Response, SamplingConfig
@@ -66,6 +66,50 @@ class EvalClient(Client):
         response = dialect.parse_response(dialect.response_type.model_validate(raw))
         response.raw = raw  # the program gets the provider's bytes back 1:1
         return response
+
+    def _upstream(
+        self, dialect: Dialect, body: dict, model: str, sampling_args: SamplingConfig
+    ) -> tuple[str, dict, dict]:
+        """The (url, headers, steered body) for a forwarded request — shared by the non-stream
+        and streaming paths."""
+        return (
+            self.base_url + dialect.upstream_path,
+            dialect.auth_headers(self.api_key),
+            dialect.apply_overrides(body, model, sampling_args),
+        )
+
+    async def relay(
+        self,
+        dialect: Dialect,
+        body: dict,
+        model: str,
+        sampling_args: SamplingConfig,
+    ) -> RelayReply:
+        # Stream the provider's response bytes through (SSE for a streaming request). An error
+        # status is read fully and mapped before any byte is handed back, so the retry +
+        # truncation machinery treat a relayed call exactly like a non-streamed one.
+        url, headers, upstream = self._upstream(dialect, body, model, sampling_args)
+        request = self.http.build_request("POST", url, json=upstream, headers=headers)
+        try:
+            resp = await self.http.send(request, stream=True)
+        except httpx.HTTPError as e:
+            raise model_error(str(e)) from e
+        if resp.status_code >= 400:
+            text = (await resp.aread()).decode("utf-8", errors="replace")
+            await resp.aclose()
+            raise model_error(f"upstream {resp.status_code}: {text}")
+
+        async def chunks():
+            try:
+                async for chunk in resp.aiter_bytes():
+                    yield chunk
+            finally:
+                await resp.aclose()
+
+        return RelayReply(
+            content_type=resp.headers.get("content-type", "text/event-stream"),
+            chunks=chunks(),
+        )
 
     async def close(self) -> None:
         await self.http.aclose()

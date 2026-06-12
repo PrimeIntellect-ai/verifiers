@@ -166,12 +166,11 @@ class InterceptionServer:
 
     async def handle_request(
         self, request: web.Request, dialect: Dialect
-    ) -> web.Response:
-        auth = request.headers.get("Authorization", "")
-        session = self.sessions.get(auth.removeprefix("Bearer "))
+    ) -> web.StreamResponse:
+        session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
             logger.warning("interception: unauthorized request")
-            return web.json_response({"error": "unauthorized"}, status=401)
+            return web.json_response(dialect.error_body("unauthorized"), status=401)
         body = await request.json()
         # `body` is forwarded to the model 1:1 (the proxy mutates only model + sampling), so no
         # provider field is lost. `prompt` is the dialect's typed parse, kept only to build the
@@ -179,6 +178,8 @@ class InterceptionServer:
         # extends both each turn (`dialect.extend` for the wire, `prompt` for the trace).
         prompt: Messages
         prompt, _ = dialect.parse_request(body)
+        if dialect.streaming(body):
+            return await self._stream(request, session, dialect, body, prompt)
         # A user simulator turns one program request into a multi-turn exchange: after each
         # model turn the simulator's reply is injected as a user turn and the model is
         # re-prompted, so a whole game plays out here and only the final assistant message
@@ -193,7 +194,7 @@ class InterceptionServer:
                 # conversation is under way, just end it and return the last turn cleanly.
                 if completion is None:
                     return web.json_response(
-                        {"error": f"rollout stopped: {refused}"}, status=400
+                        dialect.error_body(f"rollout stopped: {refused}"), status=400
                     )
                 return web.json_response(completion)
             try:
@@ -208,12 +209,13 @@ class InterceptionServer:
                 logger.debug("prompt too long: id=%s", session.trace.id)
                 if completion is None:
                     return web.json_response(
-                        {"error": "rollout stopped: context_length"}, status=400
+                        dialect.error_body("rollout stopped: context_length"),
+                        status=400,
                     )
                 return web.json_response(completion)
             except Exception as e:  # surface to the program as an API error
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
-                return web.json_response({"error": str(e)}, status=502)
+                return web.json_response(dialect.error_body(str(e)), status=502)
             # `Response.raw` is the wire response handed to the program 1:1 — the provider's
             # verbatim bytes (proxy) or the client's serialized completion (renderer).
             completion = response.raw
@@ -232,3 +234,44 @@ class InterceptionServer:
             # survives) and into the typed prompt for the trace.
             body = dialect.extend(body, completion, user_messages)
             prompt = [*prompt, response.message, *user_messages]
+
+    async def _stream(
+        self,
+        request: web.Request,
+        session: RolloutSession,
+        dialect: Dialect,
+        body: dict,
+        prompt: Messages,
+    ) -> web.StreamResponse:
+        """A streamed (SSE) model turn: relay the provider's stream through to the program,
+        accumulating the bytes to record the turn on the trace. Single-shot — a streamed turn
+        never drives a user simulator (the only client that streams is the eval relay)."""
+        refused = await session.refused()
+        if refused is not None:
+            return web.json_response(
+                dialect.error_body(f"rollout stopped: {refused}"), status=400
+            )
+        try:
+            reply = await session.ctx.client.relay(
+                dialect, body, session.ctx.model, session.ctx.sampling
+            )
+        except OverlongPromptError:
+            session.trace.stop("context_length")
+            logger.debug("prompt too long: id=%s", session.trace.id)
+            return web.json_response(
+                dialect.error_body("rollout stopped: context_length"), status=400
+            )
+        except Exception as e:  # surface to the program as an API error
+            logger.warning("model call failed: id=%s %s", session.trace.id, e)
+            return web.json_response(dialect.error_body(str(e)), status=502)
+        resp = web.StreamResponse()
+        resp.content_type = reply.content_type.split(";")[0].strip()
+        await resp.prepare(request)
+        buffer = bytearray()
+        async for chunk in reply.chunks:
+            buffer += chunk
+            await resp.write(chunk)
+        await resp.write_eof()
+        # Record the streamed turn: assemble the accumulated SSE into a typed Response.
+        graph.add_turn(session.trace, prompt, dialect.parse_stream(bytes(buffer)))
+        return resp

@@ -6,12 +6,13 @@ and responses (`parse_response`). Reasoning extraction mirrors the v0 chat clien
 read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning_details`).
 """
 
+import time
 from collections.abc import Mapping
 from typing import Any
 
 from openai.types.chat import ChatCompletion
 
-from verifiers.v1.dialects.base import Dialect
+from verifiers.v1.dialects.base import Dialect, iter_sse
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -243,6 +244,55 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
+
+    def parse_stream(self, raw: bytes) -> Response:
+        """Assemble `chat.completion.chunk` deltas into one completion, then parse it."""
+        chunks = iter_sse(raw)
+        message: dict = {"role": "assistant", "content": None}
+        tool_calls: dict[int, dict] = {}
+        finish_reason = None
+        usage = None
+        for chunk in chunks:
+            usage = chunk.get("usage") or usage
+            for choice in chunk.get("choices") or []:
+                if choice.get("index", 0) != 0:
+                    continue
+                finish_reason = choice.get("finish_reason") or finish_reason
+                delta = choice.get("delta") or {}
+                for key in ("content", "reasoning_content", "reasoning"):
+                    if delta.get(key) is not None:
+                        message[key] = (message.get(key) or "") + delta[key]
+                for tc in delta.get("tool_calls") or []:
+                    slot = tool_calls.setdefault(
+                        tc.get("index", 0),
+                        {"type": "function", "function": {"name": "", "arguments": ""}},
+                    )
+                    slot["id"] = tc.get("id") or slot.get("id", "")
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        slot["function"]["name"] = fn["name"]
+                    slot["function"]["arguments"] += fn.get("arguments") or ""
+        if tool_calls:
+            message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+        head = chunks[0] if chunks else {}
+        return response_from_wire(
+            ChatCompletion.model_validate(
+                {
+                    "id": head.get("id", "vf-intercept"),
+                    "object": "chat.completion",
+                    "created": head.get("created", int(time.time())),
+                    "model": head.get("model", ""),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": message,
+                            "finish_reason": finish_reason or "stop",
+                        }
+                    ],
+                    "usage": usage,
+                }
+            )
+        )
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
         # Forward the program's body verbatim except what the eval owns: model (overlay) and
