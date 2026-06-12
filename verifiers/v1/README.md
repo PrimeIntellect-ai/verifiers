@@ -192,13 +192,12 @@ uv run eval gsm8k-v1 -n 1 --client.type train \      # train: client-side tokeni
   --client.base-url http://localhost:8000/v1
 ```
 
-- **eval** — forwards the harness's request to the provider verbatim and parses the reply; the default for evals.
-- **train** — tokenizes each turn client-side, so every graph node carries the exact `token_ids` the engine saw plus a per-token trainable `mask` and `logprobs`. Concatenating a branch's nodes is then a ready training sample, straight from an agentic rollout with zero agent changes.
+`eval` is the default; `train` is only needed for the prime-rl training integration (it tokenizes client-side so each branch comes back as a ready training sample).
 
 ### Budgets
 
 Per-rollout budgets are framework-enforced and checked between turns, so they hold for any
-harness: a cap on model turns (`--max-turns`) and three on tokens — `--max-input-tokens`,
+harness or task: a cap on model turns (`--max-turns`) and three on tokens — `--max-input-tokens`,
 `--max-output-tokens`, `--max-total-tokens` (prompt, completion, and the sum). Hitting a cap
 cleanly truncates the rollout (`trace.is_truncated`) instead of erroring.
 
