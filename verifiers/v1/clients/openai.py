@@ -1,14 +1,24 @@
-"""OpenAI-compatible chat-completions client.
+"""OpenAI-compatible chat-completions client."""
 
-Distilled from v1's 545-line client: message<->wire translation, tool schemas,
-best-effort reasoning_content. Sampling args pass straight through; when the
-response carries vLLM's token ids + sampling logprobs (the caller asked for
-`logprobs` and `return_token_ids`), we parse them into the response's `tokens`
-so MITO training needs no renderer. Routed-experts/audio handling stays dropped.
-This is the one place raw provider dicts cross into our typed `Response`.
-"""
+from typing import Any, cast
 
 from openai import AsyncOpenAI, OpenAIError
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionAssistantMessageParam,
+    ChatCompletionContentPartImageParam,
+    ChatCompletionContentPartParam,
+    ChatCompletionContentPartTextParam,
+    ChatCompletionFunctionToolParam,
+    ChatCompletionMessageFunctionToolCall,
+    ChatCompletionMessageFunctionToolCallParam,
+    ChatCompletionMessageParam,
+    ChatCompletionSystemMessageParam,
+    ChatCompletionToolMessageParam,
+    ChatCompletionUserMessageParam,
+)
+from openai.types.chat.chat_completion import Choice
+from openai.types.shared_params import FunctionDefinition
 
 from verifiers.v1.clients.client import Client
 from verifiers.v1.errors import ModelError, OverlongPromptError
@@ -19,13 +29,15 @@ from verifiers.v1.types import (
     Messages,
     Response,
     SamplingConfig,
+    SystemMessage,
+    TextContentPart,
     Tool,
     ToolCall,
+    ToolMessage,
     TurnTokens,
     Usage,
+    UserMessage,
 )
-
-FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 
 _CONTEXT_LENGTH_PHRASES = (
     "this model's maximum context length is",
@@ -50,48 +62,80 @@ def model_error(e: OpenAIError) -> ModelError:
     return ModelError(str(e))
 
 
-def _content_to_wire(content):
-    """Plain text passes through; a content-part list becomes OpenAI wire dicts (so the
-    provider / renderer sees the native `image_url` shape)."""
+def content_to_wire(content) -> str | list[ChatCompletionContentPartParam]:
     if isinstance(content, str):
         return content
-    return [part.model_dump() for part in content]
+    parts: list[ChatCompletionContentPartParam] = []
+    for part in content:
+        if isinstance(part, TextContentPart):
+            parts.append(
+                ChatCompletionContentPartTextParam(type="text", text=part.text)
+            )
+        elif part.image_url.detail == "original":
+            raise ValueError("OpenAI Chat does not support image detail='original'")
+        else:
+            parts.append(
+                ChatCompletionContentPartImageParam(
+                    type="image_url",
+                    image_url=cast(Any, part.image_url.model_dump(exclude_none=True)),
+                )
+            )
+    return parts
 
 
-def message_to_wire(message: Message) -> dict:
-    if message.role == "assistant":
-        wire: dict = {"role": "assistant", "content": message.content}
+def message_to_wire(message: Message) -> ChatCompletionMessageParam:
+    if isinstance(message, AssistantMessage):
+        wire = ChatCompletionAssistantMessageParam(
+            role="assistant", content=message.content
+        )
         if message.tool_calls:
             wire["tool_calls"] = [
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {"name": call.name, "arguments": call.arguments},
-                }
+                ChatCompletionMessageFunctionToolCallParam(
+                    id=call.id,
+                    type="function",
+                    function={"name": call.name, "arguments": call.arguments},
+                )
                 for call in message.tool_calls
             ]
+        if message.provider_state:
+            cast(Any, wire)["reasoning_details"] = message.provider_state
         return wire
-    if message.role == "tool":
-        return {
-            "role": "tool",
-            "tool_call_id": message.tool_call_id,
-            "content": message.content,
-        }
-    return {"role": message.role, "content": _content_to_wire(message.content)}
+    if isinstance(message, ToolMessage):
+        return ChatCompletionToolMessageParam(
+            role="tool",
+            tool_call_id=message.tool_call_id,
+            content=message.content,
+        )
+    if isinstance(message, SystemMessage):
+        content = message.content
+        if not isinstance(content, str):
+            if any(not isinstance(part, TextContentPart) for part in content):
+                raise ValueError("OpenAI Chat system messages do not support images")
+            content = [
+                ChatCompletionContentPartTextParam(type="text", text=part.text)
+                for part in content
+                if isinstance(part, TextContentPart)
+            ]
+        return ChatCompletionSystemMessageParam(role="system", content=content)
+    assert isinstance(message, UserMessage)
+    return ChatCompletionUserMessageParam(
+        role="user",
+        content=content_to_wire(message.content),
+    )
 
 
-def tool_to_wire(tool: Tool) -> dict:
-    function: dict = {
-        "name": tool.name,
-        "description": tool.description,
-        "parameters": tool.parameters,
-    }
+def tool_to_wire(tool: Tool) -> ChatCompletionFunctionToolParam:
+    function = FunctionDefinition(
+        name=tool.name,
+        description=tool.description,
+        parameters=tool.parameters,
+    )
     if tool.strict is not None:
         function["strict"] = tool.strict
-    return {"type": "function", "function": function}
+    return ChatCompletionFunctionToolParam(type="function", function=function)
 
 
-def tokens_from_wire(completion, choice) -> TurnTokens | None:
+def tokens_from_wire(completion: ChatCompletion, choice: Choice) -> TurnTokens | None:
     """Parse vLLM's token ids + sampling logprobs into `TurnTokens`, for training.
 
     vLLM surfaces the completion ids on the choice (`return_token_ids`), the prompt
@@ -99,26 +143,33 @@ def tokens_from_wire(completion, choice) -> TurnTokens | None:
     per generated token (`logprobs=True`). All are absent on providers that don't
     return them, so this is best-effort: no completion ids means no `tokens`.
     """
-    completion_ids = getattr(choice, "token_ids", None)
+    completion_ids = cast(list[int] | None, (choice.model_extra or {}).get("token_ids"))
     if not completion_ids:
         return None
     content = choice.logprobs.content if choice.logprobs else None
     return TurnTokens(
-        prompt_ids=list(getattr(completion, "prompt_token_ids", None) or []),
-        completion_ids=list(completion_ids),
+        prompt_ids=cast(
+            list[int], (completion.model_extra or {}).get("prompt_token_ids") or []
+        ),
+        completion_ids=completion_ids,
         completion_logprobs=[lp.logprob for lp in content] if content else [],
     )
 
 
-def response_from_wire(completion) -> Response:
+def response_from_wire(completion: ChatCompletion) -> Response:
     choice = completion.choices[0]
     message = choice.message
+    extra = message.model_extra or {}
     tool_calls = [
         ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
         for tc in (message.tool_calls or [])
+        if isinstance(tc, ChatCompletionMessageFunctionToolCall)
     ] or None
-    finish: FinishReason = (
-        choice.finish_reason if choice.finish_reason in FINISH_REASONS else None
+    finish = cast(
+        FinishReason,
+        choice.finish_reason
+        if choice.finish_reason in ("stop", "length", "tool_calls")
+        else None,
     )
     usage = (
         Usage(
@@ -134,8 +185,14 @@ def response_from_wire(completion) -> Response:
         model=completion.model,
         message=AssistantMessage(
             content=message.content,
-            reasoning_content=getattr(message, "reasoning_content", None),
+            reasoning_content=cast(
+                str | None,
+                extra.get("reasoning_content") or extra.get("reasoning"),
+            ),
             tool_calls=tool_calls,
+            provider_state=cast(
+                list[dict[str, Any]] | None, extra.get("reasoning_details")
+            ),
         ),
         finish_reason=finish,
         usage=usage,
@@ -154,15 +211,27 @@ class OpenAIChatCompletionsClient(Client):
         sampling_args: SamplingConfig,
         tools: list[Tool] | None = None,
     ) -> Response:
-        body: dict = {
+        sampling: dict[str, Any] = sampling_args.model_dump(exclude_none=True)
+        streaming = bool(sampling.pop("stream", False))
+        if streaming:
+            # Usage only arrives on the final chunk if asked for.
+            sampling["stream_options"] = {
+                "include_usage": True,
+                **(sampling.get("stream_options") or {}),
+            }
+        body: dict[str, Any] = {
             "model": model,
             "messages": [message_to_wire(m) for m in prompt],
-            **sampling_args.model_dump(exclude_none=True),
+            **sampling,
         }
         if tools:
             body["tools"] = [tool_to_wire(t) for t in tools]
         try:
-            completion = await self.openai.chat.completions.create(**body)
+            if streaming:
+                async with self.openai.chat.completions.stream(**body) as stream:
+                    completion = await stream.get_final_completion()
+            else:
+                completion = await self.openai.chat.completions.create(**body)
         except OpenAIError as e:
             raise model_error(e) from e
         return response_from_wire(completion)

@@ -234,9 +234,17 @@ class Trace(StrictBaseModel, Generic[TaskT]):
 
     @property
     def has_response(self) -> bool:
-        """Whether the most recent assistant message produced non-empty content."""
+        """Whether the most recent assistant message produced any output."""
         last = self._last_assistant()
-        return bool(last and last.message.content)
+        return bool(
+            last
+            and (
+                last.message.content
+                or last.message.reasoning_content
+                or last.message.provider_state
+                or last.message.tool_calls
+            )
+        )
 
     @property
     def branches(self) -> list[Branch]:

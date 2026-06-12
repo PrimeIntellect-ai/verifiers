@@ -103,6 +103,13 @@ def message_hash(message: Message) -> str:
     if isinstance(message, AssistantMessage):
         if message.reasoning_content is not None:
             parts += ["reasoning_content", message.reasoning_content]
+        if message.provider_state is not None:
+            parts += [
+                "provider_state",
+                json.dumps(
+                    message.provider_state, sort_keys=True, separators=(",", ":")
+                ),
+            ]
         for tc in message.tool_calls or []:
             parts += [tc.id, tc.name, _canonical_tool_arguments(tc.arguments)]
     elif isinstance(message, ToolMessage):

@@ -1,3 +1,4 @@
+import pytest
 import verifiers.v1 as vf
 from verifiers.v1 import graph
 
@@ -88,3 +89,32 @@ def test_prompt_supplied_assistant_messages_are_not_sampled_turns():
     assert [n.sampled for n in trace.nodes] == [False, False, False, True]
     assert trace.num_turns == 1
     assert trace.assistant_messages == [response]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        vf.AssistantMessage(content="answer"),
+        vf.AssistantMessage(reasoning_content="thinking"),
+        vf.AssistantMessage(provider_state=[{"type": "reasoning"}]),
+        vf.AssistantMessage(
+            tool_calls=[vf.ToolCall(id="call_0", name="lookup", arguments="{}")]
+        ),
+    ],
+)
+def test_trace_has_response_for_any_model_output(message):
+    trace = vf.Trace(task=vf.Task(idx=0, instruction="question"))
+    graph.add_turn(trace, [vf.UserMessage(content="question")], _response(message))
+
+    assert trace.has_response
+
+
+def test_trace_has_no_response_for_empty_assistant_message():
+    trace = vf.Trace(task=vf.Task(idx=0, instruction="question"))
+    graph.add_turn(
+        trace,
+        [vf.UserMessage(content="question")],
+        _response(vf.AssistantMessage()),
+    )
+
+    assert not trace.has_response

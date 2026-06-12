@@ -15,7 +15,7 @@ from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.openai import FINISH_REASONS, model_error
+from verifiers.v1.clients.openai import model_error
 from verifiers.v1.clients.openai import message_to_wire as chat_message_to_wire
 from verifiers.v1.clients.openai import tool_to_wire
 from verifiers.v1.errors import OverlongPromptError
@@ -47,7 +47,7 @@ def response_from_generate(result: dict, model: str) -> Response:
     mirroring the chat client's `response_from_wire` (plus the token encoding)."""
     finish: FinishReason = (
         result["finish_reason"]
-        if result.get("finish_reason") in FINISH_REASONS
+        if result.get("finish_reason") in ("stop", "length", "tool_calls")
         else None
     )
     tool_calls = [
