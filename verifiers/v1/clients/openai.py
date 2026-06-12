@@ -61,6 +61,12 @@ def _content_to_wire(content):
 def message_to_wire(message: Message) -> dict:
     if message.role == "assistant":
         wire: dict = {"role": "assistant", "content": message.content}
+        # Reasoning models (DeepSeek V4, Kimi K2 Thinking, ...) require the prior turns'
+        # `reasoning_content` to be sent back as a message-level field — stripping it breaks
+        # multi-turn ("reasoning_content ... must be passed back to the API"). Carry it
+        # through whenever the model produced it; providers that don't use it ignore it.
+        if message.reasoning_content is not None:
+            wire["reasoning_content"] = message.reasoning_content
         if message.tool_calls:
             wire["tool_calls"] = [
                 {

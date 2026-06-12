@@ -15,14 +15,12 @@ from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.openai import FINISH_REASONS, model_error
-from verifiers.v1.clients.openai import message_to_wire as chat_message_to_wire
+from verifiers.v1.clients.openai import FINISH_REASONS, message_to_wire, model_error
 from verifiers.v1.clients.openai import tool_to_wire
 from verifiers.v1.errors import OverlongPromptError
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
-    Message,
     Messages,
     Response,
     SamplingConfig,
@@ -31,15 +29,6 @@ from verifiers.v1.types import (
     TurnTokens,
     Usage,
 )
-
-
-def message_to_wire(message: Message) -> dict:
-    """The chat-completions wire form, plus `reasoning_content` (the chat template
-    renders it back in), which the renderer needs but the chat client drops."""
-    wire = chat_message_to_wire(message)
-    if message.role == "assistant" and message.reasoning_content is not None:
-        wire["reasoning_content"] = message.reasoning_content
-    return wire
 
 
 def response_from_generate(result: dict, model: str) -> Response:

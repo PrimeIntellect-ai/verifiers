@@ -76,7 +76,9 @@ def parse_message(raw: dict) -> Message:
             for c in (raw.get("tool_calls") or [])
         ] or None
         return AssistantMessage(
-            content=_content_text(content) or None, tool_calls=calls
+            content=_content_text(content) or None,
+            reasoning_content=raw.get("reasoning_content"),
+            tool_calls=calls,
         )
     return UserMessage(content=content_to_parts(content))
 
@@ -99,6 +101,10 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
 def serialize_completion(response: Response, model: str) -> dict:
     """A `Response` -> an OpenAI chat.completion dict the program's SDK expects."""
     message: dict = {"role": "assistant", "content": response.message.content}
+    # Return the model's reasoning to the program so it can send it back next turn —
+    # reasoning models (DeepSeek V4, Kimi K2 Thinking) require that for multi-turn.
+    if response.message.reasoning_content is not None:
+        message["reasoning_content"] = response.message.reasoning_content
     if response.message.tool_calls:
         message["tool_calls"] = [
             {
