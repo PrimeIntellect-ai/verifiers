@@ -50,16 +50,16 @@ uv run eval gsm8k-v1 -n 5 -r 3 \
 
 Common knobs have short aliases:
 
-| alias | long               | meaning                                    |
-| ----- | ------------------ | ------------------------------------------ |
-| `-m`  | `--model`          | model id                                   |
-| `-n`  | `--num-tasks`      | how many tasks to evaluate                 |
-| `-s`  | `--shuffle`        | shuffle before the `-n` slice              |
-| `-r`  | `--num-rollouts`   | rollouts per task                          |
-| `-c`  | `--max-concurrent` | max rollouts in flight                     |
-| `-v`  | `--verbose`        | debug logging                              |
-| `-o`  | `--output-dir`     | where to write results                     |
-|       | `--no-rich`        | disable the live dashboard (on by default) |
+| alias | long               | meaning                       | default                      |
+| ----- | ------------------ | ----------------------------- | ---------------------------- |
+| `-m`  | `--model`          | model id                      | `deepseek/deepseek-v4-flash` |
+| `-n`  | `--num-tasks`      | how many tasks to evaluate    | all tasks                    |
+| `-s`  | `--shuffle`        | shuffle before the `-n` slice | off                          |
+| `-r`  | `--num-rollouts`   | rollouts per task             | `1`                          |
+| `-c`  | `--max-concurrent` | max rollouts in flight        | `128`                        |
+| `-v`  | `--verbose`        | debug logging                 | off (info)                   |
+| `-o`  | `--output-dir`     | where to write results        | a fresh per-run dir          |
+|       | `--no-rich`        | disable the live dashboard    | dashboard on                 |
 
 ## Tasksets & harnesses
 
