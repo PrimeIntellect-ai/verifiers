@@ -133,7 +133,7 @@ def parse_task(task_dir: Path, idx: int, require_image: bool) -> HarborTask:
         description=task.get("description"),
         instruction=(task_dir / "instruction.md").read_text().strip(),
         image=resolve_image(task_dir, config, require_image),
-        harness_timeout=config.get("harness", {}).get("timeout_sec"),
+        harness_timeout=config.get("agent", {}).get("timeout_sec"),
         scoring_timeout=config.get("verifier", {}).get("timeout_sec"),
         resources=parse_resources(config.get("environment", {})),
         keywords=task.get("keywords", []),
