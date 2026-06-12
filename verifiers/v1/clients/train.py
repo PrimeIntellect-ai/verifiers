@@ -15,8 +15,8 @@ from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.dialects import FINISH_REASONS, ChatCompletionsDialect, Dialect
-from verifiers.v1.dialects.chat_completions import (
+from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
+from verifiers.v1.dialects.chat import (
     message_to_wire,
     serialize_completion,
     tool_to_wire,
@@ -83,7 +83,7 @@ def response_from_generate(result: dict, model: str) -> Response:
     )
 
 
-class RendererClient(Client):
+class TrainClient(Client):
     """Renders prompts to token ids and calls a vLLM `/inference/v1/generate` engine."""
 
     def __init__(
@@ -119,7 +119,7 @@ class RendererClient(Client):
         # back), so it can't forward the raw request — it parses `body` via the dialect and renders
         # it with a chat template. It leaves `Response.raw` unset; the interception server serializes
         # its `Response` for the program instead of relaying provider bytes.
-        if not isinstance(dialect, ChatCompletionsDialect):
+        if not isinstance(dialect, ChatDialect):
             # The renderer renders a chat template, so it's only validated for chat-completions
             # input; other dialects' semantics (Responses reasoning items, Anthropic thinking) may
             # not round-trip faithfully through chat-template tokenization. Refuse them explicitly.

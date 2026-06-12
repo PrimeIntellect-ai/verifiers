@@ -8,8 +8,8 @@ from verifiers.v1.clients.config import (
     RendererClientConfig,
     resolve_client,
 )
-from verifiers.v1.clients.proxy import ProxyClient
-from verifiers.v1.clients.renderer import RendererClient
+from verifiers.v1.clients.eval import EvalClient
+from verifiers.v1.clients.train import TrainClient
 
 __all__ = [
     "Client",
@@ -20,6 +20,6 @@ __all__ = [
     "OpenAIClientConfig",
     "RendererClientConfig",
     "resolve_client",
-    "ProxyClient",
-    "RendererClient",
+    "EvalClient",
+    "TrainClient",
 ]

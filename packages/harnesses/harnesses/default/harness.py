@@ -11,7 +11,7 @@ from pathlib import Path
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.dialects.chat_completions import message_to_wire
+from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 

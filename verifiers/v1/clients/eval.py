@@ -1,6 +1,6 @@
 """The proxy client: forward the program's request to the provider 1:1.
 
-`ProxyClient` (the default) is a thin `httpx` forwarder: it sends the program's request body
+`EvalClient` (the default) is a thin `httpx` forwarder: it sends the program's request body
 verbatim to the provider — mutating only what the eval owns (model + sampling, via the dialect's
 `apply_overrides`) — and parses the provider's response into a vf `Response` (via the request's
 dialect) for the trace, carrying the raw response on `Response.raw` so the interception server
@@ -24,7 +24,7 @@ _TIMEOUT = httpx.Timeout(3600.0, connect=10.0)
 _LIMITS = httpx.Limits(max_connections=28000, max_keepalive_connections=28000)
 
 
-class ProxyClient(Client):
+class EvalClient(Client):
     """The default client: forward the program's request 1:1 to the provider, parse the response
     into a vf `Response` (via the request's dialect) for the trace, and carry the raw response on
     `Response.raw` so it reaches the program untouched."""

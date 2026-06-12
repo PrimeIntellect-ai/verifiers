@@ -17,8 +17,8 @@ from pydantic_config import BaseConfig
 from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.proxy import ProxyClient
-from verifiers.v1.clients.renderer import RendererClient
+from verifiers.v1.clients.eval import EvalClient
+from verifiers.v1.clients.train import TrainClient
 
 PRIME_INFERENCE_HOST = "pinference.ai"
 PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"
@@ -81,11 +81,11 @@ def resolve_client(config: BaseClientConfig) -> Client:
             api_key=api_key,
             default_headers=config.headers or None,
         )
-        return RendererClient(
+        return TrainClient(
             openai,
             pool_size=config.pool_size,
             config=config.renderer,
             renderer_model_name=config.renderer_model_name,
         )
     # The proxy is a raw httpx forwarder; the dialect supplies the auth scheme + upstream path.
-    return ProxyClient(config.base_url, api_key, headers=config.headers or None)
+    return EvalClient(config.base_url, api_key, headers=config.headers or None)

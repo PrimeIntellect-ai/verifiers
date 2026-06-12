@@ -229,7 +229,7 @@ def response_from_wire(completion: ChatCompletion) -> Response:
     )
 
 
-class ChatCompletionsDialect(Dialect[dict, ChatCompletion]):
+class ChatDialect(Dialect[dict, ChatCompletion]):
     """The OpenAI chat-completions wire format."""
 
     routes = ("/v1/chat/completions",)
