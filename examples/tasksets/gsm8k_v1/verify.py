@@ -18,9 +18,8 @@ import sys
 from math_verify import parse, verify
 
 gold, pred = sys.argv[1], sys.argv[2]
-# GSM8K answers come after '####'; fall back to the whole response.
-match = re.search(r"####\s*(.+)", pred)
-prediction = match.group(1).strip() if match else pred
+matches = re.findall(r"####\s*(.+)", pred)
+prediction = matches[-1].strip() if matches else pred
 try:
     score = (
         1.0
