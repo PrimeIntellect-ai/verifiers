@@ -163,12 +163,12 @@ The client sits *behind* the interception server, so the harness only ever speak
 chat-completions:
 
 ```bash
-uv run eval gsm8k-v1 -n 1                          # openai (default): text in / text out
-uv run eval gsm8k-v1 -n 1 --client.type renderers \  # renderers: client-side tokenization →
+uv run eval gsm8k-v1 -n 1                          # eval (default): relay, text in / text out
+uv run eval gsm8k-v1 -n 1 --client.type train \      # train: client-side tokenization →
   --client.base-url http://localhost:8000/v1          # token-in/out traces (needs a vLLM engine)
 ```
 
-With `renderers`, each graph node carries the exact tokens the engine saw — `token_ids`
+With `train`, each graph node carries the exact tokens the engine saw — `token_ids`
 plus a per-token trainable `mask` and `logprobs` — so concatenating a branch's nodes is a
 ready training sample, straight from an agentic rollout with zero agent changes. (When the
 engine returns ids on the response itself, the openai client picks them up too — no
