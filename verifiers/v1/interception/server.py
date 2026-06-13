@@ -187,7 +187,7 @@ class InterceptionServer:
         # extends both each turn (`dialect.extend` for the wire, `prompt` for the trace).
         prompt: Messages
         prompt, _ = dialect.parse_request(body)
-        if dialect.streaming(body, request.path):
+        if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt)
         # A user simulator turns one program request into a multi-turn exchange: after each
         # model turn the simulator's reply is injected as a user turn and the model is

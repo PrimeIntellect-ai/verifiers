@@ -82,11 +82,10 @@ the session's client, records the result with `graph.add_turn()`, and — if the
 user simulator — appends the next user message and loops, all invisibly to the harness.
 
 The wire format is abstracted by a **`Dialect`** (`dialects/`), chosen by the request's route:
-`ChatDialect` (OpenAI chat-completions), `ResponsesDialect`, `AnthropicDialect`, or
-`GoogleGenerateContentDialect`. A dialect knows how to parse a wire request into a typed prompt,
-parse a response (or a complete SSE stream) back into a `Response`, inject the eval's model +
-sampling, and extend the body for a user-sim turn — so reasoning content and streaming are
-preserved across providers.
+`ChatDialect` (OpenAI chat-completions), `ResponsesDialect`, `AnthropicDialect`. A dialect
+knows how to parse a wire request into a typed prompt, parse a response (or a complete SSE
+stream) back into a `Response`, inject the eval's model + sampling, and extend the body for a
+user-sim turn — so reasoning content and streaming are preserved across providers.
 
 Behind the endpoint sits one of two clients:
 

@@ -125,13 +125,11 @@ class EvalClient(Client):
         model: str,
         sampling_args: SamplingConfig,
         request_headers: Mapping[str, str] | None,
-        *,
-        stream: bool = False,
     ) -> tuple[str, dict, dict]:
         """The (url, headers, steered body) for a forwarded request — shared by the non-stream
         and streaming paths."""
         return (
-            self.base_url + dialect.upstream_route(model, stream),
+            self.base_url + dialect.upstream_path.format(model=model),
             self._headers(dialect, request_headers),
             dialect.apply_overrides(body, model, sampling_args),
         )
@@ -175,12 +173,7 @@ class EvalClient(Client):
         # status is read fully and mapped before any byte is handed back, so the retry +
         # truncation machinery treat a relayed call exactly like a non-streamed one.
         url, headers, upstream = self._upstream(
-            dialect,
-            body,
-            model,
-            sampling_args,
-            request_headers,
-            stream=True,
+            dialect, body, model, sampling_args, request_headers
         )
         resp = await self._request(url, upstream, headers, stream=True)
 
