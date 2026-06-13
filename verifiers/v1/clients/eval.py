@@ -26,27 +26,35 @@ from verifiers.v1.types import Response, SamplingConfig
 # else is forwarded; endpoint configuration and dialect auth override matching names.
 _BLOCKED_REQUEST_HEADERS = frozenset(
     {
+        # The harness uses this rollout secret to authenticate with the localhost server.
+        # The dialect adds the actual provider authorization after filtering.
         "authorization",
+        # These describe the original localhost connection or encoded request body. HTTPX must
+        # calculate them again for the separate provider connection and newly encoded JSON.
         "connection",
-        "content-digest",
         "content-encoding",
         "content-length",
-        "content-md5",
-        "digest",
         "expect",
         "host",
-        "idempotency-key",
         "keep-alive",
         "proxy-authenticate",
         "proxy-authorization",
         "proxy-connection",
-        "repr-digest",
-        "signature",
-        "signature-input",
         "te",
         "trailer",
         "transfer-encoding",
         "upgrade",
+        # The eval owns the model and sampling settings, so it changes those JSON fields before
+        # sending upstream. Hashes and signatures calculated from the intercepted body are stale.
+        "content-digest",
+        "content-md5",
+        "digest",
+        "repr-digest",
+        "signature",
+        "signature-input",
+        # One intercepted request may produce several distinct provider calls when a user
+        # simulator extends the conversation. Reusing one key could replay an earlier result.
+        "idempotency-key",
         "x-idempotency-key",
     }
 )
