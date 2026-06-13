@@ -21,12 +21,12 @@ config. You'll work with them in very different proportions:
   framework behind one `Runtime` contract and compose with any taskset/harness; you just choose
   where code runs.
 
-The output of a rollout is a `Trace` — a delta-native message graph (one node per message)
-whose root→leaf paths are `Branch`es, each a ready training sample (token ids + logprobs +
-trainable mask). The same `Trace` is what eval scores, the dashboard renders, and prime-rl
+The output of a rollout is a `Trace` — the full record of the agent's trajectory: every
+message plus all the metadata captured along the way (token ids, logprobs, tool calls,
+rewards, timing). The same `Trace` is what eval scores, the dashboard renders, and prime-rl
 trains on.
 
-## Install & first run
+## Quickstart
 
 ```bash
 uv sync                          # core + shipped packages + examples
