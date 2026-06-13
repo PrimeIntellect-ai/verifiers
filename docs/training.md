@@ -78,40 +78,6 @@ max_tokens = 1024
 id = "primeintellect/reverse-text"
 ```
 
-For v1 BYO Harness environments, put taskset/harness config under
-`taskset` and `harness`:
-
-```toml
-model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
-max_steps = 100
-batch_size = 256
-rollouts_per_example = 8
-
-[sampling]
-max_tokens = 4096
-
-[[env]]
-id = "primeintellect/my-v1-env"
-
-[env.harness]
-max_turns = 8
-
-[env.taskset]
-system_prompt = "Answer exactly."
-
-[env.taskset.toolsets.search]
-tools = ["my_env.tools:search"]
-objects = { index = "my_env.tools:load_index" }
-bindings = { "search.index" = "objects.index" }
-
-[[env.taskset.rewards]]
-fn = "my_env.signals:exact_answer"
-weight = 1.0
-```
-
-See [BYO Harness](byo-harness.md#toml-config) for the matching eval config
-shape and v1 callable/toolset patterns.
-
 We currently support the following models for Hosted Training:
 - `Qwen/Qwen3-30B-A3B-Instruct-2507`
 - `Qwen/Qwen3-30B-A3B-Thinking-2507`
@@ -176,7 +142,7 @@ In TOML configs, set GEPA parameters such as `max_calls`, `num_train`, `num_val`
 ### Output
 
 After optimization, you'll find:
-- `system_prompt.txt` - The optimized system prompt. For v1 environments, expose the owner prompt that GEPA should optimize as a `system_prompt` config field and default it to `vf.SystemPromptConfig(path="system_prompt.txt")` when the prompt should be file-backed. Override `load_system_prompt(config)` only when prompt loading is computed from config or package resources.
+- `system_prompt.txt` - The optimized system prompt.
 - `results.jsonl` - Candidate prompt rows for evaluation upload; GEPA-specific fields live under `info`.
 - `pareto_frontier.jsonl` - Best candidate references per validation example
 - `metadata.json` - Run configuration and summary

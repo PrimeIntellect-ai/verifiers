@@ -206,11 +206,6 @@ For TOML config, keep one shape across eval, GEPA, RL, and Hosted Training.
 Normalize old or alternate inputs at the loader boundary, then keep examples on
 the current golden path.
 
-For v1 Taskset/Harness environments, put task data, task-owned tools, user
-behavior, metrics, rewards, and task-specific configuration on the `Taskset`.
-Use the base `vf.Harness` unless the harness owns a reusable execution adapter
-such as a CLI, framework program, sandboxed program, or nested harness flow.
-
 ### Validation By Change Type
 
 - Core runtime or shared config parsing: run the focused unit tests plus `uv run pre-commit run --all-files`.
@@ -256,9 +251,6 @@ uv run pytest tests/test_file.py::test_name -vvs --pdb
 ```bash
 # Initialize a v0 environment stub
 prime env init my-environment
-
-# Initialize a thin v1 Taskset/Harness template
-prime env init my-environment --v1
 
 # Test your environment
 prime eval run my-environment -m openai/gpt-4.1-mini -n 5
@@ -318,7 +310,6 @@ uv run ty check verifiers             # Type check (matches CI Ty target)
 
 # Environment tools
 prime env init new-env                       # Create v0 environment stub
-prime env init new-env --v1                  # Create thin v1 taskset environment
 prime eval run new-env -m openai/gpt-4.1-mini -n 5  # Test environment
 prime eval view                              # Browse evals in the tree browser
 ```
