@@ -81,6 +81,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             "project",
             "--model",
             ctx.model,
+            "--strict-mcp-config",
         ]
         if system_prompt:
             argv += ["--append-system-prompt", system_prompt]
@@ -90,7 +91,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
                     name: {"type": "http", "url": url} for name, url in mcp_urls.items()
                 }
             }
-            argv += ["--strict-mcp-config", "--mcp-config", json.dumps(config)]
+            argv += ["--mcp-config", json.dumps(config)]
         argv.append(instruction)
         result = await runtime.run(argv, env)
         if result.exit_code != 0:
