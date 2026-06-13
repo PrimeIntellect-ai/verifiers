@@ -22,50 +22,26 @@ from verifiers.v1.dialects import ChatDialect, Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import Response, SamplingConfig
 
-# These belong to the intercepted localhost operation, not the provider operation. Everything
-# else is eligible for relay; endpoint configuration and dialect auth override matching names.
+# Local auth, one-shot semantics, and HTTP framing cannot be forwarded unchanged. Everything
+# else is forwarded; endpoint configuration and dialect auth override matching names.
 _BLOCKED_REQUEST_HEADERS = frozenset(
     {
         "authorization",
         "connection",
-        "client-ip",
-        "cf-connecting-ip",
         "content-encoding",
-        "content-digest",
         "content-length",
-        "content-md5",
-        "content-range",
-        "content-type",
-        "digest",
         "expect",
-        "fastly-client-ip",
-        "forwarded",
         "host",
         "idempotency-key",
         "keep-alive",
         "proxy-authenticate",
         "proxy-authorization",
         "proxy-connection",
-        "repr-digest",
-        "signature",
-        "signature-input",
         "te",
         "trailer",
         "transfer-encoding",
-        "true-client-ip",
         "upgrade",
-        "via",
-        "x-real-ip",
-        "x-client-ip",
-        "x-amz-content-sha256",
-        "x-content-sha256",
-        "x-goog-content-sha256",
         "x-idempotency-key",
-        "x-ms-content-sha256",
-        "x-forwarded-for",
-        "x-forwarded-host",
-        "x-forwarded-port",
-        "x-forwarded-proto",
     }
 )
 
