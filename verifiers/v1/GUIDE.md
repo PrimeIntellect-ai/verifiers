@@ -196,8 +196,6 @@ Built-ins, selected with `--harness.id`:
 | `rlm` | the RLM CLI agent |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
 
-(`compact` is an *example* harness — `examples/harnesses/compact` — not a built-in.)
-
 ```bash
 uv run eval gsm8k-v1 -n 1                    # default harness
 uv run eval gsm8k-v1 -n 1 --harness.id rlm   # same taskset, different driver
@@ -210,16 +208,18 @@ fast at load instead of mis-running: `SUPPORTS_TASK_TOOLS`, `SUPPORTS_USER_SIM`,
 ### Authoring a harness
 
 You rarely need this — a custom harness is for a rollout loop the built-ins can't express
-(context compaction, subagents, a bespoke agent CLI). Subclass `vf.Harness[ConfigT]`, declare
-the capability flags, and implement `launch` — it drives the model however it likes and returns
-the program's result (the base `run` wraps it and errors on a non-zero exit). Export
+(context compaction, subagents, a bespoke agent CLI). Define a `HarnessConfig` (its `id` plus
+any knobs, which surface as `--harness.*`), subclass `vf.Harness[ConfigT]`, declare the
+capability flags, and implement `launch` — it drives the model however it likes and returns the
+program's result (the base `run` wraps it and errors on a non-zero exit). Export
 `load_harness(config)`.
 
-A harness never builds the trace itself: it points a program at `endpoint` (authorized with
-`secret`) in any supported dialect, and the interception server records every call. Usually
-that program is a single-file uv script launched with `runtime.run_uv_script`, so the harness
-needs only `uv` in the runtime; `resolve_prompt(trace.task)` gives the `(system, instruction)`
-to seed it, and `mcp_urls` are the task's tool servers.
+A harness never builds the trace itself: it points *a program* — any executable the runtime
+can run — at `endpoint` (authorized with `secret`) in any supported dialect, and the
+interception server records every call. That program can be an agent CLI or any binary (run via
+`runtime.run(...)`); for a self-contained chat loop it's usually a single-file uv script
+(`runtime.run_uv_script`), so the harness needs only `uv` in the runtime. `resolve_prompt(trace.task)`
+gives the `(system, instruction)` to seed it, and `mcp_urls` are the task's tool servers.
 
 ```python
 import verifiers.v1 as vf
@@ -229,6 +229,7 @@ PROGRAM = (Path(__file__).parent / "program.py").read_text()  # a uv script, dep
 
 class MyHarnessConfig(vf.HarnessConfig):
     id: str = "my-harness"
+    max_turns: int = 16              # any knob; surfaces as --harness.max-turns
 
 
 class MyHarness(vf.Harness[MyHarnessConfig]):
@@ -238,7 +239,8 @@ class MyHarness(vf.Harness[MyHarnessConfig]):
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls) -> vf.ProgramResult:
         system, instruction = self.resolve_prompt(trace.task)
         env = {"OPENAI_BASE_URL": endpoint, "OPENAI_API_KEY": secret,
-               "OPENAI_MODEL": ctx.model, "SYSTEM_PROMPT": system or ""}
+               "OPENAI_MODEL": ctx.model, "SYSTEM_PROMPT": system or "",
+               "MAX_TURNS": str(self.config.max_turns)}
         return await runtime.run_uv_script(PROGRAM, args=[instruction], env=env)
 
 
