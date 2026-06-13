@@ -6,15 +6,20 @@ why, see the [README](README.md); this guide is the longer-form how-to. `import 
 ## Mental model
 
 A v1 environment is three decoupled pieces, each selected by `id` and configured by typed
-config:
+config. You'll work with them in very different proportions:
 
-- **Taskset** — the data and the scoring. Produces typed `Task`s and owns every `@reward` /
-  `@metric`, plus optional tools and a user simulator. *What* the model is asked and *how*
-  it's graded.
-- **Harness** — the program that drives the rollout (a chat loop, an agent CLI, ...). *How*
-  the model is called turn to turn. Any taskset runs under any harness.
-- **Runtime** — *where* that program (and the taskset's tools / user sim) executes:
-  `subprocess` / `docker` / `prime` / `modal`, behind one `Runtime` contract.
+- **Taskset** — the data and the scoring: it produces typed `Task`s and owns every `@reward` /
+  `@metric`, plus any tools and a user simulator (*what* the model is asked and *how* it's
+  graded). **This is what you author** — for almost every environment it's the only piece you
+  write.
+- **Harness** — the program that drives the rollout turn to turn, a chat loop or an agent CLI
+  (*how* the model is called). **Usually you just pick a built-in** (`default` / `rlm` /
+  `codex`); you only write your own if you need a custom rollout loop. Any taskset runs under
+  any harness.
+- **Runtime** — *where* the harness (and the taskset's tools / user simulator) executes:
+  `subprocess` / `docker` / `prime` / `modal`. **You never write one** — runtimes ship with the
+  framework behind one `Runtime` contract and compose with any taskset/harness; you just choose
+  where code runs.
 
 The output of a rollout is a `Trace` — a delta-native message graph (one node per message)
 whose root→leaf paths are `Branch`es, each a ready training sample (token ids + logprobs +
