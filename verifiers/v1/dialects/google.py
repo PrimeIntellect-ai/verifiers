@@ -24,7 +24,7 @@ from verifiers.v1.types import (
     UserMessage,
 )
 
-FINISH_REASONS = {"STOP": "stop", "MAX_TOKENS": "length"}
+FINISH_REASONS: dict[str, FinishReason] = {"STOP": "stop", "MAX_TOKENS": "length"}
 _SAMPLING_KEYS = ("temperature", "topP", "maxOutputTokens")
 
 
@@ -72,7 +72,7 @@ def response_from_wire(response: GenerateContentResponse) -> Response:
     finish: FinishReason = (
         "tool_calls"
         if message.tool_calls
-        else FINISH_REASONS.get(candidate.get("finishReason"))
+        else FINISH_REASONS.get(str(candidate.get("finishReason", "")))
     )
     metadata = data.get("usageMetadata")
     usage = None
@@ -160,19 +160,18 @@ class GoogleGenerateContentDialect(Dialect[dict, GenerateContentResponse]):
         raise NotImplementedError("Google GenerateContent streaming is not supported")
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
-        config = {
-            key: value
-            for key, value in (body.get("generationConfig") or {}).items()
-            if key not in _SAMPLING_KEYS
-        }
-        values = sampling.model_dump(exclude_none=True)
-        if "temperature" in values:
-            config["temperature"] = values["temperature"]
-        if "top_p" in values:
-            config["topP"] = values["top_p"]
-        if "max_tokens" in values:
-            config["maxOutputTokens"] = values["max_tokens"]
-        result = dict(body)
-        if "generationConfig" in body or config:
-            result["generationConfig"] = config
-        return result
+        config = dict(body.get("generationConfig") or {})
+        for key in _SAMPLING_KEYS:
+            config.pop(key, None)
+        config.update(
+            {
+                key: value
+                for key, value in (
+                    ("temperature", sampling.temperature),
+                    ("topP", sampling.top_p),
+                    ("maxOutputTokens", sampling.max_tokens),
+                )
+                if value is not None
+            }
+        )
+        return {**body, "generationConfig": config}
