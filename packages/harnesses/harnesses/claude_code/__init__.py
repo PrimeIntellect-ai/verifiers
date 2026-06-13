@@ -93,13 +93,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             }
             argv += ["--mcp-config", json.dumps(config)]
         argv.append(instruction)
-        result = await runtime.run(argv, env)
-        if result.exit_code != 0:
-            detail = result.stderr.strip() or result.stdout.strip()
-            raise ProgramError(
-                f"Claude Code exited {result.exit_code}: {detail[-2000:]}"
-            )
-        return result
+        return await runtime.run(argv, env)
 
 
 def load_harness(config: ClaudeCodeHarnessConfig) -> ClaudeCodeHarness:
