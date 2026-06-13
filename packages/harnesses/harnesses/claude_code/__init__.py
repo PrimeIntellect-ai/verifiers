@@ -77,8 +77,6 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             "--print",
             "--dangerously-skip-permissions",
             "--no-session-persistence",
-            "--setting-sources",
-            "project",
             "--model",
             ctx.model,
             "--strict-mcp-config",
