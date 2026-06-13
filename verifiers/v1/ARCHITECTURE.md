@@ -18,10 +18,12 @@ trajectory; `Episode` (`episode.py`) runs a task's N rollouts and applies cross-
 scoring. The single artifact every layer produces and consumes is a **`Trace`** — a typed
 message graph (`graph.py`, `trace.py`).
 
-The load-bearing design idea: **the harness only ever speaks plain chat-completions to a
-localhost endpoint.** Everything the framework does — building the trace, capturing tokens,
-enforcing budgets, injecting a user simulator, swapping the model wire format — happens behind
-that endpoint (`interception/`), so a harness is just a program and stays oblivious.
+The load-bearing design idea: **a harness only ever points its model SDK at a localhost
+endpoint** — in whatever wire dialect it natively speaks (chat-completions, Responses,
+Anthropic, ...) — and the framework intercepts every call behind that endpoint
+(`interception/`). A `dialect` layer route-detects the format, so everything else the
+framework does — building the trace, capturing tokens, enforcing budgets, injecting a user
+simulator — is invisible to the harness, which stays a plain program.
 
 ```
 Episode (task, n)
