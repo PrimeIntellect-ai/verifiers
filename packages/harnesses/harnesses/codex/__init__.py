@@ -60,7 +60,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         _, instruction = self.resolve_prompt(trace.task)
         # codex authenticates to the interception server with the session secret (its provider
         # api key) and posts Responses calls to `{endpoint}/responses`.
-        env = {KEY_VAR: secret}
+        env = {**self.config.env, KEY_VAR: secret}
         logger.info("codex: ensuring codex %s is installed", self.config.version)
         install = await runtime.run(
             ["sh", "-c", INSTALL.replace("{version}", self.config.version)], {}
