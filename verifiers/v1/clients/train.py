@@ -9,120 +9,98 @@ needs a running vLLM engine.
 """
 
 import json
+from collections.abc import Mapping
+from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionMessage,
+)
+from openai.types.chat.chat_completion import Choice
+from openai.types.chat.chat_completion_message_function_tool_call import (
+    ChatCompletionMessageFunctionToolCall,
+    Function,
+)
+from openai.types.completion_usage import CompletionUsage
 from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RendererConfig
+from renderers import RendererConfig, ToolSpec
 
 from verifiers.v1.clients.client import Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
-from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.dialects.chat import message_to_wire, response_from_wire
 from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.types import (
-    AssistantMessage,
-    FinishReason,
     Response,
     SamplingConfig,
     Tool,
-    ToolCall,
     TurnTokens,
-    Usage,
 )
 
 
-def tool_to_wire(tool: Tool) -> dict:
-    """A vf tool -> the OpenAI chat wire dict (the renderer's generate request)."""
-    function: dict = {
-        "name": tool.name,
-        "description": tool.description,
-        "parameters": tool.parameters,
-    }
-    if tool.strict is not None:
-        function["strict"] = tool.strict
-    return {"type": "function", "function": function}
-
-
-def serialize_completion(response: Response, model: str) -> dict:
-    """A vf `Response` -> an OpenAI chat.completion dict the program's SDK expects. The renderer
-    sets this on `Response.raw` (it generates, so has no provider response to relay)."""
-    message: dict = {"role": "assistant", "content": response.message.content}
-    if response.message.reasoning_content is not None:
-        message["reasoning_content"] = response.message.reasoning_content
-    if response.message.tool_calls:
-        message["tool_calls"] = [
-            {
-                "id": c.id,
-                "type": "function",
-                "function": {"name": c.name, "arguments": c.arguments},
-            }
-            for c in response.message.tool_calls
-        ]
-    usage = (
-        {
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
-        if response.usage
-        else None
+def tool_to_renderer(tool: Tool) -> ToolSpec:
+    """A vf tool -> the renderer's native tool specification."""
+    return ToolSpec(
+        name=tool.name,
+        description=tool.description,
+        parameters=tool.parameters,
     )
-    return {
-        "id": response.id or "vf-intercept",
-        "object": "chat.completion",
-        "created": response.created,
-        "model": response.model or model,
-        "choices": [
-            {
-                "index": 0,
-                "message": message,
-                "finish_reason": response.finish_reason or "stop",
-            }
-        ],
-        "usage": usage,
-    }
 
 
-def response_from_generate(result: dict, model: str) -> Response:
-    """Parse a `renderers.client.generate` result dict into a typed `Response`,
-    mirroring the chat client's `response_from_wire` (plus the token encoding)."""
-    finish: FinishReason = (
-        result["finish_reason"]
-        if result.get("finish_reason") in FINISH_REASONS
-        else None
-    )
+def completion_from_generate(
+    result: dict[str, Any], model: str
+) -> tuple[ChatCompletion, TurnTokens]:
+    """Convert the renderer result into the native chat response plus training tokens."""
     tool_calls = [
-        ToolCall(
+        ChatCompletionMessageFunctionToolCall(
             id=tc.id or f"call_{i}",
-            name=tc.name,
-            arguments=tc.arguments
-            if isinstance(tc.arguments, str)
-            else json.dumps(tc.arguments or {}),
+            type="function",
+            function=Function(
+                name=tc.name,
+                arguments=tc.arguments
+                if isinstance(tc.arguments, str)
+                else json.dumps(tc.arguments or {}),
+            ),
         )
         for i, tc in enumerate(result.get("tool_calls") or [])
-        if getattr(tc, "name", None)
+        if tc.name
     ] or None
     prompt_ids = result.get("prompt_ids") or []
     completion_ids = result.get("completion_ids") or []
-    # Per-message token spans (the renderer's attribution) let the trace graph store each
-    # message's tokens once; carried transiently on TurnTokens and consumed by `graph.add_turn`.
     attribution = result.get("prompt_attribution")
     message_spans = (
         attribution.message_token_spans() if attribution is not None else None
     )
-    return Response(
-        id=result.get("request_id", ""),
+    finish_reason = result.get("finish_reason")
+    completion = ChatCompletion(
+        id=result.get("request_id") or "vf-intercept",
+        choices=[
+            Choice(
+                index=0,
+                logprobs=None,
+                finish_reason=finish_reason
+                if finish_reason in FINISH_REASONS
+                else "stop",
+                message=ChatCompletionMessage(
+                    role="assistant",
+                    content=result.get("content") or None,
+                    reasoning_content=result.get("reasoning_content"),
+                    tool_calls=tool_calls,
+                ),
+            )
+        ],
         created=0,
         model=model,
-        message=AssistantMessage(
-            content=result.get("content") or None,
-            reasoning_content=result.get("reasoning_content"),
-            tool_calls=tool_calls,
+        object="chat.completion",
+        usage=CompletionUsage(
+            prompt_tokens=len(prompt_ids),
+            completion_tokens=len(completion_ids),
+            total_tokens=len(prompt_ids) + len(completion_ids),
         ),
-        finish_reason=finish,
-        usage=Usage(
-            prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)
-        ),
-        tokens=TurnTokens(
+    )
+    return (
+        completion,
+        TurnTokens(
             prompt_ids=prompt_ids,
             completion_ids=completion_ids,
             completion_logprobs=result.get("completion_logprobs") or [],
@@ -163,6 +141,7 @@ class TrainClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        _request_headers: Mapping[str, str] | None = None,
     ) -> Response:
         # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
         # back), so it can't forward the raw request — it parses `body` via the dialect and renders
@@ -187,17 +166,17 @@ class TrainClient(Client):
                 renderer=renderer,
                 messages=[message_to_wire(m) for m in prompt],
                 model=model,
-                tools=[tool_to_wire(t) for t in tools] if tools else None,
+                tools=[tool_to_renderer(t) for t in tools] if tools else None,
                 sampling_params=sampling_args.model_dump(exclude_none=True),
             )
         except RendererOverlongPromptError as e:
             raise OverlongPromptError(str(e)) from e
         except OpenAIError as e:
             raise model_error(e) from e
-        response = response_from_generate(result, model)
-        # No provider response to relay (we generated), so serialize one for the program; the
-        # interception server hands `Response.raw` back regardless of client.
-        response.raw = serialize_completion(response, model)
+        completion, tokens = completion_from_generate(result, model)
+        response = response_from_wire(completion)
+        response.tokens = tokens
+        response.raw = completion.model_dump(exclude_none=True)
         return response
 
     async def close(self) -> None:

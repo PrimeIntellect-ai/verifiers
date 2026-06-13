@@ -6,7 +6,7 @@ abstract method. Each concrete client owns its own wire translation internally.
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 
 from tenacity import (
@@ -41,10 +41,11 @@ class Client(ABC):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        request_headers: Mapping[str, str] | None = None,
     ) -> Response:
-        """Run one completion -> a vf `Response`. The proxy client forwards `body` 1:1 and
-        parses the provider response via `dialect` (carrying the raw on `Response.raw`); the
-        renderer derives the typed prompt from `body` via `dialect` and tokenizes it."""
+        """Run one completion -> a vf `Response`. The eval client forwards the native JSON and
+        safe end-to-end headers, then parses a copy via `dialect`; the train client derives the
+        typed prompt from `body` and tokenizes it."""
 
     async def relay(
         self,
@@ -52,15 +53,22 @@ class Client(ABC):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        request_headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
         """Stream a (possibly SSE) response back, relaying the provider's bytes — the proxy's
         path for a streaming request. Only the relay (eval) client supports it; the renderer
         generates and cannot stream."""
         raise NotImplementedError(f"{type(self).__name__} does not support streaming")
 
-    async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
+    async def relay_aux(
+        self,
+        dialect: Dialect,
+        route: str,
+        body: dict,
+        request_headers: Mapping[str, str] | None = None,
+    ) -> dict:
         """Relay a non-model-turn side request (an `aux_route`, e.g. Anthropic's `count_tokens`)
-        verbatim to the provider and return its JSON. Only the relay (eval) client supports it."""
+        to the provider and return its JSON. Only the relay (eval) client supports it."""
         raise NotImplementedError(f"{type(self).__name__} does not relay aux routes")
 
     async def close(self) -> None:
@@ -99,9 +107,15 @@ class RetryingClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        request_headers: Mapping[str, str] | None = None,
     ) -> Response:
         return await self._retrying(
-            self.inner.get_response, dialect, body, model, sampling_args
+            self.inner.get_response,
+            dialect,
+            body,
+            model,
+            sampling_args,
+            request_headers,
         )
 
     async def relay(
@@ -110,11 +124,28 @@ class RetryingClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        request_headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
         # Safe to retry: relay raises (and is retried) before any response byte is handed back;
         # once a `RelayReply` is returned, streaming is already underway.
         return await self._retrying(
-            self.inner.relay, dialect, body, model, sampling_args
+            self.inner.relay,
+            dialect,
+            body,
+            model,
+            sampling_args,
+            request_headers,
+        )
+
+    async def relay_aux(
+        self,
+        dialect: Dialect,
+        route: str,
+        body: dict,
+        request_headers: Mapping[str, str] | None = None,
+    ) -> dict:
+        return await self._retrying(
+            self.inner.relay_aux, dialect, route, body, request_headers
         )
 
     async def close(self) -> None:

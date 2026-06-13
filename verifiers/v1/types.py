@@ -175,9 +175,9 @@ class Response(StrictBaseModel):
     tokens: TurnTokens | None = None
     """Token ids + logprobs for training (set by the renderer client)."""
     raw: dict | None = Field(default=None, exclude=True, repr=False)
-    """The wire response the interception server hands back to the program 1:1: the provider's
-    verbatim bytes (proxy, so no field is lost) or the client's serialized completion (renderer,
-    which generates and has none to relay). Transient: excluded from the trace dump."""
+    """The native JSON response the interception server returns to the program: the provider's
+    complete object (eval relay) or the client's synthesized completion (train renderer).
+    Transient: excluded from the trace dump."""
 
 
 # --- sampling -----------------------------------------------------------------
