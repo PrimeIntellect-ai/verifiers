@@ -22,10 +22,11 @@ from verifiers.v1.dialects import ChatDialect, Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import Response, SamplingConfig
 
-# These describe the localhost connection or its request framing. HTTPX must rebuild them for
-# the provider connection; forwarding them can send the wrong host or body length upstream.
-_PROXY_MANAGED_HEADERS = frozenset(
+# These belong to the intercepted localhost operation, not the provider operation. Everything
+# else is eligible for relay; endpoint configuration and dialect auth override matching names.
+_BLOCKED_REQUEST_HEADERS = frozenset(
     {
+        "authorization",
         "connection",
         "client-ip",
         "cf-connecting-ip",
@@ -40,7 +41,11 @@ _PROXY_MANAGED_HEADERS = frozenset(
         "fastly-client-ip",
         "forwarded",
         "host",
+        "idempotency-key",
         "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "proxy-connection",
         "repr-digest",
         "signature",
         "signature-input",
@@ -55,16 +60,13 @@ _PROXY_MANAGED_HEADERS = frozenset(
         "x-amz-content-sha256",
         "x-content-sha256",
         "x-goog-content-sha256",
+        "x-idempotency-key",
         "x-ms-content-sha256",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-port",
+        "x-forwarded-proto",
     }
-)
-# Chat Completions uses Authorization for the rollout secret. Other auth-style headers may be
-# provider credentials and must remain eligible for relay.
-_INTERCEPTION_AUTH_HEADERS = frozenset({"authorization"})
-_PROXY_MANAGED_PREFIXES = (
-    "cf-access-",
-    "proxy-",
-    "x-forwarded-",
 )
 
 
@@ -113,24 +115,15 @@ class EvalClient(Client):
         """
         if not isinstance(dialect, ChatDialect):
             request_headers = None
-        incoming = httpx.Headers(request_headers)
-        blocked = (
-            _PROXY_MANAGED_HEADERS
-            | _INTERCEPTION_AUTH_HEADERS
+        headers = httpx.Headers(request_headers)
+        blocked = _BLOCKED_REQUEST_HEADERS | {
             # RFC 9110 allows `Connection` to name additional hop-by-hop fields.
-            | {
-                name.strip().lower()
-                for name in incoming.get("connection", "").split(",")
-                if name.strip()
-            }
-        )
-        forwarded = {
-            name: value
-            for name, value in incoming.items()
-            if name.lower() not in blocked
-            and not name.lower().startswith(_PROXY_MANAGED_PREFIXES)
+            name.strip().lower()
+            for name in headers.get("connection", "").split(",")
+            if name.strip()
         }
-        headers = httpx.Headers(forwarded)
+        for name in blocked:
+            headers.pop(name, None)
         headers.update(self.headers)
         headers.update(dialect.auth_headers(self.api_key))
         return dict(headers)

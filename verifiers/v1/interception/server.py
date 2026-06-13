@@ -45,10 +45,6 @@ logger = logging.getLogger(__name__)
 # context window are the real limits, this is just a host-OOM backstop.
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 
-# A simulator reprompt is a new provider operation with a different body. Preserve these on
-# retries of one operation, but never reuse them after extending the conversation.
-_ONE_SHOT_REQUEST_HEADERS = frozenset({"idempotency-key", "x-idempotency-key"})
-
 
 @dataclass(frozen=True)
 class RolloutLimits:
@@ -200,7 +196,6 @@ class InterceptionServer:
         completion: dict | None = (
             None  # the latest turn's response, returned to the program
         )
-        request_headers = request.headers
         while True:
             refused = await session.refused()
             if refused is not None:
@@ -217,7 +212,7 @@ class InterceptionServer:
                     body,
                     session.ctx.model,
                     session.ctx.sampling,
-                    request_headers,
+                    request.headers,
                 )
             except OverlongPromptError:
                 # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
@@ -252,11 +247,6 @@ class InterceptionServer:
             # survives) and into the typed prompt for the trace.
             body = dialect.extend(body, completion, user_messages)
             prompt = [*prompt, response.message, *user_messages]
-            request_headers = {
-                name: value
-                for name, value in request_headers.items()
-                if name.lower() not in _ONE_SHOT_REQUEST_HEADERS
-            }
 
     async def _stream(
         self,
