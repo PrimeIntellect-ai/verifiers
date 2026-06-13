@@ -29,7 +29,10 @@ def iter_sse(raw: bytes) -> list[dict]:
     """Parse a complete SSE byte stream into its JSON data payloads, in order (skipping
     non-JSON sentinels like OpenAI's `data: [DONE]`). Shared by the dialects' `parse_stream`."""
     events: list[dict] = []
-    for block in raw.decode("utf-8", errors="replace").split("\n\n"):
+    text = (
+        raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    )
+    for block in text.split("\n\n"):
         data = "\n".join(
             line.removeprefix("data:").strip()
             for line in block.splitlines()
@@ -57,10 +60,16 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     `count_tokens`): relayed verbatim by the eval client, never recorded on the trace."""
 
     upstream_path: ClassVar[str]
-    """The provider endpoint the proxy forwards to for this format (e.g. `/chat/completions`)."""
+    """The static provider endpoint for this format (e.g. `/chat/completions`). Override
+    `upstream_route` instead when the route depends on the model or streaming mode."""
 
     response_type: type[RespT]
     """The native response model — used to validate the provider's raw JSON before parsing."""
+
+    def upstream_route(self, model: str, stream: bool = False) -> str:
+        """The provider path for this call. Most APIs use one static path; formats such as
+        Google's GenerateContent put the model and streaming method in the URL."""
+        return self.upstream_path
 
     def auth_headers(self, api_key: str) -> dict[str, str]:
         """The provider auth headers for this format. Defaults to OAuth2 Bearer (every
@@ -73,8 +82,9 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         (default: an `Authorization: Bearer` token; Anthropic uses `x-api-key`)."""
         return headers.get("Authorization", "").removeprefix("Bearer ")
 
-    def streaming(self, body: ReqT) -> bool:
-        """Whether the request asks for a streamed (SSE) response."""
+    def streaming(self, body: ReqT, route: str = "") -> bool:
+        """Whether the request asks for a streamed (SSE) response. Most formats carry this in
+        the body; route-selected APIs can inspect the request path."""
         return bool(body.get("stream"))
 
     def error_body(self, message: str) -> dict:

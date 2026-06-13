@@ -227,8 +227,9 @@ program's result (the base `run` wraps it and errors on a non-zero exit). Export
 A harness never builds the trace itself: it just points *a program* at `endpoint` (authorized
 with `secret`), and the interception server records every call. The program can be any
 executable the runtime can run — an agent CLI, a binary, a script — **as long as it makes its
-model requests in one of the supported dialects** (chat-completions, Responses, ...); that's
-the whole contract. For a self-contained chat loop it's usually a single-file uv script
+model requests in one of the supported dialects** (chat-completions, Responses, Anthropic
+Messages, or Google GenerateContent); that's the whole contract. For a self-contained chat loop
+it's usually a single-file uv script
 (`runtime.run_uv_script`, so the harness needs only `uv` in the runtime); otherwise launch your
 binary with `runtime.run(...)`. `resolve_prompt(trace.task)` gives the `(system, instruction)`
 to seed it, and `mcp_urls` are the task's tool servers.
@@ -293,9 +294,11 @@ Common aliases: `-m`/`--model`, `-n`/`--num-tasks`, `-r`/`--num-rollouts`,
   running. Logs are teed to `<output_dir>/eval.log`.
 - **Resume** — `uv run eval --resume <output-dir>` re-runs only the missing/errored rollouts
   of a previous run.
-- **Clients** — eval (default) is a plain chat-completions relay. `--client.type train`
+- **Clients** — eval (default) relays each request in its native dialect. `--client.type train`
   tokenizes client-side so each node carries the exact `token_ids` / `mask` / `logprobs`
   (needs a vLLM engine via `--client.base-url`).
+  For the Gemini Developer API, point the eval client at
+  `https://generativelanguage.googleapis.com` and read its key from `GEMINI_API_KEY`.
 - **Validate** — `uv run validate gsm8k-v1` runs each taskset's `validate` hook (model-free
   gold check), no model needed.
 
