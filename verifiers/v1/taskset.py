@@ -128,8 +128,8 @@ class Taskset(Generic[TaskT, ConfigT]):
     async def finalize(self, task: TaskT, trace: Trace, runtime: Runtime) -> None:
         """Post-process the live runtime after the harness finishes, before scoring. No-op
         by default; override to do per-rollout work the rewards depend on — apply/commit the
-        agent's diff, run a build, snapshot state, pull artifacts into the trace. Runs while
-        the runtime is still live (after generation, before `@reward`/`@metric`); the
+        agent's diff, run a build, snapshot state, scrape runtime artifacts into `trace.info`.
+        Runs while the runtime is still live (after generation, before `@reward`/`@metric`); the
         symmetric counterpart to `setup`. Errors propagate and fail the rollout."""
         return None
 
