@@ -245,7 +245,6 @@ bridge — its rollouts mapped to v1 `Trace`s. Set `--id` (instead of a `taskset
 
 ```bash
 uv run eval --id reverse-text -n 2     # eval a v0 env
-uv run serve --id reverse-text         # serve a v0 env over ZMQ (the orchestrator can't tell v0 from v1)
 uv run eval --id reverse-text --args.num_train_examples 50 \
   --extra-env-kwargs.max-total-completion-tokens 256   # construction + post-load kwargs
 ```
