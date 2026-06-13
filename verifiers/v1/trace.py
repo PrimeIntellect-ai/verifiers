@@ -13,7 +13,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Mapping
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import Field, PrivateAttr, computed_field
 from renderers.base import MultiModalData
@@ -182,6 +182,14 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     """Per-`@reward`-function contributions, with each function's weight applied."""
     metrics: dict[str, float] = Field(default_factory=dict)
     """Per-`@metric`-function values (unweighted; not summed into the reward)."""
+    info: dict[str, Any] = Field(default_factory=dict)
+    """Free-form, JSON-serializable scratch space for taskset-specific metadata that is neither
+    a reward nor a metric — anything an author wants to scrape off the live runtime and persist
+    with the trace (captured logs, command output, container/runtime state, artifact paths).
+    Populate it from the runtime in `finalize` (or a `@reward`/`@metric`) by assigning into the
+    dict (`trace.info["build_log"] = ...`); it round-trips through the wire to `results.jsonl`.
+    Use `metrics` for numbers that aggregate, this for everything else. Values must be
+    JSON-serializable — a non-serializable value fails the trace dump rather than being dropped."""
 
     is_completed: bool = False
     stop_condition: str | None = None
