@@ -56,7 +56,6 @@ For the full hosted workflow and hosted-only flags such as `--follow`, `--timeou
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `env_id_or_path` | (positional) | — | Environment ID(s) or path to TOML config |
-| `--taskset.FIELD` / `--harness.FIELD` | — | — | Typed v1 `EnvConfig` overrides for single-environment runs |
 | `--env-args` | `-a` | `{}` | JSON object passed to `load_environment()` |
 | `--extra-env-kwargs` | `-x` | `{}` | JSON object passed to environment constructor |
 | `--timeout` | — | `None` | Per-rollout wall-clock timeout in seconds. Wins over equivalent values in `--extra-env-kwargs` or TOML `[eval.extra_env_kwargs]`. Bounds generation only — scoring is not bounded. |
@@ -67,19 +66,6 @@ The positional argument accepts two formats:
 - **TOML config path**: `configs/eval/benchmark.toml` — evaluates multiple environments defined in the config file
 
 Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported after `prime eval run` resolves the environment package.
-
-For v1 `load_environment(config: vf.EnvConfig)` loaders, prefer typed
-taskset/harness overrides. These flags are parsed against the concrete child
-config types from `load_taskset(config: ...)` and `load_harness(config: ...)`:
-
-```bash
-prime eval run my-v1-env --taskset.id my-taskset --harness.id my-harness --harness.max-turns 4
-```
-
-The positional environment ID selects the package to load. Dotted taskset and
-harness flags are fields on the typed child configs. If the loaded package does
-not provide a local child loader, `--taskset.id` and `--harness.id` select the
-taskset and harness loader packages.
 
 For legacy or direct-constructor environments, the `--env-args` flag passes
 arguments to your `load_environment()` function:
@@ -237,7 +223,7 @@ client translate them for the selected provider.
 
 Multiple rollouts per example enable metrics like pass@k and help measure variance. The total number of rollouts is `num_examples × rollouts_per_example`.
 
-When `--shuffle` is enabled, Verifiers shuffles the full evaluation dataset first, then selects `--num-examples`, then repeats each selected example according to `--rollouts-per-example`. This applies to standard environments, composable tasksets, and v1 Taskset/Harness environments because it happens in the shared evaluation input-selection layer.
+When `--shuffle` is enabled, Verifiers shuffles the full evaluation dataset first, then selects `--num-examples`, then repeats each selected example according to `--rollouts-per-example`. This applies to standard environments and composable tasksets because it happens in the shared evaluation input-selection layer.
 
 ### Concurrency
 
@@ -401,18 +387,14 @@ id = "gsm8k"
 ```
 
 Each `[[eval]]` section usually contains an `id` field. `env_id` is accepted as
-a legacy alias and normalizes to the same internal field. For Taskset/Harness
-configs, `id` may be omitted when `[eval.taskset].id` names the taskset loader
-package; the taskset id becomes the environment id for loading and outputs. All
-other fields are optional:
+a legacy alias and normalizes to the same internal field. All other fields are
+optional:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | Environment module name; optional when `[eval.taskset].id` is set |
+| `id` | string | Environment module name |
 | `name` | string | Optional eval label for display and saved result paths |
 | `args` | table | Arguments passed to `load_environment()` |
-| `taskset` | table | v1 taskset config passed through `EnvConfig.taskset` |
-| `harness` | table | v1 harness config passed through `EnvConfig.harness` |
 | `num_examples` | integer | Number of dataset examples to evaluate |
 | `rollouts_per_example` | integer | Rollouts per example |
 | `shuffle` | boolean | Shuffle the evaluation dataset before selecting examples |
@@ -451,26 +433,6 @@ num_examples = 50
 difficulty = "hard"
 split = "test"
 ```
-
-For v1 BYO Harness environments, pass taskset/harness config through sibling
-`taskset` and `harness` sections:
-
-```toml
-[[eval]]
-id = "my-v1-env"
-
-[eval.sampling]
-max_tokens = 4096
-
-[eval.harness]
-max_turns = 4
-
-[eval.taskset.scoring.exact_answer]
-weight = 0.5
-```
-
-See [BYO Harness](byo-harness.md#toml-config) for the matching RL config shape
-and v1 callable/toolset patterns.
 
 The legacy inline `sampling_args = { ... }` spelling is still accepted and
 normalizes the same way as `[sampling]` / `[eval.sampling]`.

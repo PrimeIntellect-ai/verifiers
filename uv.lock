@@ -668,6 +668,17 @@ version = "0.1.0"
 source = { editable = "examples/tasksets/code_golf_v1" }
 
 [[package]]
+name = "color-codeword-v1"
+version = "0.1.0"
+source = { editable = "examples/tasksets/color_codeword_v1" }
+dependencies = [
+    { name = "pillow" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pillow" }]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -4467,6 +4478,17 @@ wheels = [
 ]
 
 [[package]]
+name = "r2e-gym-v1"
+version = "0.1.0"
+source = { editable = "examples/tasksets/r2e_gym_v1" }
+dependencies = [
+    { name = "datasets" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "datasets" }]
+
+[[package]]
 name = "ray"
 version = "2.55.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4805,6 +4827,17 @@ wheels = [
 ]
 
 [[package]]
+name = "scaleswe-v1"
+version = "0.1.0"
+source = { editable = "examples/tasksets/scaleswe_v1" }
+dependencies = [
+    { name = "datasets" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "datasets" }]
+
+[[package]]
 name = "scipy"
 version = "1.17.1"
 source = { registry = "https://pypi.org/simple" }
@@ -5126,6 +5159,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/ce/20/08dfcd9c983f6a6f4
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8b/0c/9d30a4ebeb6db2b25a841afbb80f6ef9a854fc3b41be131d249a977b4959/starlette-0.46.2-py3-none-any.whl", hash = "sha256:595633ce89f8ffa71a015caed34a5b2dc1c0cdb3f0f1fbd1e69339cf2abeec35", size = 72037, upload-time = "2025-04-13T13:56:16.21Z" },
 ]
+
+[[package]]
+name = "swelego-v1"
+version = "0.1.0"
+source = { editable = "examples/tasksets/swelego_v1" }
+dependencies = [
+    { name = "datasets" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "datasets" }]
 
 [[package]]
 name = "sympy"
@@ -5783,12 +5827,16 @@ examples = [
     { name = "aime24-v1" },
     { name = "alphabet-sort-v1" },
     { name = "code-golf-v1" },
+    { name = "color-codeword-v1" },
     { name = "compact" },
     { name = "deepwiki-v1" },
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
     { name = "math-env-v1" },
+    { name = "r2e-gym-v1" },
     { name = "reverse-text-v1" },
+    { name = "scaleswe-v1" },
+    { name = "swelego-v1" },
     { name = "terminal-bench-2-v1" },
     { name = "wiki-search-v1" },
     { name = "wikispeedia-v1" },
@@ -5880,12 +5928,16 @@ examples = [
     { name = "aime24-v1", editable = "examples/tasksets/aime24_v1" },
     { name = "alphabet-sort-v1", editable = "examples/tasksets/alphabet_sort_v1" },
     { name = "code-golf-v1", editable = "examples/tasksets/code_golf_v1" },
+    { name = "color-codeword-v1", editable = "examples/tasksets/color_codeword_v1" },
     { name = "compact", editable = "examples/harnesses/compact" },
     { name = "deepwiki-v1", editable = "examples/tasksets/deepwiki_v1" },
     { name = "glossary-v1", editable = "examples/tasksets/glossary_v1" },
     { name = "gsm8k-v1", editable = "examples/tasksets/gsm8k_v1" },
     { name = "math-env-v1", editable = "examples/tasksets/math_env_v1" },
+    { name = "r2e-gym-v1", editable = "examples/tasksets/r2e_gym_v1" },
     { name = "reverse-text-v1", editable = "examples/tasksets/reverse_text_v1" },
+    { name = "scaleswe-v1", editable = "examples/tasksets/scaleswe_v1" },
+    { name = "swelego-v1", editable = "examples/tasksets/swelego_v1" },
     { name = "terminal-bench-2-v1", editable = "examples/tasksets/terminal_bench_2_v1" },
     { name = "wiki-search-v1", editable = "examples/tasksets/wiki_search_v1" },
     { name = "wikispeedia-v1", editable = "examples/tasksets/wikispeedia_v1" },

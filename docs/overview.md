@@ -52,16 +52,9 @@ Environments built with Verifiers are self-contained Python modules. To initiali
 ```bash
 prime env init my-env # creates a v0 stub in ./environments/my_env
 ```
-For the v1 Taskset/Harness authoring path:
-```bash
-prime env init my-env --v1
-prime env init my-env --v1 --with-harness
-```
 
 This will create a new module called `my_env` with a runnable environment
-template. For v1 templates, start by editing the generated `TasksetConfig`,
-`Taskset.load_tasks()`, and `@vf.reward` methods. Use `--with-harness` when the
-environment also owns reusable execution behavior.
+template.
 ```
 environments/my_env/
 ├── my_env.py           # Main implementation
@@ -85,76 +78,6 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
     env = vf.SingleTurnEnv(dataset=dataset, rubric=rubric)
     return env
 ```
-
-For new environments with reusable tasksets, toolsets, custom programs, or
-custom harnesses, use the v1 Taskset/Harness path:
-```python
-# my_env.py
-import verifiers as vf
-
-
-class MyTasksetConfig(vf.TasksetConfig):
-    system_prompt: vf.SystemPrompt = "Answer exactly."
-
-
-class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        """Return serializable task records as a list, generator, or Dataset."""
-        if split == "eval":
-            return []
-        return [
-            {
-                "prompt": [{"role": "user", "content": "Reverse abc."}],
-                "answer": "cba",
-                "max_turns": 1,
-            }
-        ]
-
-    @vf.reward(weight=1.0)
-    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
-        messages = vf.get_messages(state.get("completion") or [], role="assistant")
-        if not messages:
-            return 0.0
-        response = str(messages[-1].content or "").strip()
-        return float(response == task["answer"])
-
-
-def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    return MyTaskset(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
-```
-See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
-The child loader annotation is the config contract: keep root
-`load_environment` typed as `vf.EnvConfig`, put task settings on
-`TasksetConfig`, and add `load_harness(config: MyHarnessConfig)` only when the
-environment owns a reusable harness.
-Reusable v1 taskset and harness packages live in `tasksets` and `harnesses`.
-Install them with `uv add "verifiers[packages]"`, or with the narrower
-`verifiers[tasksets]`, `verifiers[harnesses]`, and backend-specific extras such
-as `verifiers[nemogym]`. For example, Harbor task directories can run through
-the bundled OpenCode CLI harness with:
-
-```python
-from harnesses import OpenCode, OpenCodeConfig
-from tasksets import HarborTaskset, HarborTasksetConfig
-
-env = vf.Env(
-    taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)),
-    harness=OpenCode(config=OpenCodeConfig()),
-)
-```
-
-The packaged `Taskset` and `Harness` classes can also be constructed directly in
-ordinary Python code; loaders are the environment/config composition path.
-`NeMoGymTaskset` and `NeMoGymHarness` expose packaged NeMo Gym rows and rollout
-collection through the same taskset/harness composition boundary.
 
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
@@ -181,8 +104,6 @@ prime eval run primeintellect/math-python
 ## Documentation
 
 **[Environments](environments.md)** — Create datasets, rubrics, and custom multi-turn interaction protocols.
-
-**[BYO Harness](byo-harness.md)** — Build v1 Taskset/Harness environments with custom tools, sandboxes, users, and custom programs.
 
 **[Evaluation](evaluation.md)** - Evaluate models using your environments.
 
