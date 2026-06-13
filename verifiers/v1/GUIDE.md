@@ -214,12 +214,14 @@ capability flags, and implement `launch` — it drives the model however it like
 program's result (the base `run` wraps it and errors on a non-zero exit). Export
 `load_harness(config)`.
 
-A harness never builds the trace itself: it points *a program* — any executable the runtime
-can run — at `endpoint` (authorized with `secret`) in any supported dialect, and the
-interception server records every call. That program can be an agent CLI or any binary (run via
-`runtime.run(...)`); for a self-contained chat loop it's usually a single-file uv script
-(`runtime.run_uv_script`), so the harness needs only `uv` in the runtime. `resolve_prompt(trace.task)`
-gives the `(system, instruction)` to seed it, and `mcp_urls` are the task's tool servers.
+A harness never builds the trace itself: it just points *a program* at `endpoint` (authorized
+with `secret`), and the interception server records every call. The program can be any
+executable the runtime can run — an agent CLI, a binary, a script — **as long as it makes its
+model requests in one of the supported dialects** (chat-completions, Responses, ...); that's
+the whole contract. For a self-contained chat loop it's usually a single-file uv script
+(`runtime.run_uv_script`, so the harness needs only `uv` in the runtime); otherwise launch your
+binary with `runtime.run(...)`. `resolve_prompt(trace.task)` gives the `(system, instruction)`
+to seed it, and `mcp_urls` are the task's tool servers.
 
 ```python
 import verifiers.v1 as vf
