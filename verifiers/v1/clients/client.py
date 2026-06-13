@@ -117,6 +117,9 @@ class RetryingClient(Client):
             self.inner.relay, dialect, body, model, sampling_args
         )
 
+    async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
+        return await self._retrying(self.inner.relay_aux, dialect, route, body)
+
     async def close(self) -> None:
         await self.inner.close()
 
