@@ -14,8 +14,8 @@ config. You'll work with them in very different proportions:
   write.
 - **Harness** — the program that drives the rollout turn to turn, a chat loop or an agent CLI
   (*how* the model is called). **Usually you just pick a built-in** (`default` / `rlm` /
-  `codex`); you only write your own if you need a custom rollout loop. Any taskset runs under
-  any harness.
+  `codex`); you only write your own if you need a custom rollout loop. With some exceptions, any 
+  taskset runs under any harness.
 - **Runtime** — *where* the harness (and the taskset's tools / user simulator) executes:
   `subprocess` / `docker` / `prime` / `modal`. **You never write one** — runtimes ship with the
   framework behind one `Runtime` contract and compose with any taskset/harness; you just choose
@@ -70,11 +70,6 @@ def load_taskset(config: ReverseConfig) -> ReverseTaskset:
     return ReverseTaskset(config=config)
 ```
 
-`Task` is a frozen pydantic model. Beyond your own fields it carries `instruction: str |
-Messages` (a single prompt or a seeded conversation — images go here as content parts),
-`system_prompt`, `image` (forces a container runtime), `workdir`, `resources`
-(`cpu`/`memory`/`gpu`/`disk`), and per-task timeout overrides.
-
 ### Scoring
 
 Rewards and metrics are decorated `async` methods; the framework injects whichever of `task`
@@ -115,6 +110,46 @@ A rollout runs `setup → harness → finalize → scoring`, each independently 
 - `setup(task, runtime)` — per-task prep before the harness runs (clone a repo, start a service).
 - `finalize(task, trace, runtime)` — after the harness, before scoring (apply a diff, snapshot state).
 - `validate(task, runtime)` — model-free gold check (does the reference solution pass?), run by `uv run validate`.
+
+### Runtime access
+
+Most hooks run *with the live runtime* and can execute in it, so the whole rollout shares one
+isolated environment. Who gets the `runtime`:
+
+| hook | signature | runtime |
+| --- | --- | --- |
+| `setup` | `(task, runtime)` | ✓ — prep it before the harness runs (the trace doesn't exist yet) |
+| `finalize` | `(task, trace, runtime)` | ✓ — act on the finished trace + runtime, before scoring |
+| `validate` | `(task, runtime)` | ✓ — model-free gold check |
+| `@reward` / `@metric` / `@stop` | inject any of `task` / `trace` / `runtime` | ✓ |
+| `@group_reward` | `(traces[, task])` | ✗ — runs after the per-rollout runtimes are gone |
+
+On a `runtime` you can call: `run(argv, env)` (exec to completion → exit code + stdout/stderr),
+`run_uv_script(src, args, env)` (a PEP 723 script with inline deps), `run_background(argv, env,
+log)` (a long-lived server), `read(path)` / `write(path, data)` (workspace files), and
+`expose(port)` (a URL reaching a port inside the runtime).
+
+A SWE taskset is the canonical case: `setup` provisions the repo, the agent edits it during the
+rollout, and a `@reward` runs the tests in the *same* runtime:
+
+```python
+class SWETaskset(vf.Taskset[SWETask, SWEConfig]):
+    NEEDS_CONTAINER = True   # this taskset needs an isolated container/sandbox runtime
+
+    async def setup(self, task: SWETask, runtime: vf.Runtime) -> None:
+        # prep the runtime before the harness runs: clone + check out the base commit
+        await runtime.run(["git", "clone", task.repo_url, "/repo"], {})
+        await runtime.run(["git", "-C", "/repo", "checkout", task.base_commit], {})
+
+    @vf.reward()
+    async def tests_pass(self, task: SWETask, trace: vf.Trace, runtime: vf.Runtime) -> float:
+        # the agent edited /repo during the rollout; run the task's tests in that same runtime
+        result = await runtime.run(["bash", "-lc", task.test_cmd], {})
+        return 1.0 if result.exit_code == 0 else 0.0
+```
+
+Since `@group_reward` has no runtime, fold any runtime-derived signal (here, pass/fail) into a
+per-rollout `@reward`/`@metric` first, then compare those across the task's rollouts.
 
 ### Tools and user simulators
 
@@ -159,20 +194,59 @@ Built-ins, selected with `--harness.id`:
 | --- | --- |
 | `default` | a tiny OpenAI chat loop (bash tool opt-in via `--harness.enable-bash`) |
 | `rlm` | the RLM CLI agent |
-| `compact` | rewrites context each turn → one branch per turn (handles subagents) |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
+
+(`compact` is an *example* harness — `examples/harnesses/compact` — not a built-in.)
 
 ```bash
 uv run eval gsm8k-v1 -n 1                    # default harness
 uv run eval gsm8k-v1 -n 1 --harness.id rlm   # same taskset, different driver
 ```
 
-**Capability flags** gate which tasksets a harness can run; an incompatible pairing fails
-fast at load instead of mis-running. A custom harness declares them as class vars:
-`SUPPORTS_TASK_TOOLS`, `SUPPORTS_USER_SIM`, `SUPPORTS_MESSAGE_INSTRUCTION`,
-`APPENDS_SYSTEM_PROMPT`. To write one, subclass `vf.Harness[ConfigT]`, set the flags, and
-implement `run(...)` (typically launching a program with `runtime.run_uv_script`); export
-`load_harness(config)`. See `examples/harnesses/compact`.
+**Capability flags** gate which tasksets a harness can run, so an incompatible pairing fails
+fast at load instead of mis-running: `SUPPORTS_TASK_TOOLS`, `SUPPORTS_USER_SIM`,
+`SUPPORTS_MESSAGE_INSTRUCTION`, `APPENDS_SYSTEM_PROMPT` (class vars on the harness).
+
+### Authoring a harness
+
+You rarely need this — a custom harness is for a rollout loop the built-ins can't express
+(context compaction, subagents, a bespoke agent CLI). Subclass `vf.Harness[ConfigT]`, declare
+the capability flags, and implement `launch` — it drives the model however it likes and returns
+the program's result (the base `run` wraps it and errors on a non-zero exit). Export
+`load_harness(config)`.
+
+A harness never builds the trace itself: it points a program at `endpoint` (authorized with
+`secret`) in any supported dialect, and the interception server records every call. Usually
+that program is a single-file uv script launched with `runtime.run_uv_script`, so the harness
+needs only `uv` in the runtime; `resolve_prompt(trace.task)` gives the `(system, instruction)`
+to seed it, and `mcp_urls` are the task's tool servers.
+
+```python
+import verifiers.v1 as vf
+
+PROGRAM = (Path(__file__).parent / "program.py").read_text()  # a uv script, deps = ["openai"]
+
+
+class MyHarnessConfig(vf.HarnessConfig):
+    id: str = "my-harness"
+
+
+class MyHarness(vf.Harness[MyHarnessConfig]):
+    SUPPORTS_TASK_TOOLS = True
+    SUPPORTS_USER_SIM = True
+
+    async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls) -> vf.ProgramResult:
+        system, instruction = self.resolve_prompt(trace.task)
+        env = {"OPENAI_BASE_URL": endpoint, "OPENAI_API_KEY": secret,
+               "OPENAI_MODEL": ctx.model, "SYSTEM_PROMPT": system or ""}
+        return await runtime.run_uv_script(PROGRAM, args=[instruction], env=env)
+
+
+def load_harness(config: MyHarnessConfig) -> MyHarness:
+    return MyHarness(config)
+```
+
+Copy `examples/harnesses/compact` (a context-rewrite loop) as a starting point.
 
 ## Runtimes
 
