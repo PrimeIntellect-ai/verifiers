@@ -54,6 +54,7 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
                 p for p in (BASH_SYSTEM_PROMPT, system_prompt) if p
             )
         env = {
+            **self.config.env,
             "OPENAI_BASE_URL": endpoint,
             "OPENAI_API_KEY": secret,
             "OPENAI_MODEL": ctx.model,
