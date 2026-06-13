@@ -58,6 +58,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "DISABLE_UPDATES": "1",
+            "IS_SANDBOX": "1",
         }
         logger.info(
             "claude-code: ensuring Claude Code %s is installed", self.config.version
