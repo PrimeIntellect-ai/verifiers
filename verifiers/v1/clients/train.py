@@ -10,11 +10,12 @@ needs a running vLLM engine.
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from openai import AsyncOpenAI, OpenAIError
 from openai.types.chat import (
     ChatCompletion,
+    ChatCompletionFunctionToolParam,
     ChatCompletionMessage,
 )
 from openai.types.chat.chat_completion import Choice
@@ -23,6 +24,7 @@ from openai.types.chat.chat_completion_message_function_tool_call import (
     Function,
 )
 from openai.types.completion_usage import CompletionUsage
+from openai.types.shared_params import FunctionDefinition
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig, ToolSpec
 
@@ -31,6 +33,7 @@ from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
 from verifiers.v1.dialects.chat import message_to_wire, response_from_wire
 from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.types import (
+    FinishReason,
     Response,
     SamplingConfig,
     Tool,
@@ -39,11 +42,17 @@ from verifiers.v1.types import (
 
 
 def tool_to_renderer(tool: Tool) -> ToolSpec:
-    """A vf tool -> the renderer's native tool specification."""
-    return ToolSpec(
+    """A vf tool -> the OpenAI tool envelope accepted by the renderer."""
+    function = FunctionDefinition(
         name=tool.name,
         description=tool.description,
         parameters=tool.parameters,
+    )
+    if tool.strict is not None:
+        function["strict"] = tool.strict
+    return cast(
+        ToolSpec,
+        ChatCompletionFunctionToolParam(type="function", function=function),
     )
 
 
@@ -71,16 +80,18 @@ def completion_from_generate(
     message_spans = (
         attribution.message_token_spans() if attribution is not None else None
     )
-    finish_reason = result.get("finish_reason")
+    finish_reason: FinishReason = (
+        result["finish_reason"]
+        if result.get("finish_reason") in FINISH_REASONS
+        else None
+    )
     completion = ChatCompletion(
-        id=result.get("request_id") or "vf-intercept",
+        id=result.get("request_id", ""),
         choices=[
             Choice(
                 index=0,
                 logprobs=None,
-                finish_reason=finish_reason
-                if finish_reason in FINISH_REASONS
-                else "stop",
+                finish_reason=finish_reason or "stop",
                 message=ChatCompletionMessage(
                     role="assistant",
                     content=result.get("content") or None,
@@ -175,8 +186,18 @@ class TrainClient(Client):
             raise model_error(e) from e
         completion, tokens = completion_from_generate(result, model)
         response = response_from_wire(completion)
+        # The wire response needs OpenAI fallbacks, while the trace keeps the renderer's original
+        # empty id and unknown finish reason semantics.
+        response.message.reasoning_content = result.get("reasoning_content")
+        response.finish_reason = (
+            result["finish_reason"]
+            if result.get("finish_reason") in FINISH_REASONS
+            else None
+        )
         response.tokens = tokens
         response.raw = completion.model_dump(exclude_none=True)
+        response.raw["id"] = response.raw["id"] or "vf-intercept"
+        response.raw["choices"][0]["message"]["content"] = response.message.content
         return response
 
     async def close(self) -> None:
