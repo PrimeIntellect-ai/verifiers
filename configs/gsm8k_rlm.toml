@@ -13,5 +13,5 @@ id = "gsm8k-v1"
 
 [harness]
 id = "rlm"
-ref = "main"
+version = "main"
 runtime = { type = "subprocess" }
