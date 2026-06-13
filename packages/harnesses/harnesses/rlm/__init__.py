@@ -26,7 +26,7 @@ class RLMHarnessConfig(HarnessConfig):
 
     id: str = "rlm"
 
-    ref: str = "main"
+    version: str = "main"
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
@@ -66,11 +66,11 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         install = (
             "apt-get update -qq && apt-get install -y -qq git curl && "
             f"git clone https://{RLM_REPO} /tmp/rlm && "
-            f"git -C /tmp/rlm checkout {self.config.ref} && "
+            f"git -C /tmp/rlm checkout {self.config.version} && "
             "UV_INSTALL_DIR=/usr/local/bin UV_TOOL_BIN_DIR=/usr/local/bin "
             "RLM_CHECKOUT_PATH=/tmp/rlm bash /tmp/rlm/install.sh"
         )
-        logger.info("rlm: ensuring rlm is installed (ref=%s)", self.config.ref)
+        logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
         await runtime.run(
             ["sh", "-c", f"command -v rlm >/dev/null 2>&1 || ({install})"], env
         )
