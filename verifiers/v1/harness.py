@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import ClassVar, Generic, TypeVar
 
+from pydantic import Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import RolloutContext
@@ -39,6 +40,9 @@ class HarnessConfig(BaseConfig):
     runtime: RuntimeConfig = DockerConfig()
     """Where the harness runs (subprocess / docker / prime). Lives on the harness — it's
     the harness's box; tool servers have their own placement (see `TasksetConfig.tools`)."""
+    env: dict[str, str] = Field(default_factory=dict)
+    """Additional environment variables for the harness program. Harness-owned endpoint,
+    authentication, and model variables take precedence."""
 
     @property
     def name(self) -> str:
