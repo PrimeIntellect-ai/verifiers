@@ -2,7 +2,7 @@
 
 `EvalClient` (the default) is a thin `httpx` forwarder: it sends the program's request body
 without a typed round-trip, mutating only what the eval owns (model + sampling, via the dialect's
-`apply_overrides`). Eligible end-to-end request headers are forwarded too; credentials, body
+`apply_overrides`). Eligible end-to-end request headers are forwarded too; rollout auth, body
 framing, and connection headers are replaced. The provider response is parsed into a vf
 `Response` for the trace, while its full JSON object stays on `Response.raw` for the interception
 server to return.
@@ -52,26 +52,19 @@ _PROXY_MANAGED_HEADERS = frozenset(
         "via",
         "x-real-ip",
         "x-client-ip",
+        "x-amz-content-sha256",
         "x-content-sha256",
+        "x-goog-content-sha256",
         "x-ms-content-sha256",
-        "x-storage-token",
-        "x-zumo-auth",
     }
 )
-# Incoming credentials authenticate the harness or its localhost environment. Never leak them
-# upstream; endpoint configuration and the dialect add the real provider credentials.
-_INTERCEPTION_AUTH_HEADERS = frozenset(
-    {"api-key", "authorization", "cookie", "x-api-key", "x-goog-api-key"}
-)
+# Chat Completions uses Authorization for the rollout secret. Other auth-style headers may be
+# provider credentials and must remain eligible for relay.
+_INTERCEPTION_AUTH_HEADERS = frozenset({"authorization"})
 _PROXY_MANAGED_PREFIXES = (
     "cf-access-",
     "proxy-",
-    "x-amz-",
-    "x-amzn-",
-    "x-auth-",
     "x-forwarded-",
-    "x-goog-",
-    "x-ms-token-",
 )
 
 
