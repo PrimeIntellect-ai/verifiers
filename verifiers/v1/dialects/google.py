@@ -8,8 +8,10 @@ parses copies into Verifiers messages for the trace and maps eval sampling into
 
 import json
 from collections.abc import Mapping
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 from verifiers.v1.dialects.base import Dialect, iter_sse
 from verifiers.v1.types import (
@@ -34,34 +36,108 @@ FINISH_REASONS = {"STOP": "stop", "MAX_TOKENS": "length"}
 _SAMPLING_KEYS = ("temperature", "topP", "maxOutputTokens")
 
 
-class GenerateContentResponse(BaseModel):
-    """Permissive parse-only view of Google's evolving response object."""
+class GoogleModel(BaseModel):
+    """Permissive typed view of Google wire objects."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(
+        alias_generator=to_camel, populate_by_name=True, extra="allow"
+    )
 
 
-def parse_content(parts: list[dict] | None) -> str | list[ContentPart]:
+class InlineData(GoogleModel):
+    mime_type: str = ""
+    data: str = ""
+
+
+class FileData(GoogleModel):
+    mime_type: str = ""
+    file_uri: str = ""
+
+
+class FunctionCall(GoogleModel):
+    id: str | None = None
+    name: str = ""
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class FunctionResponse(GoogleModel):
+    id: str | None = None
+    name: str = ""
+    response: dict[str, Any] = Field(default_factory=dict)
+
+
+class Part(GoogleModel):
+    text: str | None = None
+    thought: bool = False
+    inline_data: InlineData | None = None
+    file_data: FileData | None = None
+    function_call: FunctionCall | None = None
+    function_response: FunctionResponse | None = None
+
+
+class Content(GoogleModel):
+    role: str | None = None
+    parts: list[Part] = Field(default_factory=list)
+
+
+class FunctionDeclaration(GoogleModel):
+    name: str
+    description: str = ""
+    parameters: dict[str, Any] | None = None
+    parameters_json_schema: dict[str, Any] | None = None
+
+
+class GoogleTool(GoogleModel):
+    function_declarations: list[FunctionDeclaration] = Field(default_factory=list)
+
+
+class GenerateContentRequest(GoogleModel):
+    system_instruction: Content | None = None
+    contents: list[Content] = Field(default_factory=list)
+    tools: list[GoogleTool] = Field(default_factory=list)
+
+
+class Candidate(GoogleModel):
+    content: Content | None = None
+    finish_reason: str | None = None
+    index: int = 0
+
+
+class UsageMetadata(GoogleModel):
+    prompt_token_count: int = 0
+    candidates_token_count: int = 0
+    thoughts_token_count: int = 0
+    total_token_count: int | None = None
+
+
+class GenerateContentResponse(GoogleModel):
+    candidates: list[Candidate] = Field(default_factory=list)
+    usage_metadata: UsageMetadata | None = None
+    model_version: str = ""
+    response_id: str = ""
+
+
+def parse_content(parts: list[Part]) -> str | list[ContentPart]:
     """Google text/image parts -> typed message content."""
     content: list[ContentPart] = []
-    for part in parts or []:
-        if part.get("text") is not None and not part.get("thought"):
-            content.append(TextContentPart(text=part["text"]))
+    for part in parts:
+        if part.text is not None and not part.thought:
+            content.append(TextContentPart(text=part.text))
             continue
-        data = part.get("inlineData") or {}
-        if data.get("mimeType", "").startswith("image/"):
+        if part.inline_data and part.inline_data.mime_type.startswith("image/"):
             content.append(
                 ImageUrlContentPart(
                     image_url=ImageUrlSource(
-                        url=f"data:{data['mimeType']};base64,{data.get('data', '')}"
+                        url=f"data:{part.inline_data.mime_type};base64,"
+                        f"{part.inline_data.data}"
                     )
                 )
             )
             continue
-        data = part.get("fileData") or {}
-        if data.get("mimeType", "").startswith("image/"):
+        if part.file_data and part.file_data.mime_type.startswith("image/"):
             content.append(
                 ImageUrlContentPart(
-                    image_url=ImageUrlSource(url=data.get("fileUri", ""))
+                    image_url=ImageUrlSource(url=part.file_data.file_uri)
                 )
             )
     if all(isinstance(part, TextContentPart) for part in content):
@@ -69,88 +145,51 @@ def parse_content(parts: list[dict] | None) -> str | list[ContentPart]:
     return content
 
 
-def parse_model_content(content: dict | None) -> AssistantMessage:
-    """A Google model Content -> one assistant message."""
-    text = ""
-    reasoning = ""
-    calls: list[ToolCall] = []
-    for part in (content or {}).get("parts") or []:
-        if part.get("text") is not None:
-            if part.get("thought"):
-                reasoning += part["text"]
-            else:
-                text += part["text"]
-        if call := part.get("functionCall"):
-            calls.append(
-                ToolCall(
-                    id=call.get("id") or call.get("name", ""),
-                    name=call.get("name", ""),
-                    arguments=json.dumps(call.get("args") or {}),
-                )
-            )
+def parse_assistant(parts: list[Part]) -> AssistantMessage:
+    """Google model parts -> one assistant message."""
+    calls = [
+        ToolCall(
+            id=call.id or call.name,
+            name=call.name,
+            arguments=json.dumps(call.args),
+        )
+        for part in parts
+        if (call := part.function_call)
+    ]
     return AssistantMessage(
-        content=text or None,
-        reasoning_content=reasoning or None,
+        content="".join(part.text or "" for part in parts if not part.thought) or None,
+        reasoning_content="".join(part.text or "" for part in parts if part.thought)
+        or None,
         tool_calls=calls or None,
     )
 
 
-def parse_messages(body: dict) -> Messages:
-    """Google systemInstruction + contents -> typed messages."""
-    prompt: Messages = []
-    if system := body.get("systemInstruction"):
-        prompt.append(SystemMessage(content=parse_content(system.get("parts"))))
-    for content in body.get("contents") or []:
-        parts = content.get("parts") or []
-        if content.get("role") == "model":
-            prompt.append(parse_model_content(content))
-            continue
-        rest = []
-        for part in parts:
-            if response := part.get("functionResponse"):
-                prompt.append(
-                    ToolMessage(
-                        tool_call_id=response.get("id") or response.get("name", ""),
-                        content=json.dumps(response.get("response") or {}),
-                    )
-                )
-            else:
-                rest.append(part)
-        if rest:
-            prompt.append(UserMessage(content=parse_content(rest)))
-    return prompt
-
-
 def response_from_wire(response: GenerateContentResponse) -> Response:
     """A GenerateContentResponse -> a Verifiers response."""
-    data = response.model_dump()
-    candidates = data.get("candidates") or []
-    candidate = next((c for c in candidates if c.get("index", 0) == 0), {})
-    message = parse_model_content(candidate.get("content"))
+    candidate = next((c for c in response.candidates if c.index == 0), Candidate())
+    message = parse_assistant(candidate.content.parts if candidate.content else [])
     finish: FinishReason = (
         "tool_calls"
         if message.tool_calls
-        else FINISH_REASONS.get(candidate.get("finishReason"))
+        else FINISH_REASONS.get(candidate.finish_reason or "")
     )
-    metadata = data.get("usageMetadata") or {}
     usage = None
-    if metadata:
-        prompt_tokens = metadata.get("promptTokenCount", 0)
-        completion_tokens = metadata.get("totalTokenCount")
+    if metadata := response.usage_metadata:
+        completion_tokens = metadata.total_token_count
         if completion_tokens is not None:
-            completion_tokens -= prompt_tokens
+            completion_tokens -= metadata.prompt_token_count
         else:
-            completion_tokens = metadata.get("candidatesTokenCount", 0) + metadata.get(
-                "thoughtsTokenCount", 0
+            completion_tokens = (
+                metadata.candidates_token_count + metadata.thoughts_token_count
             )
         usage = Usage(
-            prompt_tokens=prompt_tokens,
+            prompt_tokens=metadata.prompt_token_count,
             completion_tokens=completion_tokens,
         )
     return Response(
-        id=data.get("responseId", ""),
+        id=response.response_id,
         created=0,
-        model=data.get("modelVersion", ""),
+        model=response.model_version,
         message=message,
         finish_reason=finish,
         usage=usage,
@@ -196,46 +235,75 @@ class GoogleGenerateContentDialect(Dialect[dict, GenerateContentResponse]):
         }
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
+        request = GenerateContentRequest.model_validate(body)
+        prompt: Messages = []
+        if request.system_instruction:
+            prompt.append(
+                SystemMessage(content=parse_content(request.system_instruction.parts))
+            )
+        for content in request.contents:
+            if content.role == "model":
+                prompt.append(parse_assistant(content.parts))
+                continue
+            prompt.extend(
+                ToolMessage(
+                    tool_call_id=response.id or response.name,
+                    content=json.dumps(response.response),
+                )
+                for part in content.parts
+                if (response := part.function_response)
+            )
+            user_parts = [
+                part for part in content.parts if part.function_response is None
+            ]
+            if user_parts:
+                prompt.append(UserMessage(content=parse_content(user_parts)))
         tools = [
             Tool(
-                name=declaration["name"],
-                description=declaration.get("description", ""),
-                parameters=declaration.get("parameters")
-                or declaration.get("parametersJsonSchema")
+                name=declaration.name,
+                description=declaration.description,
+                parameters=declaration.parameters
+                or declaration.parameters_json_schema
                 or {},
             )
-            for tool in body.get("tools") or []
-            for declaration in tool.get("functionDeclarations") or []
+            for tool in request.tools
+            for declaration in tool.function_declarations
         ] or None
-        return parse_messages(body), tools
+        return prompt, tools
 
     def parse_response(self, response: GenerateContentResponse) -> Response:
         return response_from_wire(response)
 
     def parse_stream(self, raw: bytes) -> Response:
         """Concatenate candidate-zero parts from each SSE chunk."""
-        response: dict = {"candidates": [{"index": 0, "content": {"parts": []}}]}
-        candidate = response["candidates"][0]
-        for chunk in iter_sse(raw):
-            for key in ("responseId", "modelVersion", "usageMetadata"):
-                if chunk.get(key) is not None:
-                    response[key] = chunk[key]
-            current = next(
-                (
-                    item
-                    for item in chunk.get("candidates") or []
-                    if item.get("index", 0) == 0
-                ),
-                None,
-            )
+        parts: list[Part] = []
+        finish_reason = None
+        response_id = ""
+        model_version = ""
+        usage = None
+        for chunk in map(GenerateContentResponse.model_validate, iter_sse(raw)):
+            response_id = chunk.response_id or response_id
+            model_version = chunk.model_version or model_version
+            usage = chunk.usage_metadata or usage
+            current = next((c for c in chunk.candidates if c.index == 0), None)
             if current is None:
                 continue
-            candidate["content"]["parts"].extend(
-                (current.get("content") or {}).get("parts") or []
+            if current.content:
+                parts.extend(current.content.parts)
+            finish_reason = current.finish_reason or finish_reason
+        return response_from_wire(
+            GenerateContentResponse(
+                candidates=[
+                    Candidate(
+                        content=Content(role="model", parts=parts),
+                        finish_reason=finish_reason,
+                    )
+                ],
+                usage_metadata=usage,
+                model_version=model_version,
+                response_id=response_id,
             )
-            if current.get("finishReason") is not None:
-                candidate["finishReason"] = current["finishReason"]
-        return response_from_wire(GenerateContentResponse.model_validate(response))
+        )
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
         config = {
