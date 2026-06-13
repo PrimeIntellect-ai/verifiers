@@ -244,6 +244,7 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
         for index, partial in partial_json.items():
             blocks[index]["input"] = json.loads(partial or "{}")
         message["content"] = [blocks[i] for i in sorted(blocks)]
+        message.get("usage", {}).pop("service_tier", None)
         return response_from_wire(AnthropicMessage.model_validate(message))
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
