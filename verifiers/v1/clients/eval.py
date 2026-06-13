@@ -2,9 +2,10 @@
 
 `EvalClient` (the default) is a thin `httpx` forwarder: it sends the program's request body
 without a typed round-trip, mutating only what the eval owns (model + sampling, via the dialect's
-`apply_overrides`). Safe end-to-end request headers are forwarded too; transport headers and the
-rollout secret are replaced. The provider response is parsed into a vf `Response` for the trace,
-while its full JSON object stays on `Response.raw` for the interception server to return.
+`apply_overrides`). Eligible end-to-end request headers are forwarded too; credentials, body
+framing, and connection headers are replaced. The provider response is parsed into a vf
+`Response` for the trace, while its full JSON object stays on `Response.raw` for the interception
+server to return.
 
 The transport is provider-agnostic: the dialect supplies the upstream path + auth headers, so a
 new wire format (incl. non-OpenAI providers like Anthropic) is just a new `Dialect` — no client
@@ -17,7 +18,7 @@ from contextlib import aclosing
 import httpx
 
 from verifiers.v1.clients.client import Client, RelayReply
-from verifiers.v1.dialects import Dialect
+from verifiers.v1.dialects import ChatDialect, Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import Response, SamplingConfig
 
@@ -26,21 +27,52 @@ from verifiers.v1.types import Response, SamplingConfig
 _PROXY_MANAGED_HEADERS = frozenset(
     {
         "connection",
+        "client-ip",
+        "cf-connecting-ip",
+        "content-encoding",
+        "content-digest",
         "content-length",
+        "content-md5",
+        "content-range",
+        "content-type",
+        "digest",
+        "expect",
+        "fastly-client-ip",
+        "forwarded",
         "host",
         "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "proxy-connection",
+        "repr-digest",
+        "signature",
+        "signature-input",
         "te",
         "trailer",
         "transfer-encoding",
+        "true-client-ip",
         "upgrade",
+        "via",
+        "x-real-ip",
+        "x-client-ip",
+        "x-content-sha256",
+        "x-ms-content-sha256",
+        "x-storage-token",
+        "x-zumo-auth",
     }
 )
-# The incoming bearer token authenticates the harness to the interception server. Never leak that
-# rollout secret upstream; the dialect adds the real provider credentials after filtering.
-_INTERCEPTION_AUTH_HEADERS = frozenset({"authorization"})
+# Incoming credentials authenticate the harness or its localhost environment. Never leak them
+# upstream; endpoint configuration and the dialect add the real provider credentials.
+_INTERCEPTION_AUTH_HEADERS = frozenset(
+    {"api-key", "authorization", "cookie", "x-api-key", "x-goog-api-key"}
+)
+_PROXY_MANAGED_PREFIXES = (
+    "cf-access-",
+    "proxy-",
+    "x-amz-",
+    "x-amzn-",
+    "x-auth-",
+    "x-forwarded-",
+    "x-goog-",
+    "x-ms-token-",
+)
 
 
 class EvalClient(Client):
@@ -53,7 +85,7 @@ class EvalClient(Client):
         self.api_key = api_key
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
-        self.headers = headers or {}
+        self.headers = dict(headers or {})
         # No timeout: agentic completions are slow and the rollout timeout is the real backstop.
         # Build full URLs ourselves (base_url + dialect.upstream_path) rather than relying on
         # httpx base-url joining, which drops the base path for a leading-slash request path.
@@ -86,6 +118,8 @@ class EvalClient(Client):
         Preserve provider feature headers such as `openai-beta`, discard localhost auth and
         transport framing, then apply endpoint-configured headers and real provider auth.
         """
+        if not isinstance(dialect, ChatDialect):
+            request_headers = None
         incoming = httpx.Headers(request_headers)
         blocked = (
             _PROXY_MANAGED_HEADERS
@@ -101,6 +135,7 @@ class EvalClient(Client):
             name: value
             for name, value in incoming.items()
             if name.lower() not in blocked
+            and not name.lower().startswith(_PROXY_MANAGED_PREFIXES)
         }
         headers = httpx.Headers(forwarded)
         headers.update(self.headers)
@@ -136,10 +171,18 @@ class EvalClient(Client):
             response = await self.http.send(request, stream=stream)
         except httpx.HTTPError as e:
             raise model_error(str(e)) from e
+        if not stream:
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                raise model_error(e.response.text) from e
+            return response
         if response.status_code < 400:
             return response
-        text = (await response.aread()).decode("utf-8", errors="replace")
-        await response.aclose()
+        try:
+            text = (await response.aread()).decode("utf-8", errors="replace")
+        finally:
+            await response.aclose()
         raise model_error(f"upstream {response.status_code}: {text}")
 
     async def relay(

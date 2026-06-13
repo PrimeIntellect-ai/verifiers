@@ -44,8 +44,8 @@ class Client(ABC):
         request_headers: Mapping[str, str] | None = None,
     ) -> Response:
         """Run one completion -> a vf `Response`. The eval client forwards the native JSON and
-        safe end-to-end headers, then parses a copy via `dialect`; the train client derives the
-        typed prompt from `body` and tokenizes it."""
+        eligible end-to-end headers, then parses a copy via `dialect`; the train client derives
+        the typed prompt from `body` and tokenizes it."""
 
     async def relay(
         self,

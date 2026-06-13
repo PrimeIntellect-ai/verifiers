@@ -33,6 +33,7 @@ from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
 from verifiers.v1.dialects.chat import message_to_wire, response_from_wire
 from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.types import (
+    AssistantMessage,
     FinishReason,
     Response,
     SamplingConfig,
@@ -72,7 +73,7 @@ def completion_from_generate(
             ),
         )
         for i, tc in enumerate(result.get("tool_calls") or [])
-        if tc.name
+        if getattr(tc, "name", None)
     ] or None
     prompt_ids = result.get("prompt_ids") or []
     completion_ids = result.get("completion_ids") or []
@@ -152,7 +153,7 @@ class TrainClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
-        _request_headers: Mapping[str, str] | None = None,
+        request_headers: Mapping[str, str] | None = None,
     ) -> Response:
         # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
         # back), so it can't forward the raw request — it parses `body` via the dialect and renders
@@ -188,7 +189,12 @@ class TrainClient(Client):
         response = response_from_wire(completion)
         # The wire response needs OpenAI fallbacks, while the trace keeps the renderer's original
         # empty id and unknown finish reason semantics.
-        response.message.reasoning_content = result.get("reasoning_content")
+        response.message = AssistantMessage.model_validate(
+            {
+                **response.message.model_dump(),
+                "reasoning_content": result.get("reasoning_content"),
+            }
+        )
         response.finish_reason = (
             result["finish_reason"]
             if result.get("finish_reason") in FINISH_REASONS
