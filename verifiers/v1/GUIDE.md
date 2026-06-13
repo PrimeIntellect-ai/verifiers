@@ -264,12 +264,7 @@ uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sand
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox
 ```
 
-Remote resources are named after the rollout id (greppable in `prime sandbox list` /
-`modal`), and the framework guarantees cleanup even on interrupt. Per-runtime knobs include
-unified resources (`cpu` / `memory` / `gpu` like `"A100:2"` / `disk` / `timeout`), prime
-`labels`, and creation-rate limits (`creates_per_sec` / `creates_per_min`).
-
-## Running evals
+## Evals
 
 ```bash
 uv run eval gsm8k-v1 -n 5 -r 3 \
@@ -293,10 +288,8 @@ Common aliases: `-m`/`--model`, `-n`/`--num-tasks`, `-r`/`--num-rollouts`,
   (needs a vLLM engine via `--client.base-url`).
 - **Validate** — `uv run validate gsm8k-v1` runs each taskset's `validate` hook (model-free
   gold check), no model needed.
-- **Serve** — `uv run serve gsm8k-v1` serves the same env over ZMQ as an env server that an
-  orchestrator (or any `EnvClient`) drives by task index.
 
-## Training with prime-rl
+## Training
 
 prime-rl consumes the same env over the env-server, so a training env is the eval config in
 TOML form. In a prime-rl config:
@@ -311,9 +304,7 @@ timeout = { scoring = 10 }                                          # per-stage 
 ```
 
 `[orchestrator.renderer]` is required (set `name = "auto"` or a specific renderer) — the
-renderer tokenizes rollouts into training samples. Multimodal training works end to end
-(see `configs/v1/multimodal_color_codeword.toml`); pixel tensors ride the trace to the
-trainer but are kept out of the on-disk rollout dumps.
+renderer tokenizes rollouts into training samples. 
 
 ## Backwards compatibility
 
@@ -322,12 +313,5 @@ its rollouts mapped to v1 `Trace`s. Use `--id` instead of a `taskset`:
 
 ```bash
 uv run eval --id reverse-text -n 2                                  # eval a v0 env
-uv run serve --id reverse-text                                      # serve it over ZMQ
 uv run eval --id reverse-text --args.num_train_examples 50          # v0 construction args
 ```
-
-## Ids and the Hub
-
-A taskset/harness/env `id` is `name`, `org/name`, or `org/name@version`. A bare local name
-must be importable; an `org/...` id installs on demand from the Environments Hub. Built-in
-ids (`default`, `rlm`, `harbor-v1`, ...) resolve to the shipped packages.
