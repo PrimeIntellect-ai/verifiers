@@ -5,11 +5,9 @@ trace from the program's native request + the provider's native response. The se
 every registered dialect's `routes` (see `dialects.DIALECTS`), so a request's format is resolved
 from the endpoint the program's SDK posts to — the harness declares nothing.
 
-The eval client relays a request's native JSON to a matching endpoint, so the dialect only
+The eval client relays a request's bytes verbatim to a matching endpoint, so the dialect only
 parses a *copy* for the trace (incl. assembling a relayed SSE stream via `parse_stream`); the
-renderer is chat-only. Request parsing intentionally operates on raw mappings instead of SDK
-request types: those are mostly `TypedDict`s and can lag provider-specific fields that the relay
-must preserve. A dialect is therefore mostly wire -> vf
+renderer is chat-only. A dialect is therefore mostly wire -> vf
 (`parse_request`/`parse_response`/`parse_stream`); the exceptions are `apply_overrides` (impose
 the eval's model + sampling in this format's shape) and `extend` (chat-only user-sim injection).
 """
@@ -99,7 +97,7 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     @abstractmethod
     def apply_overrides(self, body: ReqT, model: str, sampling: SamplingConfig) -> ReqT:
         """Return `body` with the eval's `model` + `sampling` imposed in this protocol's shape —
-        the only field mutation the proxy makes to the native JSON. Model overlays;
+        the only mutation the proxy makes to an otherwise byte-exact forward. Model overlays;
         sampling is authoritative (the program's sampling keys are dropped, the eval's applied)."""
 
     def extend(self, body: ReqT, completion: dict, user_messages: Messages) -> ReqT:

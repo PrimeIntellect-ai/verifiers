@@ -38,9 +38,9 @@ _PROXY_MANAGED_HEADERS = frozenset(
         "upgrade",
     }
 )
-# The incoming values authenticate the harness to the interception server. Never leak that
+# The incoming bearer token authenticates the harness to the interception server. Never leak that
 # rollout secret upstream; the dialect adds the real provider credentials after filtering.
-_INTERCEPTION_AUTH_HEADERS = frozenset({"authorization", "x-api-key"})
+_INTERCEPTION_AUTH_HEADERS = frozenset({"authorization"})
 
 
 class EvalClient(Client):
@@ -83,7 +83,7 @@ class EvalClient(Client):
     ) -> dict[str, str]:
         """Build provider headers from the intercepted request.
 
-        Preserve provider feature headers such as `anthropic-beta`, discard localhost auth and
+        Preserve provider feature headers such as `openai-beta`, discard localhost auth and
         transport framing, then apply endpoint-configured headers and real provider auth.
         """
         incoming = httpx.Headers(request_headers)
@@ -168,18 +168,12 @@ class EvalClient(Client):
             chunks=chunks(),
         )
 
-    async def relay_aux(
-        self,
-        dialect: Dialect,
-        route: str,
-        body: dict,
-        request_headers: Mapping[str, str] | None = None,
-    ) -> dict:
+    async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
         # A side request (e.g. count_tokens): relay its native JSON and return the provider JSON.
         resp = await self._request(
             self.base_url + route,
             body,
-            self._headers(dialect, request_headers),
+            self._headers(dialect, None),
         )
         return resp.json()
 

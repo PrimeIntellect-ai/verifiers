@@ -1,8 +1,10 @@
-"""The interception server: harness model calls, caught and proxied.
+"""The interception server: harness chat-completions, caught and proxied.
 
-Every rollout runs a harness program whose native model calls are caught here: a small
-localhost server route-detects the wire dialect, sends the request through our `Client`,
-records the turn into the trace's message graph, and returns the provider-native result.
+Every rollout runs an harness program whose OpenAI-style calls are caught here: a small
+localhost server routes each `POST /v1/chat/completions` to our `Client`, records the turn
+into the trace's message graph, and returns the result in OpenAI shape. We inject
+`OPENAI_BASE_URL`/`OPENAI_API_KEY` so the program's SDK talks to us. Chat completions only,
+no streaming.
 
 One server multiplexes many rollouts: each rollout registers a `RolloutSession` under its
 own secret (the bearer token the harness already sends), and the server routes by that
@@ -20,7 +22,6 @@ import logging
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from functools import partial
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -138,17 +139,28 @@ class InterceptionServer:
     def unregister(self, secret: str) -> None:
         self.sessions.pop(secret, None)
 
+    def _handler_for(self, dialect: Dialect):
+        """Bind a route's dialect to the request handler — the route the SDK posts to is what
+        selects the wire format (see `dialects.DIALECTS`)."""
+
+        async def handler(request: web.Request) -> web.StreamResponse:
+            return await self.handle_request(request, dialect)
+
+        return handler
+
+    def _aux_handler_for(self, dialect: Dialect, route: str):
+        async def handler(request: web.Request) -> web.Response:
+            return await self.handle_aux(request, dialect, route)
+
+        return handler
+
     async def __aenter__(self) -> "InterceptionServer":
         app = web.Application(client_max_size=_MAX_REQUEST_BODY)
         for dialect in DIALECTS:
             for route in dialect.routes:
-                app.router.add_post(
-                    route, partial(self.handle_request, dialect=dialect)
-                )
+                app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
-                app.router.add_post(
-                    aux, partial(self.handle_aux, dialect=dialect, route=aux)
-                )
+                app.router.add_post(aux, self._aux_handler_for(dialect, aux))
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -169,8 +181,8 @@ class InterceptionServer:
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         body = await request.json()
-        # The native JSON is relayed without a typed round-trip (the proxy mutates only model +
-        # sampling), so provider fields survive. `prompt` is the dialect's typed parse for the
+        # `body` is forwarded to the model 1:1 (the proxy mutates only model + sampling), so no
+        # provider field is lost. `prompt` is the dialect's typed parse, kept only to build the
         # trace (the renderer re-derives its own from the body it's handed). A user simulator
         # extends both each turn (`dialect.extend` for the wire, `prompt` for the trace).
         prompt: Messages
@@ -217,8 +229,8 @@ class InterceptionServer:
             except Exception as e:  # surface to the program as an API error
                 logger.warning("model call failed: id=%s %s", session.trace.id, e)
                 return web.json_response(dialect.error_body(str(e)), status=502)
-            # `Response.raw` is the native response handed to the program: the provider's
-            # complete JSON object (eval) or the train client's synthesized chat completion.
+            # `Response.raw` is the wire response handed to the program 1:1 — the provider's
+            # verbatim bytes (proxy) or the client's serialized completion (renderer).
             completion = response.raw
             graph.add_turn(session.trace, prompt, response)  # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
@@ -285,13 +297,13 @@ class InterceptionServer:
         self, request: web.Request, dialect: Dialect, route: str
     ) -> web.Response:
         """A non-model-turn side request (an `aux_route`, e.g. Anthropic's `count_tokens`):
-        relayed to the provider, never recorded on the trace."""
+        relayed verbatim to the provider, never recorded on the trace."""
         session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         try:
             result = await session.ctx.client.relay_aux(
-                dialect, route, await request.json(), request.headers
+                dialect, route, await request.json()
             )
         except Exception as e:
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
