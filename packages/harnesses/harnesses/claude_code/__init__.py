@@ -54,6 +54,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
             "ANTHROPIC_API_KEY": secret,
             "ANTHROPIC_CUSTOM_MODEL_OPTION": ctx.model,
+            "API_FORCE_IDLE_TIMEOUT": "0",
             "CLAUDE_CONFIG_DIR": ".vf-claude",
             "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
