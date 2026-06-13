@@ -196,25 +196,29 @@ uv run eval gsm8k-v1 -n 1 --client.type train \      # train: client-side tokeni
 
 ### Budgets
 
-Per-rollout budgets are framework-enforced and checked between turns, so they hold for any
-harness or task: a cap on model turns (`--max-turns`) and three on tokens — `--max-input-tokens`,
-`--max-output-tokens`, `--max-total-tokens` (prompt, completion, and the sum). Hitting a cap
-cleanly truncates the rollout (`trace.is_truncated`) instead of erroring.
+The framework enforces every rollout's resource limits itself — between turns and around each
+stage — so they hold for any harness or task. Three kinds:
 
-Wall-clock **timeouts** bound each rollout stage independently — `--timeout.setup`,
+**Caps.** A limit on model turns (`--max-turns`) and three on tokens — `--max-input-tokens`,
+`--max-output-tokens`, `--max-total-tokens` (prompt, completion, and the sum), checked between
+turns. Hitting a cap cleanly truncates the rollout (`trace.is_truncated`) instead of erroring.
+
+**Timeouts.** Wall-clock caps that bound each rollout stage independently — `--timeout.setup`,
 `--timeout.rollout` (the harness run), `--timeout.finalize`, `--timeout.scoring` (seconds;
 default no limit). A `rollout` timeout scores what the harness produced so far (like a turn
 cap); `setup` / `finalize` / `scoring` timeouts error the rollout.
 
-Alongside them, retries at two granularities: per-call (model + runtime, default 3 retries —
-reruns just the failed call, keeping the rollout's progress) and whole-rollout (default 1
-retry). A retry count of 0 turns a layer off.
+**Retries.** Two granularities — per-call (model + runtime, default 3, reruns just the failed
+call and keeps the rollout's progress) and whole-rollout (default 1). A retry count of 0 turns
+a layer off.
 
 ```bash
 uv run eval gsm8k-v1 -n 1 --max-turns 8                  # cap model turns
 uv run eval gsm8k-v1 -n 1 --max-total-tokens 8192        # cap prompt+completion tokens
                                                           # (also --max-input-tokens / --max-output-tokens)
+
 uv run eval gsm8k-v1 -n 1 --timeout.rollout 600 --timeout.scoring 120  # per-stage wall-clock caps (s)
+
 uv run eval gsm8k-v1 -n 1 --retries.model.max-retries 5 --retries.runtime.max-retries 5  # per-call retries
 uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.include ProgramError  # whole-rollout, by exception type
 ```
@@ -222,35 +226,16 @@ uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.incl
 ### Integrations
 
 Some tasksets wrap a whole benchmark family rather than a single task — shipped, installed by
-default, used by id: e.g. `textarena-v1` (TextArena games) and `harbor-v1` (the agentic-
+default. For example, `textarena-v1` (TextArena games) and `harbor-v1` (the agentic-
 benchmark registry). Harbor is the showcase: it pulls tasks straight from the Harbor registry
 via the `harbor` CLI (`uv tool install harbor`), each in its own declared, pullable container
-image — e.g. Terminal-Bench 2 (the `terminal-bench-2-v1` example just pins this):
+image — e.g. Terminal-Bench 2:
 
 ```bash
-uv run eval harbor-v1 --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.enable-bash true
+uv run eval harbor-v1 --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm
 ```
 
-Tasks that define their environment with a `Dockerfile` rather than a pullable image (e.g.
-SWE-bench) are rejected at load — building Dockerfiles isn't supported here (a locally-built
-image isn't pullable by a remote sandbox) — rather than silently scored against a wrong
-default image.
-
-### Typed eval CLI
-
-Every CLI flag has a TOML equivalent, and a saved config runs with just `@ file.toml` — the
-taskset / harness `id` is read from the file, so no positional id is needed:
-
-```bash
-uv run eval @ configs/gsm8k.toml          # ids + knobs from the file
-uv run eval @ configs/gsm8k.toml -n 1    # CLI flags still override the file
-```
-
-This is the same TOML-driven shape prime-rl consumes (ids live in the config, resolved by
-`EnvConfig`). The other CLI is `uv run serve` — the same env, served over ZMQ as an env
-server the orchestrator (or any `EnvClient`) drives by task index.
-
-### Backwards compatibility
+## Backwards compatibility
 
 The v0 framework is untouched — the classic `verifiers` API and its entrypoints (`vf-eval`,
 ...) keep working exactly as before; v1 lives alongside it as `verifiers.v1`. On top of
