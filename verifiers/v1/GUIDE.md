@@ -108,7 +108,7 @@ A rollout runs `setup → harness → finalize → scoring`, each independently 
 (`--timeout.{setup,rollout,finalize,scoring}`). A taskset can hook any stage (all `async`):
 
 - `setup(task, runtime)` — per-task prep before the harness runs (clone a repo, start a service).
-- `finalize(task, trace, runtime)` — after the harness, before scoring (apply a diff, snapshot state).
+- `finalize(task, trace, runtime)` — after the harness, before scoring (apply a diff, snapshot state, scrape runtime artifacts into `trace.info`).
 - `validate(task, runtime)` — model-free gold check (does the reference solution pass?), run by `uv run validate`.
 
 ### Runtime access
@@ -141,12 +141,22 @@ class SWETaskset(vf.Taskset[SWETask, SWEConfig]):
         await runtime.run(["git", "clone", task.repo_url, "/repo"], {})
         await runtime.run(["git", "-C", "/repo", "checkout", task.base_commit], {})
 
+    async def finalize(self, task: SWETask, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        # scrape the agent's diff off the live runtime into trace.info; it persists to results.jsonl
+        diff = await runtime.run(["git", "-C", "/repo", "diff"], {})
+        trace.info["diff"] = diff.stdout
+
     @vf.reward()
     async def tests_pass(self, task: SWETask, trace: vf.Trace, runtime: vf.Runtime) -> float:
         # the agent edited /repo during the rollout; run the task's tests in that same runtime
         result = await runtime.run(["bash", "-lc", task.test_cmd], {})
         return 1.0 if result.exit_code == 0 else 0.0
 ```
+
+`trace.info` is a free-form, JSON-serializable dict for anything that isn't a reward or metric —
+runtime artifacts (the diff above, captured logs, command output) you want persisted with the
+trace for inspection. Like the rewards/metrics it rides along to `results.jsonl`; use `metrics`
+for numbers that aggregate, `trace.info` for everything else.
 
 Since `@group_reward` has no runtime, fold any runtime-derived signal (here, pass/fail) into a
 per-rollout `@reward`/`@metric` first, then compare those across the task's rollouts.
