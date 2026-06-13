@@ -231,7 +231,7 @@ PROGRAM = (Path(__file__).parent / "program.py").read_text()  # a uv script, dep
 
 class MyHarnessConfig(vf.HarnessConfig):
     id: str = "my-harness"
-    max_turns: int = 16              # any knob; surfaces as --harness.max-turns
+    enable_bash: bool = False        # a harness-specific knob; surfaces as --harness.enable-bash
 
 
 class MyHarness(vf.Harness[MyHarnessConfig]):
@@ -242,7 +242,7 @@ class MyHarness(vf.Harness[MyHarnessConfig]):
         system, instruction = self.resolve_prompt(trace.task)
         env = {"OPENAI_BASE_URL": endpoint, "OPENAI_API_KEY": secret,
                "OPENAI_MODEL": ctx.model, "SYSTEM_PROMPT": system or "",
-               "MAX_TURNS": str(self.config.max_turns)}
+               "ENABLE_BASH": "1" if self.config.enable_bash else "0"}
         return await runtime.run_uv_script(PROGRAM, args=[instruction], env=env)
 
 
@@ -260,8 +260,8 @@ The same `Runtime` contract backs the harness (`--harness.runtime`), a task's to
 ```bash
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container (eval default)
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote Prime sandbox
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote Modal sandbox
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sandbox
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox
 ```
 
 Remote resources are named after the rollout id (greppable in `prime sandbox list` /
