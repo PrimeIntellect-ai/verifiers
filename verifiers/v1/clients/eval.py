@@ -129,7 +129,7 @@ class EvalClient(Client):
         """The (url, headers, steered body) for a forwarded request — shared by the non-stream
         and streaming paths."""
         return (
-            self.base_url + dialect.upstream_path,
+            self.base_url + dialect.upstream_path.format(model=model),
             self._headers(dialect, request_headers),
             dialect.apply_overrides(body, model, sampling_args),
         )

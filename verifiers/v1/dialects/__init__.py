@@ -14,9 +14,15 @@ from verifiers.v1.dialects.chat import (
     parse_tools,
     response_from_wire,
 )
+from verifiers.v1.dialects.google import GoogleGenerateContentDialect
 from verifiers.v1.dialects.responses import ResponsesDialect
 
-DIALECTS: tuple[Dialect, ...] = (ChatDialect(), ResponsesDialect(), AnthropicDialect())
+DIALECTS: tuple[Dialect, ...] = (
+    ChatDialect(),
+    ResponsesDialect(),
+    AnthropicDialect(),
+    GoogleGenerateContentDialect(),
+)
 """The registered dialects, all served simultaneously by the interception server, which resolves
 the wire format from the route a request arrived on."""
 
@@ -26,6 +32,7 @@ __all__ = [
     "FINISH_REASONS",
     "AnthropicDialect",
     "ChatDialect",
+    "GoogleGenerateContentDialect",
     "ResponsesDialect",
     "iter_sse",
     "parse_message",
