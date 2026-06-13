@@ -9,6 +9,7 @@ needs a running vLLM engine.
 """
 
 import json
+from collections.abc import Mapping
 
 from openai import AsyncOpenAI, OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
@@ -163,6 +164,7 @@ class TrainClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        request_headers: Mapping[str, str] | None = None,
     ) -> Response:
         # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
         # back), so it can't forward the raw request — it parses `body` via the dialect and renders

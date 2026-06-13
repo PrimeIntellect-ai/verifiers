@@ -208,7 +208,11 @@ class InterceptionServer:
                 return web.json_response(completion)
             try:
                 response = await session.ctx.client.get_response(
-                    dialect, body, session.ctx.model, session.ctx.sampling
+                    dialect,
+                    body,
+                    session.ctx.model,
+                    session.ctx.sampling,
+                    request.headers,
                 )
             except OverlongPromptError:
                 # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
@@ -262,7 +266,11 @@ class InterceptionServer:
             )
         try:
             reply = await session.ctx.client.relay(
-                dialect, body, session.ctx.model, session.ctx.sampling
+                dialect,
+                body,
+                session.ctx.model,
+                session.ctx.sampling,
+                request.headers,
             )
         except OverlongPromptError:
             session.trace.stop("context_length")
