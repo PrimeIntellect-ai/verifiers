@@ -17,6 +17,11 @@ import verifiers.v1 as vf
 
 DATASET = "AweAI-Team/Scale-SWE"
 
+# The dataset's `image_url` (`aweaiteam/scaleswe:<tag>`) names a public Docker Hub mirror that
+# is missing some task images. Prime's Artifact Registry holds the complete, runtime-pullable
+# set, so resolve every image against it (matching the v0 ScaleSWE taskset).
+REGISTRY = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
+
 # The testbed conda env (with the project + pytest installed) and quiet, non-interactive
 # tooling — exported for every command the taskset runs in the sandbox.
 ENV = {
@@ -102,7 +107,7 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, vf.TasksetConfig]):
                 idx=i,
                 name=row["instance_id"],
                 instruction=row["problem_statement"],
-                image=row["image_url"],
+                image=f"{REGISTRY}/{row['image_url']}",
                 workdir=row["workdir"],
                 resources=vf.Resources(cpu=4, memory=4, disk=10),
                 base_commit=row.get("parent_commit") or row.get("base_commit") or "",
