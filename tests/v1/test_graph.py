@@ -17,7 +17,9 @@ def _response(message: vf.AssistantMessage) -> vf.Response:
     )
 
 
-def _routed_payload(num_tokens: int, start: int, base: int, layers: int = 2, top_k: int = 1):
+def _routed_payload(
+    num_tokens: int, start: int, base: int, layers: int = 2, top_k: int = 1
+):
     """A fake `generate` router-replay sidecar (uint8 `[num_tokens, layers, top_k]`, base64)."""
     arr = (
         np.arange(num_tokens * layers * top_k)
@@ -25,7 +27,11 @@ def _routed_payload(num_tokens: int, start: int, base: int, layers: int = 2, top
         .astype(np.uint8)
         + base
     )
-    return {"data": base64.b64encode(arr.tobytes()).decode(), "shape": list(arr.shape), "start": start}
+    return {
+        "data": base64.b64encode(arr.tobytes()).decode(),
+        "shape": list(arr.shape),
+        "start": start,
+    }
 
 
 def test_routed_experts_attributed_and_aligned_across_turns():
@@ -39,11 +45,16 @@ def test_routed_experts_attributed_and_aligned_across_turns():
         trace,
         [user],
         vf.Response(
-            id="a", created=0, model="t",
-            message=vf.AssistantMessage(content="a1"), finish_reason="stop",
+            id="a",
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content="a1"),
+            finish_reason="stop",
             tokens=TurnTokens(
-                prompt_ids=[10, 11, 12], completion_ids=[20, 21],
-                message_spans=[(0, 2)], routed_experts=_routed_payload(5, 0, 0),
+                prompt_ids=[10, 11, 12],
+                completion_ids=[20, 21],
+                message_spans=[(0, 2)],
+                routed_experts=_routed_payload(5, 0, 0),
             ),
         ),
     )
@@ -51,11 +62,16 @@ def test_routed_experts_attributed_and_aligned_across_turns():
         trace,
         [user, vf.AssistantMessage(content="a1"), vf.UserMessage(content="u2")],
         vf.Response(
-            id="b", created=0, model="t",
-            message=vf.AssistantMessage(content="a2"), finish_reason="stop",
+            id="b",
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content="a2"),
+            finish_reason="stop",
             tokens=TurnTokens(
-                prompt_ids=[10, 11, 12, 20, 21, 30, 31], completion_ids=[40, 41],
-                message_spans=[(0, 2), None, (5, 7)], routed_experts=_routed_payload(9, 0, 100),
+                prompt_ids=[10, 11, 12, 20, 21, 30, 31],
+                completion_ids=[40, 41],
+                message_spans=[(0, 2), None, (5, 7)],
+                routed_experts=_routed_payload(9, 0, 100),
             ),
         ),
     )
@@ -77,9 +93,14 @@ def test_routed_experts_none_when_absent():
         trace,
         [vf.UserMessage(content="u1")],
         vf.Response(
-            id="a", created=0, model="t",
-            message=vf.AssistantMessage(content="a1"), finish_reason="stop",
-            tokens=TurnTokens(prompt_ids=[1, 2], completion_ids=[3], message_spans=[(0, 2)]),
+            id="a",
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content="a1"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1, 2], completion_ids=[3], message_spans=[(0, 2)]
+            ),
         ),
     )
     assert trace.branches[-1].routed_experts is None
