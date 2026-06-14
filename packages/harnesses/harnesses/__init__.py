@@ -5,6 +5,7 @@ Re-exports each harness's class + config off the package."""
 from harnesses.claude_code import ClaudeCodeHarness, ClaudeCodeHarnessConfig
 from harnesses.codex import CodexHarness, CodexHarnessConfig
 from harnesses.default import DefaultHarness, DefaultHarnessConfig
+from harnesses.kimi_code import KimiCodeHarness, KimiCodeHarnessConfig
 from harnesses.rlm import RLMHarness, RLMHarnessConfig
 
 __all__ = [
@@ -14,6 +15,8 @@ __all__ = [
     "CodexHarnessConfig",
     "DefaultHarness",
     "DefaultHarnessConfig",
+    "KimiCodeHarness",
+    "KimiCodeHarnessConfig",
     "RLMHarness",
     "RLMHarnessConfig",
 ]

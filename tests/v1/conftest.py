@@ -63,12 +63,13 @@ def skip_if_unexposable():
 
 # Built-in harnesses (bundled in the `harnesses` package), composed with `runtime` for the
 # harness x runtime matrix. compact is an example harness, not built-in, so it's excluded. rlm
-# and codex install a heavy agent binary at rollout, so they're marked slow.
+# and the code agents install a heavy binary at rollout, so they're marked slow.
 @pytest.fixture(
     params=[
         "default",
         pytest.param("rlm", marks=pytest.mark.slow),
         pytest.param("codex", marks=pytest.mark.slow),
+        pytest.param("kimi-code", marks=pytest.mark.slow),
     ]
 )
 def harness(request) -> str:
