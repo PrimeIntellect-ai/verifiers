@@ -4,6 +4,10 @@ Re-exports each harness's class + config off the package."""
 
 from harnesses.codex import CodexHarness, CodexHarnessConfig
 from harnesses.default import DefaultHarness, DefaultHarnessConfig
+from harnesses.mini_swe_agent import (
+    MiniSWEAgentHarness,
+    MiniSWEAgentHarnessConfig,
+)
 from harnesses.rlm import RLMHarness, RLMHarnessConfig
 
 __all__ = [
@@ -11,6 +15,8 @@ __all__ = [
     "CodexHarnessConfig",
     "DefaultHarness",
     "DefaultHarnessConfig",
+    "MiniSWEAgentHarness",
+    "MiniSWEAgentHarnessConfig",
     "RLMHarness",
     "RLMHarnessConfig",
 ]

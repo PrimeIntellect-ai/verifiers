@@ -9,7 +9,7 @@ tighter type contract. `import verifiers.v1 as vf`.
 
 - **Composable taskset × harness** — a taskset (data + scoring) is fully decoupled from the
   harness (the program driving the rollout); any taskset runs under any harness
-  (`default` / `rlm` / `codex` / your own)
+  (`default` / `rlm` / `codex` / `mini-swe-agent` / your own)
 - **Swappable runtime** — the harness, tools, and user simulators all run behind one
   `Runtime` contract, in `subprocess` / `docker` / `prime` / `modal` / ...
 - **First-class branching rollouts** — a rollout isn't assumed linear: context compaction and
@@ -67,8 +67,9 @@ Tasksets (data + scoring) and harnesses (the rollout driver) are Python packages
 and live in two places:
 
 - **`packages/`** — shipped, installed by default. Commonly-used **harnesses** (`default`,
-  `rlm`, `codex`, ...) and **taskset integrations** that wrap a whole benchmark family (`harbor-v1` — 
-  the agentic-benchmark registry; `textarena-v1` — TextArena games).
+  `rlm`, `codex`, `mini-swe-agent`, ...) and **taskset integrations** that wrap a whole
+  benchmark family (`harbor-v1` — the agentic-benchmark registry; `textarena-v1` —
+  TextArena games).
 - **`examples/`** — small reference implementations to copy when **authoring your own**,
   split by kind into `examples/tasksets/` and `examples/harnesses/`. Each shows one pattern.
 
@@ -103,6 +104,7 @@ The program that drives the rollout — same taskset, different driver:
 uv run eval gsm8k-v1 -n 1                     # default: a tiny OpenAI chat loop (bash tool opt-in)
 uv run eval gsm8k-v1 -n 1 --harness.id rlm    # the rlm harness
 uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
+uv run eval harbor-v1 -n 1 --harness.id mini-swe-agent
 ```
 
 ### Swappable runtime
