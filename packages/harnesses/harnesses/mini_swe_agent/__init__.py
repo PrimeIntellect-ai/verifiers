@@ -53,7 +53,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "-c",
             "agent.cost_limit=0",
             "-c",
-            "environment.timeout=120",
+            "environment.timeout=86400",
             "-c",
             "model.cost_tracking=ignore_errors",
             "-c",
