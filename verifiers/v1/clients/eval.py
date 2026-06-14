@@ -52,6 +52,9 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
         "repr-digest",
         "signature",
         "signature-input",
+        # The eval changes the request payload, so the original operation key no longer applies.
+        "idempotency-key",
+        "x-idempotency-key",
     }
 )
 
