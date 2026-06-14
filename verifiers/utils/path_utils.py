@@ -81,25 +81,31 @@ def is_valid_eval_results_path(path: Path) -> bool:
     )
 
 
-def _count_saved_rollouts(results_path: Path) -> int:
+def _count_saved_rollouts(results_path: Path, rollouts_per_example: int) -> int:
     """Count completed rollout rows in results.jsonl."""
     outputs_path = results_path / "results.jsonl"
-    count = 0
-    with open(outputs_path, "r") as f:
+    counts: dict[object, int] = {}
+    with open(outputs_path, "rb") as f:
         for line_idx, line in enumerate(f, start=1):
             if not line.strip():
                 continue
             try:
-                json.loads(line)
-            except json.JSONDecodeError:
+                output = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
                 logger.warning(
-                    "Ignoring malformed trailing line in %s at line %s",
+                    "Ignoring malformed JSONL row in %s at line %s",
                     outputs_path,
                     line_idx,
                 )
-                break
-            count += 1
-    return count
+                continue
+            if not isinstance(output, dict) or "example_id" not in output:
+                continue
+            example_id = output["example_id"]
+            counts[example_id] = min(
+                counts.get(example_id, 0) + 1,
+                rollouts_per_example,
+            )
+    return sum(counts.values())
 
 
 def find_latest_incomplete_eval_results_path(
@@ -160,7 +166,7 @@ def find_latest_incomplete_eval_results_path(
         if not isinstance(saved_num_examples, int) or saved_num_examples > num_examples:
             continue
 
-        saved_rollouts = _count_saved_rollouts(candidate)
+        saved_rollouts = _count_saved_rollouts(candidate, rollouts_per_example)
         if saved_rollouts < total_rollouts:
             return candidate
 

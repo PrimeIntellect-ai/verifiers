@@ -82,7 +82,6 @@ from verifiers.utils.save_utils import (
     save_new_outputs,
     save_outputs,
     state_to_output,
-    truncate_malformed_trailing_line,
     validate_resume_metadata,
 )
 from verifiers.utils.usage_utils import StateUsageTracker
@@ -1003,9 +1002,21 @@ class Environment(ABC):
                 )
                 on_log(f"Resuming evaluation from {results_path}")
                 outputs = load_outputs(results_path)
-                # Drop any partial trailing row left by a crashed prior write
-                # so subsequent appends start from a valid JSONL boundary.
-                truncate_malformed_trailing_line(results_path / "results.jsonl")
+                rollout_counts_by_example_id: dict[object, int] = {}
+                capped_outputs: list[RolloutOutput] = []
+                for output in outputs:
+                    example_id = output["example_id"]
+                    rollout_count = rollout_counts_by_example_id.get(example_id, 0)
+                    if rollout_count >= rollouts_per_example:
+                        continue
+                    rollout_counts_by_example_id[example_id] = rollout_count + 1
+                    capped_outputs.append(output)
+                if len(capped_outputs) != len(outputs):
+                    on_log(
+                        f"Ignoring {len(outputs) - len(capped_outputs)} saved duplicate rollout(s) "
+                        "beyond rollouts_per_example"
+                    )
+                outputs = capped_outputs
                 builder.add_outputs(outputs)
                 filtered_inputs = filter_inputs(
                     raw_inputs, outputs, rollouts_per_example
@@ -1014,7 +1025,12 @@ class Environment(ABC):
                     on_log(
                         "No remaining rollouts to evaluate, returning completed outputs"
                     )
-                    return builder.build(sort_by_example_id=True)
+                    results = builder.build(sort_by_example_id=True)
+                    if save_results:
+                        await asyncio.to_thread(
+                            save_metadata, results["metadata"], builder.results_path
+                        )
+                    return results
                 on_log(
                     f"Found {len(outputs)} completed rollout(s), {len(filtered_inputs)} remaining rollout(s)"
                 )
@@ -1023,6 +1039,21 @@ class Environment(ABC):
 
             if save_results:
                 on_log(f"Saving results to {builder.results_path}")
+                if results_path is None or not is_valid_eval_results_path(results_path):
+                    outputs_path = builder.results_path / "results.jsonl"
+                    if (
+                        results_path is not None
+                        and outputs_path.is_file()
+                        and outputs_path.stat().st_size > 0
+                    ):
+                        raise ValueError(
+                            f"Cannot save to invalid results path {builder.results_path}: "
+                            "results.jsonl already exists without valid metadata"
+                        )
+                    await asyncio.to_thread(save_outputs, [], builder.results_path, "a")
+                    await asyncio.to_thread(
+                        save_metadata, builder.build_metadata(), builder.results_path
+                    )
 
             tasks: dict[asyncio.Task, int] = {}
             try:
@@ -1104,9 +1135,6 @@ class Environment(ABC):
 
             # save if requested
             if save_results:
-                await asyncio.to_thread(
-                    save_outputs, results["outputs"], builder.results_path
-                )
                 await asyncio.to_thread(
                     save_metadata, results["metadata"], builder.results_path
                 )

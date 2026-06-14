@@ -19,7 +19,10 @@ from verifiers.envs.experimental.composable.tasksets.search import make_search_t
 
 taskset = make_search_taskset(backend="openseeker")
 taskset = make_search_taskset(backend="quest", category="objective")
-redsearcher = make_search_taskset(backend="redsearcher", difficulty="easy")
+redsearcher = make_search_taskset(
+    backend="redsearcher",
+    filter_fn="lambda x: x['info']['difficulty'] == 'easy'",
+)
 ```
 
 `make_search_taskset()` dispatches by backend name. Unknown backends raise `ValueError` with the available backend list.
