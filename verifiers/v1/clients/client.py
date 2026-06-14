@@ -41,7 +41,7 @@ class Client(ABC):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
-        request_headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Response:
         """Run one completion -> a vf `Response`. The eval client forwards the native JSON and
         eligible end-to-end headers, then parses a copy via `dialect`; the train client derives
@@ -53,7 +53,7 @@ class Client(ABC):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
-        request_headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
         """Stream a (possibly SSE) response back, relaying the provider's bytes — the proxy's
         path for a streaming request. Only the relay (eval) client supports it; the renderer
@@ -101,15 +101,10 @@ class RetryingClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
-        request_headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Response:
         return await self._retrying(
-            self.inner.get_response,
-            dialect,
-            body,
-            model,
-            sampling_args,
-            request_headers,
+            self.inner.get_response, dialect, body, model, sampling_args, headers
         )
 
     async def relay(
@@ -118,17 +113,12 @@ class RetryingClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
-        request_headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
         # Safe to retry: relay raises (and is retried) before any response byte is handed back;
         # once a `RelayReply` is returned, streaming is already underway.
         return await self._retrying(
-            self.inner.relay,
-            dialect,
-            body,
-            model,
-            sampling_args,
-            request_headers,
+            self.inner.relay, dialect, body, model, sampling_args, headers
         )
 
     async def close(self) -> None:

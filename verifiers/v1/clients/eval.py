@@ -22,27 +22,27 @@ from verifiers.v1.dialects import ChatDialect, Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import Response, SamplingConfig
 
-# Local auth, one-shot semantics, and HTTP framing cannot be forwarded unchanged. Everything
-# else is forwarded; endpoint configuration and dialect auth override matching names.
+# These fields describe the localhost request, its original bytes, or its connection. HTTPX
+# rebuilds the provider request from JSON; endpoint configuration and provider auth apply last.
 _BLOCKED_REQUEST_HEADERS = frozenset(
     {
         # The harness uses this rollout secret to authenticate with the localhost server.
         # The dialect adds the actual provider authorization after filtering.
         "authorization",
-        # These describe the original localhost connection or encoded request body. HTTPX must
-        # calculate them again for the separate provider connection and newly encoded JSON.
-        "connection",
+        # HTTPX recalculates these for the provider URL, JSON bytes, and supported decoders.
+        "accept-encoding",
         "content-encoding",
         "content-length",
-        "expect",
+        "content-type",
         "host",
+        "transfer-encoding",
+        # These control only the localhost HTTP exchange.
+        "expect",
         "keep-alive",
-        "proxy-authenticate",
         "proxy-authorization",
         "proxy-connection",
         "te",
         "trailer",
-        "transfer-encoding",
         "upgrade",
         # The eval owns the model and sampling settings, so it changes those JSON fields before
         # sending upstream. Hashes and signatures calculated from the intercepted body are stale.
@@ -52,10 +52,6 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
         "repr-digest",
         "signature",
         "signature-input",
-        # One intercepted request may produce several distinct provider calls when a user
-        # simulator extends the conversation. Reusing one key could replay an earlier result.
-        "idempotency-key",
-        "x-idempotency-key",
     }
 )
 
@@ -82,12 +78,13 @@ class EvalClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
-        request_headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Response:
-        url, headers, upstream = self._upstream(
-            dialect, body, model, sampling_args, request_headers
+        resp = await self._request(
+            self.base_url + dialect.upstream_path,
+            dialect.apply_overrides(body, model, sampling_args),
+            self._headers(dialect, headers),
         )
-        resp = await self._request(url, upstream, headers)
         raw = resp.json()
         response = dialect.parse_response(dialect.response_type.model_validate(raw))
         response.raw = raw
@@ -96,49 +93,28 @@ class EvalClient(Client):
     def _headers(
         self,
         dialect: Dialect,
-        request_headers: Mapping[str, str] | None,
-    ) -> dict[str, str]:
+        incoming: Mapping[str, str] | None,
+    ) -> httpx.Headers:
         """Build provider headers from the intercepted request.
 
         Preserve provider feature headers such as `openai-beta`, discard localhost auth and
         transport framing, then apply endpoint-configured headers and real provider auth.
         """
-        if not isinstance(dialect, ChatDialect):
-            request_headers = None
-        headers = httpx.Headers(request_headers)
-        blocked = _BLOCKED_REQUEST_HEADERS | {
-            # RFC 9110 allows `Connection` to name additional hop-by-hop fields.
-            name.strip().lower()
-            for name in headers.get("connection", "").split(",")
-            if name.strip()
-        }
-        for name in blocked:
+        headers = httpx.Headers(incoming if isinstance(dialect, ChatDialect) else None)
+        connection = headers.pop("connection", "")
+        for name in _BLOCKED_REQUEST_HEADERS | set(
+            map(str.strip, connection.lower().split(","))
+        ):
             headers.pop(name, None)
         headers.update(self.headers)
         headers.update(dialect.auth_headers(self.api_key))
-        return dict(headers)
-
-    def _upstream(
-        self,
-        dialect: Dialect,
-        body: dict,
-        model: str,
-        sampling_args: SamplingConfig,
-        request_headers: Mapping[str, str] | None,
-    ) -> tuple[str, dict, dict]:
-        """The (url, headers, steered body) for a forwarded request — shared by the non-stream
-        and streaming paths."""
-        return (
-            self.base_url + dialect.upstream_path,
-            self._headers(dialect, request_headers),
-            dialect.apply_overrides(body, model, sampling_args),
-        )
+        return headers
 
     async def _request(
         self,
         url: str,
         body: dict,
-        headers: dict[str, str],
+        headers: httpx.Headers,
         *,
         stream: bool = False,
     ) -> httpx.Response:
@@ -167,15 +143,17 @@ class EvalClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
-        request_headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
         # Stream the provider's response bytes through (SSE for a streaming request). An error
         # status is read fully and mapped before any byte is handed back, so the retry +
         # truncation machinery treat a relayed call exactly like a non-streamed one.
-        url, headers, upstream = self._upstream(
-            dialect, body, model, sampling_args, request_headers
+        resp = await self._request(
+            self.base_url + dialect.upstream_path,
+            dialect.apply_overrides(body, model, sampling_args),
+            self._headers(dialect, headers),
+            stream=True,
         )
-        resp = await self._request(url, upstream, headers, stream=True)
 
         async def chunks():
             async with aclosing(resp):
