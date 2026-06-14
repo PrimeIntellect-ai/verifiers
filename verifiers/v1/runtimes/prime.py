@@ -143,6 +143,11 @@ class PrimeRuntime(Runtime):
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=env,
+                timeout=(
+                    _MAX_TIMEOUT_SECONDS
+                    if self.config.timeout == "auto"
+                    else self.config.timeout
+                ),
             )
         except (
             Exception
