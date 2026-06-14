@@ -24,6 +24,7 @@ import msgpack
 import zmq
 import zmq.asyncio
 
+from verifiers.utils.serve_utils import msgpack_encoder
 from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
@@ -147,7 +148,11 @@ class EnvServer:
         ) as e:  # a failed request is data, not a crash — report and keep serving
             logger.warning("request failed: %s", e, exc_info=True)
             response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
-        data = msgpack.packb(response.model_dump(mode="json"), use_bin_type=True)
+        data = msgpack.packb(
+            response.model_dump(mode="python"),
+            default=msgpack_encoder,
+            use_bin_type=True,
+        )
         try:
             await self.frontend.send_multipart([client_id, request_id, data])
         except zmq.ZMQError as e:

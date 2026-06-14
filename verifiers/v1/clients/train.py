@@ -128,6 +128,7 @@ def response_from_generate(result: dict, model: str) -> Response:
             completion_logprobs=result.get("completion_logprobs") or [],
             message_spans=message_spans,
             multi_modal_data=result.get("multi_modal_data"),
+            routed_experts=result.get("routed_experts"),
         ),
     )
 
