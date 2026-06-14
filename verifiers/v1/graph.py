@@ -94,6 +94,12 @@ class MessageNode(StrictBaseModel):
     """Provider-reported token usage for this message's response (assistant nodes). Transient
     (excluded from wire/disk); lets the live dashboard show token counts even when the endpoint
     returns no token ids (so `token_ids` is empty)."""
+    routed_experts: np.ndarray | None = None
+    """This node's slice of the MoE router-replay sidecar — uint8 `[len(token_ids), layers,
+    top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
+    the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
+    concatenates these along the path into the trainer's router-replay input. Rides the wire as
+    a base64 `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
@@ -140,6 +146,20 @@ class MessageNode(StrictBaseModel):
                 for modality, items in (value.get("mm_items") or {}).items()
             },
         )
+
+    @field_serializer("routed_experts")
+    def _ser_routed_experts(self, re: np.ndarray | None) -> dict | None:
+        """uint8 routing array -> base64 `__nd__` dict so it rides the wire (numpy can't JSON)."""
+        return None if re is None else _encode_ndarray(re)
+
+    @field_validator("routed_experts", mode="before")
+    @classmethod
+    def _val_routed_experts(cls, value: Any) -> np.ndarray | None:
+        if value is None or isinstance(value, np.ndarray):
+            return value
+        if isinstance(value, dict) and value.get("__nd__"):
+            return _decode_ndarray(value)
+        raise TypeError(f"cannot build routed_experts from {type(value).__name__}")
 
 
 def _content_str(content) -> str:
@@ -233,6 +253,32 @@ def _attribute_mm(
             )
 
 
+def _attribute_routed_experts(
+    trace: "Trace",
+    new_node_ids: "list[int]",
+    path_len: int,
+    payload: Any,
+) -> None:
+    """Attach each new node's slice of this turn's MoE router-replay sidecar. The `generate`
+    payload's array covers the turn's prompt+completion from `payload["start"]` (0 = from token
+    0); the nodes created this turn tile sequence positions `[path_len:]` in creation order, so
+    we hand each node `arr[off : off+len(node.token_ids)]` and advance. Reused-prefix nodes keep
+    the routing attributed when they were first created. A node whose slice falls outside the
+    array (a `start` past `path_len`, e.g. an unexpected prefix-cache delta) is left unset — the
+    branch then reports no routing rather than misaligning."""
+    if payload is None:
+        return
+    data = payload["data"]
+    raw = base64.b64decode(data if isinstance(data, (str, bytes)) else bytes(data))
+    arr = np.frombuffer(raw, dtype=np.uint8).reshape(payload["shape"])
+    off = path_len - int(payload.get("start", 0) or 0)
+    for nid in new_node_ids:
+        n = len(trace.nodes[nid].token_ids)
+        if n and 0 <= off and off + n <= arr.shape[0]:
+            trace.nodes[nid].routed_experts = np.ascontiguousarray(arr[off : off + n])
+        off += n
+
+
 def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> None:
     """Insert one model turn (its prompt messages + its response) into the graph. Reuses any
     existing prefix nodes (by `(parent, hash)`), creates a node per new message attributing
@@ -306,6 +352,14 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
 
     # Attribute this turn's images onto the input nodes that introduced them (by content part).
     _attribute_mm(trace, path, num_reused, tokens.multi_modal_data if tokens else None)
+
+    # Attribute this turn's router-replay sidecar onto the nodes created this turn (new input
+    # nodes in creation order, then the assistant node), each getting the routing for its tokens.
+    new_node_ids = [nid for nid, _ in path[num_reused:]]
+    new_node_ids.append(len(trace.nodes) - 1)
+    _attribute_routed_experts(
+        trace, new_node_ids, path_len, tokens.routed_experts if tokens else None
+    )
 
 
 # --- walking the graph (views) ---------------------------------------------------------

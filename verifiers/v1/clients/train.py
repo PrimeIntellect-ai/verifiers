@@ -128,6 +128,9 @@ def response_from_generate(result: dict, model: str) -> Response:
             completion_logprobs=result.get("completion_logprobs") or [],
             message_spans=message_spans,
             multi_modal_data=result.get("multi_modal_data"),
+            # MoE router-replay sidecar (present only when the engine ran with
+            # `enable_return_routed_experts`); attributed per node by `graph.add_turn`.
+            routed_experts=result.get("routed_experts"),
         ),
     )
 

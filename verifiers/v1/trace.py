@@ -15,6 +15,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Generic, TypeVar
 
+import numpy as np
 from pydantic import Field, PrivateAttr, computed_field
 from renderers.base import MultiModalData
 
@@ -131,6 +132,20 @@ class Branch(StrictBaseModel):
             for modality, hashes in mmd.mm_hashes.items():
                 merged.mm_hashes.setdefault(modality, []).extend(hashes)
         return merged if found else None
+
+    @property
+    def routed_experts(self) -> np.ndarray | None:
+        """The branch's MoE router-replay sidecar — every node's expert ids concatenated in path
+        (token) order, uint8 `[len(token_ids), layers, top_k]` aligned 1:1 with `token_ids`.
+        All-or-nothing: returns None unless every token-bearing node carries routing and the
+        concatenation matches the branch length (partial routing can't be safely aligned, so the
+        trainer skips replay). None when the rollout ran without `enable_return_routed_experts`."""
+        nodes = [n for n in self.nodes if n.token_ids]
+        if not nodes or any(n.routed_experts is None for n in nodes):
+            return None
+        merged = np.concatenate([n.routed_experts for n in nodes], axis=0)
+        total = sum(len(n.token_ids) for n in nodes)
+        return merged if merged.shape[0] == total else None
 
     @property
     def completion_len(self) -> int:
