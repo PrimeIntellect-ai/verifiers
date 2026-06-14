@@ -14,8 +14,8 @@ config. You'll work with them in very different proportions:
   write.
 - **Harness** — the program that drives the rollout turn to turn, a chat loop or an agent CLI
   (*how* the model is called). **Usually you just pick a built-in** (`default` / `rlm` /
-  `codex` / `mini-swe-agent`); you only write your own if you need a custom rollout loop.
-  With some exceptions, any taskset runs under any harness.
+  `codex`); you only write your own if you need a custom rollout loop. With some exceptions, any 
+  taskset runs under any harness.
 - **Runtime** — *where* the harness (and the taskset's tools / user simulator) executes:
   `subprocess` / `docker` / `prime` / `modal`. **You never write one** — runtimes ship with the
   framework behind one `Runtime` contract and compose with any taskset/harness; you just choose
@@ -205,7 +205,6 @@ Built-ins, selected with `--harness.id`:
 | `default` | a tiny OpenAI chat loop (bash tool opt-in via `--harness.enable-bash`) |
 | `rlm` | the RLM CLI agent |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
-| `mini-swe-agent` | mini-swe-agent with native parallel bash tool calls |
 
 ```bash
 uv run eval gsm8k-v1 -n 1                    # default harness
