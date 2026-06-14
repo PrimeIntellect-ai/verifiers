@@ -52,6 +52,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "mini",
             "-c",
             "agent.cost_limit=0",
+            # Effectively unlimited; Verifiers owns the rollout timeout.
             "-c",
             "environment.timeout=86400",
             "-c",
