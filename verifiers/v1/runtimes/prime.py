@@ -68,19 +68,15 @@ class PrimeRuntime(Runtime):
     def descriptor(self) -> str | None:
         return self._sandbox_id
 
-    @property
-    def _timeout_seconds(self) -> int:
-        return (
-            _MAX_TIMEOUT_SECONDS
-            if self.config.timeout == "auto"
-            else self.config.timeout
-        )
-
     async def start(self) -> None:
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
 
         self._client = AsyncSandboxClient()
-        timeout = self._timeout_seconds
+        timeout = (
+            _MAX_TIMEOUT_SECONDS
+            if self.config.timeout == "auto"
+            else self.config.timeout
+        )
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
@@ -147,7 +143,11 @@ class PrimeRuntime(Runtime):
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=env,
-                timeout=self._timeout_seconds,
+                timeout=(
+                    _MAX_TIMEOUT_SECONDS
+                    if self.config.timeout == "auto"
+                    else self.config.timeout
+                ),
             )
         except (
             Exception
