@@ -12,8 +12,8 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from renderers.base import MultiModalData
 
 
-class RoutedExpertsPayload(TypedDict):
-    """The raw MoE expert-routing sidecar a `generate` response carries for router replay:
+class RoutedExperts(TypedDict):
+    """The raw MoE expert-routing data a `generate` response carries for router replay:
     base64 `data` (uint8 `[tokens, layers, top_k]`), its `shape`, and `start` — the prompt
     offset where the routing begins (0 = full prompt+completion). Kept opaque (`Any` data)
     so pydantic never validates the encoded blob."""
@@ -172,10 +172,10 @@ class TurnTokens(StrictBaseModel):
     # Transient carrier (excluded): the renderer's multimodal sidecar (image tensors + offsets),
     # attributed per node by `graph.add_turn`, then dropped — never persisted.
     multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
-    # Transient carrier (excluded): the MoE router-replay sidecar from `generate` (expert ids
+    # Transient carrier (excluded): the MoE expert-routing data from `generate` (expert ids
     # per token), attributed per node by `graph.add_turn` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
-    routed_experts: RoutedExpertsPayload | None = Field(default=None, exclude=True)
+    routed_experts: RoutedExperts | None = Field(default=None, exclude=True)
 
 
 class Response(StrictBaseModel):

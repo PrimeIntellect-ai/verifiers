@@ -41,20 +41,21 @@ if TYPE_CHECKING:
 
 
 def _encode_ndarray(arr: np.ndarray) -> dict:
-    """A numpy array as a JSON/msgpack-safe dict (dtype + shape + base64 bytes)."""
+    """A numpy array as a msgpack-safe dict (dtype + shape + raw bytes). The bytes ride the
+    env-server wire natively via msgpack's `bin` type — no base64 — so the response must be
+    packed from `model_dump(mode="python")` (`mode="json"` would coerce the bytes to str)."""
     arr = np.ascontiguousarray(arr)
     return {
         "__nd__": True,
         "dtype": str(arr.dtype),
         "shape": list(arr.shape),
-        "data": base64.b64encode(arr.tobytes()).decode("ascii"),
+        "data": arr.tobytes(),
     }
 
 
 def _decode_ndarray(d: dict) -> np.ndarray:
     """Reverse :func:`_encode_ndarray`."""
-    raw = base64.b64decode(d["data"])
-    return np.frombuffer(raw, dtype=np.dtype(d["dtype"])).reshape(d["shape"])
+    return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
 class MessageNode(StrictBaseModel):
@@ -88,25 +89,25 @@ class MessageNode(StrictBaseModel):
     """The renderer items for the images this message's content introduces (pixel tensors,
     grids, hashes, placeholders) — the only carrier of the pixels from the env server to the
     trainer. `Branch.multi_modal_data` concatenates them along the path into the training
-    `mm_kwargs`. Rides the wire via a base64 (de)serializer since pydantic can't JSON the numpy;
+    `mm_kwargs`. Rides the wire as raw bytes (msgpack `bin`) since pydantic can't JSON the numpy;
     kept off disk by the dump-site `exclude` in prime-rl (the tensors bloat the rollout jsonl)."""
     usage: Usage | None = Field(default=None, exclude=True)
     """Provider-reported token usage for this message's response (assistant nodes). Transient
     (excluded from wire/disk); lets the live dashboard show token counts even when the endpoint
     returns no token ids (so `token_ids` is empty)."""
     routed_experts: np.ndarray | None = None
-    """This node's slice of the MoE router-replay sidecar — uint8 `[len(token_ids), layers,
+    """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
     top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
     the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
-    a base64 `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
+    a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     @field_serializer("multi_modal_data")
-    def _ser_multi_modal_data(self, mmd: MultiModalData | None) -> dict | None:
-        """`MultiModalData` -> JSON/msgpack-safe dict so the pixel tensors ride the wire; numpy
-        `mm_items` values become base64 `__nd__` dicts (every renderer emits `return_tensors="np"`)."""
+    def serialize_multi_modal_data(self, mmd: MultiModalData | None) -> dict | None:
+        """`MultiModalData` -> msgpack-safe dict so the pixel tensors ride the wire; numpy
+        `mm_items` values become raw-bytes `__nd__` dicts (every renderer emits `return_tensors="np"`)."""
         if mmd is None:
             return None
         return {
@@ -125,7 +126,7 @@ class MessageNode(StrictBaseModel):
 
     @field_validator("multi_modal_data", mode="before")
     @classmethod
-    def _val_multi_modal_data(cls, value: Any) -> MultiModalData | None:
+    def deserialize_multi_modal_data(cls, value: Any) -> MultiModalData | None:
         if value is None or isinstance(value, MultiModalData):
             return value
         if not isinstance(value, dict):
@@ -148,13 +149,13 @@ class MessageNode(StrictBaseModel):
         )
 
     @field_serializer("routed_experts")
-    def _ser_routed_experts(self, re: np.ndarray | None) -> dict | None:
-        """uint8 routing array -> base64 `__nd__` dict so it rides the wire (numpy can't JSON)."""
+    def serialize_routed_experts(self, re: np.ndarray | None) -> dict | None:
+        """uint8 routing array -> raw-bytes `__nd__` dict so it rides the wire (numpy can't JSON)."""
         return None if re is None else _encode_ndarray(re)
 
     @field_validator("routed_experts", mode="before")
     @classmethod
-    def _val_routed_experts(cls, value: Any) -> np.ndarray | None:
+    def deserialize_routed_experts(cls, value: Any) -> np.ndarray | None:
         if value is None or isinstance(value, np.ndarray):
             return value
         if isinstance(value, dict) and value.get("__nd__"):
@@ -259,7 +260,7 @@ def _attribute_routed_experts(
     path_len: int,
     payload: Any,
 ) -> None:
-    """Attach each new node's slice of this turn's MoE router-replay sidecar. The `generate`
+    """Attach each new node's slice of this turn's MoE expert-routing array. The `generate`
     payload's array covers the turn's prompt+completion from `payload["start"]` (0 = from token
     0); the nodes created this turn tile sequence positions `[path_len:]` in creation order, so
     we hand each node `arr[off : off+len(node.token_ids)]` and advance. Reused-prefix nodes keep
@@ -353,7 +354,7 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
     # Attribute this turn's images onto the input nodes that introduced them (by content part).
     _attribute_mm(trace, path, num_reused, tokens.multi_modal_data if tokens else None)
 
-    # Attribute this turn's router-replay sidecar onto the nodes created this turn (new input
+    # Attribute this turn's expert-routing array onto the nodes created this turn (new input
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.
     new_node_ids = [nid for nid, _ in path[num_reused:]]
     new_node_ids.append(len(trace.nodes) - 1)

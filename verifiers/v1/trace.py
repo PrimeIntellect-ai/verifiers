@@ -135,7 +135,7 @@ class Branch(StrictBaseModel):
 
     @property
     def routed_experts(self) -> np.ndarray | None:
-        """The branch's MoE router-replay sidecar — every node's expert ids concatenated in path
+        """The branch's MoE expert-routing array — every node's expert ids concatenated in path
         (token) order, uint8 `[len(token_ids), layers, top_k]` aligned 1:1 with `token_ids`.
         All-or-nothing: returns None unless every token-bearing node carries routing and the
         concatenation matches the branch length (partial routing can't be safely aligned, so the
@@ -375,7 +375,12 @@ class Trace(StrictBaseModel, Generic[TaskT]):
         timing durations. A strict `Trace` can't round-trip them as input, and the
         consumer recomputes them, so we avoid re-running branching + duplicating the
         trajectory on every reply. The full `model_dump` (with derived fields) is what
-        gets written to disk."""
+        gets written to disk.
+
+        Dumped in `mode="python"` (not `"json"`) so per-node numpy arrays survive as raw bytes
+        in their `__nd__` dicts — the env-server packs the result with a numpy-aware msgpack
+        encoder so the arrays ride the `bin` wire untouched. `mode="json"` would coerce the
+        bytes to str."""
         exclude: dict = {field: True for field in type(self).model_computed_fields}
         # Drop each timing span's computed `duration` — derived per `TimeSpan` field of
         # `Timing` (setup/generation/scoring, and any future span) so none leaks to the wire.
@@ -384,7 +389,7 @@ class Trace(StrictBaseModel, Generic[TaskT]):
             for name, info in Timing.model_fields.items()
             if info.annotation is TimeSpan
         }
-        return self.model_dump(mode="json", exclude=exclude)
+        return self.model_dump(mode="python", exclude=exclude)
 
 
 TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]
