@@ -30,7 +30,8 @@ def test_find_latest_incomplete_eval_results_path_picks_newest_matching(
 
     (old_run / "results.jsonl").write_text('{"example_id":0}\n', encoding="utf-8")
     (new_run / "results.jsonl").write_text(
-        '{"example_id":0}\n{"example_id":1}\n', encoding="utf-8"
+        '{"example_id":0}\n{"example_id":1}\n{"example_id":2',
+        encoding="utf-8",
     )
     (complete_run / "results.jsonl").write_text(
         '{"example_id":0}\n{"example_id":1}\n{"example_id":2}\n{"example_id":3}\n',
