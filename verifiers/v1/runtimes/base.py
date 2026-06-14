@@ -15,6 +15,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from tenacity import (
     AsyncRetrying,
@@ -25,6 +26,9 @@ from tenacity import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes import RuntimeConfig
 
 # Ensure `uv` is available to run our PEP 723 scripts (the harness + tool servers): use it
 # if present, else bootstrap it — via pip; else via the standalone installer (curl/wget),
@@ -99,6 +103,8 @@ def cleanup_at_exit() -> None:
 
 
 class Runtime(ABC):
+    config: "RuntimeConfig"
+
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
         """Resource name — the subprocess workdir, docker `--name`, prime sandbox name.
@@ -209,6 +215,7 @@ class RetryingRuntime(Runtime):
     def __init__(self, inner: Runtime, max_retries: int) -> None:
         super().__init__(inner.name)
         self.inner = inner
+        self.config = inner.config
         self.max_retries = max_retries
         # One Retrying, reused across (and concurrent within) calls: the control flow runs
         # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.

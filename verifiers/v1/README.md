@@ -229,7 +229,12 @@ Some tasksets wrap a whole benchmark family rather than a single task — shippe
 default. For example, `textarena-v1` (TextArena games) and `harbor-v1` (the agentic-
 benchmark registry). Harbor is the showcase: it pulls tasks straight from the Harbor registry
 via the `harbor` CLI (`uv tool install harbor`), each in its own declared, pullable container
-image — e.g. Terminal-Bench 2:
+image. Harbor 0.13's `[verifier].environment_mode = "separate"` is also supported: V1 starts
+a same-provider verifier runtime, copies `/logs/artifacts` plus configured task artifacts at
+their original paths, and reads `reward.json` before `reward.txt`. Verifier environments must
+declare a pullable `docker_image`; artifact exclusions, allowlists, and building
+`tests/Dockerfile` are intentionally not supported. For example,
+Terminal-Bench 2:
 
 ```bash
 uv run eval harbor-v1 --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm
