@@ -3,7 +3,7 @@
 These tests run REAL eval runs (a live model endpoint, real runtimes) with the smallest
 settings that still exercise the path, then assert on the resulting `Trace`(s) — they are
 not unit tests of individual components. They need a model API key (`PRIME_API_KEY`);
-without one the `e2e`-marked tests skip (config parsing still runs).
+Claude Code additionally uses `OPENROUTER_API_KEY`.
 
 `run_v1` / `run_v0` mirror the eval CLI's two paths (`run_eval` for a v1 taskset,
 `run_legacy_eval` for a v0 env). The `runtime` fixture fans a test out across the built-in
@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from verifiers.v1.clients import EvalClientConfig
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.env import Environment
 from verifiers.v1.cli.runner import run_eval
@@ -66,12 +67,13 @@ def skip_if_unexposable():
 
 # Built-in harnesses (bundled in the `harnesses` package), composed with `runtime` for the
 # harness x runtime matrix. compact is an example harness, not built-in, so it's excluded. rlm
-# and codex install a heavy agent binary at rollout, so they're marked slow.
+# and the CLI harnesses install an agent binary at rollout, so they're marked slow.
 @pytest.fixture(
     params=[
         "default",
         pytest.param("rlm", marks=pytest.mark.slow),
         pytest.param("codex", marks=pytest.mark.slow),
+        pytest.param("claude-code", marks=pytest.mark.slow),
     ]
 )
 def harness(request) -> str:
@@ -131,7 +133,14 @@ def run_v1():
         harness_config: dict = {"id": harness, "runtime": {"type": runtime}}
         if enable_bash:
             harness_config["enable_bash"] = True
+        eval_overrides = {}
+        if harness == "claude-code":
+            eval_overrides["client"] = EvalClientConfig(
+                base_url="https://openrouter.ai/api",
+                api_key_var="OPENROUTER_API_KEY",
+            )
         config = EvalConfig(
+            **eval_overrides,
             taskset={"id": taskset, **(taskset_overrides or {})},
             harness=harness_config,
             num_tasks=1,

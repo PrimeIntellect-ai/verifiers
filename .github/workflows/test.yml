@@ -26,6 +26,7 @@ jobs:
     env:
       PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
       PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     strategy:
       fail-fast: false
