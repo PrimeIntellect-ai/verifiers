@@ -3,8 +3,8 @@
 Every rollout runs an harness program whose OpenAI-style calls are caught here: a small
 localhost server routes each `POST /v1/chat/completions` to our `Client`, records the turn
 into the trace's message graph, and returns the result in OpenAI shape. We inject
-`OPENAI_BASE_URL`/`OPENAI_API_KEY` so the program's SDK talks to us. Chat completions only,
-no streaming.
+`OPENAI_BASE_URL`/`OPENAI_API_KEY` so the program's SDK talks to us. Both non-streaming and
+SSE requests are supported.
 
 One server multiplexes many rollouts: each rollout registers a `RolloutSession` under its
 own secret (the bearer token the harness already sends), and the server routes by that
@@ -17,6 +17,7 @@ model, so a multi-turn exchange plays out within one program request, transparen
 harness. Tools are handled out-of-band (run by the harness).
 """
 
+import asyncio
 import contextlib
 import logging
 import secrets
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 # and the harness gets a 413. Allow large bodies; the upstream provider and the model's
 # context window are the real limits, this is just a host-OOM backstop.
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
+_KEEPALIVE_INTERVAL_SECONDS = 3
 
 
 @dataclass(frozen=True)
@@ -281,16 +283,40 @@ class InterceptionServer:
         except Exception as e:  # surface to the program as an API error
             logger.warning("model call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
-        buffer = bytearray()
-        async for chunk in reply.chunks:
-            buffer += chunk
-        graph.add_turn(session.trace, prompt, dialect.parse_stream(bytes(buffer)))
-        resp = web.StreamResponse()
+        resp = web.StreamResponse(
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        )
         resp.content_type = reply.content_type.split(";")[0].strip()
-        await resp.prepare(request)
-        with contextlib.suppress(ConnectionResetError):
-            await resp.write(bytes(buffer))
-            await resp.write_eof()
+        buffer = bytearray()
+        chunks = reply.chunks.__aiter__()
+        next_chunk = asyncio.create_task(anext(chunks, None))
+        try:
+            await resp.prepare(request)
+            while True:
+                done, _ = await asyncio.wait(
+                    {next_chunk}, timeout=_KEEPALIVE_INTERVAL_SECONDS
+                )
+                if not done:
+                    await resp.write(b": keepalive\n\n")
+                    continue
+                chunk = next_chunk.result()
+                if chunk is None:
+                    break
+                buffer += chunk
+                await resp.write(chunk)
+                next_chunk = asyncio.create_task(anext(chunks, None))
+        except ConnectionResetError:
+            return resp
+        finally:
+            next_chunk.cancel()
+            await asyncio.gather(next_chunk, return_exceptions=True)
+            await reply.close()
+
+        try:
+            graph.add_turn(session.trace, prompt, dialect.parse_stream(bytes(buffer)))
+        finally:
+            with contextlib.suppress(ConnectionResetError):
+                await resp.write_eof()
         return resp
 
     async def handle_aux(
