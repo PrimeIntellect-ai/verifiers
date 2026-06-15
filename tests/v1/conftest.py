@@ -25,12 +25,14 @@ from verifiers.v1.trace import Trace
 # tests/v1/fixtures, added to the path via `pythonpath` in pyproject so the v1 loader and the
 # v0 legacy bridge both resolve them by id (no install).
 
-# Built-in runtimes, modal excluded. docker needs the daemon; prime provisions real
-# sandboxes + tunnels (network + PRIME credentials), so both are marked to deselect easily.
+# Built-in runtimes, modal excluded. docker needs the daemon, so it's marked slow. prime
+# provisions real sandboxes + tunnels (network + PRIME credentials) — it's marked
+# `prime_sandbox` so CI deselects it (`-m "not prime_sandbox"`), with `slow` on top for fast
+# local runs.
 RUNTIMES = [
     "subprocess",
     pytest.param("docker", marks=pytest.mark.slow),
-    pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime]),
+    pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime_sandbox]),
 ]
 
 
@@ -63,7 +65,7 @@ def skip_if_unexposable():
 
 # Built-in harnesses (bundled in the `harnesses` package), composed with `runtime` for the
 # harness x runtime matrix. compact is an example harness, not built-in, so it's excluded. rlm
-# and codex install a heavy agent binary at rollout, so they're marked slow.
+# and codex install an agent binary into the runtime at rollout, so they're marked slow.
 @pytest.fixture(
     params=[
         "default",
@@ -73,6 +75,26 @@ def skip_if_unexposable():
 )
 def harness(request) -> str:
     return request.param
+
+
+# rlm installs its agent via system packages (apt: git, ripgrep) and writes to /usr/local/bin,
+# so it needs a container's root — it can't install on the host. codex installs into a
+# user-writable dir (and skips apt when its deps are present), so it runs on the host.
+HOST_INCAPABLE_HARNESSES = {"rlm"}
+
+
+@pytest.fixture(autouse=True)
+def _skip_host_incapable(request) -> None:
+    """Skip harness x runtime pairings the host (subprocess) can't support — an agent that
+    needs a container's root to install can't run on the host."""
+    names = request.fixturenames
+    if "harness" not in names or "runtime" not in names:
+        return
+    if (
+        request.getfixturevalue("runtime") == "subprocess"
+        and request.getfixturevalue("harness") in HOST_INCAPABLE_HARNESSES
+    ):
+        pytest.skip("harness needs a container (root install); host unsupported")
 
 
 @pytest.fixture

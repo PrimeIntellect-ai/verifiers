@@ -2,13 +2,14 @@
 
 Every task is one greedy rollout (`temperature=0`, set in `run_v1`) on a single task with
 turn/timeout caps. The reward tests fan out across the full **harness x runtime** matrix (the
-`harness` x `runtime` fixtures): the built-in harnesses (default, rlm) x the runtimes
-(subprocess/docker/prime, modal excluded).
+`harness` x `runtime` fixtures): the built-in harnesses (default, rlm, codex) x the runtimes
+(subprocess/docker/prime, modal excluded). Harnesses that need a container's root to install
+(rlm) are skipped on the host (subprocess) — see `conftest`.
 
 The capability-sensitive tests read the harness flags: the tools test expects a harness
-without `SUPPORTS_TASK_TOOLS` (rlm) to be refused up front (raise); the multi-turn test skips a
-harness without `SUPPORTS_USER_SIM` (rlm). The agentic task pins the default harness (only it
-exposes the bash tool) and varies runtime.
+without `SUPPORTS_TASK_TOOLS` (rlm, codex) to be refused up front (raise); the multi-turn test
+skips a harness without `SUPPORTS_USER_SIM` (rlm, codex). The agentic task pins the default
+harness (only it exposes the bash tool) and varies runtime.
 """
 
 import pytest
@@ -27,7 +28,9 @@ async def test_single_turn(run_v1, harness, runtime, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_multi_turn(run_v1, harness, runtime, harness_supports, tmp_path):
+async def test_multi_turn(
+    run_v1, harness, runtime, harness_supports, skip_if_unexposable, tmp_path
+):
     """Multi-turn, driven by a (container-safe) user simulator. Skipped on harnesses without
     `SUPPORTS_USER_SIM` (rlm: a single-instruction interface that can't take injected turns)."""
     if not harness_supports(harness, "SUPPORTS_USER_SIM"):
@@ -39,6 +42,8 @@ async def test_multi_turn(run_v1, harness, runtime, harness_supports, tmp_path):
         output_dir=tmp_path,
         max_turns=6,
     )
+    # the colocated user sim is unreachable when prime lands a non-exposable region
+    skip_if_unexposable(trace)
     assert trace.errors == []
     assert not trace.is_truncated
     assert trace.num_turns >= 2  # genuinely multi-turn
@@ -47,7 +52,7 @@ async def test_multi_turn(run_v1, harness, runtime, harness_supports, tmp_path):
 
 @pytest.mark.e2e
 async def test_multi_turn_with_tools(
-    run_v1, harness, runtime, harness_supports, tmp_path
+    run_v1, harness, runtime, harness_supports, skip_if_unexposable, tmp_path
 ):
     """Multi-turn with a colocated tool. An harness whose `SUPPORTS_TASK_TOOLS` is False can't
     drive the task's tools, so the pairing is refused at build time instead of running."""
@@ -64,6 +69,8 @@ async def test_multi_turn_with_tools(
         output_dir=tmp_path,
         max_turns=6,
     )
+    # the colocated tool server is unreachable when prime lands a non-exposable region
+    skip_if_unexposable(trace)
     assert trace.errors == []
     assert not trace.is_truncated
     assert trace.num_turns >= 2  # tool call + answer
