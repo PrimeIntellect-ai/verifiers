@@ -6,6 +6,7 @@ runtime knobs (`max_depth`, `tools`), which rlm reads from `RLM_*` env vars.
 
 import json
 import logging
+import shlex
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import RolloutContext
@@ -82,9 +83,12 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             f"RLM_CHECKOUT_PATH=/tmp/rlm bash /tmp/rlm/install.sh"
         )
         logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
-        result = await runtime.run(
-            ["sh", "-c", f"[ -x {RLM_BIN} ] || ({install})"], env
-        )
+        # Serialize concurrent rollouts that share one runtime (e.g. subprocess on the host),
+        # which otherwise race to clone/install into the same /tmp dirs: the first installs, the
+        # rest wait on the lock and find the binary already present.
+        ensure = shlex.quote(f"[ -x {RLM_BIN} ] || ({install})")
+        guarded = f"mkdir -p {RLM_DIR} && flock {RLM_DIR}/install.lock sh -c {ensure}"
+        result = await runtime.run(["sh", "-c", guarded], env)
         if result.exit_code != 0:
             raise ProgramError(f"rlm install failed: {result.stderr.strip()[-500:]}")
         return await runtime.run([RLM_BIN, instruction], env)
