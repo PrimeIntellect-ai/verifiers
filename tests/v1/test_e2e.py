@@ -27,7 +27,9 @@ async def test_single_turn(run_v1, harness, runtime, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_multi_turn(run_v1, harness, runtime, harness_supports, tmp_path):
+async def test_multi_turn(
+    run_v1, harness, runtime, harness_supports, skip_if_unexposable, tmp_path
+):
     """Multi-turn, driven by a (container-safe) user simulator. Skipped on harnesses without
     `SUPPORTS_USER_SIM` (rlm: a single-instruction interface that can't take injected turns)."""
     if not harness_supports(harness, "SUPPORTS_USER_SIM"):
@@ -39,6 +41,8 @@ async def test_multi_turn(run_v1, harness, runtime, harness_supports, tmp_path):
         output_dir=tmp_path,
         max_turns=6,
     )
+    # the colocated user-sim must publish its port back to the host (prime: region-limited)
+    skip_if_unexposable(trace)
     assert trace.errors == []
     assert not trace.is_truncated
     assert trace.num_turns >= 2  # genuinely multi-turn
@@ -104,6 +108,7 @@ async def test_task_tools_own_runtime(
             "tools": {"colocated": False, "runtime": {"type": server_runtime}}
         },
     )
+    skip_if_unexposable(trace)
     assert trace.errors == []
     assert trace.reward == 1.0
 
@@ -121,6 +126,7 @@ async def test_user_own_runtime(run_v1, server_runtime, skip_if_unexposable, tmp
         max_turns=6,
         taskset_overrides={"user": {"runtime": {"type": server_runtime}}},
     )
+    skip_if_unexposable(trace)
     assert trace.errors == []
     assert trace.num_turns >= 2
     assert trace.reward == 1.0

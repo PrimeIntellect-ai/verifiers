@@ -47,18 +47,21 @@ def server_runtime(request) -> str:
 
 
 @pytest.fixture
-def skip_if_unexposable(server_runtime):
-    """Skip the own-runtime prime cases for now: a tool / user-sim server in its own prime
-    sandbox can't publish its port back to the host yet — native `expose` is region-limited (see
-    `PrimeRuntime.public_url`), and the host has no other route to a port inside the sandbox.
-    subprocess/docker share the host network, so they never hit this.
+def skip_if_unexposable():
+    """Skip when a trace failed because the server's runtime couldn't publish its port to the
+    host — a prime sandbox whose region doesn't support port exposure (a known infra limit, not
+    a code bug). subprocess/docker share the host network, so they never hit this.
 
-    TODO: drop this skip and re-enable the prime case once prime supports port exposure in all
-    regions (or once the runtime publishes the port via an in-sandbox tunnel instead)."""
-    if server_runtime == "prime":
-        pytest.skip(
-            "prime port exposure is region-limited; re-enable once supported everywhere"
-        )
+    TODO: re-enable the prime cases once prime supports port exposure in all regions (or the
+    runtime publishes the port via an in-sandbox tunnel)."""
+
+    def _skip(trace) -> None:
+        if any("port exposure" in str(e) for e in trace.errors):
+            pytest.skip(
+                "runtime can't publish a port to the host (pin a prime region that supports port exposure)"
+            )
+
+    return _skip
 
 
 # Built-in harnesses (bundled in the `harnesses` package), composed with `runtime` for the
