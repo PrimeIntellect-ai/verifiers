@@ -1,7 +1,5 @@
 """The mini-swe-agent harness: runs the native bash-tool agent through LiteLLM."""
 
-import json
-
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
@@ -26,7 +24,6 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
 
 
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
-    APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_TASK_TOOLS = False
 
     async def launch(
@@ -38,7 +35,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        system_prompt, instruction = self.resolve_prompt(trace.task)
+        _, instruction = self.resolve_prompt(trace.task)
         args = [
             "--model",
             ctx.model,
@@ -62,8 +59,6 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "-c",
             "model.model_kwargs.parallel_tool_calls=true",
         ]
-        if system_prompt:
-            args += ["-c", f"agent.system_template={json.dumps(system_prompt)}"]
         env = {
             **self.config.env,
             "OPENAI_BASE_URL": endpoint,
