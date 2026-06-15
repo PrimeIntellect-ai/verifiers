@@ -329,5 +329,6 @@ class Environment:
         if not any(server.config.shared for server in servers):
             yield {}
             return
-        async with serve_shared(servers) as urls:
+        # Shared servers are task-agnostic; pass a representative task for their `setup` signature.
+        async with serve_shared(servers, tasks[0]) as urls:
             yield urls

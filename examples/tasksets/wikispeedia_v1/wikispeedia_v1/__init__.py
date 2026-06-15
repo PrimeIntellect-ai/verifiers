@@ -9,8 +9,6 @@ its `setup`. The harness calls `wiki_click_link` to move; the reward reads the t
 
 import random
 
-from pydantic import PrivateAttr
-
 import verifiers.v1 as vf
 
 from wikispeedia_v1.graph import WikiGraph, format_article
@@ -71,20 +69,21 @@ class WikispeediaConfig(vf.TasksetConfig):
     Wikispeedia formulation; keeps the prompt small."""
 
 
-class WikiToolset(vf.Toolset):
+class WikiToolsetConfig(vf.ToolsetConfig):
+    links_only: bool = True
+    """Genuine config (CLI-tunable): show only outgoing links (the classic formulation) or
+    full prose. The per-task source/target are read off the task in `setup`, not config."""
+
+
+class WikiToolset(vf.Toolset[WikiToolsetConfig]):
     """Holds the rollout's navigation state (current article + path) and serves
     `click_link`/`go_back`. On reaching the target it emits a `TARGET REACHED` marker in the
     tool result — which lands in the trace, where the reward reads it."""
 
-    source: str
-    target: str
-    links_only: bool = True
-    _wiki: WikiGraph = PrivateAttr(default=None)
-    _path: list[str] = PrivateAttr(default_factory=list)
-
-    async def setup(self) -> None:
-        self._wiki = WikiGraph.load()
-        self._path = [self.source]
+    async def setup(self, task) -> None:
+        self._wiki = WikiGraph.load()  # global state (~100MB graph)
+        self._target = task.target  # per-task input, from the task
+        self._path = [task.source]  # per-task + mutable nav state
 
     @vf.tool
     def click_link(self, article: str) -> str:
@@ -98,10 +97,10 @@ class WikiToolset(vf.Toolset):
                 f"Available links: {', '.join(available) or '(none)'}"
             )
         self._path.append(target)
-        page = format_article(self._wiki, target, self.links_only)
-        if target == self.target:
+        page = format_article(self._wiki, target, self.config.links_only)
+        if target == self._target:
             return (
-                f"TARGET REACHED 🎯 You navigated to the target '{self.target}'.\n\n{page}"
+                f"TARGET REACHED 🎯 You navigated to the target '{self._target}'.\n\n{page}"
             )
         return page
 
@@ -111,7 +110,7 @@ class WikiToolset(vf.Toolset):
         if len(self._path) <= 1:
             return "You are already at the starting article. Cannot go back."
         self._path.pop()
-        return format_article(self._wiki, self._path[-1], self.links_only)
+        return format_article(self._wiki, self._path[-1], self.config.links_only)
 
 
 class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
@@ -141,14 +140,7 @@ class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
         ]
 
     def tools(self, task: WikiTask) -> list[vf.Toolset]:
-        return [
-            WikiToolset(
-                name="wiki",
-                source=task.source,
-                target=task.target,
-                links_only=self.config.links_only,
-            )
-        ]
+        return [WikiToolset(WikiToolsetConfig(name="wiki", links_only=self.config.links_only))]
 
     @vf.stop
     async def done(self, trace: vf.Trace) -> bool:

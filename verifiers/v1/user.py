@@ -21,9 +21,7 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import TYPE_CHECKING
-
-from pydantic import Field
+from typing import TYPE_CHECKING, TypeVar
 
 from verifiers.v1.errors import ProgramError, RolloutError
 from verifiers.v1.runtimes import Runtime, make_runtime
@@ -42,6 +40,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+ConfigT = TypeVar("ConfigT", bound=UserConfig)
+
 # The colocated user server is up once its in-runtime probe passes, but under high concurrency
 # it can still momentarily refuse a host connection. Retry the connect before giving up so a
 # transient refusal doesn't fail the rollout.
@@ -50,21 +50,20 @@ _USER_CONNECT_BACKOFF = 0.2  # seconds, exponential up to the cap
 _USER_CONNECT_MAX_BACKOFF = 2.0
 
 
-class User(ServerBase):
-    """A user simulator authored as a vf-native class: implement `respond` (the model's last
-    message in → the next user message(s) + a done flag out). Consumed by the framework (the
-    interception server drives it), never shown to the model. Example:
+class User(ServerBase[ConfigT]):
+    """A user simulator authored as a vf-native class, initialized from its config: implement
+    `respond` (the model's last message in → the next user message(s) + a done flag out).
+    Consumed by the framework (the interception server drives it), never shown to the model.
+    Example:
 
-        class HagglerUser(vf.User):
-            target_price: int
+        class HagglerUserConfig(vf.UserConfig):
+            target_price: int = 0
+
+        class HagglerUser(vf.User[HagglerUserConfig]):
             async def respond(self, message: str) -> tuple[vf.Messages, bool]:
                 ...
                 return [{"role": "user", "content": reply}], done
     """
-
-    config: UserConfig = Field(default_factory=UserConfig, exclude=True)
-    """Per-user placement (colocated / own runtime). Excluded from the serialized payload —
-    placement is resolved host-side."""
 
     async def respond(self, message: str) -> tuple[Messages, bool]:
         raise NotImplementedError
@@ -149,6 +148,7 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
 @contextlib.asynccontextmanager
 async def serve_user(
     user: User | Tools | None,
+    task,
     agent_runtime: Runtime | None = None,
 ) -> AsyncIterator[Respond | None]:
     """Bring a rollout's user server up and yield the async `respond` the interception server
@@ -158,7 +158,7 @@ async def serve_user(
     `agent_runtime` is given) it runs inside the agent's already-started runtime — reusing it, no
     extra setup per rollout; otherwise it runs in its OWN `runtime` (host by default — always
     reachable from the host, the robust choice for a remote agent runtime that can't publish a
-    colocated port back)."""
+    colocated port back). The rollout's `task` is shipped to the server for its `setup`."""
     if user is None:
         yield None
         return
@@ -171,7 +171,7 @@ async def serve_user(
         await own.start()
         runtime = own
     try:
-        desc = _descriptor(user, runtime.type)
+        desc = _descriptor(user, runtime.type, task)
         port = _free_port()
         await serve_in_runtime(desc, runtime, port)
         base = await runtime.public_url(port) or f"http://127.0.0.1:{port}"

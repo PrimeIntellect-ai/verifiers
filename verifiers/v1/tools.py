@@ -22,9 +22,9 @@ import random
 import socket
 import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated
@@ -47,8 +47,11 @@ class ToolsetConfig(BaseConfig):
       - neither (default): its own `runtime`, per rollout (host by default).
       - colocated: in the harness's OWN runtime, per rollout (no tunnel) — only works when the
         server's deps resolve there (a self-contained published script), not a bare sandbox.
-      - shared: one instance for the whole eval, in its own `runtime`."""
+      - shared: one instance for the whole eval, in its own `runtime`.
+    Subclass to add the server's own knobs (the data its `@tool` methods / `respond` read)."""
 
+    name: str = ""
+    """MCP server name; the model sees tools as `<name>_<tool>`. Defaults to the class name."""
     colocated: bool = False
     """Run the server inside the harness's runtime (reached in-sandbox, no tunnel). Off by
     default: a vf-native server imports `verifiers` + its taskset package, which a fresh
@@ -73,8 +76,10 @@ class UserConfig(BaseConfig):
     Default — its own host (`subprocess`) runtime — runs it where `verifiers` + the taskset
     package live, reachable from any harness runtime, so the sandbox needs nothing. Set
     `colocated` to run it inside the harness's runtime instead (only when its deps resolve
-    there)."""
+    there). Subclass to add the user's own knobs (the data its `respond` reads)."""
 
+    name: str = ""
+    """MCP server name. Defaults to the class name."""
     colocated: bool = False
     """Run the user simulator inside the harness's runtime, reusing it (its port is published
     back to the host so the framework can still drive it). Off by default — see `ToolsetConfig`."""
@@ -104,48 +109,57 @@ class Tools:
     """Per-server placement (colocated / shared / own runtime)."""
 
 
+ConfigT = TypeVar("ConfigT", bound=BaseConfig)
+
+
 def _server_name(inst: ServerBase) -> str:
-    """The MCP server name: the instance's `name`, else the class name snake-cased."""
-    if inst.name:
-        return inst.name
+    """The MCP server name: the config's `name`, else the class name snake-cased."""
+    if inst.config.name:
+        return inst.config.name
     return "".join(
         ("_" + c.lower() if c.isupper() else c) for c in type(inst).__name__
     ).lstrip("_")
 
 
-class ServerBase(BaseModel):
-    """A vf-native server authored as a class: config is pydantic fields, behaviour is methods.
-    The framework serializes it, launches `verifiers.v1.toolserver` in a runtime, rebuilds it
-    there, and serves it over MCP — no FastMCP boilerplate. Subclassed by `Toolset` (model-facing
-    `@tool` methods) and `User` (a single `respond` hook). Declare extra PyPI deps in `deps`
-    (class-level, the equivalent of a uv script's PEP 723 deps) so the framework can resolve them
-    in any runtime; build expensive/non-serializable state in `setup` (runs in the server proc)."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+class ServerBase(Generic[ConfigT]):
+    """A vf-native server authored as a class, initialized from its config — the same shape as
+    `Taskset`/`TasksetConfig`: the config (a `ToolsetConfig`/`UserConfig` subclass) is the
+    serializable data (placement + the server's own knobs); the class is the behaviour. The
+    framework serializes the config, launches `verifiers.v1.toolserver` in a runtime, rebuilds
+    `cls(config)` there, and serves it over MCP — no FastMCP boilerplate. Subclassed by `Toolset`
+    (`@tool` methods) and `User` (a `respond` hook). Declare extra PyPI deps in `deps`
+    (class-level, the uv-script PEP 723 equivalent) so the framework can resolve them in any
+    runtime; build expensive/non-serializable state in `setup` — set it as plain instance
+    attributes (it runs in the server process)."""
 
     deps: ClassVar[list[str]] = []
-    name: str = ""
-    """MCP server name; the model sees tools as `<name>_<tool>`. Defaults to the class name."""
-    config: ToolsetConfig = Field(default_factory=ToolsetConfig, exclude=True)
-    """Per-server placement (colocated / shared / own runtime). Excluded from the serialized
-    payload — placement is resolved host-side, the server process never needs it. `User`
-    narrows this to a `UserConfig`."""
 
-    async def setup(self) -> None:
-        """Build expensive / non-serializable state (corpus, index, …) in the server process."""
+    def __init__(self, config: ConfigT) -> None:
+        self.config = config
+
+    async def setup(self, task) -> None:
+        """Establish everything the server needs that isn't a config knob, in the server process,
+        as plain instance attributes (`self.x = ...`): global state (a corpus/index/graph loaded
+        from disk or a dataset), per-task input read off `task` (this rollout's task — `None` for
+        a `shared` server), and initial per-rollout mutable state (counters, paths). Config knobs
+        stay on `self.config`."""
 
     def _register(self, mcp: FastMCP) -> None:
         raise NotImplementedError
 
 
-class Toolset(ServerBase):
-    """A tool server authored as a class: write `@tool`-decorated methods (the model calls them
-    as `<name>_<method>`; the docstring is the tool description). Example:
+class Toolset(ServerBase[ConfigT]):
+    """A tool server authored as a class: write `@vf.tool` methods (the model calls them as
+    `<name>_<method>`; the docstring is the tool description), reading config off `self.config`.
+    Example:
 
-        class GlossaryToolset(vf.Toolset):
-            facts: dict[str, str]
+        class GlossaryToolsetConfig(vf.ToolsetConfig):
+            facts: dict[str, str] = {}
+
+        class GlossaryToolset(vf.Toolset[GlossaryToolsetConfig]):
             @vf.tool
-            def lookup(self, name: str) -> str: return self.facts.get(name.lower(), "unknown")
+            def lookup(self, name: str) -> str:
+                return self.config.facts.get(name.lower(), "unknown")
     """
 
     def _register(self, mcp: FastMCP) -> None:
@@ -157,21 +171,22 @@ class Toolset(ServerBase):
             )
 
 
-def serve_server(inst: ServerBase) -> None:
+def serve_server(inst: ServerBase, task) -> None:
     """Run a `ServerBase` instance's MCP server (called by the `toolserver` launcher): await its
-    `setup`, build a FastMCP from its registered tools, and serve via `run_mcp_server`."""
+    `setup(task)`, build a FastMCP from its registered tools, and serve via `run_mcp_server`."""
     import asyncio
 
     from mcp.server.fastmcp import FastMCP
 
-    asyncio.run(inst.setup())
+    asyncio.run(inst.setup(task))
     mcp = FastMCP(_server_name(inst))
     inst._register(mcp)
     run_mcp_server(mcp)
 
 
-# A generated PEP 723 uv-script that rebuilds the server class in any runtime: uv resolves the
-# class's deps (+ verifiers + the taskset package), then `serve_server` runs it.
+# A generated PEP 723 uv-script that rebuilds the server in any runtime: uv resolves the class's
+# deps (+ verifiers + the taskset package), rebuilds `cls(config)` + the task, then serves —
+# `setup(task)` establishes its global / per-task / mutable state there.
 _SERVER_SCRIPT = '''\
 # /// script
 # requires-python = ">=3.10"
@@ -181,9 +196,15 @@ import importlib, os
 
 from verifiers.v1.tools import serve_server
 
-mod, qual = os.environ["VF_SERVER_REF"].split(":")
-cls = getattr(importlib.import_module(mod), qual)
-serve_server(cls.model_validate_json(os.environ["VF_SERVER"]))
+
+def _ref(var):
+    mod, qual = os.environ[var].split(":")
+    return getattr(importlib.import_module(mod), qual)
+
+
+server = _ref("VF_SERVER_REF")(_ref("VF_CONFIG_REF").model_validate_json(os.environ["VF_CONFIG"]))
+task = _ref("VF_TASK_REF").model_validate_json(os.environ["VF_TASK"])
+serve_server(server, task)
 '''
 
 
@@ -226,15 +247,26 @@ def _server_distribution(cls: type) -> str | None:
     return None
 
 
-def server_to_tools(inst: ServerBase, runtime_type: str) -> Tools:
-    """Convert a vf-native `ServerBase` to a `Tools` launch. On a host subprocess (deps already
-    present) run it directly via the `toolserver` launcher as a `command`; in any other runtime
-    generate a PEP 723 uv-script so `uv` resolves the declared `deps` (the deps answer) plus the
-    class's own distribution (so the launcher can import it) in that fresh sandbox."""
+def _ref(obj: object) -> str:
+    """A `"module:QualName"` import ref for an object's type — how the launcher re-imports it."""
+    cls = obj if isinstance(obj, type) else type(obj)
+    return f"{cls.__module__}:{cls.__qualname__}"
+
+
+def server_to_tools(inst: ServerBase, runtime_type: str, task) -> Tools:
+    """Convert a vf-native server to a `Tools` launch. Serializes its `config` + this rollout's
+    `task`; the launcher rebuilds `cls(config)` and calls `setup(task)`. On a host subprocess
+    (deps already present) it runs via the `toolserver` launcher as a `command`; in any other
+    runtime it generates a PEP 723 uv-script so `uv` resolves the class's declared `deps` (the
+    deps answer) plus its own distribution (so the launcher can import the class + config + task)
+    in that fresh sandbox."""
     cls = type(inst)
     env = {
-        "VF_SERVER": inst.model_dump_json(),
-        "VF_SERVER_REF": f"{cls.__module__}:{cls.__qualname__}",
+        "VF_SERVER_REF": _ref(cls),
+        "VF_CONFIG_REF": _ref(inst.config),
+        "VF_CONFIG": inst.config.model_dump_json(),
+        "VF_TASK_REF": _ref(task),
+        "VF_TASK": task.model_dump_json(),
     }
     name = _server_name(inst)
     if runtime_type == "subprocess":
@@ -329,14 +361,16 @@ async def _resolve_url(tool_runtime: Runtime, agent_runtime: Runtime, port: int)
     return f"{base.rstrip('/')}/mcp"
 
 
-def _descriptor(server: Tools | ServerBase, runtime_type: str) -> Tools:
-    """The launch descriptor for a server: a vf-native class is converted for `runtime_type`;
-    a raw `Tools` is already one."""
-    return server_to_tools(server, runtime_type) if isinstance(server, ServerBase) else server
+def _descriptor(server: Tools | ServerBase, runtime_type: str, task) -> Tools:
+    """The launch descriptor for a server: a vf-native class is converted for `runtime_type`
+    (its `config` + the rollout's `task` baked into the env); a raw `Tools` is already one."""
+    if isinstance(server, ServerBase):
+        return server_to_tools(server, runtime_type, task)
+    return server
 
 
 @contextlib.asynccontextmanager
-async def serve_shared(tools: list[Tools | ServerBase]):
+async def serve_shared(tools: list[Tools | ServerBase], task):
     """Start the SHARED tool servers (those whose placement is `shared`) ONCE for a whole eval,
     each in its OWN `runtime`, and yield `{name: url}` reachable by every rollout's harness — a
     prime tool runtime publishes its port (works for any harness), a host one is reached at
@@ -350,7 +384,7 @@ async def serve_shared(tools: list[Tools | ServerBase]):
             if not cfg.shared:
                 continue
             name = _server_name(server) if isinstance(server, ServerBase) else server.name
-            desc = _descriptor(server, cfg.runtime.type)
+            desc = _descriptor(server, cfg.runtime.type, task)
             if desc.url:
                 urls[name] = desc.url
                 continue
@@ -373,14 +407,15 @@ async def serve_shared(tools: list[Tools | ServerBase]):
 async def serve_tools(
     tools: list[Tools | ServerBase],
     agent_runtime: Runtime,
+    task,
     shared_urls: dict[str, str] | None = None,
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches. Each
-    server is placed by its `config`: a remote `url` is used as-is; a `shared` one reuses the
-    eval-level instance in `shared_urls`; a `colocated` one runs in the harness's own runtime
-    (reached in-sandbox, no tunnel); otherwise it runs in its OWN `runtime` (host by default),
-    reached via that runtime's `public_url` or the harness runtime bridging the port — so
-    different servers can run in different runtimes."""
+    server is placed by its `config` (and gets the rollout's `task` for its `setup`): a remote
+    `url` is used as-is; a `shared` one reuses the eval-level instance in `shared_urls`; a
+    `colocated` one runs in the harness's own runtime (reached in-sandbox, no tunnel); otherwise
+    it runs in its OWN `runtime` (host by default), reached via that runtime's `public_url` or
+    the harness runtime bridging the port — so different servers can run in different runtimes."""
     shared_urls = shared_urls or {}
     tool_runtimes: list[Runtime] = []  # per-rollout tool runtimes to tear down
     urls: dict[str, str] = {}
@@ -396,13 +431,13 @@ async def serve_tools(
                 urls[name] = shared_urls[name]
                 logger.info("tool server '%s' (shared): %s", name, shared_urls[name])
             elif cfg.colocated:  # in the harness's runtime (reached in-sandbox, no tunnel)
-                desc = _descriptor(server, agent_runtime.type)
+                desc = _descriptor(server, agent_runtime.type, task)
                 port = _free_port()
                 await serve_in_runtime(desc, agent_runtime, port)
                 urls[name] = f"http://127.0.0.1:{port}/mcp"
                 logger.info("tool server '%s' colocated on port %d", name, port)
             else:  # its own runtime (host by default); reachability resolved per where it runs
-                desc = _descriptor(server, cfg.runtime.type)
+                desc = _descriptor(server, cfg.runtime.type, task)
                 port = _free_port()
                 tool_runtime = make_runtime(cfg.runtime)
                 tool_runtimes.append(tool_runtime)

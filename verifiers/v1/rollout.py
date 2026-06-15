@@ -159,10 +159,10 @@ class Rollout:
                 tool_servers = self.taskset.tools(self.task)
                 async with (
                     serve_tools(
-                        tool_servers, runtime, shared_urls=shared_urls
+                        tool_servers, runtime, self.task, shared_urls=shared_urls
                     ) as urls,
                     serve_user(
-                        self.taskset.user(self.task), agent_runtime=runtime
+                        self.taskset.user(self.task), self.task, agent_runtime=runtime
                     ) as session.user,
                 ):
                     # setup done — the harness is now driving

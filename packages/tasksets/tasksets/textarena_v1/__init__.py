@@ -19,8 +19,6 @@ import json
 import random
 from typing import Literal
 
-from pydantic import PrivateAttr
-
 import verifiers.v1 as vf
 
 try:
@@ -50,26 +48,22 @@ def latest_feedback(observation: str) -> str:
     return latest.split("Feedback:")[-1].strip() if "Feedback:" in latest else latest
 
 
-class TextArenaUser(vf.User):
+class TextArenaUser(vf.User[vf.UserConfig]):
     """The TextArena game engine as a framework-driven conversation partner. Holds one game in
-    memory (set up from `game` + RNG `seed`, reproducing the taskset's episode) and, per
-    `respond`, steps the game with the model's move and returns the next observation as a user
-    turn plus whether the episode is over. When the game ends it writes the game's own outcome
-    (`env.state.rewards`) to `OUTCOME_FILE` in the runtime, where the taskset's reward reads it."""
+    memory (set up from the task's `game` id + RNG `seed`, reproducing the taskset's episode)
+    and, per `respond`, steps the game with the model's move and returns the next observation as
+    a user turn plus whether the episode is over. When the game ends it writes the game's own
+    outcome (`env.state.rewards`) to `OUTCOME_FILE` in the runtime, where the reward reads it."""
 
     deps = ["textarena==0.7.4", "nltk>=3.9.2"]
 
-    game: str
-    seed: int
-    _env: object = PrivateAttr(default=None)
-
-    async def setup(self) -> None:
+    async def setup(self, task) -> None:
         # textarena derives a game's whole setup from the global RNG at reset, so seeding it
         # reproduces the exact episode the taskset built the instruction from — no per-game keys.
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
-        self._env = ta.make(env_id=self.game)
-        random.seed(self.seed)
+        self._env = ta.make(env_id=task.info["game"])  # per-task input, from the task
+        random.seed(task.info["seed"])  # per-task input
         self._env.reset(num_players=1)
 
     async def respond(self, message: str) -> tuple[vf.Messages, bool]:
@@ -135,9 +129,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         ]
 
     def user(self, task: TextArenaTask) -> vf.User:
-        return TextArenaUser(
-            name="user", game=task.info["game"], seed=task.info["seed"]
-        )
+        return TextArenaUser(vf.UserConfig(name="user"))
 
     @vf.reward(weight=1.0)
     async def game_reward(

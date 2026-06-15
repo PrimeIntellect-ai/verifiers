@@ -20,7 +20,6 @@ import re
 from typing import Literal
 
 from datasets import load_dataset
-from pydantic import PrivateAttr
 
 import verifiers.v1 as vf
 
@@ -51,20 +50,21 @@ class AlphabetSortTask(vf.Task):
     per-turn `ground_truths` the reward grades against, and `num_turns`."""
 
 
-class AlphabetSortUser(vf.User):
+class AlphabetSortUser(vf.User[vf.UserConfig]):
     """Replays the episode's pre-generated follow-up turns: one `respond` per assistant turn,
     injecting the next follow-up as a user message until all turns are done. This colocates
     v0's `MultiTurnEnv.env_response` with the agent — the framework drives it, never the model."""
 
-    follow_ups: list[str]
-    num_turns: int
-    _turns: int = PrivateAttr(default=0)
+    async def setup(self, task) -> None:
+        self._follow_ups = task.info["follow_ups"]  # per-task input, from the task
+        self._num_turns = task.info["num_turns"]  # per-task input
+        self._turns = 0  # per-rollout mutable state
 
     async def respond(self, message: str) -> tuple[vf.Messages, bool]:
         self._turns += 1
-        if self._turns >= self.num_turns:
+        if self._turns >= self._num_turns:
             return [], True
-        return [{"role": "user", "content": self.follow_ups[self._turns - 1]}], False
+        return [{"role": "user", "content": self._follow_ups[self._turns - 1]}], False
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
@@ -155,11 +155,7 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
         return tasks
 
     def user(self, task: AlphabetSortTask) -> vf.User:
-        return AlphabetSortUser(
-            name="user",
-            follow_ups=task.info["follow_ups"],
-            num_turns=task.info["num_turns"],
-        )
+        return AlphabetSortUser(vf.UserConfig(name="user"))
 
     @vf.reward(weight=1.0)
     async def alphabet_sort(self, task: AlphabetSortTask, trace: vf.Trace) -> float:

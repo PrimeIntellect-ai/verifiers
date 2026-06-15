@@ -20,13 +20,13 @@ HERE = Path(__file__).resolve().parent
 FACTS: dict[str, str] = json.loads((HERE / "facts.json").read_text())
 
 
-class GlossaryToolset(vf.Toolset):
-    facts: dict[str, str]
-
+class GlossaryToolset(vf.Toolset[vf.ToolsetConfig]):
+    # `FACTS` is global state (the corpus, loaded once at import) — not a config knob and not
+    # per-task, so the tool reads it directly. No subclass config: it has no knobs of its own.
     @vf.tool
     def lookup(self, name: str) -> str:
         """Look up what a person or thing is known for."""
-        return self.facts.get(name.strip().lower(), "no entry found")
+        return FACTS.get(name.strip().lower(), "no entry found")
 
 
 class GlossaryTask(vf.Task):
@@ -50,7 +50,7 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, vf.TasksetConfig]):
         ]
 
     def tools(self, task: GlossaryTask) -> list[vf.Toolset]:
-        return [GlossaryToolset(name="facts", facts=FACTS)]
+        return [GlossaryToolset(vf.ToolsetConfig(name="facts"))]
 
     @vf.reward(weight=1.0)
     async def looked_up(

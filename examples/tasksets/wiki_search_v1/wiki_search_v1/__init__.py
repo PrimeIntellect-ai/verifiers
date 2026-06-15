@@ -8,8 +8,6 @@ the toolset is SHARED — one instance for the whole eval, not rebuilt per rollo
 asks a judge model whether the harness's answer matches the ground truth.
 """
 
-from pydantic import PrivateAttr
-
 import verifiers.v1 as vf
 from verifiers.v1.dialects import ChatDialect
 
@@ -61,19 +59,17 @@ class WikiSearchConfig(vf.TasksetConfig):
     judge: JudgeConfig = JudgeConfig()
 
 
-class WikiSearchToolset(vf.Toolset):
+class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
     """Read-only search/view/read over the wiki corpus. The corpus + chroma index (expensive)
-    are built once in `setup`, in the server process; every tool call is a read."""
+    are built once in `setup`, in the server process; every tool call is a read. No per-server
+    knobs, so it uses the base `vf.ToolsetConfig` (placement only)."""
 
     deps = ["chromadb", "datasets"]
 
-    _pages: dict[str, dict[str, str]] = PrivateAttr(default_factory=dict)
-    _collection: object = PrivateAttr(default=None)
-
-    async def setup(self) -> None:
+    async def setup(self, task) -> None:
         from wiki_search_v1.corpus import collection, corpus
 
-        self._pages = corpus()
+        self._pages = corpus()  # global state; the shared server ignores the per-task `task`
         self._collection = collection()
 
     @vf.tool
@@ -146,7 +142,7 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
     def tools(self, task: TriviaTask) -> list[vf.Toolset]:
         # SHARED: the chroma corpus is expensive, so one instance serves the whole eval
         # (its own runtime), reused across rollouts rather than rebuilt per rollout.
-        return [WikiSearchToolset(name="wiki", config=vf.ToolsetConfig(shared=True))]
+        return [WikiSearchToolset(vf.ToolsetConfig(name="wiki", shared=True))]
 
     @vf.reward(weight=1.0)
     async def judged(

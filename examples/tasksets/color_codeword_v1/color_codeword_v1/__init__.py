@@ -15,7 +15,7 @@ import re
 from io import BytesIO
 
 from PIL import Image
-from pydantic import Field, PrivateAttr
+from pydantic import Field
 
 import verifiers.v1 as vf
 
@@ -109,22 +109,23 @@ class ColorCodewordTask(vf.Task):
     """The episode the user simulator replays: `colors_per_turn` and `max_turns`."""
 
 
-class ColorCodewordUser(vf.User):
+class ColorCodewordUser(vf.User[vf.UserConfig]):
     """Reveals each turn's colored squares after the prior answer: one `respond` per assistant
     turn, injecting the next turn's squares (image_url parts) as a user message until every
     `max_turns` turn is answered. The framework drives it, never the model."""
 
-    colors_per_turn: list[list[str]]
-    max_turns: int
-    _turns: int = PrivateAttr(default=0)
+    async def setup(self, task) -> None:
+        self._colors_per_turn = task.info["colors_per_turn"]  # per-task input, from the task
+        self._max_turns = task.info["max_turns"]  # per-task input
+        self._turns = 0  # per-rollout mutable state
 
     async def respond(self, message: str) -> tuple[vf.Messages, bool]:
         self._turns += 1
-        if self._turns >= self.max_turns:
+        if self._turns >= self._max_turns:
             return [], True
-        colors = self.colors_per_turn[self._turns]
-        total = sum(len(self.colors_per_turn[t]) for t in range(self._turns + 1))
-        text = turn_text(self._turns, len(colors), self.max_turns, total)
+        colors = self._colors_per_turn[self._turns]
+        total = sum(len(self._colors_per_turn[t]) for t in range(self._turns + 1))
+        text = turn_text(self._turns, len(colors), self._max_turns, total)
         return [{"role": "user", "content": image_content(colors, text)}], False
 
 
@@ -162,11 +163,7 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
         return tasks
 
     def user(self, task: ColorCodewordTask) -> vf.User:
-        return ColorCodewordUser(
-            name="user",
-            colors_per_turn=task.info["colors_per_turn"],
-            max_turns=task.info["max_turns"],
-        )
+        return ColorCodewordUser(vf.UserConfig(name="user"))
 
     @vf.reward(weight=1.0)
     async def exact_match(self, task: ColorCodewordTask, trace: vf.Trace) -> float:
