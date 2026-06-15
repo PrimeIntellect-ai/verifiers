@@ -1,11 +1,11 @@
 """Tools: how a task gives the harness tools, via `vf.Toolset`s it declares from `Taskset.tools`.
 
-A `Toolset` (and a `User`) is authored as a vf-native class; the framework renders it to a PEP
-723 uv-script (`server_to_tools` → `_render_script`) that `uv run`s in a runtime, rebuilds the
-class there, and serves it over streamable HTTP on `MCP_PORT`. uv resolves the class's deps —
-pinned to the local editable checkouts on the host (no publishing), from PyPI in a sandbox. A
-`Toolset` can instead point at an already-running remote endpoint (`ToolsetConfig.url`, e.g.
-deepwiki), which is used as-is.
+A `Toolset` (and a `User`) is authored as a vf-native class; the framework renders it to a plain
+PEP 723 uv-script (`server_to_tools` → `_render_script`) that, launched in a runtime, rebuilds
+the class and serves it over streamable HTTP on `MCP_PORT`. On a host (`subprocess`) runtime the
+script is run with the eval's own interpreter — deps already installed, nothing fetched, no
+publishing; in a sandbox it's `uv run`, resolving the header's deps from PyPI. A `Toolset` can
+instead point at an already-running remote endpoint (`ToolsetConfig.url`, e.g. deepwiki).
 
 `serve` is the single internal launcher (any server, any placement). `serve_tools` brings a
 task's servers up for a rollout (each in its `config`'s placement — colocated, own runtime);
@@ -16,12 +16,12 @@ loop. The wire types the model sees (`Tool`, `ToolCall`, …) live in `types`.
 from __future__ import annotations
 
 import contextlib
-import functools
 import hashlib
 import logging
 import os
 import random
 import socket
+import sys
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
@@ -168,8 +168,8 @@ def serve_server(inst: ServerBase, task) -> None:
 
 
 # The body of every generated server script: rebuild `cls(config)` + the task from the env refs
-# and serve — `setup(task)` establishes its global / per-task / mutable state. The PEP 723 header
-# (deps, and on the host editable `[tool.uv.sources]`) is rendered per server by `_render_script`.
+# and serve — `setup(task)` establishes its global / per-task / mutable state. The PEP 723 deps
+# header is rendered per server by `_render_script`.
 _SERVER_BODY = '''\
 import importlib, os
 
@@ -187,59 +187,56 @@ serve_server(server, task)
 '''
 
 
-def _render_script(deps: list[str], sources: dict[str, str]) -> bytes:
-    """A PEP 723 uv-script: `dependencies` resolved by uv, plus (on the host) a `[tool.uv.sources]`
-    block pinning some of them to local editable paths — so `verifiers` + the taskset package come
-    from the dev checkout, no publishing needed; in a sandbox `sources` is empty and they resolve
-    from PyPI."""
+def _render_script(deps: list[str]) -> bytes:
+    """A plain PEP 723 uv-script — `dependencies` resolved by uv from PyPI (the sandbox launch).
+    On a host runtime the script is run with the eval's own interpreter instead, where the deps
+    are already installed, so this header is only consulted in a sandbox."""
     header = [
         "# /// script",
         '# requires-python = ">=3.10"',
-        "# dependencies = [" + ", ".join(f'"{d}"' for d in deps) + "]",
+        "# dependencies = [",
+        *[f'#   "{d}",' for d in deps],
+        "# ]",
+        "# ///",
     ]
-    if sources:
-        header += ["#", "# [tool.uv.sources]"]
-        header += [f'# {n} = {{ path = "{p}", editable = true }}' for n, p in sources.items()]
-    header.append("# ///")
     return ("\n".join(header) + "\n" + _SERVER_BODY).encode()
 
 
-def _provides_top_level(dist, top: str, src) -> bool:
+def _provides_top_level(dist, top: str) -> bool:
     """Whether an installed distribution exposes `top` as an importable top-level package — via
-    its recorded files / `top_level.txt` (regular installs) or its editable source tree `src`
-    (editable installs, whose RECORD lists only the `.pth`)."""
+    its recorded files / `top_level.txt` (regular installs) or its source tree (editable installs,
+    whose RECORD lists only the `.pth`, so we read `direct_url.json`)."""
+    import json
     from pathlib import Path
 
     if top in (dist.read_text("top_level.txt") or "").split():
         return True
     if any(f.parts and f.parts[0] in (top, f"{top}.py") for f in dist.files or []):
         return True
-    return bool(src) and (
-        (Path(src) / top / "__init__.py").exists() or (Path(src) / f"{top}.py").exists()
-    )
-
-
-@functools.lru_cache(maxsize=None)
-def _editable_dist(top: str) -> tuple[str | None, str | None]:
-    """`(distribution name, editable source path)` for the installed dist providing top-level
-    import `top` — the name lets a sandbox `uv`-install it from PyPI, the path lets the host pin
-    it to the local checkout (`None` if not editable / not found). Handles editable installs (uv /
-    PEP 660) that `packages_distributions()` misses. Cached — the mapping is stable per process."""
-    import importlib.metadata as md
-    import json
-
-    for dist in md.distributions():
-        raw = dist.read_text("direct_url.json")
-        info = json.loads(raw) if raw else {}
+    raw = dist.read_text("direct_url.json")
+    if raw:
+        info = json.loads(raw)
         url = info.get("url", "")
-        src = (
-            url[len("file://") :]
-            if info.get("dir_info", {}).get("editable") and url.startswith("file://")
-            else None
-        )
-        if _provides_top_level(dist, top, src):
-            return dist.metadata["Name"], src
-    return None, None
+        if info.get("dir_info", {}).get("editable") and url.startswith("file://"):
+            src = Path(url[len("file://") :])
+            return (src / top / "__init__.py").exists() or (src / f"{top}.py").exists()
+    return False
+
+
+def _server_distribution(cls: type) -> str | None:
+    """The installed distribution providing `cls`'s top-level import package, so a sandbox script
+    can `uv`-install it from PyPI. Handles editable installs (uv / PEP 660) that
+    `packages_distributions()` misses. None if no installed distribution provides it."""
+    import importlib.metadata as md
+
+    top = cls.__module__.split(".")[0]
+    direct = md.packages_distributions().get(top)
+    if direct:
+        return direct[0]
+    for dist in md.distributions():
+        if _provides_top_level(dist, top):
+            return dist.metadata["Name"]
+    return None
 
 
 def _ref(obj: object) -> str:
@@ -248,13 +245,13 @@ def _ref(obj: object) -> str:
     return f"{cls.__module__}:{cls.__qualname__}"
 
 
-def server_to_tools(inst: ServerBase, runtime_type: str, task) -> _Launch:
-    """Render a vf-native server to a `_Launch` — a PEP 723 uv-script that rebuilds `cls(config)`,
-    calls `setup(task)`, and serves. Serializes the `config` + this rollout's `task` into the env.
-    `uv` resolves the class's declared `deps` plus `verifiers` and the taskset's own distribution
-    (so the script can import the class). On a host (`subprocess`) runtime those two are pinned to
-    the local editable checkouts — no publishing needed; in any other runtime they resolve from
-    PyPI (so the taskset must be a publishable distribution)."""
+def server_to_tools(inst: ServerBase, task) -> _Launch:
+    """Render a vf-native server to a `_Launch` — a plain PEP 723 uv-script that rebuilds
+    `cls(config)`, calls `setup(task)`, and serves. Serializes the `config` + this rollout's
+    `task` into the env. The script's deps (`mcp`, `verifiers`, the class's `deps`, and the
+    taskset's own distribution so it can import the class) are how a SANDBOX resolves it from
+    PyPI; on a host runtime `serve_in_runtime` runs the script with the eval's interpreter where
+    those are already installed, so nothing is fetched and no publishing is needed."""
     cls = type(inst)
     env = {
         "VF_SERVER_REF": _ref(cls),
@@ -263,21 +260,14 @@ def server_to_tools(inst: ServerBase, runtime_type: str, task) -> _Launch:
         "VF_TASK_REF": _ref(task),
         "VF_TASK": task.model_dump_json(),
     }
-    vf_name, vf_path = _editable_dist("verifiers")
-    pkg_name, pkg_path = _editable_dist(cls.__module__.split(".")[0])
-    if pkg_name is None:
+    pkg = _server_distribution(cls)
+    if pkg is None:
         raise ProgramError(
             f"cannot serve {cls.__qualname__}: it isn't part of an installed distribution, so the "
             "server script can't import it. Put the class in a taskset package."
         )
-    deps = ["mcp", vf_name or "verifiers", *cls.deps, pkg_name]
-    sources: dict[str, str] = {}
-    if runtime_type == "subprocess":  # host: pin verifiers + the taskset to the local checkouts
-        if vf_name and vf_path:
-            sources[vf_name] = vf_path
-        if pkg_path:
-            sources[pkg_name] = pkg_path
-    return _Launch(name=_server_name(inst), script=_render_script(deps, sources), env=env)
+    deps = ["mcp", "verifiers", *cls.deps, pkg]
+    return _Launch(name=_server_name(inst), script=_render_script(deps), env=env)
 
 
 def run_mcp_server(mcp: "FastMCP") -> None:
@@ -324,15 +314,20 @@ def _free_port() -> int:
 
 
 async def serve_in_runtime(launch: _Launch, runtime: Runtime, port: int) -> None:
-    """`uv run` the launch's script inside `runtime` on `port` (background) and wait until it
-    serves. The script is written to a stable, content-addressed path so uv keys one resolved
-    environment per distinct script — shared across rollouts (it never re-resolves per launch)."""
+    """Start the launch's script inside `runtime` on `port` (background) and wait until it serves.
+    On a host (`subprocess`) runtime it runs with the eval's own interpreter — deps already
+    installed, so the PEP 723 header is ignored and nothing is fetched; in any other runtime it's
+    `uv run`, resolving the header's deps from PyPI. Written to a stable, content-addressed path
+    so uv keys one resolved environment per distinct script, shared across rollouts."""
     log = f"vf_tool_{launch.name}.log"
     path = f"/tmp/vf-scripts/{hashlib.sha256(launch.script).hexdigest()}.py"
     tmp = f"{path}.{uuid.uuid4().hex}.tmp"  # publish atomically — concurrent rollouts share it
     await runtime.write(tmp, launch.script)
     await runtime.run(["sh", "-c", f"mkdir -p /tmp/vf-scripts && mv -f {tmp} {path}"], {})
-    argv = ["sh", "-c", f"{_ENSURE_UV}; exec uv run --quiet {path}"]
+    if runtime.type == "subprocess":  # host: deps already installed — run with the eval's python
+        argv = [sys.executable, path]
+    else:  # sandbox: uv resolves the script's PEP 723 deps from PyPI
+        argv = ["sh", "-c", f"{_ENSURE_UV}; exec uv run --quiet {path}"]
     await runtime.run_background(argv, {**launch.env, "MCP_PORT": str(port)}, log)
     probe = await runtime.run(
         ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
@@ -368,7 +363,7 @@ async def serve(server: ServerBase, task, agent_runtime: Runtime | None = None, 
         runtime = own
     try:
         port = _free_port()
-        await serve_in_runtime(server_to_tools(server, runtime.type, task), runtime, port)
+        await serve_in_runtime(server_to_tools(server, task), runtime, port)
         local = f"http://127.0.0.1:{port}"
         if for_host:  # the framework reaches it from the host
             base = await runtime.public_url(port) or local
