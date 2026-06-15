@@ -113,9 +113,15 @@ class Harness(ABC, Generic[ConfigT]):
             return  # a @stop refused a turn mid-rollout; the harness's exit is expected
         if result.exit_code != 0:
             # The real cause is at the END of a traceback, so keep the tail.
-            raise ProgramError(
-                f"harness exited {result.exit_code}: {result.stderr.strip()[-2000:]}"
+            detail = "\n".join(
+                f"{name}: {stream.strip()[-2000:]}"
+                for name, stream in (
+                    ("stdout", result.stdout),
+                    ("stderr", result.stderr),
+                )
+                if stream.strip()
             )
+            raise ProgramError(f"harness exited {result.exit_code}:\n{detail}")
         trace.stop("agent_completed")
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
