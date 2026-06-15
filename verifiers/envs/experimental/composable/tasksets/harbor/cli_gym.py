@@ -1,4 +1,16 @@
-"""CLI-Gym taskset backed by Harbor-format task directories."""
+"""CLI-Gym taskset backed by Harbor-format task directories.
+
+Important limitations:
+- Official CLI-Gym does not provide gold/oracle solutions. Materialized Harbor
+  tasks do not include ``solution/solve.sh``, so gold-patch validation is not
+  supported.
+- CLI-Gym scoring tests are visible inside the single task sandbox. Treat this
+  taskset as an SFT/trajectory-generation source, not as a hardened RL reward
+  environment.
+- Use only after careful filtering. The default PrimeIntellect/CLI-Gym mirror
+  removes failed image builds and rows that pass no-op debug validation; custom
+  mirrors should run equivalent validation before use.
+"""
 
 import json
 import logging
@@ -64,6 +76,10 @@ class CLIGymTaskSet(HarborDatasetTaskSet):
     the official CLI-Gym rows. The taskset writes each selected row to a local
     Harbor task directory, then delegates sandbox setup and scoring upload to
     :class:`HarborDatasetTaskSet`.
+
+    Official CLI-Gym does not ship gold/oracle solutions. This taskset is
+    intended for carefully filtered SFT trajectory generation, not gold-patch
+    validation or hardened single-sandbox RL.
     """
 
     def __init__(
@@ -172,6 +188,22 @@ class CLIGymTaskSet(HarborDatasetTaskSet):
         if test_timeout := _timeout_seconds(info.get("max_test_timeout_sec")):
             state["test_timeout"] = test_timeout
 
+    async def _apply_gold_patch(
+        self, sandbox_client: Any, sandbox_id: str, state: dict
+    ) -> None:
+        raise RuntimeError(
+            "CLI-Gym does not provide gold/oracle solutions. Use this taskset "
+            "for carefully filtered SFT trajectory generation only; gold-patch "
+            "validation is unsupported."
+        )
+
+    async def validate_instance(self, state) -> bool:
+        raise RuntimeError(
+            "CLI-Gym does not provide gold/oracle solutions. Use this taskset "
+            "for carefully filtered SFT trajectory generation only; "
+            "TaskSet.validate() gold-solution validation is unsupported."
+        )
+
 
 def make_cli_gym_taskset(
     dataset_path: str | Path | None = None,
@@ -182,6 +214,14 @@ def make_cli_gym_taskset(
     cache_dir: str | Path | None = None,
     filter_fn: str | None = None,
 ) -> CLIGymTaskSet:
+    """Create a filtered CLI-Gym Harbor taskset.
+
+    Official CLI-Gym does not provide gold/oracle solutions. The default
+    ``PrimeIntellect/CLI-Gym`` mirror is filtered for failed image builds and
+    no-op debug passes, and should be used as an SFT/trajectory-generation
+    source rather than a hardened RL reward environment. Custom mirrors should
+    run equivalent filtering before use.
+    """
     return CLIGymTaskSet(
         dataset_path=dataset_path,
         task_names=_normalize_task_names(task_names),
