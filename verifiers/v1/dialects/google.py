@@ -26,6 +26,13 @@ from verifiers.v1.types import (
 
 FINISH_REASONS: dict[str, FinishReason] = {"STOP": "stop", "MAX_TOKENS": "length"}
 _SAMPLING_KEYS = ("temperature", "topP", "maxOutputTokens")
+GEMINI_25_THINKING_BUDGETS = {
+    "none": 0,
+    "minimal": 1024,
+    "low": 1024,
+    "medium": 8192,
+    "high": 24576,
+}
 
 
 class GenerateContentResponse(BaseModel):
@@ -55,7 +62,7 @@ def parse_assistant(parts: list[dict]) -> AssistantMessage:
     return AssistantMessage(
         content=text(parts) or None,
         reasoning_content="".join(
-            part.get("text", "") for part in parts if part.get("thought")
+            part.get("text") or "" for part in parts if part.get("thought")
         )
         or None,
         tool_calls=calls or None,
@@ -78,16 +85,10 @@ def response_from_wire(response: GenerateContentResponse) -> Response:
     usage = None
     if metadata:
         prompt_tokens = metadata.get("promptTokenCount", 0)
-        completion_tokens = metadata.get("totalTokenCount")
-        if completion_tokens is None:
-            completion_tokens = metadata.get("candidatesTokenCount", 0) + metadata.get(
-                "thoughtsTokenCount", 0
-            )
-        else:
-            completion_tokens -= prompt_tokens
         usage = Usage(
             prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
+            completion_tokens=metadata.get("candidatesTokenCount", 0)
+            + metadata.get("thoughtsTokenCount", 0),
         )
     return Response(
         id=data.get("responseId", ""),
@@ -163,15 +164,23 @@ class GoogleGenerateContentDialect(Dialect[dict, GenerateContentResponse]):
         config = dict(body.get("generationConfig") or {})
         for key in _SAMPLING_KEYS:
             config.pop(key, None)
-        config.update(
-            {
-                key: value
-                for key, value in (
-                    ("temperature", sampling.temperature),
-                    ("topP", sampling.top_p),
-                    ("maxOutputTokens", sampling.max_tokens),
-                )
-                if value is not None
-            }
-        )
+        values = sampling.model_dump(exclude_none=True)
+        for source, target in (
+            ("top_p", "topP"),
+            ("top_k", "topK"),
+            ("max_tokens", "maxOutputTokens"),
+        ):
+            if source in values:
+                values[target] = values.pop(source)
+        effort = values.pop("reasoning_effort", None)
+        config.update(values)
+        if effort:
+            thinking = dict(config.get("thinkingConfig") or {})
+            if model.lower().startswith("gemini-2.5-"):
+                thinking.pop("thinkingLevel", None)
+                thinking["thinkingBudget"] = GEMINI_25_THINKING_BUDGETS[effort]
+            else:
+                thinking.pop("thinkingBudget", None)
+                thinking["thinkingLevel"] = effort
+            config["thinkingConfig"] = thinking
         return {**body, "generationConfig": config}
