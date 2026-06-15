@@ -24,6 +24,7 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
 
 
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
+    APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_TASK_TOOLS = False
 
     async def launch(
