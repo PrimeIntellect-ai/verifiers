@@ -12,6 +12,7 @@ Important limitations:
   mirrors should run equivalent validation before use.
 """
 
+import hashlib
 import json
 import logging
 import math
@@ -291,14 +292,10 @@ def _materialize_hf_dataset(
     from datasets import load_dataset
 
     requested = set(task_names or [])
-    if output_dir.exists():
-        existing = _existing_task_names(output_dir)
-        if requested and requested.issubset(existing):
-            return
-        if not requested and _materialized_marker_exists(output_dir) and existing:
-            return
-
     output_dir.mkdir(parents=True, exist_ok=True)
+    existing = _existing_task_names(output_dir)
+    manifest_tasks = _manifest_task_fingerprints(output_dir)
+
     ds = load_dataset(
         hf_repo_id,
         split=split,
@@ -306,7 +303,7 @@ def _materialize_hf_dataset(
     )
 
     seen: set[str] = set()
-    materialized = 0
+    entries: list[dict[str, Any]] = []
     for row in ds:
         task_id = str(row.get("task_id") or "").strip()
         if not task_id:
@@ -324,8 +321,7 @@ def _materialize_hf_dataset(
             continue
 
         try:
-            _write_task_dir(
-                output_dir / task_id,
+            fingerprint = _row_fingerprint(
                 row,
                 image_ref=image_ref,
                 source_image_ref=source_image_ref,
@@ -336,23 +332,53 @@ def _materialize_hf_dataset(
                 raise ValueError(f"CLI-Gym task {task_id!r} is malformed: {e}") from e
             logger.warning("Skipping %s: malformed row: %s", task_id, e)
             continue
-        materialized += 1
+        entries.append(
+            {
+                "task_id": task_id,
+                "row": row,
+                "image_ref": image_ref,
+                "source_image_ref": source_image_ref,
+                "fingerprint": fingerprint,
+            }
+        )
 
     if requested:
         missing = sorted(requested - seen)
         if missing:
             raise ValueError(f"Requested CLI-Gym tasks were not found: {missing}")
-    if materialized == 0:
+    if not entries:
         raise ValueError(
             f"No runnable CLI-Gym rows materialized from {hf_repo_id!r} split {split!r}"
         )
+    if not requested and _full_materialization_current(
+        entries, existing, manifest_tasks
+    ):
+        return
+
+    for entry in entries:
+        if (
+            entry["task_id"] in existing
+            and manifest_tasks.get(entry["task_id"]) == entry["fingerprint"]
+        ):
+            continue
+        _write_task_dir(
+            output_dir / entry["task_id"],
+            entry["row"],
+            image_ref=entry["image_ref"],
+            source_image_ref=entry["source_image_ref"],
+            hf_repo_id=hf_repo_id,
+        )
     if not requested:
+        _prune_stale_task_dirs(
+            output_dir,
+            keep_task_ids={entry["task_id"] for entry in entries},
+        )
         _write_materialized_marker(
             output_dir,
             hf_repo_id=hf_repo_id,
             hf_revision=hf_revision,
             split=split,
-            materialized=materialized,
+            entries=entries,
         )
 
 
@@ -551,8 +577,43 @@ def _existing_task_names(dataset_path: Path) -> set[str]:
     }
 
 
-def _materialized_marker_exists(dataset_path: Path) -> bool:
-    return (dataset_path / _MATERIALIZED_MARKER).is_file()
+def _manifest_task_fingerprints(dataset_path: Path) -> dict[str, str]:
+    marker = dataset_path / _MATERIALIZED_MARKER
+    if not marker.is_file():
+        return {}
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    tasks = payload.get("tasks") if isinstance(payload, dict) else None
+    if not isinstance(tasks, dict):
+        return {}
+    return {
+        str(task_id): fingerprint
+        for task_id, fingerprint in tasks.items()
+        if isinstance(fingerprint, str)
+    }
+
+
+def _full_materialization_current(
+    entries: list[dict[str, Any]],
+    existing_task_names: set[str],
+    manifest_tasks: dict[str, str],
+) -> bool:
+    expected = {entry["task_id"]: entry["fingerprint"] for entry in entries}
+    return (
+        bool(expected)
+        and manifest_tasks == expected
+        and existing_task_names == set(expected)
+    )
+
+
+def _prune_stale_task_dirs(dataset_path: Path, *, keep_task_ids: set[str]) -> None:
+    for path in dataset_path.iterdir():
+        if not path.is_dir() or path.name.startswith("."):
+            continue
+        if path.name not in keep_task_ids:
+            shutil.rmtree(path)
 
 
 def _write_materialized_marker(
@@ -561,13 +622,15 @@ def _write_materialized_marker(
     hf_repo_id: str,
     hf_revision: str | None,
     split: str,
-    materialized: int,
+    entries: list[dict[str, Any]],
 ) -> None:
     payload = {
+        "cache_version": _CACHE_VERSION,
         "hf_repo_id": hf_repo_id,
         "hf_revision": hf_revision,
         "split": split,
-        "materialized": materialized,
+        "task_count": len(entries),
+        "tasks": {entry["task_id"]: entry["fingerprint"] for entry in entries},
     }
     (dataset_path / _MATERIALIZED_MARKER).write_text(
         json.dumps(payload, sort_keys=True) + "\n",
@@ -592,6 +655,30 @@ def _runnable_image_ref(row: dict, image_ref: str) -> str:
 def _has_registry_host(image_ref: str) -> bool:
     head, sep, _tail = image_ref.partition("/")
     return bool(sep and ("." in head or ":" in head or head == "localhost"))
+
+
+def _row_fingerprint(
+    row: dict,
+    *,
+    image_ref: str,
+    source_image_ref: str,
+    hf_repo_id: str,
+) -> str:
+    task_yaml = str(row.get("task_yaml") or "")
+    metadata = _parse_task_yaml(task_yaml)
+    _extract_instruction(task_yaml, metadata)
+    payload = {
+        "cache_version": _CACHE_VERSION,
+        "docker_compose": str(row.get("docker_compose") or ""),
+        "dockerfile": str(row.get("dockerfile") or ""),
+        "hf_repo_id": hf_repo_id,
+        "image_ref": image_ref,
+        "run_tests": str(row.get("run_tests") or ""),
+        "source_image_ref": source_image_ref,
+        "task_yaml": task_yaml,
+    }
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _timeout_seconds(value: Any) -> int | None:
