@@ -321,13 +321,13 @@ class Environment:
 
     @contextlib.asynccontextmanager
     async def shared_tools(self, tasks: list[Task]):
-        """When `tools.shared` is set, start the taskset's tool servers ONCE for the eval
-        (in their own `tools.runtime`) and yield `{name: url}` to inject into every
-        rollout — so an expensive corpus is built once, not per rollout. No-op ({}) when
-        not shared. Shared servers must be task-agnostic, so they're read off any task."""
-        tools = self.taskset.config.tools
-        if not (tools.shared and tasks):
+        """Start any tool servers whose placement is `shared` ONCE for the eval (each in its
+        own `runtime`) and yield `{name: url}` to inject into every rollout — so an expensive
+        corpus is built once, not per rollout. No-op ({}) when none are shared. Shared servers
+        must be task-agnostic, so they're read off any task."""
+        servers = self.taskset.tools(tasks[0]) if tasks else []
+        if not any(server.config.shared for server in servers):
             yield {}
             return
-        async with serve_shared(self.taskset.tools(tasks[0]), tools.runtime) as urls:
+        async with serve_shared(servers) as urls:
             yield urls

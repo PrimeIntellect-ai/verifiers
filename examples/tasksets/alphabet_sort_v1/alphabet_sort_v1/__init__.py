@@ -6,25 +6,23 @@ on each follow-up turn re-sorts the cumulative list — tagging the newly added 
 `<combined_alphabetical_sorted>` tags. The reward is the per-turn sequence similarity to the
 ground truth, power-scaled.
 
-The follow-up turns are supplied by a `vf.User` simulator (see `user.py`): the interception
-server drives the simulator after every assistant turn and injects the next follow-up as a
-user message, so the whole episode is one rollout the harness only ever sees as a single
-exchange. The simulator runs on the host (not colocated in the agent's runtime), so the
-host-driven loop reaches it on every runtime. The episodes are pre-generated in `load_tasks`;
-the simulator replays them.
+The follow-up turns are supplied by a `vf.User` simulator (`AlphabetSortUser` below): the
+interception server drives the simulator after every assistant turn and injects the next
+follow-up as a user message, so the whole episode is one rollout the harness only ever sees as
+a single exchange. The simulator runs on the host (not colocated in the agent's runtime), so
+the host-driven loop reaches it on every runtime. The episodes are pre-generated in
+`load_tasks`; the simulator replays them.
 """
 
 import difflib
-import json
 import random
 import re
-import sys
 from typing import Literal
 
 from datasets import load_dataset
+from pydantic import PrivateAttr
 
 import verifiers.v1 as vf
-from verifiers.v1.taskset import UserConfig
 
 DATASET = "kalomaze/alphabetic-arxiv-authors-it1"
 SEED = 1337420
@@ -45,17 +43,28 @@ class AlphabetSortConfig(vf.TasksetConfig):
     """Power-scale each turn then average (True), or average raw similarities then power once (False)."""
     split: Literal["train"] = "train"
     """Split of the source author-names dataset to build the episodes from."""
-    user: UserConfig = UserConfig(colocated=False)
-    """Run the user simulator on the host (its own subprocess runtime), not colocated in the
-    agent's runtime. The framework drives the simulator from the host, and a remote agent
-    runtime (prime/modal) can't publish a colocated server's port back to the host — so
-    running it host-side keeps it reachable on every runtime."""
 
 
 class AlphabetSortTask(vf.Task):
     info: dict
     """The pre-generated episode: the `follow_ups` the user simulator reveals turn by turn, the
     per-turn `ground_truths` the reward grades against, and `num_turns`."""
+
+
+class AlphabetSortUser(vf.User):
+    """Replays the episode's pre-generated follow-up turns: one `respond` per assistant turn,
+    injecting the next follow-up as a user message until all turns are done. This colocates
+    v0's `MultiTurnEnv.env_response` with the agent — the framework drives it, never the model."""
+
+    follow_ups: list[str]
+    num_turns: int
+    _turns: int = PrivateAttr(default=0)
+
+    async def respond(self, message: str) -> tuple[vf.Messages, bool]:
+        self._turns += 1
+        if self._turns >= self.num_turns:
+            return [], True
+        return [{"role": "user", "content": self.follow_ups[self._turns - 1]}], False
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
@@ -146,14 +155,10 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
         return tasks
 
     def user(self, task: AlphabetSortTask) -> vf.User:
-        info = {
-            "follow_ups": task.info["follow_ups"],
-            "num_turns": task.info["num_turns"],
-        }
-        return vf.User(
+        return AlphabetSortUser(
             name="user",
-            command=[sys.executable, "-m", "alphabet_sort_v1.user"],
-            env={"ALPHABET_SORT_INFO": json.dumps(info)},
+            follow_ups=task.info["follow_ups"],
+            num_turns=task.info["num_turns"],
         )
 
     @vf.reward(weight=1.0)

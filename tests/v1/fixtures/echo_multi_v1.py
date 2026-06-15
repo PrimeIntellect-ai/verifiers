@@ -51,6 +51,8 @@ class EchoMultiTask(vf.Task):
 
 class EchoMultiConfig(vf.TasksetConfig):
     phrases: list[str] = PHRASES
+    server_runtime: str = "subprocess"
+    """Runtime the user simulator runs in (its own) — set by the e2e server-runtime matrix."""
 
 
 class EchoMultiTaskset(vf.Taskset[EchoMultiTask, EchoMultiConfig]):
@@ -64,11 +66,14 @@ class EchoMultiTaskset(vf.Taskset[EchoMultiTask, EchoMultiConfig]):
             )
         ]
 
-    def user(self, task: EchoMultiTask) -> vf.User:
-        return vf.User(
+    def user(self, task: EchoMultiTask) -> vf.Tools:
+        # A self-contained `script` user-sim (driven by the framework via `serve_user`) runs in
+        # any runtime; its own `config` sets where (the e2e matrix varies `server_runtime`).
+        return vf.Tools(
             name="user",
             script=USER_SCRIPT,
             env={"ECHO_PHRASES": json.dumps(task.phrases)},
+            config=vf.ToolsetConfig(runtime={"type": self.config.server_runtime}),
         )
 
     @vf.reward(weight=1.0)

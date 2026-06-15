@@ -1,15 +1,14 @@
-"""glossary: a custom COLOCATED tool server.
+"""glossary: a custom COLOCATED tool server, authored as a vf-native class.
 
-Each task asks the model to look up an entity. The taskset ships a tiny tool server
-(`server.py`, a single-file uv script) and declares it via `tools`, passing the
-facts in through an env var; the harness surfaces its `lookup` tool as `facts_lookup`, and
-the reward checks the looked-up fact reached the answer.
+Each task asks the model to look up an entity. The taskset declares its tool server as a
+`vf.Toolset` subclass with `@vf.tool` methods (no FastMCP boilerplate, no separate server
+file): the framework serializes it, launches it in the harness's runtime, and surfaces its
+`lookup` tool as `facts_lookup`. The reward checks the looked-up fact reached the answer.
 
-This is the colocated example (`tools.colocated=True`, the default): the server is small
-and self-contained (its only runtime dep is `uv`), so it runs *inside the harness's own
-runtime*, reached over localhost with no tunnel. The right placement for a lightweight,
-per-rollout tool — contrast `wikispeedia` (its own runtime), `wiki_search` (shared), and
-`deepwiki` (a remote URL).
+This is the colocated example (`tools.colocated=True`, the default): the server is small and
+self-contained, so it runs *inside the harness's own runtime*, reached over localhost with no
+tunnel. The right placement for a lightweight, per-rollout tool — contrast `wikispeedia` (its
+own runtime), `wiki_search` (shared), and `deepwiki` (a remote URL).
 """
 
 import json
@@ -18,8 +17,16 @@ from pathlib import Path
 import verifiers.v1 as vf
 
 HERE = Path(__file__).resolve().parent
-SERVER = (HERE / "server.py").read_bytes()
 FACTS: dict[str, str] = json.loads((HERE / "facts.json").read_text())
+
+
+class GlossaryToolset(vf.Toolset):
+    facts: dict[str, str]
+
+    @vf.tool
+    def lookup(self, name: str) -> str:
+        """Look up what a person or thing is known for."""
+        return self.facts.get(name.strip().lower(), "no entry found")
 
 
 class GlossaryTask(vf.Task):
@@ -42,10 +49,8 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, vf.TasksetConfig]):
             for i, (entity, fact) in enumerate(FACTS.items())
         ]
 
-    def tools(self, task: GlossaryTask) -> list[vf.Tools]:
-        return [
-            vf.Tools(name="facts", script=SERVER, env={"FACTS_JSON": json.dumps(FACTS)})
-        ]
+    def tools(self, task: GlossaryTask) -> list[vf.Toolset]:
+        return [GlossaryToolset(name="facts", facts=FACTS)]
 
     @vf.reward(weight=1.0)
     async def looked_up(

@@ -106,6 +106,11 @@ class Runtime(ABC):
         the rollout it serves; falls back to a unique `vf-` name (standalone / tool
         runtimes, where there's no single owning rollout)."""
 
+    @property
+    def type(self) -> str:
+        """The runtime's config discriminator ("subprocess" / "docker" / "prime" / "modal")."""
+        return self.config.type
+
     @abstractmethod
     async def start(self) -> None:
         """Provision execution (workspace / container / sandbox). Use `expose` to turn a
@@ -251,6 +256,10 @@ class RetryingRuntime(Runtime):
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         await self._retry(self.inner.run_background, argv, env, log)
+
+    @property
+    def type(self) -> str:
+        return self.inner.type
 
     @property
     def descriptor(self) -> str | None:

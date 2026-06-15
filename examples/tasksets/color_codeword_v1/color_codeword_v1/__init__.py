@@ -3,20 +3,19 @@
 Each turn shows colored squares that map to letters (Red=A, Green=B, ...); the model accumulates
 the codeword across turns and, on the final turn, outputs the whole thing. Turn 0's squares are
 seeded in the task's `instruction` (a `Messages` prompt carrying images); the later turns are
-injected by a colocated `vf.User` (see `user.py`) the interception server drives after each
-assistant turn. Reward is an exact match of the final codeword; a partial-match metric tracks
-per-position accuracy. Images carry through the v1 message graph as `mm_kwargs` for training.
+injected by a colocated `vf.User` (`ColorCodewordUser` below) the interception server drives
+after each assistant turn. Reward is an exact match of the final codeword; a partial-match
+metric tracks per-position accuracy. Images carry through the v1 message graph as `mm_kwargs`
+for training.
 """
 
 import base64
-import json
 import random
 import re
-import sys
 from io import BytesIO
 
 from PIL import Image
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 
 import verifiers.v1 as vf
 
@@ -110,6 +109,25 @@ class ColorCodewordTask(vf.Task):
     """The episode the user simulator replays: `colors_per_turn` and `max_turns`."""
 
 
+class ColorCodewordUser(vf.User):
+    """Reveals each turn's colored squares after the prior answer: one `respond` per assistant
+    turn, injecting the next turn's squares (image_url parts) as a user message until every
+    `max_turns` turn is answered. The framework drives it, never the model."""
+
+    colors_per_turn: list[list[str]]
+    max_turns: int
+    _turns: int = PrivateAttr(default=0)
+
+    async def respond(self, message: str) -> tuple[vf.Messages, bool]:
+        self._turns += 1
+        if self._turns >= self.max_turns:
+            return [], True
+        colors = self.colors_per_turn[self._turns]
+        total = sum(len(self.colors_per_turn[t]) for t in range(self._turns + 1))
+        text = turn_text(self._turns, len(colors), self.max_turns, total)
+        return [{"role": "user", "content": image_content(colors, text)}], False
+
+
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
     def load_tasks(self) -> list[ColorCodewordTask]:
         c = self.config
@@ -144,10 +162,10 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
         return tasks
 
     def user(self, task: ColorCodewordTask) -> vf.User:
-        return vf.User(
+        return ColorCodewordUser(
             name="user",
-            command=[sys.executable, "-m", "color_codeword_v1.user"],
-            env={"COLOR_CODEWORD_INFO": json.dumps(task.info)},
+            colors_per_turn=task.info["colors_per_turn"],
+            max_turns=task.info["max_turns"],
         )
 
     @vf.reward(weight=1.0)

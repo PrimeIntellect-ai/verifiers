@@ -17,8 +17,9 @@ needed and any single-player TextArena game fits.
 
 import json
 import random
-import sys
 from typing import Literal
+
+from pydantic import PrivateAttr
 
 import verifiers.v1 as vf
 
@@ -38,8 +39,50 @@ SYSTEM_PROMPT = (
 )
 
 # The user simulator writes the game's outcome here (in the runtime workspace) and the
-# reward reads it back; shared with `server.py`.
+# reward reads it back.
 OUTCOME_FILE = "textarena_outcome.json"
+
+
+def latest_feedback(observation: str) -> str:
+    """Trim feedback to the latest block (the text after `Feedback:` in the last `[GAME]`
+    message) so each injected user turn stays small and doesn't duplicate the history."""
+    latest = observation.split("[GAME]")[-1].strip()
+    return latest.split("Feedback:")[-1].strip() if "Feedback:" in latest else latest
+
+
+class TextArenaUser(vf.User):
+    """The TextArena game engine as a framework-driven conversation partner. Holds one game in
+    memory (set up from `game` + RNG `seed`, reproducing the taskset's episode) and, per
+    `respond`, steps the game with the model's move and returns the next observation as a user
+    turn plus whether the episode is over. When the game ends it writes the game's own outcome
+    (`env.state.rewards`) to `OUTCOME_FILE` in the runtime, where the taskset's reward reads it."""
+
+    deps = ["textarena==0.7.4", "nltk>=3.9.2"]
+
+    game: str
+    seed: int
+    _env: object = PrivateAttr(default=None)
+
+    async def setup(self) -> None:
+        # textarena derives a game's whole setup from the global RNG at reset, so seeding it
+        # reproduces the exact episode the taskset built the instruction from — no per-game keys.
+        nltk.download("words", quiet=True)
+        nltk.download("averaged_perceptron_tagger_eng", quiet=True)
+        self._env = ta.make(env_id=self.game)
+        random.seed(self.seed)
+        self._env.reset(num_players=1)
+
+    async def respond(self, message: str) -> tuple[vf.Messages, bool]:
+        env = self._env
+        env.step(message)  # TextArena parses the bracketed move out of the message itself
+        if env.state.done:
+            reward = float((env.state.rewards or {}).get(0, 0.0))
+            reason = str(env.state.game_info[0]["reason"])
+            with open(OUTCOME_FILE, "w") as f:
+                json.dump({"reward": reward, "reason": reason}, f)
+            return [{"role": "user", "content": reason}], True
+        _, observation = env.get_observation()
+        return [{"role": "user", "content": latest_feedback(str(observation))}], False
 
 
 class TextArenaConfig(vf.TasksetConfig):
@@ -92,10 +135,8 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         ]
 
     def user(self, task: TextArenaTask) -> vf.User:
-        return vf.User(
-            name="user",
-            command=[sys.executable, "-m", "tasksets.textarena_v1.server"],
-            env={"TEXTARENA_INFO": json.dumps(task.info)},
+        return TextArenaUser(
+            name="user", game=task.info["game"], seed=task.info["seed"]
         )
 
     @vf.reward(weight=1.0)

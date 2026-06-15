@@ -14,17 +14,31 @@ side. `respond(message)` takes the model's last assistant text and returns the n
 messages plus whether the conversation is done.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from pydantic import Field
 
 from verifiers.v1.errors import ProgramError, RolloutError
-from verifiers.v1.runtimes import Runtime, RuntimeConfig, make_runtime
-from verifiers.v1.tools import Tools, serve_tools
+from verifiers.v1.runtimes import Runtime, make_runtime
+from verifiers.v1.tools import (
+    ServerBase,
+    Tools,
+    UserConfig,
+    _descriptor,
+    _free_port,
+    serve_in_runtime,
+)
 from verifiers.v1.types import Messages
+
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +50,36 @@ _USER_CONNECT_BACKOFF = 0.2  # seconds, exponential up to the cap
 _USER_CONNECT_MAX_BACKOFF = 2.0
 
 
-@dataclass(frozen=True)
-class User(Tools):
-    """A user simulator — structurally a tool server (an MCP server with a runtime), but
-    consumed by the framework, not the model. Its single `respond` tool maps the model's
-    last message to the next user message(s) and a done flag."""
+class User(ServerBase):
+    """A user simulator authored as a vf-native class: implement `respond` (the model's last
+    message in → the next user message(s) + a done flag out). Consumed by the framework (the
+    interception server drives it), never shown to the model. Example:
+
+        class HagglerUser(vf.User):
+            target_price: int
+            async def respond(self, message: str) -> tuple[vf.Messages, bool]:
+                ...
+                return [{"role": "user", "content": reply}], done
+    """
+
+    config: UserConfig = Field(default_factory=UserConfig, exclude=True)
+    """Per-user placement (colocated / own runtime). Excluded from the serialized payload —
+    placement is resolved host-side."""
+
+    async def respond(self, message: str) -> tuple[Messages, bool]:
+        raise NotImplementedError
+
+    def _register(self, mcp: FastMCP) -> None:
+        from verifiers.v1.dialects.chat import message_to_wire
+
+        user = self
+
+        async def respond(message: str) -> str:
+            messages, done = await user.respond(message)
+            wire = [m if isinstance(m, dict) else message_to_wire(m) for m in messages]
+            return json.dumps({"messages": wire, "done": done})
+
+        mcp.add_tool(respond, name="respond")
 
 
 # The model's last assistant text in; the next user messages + a done flag out.
@@ -109,35 +148,35 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
 
 @contextlib.asynccontextmanager
 async def serve_user(
-    user: Tools | None,
-    runtime_config: RuntimeConfig,
-    agent_runtime: "Runtime | None" = None,
-    colocated: bool = True,
+    user: User | Tools | None,
+    agent_runtime: Runtime | None = None,
 ) -> AsyncIterator[Respond | None]:
     """Bring a rollout's user server up and yield the async `respond` the interception server
     drives — or `None` when the taskset has no user server. The framework always drives the user
-    from the host. When `colocated` (and an `agent_runtime` is given) the server runs inside the
-    agent's already-started runtime — reusing it, so there's no extra runtime/subprocess setup
-    per rollout — with its port published back to the host (`host_reachable`). Otherwise it runs
-    in its OWN runtime (`runtime_config`), for a remote sandbox that can't publish the colocated
-    port back. Either way it's host-reachable: a remote sandbox's `public_url`, else localhost."""
+    from the HOST, so the server is reached at a host-facing URL (a remote sandbox's `public_url`,
+    else localhost). Its placement is the user's `config`: when `colocated` (and an
+    `agent_runtime` is given) it runs inside the agent's already-started runtime — reusing it, no
+    extra setup per rollout; otherwise it runs in its OWN `runtime` (host by default — always
+    reachable from the host, the robust choice for a remote agent runtime that can't publish a
+    colocated port back)."""
     if user is None:
         yield None
         return
-    if colocated and agent_runtime is not None:
-        async with serve_tools(
-            [user], agent_runtime, colocated=True, host_reachable=True
-        ) as urls:
-            async with connect_user(next(iter(urls.values()))) as respond:
-                yield respond
-        return
-    runtime = make_runtime(runtime_config)
-    await runtime.start()
+    cfg = user.config
+    own = None
+    if cfg.colocated and agent_runtime is not None:
+        runtime = agent_runtime
+    else:
+        own = make_runtime(cfg.runtime)
+        await own.start()
+        runtime = own
     try:
-        async with serve_tools(
-            [user], runtime, colocated=True, host_reachable=True
-        ) as urls:
-            async with connect_user(next(iter(urls.values()))) as respond:
-                yield respond
+        desc = _descriptor(user, runtime.type)
+        port = _free_port()
+        await serve_in_runtime(desc, runtime, port)
+        base = await runtime.public_url(port) or f"http://127.0.0.1:{port}"
+        async with connect_user(f"{base.rstrip('/')}/mcp") as respond:
+            yield respond
     finally:
-        await runtime.stop()
+        if own is not None:
+            await own.stop()

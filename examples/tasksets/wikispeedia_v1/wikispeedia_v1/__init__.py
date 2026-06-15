@@ -1,14 +1,15 @@
 """wikispeedia: navigate Wikipedia by clicking links to reach a target article.
 
-A stateful tool example. The taskset generates `(source, target)` pairs from the
-SNAP graph (loaded once, host-side) and, per rollout, launches a host-side server
-holding the navigation state (see `server.py`). The harness calls `wiki_click_link`
-to move; the reward reads the server's `TARGET REACHED` marker off the trace. The
-corpus stays host-side — nothing is shipped into the runtime.
+A stateful tool example, authored as a `vf.Toolset` (`WikiToolset` below). The taskset
+generates `(source, target)` pairs from the SNAP graph (loaded once, host-side) and, per
+rollout, launches a toolset holding the navigation state (current article + path), built in
+its `setup`. The harness calls `wiki_click_link` to move; the reward reads the toolset's
+`TARGET REACHED` marker off the trace.
 """
 
 import random
-import sys
+
+from pydantic import PrivateAttr
 
 import verifiers.v1 as vf
 
@@ -60,11 +61,6 @@ class WikiTask(vf.Task):
 
 
 class WikispeediaConfig(vf.TasksetConfig):
-    # NON-COLOCATED, NON-SHARED: the server runs in its own runtime (`tools.runtime`,
-    # default subprocess/host), one per rollout, reached via the harness's runtime
-    # (localhost or a tunnel, auto-resolved). Not colocated — its ~100MB graph
-    # shouldn't be re-fetched inside a fresh harness runtime every rollout.
-    tools: vf.ToolsConfig = vf.ToolsConfig(colocated=False)
     num_tasks: int = 20
     min_dist: int = 3
     max_dist: int = 8
@@ -73,6 +69,49 @@ class WikispeediaConfig(vf.TasksetConfig):
     links_only: bool = True
     """Show only each article's outgoing-link menu (no prose) — the classic
     Wikispeedia formulation; keeps the prompt small."""
+
+
+class WikiToolset(vf.Toolset):
+    """Holds the rollout's navigation state (current article + path) and serves
+    `click_link`/`go_back`. On reaching the target it emits a `TARGET REACHED` marker in the
+    tool result — which lands in the trace, where the reward reads it."""
+
+    source: str
+    target: str
+    links_only: bool = True
+    _wiki: WikiGraph = PrivateAttr(default=None)
+    _path: list[str] = PrivateAttr(default_factory=list)
+
+    async def setup(self) -> None:
+        self._wiki = WikiGraph.load()
+        self._path = [self.source]
+
+    @vf.tool
+    def click_link(self, article: str) -> str:
+        """Navigate to a linked article (must be an available link from the current one)."""
+        current = self._path[-1]
+        available = self._wiki.get_links(current)
+        target = self._wiki.normalize_name(article)
+        if target is None or target not in available:
+            return (
+                f"'{article}' is not a valid link from '{current}'.\n"
+                f"Available links: {', '.join(available) or '(none)'}"
+            )
+        self._path.append(target)
+        page = format_article(self._wiki, target, self.links_only)
+        if target == self.target:
+            return (
+                f"TARGET REACHED 🎯 You navigated to the target '{self.target}'.\n\n{page}"
+            )
+        return page
+
+    @vf.tool
+    def go_back(self) -> str:
+        """Go back to the previous article (undo the last click)."""
+        if len(self._path) <= 1:
+            return "You are already at the starting article. Cannot go back."
+        self._path.pop()
+        return format_article(self._wiki, self._path[-1], self.links_only)
 
 
 class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
@@ -101,16 +140,13 @@ class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
             for i, (source, target, dist) in enumerate(pairs)
         ]
 
-    def tools(self, task: WikiTask) -> list[vf.Tools]:
+    def tools(self, task: WikiTask) -> list[vf.Toolset]:
         return [
-            vf.Tools(
+            WikiToolset(
                 name="wiki",
-                command=[sys.executable, "-m", "wikispeedia_v1.server"],
-                env={
-                    "WIKISPEEDIA_SOURCE": task.source,
-                    "WIKISPEEDIA_TARGET": task.target,
-                    "WIKISPEEDIA_LINKS_ONLY": "1" if self.config.links_only else "0",
-                },
+                source=task.source,
+                target=task.target,
+                links_only=self.config.links_only,
             )
         ]
 

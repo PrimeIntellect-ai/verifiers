@@ -98,14 +98,12 @@ async def test_task_tools_own_runtime(
     runtime, with the agent on subprocess. The harness reaches the tool over the runtime's
     resolved URL (a remote sandbox publishes its port; a host one is localhost)."""
     (trace,) = await run_v1(
-        "glossary-v1",
+        "echo-tool-v1",
         harness="default",
         runtime="subprocess",
         output_dir=tmp_path,
         max_turns=6,
-        taskset_overrides={
-            "tools": {"colocated": False, "runtime": {"type": server_runtime}}
-        },
+        taskset_overrides={"server_runtime": server_runtime},
     )
     skip_if_unexposable(trace)
     assert trace.errors == []
@@ -123,7 +121,7 @@ async def test_user_own_runtime(run_v1, server_runtime, skip_if_unexposable, tmp
         runtime="subprocess",
         output_dir=tmp_path,
         max_turns=6,
-        taskset_overrides={"user": {"runtime": {"type": server_runtime}}},
+        taskset_overrides={"server_runtime": server_runtime},
     )
     skip_if_unexposable(trace)
     assert trace.errors == []
