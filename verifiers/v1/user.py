@@ -113,6 +113,7 @@ async def serve_user(
     runtime_config: RuntimeConfig,
     agent_runtime: "Runtime | None" = None,
     colocated: bool = True,
+    rollout_id: str | None = None,
 ) -> AsyncIterator[Respond | None]:
     """Bring a rollout's user server up and yield the async `respond` the interception server
     drives — or `None` when the taskset has no user server. The framework always drives the user
@@ -126,7 +127,7 @@ async def serve_user(
         return
     if colocated and agent_runtime is not None:
         async with serve_tools(
-            [user], agent_runtime, colocated=True, host_reachable=True
+            [user], agent_runtime, colocated=True, host_reachable=True, rollout_id=rollout_id
         ) as urls:
             async with connect_user(next(iter(urls.values()))) as respond:
                 yield respond
@@ -135,7 +136,7 @@ async def serve_user(
     await runtime.start()
     try:
         async with serve_tools(
-            [user], runtime, colocated=True, host_reachable=True
+            [user], runtime, colocated=True, host_reachable=True, rollout_id=rollout_id
         ) as urls:
             async with connect_user(next(iter(urls.values()))) as respond:
                 yield respond

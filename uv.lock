@@ -4889,6 +4889,11 @@ wheels = [
 ]
 
 [[package]]
+name = "scratchpad-v1"
+version = "0.1.0"
+source = { editable = "examples/tasksets/scratchpad_v1" }
+
+[[package]]
 name = "sentencepiece"
 version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -5836,6 +5841,7 @@ examples = [
     { name = "r2e-gym-v1" },
     { name = "reverse-text-v1" },
     { name = "scaleswe-v1" },
+    { name = "scratchpad-v1" },
     { name = "swelego-v1" },
     { name = "terminal-bench-2-v1" },
     { name = "wiki-search-v1" },
@@ -5937,6 +5943,7 @@ examples = [
     { name = "r2e-gym-v1", editable = "examples/tasksets/r2e_gym_v1" },
     { name = "reverse-text-v1", editable = "examples/tasksets/reverse_text_v1" },
     { name = "scaleswe-v1", editable = "examples/tasksets/scaleswe_v1" },
+    { name = "scratchpad-v1", editable = "examples/tasksets/scratchpad_v1" },
     { name = "swelego-v1", editable = "examples/tasksets/swelego_v1" },
     { name = "terminal-bench-2-v1", editable = "examples/tasksets/terminal_bench_2_v1" },
     { name = "wiki-search-v1", editable = "examples/tasksets/wiki_search_v1" },

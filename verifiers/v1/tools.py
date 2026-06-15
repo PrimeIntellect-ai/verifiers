@@ -14,12 +14,14 @@ launcher. The wire types the model sees (`Tool`, `ToolCall`, …) live in `types
 """
 
 import contextlib
+import contextvars
 import logging
 import os
 import random
 import socket
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, quote, urlsplit
 
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, make_runtime
@@ -29,6 +31,30 @@ if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
+
+# The framework tags every tool/user-server URL it hands out with the rollout's id as this
+# query param (in `serve_tools`); `run_mcp_server` reads it back into `_rollout_id` per
+# request. A server reads it via `current_rollout_id()` to scope (multiplex) its state by
+# rollout. Entirely framework-side — the harness/program carry the URL verbatim.
+ROLLOUT_ID_PARAM = "rollout_id"
+_rollout_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "vf_rollout_id", default=None
+)
+
+
+def current_rollout_id() -> str | None:
+    """The id of the rollout that issued the in-flight tool call, or None — set per request
+    by `run_mcp_server` from the framework-injected `rollout_id` URL param. Lets a shared
+    tool server namespace per-rollout state so concurrent rollouts don't corrupt each other."""
+    return _rollout_id.get()
+
+
+def _with_rollout_id(url: str, rollout_id: str | None) -> str:
+    """Tag a framework-built tool-server URL with the rollout id so the server can read it."""
+    if not rollout_id:
+        return url
+    sep = "&" if urlsplit(url).query else "?"
+    return f"{url}{sep}{ROLLOUT_ID_PARAM}={quote(rollout_id, safe='')}"
 
 
 @dataclass(frozen=True)
@@ -53,12 +79,26 @@ class Tools:
 
 def run_mcp_server(mcp: "FastMCP") -> None:
     """Serve a FastMCP server on the port the harness passes via `MCP_PORT`, mounting
-    streamable HTTP at `/mcp`. Call this at the end of a uv-script tool server."""
+    streamable HTTP at `/mcp`. Call this at the end of a uv-script tool server. Each request's
+    `rollout_id` URL param is exposed to the server's tools via `current_rollout_id()`."""
     import uvicorn
 
     port = int(os.environ["MCP_PORT"])
+    app = mcp.streamable_http_app()
+
+    async def with_rollout_id(scope, receive, send):
+        if scope["type"] != "http":
+            await app(scope, receive, send)
+            return
+        params = parse_qs(scope.get("query_string", b"").decode())
+        token = _rollout_id.set((params.get(ROLLOUT_ID_PARAM) or [None])[0])
+        try:
+            await app(scope, receive, send)
+        finally:
+            _rollout_id.reset(token)
+
     config = uvicorn.Config(
-        mcp.streamable_http_app(), host="127.0.0.1", port=port, log_level="critical"
+        with_rollout_id, host="127.0.0.1", port=port, log_level="critical"
     )
     uvicorn.Server(config).run()
 
@@ -163,11 +203,13 @@ async def serve_tools(
     host_reachable: bool = False,
     tool_runtime_config: RuntimeConfig | None = None,
     shared_urls: dict[str, str] | None = None,
+    rollout_id: str | None = None,
 ):
     """Bring up the declared tool servers for a rollout; yield `{name: url}`. A colocated
     server is reached in-sandbox (localhost) by default — set `host_reachable` for one the
     framework consumes from the host (a user simulator), so its port is published back to the
-    host (a remote sandbox's `public_url`, else localhost)."""
+    host (a remote sandbox's `public_url`, else localhost). Each framework-built URL is tagged
+    with `rollout_id` so a (shared) server can scope its state per rollout."""
     shared_urls = shared_urls or {}
     tool_runtimes: list[Runtime] = []  # per-rollout tool runtimes to tear down
     urls: dict[str, str] = {}
@@ -177,7 +219,9 @@ async def serve_tools(
                 urls[server.name] = server.url
                 logger.info("tool server '%s' (remote): %s", server.name, server.url)
             elif server.name in shared_urls:  # one shared instance, started eval-level
-                urls[server.name] = shared_urls[server.name]
+                urls[server.name] = _with_rollout_id(
+                    shared_urls[server.name], rollout_id
+                )
                 logger.info(
                     "tool server '%s' (shared): %s",
                     server.name,
@@ -193,7 +237,9 @@ async def serve_tools(
                     if host_reachable
                     else f"http://127.0.0.1:{port}"
                 )
-                urls[server.name] = f"{base.rstrip('/')}/mcp"
+                urls[server.name] = _with_rollout_id(
+                    f"{base.rstrip('/')}/mcp", rollout_id
+                )
                 logger.info("tool server '%s' colocated on port %d", server.name, port)
             else:  # its own runtime; reachability resolved per where it runs
                 port = _free_port()
@@ -201,8 +247,8 @@ async def serve_tools(
                 tool_runtimes.append(tool_runtime)
                 await tool_runtime.start()
                 await serve_in_runtime(server, tool_runtime, port)
-                urls[server.name] = await _resolve_url(
-                    tool_runtime, agent_runtime, port
+                urls[server.name] = _with_rollout_id(
+                    await _resolve_url(tool_runtime, agent_runtime, port), rollout_id
                 )
                 logger.info(
                     "tool server '%s' on %s: %s",

@@ -165,12 +165,14 @@ class Rollout:
                         colocated=tools.colocated,
                         tool_runtime_config=tools.runtime,
                         shared_urls=shared_urls,
+                        rollout_id=trace.id,
                     ) as urls,
                     serve_user(
                         self.taskset.user(self.task),
                         self.taskset.config.user.runtime,
                         agent_runtime=runtime,
                         colocated=self.taskset.config.user.colocated,
+                        rollout_id=trace.id,
                     ) as session.user,
                 ):
                     # setup done — the harness is now driving
