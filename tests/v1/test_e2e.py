@@ -77,25 +77,35 @@ async def test_multi_turn_with_tools(
 
 
 @pytest.mark.e2e
-@pytest.mark.parametrize(
-    "agentic_harness",
-    [
-        "default",
-        pytest.param("mini-swe-agent", marks=pytest.mark.slow),
-    ],
-)
-async def test_agentic(run_v1, agentic_harness, runtime, tmp_path):
-    """Agentic: write a phrase to a file with the harness's bash tool, checked in the runtime."""
+async def test_agentic(run_v1, runtime, tmp_path):
+    """Agentic: write a phrase to a file with the bash tool, checked in the runtime. Only the
+    default harness exposes the optional bash tool, so this varies runtime but pins the harness."""
     (trace,) = await run_v1(
         "echo-agentic-v1",
-        harness=agentic_harness,
-        enable_bash=agentic_harness == "default",
+        harness="default",
+        enable_bash=True,
         runtime=runtime,
         output_dir=tmp_path,
         max_turns=10,
     )
     assert trace.errors == []
     assert trace.num_turns >= 1  # ran a command, then finished
+    assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+@pytest.mark.slow
+async def test_mini_swe_agentic(run_v1, runtime, tmp_path):
+    """Mini's built-in bash agent runs the same agentic task without changing the default."""
+    (trace,) = await run_v1(
+        "echo-agentic-v1",
+        harness="mini-swe-agent",
+        runtime=runtime,
+        output_dir=tmp_path,
+        max_turns=10,
+    )
+    assert trace.errors == []
+    assert trace.num_turns >= 1
     assert trace.reward == 1.0
 
 
