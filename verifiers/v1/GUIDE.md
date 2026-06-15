@@ -288,6 +288,19 @@ Common aliases: `-m`/`--model`, `-n`/`--num-tasks`, `-r`/`--num-rollouts`,
 `-c`/`--max-concurrent`, `-s`/`--shuffle`, `-o`/`--output-dir`, `-v`/`--verbose`,
 `--no-rich` (disable the live dashboard).
 
+- **Sampling** — set provider-neutral generation knobs under `sampling`, for example
+  `--sampling.temperature 0 --sampling.max-tokens 2048 --sampling.effort medium`, or:
+
+  ```toml
+  [sampling]
+  temperature = 0
+  max_tokens = 2048
+  effort = "medium"
+  ```
+
+  v1 uses the string field `effort`, not `reasoning_effort`. The active dialect maps it to
+  `reasoning_effort` for chat-completions, `reasoning.effort` for Responses, or
+  `output_config.effort` for Anthropic Messages.
 - **Configs** — a saved run is `uv run eval @ config.toml` (the taskset/harness `id`s live in
   the file); CLI flags still override. `--dry-run` writes the resolved `config.toml` without
   running. Logs are teed to `<output_dir>/eval.log`.

@@ -4,5 +4,8 @@
 num_tasks = 5
 num_rollouts = 3
 
+[sampling]
+effort = "medium"
+
 [taskset]
 id = "gsm8k-v1"
