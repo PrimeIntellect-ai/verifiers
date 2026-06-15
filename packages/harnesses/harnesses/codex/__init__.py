@@ -8,6 +8,7 @@ session secret) is read from an env var.
 """
 
 import logging
+import shlex
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.errors import ProgramError
@@ -22,17 +23,20 @@ PROVIDER = "intercept"
 # The env var codex reads the provider api key (its bearer = the session secret) from.
 KEY_VAR = "CODEX_INTERCEPT_KEY"
 
-# Install the static-musl codex release (`rust-v<version>`) onto PATH, idempotently — fetching
-# curl first if the image lacks it. musl => no libc dep, so it runs in any linux container.
+# Install the static-musl codex release into a user-writable dir and run it by absolute path, so
+# it needs neither root nor codex on $PATH — works on a non-root host (subprocess runtime) as
+# well as a root container. musl => no libc dep. Fetches curl first only if it's missing.
+CODEX_DIR = "/tmp/vf-codex"
+CODEX_BIN = f"{CODEX_DIR}/bin/codex"
 INSTALL = r"""
-command -v codex >/dev/null 2>&1 && exit 0
 set -e
+mkdir -p {dir}/bin
 command -v curl >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq curl >/dev/null; }
 case "$(uname -m)" in aarch64|arm64) arch=aarch64 ;; *) arch=x86_64 ;; esac
 triple="${arch}-unknown-linux-musl"
-curl -fsSL "https://github.com/openai/codex/releases/download/rust-v{version}/codex-${triple}.tar.gz" | tar -xz -C /usr/local/bin
-mv "/usr/local/bin/codex-${triple}" /usr/local/bin/codex
-chmod +x /usr/local/bin/codex
+curl -fsSL "https://github.com/openai/codex/releases/download/rust-v{version}/codex-${triple}.tar.gz" | tar -xz -C {dir}/bin
+mv "{dir}/bin/codex-${triple}" {bin}
+chmod +x {bin}
 """
 
 
@@ -62,15 +66,25 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         # api key) and posts Responses calls to `{endpoint}/responses`.
         env = {**self.config.env, KEY_VAR: secret}
         logger.info("codex: ensuring codex %s is installed", self.config.version)
-        install = await runtime.run(
-            ["sh", "-c", INSTALL.replace("{version}", self.config.version)], {}
+        # Serialize concurrent rollouts that share one runtime (e.g. subprocess on the host),
+        # which otherwise race to download into the same dir: the first installs, the rest wait
+        # on the lock and find the binary already present.
+        script = (
+            INSTALL.replace("{version}", self.config.version)
+            .replace("{dir}", CODEX_DIR)
+            .replace("{bin}", CODEX_BIN)
         )
+        ensure = shlex.quote(f"[ -x {CODEX_BIN} ] || ({script})")
+        guarded = (
+            f"mkdir -p {CODEX_DIR} && flock {CODEX_DIR}/install.lock sh -c {ensure}"
+        )
+        install = await runtime.run(["sh", "-c", guarded], {})
         if install.exit_code != 0:
             raise ProgramError(f"codex install failed: {install.stderr.strip()[-500:]}")
         # `-c` values parse as TOML, falling back to a raw string (so the url / `responses`
         # come through literally); `requires_openai_auth=false` parses as a bool.
         argv = [
-            "codex",
+            CODEX_BIN,
             "exec",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
