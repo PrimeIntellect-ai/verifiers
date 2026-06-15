@@ -6,9 +6,9 @@ turn/timeout caps. The reward tests fan out across the full **harness x runtime*
 (subprocess/docker/prime, modal excluded).
 
 The capability-sensitive tests read the harness flags: the tools test expects a harness
-without `SUPPORTS_TASK_TOOLS` (rlm) to be refused up front (raise); the multi-turn test skips a
-harness without `SUPPORTS_USER_SIM` (rlm). The agentic task pins the default harness (only it
-exposes the bash tool) and varies runtime.
+without `SUPPORTS_TASK_TOOLS` to be refused up front (raise); the multi-turn test skips a
+harness without `SUPPORTS_USER_SIM`. Command-only harnesses use the agentic task instead of
+the direct-response task.
 """
 
 import pytest
@@ -17,6 +17,8 @@ import pytest
 @pytest.mark.e2e
 async def test_single_turn(run_v1, harness, runtime, tmp_path):
     """Single-turn (echo a short phrase back)."""
+    if harness == "mini-swe-agent":
+        pytest.skip("mini-swe-agent requires a bash tool call before submitting")
     (trace,) = await run_v1(
         "echo-v1", harness=harness, runtime=runtime, output_dir=tmp_path, max_turns=2
     )
@@ -75,13 +77,19 @@ async def test_multi_turn_with_tools(
 
 
 @pytest.mark.e2e
-async def test_agentic(run_v1, runtime, tmp_path):
-    """Agentic: write a phrase to a file with the bash tool, checked in the runtime. Only the
-    default harness exposes the bash tool, so this varies runtime but pins the harness."""
+@pytest.mark.parametrize(
+    "agentic_harness",
+    [
+        "default",
+        pytest.param("mini-swe-agent", marks=pytest.mark.slow),
+    ],
+)
+async def test_agentic(run_v1, agentic_harness, runtime, tmp_path):
+    """Agentic: write a phrase to a file with the harness's bash tool, checked in the runtime."""
     (trace,) = await run_v1(
         "echo-agentic-v1",
-        harness="default",
-        enable_bash=True,
+        harness=agentic_harness,
+        enable_bash=agentic_harness == "default",
         runtime=runtime,
         output_dir=tmp_path,
         max_turns=10,
