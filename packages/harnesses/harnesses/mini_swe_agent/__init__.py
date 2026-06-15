@@ -1,18 +1,13 @@
 """The mini-swe-agent harness: runs the native bash-tool agent through LiteLLM."""
 
+from pathlib import Path
+
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
-PROGRAM = """\
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["mini-swe-agent=={version}"]
-# ///
-from minisweagent.run.mini import app
-app()
-"""
+PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
 class MiniSWEAgentHarnessConfig(HarnessConfig):
@@ -68,7 +63,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "MSWEA_SILENT_STARTUP": "true",
         }
         return await runtime.run_uv_script(
-            PROGRAM.replace("{version}", self.config.version), args=args, env=env
+            PROGRAM_SOURCE.replace("{version}", self.config.version), args=args, env=env
         )
 
 
