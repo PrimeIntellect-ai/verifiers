@@ -23,9 +23,6 @@ PROVIDER = "intercept"
 # The env var codex reads the provider api key (its bearer = the session secret) from.
 KEY_VAR = "CODEX_INTERCEPT_KEY"
 
-# Install the static-musl codex release into a user-writable dir and run it by absolute path, so
-# it needs neither root nor codex on $PATH — works on a non-root host (subprocess runtime) as
-# well as a root container. musl => no libc dep. Fetches curl first only if it's missing.
 CODEX_DIR = "/tmp/vf-codex"
 CODEX_BIN = f"{CODEX_DIR}/bin/codex"
 INSTALL = r"""
