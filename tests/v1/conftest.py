@@ -50,7 +50,10 @@ def server_runtime(request) -> str:
 def skip_if_unexposable():
     """Skip when a trace failed because the server's runtime couldn't publish its port to the
     host — a prime sandbox whose region doesn't support port exposure (a known infra limit, not
-    a code bug). subprocess/docker share the host network, so they never hit this."""
+    a code bug). subprocess/docker share the host network, so they never hit this.
+
+    TODO: re-enable the prime cases once prime supports port exposure in all regions (or the
+    runtime publishes the port via an in-sandbox tunnel)."""
 
     def _skip(trace) -> None:
         if any("port exposure" in str(e) for e in trace.errors):
