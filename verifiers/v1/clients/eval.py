@@ -17,7 +17,7 @@ from contextlib import aclosing
 
 import httpx
 
-from verifiers.v1.clients.client import Client, RelayReply
+from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.dialects import ChatDialect, Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import Response, SamplingConfig
@@ -78,12 +78,13 @@ class EvalClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        session_id: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         resp = await self._request(
             self.base_url + dialect.upstream_path,
             dialect.apply_overrides(body, model, sampling_args),
-            self._headers(dialect, headers),
+            self._headers(dialect, headers, session_id),
         )
         raw = resp.json()
         response = dialect.parse_response(dialect.response_type.model_validate(raw))
@@ -94,11 +95,13 @@ class EvalClient(Client):
         self,
         dialect: Dialect,
         incoming: Mapping[str, str] | None,
+        session_id: str | None,
     ) -> httpx.Headers:
         """Build provider headers from the intercepted request.
 
         Preserve provider feature headers such as `openai-beta`, discard localhost auth and
-        transport framing, then apply endpoint-configured headers and real provider auth.
+        transport framing, then apply endpoint-configured headers, session routing, and real
+        provider auth.
         """
         headers = httpx.Headers(incoming if isinstance(dialect, ChatDialect) else None)
         connection = headers.pop("connection", "")
@@ -107,6 +110,8 @@ class EvalClient(Client):
         ):
             headers.pop(name, None)
         headers.update(self.headers)
+        if session_id:
+            headers[SESSION_ID_HEADER] = session_id
         headers.update(dialect.auth_headers(self.api_key))
         return headers
 
@@ -143,6 +148,7 @@ class EvalClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        session_id: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
         # Stream the provider's response bytes through (SSE for a streaming request). An error
@@ -151,7 +157,7 @@ class EvalClient(Client):
         resp = await self._request(
             self.base_url + dialect.upstream_path,
             dialect.apply_overrides(body, model, sampling_args),
-            self._headers(dialect, headers),
+            self._headers(dialect, headers, session_id),
             stream=True,
         )
 
@@ -170,7 +176,7 @@ class EvalClient(Client):
         resp = await self._request(
             self.base_url + route,
             body,
-            self._headers(dialect, None),
+            self._headers(dialect, None, None),
         )
         return resp.json()
 

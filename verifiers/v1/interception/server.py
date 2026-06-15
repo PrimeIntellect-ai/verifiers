@@ -213,7 +213,8 @@ class InterceptionServer:
                     body,
                     session.ctx.model,
                     session.ctx.sampling,
-                    headers,
+                    headers=headers,
+                    session_id=session.trace.id,
                 )
             except OverlongPromptError:
                 # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
@@ -274,7 +275,8 @@ class InterceptionServer:
                 body,
                 session.ctx.model,
                 session.ctx.sampling,
-                request.headers,
+                headers=request.headers,
+                session_id=session.trace.id,
             )
         except OverlongPromptError:
             session.trace.stop("context_length")

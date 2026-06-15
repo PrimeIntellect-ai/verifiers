@@ -19,7 +19,7 @@ The paired `rlm_search` environment prompts RLM to write this file and provides 
 
 ## Scoring
 
-`RedSearcherRubric` compares the final response against the released `answer` label. It first applies a strict normalized exact-answer shortcut for unambiguous matches. Otherwise it uses an OpenAI-compatible LLM-as-judge prompt that follows the answer-matching convention in REDSearcher's DeepTraceHub evaluation code: judge whether the predicted final answer is equivalent to the ground truth and return binary accuracy.
+`RedSearcherRubric` compares the final response against the released `answer` label. It first applies a strict normalized exact-answer shortcut for unambiguous matches. Otherwise it uses an OpenAI-compatible LLM-as-judge prompt that matches REDSearcher's released DeepTraceHub BROWSECOMP evaluator prompt and returns binary accuracy.
 
 A reward of `1.0` means the final response matched the ground-truth answer; `0.0` means it did not, or no final answer was produced. Judge provider failures are preserved as `vf.Error` values on `state["error"]`.
 
@@ -29,7 +29,7 @@ A reward of `1.0` means the final response matched the ground-truth answer; `0.0
 |---|---:|---|
 | `dataset_name` | `Zchu/REDSearcher_RL_1K` | Hugging Face dataset name. |
 | `split` | `train` | Dataset split. |
-| `difficulty` | `None` | Optional difficulty filter: `easy`, `medium`, `hard`, or `all`. |
+| `filter_fn` | `None` | Optional composable taskset filter over normalized rows, for example `lambda x: x['info']['difficulty'] == 'easy'`. |
 | `answer_file` | `/task/answer.txt` | Final answer path in the sandbox. |
 | `judge_model` | `openai/gpt-5.4-mini` | OpenAI-compatible model for answer-match judging. |
 | `judge_base_url` | `https://api.pinference.ai/api/v1` | Judge API base URL. |
