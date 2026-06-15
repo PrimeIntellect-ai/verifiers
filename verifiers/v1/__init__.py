@@ -53,7 +53,6 @@ from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.tools import (
     Toolset,
     ToolsetConfig,
-    Tools,
     UserConfig,
     run_mcp_server,
 )
@@ -170,7 +169,6 @@ __all__ = [
     "taskset_config_type",
     "harness_config_type",
     # mcp
-    "Tools",
     "Toolset",
     "ToolsetConfig",
     "run_mcp_server",

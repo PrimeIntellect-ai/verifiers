@@ -1,44 +1,15 @@
-"""echo (v1, multi-turn): echo a phrase per turn, driven by a container-safe user simulator.
+"""echo (v1, multi-turn): echo a phrase per turn, driven by a `vf.User` simulator.
 
-The v1 multi-turn fixture for the e2e matrix. The user simulator is a self-contained uv
-`script` (staged into the runtime + run via `uv run`, like a tool server), so it works on
-every runtime — unlike a host-bound `command=[sys.executable, ...]` user-sim, which can't run
-inside a container. A user-sim is a task tool, so this needs a tool-supporting harness.
+The v1 multi-turn fixture for the e2e matrix. The user simulator is a `vf.User` class: it runs
+host-side (its own subprocess runtime, the default) and the framework drives it, so it's
+reachable whatever runtime the harness runs in. A user-sim is a task tool, so this needs a
+tool-supporting harness.
 """
-
-import json
 
 import verifiers.v1 as vf
 
 PHRASES = ["hello world", "goodbye world"]
 SYSTEM = "Repeat the user's message back to them exactly, with no extra words."
-
-# A self-contained uv user simulator: one `respond` tool that injects the next phrase per turn.
-USER_SCRIPT = b"""# /// script
-# requires-python = ">=3.11"
-# dependencies = ["mcp"]
-# ///
-import json, os
-from mcp.server.fastmcp import FastMCP
-
-PHRASES = json.loads(os.environ["ECHO_PHRASES"])
-mcp = FastMCP("user", host="127.0.0.1", port=int(os.environ["MCP_PORT"]))
-_turns = 0
-
-
-@mcp.tool()
-def respond(message: str) -> str:
-    global _turns
-    _turns += 1
-    if _turns >= len(PHRASES):
-        return json.dumps({"messages": [], "done": True})
-    return json.dumps(
-        {"messages": [{"role": "user", "content": PHRASES[_turns]}], "done": False}
-    )
-
-
-mcp.run(transport="streamable-http")
-"""
 
 
 def _key(text: str) -> str:
@@ -51,8 +22,21 @@ class EchoMultiTask(vf.Task):
 
 class EchoMultiConfig(vf.TasksetConfig):
     phrases: list[str] = PHRASES
-    server_runtime: str = "subprocess"
-    """Runtime the user simulator runs in (its own) — set by the e2e server-runtime matrix."""
+    user: vf.UserConfig = vf.UserConfig()
+
+
+class EchoMultiUser(vf.User[vf.UserConfig]):
+    """Injects the next phrase as a user turn until the episode's phrases run out."""
+
+    async def setup(self, task) -> None:
+        self.phrases = task.phrases  # per-task input, from the task
+        self.turns = 0  # per-rollout mutable state
+
+    async def respond(self, message: str) -> tuple[vf.Messages, bool]:
+        self.turns += 1
+        if self.turns >= len(self.phrases):
+            return [], True
+        return [{"role": "user", "content": self.phrases[self.turns]}], False
 
 
 class EchoMultiTaskset(vf.Taskset[EchoMultiTask, EchoMultiConfig]):
@@ -66,15 +50,8 @@ class EchoMultiTaskset(vf.Taskset[EchoMultiTask, EchoMultiConfig]):
             )
         ]
 
-    def user(self, task: EchoMultiTask) -> vf.Tools:
-        # A self-contained `script` user-sim (driven by the framework via `serve_user`) runs in
-        # any runtime; its own `config` sets where (the e2e matrix varies `server_runtime`).
-        return vf.Tools(
-            name="user",
-            script=USER_SCRIPT,
-            env={"ECHO_PHRASES": json.dumps(task.phrases)},
-            config=vf.ToolsetConfig(runtime={"type": self.config.server_runtime}),
-        )
+    def user(self, task: EchoMultiTask) -> vf.User:
+        return EchoMultiUser(self.config.user)
 
     @vf.reward(weight=1.0)
     async def echoed(self, task: EchoMultiTask, trace: vf.Trace) -> float:

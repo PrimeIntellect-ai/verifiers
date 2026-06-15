@@ -21,6 +21,8 @@ FACTS: dict[str, str] = json.loads((HERE / "facts.json").read_text())
 
 
 class GlossaryToolset(vf.Toolset[vf.ToolsetConfig]):
+    name = "facts"  # the model sees `facts_lookup` (matches the instruction)
+
     # `FACTS` is global state (the corpus, loaded once at import) — not a config knob and not
     # per-task, so the tool reads it directly. No subclass config: it has no knobs of its own.
     @vf.tool
@@ -34,7 +36,13 @@ class GlossaryTask(vf.Task):
     """The fact the `lookup` tool returns for this task's entity."""
 
 
-class GlossaryTaskset(vf.Taskset[GlossaryTask, vf.TasksetConfig]):
+class GlossaryConfig(vf.TasksetConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    """Placement for the facts tool server, CLI-tunable (e.g.
+    `--taskset.tools.runtime.type docker`, `--taskset.tools.colocated true`)."""
+
+
+class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
     def load_tasks(self) -> list[GlossaryTask]:
         return [
             GlossaryTask(
@@ -50,7 +58,7 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, vf.TasksetConfig]):
         ]
 
     def tools(self, task: GlossaryTask) -> list[vf.Toolset]:
-        return [GlossaryToolset(vf.ToolsetConfig(name="facts"))]
+        return [GlossaryToolset(self.config.tools)]
 
     @vf.reward(weight=1.0)
     async def looked_up(
@@ -61,5 +69,5 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, vf.TasksetConfig]):
         return float(task.answer.lower() in (last or "").lower())
 
 
-def load_taskset(config: vf.TasksetConfig) -> GlossaryTaskset:
+def load_taskset(config: GlossaryConfig) -> GlossaryTaskset:
     return GlossaryTaskset(config)

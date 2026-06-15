@@ -100,6 +100,8 @@ class ColorCodewordConfig(vf.TasksetConfig):
     """Number of synthetic episodes to generate."""
     images_per_turn: int = Field(2, ge=1)
     """Colored squares shown per turn."""
+    user: vf.UserConfig = vf.UserConfig()
+    """Placement for the user simulator, CLI-tunable (e.g. `--taskset.user.runtime.type docker`)."""
 
 
 class ColorCodewordTask(vf.Task):
@@ -115,17 +117,17 @@ class ColorCodewordUser(vf.User[vf.UserConfig]):
     `max_turns` turn is answered. The framework drives it, never the model."""
 
     async def setup(self, task) -> None:
-        self._colors_per_turn = task.info["colors_per_turn"]  # per-task input, from the task
-        self._max_turns = task.info["max_turns"]  # per-task input
-        self._turns = 0  # per-rollout mutable state
+        self.colors_per_turn = task.info["colors_per_turn"]  # per-task input, from the task
+        self.max_turns = task.info["max_turns"]  # per-task input
+        self.turns = 0  # per-rollout mutable state
 
     async def respond(self, message: str) -> tuple[vf.Messages, bool]:
-        self._turns += 1
-        if self._turns >= self._max_turns:
+        self.turns += 1
+        if self.turns >= self.max_turns:
             return [], True
-        colors = self._colors_per_turn[self._turns]
-        total = sum(len(self._colors_per_turn[t]) for t in range(self._turns + 1))
-        text = turn_text(self._turns, len(colors), self._max_turns, total)
+        colors = self.colors_per_turn[self.turns]
+        total = sum(len(self.colors_per_turn[t]) for t in range(self.turns + 1))
+        text = turn_text(self.turns, len(colors), self.max_turns, total)
         return [{"role": "user", "content": image_content(colors, text)}], False
 
 
@@ -163,7 +165,7 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
         return tasks
 
     def user(self, task: ColorCodewordTask) -> vf.User:
-        return ColorCodewordUser(vf.UserConfig(name="user"))
+        return ColorCodewordUser(self.config.user)
 
     @vf.reward(weight=1.0)
     async def exact_match(self, task: ColorCodewordTask, trace: vf.Trace) -> float:

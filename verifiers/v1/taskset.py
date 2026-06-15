@@ -25,7 +25,7 @@ from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.ids import EnvId, env_name
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskT
-from verifiers.v1.tools import Tools, Toolset
+from verifiers.v1.tools import Toolset
 from verifiers.v1.trace import Trace
 from verifiers.v1.user import User
 
@@ -62,11 +62,10 @@ class Taskset(Generic[TaskT, ConfigT]):
     def load_tasks(self) -> list[TaskT]:
         raise NotImplementedError
 
-    def tools(self, task: TaskT) -> list[Tools | Toolset]:
-        """Tool servers exposing this task's tools to the model. Return `vf.Toolset`s
-        (classes with `@vf.tool` methods) or raw `vf.Tools` descriptors; each may carry its
-        own `config` (placement / runtime), else it inherits `taskset.tools`. Empty by
-        default; override to give a task tools."""
+    def tools(self, task: TaskT) -> list[Toolset]:
+        """Tool servers exposing this task's tools to the model — `vf.Toolset`s (classes with
+        `@vf.tool` methods), each carrying its `config` (placement / runtime; a remote `url`
+        for an already-running server). Empty by default; override to give a task tools."""
         return []
 
     def user(self, task: TaskT) -> User | None:

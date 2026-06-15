@@ -48,10 +48,10 @@ class ToolsetConfig(BaseConfig):
       - colocated: in the harness's OWN runtime, per rollout (no tunnel) — only works when the
         server's deps resolve there (a self-contained published script), not a bare sandbox.
       - shared: one instance for the whole eval, in its own `runtime`.
-    Subclass to add the server's own knobs (the data its `@tool` methods / `respond` read)."""
+    Subclass to add the server's own knobs (the data its `@tool` methods / `respond` read).
+    The server name is the class's `name` ClassVar, not a field here — it's an identity (the
+    model sees `<name>_<tool>`, baked into the taskset's instruction), not a tunable knob."""
 
-    name: str = ""
-    """MCP server name; the model sees tools as `<name>_<tool>`. Defaults to the class name."""
     colocated: bool = False
     """Run the server inside the harness's runtime (reached in-sandbox, no tunnel). Off by
     default: a vf-native server imports `verifiers` + its taskset package, which a fresh
@@ -63,6 +63,10 @@ class ToolsetConfig(BaseConfig):
     runtime: RuntimeConfig = SubprocessConfig()
     """The server's own runtime, used unless `colocated` (host/subprocess by default — always
     reachable from any harness runtime; set docker/prime to isolate it in its own sandbox)."""
+    url: str | None = None
+    """An already-running streamable-HTTP MCP endpoint to connect to instead of launching a
+    server (e.g. a public remote like DeepWiki). When set, placement is ignored — the toolset
+    needs no `@tool` methods, the model just sees the remote's tools as `<name>_<tool>`."""
 
     @model_validator(mode="after")
     def _exclusive(self) -> "ToolsetConfig":
@@ -78,8 +82,6 @@ class UserConfig(BaseConfig):
     `colocated` to run it inside the harness's runtime instead (only when its deps resolve
     there). Subclass to add the user's own knobs (the data its `respond` reads)."""
 
-    name: str = ""
-    """MCP server name. Defaults to the class name."""
     colocated: bool = False
     """Run the user simulator inside the harness's runtime, reusing it (its port is published
     back to the host so the framework can still drive it). Off by default — see `ToolsetConfig`."""
@@ -88,34 +90,28 @@ class UserConfig(BaseConfig):
 
 
 @dataclass(frozen=True)
-class Tools:
-    """A tool server exposing tools to the model (as `<name>_<tool>`). Set exactly one
-    of `script` (a single-file uv script we run) or `url` (already-running remote)."""
+class _Launch:
+    """Internal: how to start a tool/user server in a runtime — what `server_to_tools` produces
+    and `serve_in_runtime` runs. Authors never construct this; they write a `Toolset`/`User`."""
 
     name: str
     script: bytes | None = None
     """A self-contained uv script (PEP 723 inline deps) that serves streamable HTTP on
-    the port in `MCP_PORT` — e.g. via `run_mcp_server`. Its only runtime dep is `uv`."""
+    the port in `MCP_PORT` (the generated sandbox launch). Its only runtime dep is `uv`."""
     command: list[str] = field(default_factory=list)
-    """Alternative to `script`: a ready-to-run argv that serves on `MCP_PORT` (for a
-    server whose deps are already present where it runs)."""
+    """Alternative to `script`: a ready-to-run argv that serves on `MCP_PORT` (the host launch,
+    `python -m verifiers.v1.toolserver`, whose deps are already present)."""
     env: dict[str, str] = field(default_factory=dict)
-    """Extra env for the script/command process (e.g. per-task metadata)."""
-    url: str | None = None
-    """An already-running streamable-HTTP MCP endpoint the harness connects to."""
-    headers: dict[str, str] = field(default_factory=dict)
-    """HTTP headers sent to a remote `url` (e.g. auth)."""
-    config: ToolsetConfig = field(default_factory=ToolsetConfig)
-    """Per-server placement (colocated / shared / own runtime)."""
+    """Env for the script/command process (the serialized config + task refs)."""
 
 
 ConfigT = TypeVar("ConfigT", bound=BaseConfig)
 
 
 def _server_name(inst: ServerBase) -> str:
-    """The MCP server name: the config's `name`, else the class name snake-cased."""
-    if inst.config.name:
-        return inst.config.name
+    """The MCP server name: the class's `name` ClassVar, else the class name snake-cased."""
+    if inst.name:
+        return inst.name
     return "".join(
         ("_" + c.lower() if c.isupper() else c) for c in type(inst).__name__
     ).lstrip("_")
@@ -132,6 +128,9 @@ class ServerBase(Generic[ConfigT]):
     runtime; build expensive/non-serializable state in `setup` — set it as plain instance
     attributes (it runs in the server process)."""
 
+    name: ClassVar[str] = ""
+    """MCP server name — an identity (the model sees tools as `<name>_<tool>`), set on the
+    class, not the config. Defaults to the class name snake-cased."""
     deps: ClassVar[list[str]] = []
 
     def __init__(self, config: ConfigT) -> None:
@@ -253,13 +252,13 @@ def _ref(obj: object) -> str:
     return f"{cls.__module__}:{cls.__qualname__}"
 
 
-def server_to_tools(inst: ServerBase, runtime_type: str, task) -> Tools:
-    """Convert a vf-native server to a `Tools` launch. Serializes its `config` + this rollout's
-    `task`; the launcher rebuilds `cls(config)` and calls `setup(task)`. On a host subprocess
-    (deps already present) it runs via the `toolserver` launcher as a `command`; in any other
-    runtime it generates a PEP 723 uv-script so `uv` resolves the class's declared `deps` (the
-    deps answer) plus its own distribution (so the launcher can import the class + config + task)
-    in that fresh sandbox."""
+def server_to_tools(inst: ServerBase, runtime_type: str, task) -> _Launch:
+    """Build a `_Launch` for a vf-native server. Serializes its `config` + this rollout's `task`;
+    the launcher rebuilds `cls(config)` and calls `setup(task)`. On a host subprocess (deps
+    already present) it runs via the `toolserver` launcher as a `command`; in any other runtime
+    it generates a PEP 723 uv-script so `uv` resolves the class's declared `deps` (the deps
+    answer) plus its own distribution (so the launcher can import the class + config + task) in
+    that fresh sandbox."""
     cls = type(inst)
     env = {
         "VF_SERVER_REF": _ref(cls),
@@ -270,7 +269,7 @@ def server_to_tools(inst: ServerBase, runtime_type: str, task) -> Tools:
     }
     name = _server_name(inst)
     if runtime_type == "subprocess":
-        return Tools(
+        return _Launch(
             name=name, command=[sys.executable, "-m", "verifiers.v1.toolserver"], env=env
         )
     pkg = _server_distribution(cls)
@@ -278,12 +277,12 @@ def server_to_tools(inst: ServerBase, runtime_type: str, task) -> Tools:
         raise ProgramError(
             f"cannot run {cls.__qualname__} in a {runtime_type} runtime: it must live in an "
             "installed, publishable distribution so the sandbox can `uv`-install it (it resolved "
-            "to no distribution). Put the class in a taskset package, or run it colocated in a "
-            "subprocess runtime."
+            "to no distribution). Put the class in a taskset package, or run it on a subprocess "
+            "(host) runtime."
         )
     deps = ["mcp", "verifiers", *cls.deps, pkg]
     script = _SERVER_SCRIPT.format(deps=", ".join(f'"{d}"' for d in deps))
-    return Tools(name=name, script=script.encode(), env=env)
+    return _Launch(name=name, script=script.encode(), env=env)
 
 
 def run_mcp_server(mcp: "FastMCP") -> None:
@@ -329,18 +328,18 @@ def _free_port() -> int:
     raise ProgramError("could not find a free port in [3000, 9000)")
 
 
-async def serve_in_runtime(server: Tools, runtime: Runtime, port: int) -> None:
-    """Run `server` inside `runtime` on `port` (background) and wait until it serves.
+async def serve_in_runtime(launch: _Launch, runtime: Runtime, port: int) -> None:
+    """Run `launch` inside `runtime` on `port` (background) and wait until it serves.
     A `script` runs via uv (its deps come from the script); a `command` must already be
     runnable in the runtime."""
-    log = f"vf_tool_{server.name}.log"
-    if server.script:
-        script = f"vf_tool_{server.name}.py"
-        await runtime.write(script, server.script)
+    log = f"vf_tool_{launch.name}.log"
+    if launch.script:
+        script = f"vf_tool_{launch.name}.py"
+        await runtime.write(script, launch.script)
         argv = ["sh", "-c", f"{_ENSURE_UV}; exec uv run --quiet {script}"]
     else:
-        argv = list(server.command)
-    await runtime.run_background(argv, {**server.env, "MCP_PORT": str(port)}, log)
+        argv = list(launch.command)
+    await runtime.run_background(argv, {**launch.env, "MCP_PORT": str(port)}, log)
     probe = await runtime.run(
         ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
     )
@@ -349,104 +348,94 @@ async def serve_in_runtime(server: Tools, runtime: Runtime, port: int) -> None:
         with contextlib.suppress(Exception):
             tail = (await runtime.read(log)).decode(errors="replace").strip()[-2000:]
         raise ProgramError(
-            f"tool server {server.name!r} not serving in runtime: {tail}"
+            f"tool server {launch.name!r} not serving in runtime: {tail}"
         )
 
 
-async def _resolve_url(tool_runtime: Runtime, agent_runtime: Runtime, port: int) -> str:
-    """A URL the harness can reach the tool's `port` at: the tool runtime publishes it if
-    it can (a prime sandbox), else the harness runtime bridges the host port (localhost or
-    a tunnel)."""
-    base = await tool_runtime.public_url(port) or await agent_runtime.expose(port)
-    return f"{base.rstrip('/')}/mcp"
-
-
-def _descriptor(server: Tools | ServerBase, runtime_type: str, task) -> Tools:
-    """The launch descriptor for a server: a vf-native class is converted for `runtime_type`
-    (its `config` + the rollout's `task` baked into the env); a raw `Tools` is already one."""
-    if isinstance(server, ServerBase):
-        return server_to_tools(server, runtime_type, task)
-    return server
+@contextlib.asynccontextmanager
+async def serve(server: ServerBase, task, agent_runtime: Runtime | None = None, for_host: bool = False):
+    """The single internal launcher for a vf-native server — a `Toolset` OR a `User`. Brings it
+    up in its configured placement and yields one reachable URL, tearing down any runtime it
+    owns. Placement comes from `server.config`:
+      - `colocated` (with an `agent_runtime`): runs in the harness's own runtime, reusing it;
+      - otherwise: its OWN `runtime` (host by default), started and stopped here.
+    (A remote `url` toolset is short-circuited by the caller — it isn't launched.) Reachability
+    depends on who consumes it: `for_host` (a user sim the framework drives) yields a
+    host-reachable URL; otherwise (a tool the model calls) a harness-reachable one — localhost
+    in-sandbox when colocated, else the tool runtime's `public_url` bridged by the harness's
+    `expose` (or, eval-level with no `agent_runtime`, `public_url` or localhost for a shared one)."""
+    cfg = server.config
+    own = None
+    if cfg.colocated and agent_runtime is not None:
+        runtime = agent_runtime
+    else:
+        own = make_runtime(cfg.runtime)
+        await own.start()
+        runtime = own
+    try:
+        port = _free_port()
+        await serve_in_runtime(server_to_tools(server, runtime.type, task), runtime, port)
+        local = f"http://127.0.0.1:{port}"
+        if for_host:  # the framework reaches it from the host
+            base = await runtime.public_url(port) or local
+        elif runtime is agent_runtime:  # colocated tool: the model reaches it in-sandbox
+            base = local
+        elif agent_runtime is not None:  # own-runtime tool: the harness bridges to it
+            base = await runtime.public_url(port) or await agent_runtime.expose(port)
+        else:  # shared tool, eval-level (no single agent to bridge through)
+            base = await runtime.public_url(port) or local
+        yield f"{base.rstrip('/')}/mcp"
+    finally:
+        if own is not None:
+            with contextlib.suppress(Exception):
+                await own.stop()
 
 
 @contextlib.asynccontextmanager
-async def serve_shared(tools: list[Tools | ServerBase], task):
-    """Start the SHARED tool servers (those whose placement is `shared`) ONCE for a whole eval,
-    each in its OWN `runtime`, and yield `{name: url}` reachable by every rollout's harness — a
-    prime tool runtime publishes its port (works for any harness), a host one is reached at
-    localhost (works for host-network harnesses). Torn down when the eval ends. Used by
-    `Environment` so an expensive corpus is built once, not per rollout."""
-    tool_runtimes: list[Runtime] = []
+async def serve_shared(toolsets: list[Toolset], task):
+    """Start the SHARED tool servers (placement `shared`) ONCE for a whole eval, each in its OWN
+    `runtime`, and yield `{name: url}` reachable by every rollout's harness (a prime tool runtime
+    publishes its port; a host one is localhost, for host-network harnesses). Torn down when the
+    eval ends. Used by `Environment` so an expensive corpus is built once, not per rollout."""
     urls: dict[str, str] = {}
-    try:
-        for server in tools:
-            cfg = server.config
+    async with contextlib.AsyncExitStack() as stack:
+        for toolset in toolsets:
+            cfg = toolset.config
             if not cfg.shared:
                 continue
-            name = _server_name(server) if isinstance(server, ServerBase) else server.name
-            desc = _descriptor(server, cfg.runtime.type, task)
-            if desc.url:
-                urls[name] = desc.url
-                continue
-            port = _free_port()
-            tool_runtime = make_runtime(cfg.runtime)
-            tool_runtimes.append(tool_runtime)
-            await tool_runtime.start()
-            await serve_in_runtime(desc, tool_runtime, port)
-            base = await tool_runtime.public_url(port) or f"http://127.0.0.1:{port}"
-            urls[name] = f"{base.rstrip('/')}/mcp"
+            name = _server_name(toolset)
+            if cfg.url:  # already running remotely
+                urls[name] = cfg.url
+            else:
+                urls[name] = await stack.enter_async_context(serve(toolset, task))
             logger.info("shared tool server '%s': %s", name, urls[name])
         yield urls
-    finally:
-        for tool_runtime in tool_runtimes:
-            with contextlib.suppress(Exception):
-                await tool_runtime.stop()
 
 
 @contextlib.asynccontextmanager
 async def serve_tools(
-    tools: list[Tools | ServerBase],
+    toolsets: list[Toolset],
     agent_runtime: Runtime,
     task,
     shared_urls: dict[str, str] | None = None,
 ):
-    """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches. Each
-    server is placed by its `config` (and gets the rollout's `task` for its `setup`): a remote
-    `url` is used as-is; a `shared` one reuses the eval-level instance in `shared_urls`; a
-    `colocated` one runs in the harness's own runtime (reached in-sandbox, no tunnel); otherwise
-    it runs in its OWN `runtime` (host by default), reached via that runtime's `public_url` or
-    the harness runtime bridging the port — so different servers can run in different runtimes."""
+    """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches. A `shared`
+    toolset reuses the eval-level instance in `shared_urls`; the rest are launched by `serve`
+    (placement off each one's `config`, the rollout's `task` for its `setup`) — so different
+    servers can run in different runtimes."""
     shared_urls = shared_urls or {}
-    tool_runtimes: list[Runtime] = []  # per-rollout tool runtimes to tear down
     urls: dict[str, str] = {}
-    try:
-        for server in tools:
-            native = isinstance(server, ServerBase)  # vf-native class vs a Tools descriptor
-            name = _server_name(server) if native else server.name
-            cfg = server.config
-            if not native and server.url:  # already running remotely
-                urls[name] = server.url
-                logger.info("tool server '%s' (remote): %s", name, server.url)
+    async with contextlib.AsyncExitStack() as stack:
+        for toolset in toolsets:
+            name = _server_name(toolset)
+            cfg = toolset.config
+            if cfg.url:  # already running remotely
+                urls[name] = cfg.url
+                logger.info("tool server '%s' (remote): %s", name, cfg.url)
             elif name in shared_urls:  # one shared instance, started eval-level
                 urls[name] = shared_urls[name]
                 logger.info("tool server '%s' (shared): %s", name, shared_urls[name])
-            elif cfg.colocated:  # in the harness's runtime (reached in-sandbox, no tunnel)
-                desc = _descriptor(server, agent_runtime.type, task)
-                port = _free_port()
-                await serve_in_runtime(desc, agent_runtime, port)
-                urls[name] = f"http://127.0.0.1:{port}/mcp"
-                logger.info("tool server '%s' colocated on port %d", name, port)
-            else:  # its own runtime (host by default); reachability resolved per where it runs
-                desc = _descriptor(server, cfg.runtime.type, task)
-                port = _free_port()
-                tool_runtime = make_runtime(cfg.runtime)
-                tool_runtimes.append(tool_runtime)
-                await tool_runtime.start()
-                await serve_in_runtime(desc, tool_runtime, port)
-                urls[name] = await _resolve_url(tool_runtime, agent_runtime, port)
-                logger.info("tool server '%s' on %s: %s", name, cfg.runtime.type, urls[name])
+            else:
+                urls[name] = await stack.enter_async_context(serve(toolset, task, agent_runtime))
+                logger.info("tool server '%s': %s", name, urls[name])
         yield urls
-    finally:
-        for tool_runtime in tool_runtimes:
-            with contextlib.suppress(Exception):
-                await tool_runtime.stop()

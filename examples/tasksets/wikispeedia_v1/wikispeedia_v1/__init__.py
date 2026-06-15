@@ -58,21 +58,22 @@ class WikiTask(vf.Task):
     """The graph's shortest-path hop count from source to target."""
 
 
+class WikiToolsetConfig(vf.ToolsetConfig):
+    links_only: bool = True
+    """Genuine config (CLI-tunable): show only each article's outgoing-link menu (no prose) — the
+    classic Wikispeedia formulation; keeps the prompt small. The per-task source/target are read
+    off the task in `setup`, not config."""
+
+
 class WikispeediaConfig(vf.TasksetConfig):
     num_tasks: int = 20
     min_dist: int = 3
     max_dist: int = 8
     seed: int = 0
     max_turns: int = 30
-    links_only: bool = True
-    """Show only each article's outgoing-link menu (no prose) — the classic
-    Wikispeedia formulation; keeps the prompt small."""
-
-
-class WikiToolsetConfig(vf.ToolsetConfig):
-    links_only: bool = True
-    """Genuine config (CLI-tunable): show only outgoing links (the classic formulation) or
-    full prose. The per-task source/target are read off the task in `setup`, not config."""
+    tools: WikiToolsetConfig = WikiToolsetConfig()
+    """Placement + rendering for the navigation tool server, CLI-tunable (e.g.
+    `--taskset.tools.links_only false`, `--taskset.tools.runtime.type docker`)."""
 
 
 class WikiToolset(vf.Toolset[WikiToolsetConfig]):
@@ -80,37 +81,39 @@ class WikiToolset(vf.Toolset[WikiToolsetConfig]):
     `click_link`/`go_back`. On reaching the target it emits a `TARGET REACHED` marker in the
     tool result — which lands in the trace, where the reward reads it."""
 
+    name = "wiki"  # the model sees `wiki_click_link` / `wiki_go_back`
+
     async def setup(self, task) -> None:
-        self._wiki = WikiGraph.load()  # global state (~100MB graph)
-        self._target = task.target  # per-task input, from the task
-        self._path = [task.source]  # per-task + mutable nav state
+        self.wiki = WikiGraph.load()  # global state (~100MB graph)
+        self.target = task.target  # per-task input, from the task
+        self.path = [task.source]  # per-task + mutable nav state
 
     @vf.tool
     def click_link(self, article: str) -> str:
         """Navigate to a linked article (must be an available link from the current one)."""
-        current = self._path[-1]
-        available = self._wiki.get_links(current)
-        target = self._wiki.normalize_name(article)
+        current = self.path[-1]
+        available = self.wiki.get_links(current)
+        target = self.wiki.normalize_name(article)
         if target is None or target not in available:
             return (
                 f"'{article}' is not a valid link from '{current}'.\n"
                 f"Available links: {', '.join(available) or '(none)'}"
             )
-        self._path.append(target)
-        page = format_article(self._wiki, target, self.config.links_only)
-        if target == self._target:
+        self.path.append(target)
+        page = format_article(self.wiki, target, self.config.links_only)
+        if target == self.target:
             return (
-                f"TARGET REACHED 🎯 You navigated to the target '{self._target}'.\n\n{page}"
+                f"TARGET REACHED 🎯 You navigated to the target '{self.target}'.\n\n{page}"
             )
         return page
 
     @vf.tool
     def go_back(self) -> str:
         """Go back to the previous article (undo the last click)."""
-        if len(self._path) <= 1:
+        if len(self.path) <= 1:
             return "You are already at the starting article. Cannot go back."
-        self._path.pop()
-        return format_article(self._wiki, self._path[-1], self.config.links_only)
+        self.path.pop()
+        return format_article(self.wiki, self.path[-1], self.config.links_only)
 
 
 class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
@@ -133,14 +136,14 @@ class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
                 instruction=(
                     f"{SYSTEM}\n\nYour mission: {source} >> {target}\n\n"
                     f"Here is the starting article:\n\n"
-                    f"{format_article(wiki, source, self.config.links_only)}"
+                    f"{format_article(wiki, source, self.config.tools.links_only)}"
                 ),
             )
             for i, (source, target, dist) in enumerate(pairs)
         ]
 
     def tools(self, task: WikiTask) -> list[vf.Toolset]:
-        return [WikiToolset(WikiToolsetConfig(name="wiki", links_only=self.config.links_only))]
+        return [WikiToolset(self.config.tools)]
 
     @vf.stop
     async def done(self, trace: vf.Trace) -> bool:

@@ -42,6 +42,9 @@ class AlphabetSortConfig(vf.TasksetConfig):
     """Power-scale each turn then average (True), or average raw similarities then power once (False)."""
     split: Literal["train"] = "train"
     """Split of the source author-names dataset to build the episodes from."""
+    user: vf.UserConfig = vf.UserConfig()
+    """Placement for the user simulator, CLI-tunable (e.g. `--taskset.user.colocated true`,
+    `--taskset.user.runtime.type docker`)."""
 
 
 class AlphabetSortTask(vf.Task):
@@ -56,15 +59,15 @@ class AlphabetSortUser(vf.User[vf.UserConfig]):
     v0's `MultiTurnEnv.env_response` with the agent — the framework drives it, never the model."""
 
     async def setup(self, task) -> None:
-        self._follow_ups = task.info["follow_ups"]  # per-task input, from the task
-        self._num_turns = task.info["num_turns"]  # per-task input
-        self._turns = 0  # per-rollout mutable state
+        self.follow_ups = task.info["follow_ups"]  # per-task input, from the task
+        self.num_turns = task.info["num_turns"]  # per-task input
+        self.turns = 0  # per-rollout mutable state
 
     async def respond(self, message: str) -> tuple[vf.Messages, bool]:
-        self._turns += 1
-        if self._turns >= self._num_turns:
+        self.turns += 1
+        if self.turns >= self.num_turns:
             return [], True
-        return [{"role": "user", "content": self._follow_ups[self._turns - 1]}], False
+        return [{"role": "user", "content": self.follow_ups[self.turns - 1]}], False
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
@@ -155,7 +158,7 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
         return tasks
 
     def user(self, task: AlphabetSortTask) -> vf.User:
-        return AlphabetSortUser(vf.UserConfig(name="user"))
+        return AlphabetSortUser(self.config.user)
 
     @vf.reward(weight=1.0)
     async def alphabet_sort(self, task: AlphabetSortTask, trace: vf.Trace) -> float:

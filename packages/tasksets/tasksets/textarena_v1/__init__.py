@@ -62,12 +62,12 @@ class TextArenaUser(vf.User[vf.UserConfig]):
         # reproduces the exact episode the taskset built the instruction from — no per-game keys.
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
-        self._env = ta.make(env_id=task.info["game"])  # per-task input, from the task
+        self.env = ta.make(env_id=task.info["game"])  # per-task input, from the task
         random.seed(task.info["seed"])  # per-task input
-        self._env.reset(num_players=1)
+        self.env.reset(num_players=1)
 
     async def respond(self, message: str) -> tuple[vf.Messages, bool]:
-        env = self._env
+        env = self.env
         env.step(message)  # TextArena parses the bracketed move out of the message itself
         if env.state.done:
             reward = float((env.state.rewards or {}).get(0, 0.0))
@@ -92,6 +92,9 @@ class TextArenaConfig(vf.TasksetConfig):
     target), and WordSearch (find words in a grid)."""
     num_tasks: int = 1000
     """How many seeded episodes to generate; the eval/orchestrator selects from these."""
+    user: vf.UserConfig = vf.UserConfig()
+    """Placement for the game-engine user simulator, CLI-tunable (e.g.
+    `--taskset.user.runtime.type docker`)."""
 
 
 class TextArenaTask(vf.Task):
@@ -129,7 +132,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         ]
 
     def user(self, task: TextArenaTask) -> vf.User:
-        return TextArenaUser(vf.UserConfig(name="user"))
+        return TextArenaUser(self.config.user)
 
     @vf.reward(weight=1.0)
     async def game_reward(

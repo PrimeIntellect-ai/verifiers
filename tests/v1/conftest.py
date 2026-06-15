@@ -39,13 +39,6 @@ def runtime(request) -> str:
     return request.param
 
 
-# The runtime a tool / user-sim server runs in (its OWN, not colocated in the agent's), so the
-# task-tools and user-sim tests can cover every runtime independent of the agent's.
-@pytest.fixture(params=RUNTIMES)
-def server_runtime(request) -> str:
-    return request.param
-
-
 @pytest.fixture
 def skip_if_unexposable():
     """Skip when a trace failed because the server's runtime couldn't publish its port to the

@@ -57,6 +57,10 @@ class JudgeConfig(vf.BaseClientConfig):
 
 class WikiSearchConfig(vf.TasksetConfig):
     judge: JudgeConfig = JudgeConfig()
+    # SHARED: the chroma corpus is expensive, so one instance serves the whole eval (its own
+    # runtime), reused across rollouts rather than rebuilt per rollout. CLI-tunable, e.g.
+    # `--taskset.tools.shared false` or `--taskset.tools.runtime.type docker`.
+    tools: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
 
 
 class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
@@ -64,21 +68,22 @@ class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
     are built once in `setup`, in the server process; every tool call is a read. No per-server
     knobs, so it uses the base `vf.ToolsetConfig` (placement only)."""
 
+    name = "wiki"  # the model sees `wiki_search_pages` / `wiki_view_sections` / `wiki_read_section`
     deps = ["chromadb", "datasets"]
 
     async def setup(self, task) -> None:
         from wiki_search_v1.corpus import collection, corpus
 
-        self._pages = corpus()  # global state; the shared server ignores the per-task `task`
-        self._collection = collection()
+        self.pages = corpus()  # global state; the shared server ignores the per-task `task`
+        self.collection = collection()
 
     @vf.tool
     def search_pages(self, query: str) -> list[dict]:
         """Search the wiki for the 10 most relevant pages (by title). Returns
         `[{page_id, title}, ...]` — pass a page_id to view_sections."""
-        result = self._collection.query(query_texts=[query], n_results=10)
+        result = self.collection.query(query_texts=[query], n_results=10)
         return [
-            {"page_id": pid, "title": self._pages[pid]["title"]}
+            {"page_id": pid, "title": self.pages[pid]["title"]}
             for pid in result["ids"][0]
         ]
 
@@ -88,7 +93,7 @@ class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
         section_id to read_section."""
         from wiki_search_v1.corpus import normalize_id
 
-        content = self._pages[page_id]["content"]
+        content = self.pages[page_id]["content"]
         sections = [
             {
                 "section_id": f"{page_id}:{normalize_id(line.lstrip('#').strip())}",
@@ -107,7 +112,7 @@ class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
         from wiki_search_v1.corpus import normalize_id
 
         page_id, section = section_id.split(":", 1)
-        content = self._pages[page_id]["content"]
+        content = self.pages[page_id]["content"]
         if section == "full":
             return content
         lines = content.split("\n")
@@ -140,9 +145,7 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
         ]
 
     def tools(self, task: TriviaTask) -> list[vf.Toolset]:
-        # SHARED: the chroma corpus is expensive, so one instance serves the whole eval
-        # (its own runtime), reused across rollouts rather than rebuilt per rollout.
-        return [WikiSearchToolset(vf.ToolsetConfig(name="wiki", shared=True))]
+        return [WikiSearchToolset(self.config.tools)]
 
     @vf.reward(weight=1.0)
     async def judged(

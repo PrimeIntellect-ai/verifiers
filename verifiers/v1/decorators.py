@@ -62,17 +62,13 @@ def mark(attr: str, **extra: Any) -> Callable[[F], F]:
 
 
 @overload
-def tool(func: F, name: str | None = None, priority: int = 0) -> F: ...
+def tool(func: F, name: str | None = None) -> F: ...
 @overload
-def tool(
-    func: None = None, name: str | None = None, priority: int = 0
-) -> Callable[[F], F]: ...
-def tool(
-    func: F | None = None, name: str | None = None, priority: int = 0
-) -> F | Callable[[F], F]:
+def tool(func: None = None, name: str | None = None) -> Callable[[F], F]: ...
+def tool(func: F | None = None, name: str | None = None) -> F | Callable[[F], F]:
     """Mark a `Toolset` method as an MCP tool exposed to the model. The tool name defaults
     to the method name (override with `name`); the docstring becomes its description."""
-    decorator = mark("tool", tool_priority=priority, tool_name=name)
+    decorator = mark("tool", tool_name=name)
     return decorator if func is None else decorator(func)
 
 
