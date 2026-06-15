@@ -259,10 +259,10 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
             overrides["top_p"] = s["top_p"]
         if "max_tokens" in s:
             overrides["max_tokens"] = s["max_tokens"]
-        if "reasoning_effort" in s:
+        if "effort" in s:
             overrides["output_config"] = {
                 **dict(body.get("output_config") or {}),
-                "effort": s["reasoning_effort"],
+                "effort": s["effort"],
             }
         steered = {
             k: v
