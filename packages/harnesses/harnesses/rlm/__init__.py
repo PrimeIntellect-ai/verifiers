@@ -21,9 +21,6 @@ RLM_REPO = "github.com/PrimeIntellect-ai/rlm.git"
 # rlm writes its session under $RLM_HOME/sessions/<id>/; point it at a workdir-
 # relative dir so it stays in the runtime (and is cleaned up with the workdir).
 RLM_HOME = ".rlm"
-# Install uv + the rlm CLI into a user-writable dir and run the binary by absolute path, so it
-# needs neither root nor rlm on $PATH — works on a non-root host (subprocess runtime) as well as
-# a root container. install.sh fetches curl/uv itself when missing.
 RLM_DIR = "/tmp/vf-rlm"
 RLM_BIN = f"{RLM_DIR}/bin/rlm"
 
