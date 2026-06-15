@@ -13,7 +13,7 @@ change. Endpoint config (base url, api key, billing headers) comes from the clie
 
 import httpx
 
-from verifiers.v1.clients.client import Client, RelayReply
+from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import Response, SamplingConfig
@@ -40,9 +40,12 @@ class EvalClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        session_id: str | None = None,
     ) -> Response:
         # Byte-exact forward, save for the eval's model + sampling (imposed by the dialect).
-        url, headers, upstream = self._upstream(dialect, body, model, sampling_args)
+        url, headers, upstream = self._upstream(
+            dialect, body, model, sampling_args, session_id
+        )
         try:
             resp = await self.http.post(url, json=upstream, headers=headers)
             resp.raise_for_status()
@@ -58,13 +61,22 @@ class EvalClient(Client):
         return response
 
     def _upstream(
-        self, dialect: Dialect, body: dict, model: str, sampling_args: SamplingConfig
+        self,
+        dialect: Dialect,
+        body: dict,
+        model: str,
+        sampling_args: SamplingConfig,
+        session_id: str | None = None,
     ) -> tuple[str, dict, dict]:
         """The (url, headers, steered body) for a forwarded request — shared by the non-stream
-        and streaming paths."""
+        and streaming paths. A `session_id` is forwarded as the `SESSION_ID_HEADER` so the
+        provider's router can pin the rollout's turns to one engine."""
+        headers = dialect.auth_headers(self.api_key)
+        if session_id:
+            headers = {**headers, SESSION_ID_HEADER: session_id}
         return (
             self.base_url + dialect.upstream_path,
-            dialect.auth_headers(self.api_key),
+            headers,
             dialect.apply_overrides(body, model, sampling_args),
         )
 
@@ -74,11 +86,14 @@ class EvalClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        session_id: str | None = None,
     ) -> RelayReply:
         # Stream the provider's response bytes through (SSE for a streaming request). An error
         # status is read fully and mapped before any byte is handed back, so the retry +
         # truncation machinery treat a relayed call exactly like a non-streamed one.
-        url, headers, upstream = self._upstream(dialect, body, model, sampling_args)
+        url, headers, upstream = self._upstream(
+            dialect, body, model, sampling_args, session_id
+        )
         request = self.http.build_request("POST", url, json=upstream, headers=headers)
         try:
             resp = await self.http.send(request, stream=True)
