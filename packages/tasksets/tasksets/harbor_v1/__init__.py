@@ -146,6 +146,14 @@ def parse_task(task_dir: Path, idx: int, require_image: bool) -> HarborTask:
     environment = config.get("environment", {})
     verifier_config = config.get("verifier", {})
     verifier_environment = verifier_config.get("environment")
+    if (
+        verifier_config.get("environment_mode") == "shared"
+        and verifier_environment is not None
+    ):
+        raise ValueError(
+            f"{task_dir.name}: verifier.environment is incompatible with "
+            "environment_mode='shared'"
+        )
     separate = (
         verifier_config.get("environment_mode") == "separate"
         or verifier_environment is not None
