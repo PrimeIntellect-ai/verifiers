@@ -8,6 +8,8 @@ __all__ = [
     "TaskSet",
     "Harness",
     "ComposableEnv",
+    "SandboxDebugEnv",
+    "SandboxDebugRubric",
     "SWEDebugEnv",
 ]
 
@@ -20,6 +22,8 @@ def __getattr__(name: str):
         "TaskSet": "verifiers.envs.experimental.composable:TaskSet",
         "Harness": "verifiers.envs.experimental.composable:Harness",
         "ComposableEnv": "verifiers.envs.experimental.composable:ComposableEnv",
+        "SandboxDebugEnv": "verifiers.envs.experimental.composable:SandboxDebugEnv",
+        "SandboxDebugRubric": "verifiers.envs.experimental.composable:SandboxDebugRubric",
         "SWEDebugEnv": "verifiers.envs.experimental.composable:SWEDebugEnv",
     }
     if name in _lazy:

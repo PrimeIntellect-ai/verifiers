@@ -50,7 +50,10 @@ def server_runtime(request) -> str:
 def skip_if_unexposable():
     """Skip when a trace failed because the server's runtime couldn't publish its port to the
     host — a prime sandbox whose region doesn't support port exposure (a known infra limit, not
-    a code bug). subprocess/docker share the host network, so they never hit this."""
+    a code bug). subprocess/docker share the host network, so they never hit this.
+
+    TODO: re-enable the prime cases once prime supports port exposure in all regions (or the
+    runtime publishes the port via an in-sandbox tunnel)."""
 
     def _skip(trace) -> None:
         if any("port exposure" in str(e) for e in trace.errors):
@@ -62,14 +65,15 @@ def skip_if_unexposable():
 
 
 # Built-in harnesses (bundled in the `harnesses` package), composed with `runtime` for the
-# harness x runtime matrix. compact is an example harness, not built-in, so it's excluded. rlm
-# and the code agents install a heavy binary at rollout, so they're marked slow.
+# harness x runtime matrix. compact is an example harness, not built-in, so it's excluded.
+# Agent CLI harnesses install their dependencies at rollout, so they're marked slow.
 @pytest.fixture(
     params=[
         "default",
         pytest.param("rlm", marks=pytest.mark.slow),
         pytest.param("codex", marks=pytest.mark.slow),
         pytest.param("kimi-code", marks=pytest.mark.slow),
+        pytest.param("mini-swe-agent", marks=pytest.mark.slow),
     ]
 )
 def harness(request) -> str:

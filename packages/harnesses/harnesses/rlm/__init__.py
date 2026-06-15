@@ -6,10 +6,12 @@ runtime knobs (`max_depth`, `tools`), which rlm reads from `RLM_*` env vars.
 
 import json
 import logging
+import shlex
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import metric
+from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -19,6 +21,8 @@ RLM_REPO = "github.com/PrimeIntellect-ai/rlm.git"
 # rlm writes its session under $RLM_HOME/sessions/<id>/; point it at a workdir-
 # relative dir so it stays in the runtime (and is cleaned up with the workdir).
 RLM_HOME = ".rlm"
+RLM_DIR = "/tmp/vf-rlm"
+RLM_BIN = f"{RLM_DIR}/bin/rlm"
 
 
 class RLMHarnessConfig(HarnessConfig):
@@ -62,20 +66,29 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
         if self.config.tools is not None:
             env["RLM_TOOLS"] = ",".join(self.config.tools)
-        # Install rlm onto PATH only if it isn't already there (no runtime-type
-        # checks): a no-op where rlm is present, a fresh install otherwise.
+        # Install rlm only if the binary isn't already there (no runtime-type checks): a no-op
+        # where it's present, a fresh install otherwise. install.sh fetches curl/uv (and git,
+        # via the runtime's package manager) itself when missing, so the only thing we add is
+        # git for our pinned checkout — and only when it's absent, so a non-root host with git
+        # already present needs no root.
         install = (
-            "apt-get update -qq && apt-get install -y -qq git curl && "
-            f"git clone https://{RLM_REPO} /tmp/rlm && "
+            "command -v git >/dev/null 2>&1 || "
+            "{ apt-get update -qq && apt-get install -y -qq git; } && "
+            f"rm -rf /tmp/rlm && git clone https://{RLM_REPO} /tmp/rlm && "
             f"git -C /tmp/rlm checkout {self.config.version} && "
-            "UV_INSTALL_DIR=/usr/local/bin UV_TOOL_BIN_DIR=/usr/local/bin "
-            "RLM_CHECKOUT_PATH=/tmp/rlm bash /tmp/rlm/install.sh"
+            f"UV_INSTALL_DIR={RLM_DIR}/bin UV_TOOL_BIN_DIR={RLM_DIR}/bin "
+            f"RLM_CHECKOUT_PATH=/tmp/rlm bash /tmp/rlm/install.sh"
         )
         logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
-        await runtime.run(
-            ["sh", "-c", f"command -v rlm >/dev/null 2>&1 || ({install})"], env
-        )
-        return await runtime.run(["rlm", instruction], env)
+        # Serialize concurrent rollouts that share one runtime (e.g. subprocess on the host),
+        # which otherwise race to clone/install into the same /tmp dirs: the first installs, the
+        # rest wait on the lock and find the binary already present.
+        ensure = shlex.quote(f"[ -x {RLM_BIN} ] || ({install})")
+        guarded = f"mkdir -p {RLM_DIR} && flock {RLM_DIR}/install.lock sh -c {ensure}"
+        result = await runtime.run(["sh", "-c", guarded], env)
+        if result.exit_code != 0:
+            raise ProgramError(f"rlm install failed: {result.stderr.strip()[-500:]}")
+        return await runtime.run([RLM_BIN, instruction], env)
 
     @metric
     async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:

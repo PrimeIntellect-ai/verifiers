@@ -557,7 +557,12 @@ async def test_generate_resume_closes_local_endpoint_clients(
     results_path = tmp_path / "resume-complete"
     results_path.mkdir()
     (results_path / "results.jsonl").write_text(
-        json.dumps(make_output(example_id=0)) + "\n",
+        (
+            json.dumps(make_output(example_id=0, reward=0.0))
+            + "\n"
+            + json.dumps(make_output(example_id=0, reward=1.0))
+            + "\n"
+        ),
         encoding="utf-8",
     )
     (results_path / "metadata.json").write_text(
@@ -583,9 +588,12 @@ async def test_generate_resume_closes_local_endpoint_clients(
         ),
         model="test-model",
         results_path=results_path,
+        save_results=True,
     )
 
     assert len(outputs["outputs"]) == 1
+    saved_metadata = json.loads((results_path / "metadata.json").read_text())
+    assert saved_metadata["avg_reward"] == 0.0
     assert len(created_clients) == 2
     assert all(client.closed for client in created_clients)
 
@@ -668,6 +676,21 @@ async def test_generate_resume_raises_on_metadata_mismatch(
     tmp_path, mock_client, make_dummy_env, make_input
 ):
     env = make_dummy_env(mock_client)
+
+    invalid_results_path = tmp_path / "missing-metadata"
+    invalid_results_path.mkdir()
+    (invalid_results_path / "results.jsonl").write_text(
+        json.dumps({"example_id": 99, "label": "existing"}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="already exists without valid metadata"):
+        await env.generate(
+            inputs=[make_input(example_id=0)],
+            client=mock_client,
+            model="test-model",
+            results_path=invalid_results_path,
+            save_results=True,
+        )
 
     results_path = tmp_path / "resume"
     results_path.mkdir()

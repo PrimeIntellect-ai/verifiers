@@ -97,10 +97,10 @@ async def run_with_retry(
         # collects exactly the errors that caused a retry — never the final attempt's.
         trace = state.outcome.result()
         logger.warning(
-            "retrying rollout %s (attempt %d/%d) after error: %s",
+            "retrying rollout %s (retry %d/%d) after error: %s",
             trace.id,
             state.attempt_number,
-            retry.max_retries + 1,
+            retry.max_retries,
             trace.error.type if trace.error else "?",
         )
         history.extend(trace.errors)

@@ -1,13 +1,13 @@
 # QUEST Search Taskset
 
-Objective QUEST tasks ported into the composable search taskset framework.
+QUEST tasks ported into the composable search taskset framework.
 
 ## Source
 
 - Dataset: [`osunlp/QUEST-RL-Data`](https://huggingface.co/datasets/osunlp/QUEST-RL-Data)
 - Upstream project: [`OSU-NLP-Group/QUEST`](https://github.com/OSU-NLP-Group/QUEST)
 
-The taskset loads the Hugging Face dataset, filters to `rl_task_category == "objective"` by default, and uses the dataset-provided generated evaluation scripts under `eval_scripts/*.py`.
+The taskset loads the Hugging Face dataset and filters by `rl_task_category`. Objective tasks use the dataset-provided generated evaluation scripts under `eval_scripts/*.py`. Open-ended tasks use the dataset-provided reference answer and rubric criteria.
 
 ## Task Contract
 
@@ -17,15 +17,27 @@ The paired `rlm_search` environment prompts RLM to write this file and provides 
 
 ## Scoring
 
-`QuestRubric` loads the generated eval script for the example's `task_id` and calls its async `evaluate_answer(...)` entrypoint using the vendored minimal `obj_task_eval` runtime. The rollout reward is `summary["final_score"]`, clipped to `[0.0, 1.0]`.
+### Objective
+
+For objective tasks, `QuestRubric` loads the generated eval script for the example's `task_id` and calls its async `evaluate_answer(...)` entrypoint using the vendored minimal `obj_task_eval` runtime. The rollout reward is `summary["final_score"]`, clipped to `[0.0, 1.0]`.
 
 Generated scripts may request URL-backed verification. PDF URLs are detected and parsed with the upstream QUEST PDF parser path before falling back to generic webpage retrieval.
 
 This port intentionally preserves upstream QUEST behavior for URL-backed verification semantics. The upstream verifier generally treats invalid, irrelevant, or inaccessible cited webpages as unsupported claims, which can assign `0.0` to the affected verification node even when the immediate cause is source access such as a bot challenge, rate limit, timeout, or parser failure. Future work should consider a finer-grained source-access taxonomy so verifier infrastructure limitations can be distinguished from model-provided bad URLs or unsupported claims.
 
-A reward of `0.0` with no `state["error"]` means the QUEST evaluator ran and judged the answer incorrect under the upstream-compatible scoring path. Infrastructure and evaluator failures outside normal QUEST source verification are represented with `vf.Error` subclasses instead of ad hoc success metrics.
+### Open-ended
+
+For open-ended tasks, `QuestRubric` evaluates each rubric criterion independently. Each judge call compares the candidate answer against the dataset reference answer and returns scores for both documents on the criterion. The expected nominal judge-call count is the number of rubric criteria in the example, typically about 31 calls.
+
+The summary stores both scoring views:
+
+- `upstream_pairwise_score`: upstream QUEST's `total_score_a / (total_score_a + total_score_b)` comparison value.
+- `raw_reference_ratio`: raw `total_score_a / total_score_b` candidate-vs-reference score.
+- `final_score`: Verifiers reward, `raw_reference_ratio / 0.9` clipped to `[0.0, 1.0]`, so near-reference-quality answers can receive reward `1.0` despite noisy continuous criterion judging.
 
 ## Error Handling
+
+A reward of `0.0` with no `state["error"]` means the QUEST evaluator ran and judged the answer incorrect or insufficient under the selected scoring path. Infrastructure and evaluator failures outside normal QUEST source verification are represented with `vf.Error` subclasses instead of ad hoc success metrics.
 
 QUEST uses Verifiers' framework-managed error field for non-answer failures when the failure comes from external runtime systems:
 
@@ -33,9 +45,9 @@ QUEST uses Verifiers' framework-managed error field for non-answer failures when
 - Transient judge provider/network/rate-limit/server failures: retryable `vf.InfraError`.
 - Empty or invalid judge responses: retryable `vf.InvalidModelResponseError` / `vf.EmptyModelResponseError`.
 - Judge auth, model-not-found, content-filter, or invalid request failures: non-retryable `vf.ModelError`.
-- QUEST eval-script download/cache resolution failure: `vf.InfraError`.
+- QUEST objective eval-script download/cache resolution failure: `vf.InfraError`.
 
-Wrong answers, empty answers, and inaccessible or irrelevant cited sources remain ordinary scored outcomes and return `0.0` without setting `state["error"]`. Generated eval-script source errors, missing task metadata, missing eval-script files, import/load failures, and unexpected evaluator runtime bugs are not converted to `vf.Error`; they raise normally so broken evaluator code fails hard.
+Wrong answers, empty answers, and inaccessible or irrelevant cited sources remain ordinary scored outcomes and return `0.0` without setting `state["error"]`. Generated objective eval-script source errors, missing task metadata, missing eval-script files, import/load failures, and unexpected evaluator runtime bugs are not converted to `vf.Error`; they raise normally so broken evaluator code fails hard.
 
 ## Common Arguments
 
@@ -43,10 +55,10 @@ Wrong answers, empty answers, and inaccessible or irrelevant cited sources remai
 |---|---:|---|
 | `dataset_name` | `osunlp/QUEST-RL-Data` | Hugging Face dataset name. |
 | `split` | `train` | Dataset split. |
-| `category` | `objective` | Initial implementation supports objective tasks only. |
+| `category` | `objective` | QUEST category: `objective`, `open-ended`, or `all`. |
 | `answer_file` | `/task/answer.txt` | Final answer path in the sandbox. |
 | `judge_model` | `openai/gpt-5.4-mini` | OpenAI-compatible model for QUEST verifier calls. |
 | `judge_base_url` | `https://api.pinference.ai/api/v1` | Judge API base URL. |
 | `judge_api_key_var` | `PRIME_API_KEY` | Env var containing the judge API key. |
-| `quest_eval_scripts_dir` | HF cache | Optional local directory containing `eval_scripts/*.py`. |
+| `quest_eval_scripts_dir` | HF cache | Optional local directory containing `eval_scripts/*.py` for objective tasks. |
 | `quest_cache_dir` | `~/.cache/verifiers/quest` | Host cache for QUEST verifier state. |
