@@ -47,6 +47,7 @@ PRIME_SANDBOX_REGISTRY = (
 )
 _CACHE_VERSION = "v1"
 _MATERIALIZED_MARKER = ".materialized.json"
+_SANDBOX_TIMEOUT_BUFFER_SECONDS = 60
 
 _TASK_YAML_KEYS = (
     "author_email",
@@ -177,7 +178,7 @@ class CLIGymTaskSet(HarborDatasetTaskSet):
             task_name = info.get("task_name", "<unknown>")
             raise ValueError(f"CLI-Gym task {task_name!r} is missing an image")
 
-        timeout = _timeout_minutes(info.get("max_agent_timeout_sec"))
+        timeout = _sandbox_lifetime_minutes(info)
         return SandboxSpec(image=str(image), timeout_minutes=timeout)
 
     def get_workdir(self, info: dict) -> str:
@@ -607,6 +608,17 @@ def _timeout_minutes(value: Any) -> int | None:
     if seconds is None:
         return None
     return max(1, math.ceil(seconds / 60))
+
+
+def _sandbox_lifetime_minutes(info: dict) -> int | None:
+    agent_timeout = _timeout_seconds(info.get("max_agent_timeout_sec"))
+    test_timeout = _timeout_seconds(info.get("max_test_timeout_sec"))
+    timeout_seconds = sum(
+        timeout for timeout in (agent_timeout, test_timeout) if timeout is not None
+    )
+    if timeout_seconds == 0:
+        return None
+    return _timeout_minutes(timeout_seconds + _SANDBOX_TIMEOUT_BUFFER_SECONDS)
 
 
 def _toml_string(value: str) -> str:
