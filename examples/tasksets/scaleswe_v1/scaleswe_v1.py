@@ -83,85 +83,53 @@ def _ids(raw: str | list[str] | None) -> list[str]:
     return [parsed] if isinstance(parsed, str) and parsed else []
 
 
-def _parse_ref(ref: str) -> tuple[str, str, str]:
-    """Split an image reference into (registry host, repository, tag)."""
-    head, _, rest = ref.partition("/")
-    if rest and ("." in head or ":" in head or head == "localhost"):
-        registry, remainder = head, rest
-    else:
-        registry, remainder = "registry-1.docker.io", ref
-    repo, _, tag = remainder.rpartition(":")
-    return registry, repo, tag
+def _docker_hub_tags(repo: str) -> set[str] | None:
+    """Every tag in a public Docker Hub `repo` via the registry v2 API, or None if unreadable."""
+    import httpx
 
-
-def _list_tags(registry: str, repo: str) -> set[str] | None:
-    """All tags in `registry/repo` via the Docker registry v2 API, or None if the registry
-    can't be enumerated anonymously (private/no creds/unreachable)."""
-    import urllib.error
-    import urllib.request
-
-    def _get(url: str, token: str | None):
-        req = urllib.request.Request(url)
-        if token:
-            req.add_header("Authorization", f"Bearer {token}")
-        return urllib.request.urlopen(req, timeout=30)
-
-    def _token(challenge: str | None) -> str | None:
-        if not challenge or not challenge.lower().startswith("bearer "):
-            return None
-        parts = dict(
-            p.strip().split("=", 1) for p in challenge[7:].split(",") if "=" in p
-        )
-        realm = parts.get("realm", "").strip('"')
-        params = "&".join(
-            f"{k}={v.strip(chr(34))}" for k, v in parts.items() if k != "realm"
-        )
-        try:
-            return json.load(_get(f"{realm}?{params}", None)).get("token")
-        except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
-            return None
-
-    tags: list[str] = []
-    url: str | None = f"https://{registry}/v2/{repo}/tags/list?n=1000"
-    token = None
-    while url:
-        try:
-            resp = _get(url, token)
-        except urllib.error.HTTPError as e:
-            if e.code == 401 and token is None:
-                token = _token(e.headers.get("WWW-Authenticate"))
-                if token:
-                    continue
-            return None
-        except urllib.error.URLError:
-            return None
-        tags.extend(json.load(resp).get("tags") or [])
-        link = resp.headers.get("Link", "")
-        nxt = link[link.find("<") + 1 : link.find(">")] if 'rel="next"' in link else ""
-        url = f"https://{registry}{nxt}" if nxt.startswith("/") else (nxt or None)
-    return set(tags)
+    base = "https://registry-1.docker.io"
+    try:
+        token = httpx.get(
+            "https://auth.docker.io/token",
+            params={
+                "service": "registry.docker.io",
+                "scope": f"repository:{repo}:pull",
+            },
+            timeout=30,
+        ).json()["token"]
+        tags: list[str] = []
+        url: str | None = f"{base}/v2/{repo}/tags/list?n=1000"
+        while url:
+            resp = httpx.get(
+                url, headers={"Authorization": f"Bearer {token}"}, timeout=30
+            )
+            resp.raise_for_status()
+            tags += resp.json().get("tags") or []
+            nxt = resp.links.get("next", {}).get("url")
+            url = f"{base}{nxt}" if nxt else None
+        return set(tags)
+    except (httpx.HTTPError, KeyError):
+        return None
 
 
 def _available_images(images: set[str]) -> set[str]:
-    """The subset of `images` whose tag exists in its registry. Images in a registry that
-    can't be enumerated (private, no creds, unreachable) are kept rather than dropped."""
-    by_repo: dict[tuple[str, str], set[str]] = {}
-    for ref in images:
-        registry, repo, _ = _parse_ref(ref)
-        by_repo.setdefault((registry, repo), set()).add(ref)
+    """Subset of `images` known to exist. Only the public Docker Hub mirror is enumerated
+    anonymously; images on other registries (e.g. the private Artifact Registry) are kept."""
+    repos: dict[str, set[str]] = {}
     available: set[str] = set()
-    for (registry, repo), refs in by_repo.items():
-        tags = _list_tags(registry, repo)
+    for ref in images:
+        head = ref.split("/", 1)
+        # a leading registry host (with "." or ":") isn't anonymously enumerable - keep it
+        if len(head) == 2 and ("." in head[0] or ":" in head[0]):
+            available.add(ref)
+        else:
+            repos.setdefault(ref.rsplit(":", 1)[0], set()).add(ref)
+    for repo, refs in repos.items():
+        tags = _docker_hub_tags(repo)
         if tags is None:
-            logger.warning(
-                "scaleswe: could not enumerate %s/%s - keeping %d images unchecked",
-                registry,
-                repo,
-                len(refs),
-            )
             available |= refs
         else:
-            available |= {r for r in refs if _parse_ref(r)[2] in tags}
+            available |= {r for r in refs if r.rsplit(":", 1)[1] in tags}
     return available
 
 
