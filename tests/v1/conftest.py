@@ -99,14 +99,23 @@ def harness_supports():
 def pytest_collection_modifyitems(config, items) -> None:
     """Skip the live-model tests (marked `e2e`) when no model endpoint is configured, so the
     rest of the suite (e.g. config parsing) still runs in a keyless environment."""
-    if os.environ.get("PRIME_API_KEY") or os.environ.get("OPENAI_API_KEY"):
-        return
-    skip = pytest.mark.skip(
-        reason="needs a model API key (PRIME_API_KEY / OPENAI_API_KEY)"
+    has_default_key = bool(
+        os.environ.get("PRIME_API_KEY") or os.environ.get("OPENAI_API_KEY")
     )
+    has_openrouter_key = bool(os.environ.get("OPENROUTER_API_KEY"))
     for item in items:
-        if "e2e" in item.keywords:
-            item.add_marker(skip)
+        if "e2e" not in item.keywords:
+            continue
+        callspec = getattr(item, "callspec", None)
+        is_claude = callspec and callspec.params.get("harness") == "claude-code"
+        if is_claude and not has_openrouter_key:
+            item.add_marker(pytest.mark.skip(reason="needs OPENROUTER_API_KEY"))
+        elif not is_claude and not has_default_key:
+            item.add_marker(
+                pytest.mark.skip(
+                    reason="needs a model API key (PRIME_API_KEY / OPENAI_API_KEY)"
+                )
+            )
 
 
 @pytest.fixture
