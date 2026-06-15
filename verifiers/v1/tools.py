@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import inspect
 import logging
 import os
 import random
@@ -24,6 +25,7 @@ import socket
 import sys
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from pydantic import model_validator
@@ -92,15 +94,6 @@ class _Launch:
 ConfigT = TypeVar("ConfigT", bound=BaseConfig)
 
 
-def _server_name(inst: ServerBase) -> str:
-    """The MCP server name: the class's `name` ClassVar, else the class name snake-cased."""
-    if inst.name:
-        return inst.name
-    return "".join(
-        ("_" + c.lower() if c.isupper() else c) for c in type(inst).__name__
-    ).lstrip("_")
-
-
 class ServerBase(Generic[ConfigT]):
     """A vf-native server authored as a class, initialized from its config — the same shape as
     `Taskset`/`TasksetConfig`: the config (a `ToolsetConfig`/`UserConfig` subclass) is the
@@ -119,6 +112,13 @@ class ServerBase(Generic[ConfigT]):
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
+
+    @property
+    def server_name(self) -> str:
+        """The MCP server name: the class's `name` ClassVar, else the class name snake-cased."""
+        return self.name or "".join(
+            ("_" + c.lower() if c.isupper() else c) for c in type(self).__name__
+        ).lstrip("_")
 
     async def setup(self, task) -> None:
         """Establish everything the server needs that isn't a config knob, in the server process,
@@ -162,112 +162,59 @@ def serve_server(inst: ServerBase, task) -> None:
     from mcp.server.fastmcp import FastMCP
 
     asyncio.run(inst.setup(task))
-    mcp = FastMCP(_server_name(inst))
+    mcp = FastMCP(inst.server_name)
     inst._register(mcp)
     run_mcp_server(mcp)
 
 
-# The body of every generated server script: rebuild `cls(config)` + the task from the env refs
-# and serve — `setup(task)` establishes its global / per-task / mutable state. The PEP 723 deps
-# header is rendered per server by `_render_script`.
-_SERVER_BODY = '''\
-import importlib, os
-
-from verifiers.v1.tools import serve_server
+# The server-side runtime, vendored verbatim into every rendered script (NOT imported at serve
+# time) — so the script depends on neither `verifiers` nor the taskset package, only public PyPI.
+_SERVERKIT = (Path(__file__).parent / "_serverkit.py").read_text()
 
 
-def _ref(var):
-    mod, qual = os.environ[var].split(":")
-    return getattr(importlib.import_module(mod), qual)
+def _render_script(inst: ServerBase, deps: list[str]) -> bytes:
+    """Render a STANDALONE PEP 723 uv-script for `inst`: a public-PyPI dep header
+    (`mcp`/`pydantic`/`uvicorn` + the class's own `deps`), the vendored runtime, then the server's
+    config + class source inlined and reconstructed from the env. It imports neither `verifiers`
+    nor the taskset package — so it runs in any runtime (and a fresh sandbox) with no publishing."""
+    cls = type(inst)
+    cfg_cls = type(inst.config)
+    # An author config subclass carries the server's data and is inlined; the bare runtime base
+    # (placement only — irrelevant here) is already in the vendored kit.
+    cfg_src = "" if cfg_cls.__module__.startswith("verifiers") else inspect.getsource(cfg_cls)
+    header = "\n".join(
+        ["# /// script", '# requires-python = ">=3.10"', "# dependencies = ["]
+        + [f'#   "{d}",' for d in ["mcp", "pydantic", "uvicorn", *deps]]
+        + ["# ]", "# ///"]
+    )
+    body = f'''
+import os as _os, sys as _sys
 
+vf = _sys.modules[__name__]  # the authored class refers to `vf.Toolset` / `@vf.tool` / `vf.UserConfig`
 
-server = _ref("VF_SERVER_REF")(_ref("VF_CONFIG_REF").model_validate_json(os.environ["VF_CONFIG"]))
-task = _ref("VF_TASK_REF").model_validate_json(os.environ["VF_TASK"])
-serve_server(server, task)
+{cfg_src}
+
+{inspect.getsource(cls)}
+
+_inst = {cls.__name__}({cfg_cls.__name__}.model_validate_json(_os.environ["VF_CONFIG"]))
+serve_server(_inst, Task.model_validate_json(_os.environ["VF_TASK"]))
 '''
-
-
-def _render_script(deps: list[str]) -> bytes:
-    """A plain PEP 723 uv-script — `dependencies` resolved by uv from PyPI (the sandbox launch).
-    On a host runtime the script is run with the eval's own interpreter instead, where the deps
-    are already installed, so this header is only consulted in a sandbox."""
-    header = [
-        "# /// script",
-        '# requires-python = ">=3.10"',
-        "# dependencies = [",
-        *[f'#   "{d}",' for d in deps],
-        "# ]",
-        "# ///",
-    ]
-    return ("\n".join(header) + "\n" + _SERVER_BODY).encode()
-
-
-def _provides_top_level(dist, top: str) -> bool:
-    """Whether an installed distribution exposes `top` as an importable top-level package — via
-    its recorded files / `top_level.txt` (regular installs) or its source tree (editable installs,
-    whose RECORD lists only the `.pth`, so we read `direct_url.json`)."""
-    import json
-    from pathlib import Path
-
-    if top in (dist.read_text("top_level.txt") or "").split():
-        return True
-    if any(f.parts and f.parts[0] in (top, f"{top}.py") for f in dist.files or []):
-        return True
-    raw = dist.read_text("direct_url.json")
-    if raw:
-        info = json.loads(raw)
-        url = info.get("url", "")
-        if info.get("dir_info", {}).get("editable") and url.startswith("file://"):
-            src = Path(url[len("file://") :])
-            return (src / top / "__init__.py").exists() or (src / f"{top}.py").exists()
-    return False
-
-
-def _server_distribution(cls: type) -> str | None:
-    """The installed distribution providing `cls`'s top-level import package, so a sandbox script
-    can `uv`-install it from PyPI. Handles editable installs (uv / PEP 660) that
-    `packages_distributions()` misses. None if no installed distribution provides it."""
-    import importlib.metadata as md
-
-    top = cls.__module__.split(".")[0]
-    direct = md.packages_distributions().get(top)
-    if direct:
-        return direct[0]
-    for dist in md.distributions():
-        if _provides_top_level(dist, top):
-            return dist.metadata["Name"]
-    return None
-
-
-def _ref(obj: object) -> str:
-    """A `"module:QualName"` import ref for an object's type — how the script re-imports it."""
-    cls = obj if isinstance(obj, type) else type(obj)
-    return f"{cls.__module__}:{cls.__qualname__}"
+    return (header + "\n" + _SERVERKIT + body).encode()
 
 
 def server_to_tools(inst: ServerBase, task) -> _Launch:
-    """Render a vf-native server to a `_Launch` — a plain PEP 723 uv-script that rebuilds
-    `cls(config)`, calls `setup(task)`, and serves. Serializes the `config` + this rollout's
-    `task` into the env. The script's deps (`mcp`, `verifiers`, the class's `deps`, and the
-    taskset's own distribution so it can import the class) are how a SANDBOX resolves it from
-    PyPI; on a host runtime `serve_in_runtime` runs the script with the eval's interpreter where
-    those are already installed, so nothing is fetched and no publishing is needed."""
-    cls = type(inst)
+    """Render a vf-native server to a `_Launch` — a standalone PEP 723 uv-script (the vendored
+    runtime + the server's inlined config/class) that rebuilds `cls(config)`, runs `setup(task)`,
+    and serves. The `config` + this rollout's `task` cross the wire as JSON in the env; the
+    script's only deps are `mcp`/`pydantic`/`uvicorn` + the class's declared `deps` — all public
+    PyPI, no `verifiers` or taskset package, so it needs nothing pre-installed in a sandbox."""
     env = {
-        "VF_SERVER_REF": _ref(cls),
-        "VF_CONFIG_REF": _ref(inst.config),
         "VF_CONFIG": inst.config.model_dump_json(),
-        "VF_TASK_REF": _ref(task),
         "VF_TASK": task.model_dump_json(),
     }
-    pkg = _server_distribution(cls)
-    if pkg is None:
-        raise ProgramError(
-            f"cannot serve {cls.__qualname__}: it isn't part of an installed distribution, so the "
-            "server script can't import it. Put the class in a taskset package."
-        )
-    deps = ["mcp", "verifiers", *cls.deps, pkg]
-    return _Launch(name=_server_name(inst), script=_render_script(deps), env=env)
+    return _Launch(
+        name=inst.server_name, script=_render_script(inst, list(type(inst).deps)), env=env
+    )
 
 
 def run_mcp_server(mcp: "FastMCP") -> None:
@@ -392,7 +339,7 @@ async def serve_shared(toolsets: list[Toolset], task):
             cfg = toolset.config
             if not cfg.shared:
                 continue
-            name = _server_name(toolset)
+            name = toolset.server_name
             if cfg.url:  # already running remotely
                 urls[name] = cfg.url
             else:
@@ -416,7 +363,7 @@ async def serve_tools(
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
         for toolset in toolsets:
-            name = _server_name(toolset)
+            name = toolset.server_name
             cfg = toolset.config
             if cfg.url:  # already running remotely
                 urls[name] = cfg.url

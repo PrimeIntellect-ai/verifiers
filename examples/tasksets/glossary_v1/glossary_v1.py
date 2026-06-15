@@ -20,15 +20,19 @@ HERE = Path(__file__).resolve().parent
 FACTS: dict[str, str] = json.loads((HERE / "facts.json").read_text())
 
 
-class GlossaryToolset(vf.Toolset[vf.ToolsetConfig]):
+class GlossaryToolsetConfig(vf.ToolsetConfig):
+    facts: dict[str, str] = {}
+    """The corpus the `lookup` tool serves — server data, shipped in the config (so the server
+    is self-contained), injected by the taskset rather than tuned on the CLI."""
+
+
+class GlossaryToolset(vf.Toolset[GlossaryToolsetConfig]):
     name = "facts"  # the model sees `facts_lookup` (matches the instruction)
 
-    # `FACTS` is global state (the corpus, loaded once at import) — not a config knob and not
-    # per-task, so the tool reads it directly. No subclass config: it has no knobs of its own.
     @vf.tool
     def lookup(self, name: str) -> str:
         """Look up what a person or thing is known for."""
-        return FACTS.get(name.strip().lower(), "no entry found")
+        return self.config.facts.get(name.strip().lower(), "no entry found")
 
 
 class GlossaryTask(vf.Task):
@@ -37,7 +41,7 @@ class GlossaryTask(vf.Task):
 
 
 class GlossaryConfig(vf.TasksetConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    tools: GlossaryToolsetConfig = GlossaryToolsetConfig()
     """Placement for the facts tool server, CLI-tunable (e.g.
     `--taskset.tools.runtime.type docker`, `--taskset.tools.colocated true`)."""
 
@@ -58,7 +62,7 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
         ]
 
     def tools(self, task: GlossaryTask) -> list[vf.Toolset]:
-        return [GlossaryToolset(self.config.tools)]
+        return [GlossaryToolset(self.config.tools.model_copy(update={"facts": FACTS}))]
 
     @vf.reward(weight=1.0)
     async def looked_up(

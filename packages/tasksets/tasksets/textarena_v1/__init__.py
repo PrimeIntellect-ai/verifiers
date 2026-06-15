@@ -36,47 +36,51 @@ SYSTEM_PROMPT = (
     "bracketed token, so don't put other words in brackets."
 )
 
-# The user simulator writes the game's outcome here (in the runtime workspace) and the
-# reward reads it back.
-OUTCOME_FILE = "textarena_outcome.json"
-
-
-def latest_feedback(observation: str) -> str:
-    """Trim feedback to the latest block (the text after `Feedback:` in the last `[GAME]`
-    message) so each injected user turn stays small and doesn't duplicate the history."""
-    latest = observation.split("[GAME]")[-1].strip()
-    return latest.split("Feedback:")[-1].strip() if "Feedback:" in latest else latest
-
-
 class TextArenaUser(vf.User[vf.UserConfig]):
     """The TextArena game engine as a framework-driven conversation partner. Holds one game in
-    memory (set up from the task's `game` id + RNG `seed`, reproducing the taskset's episode)
-    and, per `respond`, steps the game with the model's move and returns the next observation as
-    a user turn plus whether the episode is over. When the game ends it writes the game's own
-    outcome (`env.state.rewards`) to `OUTCOME_FILE` in the runtime, where the reward reads it."""
+    memory (set up from the task's `game` id + RNG `seed`, reproducing the taskset's episode) and,
+    per `respond`, steps the game with the model's move and returns the next observation as a user
+    turn plus whether the episode is over. Self-contained (`deps=["textarena","nltk"]`): when the
+    game ends it writes the game's own outcome to `OUTCOME_FILE` in the runtime, which the reward
+    reads back."""
 
     deps = ["textarena==0.7.4", "nltk>=3.9.2"]
+    OUTCOME_FILE = "textarena_outcome.json"
 
     async def setup(self, task) -> None:
         # textarena derives a game's whole setup from the global RNG at reset, so seeding it
         # reproduces the exact episode the taskset built the instruction from — no per-game keys.
+        import random
+
+        import nltk
+        import textarena
+
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
-        self.env = ta.make(env_id=task.info["game"])  # per-task input, from the task
+        self.env = textarena.make(env_id=task.info["game"])  # per-task input, from the task
         random.seed(task.info["seed"])  # per-task input
         self.env.reset(num_players=1)
 
+    @staticmethod
+    def _latest_feedback(observation: str) -> str:
+        """Trim feedback to the latest block (after `Feedback:` in the last `[GAME]` message) so
+        each injected user turn stays small and doesn't duplicate the history."""
+        latest = observation.split("[GAME]")[-1].strip()
+        return latest.split("Feedback:")[-1].strip() if "Feedback:" in latest else latest
+
     async def respond(self, message: str) -> tuple[vf.Messages, bool]:
+        import json
+
         env = self.env
         env.step(message)  # TextArena parses the bracketed move out of the message itself
         if env.state.done:
             reward = float((env.state.rewards or {}).get(0, 0.0))
             reason = str(env.state.game_info[0]["reason"])
-            with open(OUTCOME_FILE, "w") as f:
+            with open(self.OUTCOME_FILE, "w") as f:
                 json.dump({"reward": reward, "reason": reason}, f)
             return [{"role": "user", "content": reason}], True
         _, observation = env.get_observation()
-        return [{"role": "user", "content": latest_feedback(str(observation))}], False
+        return [{"role": "user", "content": self._latest_feedback(str(observation))}], False
 
 
 class TextArenaConfig(vf.TasksetConfig):
@@ -141,7 +145,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         # The simulator wrote the game's own outcome to the runtime when the episode ended;
         # a missing file means the game never finished (e.g. every move was invalid).
         try:
-            data = await runtime.read(OUTCOME_FILE)
+            data = await runtime.read(TextArenaUser.OUTCOME_FILE)
         except (FileNotFoundError, OSError):
             return 0.0
         return float(json.loads(data)["reward"])

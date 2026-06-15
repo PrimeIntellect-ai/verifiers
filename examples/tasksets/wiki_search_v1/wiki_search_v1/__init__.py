@@ -40,7 +40,7 @@ with "no" even if the correct answer is also present."""
 
 
 # The question bank and count are fixed properties of this env, not eval-time
-# knobs (the corpus dataset lives in corpus.py).
+# knobs (the searchable corpus is built in `WikiSearchToolset.setup`).
 QUESTIONS_DATASET = "willcb/wiki-trivia-questions-v4"
 NUM_QUESTIONS = 20
 
@@ -64,18 +64,44 @@ class WikiSearchConfig(vf.TasksetConfig):
 
 
 class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
-    """Read-only search/view/read over the wiki corpus. The corpus + chroma index (expensive)
-    are built once in `setup`, in the server process; every tool call is a read. No per-server
-    knobs, so it uses the base `vf.ToolsetConfig` (placement only)."""
+    """Read-only search/view/read over the wiki corpus. The corpus + chroma index (expensive) are
+    built once in `setup`, in the server process — self-contained (no sibling imports), so the
+    rendered server ships with just `chromadb` + `datasets`. Every tool call is a read."""
 
     name = "wiki"  # the model sees `wiki_search_pages` / `wiki_view_sections` / `wiki_read_section`
     deps = ["chromadb", "datasets"]
+    dataset = "willcb/rare-wiki-pages"
 
     async def setup(self, task) -> None:
-        from wiki_search_v1.corpus import collection, corpus
+        import os
+        from pathlib import Path
 
-        self.pages = corpus()  # global state; the shared server ignores the per-task `task`
-        self.collection = collection()
+        # chromadb (via opentelemetry) imports protobuf-generated code predating protobuf 6.x;
+        # force the pure-Python impl so it imports next to a newer protobuf (e.g. vllm's).
+        os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+        import chromadb
+        from datasets import load_dataset
+
+        rows = load_dataset(self.dataset, split="train")
+        self.pages = {r["id"]: {"title": r["title"], "content": r["content"]} for r in rows}
+        cache = os.environ.get("WIKI_SEARCH_CACHE", str(Path.home() / ".cache" / "wiki_search"))
+        col = chromadb.PersistentClient(path=f"{cache}/chroma").get_or_create_collection(
+            "wiki_titles"  # default local embedder (onnx MiniLM) — no API key
+        )
+        ids = list(self.pages)
+        have: set[str] = set()
+        for i in range(0, len(ids), 500):
+            have.update(col.get(ids=ids[i : i + 500]).get("ids", []))
+        missing = [pid for pid in ids if pid not in have]
+        for i in range(0, len(missing), 256):
+            batch = missing[i : i + 256]
+            col.upsert(ids=batch, documents=[self.pages[pid]["title"] for pid in batch])
+        self.collection = col
+
+    @staticmethod
+    def _norm(text: str) -> str:
+        """lowercase, spaces -> underscores (section ids)."""
+        return text.strip().lower().replace(" ", "_")
 
     @vf.tool
     def search_pages(self, query: str) -> list[dict]:
@@ -91,12 +117,10 @@ class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
     def view_sections(self, page_id: str) -> list[dict]:
         """List a page's sections. Returns `[{section_id, section_name}, ...]` — pass a
         section_id to read_section."""
-        from wiki_search_v1.corpus import normalize_id
-
         content = self.pages[page_id]["content"]
         sections = [
             {
-                "section_id": f"{page_id}:{normalize_id(line.lstrip('#').strip())}",
+                "section_id": f"{page_id}:{self._norm(line.lstrip('#').strip())}",
                 "section_name": line.lstrip("#").strip(),
             }
             for line in content.split("\n")
@@ -109,8 +133,6 @@ class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
     @vf.tool
     def read_section(self, section_id: str) -> str:
         """Read the text of a section (`page_id:section`; use `page_id:full` for all)."""
-        from wiki_search_v1.corpus import normalize_id
-
         page_id, section = section_id.split(":", 1)
         content = self.pages[page_id]["content"]
         if section == "full":
@@ -119,7 +141,7 @@ class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
         start = end = None
         for i, line in enumerate(lines):
             if line.startswith("#"):
-                if normalize_id(line.lstrip("#").strip()) == section and start is None:
+                if self._norm(line.lstrip("#").strip()) == section and start is None:
                     start = i
                 elif start is not None:
                     end = i
