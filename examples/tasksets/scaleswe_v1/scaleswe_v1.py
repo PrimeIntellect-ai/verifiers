@@ -17,9 +17,10 @@ import verifiers.v1 as vf
 
 DATASET = "AweAI-Team/Scale-SWE"
 
-# The dataset's `image_url` (`aweaiteam/scaleswe:<tag>`) names a public Docker Hub mirror that
-# is missing some task images. Prime's Artifact Registry holds the complete, runtime-pullable
-# set, so resolve every image against it (matching the v0 ScaleSWE taskset).
+# Prime's private Artifact Registry holds the complete image set, but only runtimes with GCP
+# credentials (e.g. Prime sandboxes) can pull from it. By default images are taken straight from
+# the dataset's `image_url` (the public `aweaiteam/scaleswe` Docker Hub mirror, missing some
+# tags); set `use_prime_registry` to resolve against this registry instead.
 REGISTRY = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
 
 # The testbed conda env (with the project + pytest installed) and quiet, non-interactive
@@ -95,7 +96,13 @@ class ScaleSWETask(vf.Task):
     pass_to_pass: list[str] = []
 
 
-class ScaleSWETaskset(vf.Taskset[ScaleSWETask, vf.TasksetConfig]):
+class ScaleSWEConfig(vf.TasksetConfig):
+    use_prime_registry: bool = False
+    """Resolve task images against Prime's private Artifact Registry (`REGISTRY`) instead of the
+    dataset's public Docker Hub `image_url`. Only works on runtimes with GCP pull credentials."""
+
+
+class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
     NEEDS_CONTAINER = True
 
     def load_tasks(self) -> list[ScaleSWETask]:
@@ -107,7 +114,11 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, vf.TasksetConfig]):
                 idx=i,
                 name=row["instance_id"],
                 instruction=row["problem_statement"],
-                image=f"{REGISTRY}/{row['image_url']}",
+                image=(
+                    f"{REGISTRY}/{row['image_url']}"
+                    if self.config.use_prime_registry
+                    else row["image_url"]
+                ),
                 workdir=row["workdir"],
                 resources=vf.Resources(cpu=4, memory=4, disk=10),
                 base_commit=row.get("parent_commit") or row.get("base_commit") or "",
@@ -175,5 +186,5 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, vf.TasksetConfig]):
         return False
 
 
-def load_taskset(config: vf.TasksetConfig) -> ScaleSWETaskset:
+def load_taskset(config: ScaleSWEConfig) -> ScaleSWETaskset:
     return ScaleSWETaskset(config)
