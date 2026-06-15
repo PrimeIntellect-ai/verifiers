@@ -26,6 +26,17 @@ from verifiers.v1.types import (
 
 FINISH_REASONS: dict[str, FinishReason] = {"STOP": "stop", "MAX_TOKENS": "length"}
 _SAMPLING_KEYS = ("temperature", "topP", "topK", "maxOutputTokens")
+_GENERATION_KEYS = {
+    *_SAMPLING_KEYS,
+    "candidateCount",
+    "frequencyPenalty",
+    "logprobs",
+    "presencePenalty",
+    "responseLogprobs",
+    "seed",
+    "stopSequences",
+    "thinkingConfig",
+}
 GEMINI_25_THINKING_BUDGETS = {
     "none": 0,
     "minimal": 1024,
@@ -173,10 +184,12 @@ class GoogleGenerateContentDialect(Dialect[dict, GenerateContentResponse]):
             if source in values:
                 values[target] = values.pop(source)
         effort = values.pop("reasoning_effort", None)
-        config.update(values)
+        config.update(
+            {key: value for key, value in values.items() if key in _GENERATION_KEYS}
+        )
         if effort:
             thinking = dict(config.get("thinkingConfig") or {})
-            if model.lower().startswith("gemini-2.5-"):
+            if model.rsplit("/", 1)[-1].lower().startswith("gemini-2.5-"):
                 thinking.pop("thinkingLevel", None)
                 thinking["thinkingBudget"] = GEMINI_25_THINKING_BUDGETS[effort]
             else:
