@@ -23,10 +23,8 @@ build the Dockerfile — a locally-built image isn't pullable by a remote sandbo
 
 import io
 import json
-import logging
 import os
 import re
-import shlex
 import subprocess
 import tarfile
 import tomllib
@@ -36,19 +34,13 @@ from pydantic import Field
 
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes import (
-    ProgramResult,
-    Runtime,
-    SubprocessConfig,
-    make_runtime,
-)
+from verifiers.v1.runtimes import Runtime, SubprocessConfig, make_runtime
 from verifiers.v1.task import Resources, Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"
 ENV_TEMPLATE = re.compile(r"\$\{([^}:]+)(?::-(.*))?\}")
-logger = logging.getLogger(__name__)
 
 
 class HarborConfig(TasksetConfig):
@@ -218,16 +210,6 @@ def make_tar(directory: Path) -> bytes:
     return buffer.getvalue()
 
 
-def log_failure(action: str, result: ProgramResult) -> None:
-    if result.exit_code:
-        logger.error(
-            "Harbor %s failed (%d): %s",
-            action,
-            result.exit_code,
-            result.stderr or result.stdout,
-        )
-
-
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
     def load_tasks(self) -> list[HarborTask]:
         root = dataset_dir(self.config.dataset)
@@ -260,7 +242,11 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                     "separate Harbor verification needs a docker, prime, or modal runtime"
                 )
             result = await runtime.run(["mkdir", "-p", "/logs/artifacts"], {})
-            log_failure("artifact directory setup", result)
+            if result.exit_code:
+                raise ProgramError(
+                    f"Harbor artifact directory setup failed: "
+                    f"{result.stderr or result.stdout}"
+                )
             result = await runtime.run(
                 [
                     "tar",
@@ -270,10 +256,20 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                 ],
                 {},
             )
-            log_failure("artifact collection", result)
+            if result.exit_code:
+                raise ProgramError(
+                    f"Harbor artifact collection failed: "
+                    f"{result.stderr or result.stdout}"
+                )
             archive_data = await runtime.read(archive)
 
-            updates = verifier.resources.model_dump(exclude_none=True)
+            config_type = type(runtime_config)
+            updates = {
+                name: config_type.model_fields[name].default
+                for name in Resources.model_fields
+                if name in config_type.model_fields
+            }
+            updates.update(verifier.resources.model_dump(exclude_none=True))
             updates.update(
                 image=verifier.image,
                 network_access=verifier.network_access,
@@ -290,15 +286,21 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                 await verifier_runtime.start()
                 target = verifier_runtime
                 await target.write(archive, archive_data)
-                result = await target.run(
-                    ["sh", "-c", f"tar -xzf {shlex.quote(archive)} -C /"], {}
-                )
-                log_failure("artifact extraction", result)
+                result = await target.run(["tar", "-xzf", archive, "-C", "/"], {})
+                if result.exit_code:
+                    raise ProgramError(
+                        f"Harbor artifact extraction failed: "
+                        f"{result.stderr or result.stdout}"
+                    )
 
             result = await target.run(
                 ["sh", "-c", "mkdir -p /logs/verifier /logs/artifacts"], {}
             )
-            log_failure("verifier directory setup", result)
+            if result.exit_code:
+                raise ProgramError(
+                    f"Harbor verifier directory setup failed: "
+                    f"{result.stderr or result.stdout}"
+                )
             if verifier.image is None or verifier.upload_tests:
                 await target.write(
                     "/tmp/tests.tgz", make_tar(Path(task.task_dir) / "tests")
@@ -312,7 +314,10 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                     ],
                     {},
                 )
-                log_failure("test upload", result)
+                if result.exit_code:
+                    raise ProgramError(
+                        f"Harbor test upload failed: {result.stderr or result.stdout}"
+                    )
 
             env: dict[str, str] = {}
             for key, value in verifier.env.items():
@@ -326,34 +331,37 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                     )
                 env[key] = value
 
-            result = await target.run(
+            await target.run(
                 [
                     "sh",
                     "-c",
-                    "chmod +x /tests/test.sh && cd /tests && "
-                    "./test.sh > /logs/verifier/test-stdout.txt 2>&1",
+                    "cd /tests && bash test.sh > /logs/verifier/test-stdout.txt 2>&1",
                 ],
                 env,
             )
-            log_failure("test execution", result)
             result = await target.run(
                 [
                     "sh",
                     "-c",
-                    "if [ -s /logs/verifier/reward.json ]; then "
-                    "cat /logs/verifier/reward.json; else "
-                    "cat /logs/verifier/reward.txt 2>/dev/null; fi",
+                    "if [ -s /logs/verifier/reward.txt ]; then "
+                    "cat /logs/verifier/reward.txt; "
+                    "elif [ -s /logs/verifier/reward.json ]; then "
+                    "cat /logs/verifier/reward.json; fi",
                 ],
                 {},
             )
-            log_failure("reward read", result)
-            try:
-                value = json.loads(result.stdout or "0")
-                return float(
-                    value.get("reward", 0) if isinstance(value, dict) else value
+            if result.exit_code:
+                raise ProgramError(
+                    f"Harbor reward read failed: {result.stderr or result.stdout}"
                 )
-            except (TypeError, ValueError):
-                return 0.0
+            output = (result.stdout or "").strip()
+            try:
+                return float(output or 0)
+            except ValueError:
+                try:
+                    return float(json.loads(output).get("reward", 0))
+                except (AttributeError, TypeError, ValueError):
+                    return 0.0
         finally:
             if verifier_runtime is not None:
                 await verifier_runtime.stop()
