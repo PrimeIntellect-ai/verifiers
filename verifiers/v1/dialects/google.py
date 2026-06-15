@@ -95,11 +95,10 @@ def response_from_wire(response: GenerateContentResponse) -> Response:
     metadata = data.get("usageMetadata")
     usage = None
     if metadata:
-        prompt_tokens = metadata.get("promptTokenCount", 0)
         usage = Usage(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=metadata.get("candidatesTokenCount", 0)
-            + metadata.get("thoughtsTokenCount", 0),
+            prompt_tokens=metadata.get("promptTokenCount") or 0,
+            completion_tokens=(metadata.get("candidatesTokenCount") or 0)
+            + (metadata.get("thoughtsTokenCount") or 0),
         )
     return Response(
         id=data.get("responseId", ""),
@@ -123,6 +122,9 @@ class GoogleGenerateContentDialect(Dialect[dict, GenerateContentResponse]):
 
     def secret(self, headers: Mapping[str, str]) -> str:
         return headers.get("x-goog-api-key", "")
+
+    def streaming(self, body: dict) -> bool:
+        return False
 
     def error_body(self, message: str) -> dict:
         return {
@@ -187,9 +189,12 @@ class GoogleGenerateContentDialect(Dialect[dict, GenerateContentResponse]):
         config.update(
             {key: value for key, value in values.items() if key in _GENERATION_KEYS}
         )
+        gemini_25 = model.rsplit("/", 1)[-1].lower().startswith("gemini-2.5-")
+        if gemini_25 and effort not in GEMINI_25_THINKING_BUDGETS:
+            effort = None
         if effort:
             thinking = dict(config.get("thinkingConfig") or {})
-            if model.rsplit("/", 1)[-1].lower().startswith("gemini-2.5-"):
+            if gemini_25:
                 thinking.pop("thinkingLevel", None)
                 thinking["thinkingBudget"] = GEMINI_25_THINKING_BUDGETS[effort]
             else:
