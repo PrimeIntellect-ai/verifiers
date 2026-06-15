@@ -25,7 +25,7 @@ from verifiers.v1.types import (
 )
 
 FINISH_REASONS: dict[str, FinishReason] = {"STOP": "stop", "MAX_TOKENS": "length"}
-_SAMPLING_KEYS = ("temperature", "topP", "maxOutputTokens")
+_SAMPLING_KEYS = ("temperature", "topP", "topK", "maxOutputTokens")
 GEMINI_25_THINKING_BUDGETS = {
     "none": 0,
     "minimal": 1024,
