@@ -187,13 +187,16 @@ class GoogleGenerateContentDialect(Dialect[dict, GenerateContentResponse]):
         config.update({key: values[key] for key in _GENERATION_KEYS if key in values})
 
         effort = values.get("reasoning_effort")
-        gemini_25 = model.rsplit("/", 1)[-1].lower().startswith("gemini-2.5-")
-        thinking_key = "thinkingLevel"
-        stale_key = "thinkingBudget"
-        if gemini_25:
+        model = model.rsplit("/", 1)[-1].lower()
+        if model.startswith("gemini-2.5-"):
             effort = _GEMINI_25_THINKING_BUDGETS.get(effort)
             thinking_key = "thinkingBudget"
             stale_key = "thinkingLevel"
+        elif model.startswith("gemini-3"):
+            thinking_key = "thinkingLevel"
+            stale_key = "thinkingBudget"
+        else:
+            effort = None
         if effort is not None:
             thinking = dict(config.get("thinkingConfig") or {})
             thinking.pop(stale_key, None)
