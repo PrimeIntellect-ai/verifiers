@@ -72,7 +72,7 @@ async def test_codex_streaming_request_uses_eval_reasoning_effort() -> None:
     assert captured["reasoning"] == {"effort": "low", "summary": "auto"}
 
 
-def test_anthropic_reasoning_effort_enables_adaptive_thinking() -> None:
+def test_anthropic_reasoning_effort_overrides_output_config() -> None:
     body = {
         "messages": [{"role": "user", "content": "Solve this."}],
         "max_tokens": 1024,
@@ -86,7 +86,7 @@ def test_anthropic_reasoning_effort_enables_adaptive_thinking() -> None:
     )
 
     assert request["output_config"] == {"format": "compact", "effort": "low"}
-    assert request["thinking"] == {"type": "adaptive"}
+    assert "thinking" not in request
 
 
 def test_anthropic_reasoning_effort_preserves_explicit_thinking() -> None:
@@ -137,4 +137,4 @@ async def test_anthropic_streaming_request_uses_eval_reasoning_effort() -> None:
         await client.close()
 
     assert captured["output_config"] == {"effort": "low"}
-    assert captured["thinking"] == {"type": "adaptive"}
+    assert "thinking" not in captured
