@@ -23,37 +23,6 @@ from verifiers.v1.types import Response, SamplingConfig
 
 logger = logging.getLogger(__name__)
 
-BLOCKED_REQUEST_HEADERS = frozenset(
-    {
-        # The harness uses this rollout secret to authenticate with the localhost server.
-        # The client adds the actual provider authorization after filtering.
-        "authorization",
-        # The provider client recalculates these for its URL, JSON bytes, and supported decoders.
-        "accept-encoding",
-        "content-encoding",
-        "content-length",
-        "content-type",
-        "host",
-        "transfer-encoding",
-        # These control only the localhost HTTP exchange.
-        "expect",
-        "keep-alive",
-        "proxy-authorization",
-        "proxy-connection",
-        "te",
-        "trailer",
-        "upgrade",
-        # The client changes the request body before sending upstream, so hashes and signatures
-        # calculated from the intercepted body are stale.
-        "content-digest",
-        "content-md5",
-        "digest",
-        "repr-digest",
-        "signature",
-        "signature-input",
-    }
-)
-
 SESSION_ID_HEADER = "X-Session-ID"
 """Per-rollout routing header. Every turn of one rollout sends the same value (the trace id),
 so a session-affinity router (e.g. vLLM's ``consistent_hash`` policy keyed on its

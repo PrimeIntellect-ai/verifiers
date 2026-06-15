@@ -17,15 +17,43 @@ from contextlib import aclosing
 
 import httpx
 
-from verifiers.v1.clients.client import (
-    BLOCKED_REQUEST_HEADERS,
-    SESSION_ID_HEADER,
-    Client,
-    RelayReply,
-)
+from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.dialects import ChatDialect, Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import Response, SamplingConfig
+
+# These fields describe the localhost request, its original bytes, or its connection. HTTPX
+# rebuilds the provider request from JSON; endpoint configuration and provider auth apply last.
+_BLOCKED_REQUEST_HEADERS = frozenset(
+    {
+        # The harness uses this rollout secret to authenticate with the localhost server.
+        # The dialect adds the actual provider authorization after filtering.
+        "authorization",
+        # HTTPX recalculates these for the provider URL, JSON bytes, and supported decoders.
+        "accept-encoding",
+        "content-encoding",
+        "content-length",
+        "content-type",
+        "host",
+        "transfer-encoding",
+        # These control only the localhost HTTP exchange.
+        "expect",
+        "keep-alive",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "upgrade",
+        # The eval owns the model and sampling settings, so it changes those JSON fields before
+        # sending upstream. Hashes and signatures calculated from the intercepted body are stale.
+        "content-digest",
+        "content-md5",
+        "digest",
+        "repr-digest",
+        "signature",
+        "signature-input",
+    }
+)
 
 
 class EvalClient(Client):
@@ -77,7 +105,7 @@ class EvalClient(Client):
         """
         headers = httpx.Headers(incoming if isinstance(dialect, ChatDialect) else None)
         connection = headers.pop("connection", "")
-        for name in BLOCKED_REQUEST_HEADERS | set(
+        for name in _BLOCKED_REQUEST_HEADERS | set(
             map(str.strip, connection.lower().split(","))
         ):
             headers.pop(name, None)

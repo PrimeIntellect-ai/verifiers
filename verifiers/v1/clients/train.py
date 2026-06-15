@@ -11,16 +11,11 @@ needs a running vLLM engine.
 import json
 from collections.abc import Mapping
 
-import httpx
 from openai import AsyncOpenAI, OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
-from verifiers.v1.clients.client import (
-    BLOCKED_REQUEST_HEADERS,
-    SESSION_ID_HEADER,
-    Client,
-)
+from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import OverlongPromptError, model_error
@@ -186,18 +181,6 @@ class TrainClient(Client):
                 f"{type(dialect).__name__}. Use the proxy client for this dialect, or add "
                 f"renderer support for it."
             )
-        extra_headers = httpx.Headers(headers)
-        connection = extra_headers.pop("connection", "")
-        for name in BLOCKED_REQUEST_HEADERS | set(
-            map(str.strip, connection.lower().split(","))
-        ):
-            extra_headers.pop(name, None)
-        # Endpoint configuration remains authoritative over intercepted request headers.
-        for name in self.openai.default_headers:
-            extra_headers.pop(name, None)
-        if session_id:
-            extra_headers[SESSION_ID_HEADER] = session_id
-
         prompt, tools = dialect.parse_request(body)
         renderer = self._renderer_pool(model)
         from renderers.client import generate
@@ -210,7 +193,7 @@ class TrainClient(Client):
                 model=model,
                 tools=[tool_to_wire(t) for t in tools] if tools else None,
                 sampling_params=sampling_args.model_dump(exclude_none=True),
-                extra_headers=dict(extra_headers) or None,
+                extra_headers={SESSION_ID_HEADER: session_id} if session_id else None,
             )
         except RendererOverlongPromptError as e:
             raise OverlongPromptError(str(e)) from e
