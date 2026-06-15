@@ -166,9 +166,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
-        local = local_examples("examples/tasksets")
+        local = local_examples("environments")
         if local:
-            print("example tasksets:", ", ".join(local))
+            print("environments:", ", ".join(local))
         sys.argv = [sys.argv[0], "--help"]
         cli(_narrow(argv))  # full option help, narrowed to the given taskset
         return

@@ -39,7 +39,7 @@ flag names are the dotted config path (`--harness.runtime.type docker`).
 
 ## Authoring a taskset
 
-A taskset is a package selected by `id`. Copy the closest `examples/tasksets/<name>` and edit.
+A taskset is a package selected by `id`. Copy the closest `environments/<name>_v1` and edit.
 Minimal shape:
 
 ```python
@@ -180,7 +180,7 @@ whether it runs in the harness's runtime or its own.
 
 ### Learn from the examples
 
-`examples/tasksets/` is the reference library — each shows one pattern:
+The `*_v1` tasksets under `environments/` are the reference library — each shows one pattern:
 
 | example | pattern |
 | --- | --- |
@@ -260,7 +260,7 @@ def load_harness(config: MyHarnessConfig) -> MyHarness:
     return MyHarness(config)
 ```
 
-Copy `examples/harnesses/compact` (a context-rewrite loop) as a starting point.
+Copy `environments/compact` (a context-rewrite loop) as a starting point.
 
 ## Runtimes
 

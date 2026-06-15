@@ -31,10 +31,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
-        for kind in ("tasksets", "harnesses"):
-            local = local_examples(f"examples/{kind}")
-            if local:
-                print(f"example {kind}:", ", ".join(local))
+        local = local_examples("environments")
+        if local:
+            print("environments:", ", ".join(local))
         sys.argv = [sys.argv[0], "--help"]
         cli(narrow_config(ServeConfig, argv))
         return
