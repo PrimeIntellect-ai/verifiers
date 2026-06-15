@@ -14,7 +14,7 @@ from openai import AsyncOpenAI, OpenAIError
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
-from verifiers.v1.clients.client import Client
+from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import OverlongPromptError, model_error
@@ -164,6 +164,7 @@ class TrainClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        session_id: str | None = None,
     ) -> Response:
         # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
         # back), so it can't forward the raw request — it parses `body` via the dialect and renders
@@ -190,6 +191,7 @@ class TrainClient(Client):
                 model=model,
                 tools=[tool_to_wire(t) for t in tools] if tools else None,
                 sampling_params=sampling_args.model_dump(exclude_none=True),
+                extra_headers={SESSION_ID_HEADER: session_id} if session_id else None,
             )
         except RendererOverlongPromptError as e:
             raise OverlongPromptError(str(e)) from e
