@@ -77,10 +77,22 @@ class Tools:
     """HTTP headers sent to a remote `url` (e.g. auth)."""
 
 
-def run_mcp_server(mcp: "FastMCP") -> None:
+def run_mcp_server(mcp: "FastMCP", multiplex: bool = False) -> None:
     """Serve a FastMCP server on the port the harness passes via `MCP_PORT`, mounting
     streamable HTTP at `/mcp`. Call this at the end of a uv-script tool server. Each request's
-    `rollout_id` URL param is exposed to the server's tools via `current_rollout_id()`."""
+    `rollout_id` URL param is exposed to the server's tools via `current_rollout_id()`.
+
+    With `multiplex=True`, serve as a fork-per-rollout multiplexer (see `verifiers.v1.multiplex`):
+    expensive setup runs once in the parent, then each rollout gets its own forked child
+    (copy-on-write memory + a private working dir) — so an ordinary *stateful* server is
+    isolated per rollout automatically, with no `current_rollout_id()` namespacing in the
+    tool code."""
+    if multiplex:
+        from verifiers.v1.multiplex import run_multiplexed
+
+        run_multiplexed(mcp)
+        return
+
     import uvicorn
 
     port = int(os.environ["MCP_PORT"])
