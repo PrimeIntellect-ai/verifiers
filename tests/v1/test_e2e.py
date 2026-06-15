@@ -104,7 +104,6 @@ async def test_task_tools_own_runtime(
             "tools": {"colocated": False, "runtime": {"type": server_runtime}}
         },
     )
-    skip_if_unexposable(trace)
     assert trace.errors == []
     assert trace.reward == 1.0
 
@@ -122,7 +121,6 @@ async def test_user_own_runtime(run_v1, server_runtime, skip_if_unexposable, tmp
         max_turns=6,
         taskset_overrides={"user": {"runtime": {"type": server_runtime}}},
     )
-    skip_if_unexposable(trace)
     assert trace.errors == []
     assert trace.num_turns >= 2
     assert trace.reward == 1.0
