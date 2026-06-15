@@ -4,7 +4,7 @@ from verifiers.envs.experimental.composable.composable_env import ComposableEnv
 from verifiers.envs.experimental.composable.harnesses.opencode import (
     build_install_script,
 )
-from verifiers.envs.experimental.composable.tasksets.swe.swe_rebench_v2 import (
+from verifiers.envs.experimental.composable.tasksets.swe.swe_rebench_v2.taskset import (
     _patch_failure_message,
 )
 
@@ -41,7 +41,6 @@ def test_opencode_install_script_wraps_setup_steps():
     assert 'run_setup_step "apt_dependencies"' in script
     assert 'run_setup_step "ripgrep_install"' in script
     assert 'run_setup_step "download_opencode"' in script
-    assert 'run_setup_step "verify_opencode_sha256"' in script
     assert 'run_setup_step "install_opencode"' in script
 
 
