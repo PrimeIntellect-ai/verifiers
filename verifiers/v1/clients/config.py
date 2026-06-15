@@ -19,7 +19,6 @@ from renderers import RendererConfig
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.eval import EvalClient
 from verifiers.v1.clients.train import TrainClient
-from verifiers.utils.client_utils import load_prime_config
 
 PRIME_INFERENCE_HOST = "pinference.ai"
 PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"
@@ -74,22 +73,13 @@ ClientConfig = Annotated[
 
 
 def resolve_client(config: BaseClientConfig) -> Client:
-    api_key = os.environ.get(config.api_key_var)
-    headers = dict(config.headers)
-    if config.api_key_var == "PRIME_API_KEY":
-        prime_config = load_prime_config()
-        api_key = api_key or prime_config.get("api_key")
-        team_id = os.environ.get("PRIME_TEAM_ID") or prime_config.get("team_id")
-        if team_id:
-            headers.setdefault(PRIME_TEAM_ID_HEADER, team_id)
-    api_key = api_key or "EMPTY"
-
+    api_key = os.environ.get(config.api_key_var, "EMPTY")
     if isinstance(config, TrainClientConfig):
         # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
         openai = AsyncOpenAI(
             base_url=config.base_url,
             api_key=api_key,
-            default_headers=headers or None,
+            default_headers=config.headers or None,
         )
         return TrainClient(
             openai,
@@ -98,4 +88,4 @@ def resolve_client(config: BaseClientConfig) -> Client:
             renderer_model_name=config.renderer_model_name,
         )
     # The proxy is a raw httpx forwarder; the dialect supplies the auth scheme + upstream path.
-    return EvalClient(config.base_url, api_key, headers=headers or None)
+    return EvalClient(config.base_url, api_key, headers=config.headers or None)

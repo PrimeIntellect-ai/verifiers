@@ -205,8 +205,6 @@ Built-ins, selected with `--harness.id`:
 | `default` | a tiny OpenAI chat loop (bash tool opt-in via `--harness.enable-bash`) |
 | `rlm` | the RLM CLI agent |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
-| `claude-code` | Claude Code (Anthropic Messages dialect + MCP tools) |
-| `kimi-code` | Kimi Code (OpenAI Chat Completions dialect + MCP tools) |
 
 ```bash
 uv run eval gsm8k-v1 -n 1                    # default harness

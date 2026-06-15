@@ -26,11 +26,13 @@ if [ -x "$bin" ] && [ "$("$bin" --version 2>/dev/null)" = "{version}" ]; then
     exit 0
 fi
 command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null; }
-curl -fsSL https://code.kimi.com/kimi-code/install.sh | env \
+installer=/tmp/vf-kimi-code-install.sh
+curl -fsSL https://code.kimi.com/kimi-code/install.sh -o "$installer"
+env \
     KIMI_VERSION="{version}" \
     KIMI_INSTALL_DIR=/tmp/vf-kimi-code \
     KIMI_NO_MODIFY_PATH=1 \
-    bash
+    bash "$installer"
 """
 
 
