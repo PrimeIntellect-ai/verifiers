@@ -23,15 +23,32 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, TypeVar
 
+from pydantic_config import BaseConfig
+
 from verifiers.v1.errors import ProgramError, RolloutError
-from verifiers.v1.runtimes import Runtime
-from verifiers.v1.tools import ServerBase, UserConfig, serve
+from verifiers.v1.runtimes import Runtime, RuntimeConfig, SubprocessConfig
+from verifiers.v1.tools import ServerBase, serve
 from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
+
+
+class UserConfig(BaseConfig):
+    """Where the user simulator runs (placement). The framework always drives it from the host.
+    Default — its own host (`subprocess`) runtime — runs it where `verifiers` + the taskset
+    package live, reachable from any harness runtime, so the sandbox needs nothing. Set
+    `colocated` to run it inside the harness's runtime instead (only when its deps resolve
+    there). Subclass to add the user's own knobs (the data its `respond` reads)."""
+
+    colocated: bool = False
+    """Run the user simulator inside the harness's runtime, reusing it (its port is published
+    back to the host so the framework can still drive it). Off by default — see `ToolsetConfig`."""
+    runtime: RuntimeConfig = SubprocessConfig()
+    """The user simulator's own runtime, used unless `colocated` (host/subprocess by default)."""
+
 
 ConfigT = TypeVar("ConfigT", bound=UserConfig)
 

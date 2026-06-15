@@ -53,7 +53,6 @@ from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.tools import (
     Toolset,
     ToolsetConfig,
-    UserConfig,
     run_mcp_server,
 )
 from verifiers.v1.graph import MessageNode
@@ -84,7 +83,7 @@ from verifiers.v1.types import (
     Usage,
     UserMessage,
 )
-from verifiers.v1.user import User
+from verifiers.v1.user import User, UserConfig
 
 __all__ = [
     # types

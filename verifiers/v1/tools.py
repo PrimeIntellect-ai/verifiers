@@ -1,26 +1,28 @@
-"""Tools: how a task gives the harness tools, via tool servers it declares.
+"""Tools: how a task gives the harness tools, via `vf.Toolset`s it declares from `Taskset.tools`.
 
-A taskset returns `Tools`s from `Taskset.tools`. A server is either a
-single-file uv script the harness runs (`script` — its only runtime dep is `uv`, which
-resolves the script's PEP 723 inline deps, so it runs in any runtime: host, the harness's
-runtime when colocated, or its own) or an already-running remote endpoint (`url`, e.g.
-deepwiki). The server binds the port passed via `MCP_PORT`.
+A `Toolset` (and a `User`) is authored as a vf-native class; the framework renders it to a PEP
+723 uv-script (`server_to_tools` → `_render_script`) that `uv run`s in a runtime, rebuilds the
+class there, and serves it over streamable HTTP on `MCP_PORT`. uv resolves the class's deps —
+pinned to the local editable checkouts on the host (no publishing), from PyPI in a sandbox. A
+`Toolset` can instead point at an already-running remote endpoint (`ToolsetConfig.url`, e.g.
+deepwiki), which is used as-is.
 
-`serve_tools` brings a task's servers up for a rollout — colocated in the harness's runtime
-(reached via localhost) or in their own `tools.runtime` (reached via that runtime's
-`public_url`, or the harness runtime's `expose` for a tunnel) — and yields `{name: url}`;
-`serve_shared` brings up shared ones once per eval. `run_mcp_server` is the server-side
-launcher. The wire types the model sees (`Tool`, `ToolCall`, …) live in `types`.
+`serve` is the single internal launcher (any server, any placement). `serve_tools` brings a
+task's servers up for a rollout (each in its `config`'s placement — colocated, own runtime);
+`serve_shared` brings up shared ones once per eval. `run_mcp_server` is the server-side serve
+loop. The wire types the model sees (`Tool`, `ToolCall`, …) live in `types`.
 """
 
 from __future__ import annotations
 
 import contextlib
+import functools
+import hashlib
 import logging
 import os
 import random
 import socket
-import sys
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
@@ -75,34 +77,16 @@ class ToolsetConfig(BaseConfig):
         return self
 
 
-class UserConfig(BaseConfig):
-    """Where the user simulator runs (placement). The framework always drives it from the host.
-    Default — its own host (`subprocess`) runtime — runs it where `verifiers` + the taskset
-    package live, reachable from any harness runtime, so the sandbox needs nothing. Set
-    `colocated` to run it inside the harness's runtime instead (only when its deps resolve
-    there). Subclass to add the user's own knobs (the data its `respond` reads)."""
-
-    colocated: bool = False
-    """Run the user simulator inside the harness's runtime, reusing it (its port is published
-    back to the host so the framework can still drive it). Off by default — see `ToolsetConfig`."""
-    runtime: RuntimeConfig = SubprocessConfig()
-    """The user simulator's own runtime, used unless `colocated` (host/subprocess by default)."""
-
-
 @dataclass(frozen=True)
 class _Launch:
-    """Internal: how to start a tool/user server in a runtime — what `server_to_tools` produces
-    and `serve_in_runtime` runs. Authors never construct this; they write a `Toolset`/`User`."""
+    """Internal: a rendered PEP 723 uv-script that serves a tool/user server over streamable HTTP
+    on `MCP_PORT`, plus the env (serialized config + task refs) it reads. What `server_to_tools`
+    produces and `serve_in_runtime` `uv run`s. Authors never construct this — they write a
+    `Toolset`/`User` and the framework renders it."""
 
     name: str
-    script: bytes | None = None
-    """A self-contained uv script (PEP 723 inline deps) that serves streamable HTTP on
-    the port in `MCP_PORT` (the generated sandbox launch). Its only runtime dep is `uv`."""
-    command: list[str] = field(default_factory=list)
-    """Alternative to `script`: a ready-to-run argv that serves on `MCP_PORT` (the host launch,
-    `python -m verifiers.v1.toolserver`, whose deps are already present)."""
+    script: bytes
     env: dict[str, str] = field(default_factory=dict)
-    """Env for the script/command process (the serialized config + task refs)."""
 
 
 ConfigT = TypeVar("ConfigT", bound=BaseConfig)
@@ -121,8 +105,8 @@ class ServerBase(Generic[ConfigT]):
     """A vf-native server authored as a class, initialized from its config — the same shape as
     `Taskset`/`TasksetConfig`: the config (a `ToolsetConfig`/`UserConfig` subclass) is the
     serializable data (placement + the server's own knobs); the class is the behaviour. The
-    framework serializes the config, launches `verifiers.v1.toolserver` in a runtime, rebuilds
-    `cls(config)` there, and serves it over MCP — no FastMCP boilerplate. Subclassed by `Toolset`
+    framework renders a PEP 723 uv-script from it (`server_to_tools`), `uv run`s it in a runtime
+    where it rebuilds `cls(config)` and serves over MCP — no FastMCP boilerplate. Subclassed by `Toolset`
     (`@tool` methods) and `User` (a `respond` hook). Declare extra PyPI deps in `deps`
     (class-level, the uv-script PEP 723 equivalent) so the framework can resolve them in any
     runtime; build expensive/non-serializable state in `setup` — set it as plain instance
@@ -171,7 +155,7 @@ class Toolset(ServerBase[ConfigT]):
 
 
 def serve_server(inst: ServerBase, task) -> None:
-    """Run a `ServerBase` instance's MCP server (called by the `toolserver` launcher): await its
+    """Run a `ServerBase` instance's MCP server (called by the rendered server script): await its
     `setup(task)`, build a FastMCP from its registered tools, and serve via `run_mcp_server`."""
     import asyncio
 
@@ -183,14 +167,10 @@ def serve_server(inst: ServerBase, task) -> None:
     run_mcp_server(mcp)
 
 
-# A generated PEP 723 uv-script that rebuilds the server in any runtime: uv resolves the class's
-# deps (+ verifiers + the taskset package), rebuilds `cls(config)` + the task, then serves —
-# `setup(task)` establishes its global / per-task / mutable state there.
-_SERVER_SCRIPT = '''\
-# /// script
-# requires-python = ">=3.10"
-# dependencies = [{deps}]
-# ///
+# The body of every generated server script: rebuild `cls(config)` + the task from the env refs
+# and serve — `setup(task)` establishes its global / per-task / mutable state. The PEP 723 header
+# (deps, and on the host editable `[tool.uv.sources]`) is rendered per server by `_render_script`.
+_SERVER_BODY = '''\
 import importlib, os
 
 from verifiers.v1.tools import serve_server
@@ -207,58 +187,74 @@ serve_server(server, task)
 '''
 
 
-def _provides_top_level(dist, top: str) -> bool:
-    """Whether an installed distribution exposes `top` as an importable top-level package —
-    via its recorded files / `top_level.txt` (regular installs) or its source tree (editable
-    installs, whose RECORD lists only the `.pth`, so we read `direct_url.json`)."""
-    import json
+def _render_script(deps: list[str], sources: dict[str, str]) -> bytes:
+    """A PEP 723 uv-script: `dependencies` resolved by uv, plus (on the host) a `[tool.uv.sources]`
+    block pinning some of them to local editable paths — so `verifiers` + the taskset package come
+    from the dev checkout, no publishing needed; in a sandbox `sources` is empty and they resolve
+    from PyPI."""
+    header = [
+        "# /// script",
+        '# requires-python = ">=3.10"',
+        "# dependencies = [" + ", ".join(f'"{d}"' for d in deps) + "]",
+    ]
+    if sources:
+        header += ["#", "# [tool.uv.sources]"]
+        header += [f'# {n} = {{ path = "{p}", editable = true }}' for n, p in sources.items()]
+    header.append("# ///")
+    return ("\n".join(header) + "\n" + _SERVER_BODY).encode()
+
+
+def _provides_top_level(dist, top: str, src) -> bool:
+    """Whether an installed distribution exposes `top` as an importable top-level package — via
+    its recorded files / `top_level.txt` (regular installs) or its editable source tree `src`
+    (editable installs, whose RECORD lists only the `.pth`)."""
     from pathlib import Path
 
     if top in (dist.read_text("top_level.txt") or "").split():
         return True
-    for f in dist.files or []:
-        if f.parts and f.parts[0] in (top, f"{top}.py"):
-            return True
-    raw = dist.read_text("direct_url.json")
-    if raw:
-        info = json.loads(raw)
-        url = info.get("url", "")
-        if info.get("dir_info", {}).get("editable") and url.startswith("file://"):
-            src = Path(url[len("file://") :])
-            return (src / top / "__init__.py").exists() or (src / f"{top}.py").exists()
-    return False
+    if any(f.parts and f.parts[0] in (top, f"{top}.py") for f in dist.files or []):
+        return True
+    return bool(src) and (
+        (Path(src) / top / "__init__.py").exists() or (Path(src) / f"{top}.py").exists()
+    )
 
 
-def _server_distribution(cls: type) -> str | None:
-    """The installed distribution providing `cls`'s top-level import package, so a generated
-    sandbox script can install it with `uv`. Handles editable installs (uv / PEP 660) that
-    `packages_distributions()` misses. None if no installed distribution provides it (the class
-    isn't part of a publishable package)."""
+@functools.lru_cache(maxsize=None)
+def _editable_dist(top: str) -> tuple[str | None, str | None]:
+    """`(distribution name, editable source path)` for the installed dist providing top-level
+    import `top` — the name lets a sandbox `uv`-install it from PyPI, the path lets the host pin
+    it to the local checkout (`None` if not editable / not found). Handles editable installs (uv /
+    PEP 660) that `packages_distributions()` misses. Cached — the mapping is stable per process."""
     import importlib.metadata as md
+    import json
 
-    top = cls.__module__.split(".")[0]
-    direct = md.packages_distributions().get(top)
-    if direct:
-        return direct[0]
     for dist in md.distributions():
-        if _provides_top_level(dist, top):
-            return dist.metadata["Name"]
-    return None
+        raw = dist.read_text("direct_url.json")
+        info = json.loads(raw) if raw else {}
+        url = info.get("url", "")
+        src = (
+            url[len("file://") :]
+            if info.get("dir_info", {}).get("editable") and url.startswith("file://")
+            else None
+        )
+        if _provides_top_level(dist, top, src):
+            return dist.metadata["Name"], src
+    return None, None
 
 
 def _ref(obj: object) -> str:
-    """A `"module:QualName"` import ref for an object's type — how the launcher re-imports it."""
+    """A `"module:QualName"` import ref for an object's type — how the script re-imports it."""
     cls = obj if isinstance(obj, type) else type(obj)
     return f"{cls.__module__}:{cls.__qualname__}"
 
 
 def server_to_tools(inst: ServerBase, runtime_type: str, task) -> _Launch:
-    """Build a `_Launch` for a vf-native server. Serializes its `config` + this rollout's `task`;
-    the launcher rebuilds `cls(config)` and calls `setup(task)`. On a host subprocess (deps
-    already present) it runs via the `toolserver` launcher as a `command`; in any other runtime
-    it generates a PEP 723 uv-script so `uv` resolves the class's declared `deps` (the deps
-    answer) plus its own distribution (so the launcher can import the class + config + task) in
-    that fresh sandbox."""
+    """Render a vf-native server to a `_Launch` — a PEP 723 uv-script that rebuilds `cls(config)`,
+    calls `setup(task)`, and serves. Serializes the `config` + this rollout's `task` into the env.
+    `uv` resolves the class's declared `deps` plus `verifiers` and the taskset's own distribution
+    (so the script can import the class). On a host (`subprocess`) runtime those two are pinned to
+    the local editable checkouts — no publishing needed; in any other runtime they resolve from
+    PyPI (so the taskset must be a publishable distribution)."""
     cls = type(inst)
     env = {
         "VF_SERVER_REF": _ref(cls),
@@ -267,22 +263,21 @@ def server_to_tools(inst: ServerBase, runtime_type: str, task) -> _Launch:
         "VF_TASK_REF": _ref(task),
         "VF_TASK": task.model_dump_json(),
     }
-    name = _server_name(inst)
-    if runtime_type == "subprocess":
-        return _Launch(
-            name=name, command=[sys.executable, "-m", "verifiers.v1.toolserver"], env=env
-        )
-    pkg = _server_distribution(cls)
-    if pkg is None:
+    vf_name, vf_path = _editable_dist("verifiers")
+    pkg_name, pkg_path = _editable_dist(cls.__module__.split(".")[0])
+    if pkg_name is None:
         raise ProgramError(
-            f"cannot run {cls.__qualname__} in a {runtime_type} runtime: it must live in an "
-            "installed, publishable distribution so the sandbox can `uv`-install it (it resolved "
-            "to no distribution). Put the class in a taskset package, or run it on a subprocess "
-            "(host) runtime."
+            f"cannot serve {cls.__qualname__}: it isn't part of an installed distribution, so the "
+            "server script can't import it. Put the class in a taskset package."
         )
-    deps = ["mcp", "verifiers", *cls.deps, pkg]
-    script = _SERVER_SCRIPT.format(deps=", ".join(f'"{d}"' for d in deps))
-    return _Launch(name=name, script=script.encode(), env=env)
+    deps = ["mcp", vf_name or "verifiers", *cls.deps, pkg_name]
+    sources: dict[str, str] = {}
+    if runtime_type == "subprocess":  # host: pin verifiers + the taskset to the local checkouts
+        if vf_name and vf_path:
+            sources[vf_name] = vf_path
+        if pkg_path:
+            sources[pkg_name] = pkg_path
+    return _Launch(name=_server_name(inst), script=_render_script(deps, sources), env=env)
 
 
 def run_mcp_server(mcp: "FastMCP") -> None:
@@ -329,16 +324,15 @@ def _free_port() -> int:
 
 
 async def serve_in_runtime(launch: _Launch, runtime: Runtime, port: int) -> None:
-    """Run `launch` inside `runtime` on `port` (background) and wait until it serves.
-    A `script` runs via uv (its deps come from the script); a `command` must already be
-    runnable in the runtime."""
+    """`uv run` the launch's script inside `runtime` on `port` (background) and wait until it
+    serves. The script is written to a stable, content-addressed path so uv keys one resolved
+    environment per distinct script — shared across rollouts (it never re-resolves per launch)."""
     log = f"vf_tool_{launch.name}.log"
-    if launch.script:
-        script = f"vf_tool_{launch.name}.py"
-        await runtime.write(script, launch.script)
-        argv = ["sh", "-c", f"{_ENSURE_UV}; exec uv run --quiet {script}"]
-    else:
-        argv = list(launch.command)
+    path = f"/tmp/vf-scripts/{hashlib.sha256(launch.script).hexdigest()}.py"
+    tmp = f"{path}.{uuid.uuid4().hex}.tmp"  # publish atomically — concurrent rollouts share it
+    await runtime.write(tmp, launch.script)
+    await runtime.run(["sh", "-c", f"mkdir -p /tmp/vf-scripts && mv -f {tmp} {path}"], {})
+    argv = ["sh", "-c", f"{_ENSURE_UV}; exec uv run --quiet {path}"]
     await runtime.run_background(argv, {**launch.env, "MCP_PORT": str(port)}, log)
     probe = await runtime.run(
         ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
