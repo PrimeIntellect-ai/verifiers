@@ -145,15 +145,21 @@ class GoogleGenerateContentDialect(Dialect[dict, GenerateContentResponse]):
             if content.get("role") == "model":
                 prompt.append(parse_assistant(parts))
                 continue
-            prompt.extend(
-                ToolMessage(
-                    tool_call_id=result.get("id") or result.get("name", ""),
-                    content=json.dumps(result.get("response") or {}),
-                )
-                for part in parts
-                if (result := part.get("functionResponse"))
-            )
-            if user_text := text(parts):
+            user_text = ""
+            for part in parts:
+                if result := part.get("functionResponse"):
+                    if user_text:
+                        prompt.append(UserMessage(content=user_text))
+                        user_text = ""
+                    prompt.append(
+                        ToolMessage(
+                            tool_call_id=result.get("id") or result.get("name", ""),
+                            content=json.dumps(result.get("response") or {}),
+                        )
+                    )
+                elif not part.get("thought"):
+                    user_text += part.get("text") or ""
+            if user_text:
                 prompt.append(UserMessage(content=user_text))
         tools = [
             Tool(
@@ -184,6 +190,11 @@ class GoogleGenerateContentDialect(Dialect[dict, GenerateContentResponse]):
             for key, value in (body.get("generationConfig") or {}).items()
             if key not in _SAMPLING_KEYS
         }
+        thinking = dict(config.pop("thinkingConfig", {}) or {})
+        thinking.pop("thinkingBudget", None)
+        thinking.pop("thinkingLevel", None)
+        if thinking:
+            config["thinkingConfig"] = thinking
         config.update({key: values[key] for key in _GENERATION_KEYS if key in values})
 
         effort = values.get("reasoning_effort")
