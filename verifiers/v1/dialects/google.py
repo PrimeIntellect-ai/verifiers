@@ -25,7 +25,12 @@ from verifiers.v1.types import (
 )
 
 FINISH_REASONS: dict[str, FinishReason] = {"STOP": "stop", "MAX_TOKENS": "length"}
-_SAMPLING_KEYS = ("temperature", "topP", "topK", "maxOutputTokens")
+_SAMPLING_KEYS = {"temperature", "topP", "topK", "maxOutputTokens"}
+_SAMPLING_ALIASES = {
+    "top_p": "topP",
+    "top_k": "topK",
+    "max_tokens": "maxOutputTokens",
+}
 _GENERATION_KEYS = {
     *_SAMPLING_KEYS,
     "candidateCount",
@@ -37,7 +42,7 @@ _GENERATION_KEYS = {
     "stopSequences",
     "thinkingConfig",
 }
-GEMINI_25_THINKING_BUDGETS = {
+_GEMINI_25_THINKING_BUDGETS = {
     "none": 0,
     "minimal": 1024,
     "low": 1024,
@@ -53,11 +58,7 @@ class GenerateContentResponse(BaseModel):
 
 
 def text(parts: list[dict]) -> str:
-    return "".join(
-        part.get("text", "")
-        for part in parts
-        if part.get("text") is not None and not part.get("thought")
-    )
+    return "".join(part.get("text") or "" for part in parts if not part.get("thought"))
 
 
 def parse_assistant(parts: list[dict]) -> AssistantMessage:
@@ -174,31 +175,28 @@ class GoogleGenerateContentDialect(Dialect[dict, GenerateContentResponse]):
         raise NotImplementedError("Google GenerateContent streaming is not supported")
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
-        config = dict(body.get("generationConfig") or {})
-        for key in _SAMPLING_KEYS:
-            config.pop(key, None)
         values = sampling.model_dump(exclude_none=True)
-        for source, target in (
-            ("top_p", "topP"),
-            ("top_k", "topK"),
-            ("max_tokens", "maxOutputTokens"),
-        ):
+        for source, target in _SAMPLING_ALIASES.items():
             if source in values:
-                values[target] = values.pop(source)
-        effort = values.pop("reasoning_effort", None)
-        config.update(
-            {key: value for key, value in values.items() if key in _GENERATION_KEYS}
-        )
+                values[target] = values[source]
+        config = {
+            key: value
+            for key, value in (body.get("generationConfig") or {}).items()
+            if key not in _SAMPLING_KEYS
+        }
+        config.update({key: values[key] for key in _GENERATION_KEYS if key in values})
+
+        effort = values.get("reasoning_effort")
         gemini_25 = model.rsplit("/", 1)[-1].lower().startswith("gemini-2.5-")
-        if gemini_25 and effort not in GEMINI_25_THINKING_BUDGETS:
-            effort = None
-        if effort:
+        thinking_key = "thinkingLevel"
+        stale_key = "thinkingBudget"
+        if gemini_25:
+            effort = _GEMINI_25_THINKING_BUDGETS.get(effort)
+            thinking_key = "thinkingBudget"
+            stale_key = "thinkingLevel"
+        if effort is not None:
             thinking = dict(config.get("thinkingConfig") or {})
-            if gemini_25:
-                thinking.pop("thinkingLevel", None)
-                thinking["thinkingBudget"] = GEMINI_25_THINKING_BUDGETS[effort]
-            else:
-                thinking.pop("thinkingBudget", None)
-                thinking["thinkingLevel"] = effort
+            thinking.pop(stale_key, None)
+            thinking[thinking_key] = effort
             config["thinkingConfig"] = thinking
         return {**body, "generationConfig": config}
