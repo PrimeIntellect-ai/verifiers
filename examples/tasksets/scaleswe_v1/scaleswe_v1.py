@@ -115,21 +115,24 @@ def _docker_hub_tags(repo: str) -> set[str] | None:
 def _available_images(images: set[str]) -> set[str]:
     """Subset of `images` known to exist. Only the public Docker Hub mirror is enumerated
     anonymously; images on other registries (e.g. the private Artifact Registry) are kept."""
-    repos: dict[str, set[str]] = {}
+    by_repo: dict[str, set[tuple[str, str]]] = {}
     available: set[str] = set()
     for ref in images:
         head = ref.split("/", 1)
         # a leading registry host (with "." or ":") isn't anonymously enumerable - keep it
         if len(head) == 2 and ("." in head[0] or ":" in head[0]):
             available.add(ref)
-        else:
-            repos.setdefault(ref.rsplit(":", 1)[0], set()).add(ref)
-    for repo, refs in repos.items():
+            continue
+        repo, sep, tag = ref.rpartition(":")
+        if not sep:  # no tag -> implicit "latest"
+            repo, tag = ref, "latest"
+        by_repo.setdefault(repo, set()).add((ref, tag))
+    for repo, refs in by_repo.items():
         tags = _docker_hub_tags(repo)
         if tags is None:
-            available |= refs
+            available |= {ref for ref, _ in refs}
         else:
-            available |= {r for r in refs if r.rsplit(":", 1)[1] in tags}
+            available |= {ref for ref, tag in refs if tag in tags}
     return available
 
 
