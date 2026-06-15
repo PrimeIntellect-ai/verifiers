@@ -38,6 +38,12 @@ STOP_REASONS = {
     "stop_sequence": "stop",
 }
 
+ADAPTIVE_THINKING_MODELS = {
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+}
+
 
 def parse_content(content) -> str | list[ContentPart]:
     """Anthropic user-side content (text + image blocks) -> typed content parts."""
@@ -259,6 +265,13 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
             overrides["top_p"] = s["top_p"]
         if "max_tokens" in s:
             overrides["max_tokens"] = s["max_tokens"]
+        if "reasoning_effort" in s:
+            overrides["output_config"] = {
+                **dict(body.get("output_config") or {}),
+                "effort": s["reasoning_effort"],
+            }
+            if "thinking" not in body and model in ADAPTIVE_THINKING_MODELS:
+                overrides["thinking"] = {"type": "adaptive"}
         steered = {
             k: v
             for k, v in body.items()
