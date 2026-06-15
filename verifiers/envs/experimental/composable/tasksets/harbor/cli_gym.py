@@ -46,6 +46,7 @@ PRIME_SANDBOX_REGISTRY = (
     "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
 )
 _CACHE_VERSION = "v1"
+_MATERIALIZED_MARKER = ".materialized.json"
 
 _TASK_YAML_KEYS = (
     "author_email",
@@ -290,7 +291,10 @@ def _materialize_hf_dataset(
 
     requested = set(task_names or [])
     if output_dir.exists():
-        if not requested or requested.issubset(_existing_task_names(output_dir)):
+        existing = _existing_task_names(output_dir)
+        if requested and requested.issubset(existing):
+            return
+        if not requested and _materialized_marker_exists(output_dir) and existing:
             return
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -318,13 +322,19 @@ def _materialize_hf_dataset(
             logger.warning("Skipping %s: missing docker_image", task_id)
             continue
 
-        _write_task_dir(
-            output_dir / task_id,
-            row,
-            image_ref=image_ref,
-            source_image_ref=source_image_ref,
-            hf_repo_id=hf_repo_id,
-        )
+        try:
+            _write_task_dir(
+                output_dir / task_id,
+                row,
+                image_ref=image_ref,
+                source_image_ref=source_image_ref,
+                hf_repo_id=hf_repo_id,
+            )
+        except ValueError as e:
+            if requested:
+                raise ValueError(f"CLI-Gym task {task_id!r} is malformed: {e}") from e
+            logger.warning("Skipping %s: malformed row: %s", task_id, e)
+            continue
         materialized += 1
 
     if requested:
@@ -334,6 +344,14 @@ def _materialize_hf_dataset(
     if materialized == 0:
         raise ValueError(
             f"No runnable CLI-Gym rows materialized from {hf_repo_id!r} split {split!r}"
+        )
+    if not requested:
+        _write_materialized_marker(
+            output_dir,
+            hf_repo_id=hf_repo_id,
+            hf_revision=hf_revision,
+            split=split,
+            materialized=materialized,
         )
 
 
@@ -523,7 +541,37 @@ def _missing_required_files(task_dir: Path) -> list[str]:
 
 
 def _existing_task_names(dataset_path: Path) -> set[str]:
-    return {path.name for path in dataset_path.iterdir() if path.is_dir()}
+    return {
+        path.name
+        for path in dataset_path.iterdir()
+        if path.is_dir()
+        and not path.name.startswith(".")
+        and not _missing_required_files(path)
+    }
+
+
+def _materialized_marker_exists(dataset_path: Path) -> bool:
+    return (dataset_path / _MATERIALIZED_MARKER).is_file()
+
+
+def _write_materialized_marker(
+    dataset_path: Path,
+    *,
+    hf_repo_id: str,
+    hf_revision: str | None,
+    split: str,
+    materialized: int,
+) -> None:
+    payload = {
+        "hf_repo_id": hf_repo_id,
+        "hf_revision": hf_revision,
+        "split": split,
+        "materialized": materialized,
+    }
+    (dataset_path / _MATERIALIZED_MARKER).write_text(
+        json.dumps(payload, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _cache_key(hf_repo_id: str, hf_revision: str | None, split: str) -> str:
