@@ -239,10 +239,7 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
         # Forward the program's body verbatim, overlaying only what the eval owns: the model and
         # the sampling knobs it set (later keys win, so the eval's override the program's).
-        overrides = sampling.model_dump(exclude_none=True)
-        if "effort" in overrides:
-            overrides["reasoning_effort"] = overrides.pop("effort")
-        return {**body, "model": model, **overrides}
+        return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
 
     def extend(self, body: dict, completion: dict, user_messages: Messages) -> dict:
         # Append the model's turn (the verbatim assistant message, so its reasoning survives for

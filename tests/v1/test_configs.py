@@ -22,12 +22,10 @@ CONFIGS = sorted(
 
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
 def test_eval_config_parses(path: Path) -> None:
-    data = tomllib.load(path.open("rb"))
-    assert "reasoning_effort" not in data.get("sampling", {})
-    config = EvalConfig.model_validate(data)
+    config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
     assert config.taskset.id or config.id  # resolved to a v1 taskset or a v0 env id
 
 
-def test_sampling_effort_is_typed() -> None:
-    config = EvalConfig.model_validate({"sampling": {"effort": "medium"}})
-    assert config.sampling.effort == "medium"
+def test_sampling_reasoning_effort_is_typed() -> None:
+    config = EvalConfig.model_validate({"sampling": {"reasoning_effort": "medium"}})
+    assert config.sampling.reasoning_effort == "medium"
