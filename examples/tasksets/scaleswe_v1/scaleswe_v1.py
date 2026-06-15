@@ -11,9 +11,12 @@ which scores 1.0 iff every expected id passed. A v1 port of the v0 ComposableEnv
 """
 
 import json
+import logging
 from pathlib import Path
 
 import verifiers.v1 as vf
+
+logger = logging.getLogger(__name__)
 
 DATASET = "AweAI-Team/Scale-SWE"
 
@@ -80,6 +83,59 @@ def _ids(raw: str | list[str] | None) -> list[str]:
     return [parsed] if isinstance(parsed, str) and parsed else []
 
 
+def _docker_hub_tags(repo: str) -> set[str] | None:
+    """Every tag in a public Docker Hub `repo` via the registry v2 API, or None if unreadable."""
+    import httpx
+
+    base = "https://registry-1.docker.io"
+    try:
+        token = httpx.get(
+            "https://auth.docker.io/token",
+            params={
+                "service": "registry.docker.io",
+                "scope": f"repository:{repo}:pull",
+            },
+            timeout=30,
+        ).json()["token"]
+        tags: list[str] = []
+        url: str | None = f"{base}/v2/{repo}/tags/list?n=1000"
+        while url:
+            resp = httpx.get(
+                url, headers={"Authorization": f"Bearer {token}"}, timeout=30
+            )
+            resp.raise_for_status()
+            tags += resp.json().get("tags") or []
+            nxt = resp.links.get("next", {}).get("url")
+            url = f"{base}{nxt}" if nxt else None
+        return set(tags)
+    except (httpx.HTTPError, KeyError):
+        return None
+
+
+def _available_images(images: set[str]) -> set[str]:
+    """Subset of `images` known to exist. Only the public Docker Hub mirror is enumerated
+    anonymously; images on other registries (e.g. the private Artifact Registry) are kept."""
+    by_repo: dict[str, set[tuple[str, str]]] = {}
+    available: set[str] = set()
+    for ref in images:
+        head = ref.split("/", 1)
+        # a leading registry host (with "." or ":") isn't anonymously enumerable - keep it
+        if len(head) == 2 and ("." in head[0] or ":" in head[0]):
+            available.add(ref)
+            continue
+        repo, sep, tag = ref.rpartition(":")
+        if not sep:  # no tag -> implicit "latest"
+            repo, tag = ref, "latest"
+        by_repo.setdefault(repo, set()).add((ref, tag))
+    for repo, refs in by_repo.items():
+        tags = _docker_hub_tags(repo)
+        if tags is None:
+            available |= {ref for ref, _ in refs}
+        else:
+            available |= {ref for ref, tag in refs if tag in tags}
+    return available
+
+
 class ScaleSWETask(vf.Task):
     base_commit: str
     """Commit the repo is reset to before the agent runs and tests are scored against."""
@@ -100,6 +156,9 @@ class ScaleSWEConfig(vf.TasksetConfig):
     use_prime_registry: bool = False
     """Resolve task images against Prime's private Artifact Registry (`REGISTRY`) instead of the
     dataset's public Docker Hub `image_url`. Only works on runtimes with GCP pull credentials."""
+    filter_unavailable_images: bool = True
+    """Drop tasks whose image isn't present in the registry (a quick tags/list check at load),
+    so rollouts don't fail at container start. Registries that can't be enumerated are kept."""
 
 
 class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
@@ -109,7 +168,7 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
         from datasets import load_dataset
 
         rows = load_dataset(DATASET, split="train")
-        return [
+        tasks = [
             ScaleSWETask(
                 idx=i,
                 name=row["instance_id"],
@@ -133,6 +192,17 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
             )
             for i, row in enumerate(rows)
         ]
+        if self.config.filter_unavailable_images:
+            available = _available_images({t.image for t in tasks})
+            kept = [t for t in tasks if t.image in available]
+            if len(kept) < len(tasks):
+                logger.info(
+                    "scaleswe: dropped %d/%d tasks with unavailable images",
+                    len(tasks) - len(kept),
+                    len(tasks),
+                )
+            tasks = kept
+        return tasks
 
     async def setup(self, task: ScaleSWETask, runtime: vf.Runtime) -> None:
         result = await runtime.run(["sh", "-c", task.pre_commands], ENV)
