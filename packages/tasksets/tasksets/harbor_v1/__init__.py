@@ -167,8 +167,18 @@ def parse_task(task_dir: Path, idx: int, require_image: bool) -> HarborTask:
             "building tests/Dockerfile is not supported"
         )
     network_mode = verifier_config.get(
-        "network_mode", verifier_environment.get("network_mode", "public")
+        "network_mode", verifier_environment.get("network_mode")
     )
+    if network_mode is None:
+        network_mode = (
+            "public"
+            if verifier_environment.get("allow_internet", True)
+            else "no-network"
+        )
+    if network_mode == "allowlist":
+        raise ValueError(
+            f"{task_dir.name}: verifier network_mode='allowlist' is not supported"
+        )
     artifacts = [
         artifact if isinstance(artifact, str) else artifact["source"]
         for artifact in config.get("artifacts", [])
