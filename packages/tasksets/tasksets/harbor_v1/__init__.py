@@ -282,12 +282,19 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
             archive_data = await runtime.read(archive)
 
             config_type = type(runtime_config)
-            updates = {
-                name: config_type.model_fields[name].default
-                for name in Resources.model_fields
-                if name in config_type.model_fields
-            }
-            updates.update(verifier.resources.model_dump(exclude_none=True))
+            updates = {}
+            for name in Resources.model_fields:
+                if name not in config_type.model_fields:
+                    continue
+                verifier_value = getattr(verifier.resources, name)
+                agent_value = getattr(task.resources, name)
+                if verifier_value is not None:
+                    updates[name] = verifier_value
+                elif (
+                    agent_value is not None
+                    and getattr(runtime_config, name) == agent_value
+                ):
+                    updates[name] = config_type.model_fields[name].default
             updates.update(
                 image=verifier.image,
                 network_access=verifier.network_access,
@@ -353,7 +360,7 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                 [
                     "sh",
                     "-c",
-                    "cd /tests && bash test.sh > /logs/verifier/test-stdout.txt 2>&1",
+                    "bash /tests/test.sh > /logs/verifier/test-stdout.txt 2>&1",
                 ],
                 env,
             )
@@ -361,10 +368,10 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                 [
                     "sh",
                     "-c",
-                    "if [ -s /logs/verifier/reward.txt ]; then "
-                    "cat /logs/verifier/reward.txt; "
-                    "elif [ -s /logs/verifier/reward.json ]; then "
-                    "cat /logs/verifier/reward.json; fi",
+                    "if [ -s /logs/verifier/reward.json ]; then "
+                    "cat /logs/verifier/reward.json; "
+                    "elif [ -s /logs/verifier/reward.txt ]; then "
+                    "cat /logs/verifier/reward.txt; fi",
                 ],
                 {},
             )
@@ -377,7 +384,12 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                 return float(output or 0)
             except ValueError:
                 try:
-                    return float(json.loads(output).get("reward", 0))
+                    rewards = json.loads(output)
+                    if "reward" in rewards:
+                        return float(rewards["reward"])
+                    if len(rewards) == 1:
+                        return float(next(iter(rewards.values())))
+                    return 0.0
                 except (AttributeError, TypeError, ValueError):
                     return 0.0
         finally:
