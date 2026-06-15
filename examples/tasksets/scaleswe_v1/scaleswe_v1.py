@@ -167,8 +167,21 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
     def load_tasks(self) -> list[ScaleSWETask]:
         from datasets import load_dataset
 
-        rows = load_dataset(DATASET, split="train")
-        tasks = [
+        rows = list(enumerate(load_dataset(DATASET, split="train")))
+        if self.config.filter_unavailable_images:
+            # Availability is checked against the public Docker Hub `image_url` - the private
+            # Artifact Registry can't be enumerated anonymously and mirrors Docker Hub, so the
+            # public tag set stands in for it whether or not `use_prime_registry` is set.
+            available = _available_images({row["image_url"] for _, row in rows})
+            kept = [(i, row) for i, row in rows if row["image_url"] in available]
+            if len(kept) < len(rows):
+                logger.info(
+                    "scaleswe: dropped %d/%d tasks with unavailable images",
+                    len(rows) - len(kept),
+                    len(rows),
+                )
+            rows = kept
+        return [
             ScaleSWETask(
                 idx=i,
                 name=row["instance_id"],
@@ -190,19 +203,8 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
                 fail_to_pass=_ids(row.get("FAIL_TO_PASS")),
                 pass_to_pass=_ids(row.get("PASS_TO_PASS")),
             )
-            for i, row in enumerate(rows)
+            for i, row in rows
         ]
-        if self.config.filter_unavailable_images:
-            available = _available_images({t.image for t in tasks})
-            kept = [t for t in tasks if t.image in available]
-            if len(kept) < len(tasks):
-                logger.info(
-                    "scaleswe: dropped %d/%d tasks with unavailable images",
-                    len(tasks) - len(kept),
-                    len(tasks),
-                )
-            tasks = kept
-        return tasks
 
     async def setup(self, task: ScaleSWETask, runtime: vf.Runtime) -> None:
         result = await runtime.run(["sh", "-c", task.pre_commands], ENV)
