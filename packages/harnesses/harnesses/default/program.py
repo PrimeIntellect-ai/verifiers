@@ -99,16 +99,11 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
 def mcp_content_to_chat_content(blocks) -> str | list[dict]:
     parts = []
     for block in blocks:
-        kind = getattr(block, "type", None)
-        if kind == "text":
+        if block.type == "text":
             parts.append({"type": "text", "text": block.text})
-        elif kind == "image":
-            parts.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{block.mimeType};base64,{block.data}"},
-                }
-            )
+        elif block.type == "image":
+            url = f"data:{block.mimeType};base64,{block.data}"
+            parts.append({"type": "image_url", "image_url": {"url": url}})
         else:
             parts.append({"type": "text", "text": str(block)})
     if not parts:
