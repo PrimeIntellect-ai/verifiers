@@ -17,9 +17,10 @@ import verifiers.v1 as vf
 
 DATASET = "R2E-Gym/R2E-Gym-Subset"
 
-# R2E-Gym images live in the Prime Intellect prod sandbox registry; rows carry the bare
-# repository:tag in ``docker_image`` and we prefix it here.
-REGISTRY_PREFIX = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
+# `docker_image` is a public Docker Hub ref (`namanjain12/<repo>_final:<commit>`); Prime mirrors
+# these into its private Artifact Registry. By default images come straight from Docker Hub; set
+# `use_prime_registry` to resolve against the registry instead (needs GCP pull credentials).
+REGISTRY = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
 
 REPO_PATH = "/testbed"
 ALT_PATH = "/root"
@@ -172,7 +173,13 @@ class R2EGymTask(vf.Task):
     """R2E-Gym commit JSON; gold patch is reconstructed from it for validation/dummy rollouts."""
 
 
-class R2EGymTaskset(vf.Taskset[R2EGymTask, vf.TasksetConfig]):
+class R2EGymConfig(vf.TasksetConfig):
+    use_prime_registry: bool = False
+    """Resolve task images against Prime's private Artifact Registry (`REGISTRY`) instead of the
+    dataset's public Docker Hub `docker_image`. Only works on runtimes with GCP pull credentials."""
+
+
+class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
     NEEDS_CONTAINER = True
 
     def load_tasks(self) -> list[R2EGymTask]:
@@ -184,7 +191,11 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, vf.TasksetConfig]):
                 idx=i,
                 name=row.get("commit_hash") or f"r2e-{i}",
                 instruction=row["problem_statement"],
-                image=f"{REGISTRY_PREFIX}/{row['docker_image']}",
+                image=(
+                    f"{REGISTRY}/{row['docker_image']}"
+                    if self.config.use_prime_registry
+                    else row["docker_image"]
+                ),
                 workdir=REPO_PATH,
                 expected_output_json=row["expected_output_json"],
                 parsed_commit_content=row.get("parsed_commit_content") or "",
@@ -231,5 +242,5 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, vf.TasksetConfig]):
             )
 
 
-def load_taskset(config: vf.TasksetConfig) -> R2EGymTaskset:
+def load_taskset(config: R2EGymConfig) -> R2EGymTaskset:
     return R2EGymTaskset(config)
