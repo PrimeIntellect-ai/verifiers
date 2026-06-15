@@ -200,6 +200,14 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     def parse_response(self, response: AnthropicMessage) -> Response:
         return response_from_wire(response)
 
+    def validate_response(self, raw: dict) -> AnthropicMessage:
+        usage = raw.get("usage")
+        tier = usage.get("service_tier") if usage else None
+        if tier not in (None, "standard", "priority", "batch"):
+            raw = {**raw, "usage": usage.copy()}
+            raw["usage"].pop("service_tier")
+        return super().validate_response(raw)
+
     def parse_stream(self, raw: bytes) -> Response:
         """Assemble message_start / content_block_* / message_delta events into the complete
         message, then parse it."""
@@ -244,8 +252,7 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
         for index, partial in partial_json.items():
             blocks[index]["input"] = json.loads(partial or "{}")
         message["content"] = [blocks[i] for i in sorted(blocks)]
-        message.get("usage", {}).pop("service_tier", None)
-        return response_from_wire(AnthropicMessage.model_validate(message))
+        return response_from_wire(self.validate_response(message))
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
         # Forward verbatim except the eval's model + sampling. `temperature`/`top_p` are
