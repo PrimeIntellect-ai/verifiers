@@ -57,13 +57,6 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def block_text(content) -> str:
-    """Flatten a tool_result's content (a string or text blocks) to text."""
-    if isinstance(content, str):
-        return content
-    return "".join(b.get("text", "") for b in content or [] if b.get("type") == "text")
-
-
 def parse_messages(body: dict) -> Messages:
     """The request's top-level `system` + `messages` -> typed messages. Assistant turns fold
     their blocks into one message (thinking -> reasoning, tool_use -> tool calls); a user turn's
@@ -106,7 +99,7 @@ def parse_messages(body: dict) -> Messages:
                 prompt.append(
                     ToolMessage(
                         tool_call_id=block.get("tool_use_id", ""),
-                        content=block_text(block.get("content")),
+                        content=parse_content(block.get("content")),
                     )
                 )
             else:

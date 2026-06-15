@@ -115,7 +115,7 @@ class ToolMessage(StrictBaseModel):
 
     role: Literal["tool"] = "tool"
     tool_call_id: str
-    content: str
+    content: MessageContent
 
 
 Message = Annotated[

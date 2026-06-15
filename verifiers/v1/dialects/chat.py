@@ -48,7 +48,7 @@ def reasoning_text(data: Mapping[str, Any]) -> str | None:
 
 
 def _content_text(content) -> str:
-    """Flatten content to text — for roles that never carry images (assistant, tool)."""
+    """Flatten content to text for roles that never carry images."""
     if isinstance(content, list):
         return "".join(p.get("text", "") for p in content if isinstance(p, dict))
     return content or ""
@@ -56,14 +56,15 @@ def _content_text(content) -> str:
 
 def parse_message(raw: dict) -> Message:
     """An OpenAI chat request message dict -> a typed Message. User/system bodies keep their
-    image parts (multimodal ingress); assistant/tool bodies flatten to text."""
+    image parts (multimodal ingress); assistant bodies flatten to text."""
     role = raw.get("role")
     content = raw.get("content")
     if role == "system":
         return SystemMessage(content=content_to_parts(content))
     if role == "tool":
         return ToolMessage(
-            tool_call_id=raw.get("tool_call_id", ""), content=_content_text(content)
+            tool_call_id=raw.get("tool_call_id", ""),
+            content=content_to_parts(content),
         )
     if role == "assistant":
         calls = [
@@ -133,7 +134,7 @@ def message_to_wire(message: Message) -> dict:
         return {
             "role": "tool",
             "tool_call_id": message.tool_call_id,
-            "content": message.content,
+            "content": _content_to_wire(message.content),
         }
     return {"role": message.role, "content": _content_to_wire(message.content)}
 
