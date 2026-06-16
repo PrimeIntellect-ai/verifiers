@@ -10,7 +10,7 @@ from typing import Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import ProgramResult, Runtime, parse_gpu
+from verifiers.v1.runtimes.base import _SERVICE_PORT, ProgramResult, Runtime, parse_gpu
 from verifiers.v1.runtimes.limiters import _TUNNEL_LIMITER, creation_limiter
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,10 @@ class PrimeRuntime(Runtime):
     @property
     def descriptor(self) -> str | None:
         return self._sandbox_id
+
+    @property
+    def published_port(self) -> int | None:
+        return _SERVICE_PORT
 
     async def start(self) -> None:
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest

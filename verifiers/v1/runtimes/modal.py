@@ -17,7 +17,7 @@ from typing import Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import _SERVICE_PORT, ProgramResult, Runtime
 from verifiers.v1.runtimes.limiters import _TUNNEL_LIMITER, creation_limiter
 
 logger = logging.getLogger(__name__)
@@ -26,10 +26,6 @@ logger = logging.getLogger(__name__)
 # Modal's max sandbox lifetime (24h in seconds); "auto" timeout requests it. Sandboxes are
 # created with a `sleep infinity` entrypoint so they stay alive for `exec` until terminated.
 _MAX_TIMEOUT_SECONDS = 24 * 60 * 60
-# The single port Modal forwards to the public internet for a server hosted in the sandbox.
-# Modal only forwards ports named at creation, so it's reserved up front (an unused tunnel costs
-# nothing); a server placed here binds it and is reached at its tunnel URL. Internal, not a knob.
-_SERVICE_PORT = 8000
 # Shared Modal app every rollout's sandbox attaches to (created on first lookup).
 _APP_NAME = "verifiers-v1"
 
