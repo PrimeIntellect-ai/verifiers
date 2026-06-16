@@ -1,19 +1,18 @@
-"""deepwiki: an EXISTING (remote) shared tool server.
+"""deepwiki: an EXISTING (remote) tool server.
 
-The other tool examples ship a server the harness runs (`glossary` colocated,
-`wikispeedia` in its own runtime, `wiki_search` shared); this one points at a live,
-public streamable-HTTP MCP server — DeepWiki (https://mcp.deepwiki.com/mcp), which
-answers questions about GitHub repos. The taskset declares it by `url` only (placement
-config doesn't apply — it's already running, shared by everyone), the harness connects
-over HTTP and exposes its tools as `deepwiki_<tool>`. Each task asks the model to use
-`deepwiki_ask_question` for a repo's primary language; the reward checks the answer.
+The other tool examples ship a server the harness runs (`glossary` host-side, `wikispeedia`
+its own runtime, `wiki_search` shared); this one points at a live, public streamable-HTTP MCP
+server — DeepWiki, which answers questions about GitHub repos. The `DeepWikiToolset` in
+`servers/deepwiki.py` has no `@tool` methods: setting `url` on its config makes the framework
+connect to the remote directly. Each task asks the model to use `deepwiki_ask_question` for a
+repo's primary language; the reward checks the answer.
 
 Runs in docker (the harness installs the mcp client there and needs outbound net).
 """
 
 import verifiers.v1 as vf
 
-DEEPWIKI_URL = "https://mcp.deepwiki.com/mcp"
+from deepwiki_v1.servers.deepwiki import DEEPWIKI_URL, DeepWikiToolset
 
 # (repo, expected language) — unambiguous, well-indexed repos.
 TASKS = [
@@ -27,7 +26,11 @@ class DeepWikiTask(vf.Task):
     """The language the repo is written in (must appear in the model's reply)."""
 
 
-class DeepWikiTaskset(vf.Taskset[DeepWikiTask, vf.TasksetConfig]):
+class DeepWikiConfig(vf.TasksetConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig(url=DEEPWIKI_URL)
+
+
+class DeepWikiTaskset(vf.Taskset[DeepWikiTask, DeepWikiConfig]):
     def load_tasks(self) -> list[DeepWikiTask]:
         return [
             DeepWikiTask(
@@ -43,8 +46,8 @@ class DeepWikiTaskset(vf.Taskset[DeepWikiTask, vf.TasksetConfig]):
             for i, (repo, language) in enumerate(TASKS)
         ]
 
-    def tools(self, task: DeepWikiTask) -> list[vf.Tools]:
-        return [vf.Tools(name="deepwiki", url=DEEPWIKI_URL)]
+    def tools(self, task: DeepWikiTask) -> list[vf.Toolset]:
+        return [DeepWikiToolset(self.config.tools)]
 
     @vf.reward(weight=1.0)
     async def answered(
@@ -54,5 +57,5 @@ class DeepWikiTaskset(vf.Taskset[DeepWikiTask, vf.TasksetConfig]):
         return float(task.answer.lower() in (last or "").lower())
 
 
-def load_taskset(config: vf.TasksetConfig) -> DeepWikiTaskset:
+def load_taskset(config: DeepWikiConfig) -> DeepWikiTaskset:
     return DeepWikiTaskset(config)

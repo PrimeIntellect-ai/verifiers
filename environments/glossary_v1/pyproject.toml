@@ -1,14 +1,14 @@
 [project]
 name = "glossary-v1"
 version = "0.1.0"
-description = "glossary-v1 — task-specific tools via a stdio MCP server."
+description = "glossary-v1 — task-specific tools via a vf-native Toolset class."
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["verifiers"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build]
-include = ["glossary_v1.py", "server.py", "facts.json", "pyproject.toml"]
+[tool.hatch.build.targets.wheel]
+packages = ["glossary_v1"]
 

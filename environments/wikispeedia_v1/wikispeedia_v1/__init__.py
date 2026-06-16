@@ -1,18 +1,18 @@
 """wikispeedia: navigate Wikipedia by clicking links to reach a target article.
 
-A stateful tool example. The taskset generates `(source, target)` pairs from the
-SNAP graph (loaded once, host-side) and, per rollout, launches a host-side server
-holding the navigation state (see `server.py`). The harness calls `wiki_click_link`
-to move; the reward reads the server's `TARGET REACHED` marker off the trace. The
-corpus stays host-side — nothing is shipped into the runtime.
+A stateful tool example, authored as a `vf.Toolset` (`WikiToolset` in `servers/wiki.py`). The
+taskset generates `(source, target)` pairs from the SNAP graph (loaded once, host-side) and, per
+rollout, launches a toolset holding the navigation state (current article + path), built in its
+`setup`. The harness calls `wiki_click_link` to move; the reward reads the toolset's
+`TARGET REACHED` marker off the trace.
 """
 
 import random
-import sys
 
 import verifiers.v1 as vf
 
 from wikispeedia_v1.graph import WikiGraph, format_article
+from wikispeedia_v1.servers.wiki import WikiToolset, WikiToolsetConfig
 
 SYSTEM = (
     "This game is easy and fun: starting from the first Wikipedia article, reach the "
@@ -60,19 +60,12 @@ class WikiTask(vf.Task):
 
 
 class WikispeediaConfig(vf.TasksetConfig):
-    # NON-COLOCATED, NON-SHARED: the server runs in its own runtime (`tools.runtime`,
-    # default subprocess/host), one per rollout, reached via the harness's runtime
-    # (localhost or a tunnel, auto-resolved). Not colocated — its ~100MB graph
-    # shouldn't be re-fetched inside a fresh harness runtime every rollout.
-    tools: vf.ToolsConfig = vf.ToolsConfig(colocated=False)
     num_tasks: int = 20
     min_dist: int = 3
     max_dist: int = 8
     seed: int = 0
     max_turns: int = 30
-    links_only: bool = True
-    """Show only each article's outgoing-link menu (no prose) — the classic
-    Wikispeedia formulation; keeps the prompt small."""
+    tools: WikiToolsetConfig = WikiToolsetConfig()
 
 
 class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
@@ -95,24 +88,14 @@ class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
                 instruction=(
                     f"{SYSTEM}\n\nYour mission: {source} >> {target}\n\n"
                     f"Here is the starting article:\n\n"
-                    f"{format_article(wiki, source, self.config.links_only)}"
+                    f"{format_article(wiki, source, self.config.tools.links_only)}"
                 ),
             )
             for i, (source, target, dist) in enumerate(pairs)
         ]
 
-    def tools(self, task: WikiTask) -> list[vf.Tools]:
-        return [
-            vf.Tools(
-                name="wiki",
-                command=[sys.executable, "-m", "wikispeedia_v1.server"],
-                env={
-                    "WIKISPEEDIA_SOURCE": task.source,
-                    "WIKISPEEDIA_TARGET": task.target,
-                    "WIKISPEEDIA_LINKS_ONLY": "1" if self.config.links_only else "0",
-                },
-            )
-        ]
+    def tools(self, task: WikiTask) -> list[vf.Toolset]:
+        return [WikiToolset(self.config.tools)]
 
     @vf.stop
     async def done(self, trace: vf.Trace) -> bool:

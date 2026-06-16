@@ -294,8 +294,9 @@ class LegacyEnvServer(EnvServer):
         self.frontend.bind(self.address)
         self.address = self.frontend.getsockopt_string(zmq.LAST_ENDPOINT)
 
-    def interception_pool(self):
-        # The v0 bridge runs its own rollouts (no v1 interception), so no pool to enter.
+    def serving(self):
+        # The v0 bridge runs its own rollouts (no v1 shared tools / interception), so there
+        # are no serving resources to enter.
         return contextlib.nullcontext()
 
     def _v0_client(self, client_config: ClientConfig, model: str):

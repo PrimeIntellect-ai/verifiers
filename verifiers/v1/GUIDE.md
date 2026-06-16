@@ -163,20 +163,37 @@ per-rollout `@reward`/`@metric` first, then compare those across the task's roll
 
 ### Tools and user simulators
 
-A taskset exposes a task's tools via `tools(task) -> list[vf.Tools]` (each an MCP server — a
-single-file uv script, so it runs in any runtime). Placement is config on `taskset.tools`:
+Both a tool server and a user simulator are **vf-native classes** (not raw MCP, no FastMCP
+boilerplate) authored from a config — the same shape as a taskset:
+
+- A **tool server** is a `vf.Toolset[ConfigT]` with `@vf.tool` methods (the model sees
+  `<TOOL_PREFIX>_<method>`; the docstring is the description). A taskset exposes a task's tools via
+  `tools(task) -> list[vf.Toolset]`.
+- A **user simulator** is a `vf.User[ConfigT]` with one `async def respond(message) -> (Messages,
+  bool)` hook (the framework calls it after each assistant turn for the next user message + a done
+  flag). A taskset supplies one via `user(task) -> vf.User | None`.
+
+A taskset may expose **both** at once (tools the model calls *and* a user sim driving the turns) —
+they're served together each rollout; a harness just needs to support both.
+
+**Where they live.** Each server is its own self-launching module under the env package's
+`servers/`, ending with `if __name__ == "__main__": <Server>.run()`; the framework launches it with
+`python -m <env>.servers.<name>` (host: ambient; sandbox: the env package is uploaded + installed
+first). Build state as plain `self.x` attributes in `async def setup(self)` (task-agnostic, runs for
+every server) or `async def setup_task(self, task)` (per-rollout — **skipped for a `shared`
+server**). Fixed data lives in module constants, not config.
+
+**Placement** is config on the server's config (a `vf.ToolsetConfig` / `vf.UserConfig` field on the
+taskset's own config), so it's per-server and CLI-tunable (`--taskset.tools.runtime.type docker`,
+`--taskset.tools.shared true`, `--taskset.user.colocated true`):
 
 | placement | how |
 | --- | --- |
-| colocated (default) | in the harness's own runtime, reached on localhost |
-| own per-rollout runtime | `taskset.tools.runtime = {...}`, reached over a tunnel |
-| shared | one instance built once for the whole eval |
-| remote | an existing server, by URL |
-
-A multi-turn, stateful task drives the conversation with a user simulator —
-`user(task) -> vf.User | None` (structurally a tool server; the framework calls it after each
-assistant turn for the next user message + a done flag). `UserConfig.colocated` controls
-whether it runs in the harness's runtime or its own.
+| own host runtime (default) | its own `subprocess` runtime on the host, reached over the host network |
+| own per-rollout runtime | `runtime = {type = "docker"/"prime"}`, reached over a tunnel |
+| colocated | `colocated = true` — inside the harness's runtime (reached in-sandbox, no tunnel) |
+| shared (tools only) | `shared = true` — one instance built once for the whole eval |
+| remote (tools only) | an existing server, by `url` |
 
 ### Learn from the examples
 
@@ -188,8 +205,8 @@ The `*_v1` tasksets under `environments/` are the reference library — each sho
 | `gsm8k-v1`, `aime24-v1`, `math-env-v1` | single-turn + in-runtime scoring (a `@reward` uv script) |
 | `code-golf-v1` | group rewards (`@group_reward` over a task's N rollouts) |
 | `alphabet-sort-v1` | multi-turn, stateful, driven by a `vf.User` simulator |
-| `glossary-v1` | a colocated tool server |
-| `wikispeedia-v1` | a tool server in its own per-rollout runtime |
+| `glossary-v1` | the simplest tool server (own host runtime) |
+| `wikispeedia-v1` | a stateful tool server (global `setup` + per-task `setup_task`) |
 | `wiki-search-v1` | a shared tool server (built once) + an LLM judge |
 | `deepwiki-v1` | an existing remote tool server, by URL |
 | `color-codeword-v1` | a multimodal (image) task |
