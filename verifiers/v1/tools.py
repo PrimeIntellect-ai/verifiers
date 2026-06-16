@@ -366,6 +366,12 @@ async def serve(server: ServerBase, task, agent_runtime: Runtime | None = None, 
     in-sandbox when colocated, else the tool runtime's `public_url` bridged by the harness's
     `expose` (or, eval-level with no `agent_runtime`, `public_url` or localhost for a shared one)."""
     cfg = server.config
+    if getattr(cfg, "shared", False) and task is not None:
+        raise ValueError(
+            f"shared server {server.server_name!r} was launched with a task, but a `shared` server "
+            "is built once for the whole eval and must be task-agnostic — it receives no task. "
+            "Drop `shared` to run it per-rollout (with the task), or make its `setup` task-independent."
+        )
     own = None
     if cfg.colocated and agent_runtime is not None:
         runtime = agent_runtime
