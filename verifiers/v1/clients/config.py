@@ -21,12 +21,8 @@ from verifiers.v1.clients.eval import EvalClient
 if TYPE_CHECKING:
     from renderers import RendererConfig
 else:
-    try:
-        from renderers import RendererConfig
-    except ModuleNotFoundError as exc:
-        if exc.name != "renderers" and not (exc.name or "").startswith("renderers."):
-            raise
-        RendererConfig = Any
+    # TrainClient validates this once the optional renderer package is loaded.
+    RendererConfig = Any
 
 PRIME_INFERENCE_HOST = "pinference.ai"
 PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"
@@ -83,17 +79,8 @@ ClientConfig = Annotated[
 def resolve_client(config: BaseClientConfig) -> Client:
     api_key = os.environ.get(config.api_key_var, "EMPTY")
     if isinstance(config, TrainClientConfig):
-        try:
-            from verifiers.v1.clients.train import TrainClient
-        except ModuleNotFoundError as exc:
-            if exc.name != "renderers" and not (exc.name or "").startswith(
-                "renderers."
-            ):
-                raise
-            raise ImportError(
-                "TrainClient requires the renderers extra; install "
-                "`verifiers[renderers]`."
-            ) from exc
+        from verifiers.v1.clients.train import TrainClient
+
         # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
         openai = AsyncOpenAI(
             base_url=config.base_url,

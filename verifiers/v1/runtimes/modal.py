@@ -71,12 +71,10 @@ class ModalRuntime(Runtime):
     async def start(self) -> None:
         try:
             import modal
-        except ModuleNotFoundError as exc:
-            if exc.name != "modal" and not (exc.name or "").startswith("modal."):
-                raise
+        except ImportError as e:
             raise ProgramError(
                 "ModalRuntime requires the modal extra; install `verifiers[modal]`."
-            ) from exc
+            ) from e
 
         timeout = (
             _MAX_TIMEOUT_SECONDS

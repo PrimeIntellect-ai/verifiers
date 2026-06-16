@@ -11,6 +11,7 @@ needs a running vLLM engine.
 import json
 
 from openai import AsyncOpenAI, OpenAIError
+from pydantic import TypeAdapter
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
@@ -21,6 +22,8 @@ from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
+    MultiModalData,
+    PlaceholderRange,
     Response,
     SamplingConfig,
     Tool,
@@ -109,6 +112,21 @@ def response_from_generate(result: dict, model: str) -> Response:
     message_spans = (
         attribution.message_token_spans() if attribution is not None else None
     )
+    renderer_mmd = result.get("multi_modal_data")
+    multi_modal_data = (
+        MultiModalData(
+            mm_hashes=renderer_mmd.mm_hashes,
+            mm_placeholders={
+                modality: [
+                    PlaceholderRange(offset=p.offset, length=p.length) for p in ranges
+                ]
+                for modality, ranges in renderer_mmd.mm_placeholders.items()
+            },
+            mm_items=renderer_mmd.mm_items,
+        )
+        if renderer_mmd is not None
+        else None
+    )
     return Response(
         id=result.get("request_id", ""),
         created=0,
@@ -127,7 +145,7 @@ def response_from_generate(result: dict, model: str) -> Response:
             completion_ids=completion_ids,
             completion_logprobs=result.get("completion_logprobs") or [],
             message_spans=message_spans,
-            multi_modal_data=result.get("multi_modal_data"),
+            multi_modal_data=multi_modal_data,
             routed_experts=result.get("routed_experts"),
         ),
     )
@@ -145,7 +163,11 @@ class TrainClient(Client):
     ) -> None:
         self.openai = openai
         self.pool_size = pool_size
-        self.config = config
+        self.config = (
+            TypeAdapter(RendererConfig).validate_python(config)
+            if config is not None
+            else None
+        )
         self.renderer_model_name = renderer_model_name
         self._pool = None
 

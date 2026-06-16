@@ -8,6 +8,7 @@ def test_v1_imports_without_optional_runtime_dependencies():
         """
         import asyncio
         import builtins
+        import sys
 
         real_import = builtins.__import__
 
@@ -26,18 +27,13 @@ def test_v1_imports_without_optional_runtime_dependencies():
         from verifiers.v1.types import MultiModalData
 
         assert MultiModalData().is_empty()
-
-        try:
-            from verifiers.v1.clients import TrainClient
-        except ImportError as exc:
-            assert "verifiers[renderers]" in str(exc)
-        else:
-            raise AssertionError(f"unexpected TrainClient: {TrainClient}")
+        assert "modal" not in sys.modules
+        assert "renderers" not in sys.modules
 
         try:
             vf.resolve_client(TrainClientConfig())
-        except ImportError as exc:
-            assert "verifiers[renderers]" in str(exc)
+        except ModuleNotFoundError as exc:
+            assert exc.name == "renderers"
         else:
             raise AssertionError("TrainClientConfig resolved without renderers")
 
@@ -50,3 +46,35 @@ def test_v1_imports_without_optional_runtime_dependencies():
         """
     )
     subprocess.run([sys.executable, "-c", script], check=True)
+
+
+def test_train_client_normalizes_renderer_types_at_the_boundary():
+    from renderers import AutoRendererConfig
+    from renderers.base import MultiModalData as RendererMultiModalData
+    from renderers.base import PlaceholderRange as RendererPlaceholderRange
+
+    from verifiers.v1.clients import TrainClientConfig
+    from verifiers.v1.clients.train import TrainClient, response_from_generate
+    from verifiers.v1.types import MultiModalData
+
+    config = TrainClientConfig(renderer={"name": "auto", "preserve_all_thinking": True})
+    client = TrainClient(None, config=config.renderer)
+    assert isinstance(client.config, AutoRendererConfig)
+
+    response = response_from_generate(
+        {
+            "content": "ok",
+            "prompt_ids": [1],
+            "completion_ids": [2],
+            "multi_modal_data": RendererMultiModalData(
+                mm_hashes={"image": ["hash"]},
+                mm_placeholders={
+                    "image": [RendererPlaceholderRange(offset=0, length=1)]
+                },
+                mm_items={"image": [{"pixel_values": "pixels"}]},
+            ),
+        },
+        "model",
+    )
+    assert response.tokens is not None
+    assert isinstance(response.tokens.multi_modal_data, MultiModalData)

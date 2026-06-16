@@ -12,27 +12,23 @@ from typing import Annotated, Any, Literal
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from typing_extensions import TypedDict
 
-try:
-    from renderers.base import MultiModalData, PlaceholderRange
-except ModuleNotFoundError as exc:
-    if exc.name != "renderers" and not (exc.name or "").startswith("renderers."):
-        raise
 
-    @dataclass
-    class PlaceholderRange:
-        offset: int
-        length: int
+@dataclass
+class PlaceholderRange:
+    offset: int
+    length: int
 
-    @dataclass
-    class MultiModalData:
-        """Renderer-compatible multimodal trace data for base installs."""
 
-        mm_hashes: dict[str, list[str]] = field(default_factory=dict)
-        mm_placeholders: dict[str, list[PlaceholderRange]] = field(default_factory=dict)
-        mm_items: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+@dataclass
+class MultiModalData:
+    """Multimodal trace data shared by all V1 clients."""
 
-        def is_empty(self) -> bool:
-            return not (self.mm_hashes or self.mm_placeholders or self.mm_items)
+    mm_hashes: dict[str, list[str]] = field(default_factory=dict)
+    mm_placeholders: dict[str, list[PlaceholderRange]] = field(default_factory=dict)
+    mm_items: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+
+    def is_empty(self) -> bool:
+        return not (self.mm_hashes or self.mm_placeholders or self.mm_items)
 
 
 class RoutedExperts(TypedDict):
