@@ -178,14 +178,11 @@ class ServerBase(Generic[ConfigT, StateT]):
                 await self.setup_task(task)
 
         asyncio.run(_setup())
-        # Bound to 0.0.0.0 means a sandbox tunnel reaches us at a non-loopback host (e.g. modal's
-        # *.modal.host); FastMCP's default DNS-rebinding guard allows only localhost and would 421
-        # the tunnel host, so relax it (the tunnel is the trust boundary).
-        security = None
-        if host == "0.0.0.0":
-            from mcp.server.transport_security import TransportSecuritySettings
+        # Relax FastMCP's DNS-rebinding guard: it 421s a non-localhost Host, but our servers are
+        # reached only by our own harness over localhost or a tunnel (never a browser).
+        from mcp.server.transport_security import TransportSecuritySettings
 
-            security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+        security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
         mcp = FastMCP(self.server_name, transport_security=security)
         self._register(mcp)
         server = uvicorn.Server(
