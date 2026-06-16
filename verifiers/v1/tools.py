@@ -87,7 +87,7 @@ class ToolsetConfig(BaseConfig):
     needs no `@tool` methods, the model just sees the remote's tools as `<name>_<tool>`."""
 
     @model_validator(mode="after")
-    def _exclusive(self) -> "ToolsetConfig":
+    def reject_colocated_and_shared(self) -> "ToolsetConfig":
         if self.colocated and self.shared:
             raise ValueError("colocated and shared are mutually exclusive")
         return self
