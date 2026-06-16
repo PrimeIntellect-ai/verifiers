@@ -96,5 +96,5 @@ class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
         return [1.0 if t == best else 0.0 for t in times]
 
 
-def load_taskset(config: vf.TasksetConfig) -> CodeGolfTaskset:
-    return CodeGolfTaskset(config)
+Config = vf.TasksetConfig
+Taskset = CodeGolfTaskset

@@ -78,8 +78,7 @@ class Task(StrictBaseModel):
 class WireTask(Task):
     """A `Task` that accepts (and preserves) taskset-specific extra fields. Lets a `Trace`
     be typed on the wire — `Trace[WireTask]` — without importing the taskset, since the real
-    `Task` subclass's extra fields land in `model_extra` instead of being rejected. A caller
-    that imports the taskset upgrades to the real type via `task_type(taskset_id)`."""
+    `Task` subclass's extra fields land in `model_extra` instead of being rejected."""
 
     model_config = ConfigDict(extra="allow")
 

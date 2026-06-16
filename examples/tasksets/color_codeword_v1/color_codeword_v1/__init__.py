@@ -168,5 +168,5 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
         )
 
 
-def load_taskset(config: ColorCodewordConfig) -> ColorCodewordTaskset:
-    return ColorCodewordTaskset(config)
+Config = ColorCodewordConfig
+Taskset = ColorCodewordTaskset

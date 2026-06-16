@@ -29,7 +29,8 @@ from verifiers.v1.decorators import reward
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Resources, Task
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.taskset import Taskset as BaseTaskset
+from verifiers.v1.taskset import TasksetConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import StrictBaseModel
 
@@ -154,7 +155,7 @@ def make_tar(directory: Path) -> bytes:
     return buffer.getvalue()
 
 
-class HarborTaskset(Taskset[HarborTask, HarborConfig]):
+class HarborTaskset(BaseTaskset[HarborTask, HarborConfig]):
     def load_tasks(self) -> list[HarborTask]:
         root = dataset_dir(self.config.dataset)
         task_dirs = [
@@ -194,5 +195,5 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
             return 0.0
 
 
-def load_taskset(config: HarborConfig) -> HarborTaskset:
-    return HarborTaskset(config)
+Config = HarborConfig
+Taskset = HarborTaskset

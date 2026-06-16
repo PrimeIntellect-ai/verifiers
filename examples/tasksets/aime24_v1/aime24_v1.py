@@ -69,5 +69,5 @@ class AIME24Taskset(vf.Taskset[AIME24Task, AIME24Config]):
         return float(lines[-1]) if lines else 0.0
 
 
-def load_taskset(config: AIME24Config) -> AIME24Taskset:
-    return AIME24Taskset(config)
+Config = AIME24Config
+Taskset = AIME24Taskset

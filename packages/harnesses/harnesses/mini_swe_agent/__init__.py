@@ -3,7 +3,8 @@
 from pathlib import Path
 
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import Harness as BaseHarness
+from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -18,7 +19,7 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
     """mini-swe-agent release to install, pinned for reproducibility."""
 
 
-class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
+class MiniSWEAgentHarness(BaseHarness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_TASK_TOOLS = False
 
@@ -67,12 +68,13 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         )
 
 
-def load_harness(config: MiniSWEAgentHarnessConfig) -> MiniSWEAgentHarness:
-    return MiniSWEAgentHarness(config)
+Config = MiniSWEAgentHarnessConfig
+Harness = MiniSWEAgentHarness
 
 
 __all__ = [
+    "Config",
+    "Harness",
     "MiniSWEAgentHarness",
     "MiniSWEAgentHarnessConfig",
-    "load_harness",
 ]

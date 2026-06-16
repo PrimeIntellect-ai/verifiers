@@ -1,11 +1,8 @@
-"""compact — an example custom harness: rewrites its context every turn (so the
-trajectory branches, one branch per turn). Resolved by id via `load_harness`."""
+"""compact — an example custom harness that rewrites its context every turn."""
 
 from compact.harness import CompactingHarness, CompactingHarnessConfig
 
+Config = CompactingHarnessConfig
+Harness = CompactingHarness
 
-def load_harness(config: CompactingHarnessConfig) -> CompactingHarness:
-    return CompactingHarness(config)
-
-
-__all__ = ["CompactingHarness", "CompactingHarnessConfig", "load_harness"]
+__all__ = ["Config", "Harness", "CompactingHarness", "CompactingHarnessConfig"]

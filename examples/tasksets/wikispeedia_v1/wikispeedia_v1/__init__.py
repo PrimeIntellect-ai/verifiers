@@ -145,5 +145,5 @@ class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
         )
 
 
-def load_taskset(config: WikispeediaConfig) -> WikispeediaTaskset:
-    return WikispeediaTaskset(config)
+Config = WikispeediaConfig
+Taskset = WikispeediaTaskset

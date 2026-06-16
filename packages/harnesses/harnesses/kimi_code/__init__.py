@@ -11,7 +11,8 @@ import shlex
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import Harness as BaseHarness
+from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -45,7 +46,7 @@ class KimiCodeHarnessConfig(HarnessConfig):
     """Kimi Code release to install, pinned for reproducibility."""
 
 
-class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
+class KimiCodeHarness(BaseHarness[KimiCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_TASK_TOOLS = True
 
@@ -91,8 +92,8 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         return await runtime.run([BINARY, "--prompt", instruction], env)
 
 
-def load_harness(config: KimiCodeHarnessConfig) -> KimiCodeHarness:
-    return KimiCodeHarness(config)
+Config = KimiCodeHarnessConfig
+Harness = KimiCodeHarness
 
 
-__all__ = ["KimiCodeHarness", "KimiCodeHarnessConfig", "load_harness"]
+__all__ = ["Config", "Harness", "KimiCodeHarness", "KimiCodeHarnessConfig"]

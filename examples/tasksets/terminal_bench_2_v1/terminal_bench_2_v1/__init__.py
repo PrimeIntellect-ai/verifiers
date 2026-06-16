@@ -15,5 +15,5 @@ class TerminalBench2Config(HarborConfig):
     )
 
 
-def load_taskset(config: TerminalBench2Config) -> HarborTaskset:
-    return HarborTaskset(config)
+Config = TerminalBench2Config
+Taskset = HarborTaskset

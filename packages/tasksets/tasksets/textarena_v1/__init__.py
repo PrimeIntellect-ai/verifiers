@@ -111,5 +111,5 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         return float(json.loads(data)["reward"])
 
 
-def load_taskset(config: TextArenaConfig) -> TextArenaTaskset:
-    return TextArenaTaskset(config)
+Config = TextArenaConfig
+Taskset = TextArenaTaskset

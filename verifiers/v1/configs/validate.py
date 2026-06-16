@@ -58,7 +58,5 @@ class ValidateConfig(BaseConfig):
     def _resolve_taskset(cls, data):
         """Narrow the generic `taskset` to its specific config type by `id` — the taskset-only
         half of `EnvConfig._resolve_plugins` (validate has no harness)."""
-        from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
-
-        narrow_plugin_field(data, "taskset", taskset_config_type)
+        data["taskset"] = TasksetConfig.resolve(data.get("taskset"))
         return data

@@ -242,5 +242,5 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
             )
 
 
-def load_taskset(config: R2EGymConfig) -> R2EGymTaskset:
-    return R2EGymTaskset(config)
+Config = R2EGymConfig
+Taskset = R2EGymTaskset

@@ -94,12 +94,11 @@ def harness_supports():
     """Read a capability flag (e.g. `SUPPORTS_TASK_TOOLS`, `SUPPORTS_USER_SIM`) off an harness
     by id — the matrix tests use it to decide whether a harness/task pairing should run, be
     rejected, or be skipped."""
-    from verifiers.v1.loaders import load_harness
 
     def _supports(harness_id: str, flag: str) -> bool:
-        harness = load_harness(
-            EvalConfig.model_validate({"harness": {"id": harness_id}}).harness
-        )
+        harness = EvalConfig.model_validate(
+            {"harness": {"id": harness_id}}
+        ).harness.build()
         return getattr(harness, flag)
 
     return _supports

@@ -109,5 +109,5 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
         return float("yes" in (verdict.message.content or "").lower())
 
 
-def load_taskset(config: WikiSearchConfig) -> WikiSearchTaskset:
-    return WikiSearchTaskset(config)
+Config = WikiSearchConfig
+Taskset = WikiSearchTaskset

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+import verifiers.v1 as vf
 from verifiers.v1.configs.eval import EvalConfig
 
 CONFIGS = sorted(
@@ -24,3 +25,21 @@ CONFIGS = sorted(
 def test_eval_config_parses(path: Path) -> None:
     config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
     assert config.taskset.id or config.id  # resolved to a v1 taskset or a v0 env id
+
+
+def test_plugin_exports_resolve_and_build() -> None:
+    config = EvalConfig.model_validate(
+        {
+            "taskset": {"id": "echo-v1", "phrases": ["hello"]},
+            "harness": {"id": "default", "runtime": {"type": "subprocess"}},
+        }
+    )
+
+    assert type(config.taskset).__name__ == "EchoConfig"
+    assert type(config.harness).__name__ == "DefaultHarnessConfig"
+
+    env = vf.Environment(config)
+    assert type(env.taskset).__name__ == "EchoTaskset"
+    assert type(env.harness).__name__ == "DefaultHarness"
+    assert not hasattr(vf, "load_taskset")
+    assert not hasattr(vf, "load_harness")

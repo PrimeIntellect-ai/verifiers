@@ -73,5 +73,5 @@ class MathTaskset(vf.Taskset[MathTask, MathConfig]):
         return float(lines[-1]) if lines else 0.0
 
 
-def load_taskset(config: MathConfig) -> MathTaskset:
-    return MathTaskset(config)
+Config = MathConfig
+Taskset = MathTaskset

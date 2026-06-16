@@ -12,7 +12,8 @@ import shlex
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import Harness as BaseHarness
+from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -45,7 +46,7 @@ class CodexHarnessConfig(HarnessConfig):
     """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
 
 
-class CodexHarness(Harness[CodexHarnessConfig]):
+class CodexHarness(BaseHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_TASK_TOOLS = False  # TODO
 
@@ -104,8 +105,8 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         return await runtime.run(argv, env)
 
 
-def load_harness(config: CodexHarnessConfig) -> CodexHarness:
-    return CodexHarness(config)
+Config = CodexHarnessConfig
+Harness = CodexHarness
 
 
-__all__ = ["CodexHarness", "CodexHarnessConfig", "load_harness"]
+__all__ = ["Config", "Harness", "CodexHarness", "CodexHarnessConfig"]

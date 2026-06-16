@@ -58,8 +58,8 @@ def narrow_config(base: type, argv: list[str]) -> type:
     annotations: dict[str, type] = {}
     fields: dict[str, object] = {}
     for field, resolve, ident in (
-        ("taskset", vf.taskset_config_type, taskset_id),
-        ("harness", vf.harness_config_type, harness_id),
+        ("taskset", vf.TasksetConfig.for_id, taskset_id),
+        ("harness", vf.HarnessConfig.for_id, harness_id),
     ):
         if ident:
             ftype = resolve(ident)

@@ -54,5 +54,5 @@ class DeepWikiTaskset(vf.Taskset[DeepWikiTask, vf.TasksetConfig]):
         return float(task.answer.lower() in (last or "").lower())
 
 
-def load_taskset(config: vf.TasksetConfig) -> DeepWikiTaskset:
-    return DeepWikiTaskset(config)
+Config = vf.TasksetConfig
+Taskset = DeepWikiTaskset

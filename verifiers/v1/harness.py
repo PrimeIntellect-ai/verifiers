@@ -19,7 +19,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.ids import EnvId, env_name
+from verifiers.v1.ids import EnvId, env_name, plugin_export
 from verifiers.v1.runtimes import DockerConfig, ProgramResult, Runtime, RuntimeConfig
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
@@ -48,6 +48,24 @@ class HarnessConfig(BaseConfig):
     def name(self) -> str:
         """The harness's package name (the id with any org / version stripped)."""
         return env_name(self.id)
+
+    @classmethod
+    def for_id(cls, harness_id: str) -> type["HarnessConfig"]:
+        """The config exported by a harness package."""
+        return plugin_export(harness_id, "harness", "Config")
+
+    @classmethod
+    def resolve(cls, value) -> "HarnessConfig":
+        """Validate raw harness config against the package's exported config."""
+        data = (
+            value.model_dump() if isinstance(value, BaseConfig) else dict(value or {})
+        )
+        harness_id = data.get("id") or "default"
+        return cls.for_id(harness_id).model_validate({**data, "id": harness_id})
+
+    def build(self) -> "Harness":
+        """Construct the harness class exported by this config's package."""
+        return plugin_export(self.id, "harness", "Harness")(self)
 
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)

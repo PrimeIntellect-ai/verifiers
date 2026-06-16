@@ -49,7 +49,7 @@ def _narrow(argv: list[str]) -> type[ValidateConfig]:
     taskset_id = extract_id(argv, "taskset")
     if not taskset_id:
         return ValidateConfig
-    ftype = vf.taskset_config_type(taskset_id)
+    ftype = vf.TasksetConfig.for_id(taskset_id)
     return type(
         ValidateConfig.__name__,
         (ValidateConfig,),
@@ -110,7 +110,7 @@ async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> dict
 async def run_validate(config: ValidateConfig) -> list[dict]:
     """Run each task's `validate` hook with bounded concurrency, showing progress live. Returns
     the result rows in memory — nothing is persisted."""
-    taskset = vf.load_taskset(config.taskset)
+    taskset = config.taskset.build()
     tasks = taskset.load_tasks()
     if config.shuffle:
         random.Random(0).shuffle(tasks)

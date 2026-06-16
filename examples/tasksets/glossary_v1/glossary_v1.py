@@ -56,5 +56,5 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, vf.TasksetConfig]):
         return float(task.answer.lower() in (last or "").lower())
 
 
-def load_taskset(config: vf.TasksetConfig) -> GlossaryTaskset:
-    return GlossaryTaskset(config)
+Config = vf.TasksetConfig
+Taskset = GlossaryTaskset

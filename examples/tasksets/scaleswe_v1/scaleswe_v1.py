@@ -258,5 +258,5 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
         return False
 
 
-def load_taskset(config: ScaleSWEConfig) -> ScaleSWETaskset:
-    return ScaleSWETaskset(config)
+Config = ScaleSWEConfig
+Taskset = ScaleSWETaskset

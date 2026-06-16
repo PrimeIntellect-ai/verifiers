@@ -57,5 +57,5 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTask, ReverseTextConfig]):
         return SequenceMatcher(None, response, task.answer).ratio()
 
 
-def load_taskset(config: ReverseTextConfig) -> ReverseTextTaskset:
-    return ReverseTextTaskset(config)
+Config = ReverseTextConfig
+Taskset = ReverseTextTaskset

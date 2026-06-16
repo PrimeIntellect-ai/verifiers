@@ -69,5 +69,5 @@ class ToolResponseImageTaskset(vf.Taskset[ToolResponseImageTask, vf.TasksetConfi
         return 0.0
 
 
-def load_taskset(config: vf.TasksetConfig) -> ToolResponseImageTaskset:
-    return ToolResponseImageTaskset(config)
+Config = vf.TasksetConfig
+Taskset = ToolResponseImageTaskset

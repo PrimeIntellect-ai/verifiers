@@ -23,7 +23,7 @@ from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.ids import EnvId, env_name
+from verifiers.v1.ids import EnvId, env_name, plugin_export
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, SubprocessConfig
 from verifiers.v1.task import TaskT
 from verifiers.v1.tools import Tools
@@ -86,6 +86,26 @@ class TasksetConfig(BaseConfig):
     def name(self) -> str:
         """The taskset's package name (the id with any org / version stripped)."""
         return env_name(self.id)
+
+    @classmethod
+    def for_id(cls, taskset_id: str) -> type["TasksetConfig"]:
+        """The config exported by a taskset package."""
+        return plugin_export(taskset_id, "taskset", "Config")
+
+    @classmethod
+    def resolve(cls, value) -> "TasksetConfig":
+        """Validate raw taskset config against the package's exported config."""
+        data = (
+            value.model_dump() if isinstance(value, BaseConfig) else dict(value or {})
+        )
+        taskset_id = data.get("id")
+        if not taskset_id:
+            return cls.model_validate(data)
+        return cls.for_id(taskset_id).model_validate({**data, "id": taskset_id})
+
+    def build(self) -> "Taskset":
+        """Construct the taskset class exported by this config's package."""
+        return plugin_export(self.id, "taskset", "Taskset")(self)
 
 
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig)

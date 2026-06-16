@@ -81,5 +81,5 @@ class EchoMultiTaskset(vf.Taskset[EchoMultiTask, EchoMultiConfig]):
         return matched / len(phrases)
 
 
-def load_taskset(config: EchoMultiConfig) -> EchoMultiTaskset:
-    return EchoMultiTaskset(config)
+Config = EchoMultiConfig
+Taskset = EchoMultiTaskset

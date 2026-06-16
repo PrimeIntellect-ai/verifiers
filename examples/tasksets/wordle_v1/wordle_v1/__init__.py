@@ -14,5 +14,5 @@ class WordleConfig(TextArenaConfig):
     game: Literal["Wordle-v0"] = "Wordle-v0"
 
 
-def load_taskset(config: WordleConfig) -> TextArenaTaskset:
-    return TextArenaTaskset(config)
+Config = WordleConfig
+Taskset = TextArenaTaskset

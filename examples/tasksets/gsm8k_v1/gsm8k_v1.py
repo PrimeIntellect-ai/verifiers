@@ -71,5 +71,5 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
         return bool(lines) and float(lines[-1]) == 1.0
 
 
-def load_taskset(config: GSM8KConfig) -> GSM8KTaskset:
-    return GSM8KTaskset(config)
+Config = GSM8KConfig
+Taskset = GSM8KTaskset

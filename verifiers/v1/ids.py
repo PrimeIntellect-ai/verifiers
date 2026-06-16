@@ -13,8 +13,10 @@ and output paths; `ensure_installed` makes a hub id importable on demand, reusin
 install path as `prime env install`.
 """
 
+import importlib
+import importlib.util
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator
 
@@ -66,3 +68,21 @@ def ensure_installed(env_id: str) -> str:
                 f"could not install {env_id!r} from the environments hub"
             )
     return env_module(env_id)
+
+
+def plugin_export(plugin_id: str, kind: Literal["taskset", "harness"], name: str):
+    """Read a required export from a taskset or harness package."""
+    module = ensure_installed(plugin_id)
+    group = {"taskset": "tasksets", "harness": "harnesses"}[kind]
+    namespaced = f"{group}.{module}"
+    target = namespaced if importlib.util.find_spec(namespaced) else module
+    try:
+        plugin = importlib.import_module(target)
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(
+            f"{kind} {plugin_id!r} not found (tried to import {target!r})"
+        ) from e
+    try:
+        return getattr(plugin, name)
+    except AttributeError as e:
+        raise AttributeError(f"{kind} {plugin_id!r} must export {name}") from e

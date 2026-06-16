@@ -1,11 +1,8 @@
-"""default — v1's built-in harness: its `harness.py` (class + config) and the
-`program.py` script it stages into the runtime. Resolved by id via `load_harness`."""
+"""Default v1 harness and the program script it stages into the runtime."""
 
 from harnesses.default.harness import DefaultHarness, DefaultHarnessConfig
 
+Config = DefaultHarnessConfig
+Harness = DefaultHarness
 
-def load_harness(config: DefaultHarnessConfig) -> DefaultHarness:
-    return DefaultHarness(config)
-
-
-__all__ = ["DefaultHarness", "DefaultHarnessConfig", "load_harness"]
+__all__ = ["Config", "Harness", "DefaultHarness", "DefaultHarnessConfig"]

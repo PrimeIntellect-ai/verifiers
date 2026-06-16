@@ -89,8 +89,8 @@ def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
 class EnvConfig(BaseConfig):
     """The rollout's two peers: the taskset (data + scoring) and the harness (which
     program drives it, and where it runs — `harness.runtime`). Both are chosen at eval
-    time, not by the env — only `taskset` is narrowed per env (to its config type,
-    inferred from `load_taskset`). Tool-server placement lives on `taskset.tools`."""
+    time, not by the env. Each package exports its concrete config type; tool-server
+    placement lives on `taskset.tools`."""
 
     # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, DefaultHarnessConfig);
     # without it model_dump() narrows to the base type and drops the subclass fields, so the
@@ -149,14 +149,8 @@ class EnvConfig(BaseConfig):
     def _resolve_plugins(cls, data):
         """Resolve the generic `taskset` / `harness` to its specific config type by `id`, so
         env-specific fields validate against the real plugin config (no untyped args dict)."""
-        from verifiers.v1.loaders import (
-            harness_config_type,
-            narrow_plugin_field,
-            taskset_config_type,
-        )
-
-        narrow_plugin_field(data, "taskset", taskset_config_type)
-        narrow_plugin_field(data, "harness", harness_config_type, "default")
+        data["taskset"] = TasksetConfig.resolve(data.get("taskset"))
+        data["harness"] = HarnessConfig.resolve(data.get("harness"))
         return data
 
 
@@ -218,12 +212,11 @@ def resolve_runtime_config(
 
 class Environment:
     def __init__(self, config: EnvConfig) -> None:
-        from verifiers.v1.loaders import load_harness, load_taskset
         from verifiers.v1.taskset import Taskset
 
         self.config = config
-        self.taskset = load_taskset(config.taskset)
-        self.harness = load_harness(config.harness)
+        self.taskset = config.taskset.build()
+        self.harness = config.harness.build()
         if (
             not self.harness.SUPPORTS_TASK_TOOLS
             and type(self.taskset).tools is not Taskset.tools

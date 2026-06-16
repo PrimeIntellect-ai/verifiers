@@ -190,5 +190,5 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
         return avg if c.power_per_turn else avg**c.similarity_power
 
 
-def load_taskset(config: AlphabetSortConfig) -> AlphabetSortTaskset:
-    return AlphabetSortTaskset(config)
+Config = AlphabetSortConfig
+Taskset = AlphabetSortTaskset

@@ -250,5 +250,5 @@ class SWELegoTaskset(vf.Taskset[SWELegoTask, vf.TasksetConfig]):
         )
 
 
-def load_taskset(config: vf.TasksetConfig) -> SWELegoTaskset:
-    return SWELegoTaskset(config)
+Config = vf.TasksetConfig
+Taskset = SWELegoTaskset

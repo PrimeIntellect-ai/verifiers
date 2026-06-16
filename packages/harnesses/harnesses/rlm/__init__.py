@@ -8,7 +8,8 @@ import json
 import logging
 import shlex
 
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import Harness as BaseHarness
+from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import metric
 from verifiers.v1.errors import ProgramError
@@ -38,7 +39,7 @@ class RLMHarnessConfig(HarnessConfig):
     """Built-in rlm tools to enable (RLM_TOOLS); None uses rlm's default set."""
 
 
-class RLMHarness(Harness[RLMHarnessConfig]):
+class RLMHarness(BaseHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_TASK_TOOLS = False
 
@@ -113,5 +114,5 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         }
 
 
-def load_harness(config: RLMHarnessConfig) -> RLMHarness:
-    return RLMHarness(config)
+Config = RLMHarnessConfig
+Harness = RLMHarness

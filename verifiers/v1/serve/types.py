@@ -53,8 +53,7 @@ class RunRolloutRequest(BaseRequest):
 class RunRolloutResponse(BaseResponse):
     trace: Trace[WireTask] | None = None
     """A typed `Trace` with a non-strict `WireTask` (taskset-specific task fields ride in
-    `model_extra`), so the server needn't assume the caller imports the taskset. A caller
-    that *does* import it upgrades via `Trace[task_type(taskset_id)].model_validate(...)`."""
+    `model_extra`), so the server needn't assume the caller imports the taskset."""
 
     @field_serializer("trace")
     def _ser_trace(self, trace: "Trace[WireTask] | None") -> dict | None:

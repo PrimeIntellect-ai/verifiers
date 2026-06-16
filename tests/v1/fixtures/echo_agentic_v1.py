@@ -60,5 +60,5 @@ class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
         return float(lenient_match(task.answer, content))
 
 
-def load_taskset(config: EchoAgenticConfig) -> EchoAgenticTaskset:
-    return EchoAgenticTaskset(config)
+Config = EchoAgenticConfig
+Taskset = EchoAgenticTaskset
