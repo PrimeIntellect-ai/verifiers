@@ -231,6 +231,11 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             overrides["top_p"] = s["top_p"]
         if "max_tokens" in s:
             overrides["max_output_tokens"] = s["max_tokens"]
+        if "reasoning_effort" in s:
+            overrides["reasoning"] = {
+                **dict(body.get("reasoning") or {}),
+                "effort": s["reasoning_effort"],
+            }
         steered = {
             k: v
             for k, v in body.items()
