@@ -1,8 +1,8 @@
-"""Client configs: describe an OpenAI-compatible endpoint and resolve it to a Client.
+"""Client configs: describe OpenAI-compatible endpoints and resolve them to a Client.
 
-A `BaseClientConfig` is an OpenAI-compatible endpoint (base_url + API-key env var
+A `BaseClientConfig` is one or more OpenAI-compatible endpoints (base_url + API-key env var
 + extra headers) that `resolve_client` turns into a `Client`. Prime team-billing
-is baked in via a validator, so it's handled in one place. Both the eval entrypoint
+is handled while resolving each endpoint. Both the eval entrypoint
 (its model client) and in-env LLM calls (e.g. a judge reward) build clients from
 these — inherit `BaseClientConfig` to get the endpoint/header handling for free.
 `ClientConfig` is the CLI-selectable discriminated union (eval | train).
@@ -12,7 +12,7 @@ import os
 from typing import Annotated, Literal
 
 from openai import AsyncOpenAI
-from pydantic import Field, model_validator
+from pydantic import Field
 from pydantic_config import BaseConfig
 from renderers import RendererConfig
 
@@ -25,21 +25,15 @@ PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"
 
 
 class BaseClientConfig(BaseConfig):
-    """An OpenAI-compatible endpoint. The API key is read from an env var."""
+    """OpenAI-compatible endpoint(s). The API key is read from an env var."""
 
-    base_url: str = "https://api.pinference.ai/api/v1"
+    base_url: str | Annotated[list[str], Field(min_length=1)] = (
+        "https://api.pinference.ai/api/v1"
+    )
+    """One URL, or URLs assigned round-robin across rollouts."""
     api_key_var: str = "PRIME_API_KEY"
     headers: dict[str, str] = Field(default_factory=dict)
     """Extra HTTP headers sent on every request."""
-
-    @model_validator(mode="after")
-    def add_prime_team_id(self) -> "BaseClientConfig":
-        # Prime inference bills the personal balance unless a team is named; on
-        # that endpoint, route billing to PRIME_TEAM_ID when set (explicit wins).
-        team_id = os.environ.get("PRIME_TEAM_ID")
-        if PRIME_INFERENCE_HOST in self.base_url and team_id:
-            self.headers.setdefault(PRIME_TEAM_ID_HEADER, team_id)
-        return self
 
 
 class EvalClientConfig(BaseClientConfig):
@@ -72,14 +66,23 @@ ClientConfig = Annotated[
 ]
 
 
-def resolve_client(config: BaseClientConfig) -> Client:
+def resolve_client(config: BaseClientConfig, endpoint_idx: int = 0) -> Client:
+    """Resolve one configured endpoint."""
+    base_urls = (
+        [config.base_url] if isinstance(config.base_url, str) else config.base_url
+    )
+    base_url = base_urls[endpoint_idx % len(base_urls)]
     api_key = os.environ.get(config.api_key_var, "EMPTY")
+    headers = dict(config.headers)
+    team_id = os.environ.get("PRIME_TEAM_ID")
+    if PRIME_INFERENCE_HOST in base_url and team_id:
+        headers.setdefault(PRIME_TEAM_ID_HEADER, team_id)
     if isinstance(config, TrainClientConfig):
         # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
         openai = AsyncOpenAI(
-            base_url=config.base_url,
+            base_url=base_url,
             api_key=api_key,
-            default_headers=config.headers or None,
+            default_headers=headers or None,
         )
         return TrainClient(
             openai,
@@ -88,4 +91,4 @@ def resolve_client(config: BaseClientConfig) -> Client:
             renderer_model_name=config.renderer_model_name,
         )
     # The proxy is a raw httpx forwarder; the dialect supplies the auth scheme + upstream path.
-    return EvalClient(config.base_url, api_key, headers=config.headers or None)
+    return EvalClient(base_url, api_key, headers=headers or None)

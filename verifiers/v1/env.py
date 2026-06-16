@@ -252,6 +252,7 @@ class Environment:
             max_total_tokens=config.max_total_tokens,
         )
         self._warned_resources: set[tuple[str, str]] = set()
+        self._context_idx = 0
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
         """Resolve the runtime config for a task off the harness's runtime (see
@@ -260,11 +261,17 @@ class Environment:
             self.harness.config.runtime, task, self._warned_resources
         )
 
-    def episode(self, task: Task, ctx: RolloutContext, n: int = 1) -> Episode:
+    def episode(
+        self,
+        task: Task,
+        ctx: RolloutContext | list[RolloutContext],
+        n: int = 1,
+    ) -> Episode:
         """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime
         (image + resources) and its timeouts (cli/toml > task > default, None = no limit),
         build one `Rollout` per sample sharing them, and wrap them in an `Episode` (which
-        runs them and applies the taskset's `@group_reward`s across their traces).
+        runs them and applies the taskset's `@group_reward`s across their traces). When
+        multiple contexts are given, assign them round-robin across episodes.
 
         A taskset with `@group_reward`s compares a task's rollouts, so it needs >=2 of
         them — refuse `n < 2` there (rather than silently scoring a group of one)."""
@@ -273,6 +280,9 @@ class Environment:
                 f"taskset defines @group_reward(s), which compare a task's rollouts and "
                 f"need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
             )
+        contexts = ctx if isinstance(ctx, list) else [ctx]
+        context_idx = self._context_idx
+        self._context_idx += n
         runtime_config = self.runtime_for(task)
         setup_timeout = (
             self.setup_timeout if self.setup_timeout is not None else task.setup_timeout
@@ -298,7 +308,7 @@ class Environment:
                 task=task,
                 taskset=self.taskset,
                 harness=self.harness,
-                ctx=ctx,
+                ctx=contexts[(context_idx + i) % len(contexts)],
                 runtime_config=runtime_config,
                 setup_timeout=setup_timeout,
                 harness_timeout=harness_timeout,
@@ -308,7 +318,7 @@ class Environment:
                 model_retries=retries.model.max_retries,
                 runtime_retries=retries.runtime.max_retries,
             )
-            for _ in range(n)
+            for i in range(n)
         ]
         return Episode(rollouts, self.taskset, retry=retries.rollout)
 
