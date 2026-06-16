@@ -1,8 +1,3 @@
-"""wikispeedia tool server: a stateful `vf.Toolset` exposing `wiki_click_link` / `wiki_go_back`.
-
-Self-launching — the framework starts it with `python -m wikispeedia_v1.servers.wiki`.
-"""
-
 import verifiers.v1 as vf
 
 

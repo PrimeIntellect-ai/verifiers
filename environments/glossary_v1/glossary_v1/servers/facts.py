@@ -1,8 +1,3 @@
-"""glossary tool server: a `vf.Toolset` exposing a `facts_lookup` tool.
-
-Self-launching — the framework starts it with `python -m glossary_v1.servers.facts`.
-"""
-
 import json
 from pathlib import Path
 
@@ -12,7 +7,7 @@ FACTS: dict[str, str] = json.loads((Path(__file__).parent / "facts.json").read_t
 
 
 class GlossaryToolset(vf.Toolset[vf.ToolsetConfig]):
-    TOOL_PREFIX = "facts"  # the model sees `facts_lookup` (matches the instruction)
+    TOOL_PREFIX = "facts"
 
     @vf.tool
     def lookup(self, name: str) -> str:

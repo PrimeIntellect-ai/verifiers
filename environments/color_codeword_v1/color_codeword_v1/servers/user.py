@@ -1,8 +1,3 @@
-"""color-codeword user simulator: a `vf.User` revealing each turn's colored squares.
-
-Self-launching — the framework starts it with `python -m color_codeword_v1.servers.user`.
-"""
-
 import base64
 from io import BytesIO
 

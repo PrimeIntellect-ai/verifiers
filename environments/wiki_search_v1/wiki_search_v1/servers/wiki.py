@@ -1,8 +1,3 @@
-"""wiki-search tool server: a `vf.Toolset` exposing read-only search/view/read tools.
-
-Self-launching — the framework starts it with `python -m wiki_search_v1.servers.wiki`.
-"""
-
 import verifiers.v1 as vf
 
 DATASET = "willcb/rare-wiki-pages"

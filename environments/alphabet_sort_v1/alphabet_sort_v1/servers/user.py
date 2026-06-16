@@ -1,8 +1,3 @@
-"""alphabet-sort user simulator: a `vf.User` that replays the episode's follow-up turns.
-
-Self-launching — the framework starts it with `python -m alphabet_sort_v1.servers.user`.
-"""
-
 import verifiers.v1 as vf
 
 
@@ -11,9 +6,9 @@ class AlphabetSortUser(vf.User[vf.UserConfig]):
     injecting the next follow-up as a user message until all turns are done."""
 
     async def setup_task(self, task) -> None:
-        self.follow_ups = task.info["follow_ups"]  # per-task input, from the task
-        self.num_turns = task.info["num_turns"]  # per-task input
-        self.turns = 0  # per-rollout mutable state
+        self.follow_ups = task.info["follow_ups"]
+        self.num_turns = task.info["num_turns"]
+        self.turns = 0
 
     async def respond(self, message: str) -> tuple[vf.Messages, bool]:
         self.turns += 1
