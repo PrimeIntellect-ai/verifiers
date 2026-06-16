@@ -75,6 +75,26 @@ async def test_multi_turn_with_tools(
 
 
 @pytest.mark.e2e
+async def test_shared_tools_via_env_server(run_v1_server, tmp_path):
+    """A *shared* tool server (stood up once per eval, not per rollout) driven through the
+    env-server worker pool — the path prime-rl trains through. Serving the shared tools is the
+    server's job; a rollout just reuses the shared URL. Regression guard: the env server used to
+    run rollouts without entering its serving context, so a shared server was rebuilt per rollout
+    or errored outright ("shared server was launched with a task")."""
+    (trace,) = await run_v1_server(
+        "glossary-v1",
+        runtime="subprocess",
+        output_dir=tmp_path,
+        max_turns=6,
+        taskset_overrides={"tools": {"shared": True}},
+    )
+    assert trace.errors == []
+    assert not trace.is_truncated
+    assert trace.num_turns >= 2  # tool call + answer
+    assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
 async def test_tool_response_image(run_v1, tmp_path):
     """MCP image content from a tool result survives into the v1 trace."""
     (trace,) = await run_v1(

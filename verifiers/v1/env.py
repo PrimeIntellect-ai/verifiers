@@ -252,6 +252,11 @@ class Environment:
             max_total_tokens=config.max_total_tokens,
         )
         self._warned_resources: set[tuple[str, str]] = set()
+        self._shared_urls: dict[str, str] = {}
+        self._interception: InterceptionPool | None = None
+        """Eval-level serving resources, live only inside `serving()`: shared tool servers
+        ({name: url}) and the interception pool. `episode()` injects them into every rollout
+        so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
         """Resolve the runtime config for a task off the harness's runtime (see
@@ -307,10 +312,31 @@ class Environment:
                 limits=self.limits,
                 model_retries=retries.model.max_retries,
                 runtime_retries=retries.runtime.max_retries,
+                shared_urls=self._shared_urls,
+                interception=self._interception,
             )
             for _ in range(n)
         ]
         return Episode(rollouts, self.taskset, retry=retries.rollout)
+
+    @contextlib.asynccontextmanager
+    async def serving(self, tasks: list[Task]):
+        """Hold the env-level serving resources for the duration of an eval: the shared tool
+        servers (built once, see `shared_tools`) and the interception pool. Stash them so
+        every `episode()` built inside this context injects them into its rollouts — that's
+        what keeps both eval runners (in-process and env-server) on one serving path. Build
+        episodes inside this context; the resources are torn down on exit."""
+        async with (
+            self.shared_tools(tasks) as shared_urls,
+            self.interception_pool() as interception,
+        ):
+            self._shared_urls = shared_urls
+            self._interception = interception
+            try:
+                yield
+            finally:
+                self._shared_urls = {}
+                self._interception = None
 
     def interception_pool(self) -> InterceptionPool:
         """The shared interception pool for this env's rollouts — one server (+ tunnel

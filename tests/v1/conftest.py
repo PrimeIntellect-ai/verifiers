@@ -111,43 +111,69 @@ def pytest_collection_modifyitems(config, items) -> None:
             item.add_marker(skip)
 
 
-@pytest.fixture
-def run_v1():
-    """Run a v1 taskset end-to-end (the eval CLI's native path) and return its traces.
+def _eval_config(
+    taskset: str,
+    *,
+    runtime: str,
+    output_dir: Path,
+    harness: str = "default",
+    n: int = 1,
+    max_tokens: int = 2048,
+    max_turns: int | None = 4,
+    rollout_timeout: float = 180,
+    enable_bash: bool = False,
+    taskset_overrides: dict | None = None,
+    pool: dict | None = None,
+) -> EvalConfig:
+    """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
+    (`run_v1`) and env-server (`run_v1_server`) fixtures.
 
     `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
     risks truncating the reasoning before the answer (which tanks the reward)."""
+    harness_config: dict = {"id": harness, "runtime": {"type": runtime}}
+    if enable_bash:
+        harness_config["enable_bash"] = True
+    return EvalConfig(
+        taskset={"id": taskset, **(taskset_overrides or {})},
+        harness=harness_config,
+        num_tasks=1,
+        num_rollouts=n,
+        max_turns=max_turns,
+        max_output_tokens=max_tokens,
+        sampling={"max_tokens": max_tokens, "temperature": 0},
+        timeout={"rollout": rollout_timeout, "scoring": 60},
+        rich=False,
+        output_dir=output_dir,
+        **({"pool": pool} if pool else {}),
+    )
 
-    async def _run(
-        taskset: str,
-        *,
-        runtime: str,
-        output_dir: Path,
-        harness: str = "default",
-        n: int = 1,
-        max_tokens: int = 2048,
-        max_turns: int | None = 4,
-        rollout_timeout: float = 180,
-        enable_bash: bool = False,
-        taskset_overrides: dict | None = None,
-    ) -> list[Trace]:
-        harness_config: dict = {"id": harness, "runtime": {"type": runtime}}
-        if enable_bash:
-            harness_config["enable_bash"] = True
-        config = EvalConfig(
-            taskset={"id": taskset, **(taskset_overrides or {})},
-            harness=harness_config,
-            num_tasks=1,
-            num_rollouts=n,
-            max_turns=max_turns,
-            max_output_tokens=max_tokens,
-            sampling={"max_tokens": max_tokens, "temperature": 0},
-            timeout={"rollout": rollout_timeout, "scoring": 60},
-            rich=False,
-            output_dir=output_dir,
-        )
+
+@pytest.fixture
+def run_v1():
+    """Run a v1 taskset end-to-end in-process (`run_eval`, the `--rich` CLI path) and return
+    its traces."""
+
+    async def _run(taskset: str, **kwargs) -> list[Trace]:
+        config = _eval_config(taskset, **kwargs)
         return await run_eval(Environment(config), config)
+
+    return _run
+
+
+@pytest.fixture
+def run_v1_server():
+    """Run a v1 taskset through the env-server worker pool (`run_eval_server`) — the path a
+    non-`--rich` CLI run and prime-rl training both take. Spawns the broker + a worker, so it's
+    the only fixture that exercises serving resources (shared tool servers, interception pool)
+    being stood up by the *server* rather than the in-process runner. Pinned to a single static
+    worker for determinism."""
+    from verifiers.v1.cli.runner import run_eval_server
+
+    async def _run(taskset: str, **kwargs) -> list[Trace]:
+        kwargs.setdefault("pool", {"type": "static", "num_workers": 1})
+        config = _eval_config(taskset, **kwargs)
+        return await run_eval_server(config)
 
     return _run
 

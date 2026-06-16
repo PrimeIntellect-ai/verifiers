@@ -18,13 +18,17 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from enum import StrEnum
-from typing import TYPE_CHECKING
 
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RetryingClient, RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.errors import ProgramError, RolloutError
-from verifiers.v1.interception import InterceptionServer, RolloutLimits, RolloutSession
+from verifiers.v1.interception import (
+    InterceptionPool,
+    InterceptionServer,
+    RolloutLimits,
+    RolloutSession,
+)
 from verifiers.v1.runtimes import (
     RetryingRuntime,
     Runtime,
@@ -36,9 +40,6 @@ from verifiers.v1.mcp import serve_tools, serve_user
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
-
-if TYPE_CHECKING:
-    from verifiers.v1.interception import InterceptionPool
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,8 @@ class Rollout:
         limits: RolloutLimits | None = None,
         model_retries: int = 0,
         runtime_retries: int = 0,
+        shared_urls: dict[str, str] | None = None,
+        interception: InterceptionPool | None = None,
     ) -> None:
         self.task = task
         self.taskset = taskset
@@ -82,6 +85,12 @@ class Rollout:
         self.limits = limits or RolloutLimits()
         self.model_retries = model_retries
         self.runtime_retries = runtime_retries
+        self.shared_urls = shared_urls or {}
+        """Eval-level shared tool servers ({name: url}) to reuse instead of starting per rollout;
+        the eval-level interception pool. Both injected by `Environment.episode` from the active
+        `Environment.serving` context — so a rollout always has them and no runner has to thread
+        them in."""
+        self.interception = interception
         self.phase = Phase.SETUP
         """Lifecycle phase for display (see `Phase`); advanced through the rollout, and
         set to DONE by the Episode once group scoring has run."""
@@ -96,7 +105,7 @@ class Rollout:
     @asynccontextmanager
     async def _serve_interception(
         self,
-        pool: "InterceptionPool | None",
+        pool: InterceptionPool | None,
         runtime: Runtime,
         session: RolloutSession,
     ):
@@ -111,16 +120,12 @@ class Rollout:
                 async with host_endpoint(server.port, runtime.is_local) as url:
                     yield f"{url}/v1", secret
 
-    async def run(
-        self,
-        shared_urls: dict[str, str] | None = None,
-        interception: "InterceptionPool | None" = None,
-    ) -> Trace:
+    async def run(self) -> Trace:
         """Run the rollout and return its trace. Captures expected `RolloutError`s onto
         the trace (a bad rollout is data, not a crash), runs per-rollout scoring while
-        the runtime is live, then tears the runtime down in a `finally`. `shared_urls`
-        are eval-level shared tool servers to reuse instead of starting; `interception`
-        is the eval-level shared interception pool (None = a server per rollout)."""
+        the runtime is live, then tears the runtime down in a `finally`. Reuses the
+        eval-level shared tool servers / interception pool injected at construction (see
+        `self.shared_urls` / `self.interception`)."""
         trace: Trace = Trace(task=self.task)
         self.trace = trace  # expose for the --rich dashboard
         trace.timing.setup.start = time.time()
@@ -152,14 +157,16 @@ class Rollout:
                 raise ProgramError(
                     f"setup exceeded setup_timeout of {self.setup_timeout}s"
                 ) from None
-            async with self._serve_interception(interception, runtime, session) as (
+            async with self._serve_interception(
+                self.interception, runtime, session
+            ) as (
                 endpoint,
                 secret,
             ):
                 tool_servers = self.taskset.tools(self.task)
                 async with (
                     serve_tools(
-                        tool_servers, runtime, self.task, shared_urls=shared_urls
+                        tool_servers, runtime, self.task, shared_urls=self.shared_urls
                     ) as urls,
                     serve_user(
                         self.taskset.user(self.task), self.task, agent_runtime=runtime
