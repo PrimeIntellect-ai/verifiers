@@ -46,7 +46,7 @@ client = AsyncOpenAI()
 def run_bash(command: str) -> str:
     try:
         result = subprocess.run(
-            ["bash", "-c", command], capture_output=True, text=True, timeout=60
+            ["bash", "-c", command], capture_output=True, text=True, timeout=3600
         )
         return result.stdout + result.stderr
     except Exception as e:
