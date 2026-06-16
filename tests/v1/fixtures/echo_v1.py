@@ -48,5 +48,4 @@ class EchoTaskset(vf.Taskset[EchoTask, EchoConfig]):
         return float(lenient_match(task.answer, reply or ""))
 
 
-def load_taskset(config: EchoConfig) -> EchoTaskset:
-    return EchoTaskset(config)
+__all__ = ["EchoTaskset"]

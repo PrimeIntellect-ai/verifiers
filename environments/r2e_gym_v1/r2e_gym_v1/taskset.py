@@ -240,7 +240,3 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
             raise vf.ProgramError(
                 f"gold apply failed ({task.name}): {result.stderr.strip()[-500:]}"
             )
-
-
-def load_taskset(config: R2EGymConfig) -> R2EGymTaskset:
-    return R2EGymTaskset(config)

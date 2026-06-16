@@ -69,7 +69,3 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
             raise vf.ProgramError(f"verify.py failed: {result.stderr.strip()[-500:]}")
         lines = result.stdout.strip().splitlines()
         return bool(lines) and float(lines[-1]) == 1.0
-
-
-def load_taskset(config: GSM8KConfig) -> GSM8KTaskset:
-    return GSM8KTaskset(config)

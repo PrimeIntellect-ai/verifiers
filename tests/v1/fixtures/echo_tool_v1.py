@@ -57,8 +57,7 @@ class EchoToolTaskset(vf.Taskset[EchoToolTask, EchoToolConfig]):
         return float(PHRASE in last and ECHO_TOKEN in last)
 
 
-def load_taskset(config: EchoToolConfig) -> EchoToolTaskset:
-    return EchoToolTaskset(config)
+__all__ = ["EchoToolTaskset"]
 
 
 if __name__ == "__main__":
