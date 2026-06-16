@@ -4,9 +4,9 @@ A `Toolset` (and a `User`) is authored as a vf-native class. The framework launc
 generic entrypoint (`python -m verifiers.v1.toolserver`) that imports the real class from its
 (installed) env module and serves it over streamable HTTP on `MCP_PORT`. On a host (`subprocess`)
 runtime that's the eval's own interpreter — `verifiers` and the env module are already installed,
-nothing is fetched. In a sandbox the env module is uploaded and `uv pip install`ed (pulling
-`verifiers`, a git-pinned dependency of the env package, plus the env's own deps), then the same
-entrypoint runs. A `Toolset` can instead point at an already-running remote endpoint
+nothing is fetched. In a sandbox the working-tree `verifiers` source and the env module are
+uploaded and `uv pip install`ed (deps resolve from PyPI), then the same entrypoint runs — no
+publish or pin to keep in sync. A `Toolset` can instead point at an already-running remote endpoint
 (`ToolsetConfig.url`, e.g. deepwiki).
 
 `serve` is the single internal launcher (any server, any placement). `serve_tools` brings a
@@ -44,9 +44,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# `verifiers` isn't on PyPI at the v1 version, so a sandbox installs it from git (the env package
-# declares it as a dependency; this supplies the pin). Locally the editable workspace is used.
-_VERIFIERS_PIN = "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@3f998e3"
+# The verifiers source tree's wheel-build inputs — uploaded into a sandbox so it installs the
+# developer's working-tree verifiers (deps resolve from PyPI off the uploaded pyproject), with no
+# publish or git pin to keep in sync.
+_VERIFIERS_BUILD_INPUTS = ["pyproject.toml", "README.md", "LICENSE", "verifiers"]
 
 
 class ToolsetConfig(BaseConfig):
@@ -57,8 +58,8 @@ class ToolsetConfig(BaseConfig):
     and `shared` trade that off:
       - neither (default): its own `runtime`, per rollout (host by default).
       - colocated: in the harness's OWN runtime, per rollout (no tunnel). In a sandbox this means
-        the env module is uploaded and `uv pip install`ed there (pulling git-pinned `verifiers`),
-        so it costs a per-rollout install.
+        the `verifiers` source + the env module are uploaded and `uv pip install`ed there, so it
+        costs a per-rollout install.
       - shared: one instance for the whole eval, in its own `runtime`.
     Subclass to add the server's own knobs (the data its `@tool` methods / `respond` read).
     The server name is the class's `name` ClassVar, not a field here — it's an identity (the
@@ -259,30 +260,58 @@ def _free_port() -> int:
     raise ProgramError("could not find a free port in [3000, 9000)")
 
 
+def _tar_source(src: Path, members: list[str] | None = None) -> bytes:
+    """Gzipped tarball of a local package dir, rooted at `src.name/` and excluding `__pycache__`.
+    `members` limits it to those top-level entries (the verifiers tree only needs its package +
+    project files); otherwise the whole dir (a small env package)."""
+
+    def keep(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        return None if "__pycache__" in info.name.split("/") else info
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for member in members or [""]:
+            path = src / member if member else src
+            if path.exists():
+                tar.add(path, arcname=f"{src.name}/{member}".rstrip("/"), filter=keep)
+    return buf.getvalue()
+
+
+def _verifiers_root() -> Path:
+    """The verifiers source checkout — the dir holding its `pyproject.toml`, above the package."""
+    import verifiers
+
+    root = Path(verifiers.__file__).resolve().parent.parent
+    if not (root / "pyproject.toml").exists():
+        raise ProgramError(
+            "verifiers is not a source checkout (no pyproject above the package), so it can't be "
+            "uploaded to a sandbox; run sandboxed servers from a verifiers source install"
+        )
+    return root
+
+
 async def _install_in_sandbox(launch: _Launch, runtime: Runtime) -> str:
-    """Make the env module importable in a sandbox: upload its package directory (a tarball over
-    `write`), create a venv, and `uv pip install` git-pinned `verifiers` then the package (which
-    pulls the env's own deps). Returns the venv's python. The env package's `verifiers` dependency
-    is satisfied by the pre-installed git pin, so it resolves to the v1 version, not PyPI."""
+    """Make the env module importable in a sandbox: upload the working-tree `verifiers` source and
+    the env package (tarballs over `write`), create a venv, and `uv pip install` both — verifiers
+    first (deps resolve from PyPI off its pyproject), then the env package (its `verifiers` dep
+    already satisfied). Returns the venv's python. Uses the developer's current code — no publish
+    or pin to keep in sync."""
     if launch.source_dir is None:
         raise ProgramError(
             f"server {launch.name!r} runs in a {runtime.type} runtime but its module is not a "
             "local package (no pyproject) — sandbox launch needs a local env package to upload"
         )
-    src = Path(launch.source_dir)
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        tar.add(src, arcname=src.name)
-    await runtime.write("/tmp/vf-env/pkg.tar.gz", buf.getvalue())
-    venv, pkg = "/tmp/vf-venv", f"/tmp/vf-env/{src.name}"
+    root = "/tmp/vf-src"
+    vf, env = _verifiers_root(), Path(launch.source_dir)
+    await runtime.write(f"{root}/{vf.name}.tar.gz", _tar_source(vf, _VERIFIERS_BUILD_INPUTS))
+    await runtime.write(f"{root}/{env.name}.tar.gz", _tar_source(env))
+    venv = "/tmp/vf-venv"
     setup = (
         f"{_ENSURE_UV}; set -e; "
-        # the git-pinned verifiers install needs a git client (slim base images lack one)
-        "command -v git >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq git >/dev/null; }; "
-        "tar -xzf /tmp/vf-env/pkg.tar.gz -C /tmp/vf-env && "
+        f'for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
         f"uv venv {venv} && "
-        f"uv pip install --python {venv} {shlex.quote(_VERIFIERS_PIN)} && "
-        f"uv pip install --python {venv} {shlex.quote(pkg)}"
+        f"uv pip install --python {venv} {root}/{shlex.quote(vf.name)} && "
+        f"uv pip install --python {venv} {root}/{shlex.quote(env.name)}"
     )
     result = await runtime.run(["sh", "-c", setup], {})
     if result.exit_code != 0:
@@ -301,7 +330,7 @@ async def serve_in_runtime(launch: _Launch, runtime: Runtime, port: int) -> None
     log = f"vf_tool_{launch.name}.log"
     if runtime.type == "subprocess":  # host: verifiers + env module already installed
         python = sys.executable
-    else:  # sandbox: upload + install the env package (pulls git-pinned verifiers)
+    else:  # sandbox: upload + install the verifiers source + the env package
         python = await _install_in_sandbox(launch, runtime)
     argv = [python, "-m", "verifiers.v1.toolserver"]
     env = {**launch.env, "MCP_PORT": str(port)}
