@@ -63,3 +63,7 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
 
 def load_taskset(config: GlossaryConfig) -> GlossaryTaskset:
     return GlossaryTaskset(config)
+
+
+if __name__ == "__main__":
+    GlossaryToolset.run()

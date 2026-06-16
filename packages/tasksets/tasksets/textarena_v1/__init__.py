@@ -45,16 +45,19 @@ class TextArenaUser(vf.User[vf.UserConfig]):
     turn plus whether the episode is over. When the game ends it writes the game's own outcome to
     `OUTCOME_FILE` in the runtime, which the reward reads back."""
 
-    async def setup(self, task) -> None:
+    async def setup(self) -> None:
+        import nltk
+
+        nltk.download("words", quiet=True)
+        nltk.download("averaged_perceptron_tagger_eng", quiet=True)
+
+    async def setup_task(self, task) -> None:
         # textarena derives a game's whole setup from the global RNG at reset, so seeding it
         # reproduces the exact episode the taskset built the instruction from — no per-game keys.
         import random
 
-        import nltk
         import textarena
 
-        nltk.download("words", quiet=True)
-        nltk.download("averaged_perceptron_tagger_eng", quiet=True)
         self.env = textarena.make(env_id=task.info["game"])  # per-task input, from the task
         random.seed(task.info["seed"])  # per-task input
         self.env.reset(num_players=1)

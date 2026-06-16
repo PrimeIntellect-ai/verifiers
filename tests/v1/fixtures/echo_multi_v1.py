@@ -28,7 +28,7 @@ class EchoMultiConfig(vf.TasksetConfig):
 class EchoMultiUser(vf.User[vf.UserConfig]):
     """Injects the next phrase as a user turn until the episode's phrases run out."""
 
-    async def setup(self, task) -> None:
+    async def setup_task(self, task) -> None:
         self.phrases = task.phrases  # per-task input, from the task
         self.turns = 0  # per-rollout mutable state
 
@@ -65,3 +65,7 @@ class EchoMultiTaskset(vf.Taskset[EchoMultiTask, EchoMultiConfig]):
 
 def load_taskset(config: EchoMultiConfig) -> EchoMultiTaskset:
     return EchoMultiTaskset(config)
+
+
+if __name__ == "__main__":
+    EchoMultiUser.run()

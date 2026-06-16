@@ -58,3 +58,7 @@ class ToolResponseImageTaskset(vf.Taskset[ToolResponseImageTask, vf.TasksetConfi
 
 def load_taskset(config: vf.TasksetConfig) -> ToolResponseImageTaskset:
     return ToolResponseImageTaskset(config)
+
+
+if __name__ == "__main__":
+    VisionToolset.run()

@@ -53,7 +53,6 @@ from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.tools import (
     Toolset,
     ToolsetConfig,
-    run_mcp_server,
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
@@ -170,7 +169,6 @@ __all__ = [
     # mcp
     "Toolset",
     "ToolsetConfig",
-    "run_mcp_server",
     # user simulator
     "User",
     "UserConfig",

@@ -1,18 +1,18 @@
 """Tools: how a task gives the harness tools, via `vf.Toolset`s it declares from `Taskset.tools`.
 
-A `Toolset` (and a `User`) is authored as a vf-native class. The framework launches it with a
-generic entrypoint (`python -m verifiers.v1.toolserver`) that imports the real class from its
-(installed) env module and serves it over streamable HTTP on `MCP_PORT`. On a host (`subprocess`)
-runtime that's the eval's own interpreter — `verifiers` and the env module are already installed,
-nothing is fetched. In a sandbox the working-tree `verifiers` source and the env module are
-uploaded and `uv pip install`ed (deps resolve from PyPI), then the same entrypoint runs — no
-publish or pin to keep in sync. A `Toolset` can instead point at an already-running remote endpoint
-(`ToolsetConfig.url`, e.g. deepwiki).
+A `Toolset` (and a `User`) is authored as a vf-native class whose env module ends with
+`if __name__ == "__main__": <Server>.run()`. The framework launches it by running that module
+(`python -m <module>`); `ServerBase.run()` rebuilds the server from the environment and serves it
+over streamable HTTP on `MCP_PORT`. On a host (`subprocess`) runtime that's the eval's own
+interpreter — `verifiers` and the env module are already installed, nothing is fetched. In a sandbox
+the working-tree `verifiers` source and the env module are uploaded and `uv pip install`ed (deps
+resolve from PyPI), then the module runs the same way — no publish or pin to keep in sync. A
+`Toolset` can instead point at an already-running remote endpoint (`ToolsetConfig.url`, e.g. deepwiki).
 
 `serve` is the single internal launcher (any server, any placement). `serve_tools` brings a
 task's servers up for a rollout (each in its `config`'s placement — colocated, own runtime);
-`serve_shared` brings up shared ones once per eval. `serve_server`/`run_mcp_server` run the
-server-side serve loop (called by the entrypoint). The wire types the model sees (`Tool`,
+`serve_shared` brings up shared ones once per eval. `ServerBase.run` → `ServerBase._serve` is the
+server-side serve loop (in the launched process). The wire types the model sees (`Tool`,
 `ToolCall`, …) live in `types`.
 """
 
@@ -27,9 +27,8 @@ import shlex
 import socket
 import sys
 import tarfile
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar, get_args
 
 from pydantic import model_validator
 from pydantic_config import BaseConfig
@@ -43,7 +42,7 @@ from verifiers.v1.runtimes import (
     host_endpoint,
     make_runtime,
 )
-from verifiers.v1.runtimes.base import _ENSURE_UV
+from verifiers.v1.runtimes.base import _ENSURE_UV, SERVICE_PORT
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -94,19 +93,6 @@ class ToolsetConfig(BaseConfig):
         return self
 
 
-@dataclass(frozen=True)
-class _Launch:
-    """Internal: everything `serve_in_runtime` needs to start a server with the generic entrypoint
-    (`python -m verifiers.v1.toolserver`). `env` carries the serialized class/config/task refs the
-    entrypoint reads; `source_dir` is the env package's local directory (the one with `pyproject`),
-    uploaded + installed when the runtime is a sandbox (`None` for a non-local/ambient module).
-    What `server_to_launch` produces; authors never construct it."""
-
-    name: str
-    env: dict[str, str] = field(default_factory=dict)
-    source_dir: str | None = None
-
-
 ConfigT = TypeVar("ConfigT", bound=BaseConfig)
 
 
@@ -114,13 +100,13 @@ class ServerBase(Generic[ConfigT]):
     """A vf-native server authored as a class, initialized from its config — the same shape as
     `Taskset`/`TasksetConfig`: the config (a `ToolsetConfig`/`UserConfig` subclass) is the
     serializable data (placement + the server's own knobs); the class is the behaviour. The
-    framework launches it with the generic entrypoint (`python -m verifiers.v1.toolserver`), which
-    imports this class from its env module, rebuilds `cls(config)`, and serves over MCP — no
-    FastMCP boilerplate. Subclassed by `Toolset` (`@tool` methods) and `User` (a `respond` hook).
-    Build expensive/non-serializable state in `setup` — set it as plain instance attributes (it
-    runs in the server process). The server's deps come from its env package's `pyproject` (the
-    install in a sandbox), so the class may freely `import verifiers`, import siblings, and use
-    module globals."""
+    framework launches it by running its env module (`python -m <module>`), whose `__main__` calls
+    `cls.run()` to rebuild `cls(config)` from the environment and serve over MCP — no FastMCP
+    boilerplate. Subclassed by `Toolset` (`@tool` methods) and `User` (a `respond` hook). Build
+    expensive/non-serializable state in `setup` — set it as plain instance attributes (it runs in
+    the server process). The server's deps come from its env package's `pyproject` (the install in
+    a sandbox), so the class may freely `import verifiers`, import siblings, and use module
+    globals."""
 
     TOOL_PREFIX: ClassVar[str] = ""
     """Prefix the model sees on this server's tools (`<TOOL_PREFIX>_<tool>`), set on the class,
@@ -138,15 +124,83 @@ class ServerBase(Generic[ConfigT]):
             ("_" + c.lower() if c.isupper() else c) for c in type(self).__name__
         ).lstrip("_")
 
-    async def setup(self, task) -> None:
-        """Establish everything the server needs that isn't a config knob, in the server process,
-        as plain instance attributes (`self.x = ...`): global state (a corpus/index/graph loaded
-        from disk or a dataset), per-task input read off `task` (this rollout's task — `None` for
-        a `shared` server), and initial per-rollout mutable state (counters, paths). Config knobs
-        stay on `self.config`."""
+    async def setup(self) -> None:
+        """Task-agnostic setup, in the server process: global state (a corpus / index / graph loaded
+        from disk or a dataset) as plain instance attributes (`self.x = ...`). Runs for every server
+        — shared or per-rollout. Config knobs stay on `self.config`."""
+
+    async def setup_task(self, task) -> None:
+        """Per-rollout setup, in the server process: per-task input read off `task` (this rollout's
+        task) and initial per-rollout mutable state (counters, paths). Runs only when the server has
+        a task — SKIPPED for a `shared` server (one instance for the whole eval), so don't override
+        it on a shared server (the framework warns loudly if you do)."""
 
     def _register(self, mcp: FastMCP) -> None:
         raise NotImplementedError
+
+    def _serve(self, task) -> None:
+        """Run this server's MCP server: `setup` (always) + `setup_task(task)` (only when there's a
+        task — skipped for a shared server), build a FastMCP from the registered tools, and serve it
+        over streamable HTTP on `MCP_PORT`/`MCP_HOST`. Called by `run()`."""
+        import asyncio
+
+        import uvicorn
+        from mcp.server.fastmcp import FastMCP
+
+        async def _setup() -> None:
+            await self.setup()
+            if task is not None:
+                await self.setup_task(task)
+
+        asyncio.run(_setup())
+        # Bound to 0.0.0.0 means a sandbox tunnel reaches us at a non-loopback host (e.g. modal's
+        # *.modal.host); FastMCP's default DNS-rebinding guard allows only localhost and would 421
+        # the tunnel host, so relax it (the tunnel is the trust boundary).
+        host = os.environ.get("MCP_HOST", "127.0.0.1")
+        security = None
+        if host == "0.0.0.0":
+            from mcp.server.transport_security import TransportSecuritySettings
+
+            security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+        mcp = FastMCP(self.server_name, transport_security=security)
+        self._register(mcp)
+        uvicorn.Server(
+            uvicorn.Config(
+                mcp.streamable_http_app(),
+                host=host,
+                port=int(os.environ.get("MCP_PORT", SERVICE_PORT)),
+                log_level="critical",
+            )
+        ).run()
+
+    @classmethod
+    def _config_cls(cls) -> type[BaseConfig]:
+        """The config type from the `Toolset[Config]` / `User[Config]` generic parameter."""
+        for base in getattr(cls, "__orig_bases__", ()):
+            for arg in get_args(base):
+                if isinstance(arg, type) and issubclass(arg, BaseConfig):
+                    return arg
+        raise TypeError(f"{cls.__name__} must parameterize its config, e.g. Toolset[MyConfig]")
+
+    @classmethod
+    def run(cls) -> None:
+        """Entry point a server module calls from `if __name__ == "__main__"`: rebuild this server
+        from the environment the framework set (`VF_CONFIG` JSON + `VF_TASK`/`VF_TASK_CLS`) and serve
+        it over MCP. With no `VF_CONFIG` the config is parsed from the CLI instead (`cli(config)`),
+        so the module is runnable by hand for debugging. `VF_TASK` is absent for a `shared` server."""
+        config_cls = cls._config_cls()
+        if "VF_CONFIG" in os.environ:
+            config = config_cls.model_validate_json(os.environ["VF_CONFIG"])
+        else:
+            from pydantic_config import cli
+
+            config = cli(config_cls)
+        task = None
+        if "VF_TASK" in os.environ:
+            task = _import_ref(os.environ["VF_TASK_CLS"]).model_validate_json(
+                os.environ["VF_TASK"]
+            )
+        cls(config)._serve(task)
 
 
 class Toolset(ServerBase[ConfigT]):
@@ -172,27 +226,6 @@ class Toolset(ServerBase[ConfigT]):
             )
 
 
-def serve_server(inst: ServerBase, task) -> None:
-    """Run a `ServerBase` instance's MCP server (called by the rendered server script): await its
-    `setup(task)`, build a FastMCP from its registered tools, and serve via `run_mcp_server`."""
-    import asyncio
-
-    from mcp.server.fastmcp import FastMCP
-
-    asyncio.run(inst.setup(task))
-    # Bound to 0.0.0.0 means a sandbox tunnel reaches us at a non-loopback host (e.g. modal's
-    # *.modal.host). FastMCP's default DNS-rebinding guard allows only localhost and 421s the
-    # tunnel host; the tunnel is the trust boundary, so relax it.
-    security = None
-    if os.environ.get("MCP_HOST") == "0.0.0.0":
-        from mcp.server.transport_security import TransportSecuritySettings
-
-        security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-    mcp = FastMCP(inst.server_name, transport_security=security)
-    inst._register(mcp)
-    run_mcp_server(mcp)
-
-
 def _source_dir(cls: type) -> str | None:
     """The local directory of `cls`'s env package — the nearest ancestor of its module file that
     holds a `pyproject.toml` (what gets uploaded + installed in a sandbox). `None` when the module
@@ -207,36 +240,15 @@ def _source_dir(cls: type) -> str | None:
     return None
 
 
-def server_to_launch(inst: ServerBase, task) -> _Launch:
-    """Build the `_Launch` for a vf-native server: the env the generic entrypoint
-    (`verifiers.v1.toolserver`) reads to rebuild it — the class and config-class refs
-    (`module:qualname`) + the `config` as JSON — plus the env package's local `source_dir`
-    (uploaded + installed when the runtime is a sandbox). `task` (this rollout's task) is shipped
-    too unless it's `None` — a `shared` server is task-agnostic, so it gets no task and one that
-    reads it fails loudly in `setup` rather than silently serving one task's data to every rollout."""
-    cls, cfg_cls = type(inst), type(inst.config)
-    env = {
-        "VF_SERVER": f"{cls.__module__}:{cls.__qualname__}",
-        "VF_CONFIG_CLS": f"{cfg_cls.__module__}:{cfg_cls.__qualname__}",
-        "VF_CONFIG": inst.config.model_dump_json(),
-    }
-    if task is not None:
-        env["VF_TASK_CLS"] = f"{type(task).__module__}:{type(task).__qualname__}"
-        env["VF_TASK"] = task.model_dump_json()
-    return _Launch(name=inst.server_name, env=env, source_dir=_source_dir(cls))
+def _import_ref(ref: str) -> object:
+    """Resolve a `module:qualname` reference (e.g. `glossary_v1:GlossaryTask`) to the object."""
+    import importlib
 
-
-def run_mcp_server(mcp: "FastMCP") -> None:
-    """Serve a FastMCP server on the port the harness passes via `MCP_PORT`, mounting
-    streamable HTTP at `/mcp`. Called by the server entrypoint (`verifiers.v1.toolserver`)."""
-    import uvicorn
-
-    port = int(os.environ["MCP_PORT"])
-    host = os.environ.get("MCP_HOST", "127.0.0.1")
-    config = uvicorn.Config(
-        mcp.streamable_http_app(), host=host, port=port, log_level="critical"
-    )
-    uvicorn.Server(config).run()
+    module_name, _, qualname = ref.partition(":")
+    obj: object = importlib.import_module(module_name)
+    for attr in qualname.split("."):
+        obj = getattr(obj, attr)
+    return obj
 
 
 # Poll a URL from inside a runtime until it serves (any HTTP response — incl. MCP's 406
@@ -300,19 +312,20 @@ def _verifiers_root() -> Path:
     return root
 
 
-async def _install_in_sandbox(launch: _Launch, runtime: Runtime) -> str:
-    """Make the env module importable in a sandbox: upload the working-tree `verifiers` source and
-    the env package (tarballs over `write`), create a venv, and `uv pip install` both — verifiers
-    first (deps resolve from PyPI off its pyproject), then the env package (its `verifiers` dep
-    already satisfied). Returns the venv's python. Uses the developer's current code — no publish
+async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
+    """Make `server`'s env module importable in a sandbox: upload the working-tree `verifiers`
+    source and the env package (tarballs over `write`), create a venv, and `uv pip install` both —
+    verifiers first (deps resolve from PyPI off its pyproject), then the env package (its `verifiers`
+    dep already satisfied). Returns the venv's python. Uses the developer's current code — no publish
     or pin to keep in sync."""
-    if launch.source_dir is None:
+    source_dir = _source_dir(type(server))
+    if source_dir is None:
         raise ProgramError(
-            f"server {launch.name!r} runs in a {runtime.type} runtime but its module is not a "
-            "local package (no pyproject) — sandbox launch needs a local env package to upload"
+            f"server {server.server_name!r} runs in a {runtime.type} runtime but its module is not "
+            "a local package (no pyproject) — sandbox launch needs a local env package to upload"
         )
     root = "/tmp/vf-src"
-    vf, env = _verifiers_root(), Path(launch.source_dir)
+    vf, env = _verifiers_root(), Path(source_dir)
     await runtime.write(f"{root}/{vf.name}.tar.gz", _tar_source(vf, _VERIFIERS_BUILD_INPUTS))
     await runtime.write(f"{root}/{env.name}.tar.gz", _tar_source(env))
     venv = "/tmp/vf-venv"
@@ -326,27 +339,34 @@ async def _install_in_sandbox(launch: _Launch, runtime: Runtime) -> str:
     result = await runtime.run(["sh", "-c", setup], {})
     if result.exit_code != 0:
         raise ProgramError(
-            f"server {launch.name!r} install failed in runtime: "
+            f"server {server.server_name!r} install failed in runtime: "
             f"{(result.stderr or result.stdout).strip()[-2000:]}"
         )
     return f"{venv}/bin/python"
 
 
-async def serve_in_runtime(launch: _Launch, runtime: Runtime, port: int) -> None:
-    """Start the server inside `runtime` on `port` (background, via the generic entrypoint) and
-    wait until it serves. On a host (`subprocess`) runtime it runs with the eval's own interpreter
-    — `verifiers` and the env module are already installed, nothing is fetched. In a sandbox the
-    env package is uploaded + installed first (`_install_in_sandbox`), then run with that venv."""
-    log = f"vf_tool_{launch.name}.log"
+async def serve_in_runtime(
+    server: ServerBase, task, runtime: Runtime, port: int
+) -> None:
+    """Start `server` inside `runtime` on `port` (background, by running its env module —
+    `python -m <module>`, whose `__main__` calls `ServerBase.run()`) and wait until it serves. The
+    `config` + this rollout's `task` cross to the server as env JSON (a `shared` server passes
+    `None`). On a host (`subprocess`) runtime it runs with the eval's own interpreter — `verifiers`
+    and the env module are already installed, nothing is fetched. In a sandbox the working-tree
+    `verifiers` source + the env package are uploaded and installed first (`_install_in_sandbox`),
+    then run from that venv."""
+    env = {"VF_CONFIG": server.config.model_dump_json(), "MCP_PORT": str(port)}
+    if task is not None:
+        env["VF_TASK_CLS"] = f"{type(task).__module__}:{type(task).__qualname__}"
+        env["VF_TASK"] = task.model_dump_json()
+    if runtime.published_port is not None:  # a self-publishing runtime (modal/prime) forwards to
+        env["MCP_HOST"] = "0.0.0.0"  # all interfaces, not just loopback
     if runtime.type == "subprocess":  # host: verifiers + env module already installed
         python = sys.executable
     else:  # sandbox: upload + install the verifiers source + the env package
-        python = await _install_in_sandbox(launch, runtime)
-    argv = [python, "-m", "verifiers.v1.toolserver"]
-    env = {**launch.env, "MCP_PORT": str(port)}
-    if runtime.published_port is not None:  # a self-publishing runtime (modal) forwards to all
-        env["MCP_HOST"] = "0.0.0.0"  # interfaces, not just loopback
-    await runtime.run_background(argv, env, log)
+        python = await _install_in_sandbox(server, runtime)
+    log = f"vf_tool_{server.server_name}.log"
+    await runtime.run_background([python, "-m", type(server).__module__], env, log)
     probe = await runtime.run(
         ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
     )
@@ -355,7 +375,7 @@ async def serve_in_runtime(launch: _Launch, runtime: Runtime, port: int) -> None
         with contextlib.suppress(Exception):
             tail = (await runtime.read(log)).decode(errors="replace").strip()[-2000:]
         raise ProgramError(
-            f"tool server {launch.name!r} not serving in runtime: {tail}"
+            f"tool server {server.server_name!r} not serving in runtime: {tail}"
         )
 
 
@@ -372,11 +392,19 @@ async def serve(server: ServerBase, task, agent_runtime: Runtime | None = None, 
     in-sandbox when colocated, else the tool runtime's `expose` (its published URL) or, for a
     host-side tool reached by an in-sandbox harness, a `host_endpoint` tunnel to the host port."""
     cfg = server.config
-    if getattr(cfg, "shared", False) and task is not None:
+    shared = getattr(cfg, "shared", False)
+    if shared and task is not None:
         raise ValueError(
             f"shared server {server.server_name!r} was launched with a task, but a `shared` server "
             "is built once for the whole eval and must be task-agnostic — it receives no task. "
             "Drop `shared` to run it per-rollout (with the task), or make its `setup` task-independent."
+        )
+    if shared and type(server).setup_task is not ServerBase.setup_task:
+        logger.warning(
+            "shared server %r overrides `setup_task`, but `setup_task` is NEVER called for a shared "
+            "server (it's built once, task-agnostic) — its per-task logic will not run. Move "
+            "task-agnostic work into `setup`, or drop `shared` to run it per-rollout.",
+            server.server_name,
         )
     async with contextlib.AsyncExitStack() as stack:
         if cfg.colocated and agent_runtime is not None:
@@ -386,7 +414,7 @@ async def serve(server: ServerBase, task, agent_runtime: Runtime | None = None, 
             await runtime.start()
             stack.push_async_callback(runtime.stop)
         port = runtime.published_port or _free_port()
-        await serve_in_runtime(server_to_launch(server, task), runtime, port)
+        await serve_in_runtime(server, task, runtime, port)
         local = f"http://127.0.0.1:{port}"
         if for_host:  # the framework reaches it from the host
             base = await runtime.expose(port) or local

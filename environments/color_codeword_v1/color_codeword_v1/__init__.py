@@ -115,7 +115,7 @@ class ColorCodewordUser(vf.User[vf.UserConfig]):
     turn, injecting the next turn's squares (image_url parts) as a user message until every
     `max_turns` turn is answered."""
 
-    async def setup(self, task) -> None:
+    async def setup_task(self, task) -> None:
         self.colors_per_turn = task.info["colors_per_turn"]  # per-task input, from the task
         self.max_turns = task.info["max_turns"]  # per-task input
         self.turns = 0  # per-rollout mutable state

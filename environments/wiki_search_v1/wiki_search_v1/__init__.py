@@ -71,7 +71,7 @@ class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
 
     TOOL_PREFIX = "wiki"  # the model sees `wiki_search_pages` / `wiki_view_sections` / `wiki_read_section`
 
-    async def setup(self, task) -> None:
+    async def setup(self) -> None:
         import os
         from pathlib import Path
 

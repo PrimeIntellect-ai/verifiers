@@ -82,7 +82,7 @@ class WikiToolset(vf.Toolset[WikiToolsetConfig]):
 
     TOOL_PREFIX = "wiki"  # the model sees `wiki_click_link` / `wiki_go_back`
 
-    async def setup(self, task) -> None:
+    async def setup(self) -> None:
         import os
         import tarfile
         import urllib.request
@@ -121,8 +121,10 @@ class WikiToolset(vf.Toolset[WikiToolsetConfig]):
             if dst in self.articles and src in self.links:
                 self.links[src].append(dst)
         self._lookup = {name.lower(): name for name in self.articles}
+
+    async def setup_task(self, task) -> None:
         self.target = task.target  # per-task input, from the task
-        self.path = [task.source]  # per-task + mutable nav state
+        self.path = [task.source]  # per-task + mutable nav state (current article is path[-1])
 
     def _normalize(self, name: str) -> str | None:
         if name in self.articles:
