@@ -690,59 +690,60 @@ async def create_sandbox(
         else None,
         guaranteed=bool(sandbox_config.get("guaranteed", False)),
     )
-    create_task = asyncio.create_task(
-        with_sandbox_retry(lambda: client.create(request))
-    )
-    try:
-        create_waiter = asyncio.shield(create_task)
-        if sandbox_config.get("create_timeout") is not None:
-            sandbox = await asyncio.wait_for(
-                create_waiter, int_config(sandbox_config, "create_timeout", 0)
-            )
-        else:
-            sandbox = await create_waiter
-    except (asyncio.CancelledError, TimeoutError):
-        try:
-            sandbox = cast(SandboxRecord, await asyncio.shield(create_task))
-        except BaseException:
-            if owns_client:
-                await close_sandbox_client(client)
-            raise
-        await asyncio.shield(
-            delete_sandbox_id(
-                client,
-                str(sandbox.id),
-                close_client=owns_client,
-                reason="cancelled creation",
-            )
+    async def _create_and_wait_once() -> str:
+        create_task = asyncio.create_task(
+            with_sandbox_retry(lambda: client.create(request))
         )
-        raise
+        try:
+            create_waiter = asyncio.shield(create_task)
+            if sandbox_config.get("create_timeout") is not None:
+                sandbox = await asyncio.wait_for(
+                    create_waiter, int_config(sandbox_config, "create_timeout", 0)
+                )
+            else:
+                sandbox = await create_waiter
+        except (asyncio.CancelledError, TimeoutError):
+            sandbox = cast(SandboxRecord, await asyncio.shield(create_task))
+            await asyncio.shield(
+                delete_sandbox_id(
+                    client,
+                    str(sandbox.id),
+                    close_client=False,
+                    reason="cancelled creation",
+                )
+            )
+            raise
+        sandbox_id = str(sandbox.id)
+        try:
+            wait = client.wait_for_creation(
+                sandbox_id,
+                max_attempts=SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
+            )
+            if sandbox_config.get("wait_timeout") is not None:
+                await asyncio.wait_for(
+                    wait, int_config(sandbox_config, "wait_timeout", 0)
+                )
+            else:
+                await wait
+        except BaseException:
+            delete_task = asyncio.create_task(
+                delete_sandbox_id(
+                    client,
+                    sandbox_id,
+                    close_client=False,
+                    reason="creation failure",
+                )
+            )
+            await asyncio.shield(delete_task)
+            raise
+        return sandbox_id
+
+    try:
+        return await with_sandbox_retry(_create_and_wait_once)
     except BaseException:
         if owns_client:
             await close_sandbox_client(client)
         raise
-    sandbox_id = str(sandbox.id)
-    try:
-        wait = client.wait_for_creation(
-            sandbox_id,
-            max_attempts=SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
-        )
-        if sandbox_config.get("wait_timeout") is not None:
-            await asyncio.wait_for(wait, int_config(sandbox_config, "wait_timeout", 0))
-        else:
-            await wait
-    except BaseException:
-        delete_task = asyncio.create_task(
-            delete_sandbox_id(
-                client,
-                sandbox_id,
-                close_client=owns_client,
-                reason="creation failure",
-            )
-        )
-        await asyncio.shield(delete_task)
-        raise
-    return sandbox_id
 
 
 async def delete_sandbox_id(
