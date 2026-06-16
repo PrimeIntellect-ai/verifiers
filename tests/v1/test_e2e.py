@@ -6,9 +6,9 @@ turn/timeout caps. The reward tests fan out across the full **harness x runtime*
 (subprocess/docker/prime, modal excluded).
 
 The capability-sensitive tests read the harness flags: the tools test expects a harness
-without `SUPPORTS_TASK_TOOLS` (rlm) to be refused up front (raise); the multi-turn test skips a
-harness without `SUPPORTS_USER_SIM` (rlm). The agentic task pins the default harness (only it
-exposes the bash tool) and varies runtime.
+without `SUPPORTS_TASK_TOOLS` to be refused up front (raise); the multi-turn test skips a
+harness without `SUPPORTS_USER_SIM`. Bash-first harnesses use the agentic task instead of the
+direct-response task.
 """
 
 import pytest
@@ -75,13 +75,28 @@ async def test_multi_turn_with_tools(
 
 
 @pytest.mark.e2e
-async def test_agentic(run_v1, runtime, tmp_path):
-    """Agentic: write a phrase to a file with the bash tool, checked in the runtime. Only the
-    default harness exposes the bash tool, so this varies runtime but pins the harness."""
+async def test_tool_response_image(run_v1, tmp_path):
+    """MCP image content from a tool result survives into the v1 trace."""
+    (trace,) = await run_v1(
+        "tool-response-image-v1",
+        harness="default",
+        runtime="subprocess",
+        output_dir=tmp_path,
+        max_turns=4,
+    )
+    assert trace.errors == []
+    assert not trace.is_truncated
+    assert trace.num_turns >= 2  # tool call + answer
+    assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+async def test_agentic(run_v1, agentic_harness, runtime, tmp_path):
+    """Agentic: write a phrase to a file with the harness's bash tool, checked in the runtime."""
     (trace,) = await run_v1(
         "echo-agentic-v1",
-        harness="default",
-        enable_bash=True,
+        harness=agentic_harness,
+        enable_bash=agentic_harness == "default",
         runtime=runtime,
         output_dir=tmp_path,
         max_turns=10,
