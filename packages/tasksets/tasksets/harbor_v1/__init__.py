@@ -42,6 +42,10 @@ class HarborConfig(TasksetConfig):
     downloaded + cached via the `harbor` CLI."""
     tasks: list[str] | None = None
     """Optional subset of task names to load (None = all)."""
+    timeout_multiplier: float = Field(1.0, gt=0)
+    """Scale each task's agent and verifier timeouts."""
+    resource_multiplier: float = Field(1.0, gt=0)
+    """Scale each task's CPU, memory, and disk requests. GPU requests are unchanged."""
     require_image: bool = False
     """For a task with NO declared environment at all (no docker_image, no Dockerfile),
     whether to reject it (True) or run it on the runtime's default image (False). Tasks
@@ -109,17 +113,17 @@ def resolve_image(task_dir: Path, config: dict, require_image: bool) -> str | No
     return None
 
 
-def parse_resources(env: dict) -> Resources:
+def parse_resources(env: dict, multiplier: float = 1.0) -> Resources:
     """Map a task.toml [environment] block to Resources (0 gpus -> unset)."""
     return Resources(
-        cpu=env.get("cpus"),
-        memory=env["memory_mb"] / 1024 if env.get("memory_mb") else None,
+        cpu=env["cpus"] * multiplier if env.get("cpus") else None,
+        memory=env["memory_mb"] / 1024 * multiplier if env.get("memory_mb") else None,
         gpu=str(env["gpus"]) if env.get("gpus") else None,
-        disk=env["storage_mb"] / 1024 if env.get("storage_mb") else None,
+        disk=env["storage_mb"] / 1024 * multiplier if env.get("storage_mb") else None,
     )
 
 
-def parse_task(task_dir: Path, idx: int, require_image: bool) -> HarborTask:
+def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborTask:
     """Read a harbor task dir (task.toml + instruction.md) into a typed task,
     handling both the [task].authors and legacy [metadata].author_name layouts."""
     config = tomllib.loads((task_dir / "task.toml").read_text())
@@ -127,15 +131,23 @@ def parse_task(task_dir: Path, idx: int, require_image: bool) -> HarborTask:
     authors = [Author(**a) for a in task.get("authors", [])]
     if not authors and meta.get("author_name"):
         authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
+    harness_timeout = config.get("agent", {}).get("timeout_sec")
+    scoring_timeout = config.get("verifier", {}).get("timeout_sec")
     return HarborTask(
         idx=idx,
         name=task.get("name") or task_dir.name,
         description=task.get("description"),
         instruction=(task_dir / "instruction.md").read_text().strip(),
-        image=resolve_image(task_dir, config, require_image),
-        harness_timeout=config.get("agent", {}).get("timeout_sec"),
-        scoring_timeout=config.get("verifier", {}).get("timeout_sec"),
-        resources=parse_resources(config.get("environment", {})),
+        image=resolve_image(task_dir, config, harbor_config.require_image),
+        harness_timeout=harness_timeout * harbor_config.timeout_multiplier
+        if harness_timeout is not None
+        else None,
+        scoring_timeout=scoring_timeout * harbor_config.timeout_multiplier
+        if scoring_timeout is not None
+        else None,
+        resources=parse_resources(
+            config.get("environment", {}), harbor_config.resource_multiplier
+        ),
         keywords=task.get("keywords", []),
         authors=authors,
         difficulty=meta.get("difficulty"),
@@ -168,7 +180,7 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         if not task_dirs:
             raise ValueError(f"no harbor tasks found in {root}")
         return [
-            parse_task(task_dir, idx, self.config.require_image)
+            parse_task(task_dir, idx, self.config)
             for idx, task_dir in enumerate(task_dirs)
         ]
 
