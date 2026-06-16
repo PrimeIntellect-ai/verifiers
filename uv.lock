@@ -44,7 +44,7 @@ wheels = [
 [[package]]
 name = "aime24-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/aime24_v1" }
+source = { editable = "environments/aime24_v1" }
 dependencies = [
     { name = "datasets" },
 ]
@@ -163,7 +163,7 @@ wheels = [
 [[package]]
 name = "alphabet-sort-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/alphabet_sort_v1" }
+source = { editable = "environments/alphabet_sort_v1" }
 dependencies = [
     { name = "datasets" },
 ]
@@ -665,12 +665,12 @@ wheels = [
 [[package]]
 name = "code-golf-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/code_golf_v1" }
+source = { editable = "environments/code_golf_v1" }
 
 [[package]]
 name = "color-codeword-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/color_codeword_v1" }
+source = { editable = "environments/color_codeword_v1" }
 dependencies = [
     { name = "pillow" },
 ]
@@ -699,7 +699,7 @@ wheels = [
 [[package]]
 name = "compact"
 version = "0.1.0"
-source = { editable = "examples/harnesses/compact" }
+source = { editable = "environments/compact" }
 
 [[package]]
 name = "compressed-tensors"
@@ -1022,7 +1022,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/24/61/5ea1c63b139fe7530
 [[package]]
 name = "deepwiki-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/deepwiki_v1" }
+source = { editable = "environments/deepwiki_v1" }
 
 [[package]]
 name = "depyf"
@@ -1426,7 +1426,7 @@ wheels = [
 [[package]]
 name = "glossary-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/glossary_v1" }
+source = { editable = "environments/glossary_v1" }
 
 [[package]]
 name = "googleapis-common-protos"
@@ -1506,7 +1506,7 @@ wheels = [
 [[package]]
 name = "gsm8k-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/gsm8k_v1" }
+source = { editable = "environments/gsm8k_v1" }
 dependencies = [
     { name = "datasets" },
 ]
@@ -2266,7 +2266,7 @@ wheels = [
 [[package]]
 name = "math-env-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/math_env_v1" }
+source = { editable = "environments/math_env_v1" }
 dependencies = [
     { name = "datasets" },
 ]
@@ -4480,7 +4480,7 @@ wheels = [
 [[package]]
 name = "r2e-gym-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/r2e_gym_v1" }
+source = { editable = "environments/r2e_gym_v1" }
 dependencies = [
     { name = "datasets" },
 ]
@@ -4679,7 +4679,7 @@ wheels = [
 [[package]]
 name = "reverse-text-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/reverse_text_v1" }
+source = { editable = "environments/reverse_text_v1" }
 dependencies = [
     { name = "datasets" },
 ]
@@ -4829,7 +4829,7 @@ wheels = [
 [[package]]
 name = "scaleswe-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/scaleswe_v1" }
+source = { editable = "environments/scaleswe_v1" }
 dependencies = [
     { name = "datasets" },
 ]
@@ -5163,7 +5163,7 @@ wheels = [
 [[package]]
 name = "swelego-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/swelego_v1" }
+source = { editable = "environments/swelego_v1" }
 dependencies = [
     { name = "datasets" },
 ]
@@ -5234,7 +5234,7 @@ wheels = [
 [[package]]
 name = "terminal-bench-2-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/terminal_bench_2_v1" }
+source = { editable = "environments/terminal_bench_2_v1" }
 dependencies = [
     { name = "tasksets" },
 ]
@@ -5925,23 +5925,23 @@ dev = [
     { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
 ]
 examples = [
-    { name = "aime24-v1", editable = "examples/tasksets/aime24_v1" },
-    { name = "alphabet-sort-v1", editable = "examples/tasksets/alphabet_sort_v1" },
-    { name = "code-golf-v1", editable = "examples/tasksets/code_golf_v1" },
-    { name = "color-codeword-v1", editable = "examples/tasksets/color_codeword_v1" },
-    { name = "compact", editable = "examples/harnesses/compact" },
-    { name = "deepwiki-v1", editable = "examples/tasksets/deepwiki_v1" },
-    { name = "glossary-v1", editable = "examples/tasksets/glossary_v1" },
-    { name = "gsm8k-v1", editable = "examples/tasksets/gsm8k_v1" },
-    { name = "math-env-v1", editable = "examples/tasksets/math_env_v1" },
-    { name = "r2e-gym-v1", editable = "examples/tasksets/r2e_gym_v1" },
-    { name = "reverse-text-v1", editable = "examples/tasksets/reverse_text_v1" },
-    { name = "scaleswe-v1", editable = "examples/tasksets/scaleswe_v1" },
-    { name = "swelego-v1", editable = "examples/tasksets/swelego_v1" },
-    { name = "terminal-bench-2-v1", editable = "examples/tasksets/terminal_bench_2_v1" },
-    { name = "wiki-search-v1", editable = "examples/tasksets/wiki_search_v1" },
-    { name = "wikispeedia-v1", editable = "examples/tasksets/wikispeedia_v1" },
-    { name = "wordle-v1", editable = "examples/tasksets/wordle_v1" },
+    { name = "aime24-v1", editable = "environments/aime24_v1" },
+    { name = "alphabet-sort-v1", editable = "environments/alphabet_sort_v1" },
+    { name = "code-golf-v1", editable = "environments/code_golf_v1" },
+    { name = "color-codeword-v1", editable = "environments/color_codeword_v1" },
+    { name = "compact", editable = "environments/compact" },
+    { name = "deepwiki-v1", editable = "environments/deepwiki_v1" },
+    { name = "glossary-v1", editable = "environments/glossary_v1" },
+    { name = "gsm8k-v1", editable = "environments/gsm8k_v1" },
+    { name = "math-env-v1", editable = "environments/math_env_v1" },
+    { name = "r2e-gym-v1", editable = "environments/r2e_gym_v1" },
+    { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
+    { name = "scaleswe-v1", editable = "environments/scaleswe_v1" },
+    { name = "swelego-v1", editable = "environments/swelego_v1" },
+    { name = "terminal-bench-2-v1", editable = "environments/terminal_bench_2_v1" },
+    { name = "wiki-search-v1", editable = "environments/wiki_search_v1" },
+    { name = "wikispeedia-v1", editable = "environments/wikispeedia_v1" },
+    { name = "wordle-v1", editable = "environments/wordle_v1" },
 ]
 harnesses = [{ name = "harnesses", editable = "packages/harnesses" }]
 tasksets = [{ name = "tasksets", editable = "packages/tasksets" }]
@@ -6193,7 +6193,7 @@ wheels = [
 [[package]]
 name = "wiki-search-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/wiki_search_v1" }
+source = { editable = "environments/wiki_search_v1" }
 dependencies = [
     { name = "chromadb" },
     { name = "datasets" },
@@ -6208,7 +6208,7 @@ requires-dist = [
 [[package]]
 name = "wikispeedia-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/wikispeedia_v1" }
+source = { editable = "environments/wikispeedia_v1" }
 
 [[package]]
 name = "win32-setctime"
@@ -6222,7 +6222,7 @@ wheels = [
 [[package]]
 name = "wordle-v1"
 version = "0.1.0"
-source = { editable = "examples/tasksets/wordle_v1" }
+source = { editable = "environments/wordle_v1" }
 dependencies = [
     { name = "tasksets", extra = ["textarena"] },
 ]
