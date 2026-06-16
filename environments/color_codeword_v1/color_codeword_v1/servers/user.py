@@ -39,10 +39,11 @@ class ColorCodewordUser(vf.User[vf.UserConfig]):
             parts.append({"type": "image_url", "image_url": {"url": url}})
         return parts + [{"type": "text", "text": text}]
 
-    async def respond(self, message: str) -> tuple[vf.Messages, bool]:
+    async def respond(self, message: str) -> vf.Messages:
         self.turns += 1
         if self.turns >= self.max_turns:
-            return [], True
+            self.state.done = True
+            return []
         colors = self.colors_per_turn[self.turns]
         total = sum(len(self.colors_per_turn[t]) for t in range(self.turns + 1))
         last = self.turns == self.max_turns - 1
@@ -52,7 +53,7 @@ class ColorCodewordUser(vf.User[vf.UserConfig]):
             if last
             else f"Here are {len(colors)} more squares."
         )
-        return [{"role": "user", "content": self._content(colors, text)}], False
+        return [{"role": "user", "content": self._content(colors, text)}]
 
 
 if __name__ == "__main__":

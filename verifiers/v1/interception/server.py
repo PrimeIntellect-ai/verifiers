@@ -106,6 +106,12 @@ class RolloutSession:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
         call halts the harness (its model call errors out); Harness.run treats it as clean."""
+        if (
+            self.trace.state.done
+        ):  # a tool (or user) ended the trajectory via shared state
+            self.trace.stop("done")
+            logger.debug("state.done set: id=%s", self.trace.id)
+            return "done"
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)
@@ -163,6 +169,10 @@ class InterceptionServer:
                 app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
+        # The shared-state back-channel (see `verifiers.v1.state`): a rollout's tool/user servers
+        # GET/PUT their `self.state` here, keyed by the same bearer secret as the model routes.
+        app.router.add_get("/state", self.handle_state_get)
+        app.router.add_put("/state", self.handle_state_put)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -240,8 +250,10 @@ class InterceptionServer:
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
                 return web.json_response(completion)
-            user_messages, done = await session.user(response.message.content or "")
-            if done:
+            user_messages = await session.user(response.message.content or "")
+            # The user sim ends the trajectory by setting `self.state.done` (pushed to `trace.state`
+            # over the state channel before `respond` returns, so it's set by the time we're here).
+            if session.trace.state.done:
                 session.trace.stop("user_completed")
                 return web.json_response(completion)
             # Inject the model turn + the simulator's user turn(s): into the wire request for the
@@ -335,3 +347,29 @@ class InterceptionServer:
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
         return web.json_response(result)
+
+    def _session_for(self, request: web.Request) -> RolloutSession | None:
+        """The session a state request belongs to, by its `Authorization: Bearer <secret>` — the
+        same per-rollout secret the model routes use (dialect-independent, so parsed directly)."""
+        auth = request.headers.get("Authorization", "")
+        secret = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
+        return self.sessions.get(secret)
+
+    async def handle_state_get(self, request: web.Request) -> web.Response:
+        """Hand a rollout's tool/user server the current shared `trace.state` (it pulls before each
+        `@vf.tool`/`respond` call, so it sees writes from the other servers)."""
+        session = self._session_for(request)
+        if session is None:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        return web.json_response(session.trace.state.model_dump(mode="json"))
+
+    async def handle_state_put(self, request: web.Request) -> web.Response:
+        """Replace a rollout's shared `trace.state` with a server's pushed copy (validated into the
+        trace's `State` type). Last write wins per call; `state.done` ends the trajectory (checked
+        after the user `respond`, and before each model call in `RolloutSession.refused`)."""
+        session = self._session_for(request)
+        if session is None:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        body = await request.json()
+        session.trace.state = type(session.trace.state).model_validate(body)
+        return web.json_response({"ok": True})

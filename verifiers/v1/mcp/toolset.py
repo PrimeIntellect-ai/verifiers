@@ -14,6 +14,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.mcp.server import ConfigT, ServerBase
 from verifiers.v1.runtimes import RuntimeConfig, SubprocessConfig
+from verifiers.v1.state import StateT
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -57,10 +58,10 @@ class ToolsetConfig(BaseConfig):
         return self
 
 
-class Toolset(ServerBase[ConfigT]):
+class Toolset(ServerBase[ConfigT, StateT]):
     """A tool server authored as a class: write `@vf.tool` methods (the model calls them as
-    `<prefix>_<method>`; the docstring is the tool description), reading config off `self.config`.
-    Example:
+    `<prefix>_<method>`; the docstring is the tool description), reading config off `self.config` and
+    optionally the rollout's shared `self.state`. Example:
 
         class GlossaryToolsetConfig(vf.ToolsetConfig):
             facts: dict[str, str] = {}
@@ -69,12 +70,15 @@ class Toolset(ServerBase[ConfigT]):
             @vf.tool
             def lookup(self, name: str) -> str:
                 return self.config.facts.get(name.lower(), "unknown")
+
+    Parameterize a stateful toolset with its `State` subclass too — `Toolset[Config, MyState]` — so
+    `self.state` is typed; it defaults to the base `State`.
     """
 
     def _register(self, mcp: FastMCP) -> None:
         for fn in discover_decorated(self, "tool"):
             mcp.add_tool(
-                fn,
+                self._with_state(fn),
                 name=getattr(fn, "tool_name", None) or fn.__name__,
                 description=(fn.__doc__ or "").strip() or None,
             )

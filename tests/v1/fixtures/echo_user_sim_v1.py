@@ -33,11 +33,12 @@ class EchoUserSimUser(vf.User[vf.UserConfig]):
         self.phrases = task.phrases  # per-task input, from the task
         self.turns = 0  # per-rollout mutable state
 
-    async def respond(self, message: str) -> tuple[vf.Messages, bool]:
+    async def respond(self, message: str) -> vf.Messages:
         self.turns += 1
         if self.turns >= len(self.phrases):
-            return [], True
-        return [{"role": "user", "content": self.phrases[self.turns]}], False
+            self.state.done = True
+            return []
+        return [{"role": "user", "content": self.phrases[self.turns]}]
 
 
 class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):

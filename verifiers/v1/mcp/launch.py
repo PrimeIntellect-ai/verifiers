@@ -39,8 +39,9 @@ logger = logging.getLogger(__name__)
 # publish or git pin to keep in sync.
 VF_BUILD_INPUTS = ["pyproject.toml", "README.md", "LICENSE", "verifiers"]
 
-# The model's last assistant text in; the next user messages + a done flag out.
-Respond = Callable[[str], Awaitable[tuple[Messages, bool]]]
+# The model's last assistant text in; the next user messages out. The user sim ends the trajectory
+# by setting `self.state.done` (over the shared-state channel), not via a return flag.
+Respond = Callable[[str], Awaitable[Messages]]
 
 # The colocated user server is up once its in-runtime probe passes, but under high concurrency
 # it can still momentarily refuse a host connection. Retry the connect before giving up so a
@@ -167,7 +168,13 @@ async def _read_back_port(runtime: Runtime, path: str) -> int:
 
 
 async def serve_in_runtime(
-    server: ServerBase, task, runtime: Runtime, *, exposed: bool
+    server: ServerBase,
+    task,
+    runtime: Runtime,
+    *,
+    exposed: bool,
+    state_url: str | None = None,
+    state_secret: str = "",
 ) -> int:
     """Start `server` inside `runtime` (background, by running its env module — `python -m <module>`,
     whose `__main__` calls `ServerBase.run()`), wait until it serves, and return the port it bound.
@@ -181,6 +188,9 @@ async def serve_in_runtime(
     if task is not None:
         env["VF_TASK_CLS"] = f"{type(task).__module__}:{type(task).__qualname__}"
         env["VF_TASK"] = task.model_dump_json()
+    if state_url:  # the shared-state back-channel to this rollout's interception server
+        env["VF_STATE_URL"] = state_url
+        env["VF_STATE_SECRET"] = state_secret
     if (
         runtime.published_port is not None
     ):  # a self-publishing runtime (modal/prime) forwards to
@@ -219,6 +229,9 @@ async def serve(
     agent_runtime: Runtime | None = None,
     for_host: bool = False,
     agent_is_local: bool = True,
+    *,
+    state_port: int | None = None,
+    state_secret: str = "",
 ):
     """The single internal launcher for a vf-native server — a `Toolset` OR a `User`. Brings it
     up in its configured placement and yields one reachable URL, tearing down any runtime it
@@ -258,7 +271,23 @@ async def serve(
         # and binds an OS-assigned free port instead (two colocated servers can't then clash on the
         # published SERVICE_PORT). `serve_in_runtime` returns the actual bound port.
         exposed = for_host or runtime is not agent_runtime
-        port = await serve_in_runtime(server, task, runtime, exposed=exposed)
+        # The shared-state channel: the interception server is a HOST service the server reaches from
+        # its own runtime — localhost when local, a tunnel when remote (only paid when state is wired
+        # and the runtime is remote). Shared/eval-level servers get no channel (state is per-rollout).
+        state_url = None
+        if state_port is not None:
+            state_base = await stack.enter_async_context(
+                reachable_url(HOST, state_port, consumer=runtime)
+            )
+            state_url = f"{state_base.rstrip('/')}/state"
+        port = await serve_in_runtime(
+            server,
+            task,
+            runtime,
+            exposed=exposed,
+            state_url=state_url,
+            state_secret=state_secret,
+        )
         # Who consumes the server decides reachability (see `reachable_url`): a user sim is reached
         # by the host (`for_host`); a tool by the harness — its `agent_runtime` per rollout, or, for
         # a shared eval-level tool with no single agent, just the harness locality (`agent_is_local`).
@@ -303,11 +332,15 @@ async def serve_tools(
     agent_runtime: Runtime,
     task,
     shared_urls: dict[str, str] | None = None,
+    *,
+    state_port: int | None = None,
+    state_secret: str = "",
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches. A `shared`
     toolset reuses the eval-level instance in `shared_urls`; the rest are launched by `serve`
     (placement off each one's `config`, the rollout's `task` for its `setup`) — so different
-    servers can run in different runtimes."""
+    servers can run in different runtimes. `state_port`/`state_secret` wire each per-rollout server to
+    the interception server's shared-state channel."""
     shared_urls = shared_urls or {}
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
@@ -322,7 +355,13 @@ async def serve_tools(
                 logger.info("tool server '%s' (shared): %s", name, shared_urls[name])
             else:
                 urls[name] = await stack.enter_async_context(
-                    serve(toolset, task, agent_runtime)
+                    serve(
+                        toolset,
+                        task,
+                        agent_runtime,
+                        state_port=state_port,
+                        state_secret=state_secret,
+                    )
                 )
                 logger.info("tool server '%s': %s", name, urls[name])
         yield urls
@@ -332,7 +371,8 @@ async def serve_tools(
 async def connect_user(url: str) -> AsyncIterator[Respond]:
     """Open an MCP client session to a user server at `url` and yield an async
     `respond(message)` that calls its `respond` tool, parsing the JSON it returns
-    (`{"messages": [...], "done": bool}`) into typed `(messages, done)`.
+    (`{"messages": [...]}`) into typed `Messages`. End-of-trajectory is signalled out-of-band
+    via the shared `state.done` (the server pushes it over the state channel), not in this reply.
 
     Retries the connect — under high concurrency the colocated user server can be slow to
     accept (or briefly refuse) a connection. A server that stays unreachable raises
@@ -356,7 +396,7 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
                 await session.initialize()
                 connected = True
 
-                async def respond(message: str) -> tuple[Messages, bool]:
+                async def respond(message: str) -> Messages:
                     result = await session.call_tool("respond", {"message": message})
                     texts = [
                         b.text
@@ -364,8 +404,7 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
                         if getattr(b, "type", None) == "text"
                     ]
                     data = json.loads("\n".join(texts))
-                    messages = [parse_message(m) for m in data["messages"]]
-                    return messages, bool(data["done"])
+                    return [parse_message(m) for m in data["messages"]]
 
                 in_body = True  # while the harness drives; an error here is the body's, not ours
                 yield respond
@@ -398,15 +437,26 @@ async def serve_user(
     user: User | None,
     task,
     agent_runtime: Runtime | None = None,
+    *,
+    state_port: int | None = None,
+    state_secret: str = "",
 ) -> AsyncIterator[Respond | None]:
     """Bring a rollout's user server up (via the shared `serve` launcher, `for_host=True` since
     the framework drives the user from the HOST) and yield the async `respond` the interception
     server drives — or `None` when the taskset has no user server. Placement is the user's
     `config` (colocated in the agent's runtime, or its own); the rollout's `task` is shipped to
-    the server for its `setup`."""
+    the server for its `setup`. `state_port`/`state_secret` wire it to the shared-state channel — how
+    the user sim's `respond` reads/writes `self.state` and ends the trajectory (`self.state.done`)."""
     if user is None:
         yield None
         return
-    async with serve(user, task, agent_runtime, for_host=True) as url:
+    async with serve(
+        user,
+        task,
+        agent_runtime,
+        for_host=True,
+        state_port=state_port,
+        state_secret=state_secret,
+    ) as url:
         async with connect_user(url) as respond:
             yield respond

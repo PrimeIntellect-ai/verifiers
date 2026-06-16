@@ -81,7 +81,7 @@ class TextArenaUser(vf.User[vf.UserConfig]):
             latest.split("Feedback:")[-1].strip() if "Feedback:" in latest else latest
         )
 
-    async def respond(self, message: str) -> tuple[vf.Messages, bool]:
+    async def respond(self, message: str) -> vf.Messages:
         import json
 
         env = self.env
@@ -93,11 +93,10 @@ class TextArenaUser(vf.User[vf.UserConfig]):
             reason = str(env.state.game_info[0]["reason"])
             with open(OUTCOME_FILE, "w") as f:
                 json.dump({"reward": reward, "reason": reason}, f)
-            return [{"role": "user", "content": reason}], True
+            self.state.done = True
+            return [{"role": "user", "content": reason}]
         _, observation = env.get_observation()
-        return [
-            {"role": "user", "content": self._latest_feedback(str(observation))}
-        ], False
+        return [{"role": "user", "content": self._latest_feedback(str(observation))}]
 
 
 class TextArenaConfig(vf.TasksetConfig):

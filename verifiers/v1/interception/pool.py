@@ -78,14 +78,15 @@ class InterceptionPool:
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession):
-        """Register `session` on a server with spare capacity (bringing one up if needed)
-        and yield its `(endpoint, secret)`; free the slot on exit."""
+        """Register `session` on a server with spare capacity (bringing one up if needed) and yield
+        its `(endpoint, secret, port)` — the host port is the interception server's, for the rollout's
+        servers to reach the shared-state channel; free the slot on exit."""
         async with self._lock:
             entry = await self._entry()
             secret = entry.server.register(session)
             entry.load += 1
         try:
-            yield entry.endpoint, secret
+            yield entry.endpoint, secret, entry.server.port
         finally:
             entry.server.unregister(secret)
             entry.load -= 1

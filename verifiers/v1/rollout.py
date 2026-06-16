@@ -38,6 +38,7 @@ from verifiers.v1.runtimes import (
     reachable_url,
 )
 from verifiers.v1.mcp import serve_tools, serve_user
+from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
@@ -110,17 +111,18 @@ class Rollout:
         runtime: Runtime,
         session: RolloutSession,
     ):
-        """Yield `(endpoint, secret)` for the harness — a slot on the shared `pool` if one
-        is given, else a per-rollout server exposed via this rollout's own runtime."""
+        """Yield `(endpoint, secret, state_port)` for the harness — a slot on the shared `pool` if one
+        is given, else a per-rollout server exposed via this rollout's own runtime. `state_port` is the
+        interception server's host port, for the rollout's servers to reach its shared-state channel."""
         if pool is not None:
-            async with pool.acquire(session) as (endpoint, secret):
-                yield endpoint, secret
+            async with pool.acquire(session) as (endpoint, secret, state_port):
+                yield endpoint, secret, state_port
         else:
             async with InterceptionServer() as server:
                 secret = server.register(session)
                 # a HOST service the harness (in `runtime`) reaches: localhost or a tunnel
                 async with reachable_url(HOST, server.port, consumer=runtime) as url:
-                    yield f"{url}/v1", secret
+                    yield f"{url}/v1", secret, server.port
 
     async def run(self) -> Trace:
         """Run the rollout and return its trace. Captures expected `RolloutError`s onto
@@ -128,7 +130,7 @@ class Rollout:
         the runtime is live, then tears the runtime down in a `finally`. Reuses the
         eval-level shared tool servers / interception pool injected at construction (see
         `self.shared_urls` / `self.interception`)."""
-        trace: Trace = Trace(task=self.task)
+        trace: Trace = Trace(task=self.task, state=state_cls(type(self.taskset))())
         self.trace = trace  # expose for the --rich dashboard
         trace.timing.setup.start = time.time()
         self.runtime = make_runtime(
@@ -164,14 +166,24 @@ class Rollout:
             ) as (
                 endpoint,
                 secret,
+                state_port,
             ):
                 tool_servers = self.taskset.tools(self.task)
                 async with (
                     serve_tools(
-                        tool_servers, runtime, self.task, shared_urls=self.shared_urls
+                        tool_servers,
+                        runtime,
+                        self.task,
+                        shared_urls=self.shared_urls,
+                        state_port=state_port,
+                        state_secret=secret,
                     ) as urls,
                     serve_user(
-                        self.taskset.user(self.task), self.task, agent_runtime=runtime
+                        self.taskset.user(self.task),
+                        self.task,
+                        agent_runtime=runtime,
+                        state_port=state_port,
+                        state_secret=secret,
                     ) as session.user,
                 ):
                     # setup done — the harness is now driving

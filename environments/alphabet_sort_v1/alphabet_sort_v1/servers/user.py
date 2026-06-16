@@ -10,11 +10,12 @@ class AlphabetSortUser(vf.User[vf.UserConfig]):
         self.num_turns = task.info["num_turns"]
         self.turns = 0
 
-    async def respond(self, message: str) -> tuple[vf.Messages, bool]:
+    async def respond(self, message: str) -> vf.Messages:
         self.turns += 1
         if self.turns >= self.num_turns:
-            return [], True
-        return [{"role": "user", "content": self.follow_ups[self.turns - 1]}], False
+            self.state.done = True
+            return []
+        return [{"role": "user", "content": self.follow_ups[self.turns - 1]}]
 
 
 if __name__ == "__main__":
