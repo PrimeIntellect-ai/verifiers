@@ -56,7 +56,7 @@ class EvalClient(Client):
         except httpx.HTTPError as e:  # connect / read timeout / transport failure
             raise model_error(str(e)) from e
         raw = resp.json()
-        response = dialect.parse_response(dialect.response_type.model_validate(raw))
+        response = dialect.parse_response(dialect.validate_response(raw))
         response.raw = raw  # the program gets the provider's bytes back 1:1
         return response
 
