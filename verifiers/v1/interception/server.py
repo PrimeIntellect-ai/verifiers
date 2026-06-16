@@ -14,7 +14,9 @@ one tunnel) per pool member rather than one each — see `interception.pool`.
 When a rollout sets a user simulator (see `verifiers.v1.mcp.user`), the session also drives it:
 after each model turn it injects the simulator's reply as a user turn and re-prompts the
 model, so a multi-turn exchange plays out within one program request, transparently to the
-harness. Tools are handled out-of-band (run by the harness).
+harness. When the task carries no prompt (`task.instruction is None`), the simulator also
+opens the conversation: its first turn is seeded before the model is ever called. Tools are
+handled out-of-band (run by the harness).
 """
 
 import asyncio
@@ -189,6 +191,25 @@ class InterceptionServer:
         # extends both each turn (`dialect.extend` for the wire, `prompt` for the trace).
         prompt: Messages
         prompt, _ = dialect.parse_request(body)
+        # A task with no prompt has its conversation opened by the user simulator: before the
+        # first model call, seed the simulator's opening user turn(s) into both the wire request
+        # and the trace prompt, so the model answers the user rather than an empty prompt. Guarded
+        # to the opening (`num_turns == 0`), so a later program request (e.g. after a tool call)
+        # never re-seeds. The post-turn loop below then drives the remaining turns as usual.
+        if (
+            session.user is not None
+            and session.trace.task.instruction is None
+            and session.trace.num_turns == 0
+        ):
+            seed_messages, done = await session.user("")
+            body = dialect.extend(body, None, seed_messages)
+            prompt = [*prompt, *seed_messages]
+            if done:
+                # Degenerate: the simulator ended before any model turn — halt the harness clean.
+                session.trace.stop("user_completed")
+                return web.json_response(
+                    dialect.error_body("rollout stopped: user_completed"), status=400
+                )
         if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt)
         # A user simulator turns one program request into a multi-turn exchange: after each

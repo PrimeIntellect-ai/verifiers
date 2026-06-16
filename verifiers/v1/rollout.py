@@ -174,6 +174,12 @@ class Rollout:
                         self.taskset.user(self.task), self.task, agent_runtime=runtime
                     ) as session.user,
                 ):
+                    if self.task.instruction is None and session.user is None:
+                        raise ProgramError(
+                            "task has no instruction and no user simulator to open the "
+                            "conversation; set task.instruction or have Taskset.user return "
+                            "a simulator"
+                        )
                     # setup done — the harness is now driving
                     now = time.time()
                     trace.timing.setup.end = now
