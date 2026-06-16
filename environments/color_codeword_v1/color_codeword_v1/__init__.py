@@ -3,22 +3,23 @@
 Each turn shows colored squares that map to letters (Red=A, Green=B, ...); the model accumulates
 the codeword across turns and, on the final turn, outputs the whole thing. Turn 0's squares are
 seeded in the task's `instruction` (a `Messages` prompt carrying images); the later turns are
-injected by a colocated `vf.User` (see `user.py`) the interception server drives after each
-assistant turn. Reward is an exact match of the final codeword; a partial-match metric tracks
-per-position accuracy. Images carry through the v1 message graph as `mm_kwargs` for training.
+injected by a colocated `vf.User` (`ColorCodewordUser` below) the interception server drives
+after each assistant turn. Reward is an exact match of the final codeword; a partial-match
+metric tracks per-position accuracy. Images carry through the v1 message graph as `mm_kwargs`
+for training.
 """
 
 import base64
-import json
 import random
 import re
-import sys
 from io import BytesIO
 
 from PIL import Image
 from pydantic import Field
 
 import verifiers.v1 as vf
+
+from color_codeword_v1.servers.user import COLOR_RGB, ColorCodewordUser
 
 COLOR_MAP = {
     "red": "A",
@@ -30,17 +31,6 @@ COLOR_MAP = {
     "orange": "G",
     "white": "H",
     "black": "I",
-}
-COLOR_RGB = {
-    "red": (255, 0, 0),
-    "green": (0, 255, 0),
-    "blue": (0, 0, 255),
-    "yellow": (255, 255, 0),
-    "purple": (128, 0, 128),
-    "cyan": (0, 255, 255),
-    "orange": (255, 165, 0),
-    "white": (255, 255, 255),
-    "black": (0, 0, 0),
 }
 
 SYSTEM_PROMPT = """You will be shown colored squares across multiple turns. Each color maps to a letter:
@@ -101,6 +91,7 @@ class ColorCodewordConfig(vf.TasksetConfig):
     """Number of synthetic episodes to generate."""
     images_per_turn: int = Field(2, ge=1)
     """Colored squares shown per turn."""
+    user: vf.UserConfig = vf.UserConfig()
 
 
 class ColorCodewordTask(vf.Task):
@@ -144,11 +135,7 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
         return tasks
 
     def user(self, task: ColorCodewordTask) -> vf.User:
-        return vf.User(
-            name="user",
-            command=[sys.executable, "-m", "color_codeword_v1.user"],
-            env={"COLOR_CODEWORD_INFO": json.dumps(task.info)},
-        )
+        return ColorCodewordUser(self.config.user)
 
     @vf.reward(weight=1.0)
     async def exact_match(self, task: ColorCodewordTask, trace: vf.Trace) -> float:

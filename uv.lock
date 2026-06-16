@@ -166,10 +166,14 @@ version = "0.1.0"
 source = { editable = "environments/alphabet_sort_v1" }
 dependencies = [
     { name = "datasets" },
+    { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "datasets" }]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
 
 [[package]]
 name = "annotated-doc"
@@ -673,10 +677,14 @@ version = "0.1.0"
 source = { editable = "environments/color_codeword_v1" }
 dependencies = [
     { name = "pillow" },
+    { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pillow" }]
+requires-dist = [
+    { name = "pillow" },
+    { name = "verifiers" },
+]
 
 [[package]]
 name = "colorama"
@@ -1023,6 +1031,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/24/61/5ea1c63b139fe7530
 name = "deepwiki-v1"
 version = "0.1.0"
 source = { editable = "environments/deepwiki_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "depyf"
@@ -1427,6 +1441,12 @@ wheels = [
 name = "glossary-v1"
 version = "0.1.0"
 source = { editable = "environments/glossary_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "googleapis-common-protos"
@@ -6197,18 +6217,26 @@ source = { editable = "environments/wiki_search_v1" }
 dependencies = [
     { name = "chromadb" },
     { name = "datasets" },
+    { name = "verifiers" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "chromadb" },
     { name = "datasets" },
+    { name = "verifiers" },
 ]
 
 [[package]]
 name = "wikispeedia-v1"
 version = "0.1.0"
 source = { editable = "environments/wikispeedia_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "win32-setctime"

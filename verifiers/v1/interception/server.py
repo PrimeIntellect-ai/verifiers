@@ -11,7 +11,7 @@ own secret (the bearer token the harness already sends), and the server routes b
 secret to the right session. So N rollouts need one server (and, behind a remote runtime,
 one tunnel) per pool member rather than one each — see `interception.pool`.
 
-When a rollout sets a user simulator (see `verifiers.v1.user`), the session also drives it:
+When a rollout sets a user simulator (see `verifiers.v1.mcp.user`), the session also drives it:
 after each model turn it injects the simulator's reply as a user turn and re-prompts the
 model, so a multi-turn exchange plays out within one program request, transparently to the
 harness. Tools are handled out-of-band (run by the harness).
@@ -35,7 +35,7 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
-    from verifiers.v1.user import Respond
+    from verifiers.v1.mcp import Respond
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ class RolloutSession:
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
     user: "Respond | None" = None
-    """A user simulator the rollout sets before the harness runs (see `verifiers.v1.user`).
+    """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
     injected as a user turn, and the model is re-prompted — all within one program request,
     transparently to the harness."""

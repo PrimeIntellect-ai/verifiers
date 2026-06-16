@@ -3,7 +3,7 @@ name = "wikispeedia-v1"
 version = "0.1.0"
 description = "wikispeedia-v1 — navigate Wikipedia by following links to a target article."
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["verifiers"]
 
 [build-system]
 requires = ["hatchling"]
