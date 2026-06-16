@@ -67,7 +67,13 @@ sys.exit(1)
 
 def _free_port() -> int:
     """A free host port in [3000, 9000) — also free in a fresh container/sandbox, and
-    within prime's port-exposure cap (<= 9000)."""
+    within prime's port-exposure cap (<= 9000).
+
+    The probe socket is closed before the port is handed to the server, so there's a small TOCTOU
+    window: two concurrent host rollouts can pick the same port, and the second server then fails to
+    bind. That surfaces as the server's probe timing out (a retryable rollout error), so the rollout
+    retry covers it — rare enough under host concurrency not to warrant holding the socket open across
+    the launch. Remote runtimes use the fixed `published_port` and don't race."""
     for _ in range(50):
         port = random.randint(3000, 8999)
         probe = socket.socket()
@@ -247,7 +253,16 @@ async def serve(
             runtime = make_runtime(cfg.runtime)
             await runtime.start()
             stack.push_async_callback(runtime.stop)
-        port = runtime.published_port or _free_port()
+        # A colocated tool is reached in-sandbox at localhost, so it only needs a free in-sandbox
+        # port; binding the runtime's published_port (a fixed SERVICE_PORT) would clash if two
+        # colocated servers shared one remote sandbox. Only an EXPOSED port — a `for_host` server, or
+        # a tool in its own remote runtime reached from outside — uses the published port.
+        in_sandbox_only = runtime is agent_runtime and not for_host
+        port = (
+            _free_port()
+            if in_sandbox_only
+            else (runtime.published_port or _free_port())
+        )
         await serve_in_runtime(server, task, runtime, port)
         local = f"http://127.0.0.1:{port}"
         if for_host:  # the framework reaches it from the host
@@ -346,7 +361,7 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
 
     last_exc: Exception | None = None
     for attempt in range(_USER_CONNECT_ATTEMPTS):
-        connected = False
+        connected = in_body = False
         try:
             async with (
                 streamable_http_client(url) as (read, write, *_),
@@ -366,11 +381,16 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
                     messages = [parse_message(m) for m in data["messages"]]
                     return messages, bool(data["done"])
 
+                in_body = True  # while the harness drives; an error here is the body's, not ours
                 yield respond
+                in_body = False
             return
         except RolloutError:
             raise  # a real rollout error surfaced after connecting: propagate as-is
         except Exception as e:
+            if in_body:
+                raise  # the harness body raised (thrown back at the yield): propagate untouched,
+                # don't mislabel it as a connection loss
             if connected:
                 # the user-sim connection broke mid-rollout/teardown (e.g. the colocated server
                 # was killed under memory pressure): capture it as a retryable rollout error

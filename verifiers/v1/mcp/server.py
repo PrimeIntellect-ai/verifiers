@@ -111,11 +111,14 @@ class ServerBase(Generic[ConfigT]):
 
     @classmethod
     def _config_cls(cls) -> type[BaseConfig]:
-        """The config type from the `Toolset[Config]` / `User[Config]` generic parameter."""
-        for base in getattr(cls, "__orig_bases__", ()):
-            for arg in get_args(base):
-                if isinstance(arg, type) and issubclass(arg, BaseConfig):
-                    return arg
+        """The config type from the `Toolset[Config]` / `User[Config]` generic parameter. Walks the
+        MRO, so a further subclass that doesn't re-parameterize (`class B(MyToolset)`) inherits the
+        config from where it was set."""
+        for klass in cls.__mro__:
+            for base in getattr(klass, "__orig_bases__", ()):
+                for arg in get_args(base):
+                    if isinstance(arg, type) and issubclass(arg, BaseConfig):
+                        return arg
         raise TypeError(
             f"{cls.__name__} must parameterize its config, e.g. Toolset[MyConfig]"
         )
