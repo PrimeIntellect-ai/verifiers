@@ -42,11 +42,16 @@ import shlex
 import tarfile
 import tempfile
 import time
-from importlib.abc import Traversable
 from pathlib import Path
 from typing import Any
 
+try:
+    from importlib.resources.abc import Traversable
+except ImportError:  # Python < 3.14
+    from importlib.abc import Traversable
+
 import verifiers as vf
+
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.task import TaskSet

@@ -27,9 +27,13 @@ A **SandboxSpec** describes sandbox requirements (image, CPU, memory, etc.).
 import importlib
 import importlib.resources as resources
 from dataclasses import dataclass
-from importlib.abc import Traversable
 from pathlib import Path
 from typing import Any, Callable
+
+try:
+    from importlib.resources.abc import Traversable
+except ImportError:  # Python < 3.14
+    from importlib.abc import Traversable
 
 from verifiers.envs.experimental.composable._filter import _resolve_filter_fn
 from verifiers.types import DatasetBuilder, Messages, State

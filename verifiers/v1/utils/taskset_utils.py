@@ -5,9 +5,13 @@ import uuid
 from collections.abc import Iterable
 from contextlib import suppress
 from copy import deepcopy
-from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
+
+try:
+    from importlib.resources.abc import Traversable
+except ImportError:  # Python < 3.14
+    from importlib.abc import Traversable
 
 from datasets import Dataset
 from verifiers.types import task_payload_from_info
