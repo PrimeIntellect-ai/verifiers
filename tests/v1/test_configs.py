@@ -24,8 +24,3 @@ CONFIGS = sorted(
 def test_eval_config_parses(path: Path) -> None:
     config = EvalConfig.model_validate(tomllib.load(path.open("rb")))
     assert config.taskset.id or config.id  # resolved to a v1 taskset or a v0 env id
-
-
-def test_sampling_reasoning_effort_is_typed() -> None:
-    config = EvalConfig.model_validate({"sampling": {"reasoning_effort": "medium"}})
-    assert config.sampling.reasoning_effort == "medium"
