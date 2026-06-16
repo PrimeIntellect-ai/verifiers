@@ -323,12 +323,12 @@ class Environment:
     async def shared_tools(self, tasks: list[Task]):
         """Start any tool servers whose placement is `shared` ONCE for the eval (each in its
         own `runtime`) and yield `{name: url}` to inject into every rollout — so an expensive
-        corpus is built once, not per rollout. No-op ({}) when none are shared. Shared servers
-        must be task-agnostic, so they're read off any task."""
+        corpus is built once, not per rollout. No-op ({}) when none are shared. A shared server
+        must be task-agnostic: its `setup` gets no task (so it can't silently serve one task's
+        data to every rollout); `tools(tasks[0])` here only builds the toolset instances."""
         servers = self.taskset.tools(tasks[0]) if tasks else []
         if not any(server.config.shared for server in servers):
             yield {}
             return
-        # Shared servers are task-agnostic; pass a representative task for their `setup` signature.
-        async with serve_shared(servers, tasks[0]) as urls:
+        async with serve_shared(servers) as urls:
             yield urls

@@ -204,16 +204,19 @@ def _source_dir(cls: type) -> str | None:
 def server_to_launch(inst: ServerBase, task) -> _Launch:
     """Build the `_Launch` for a vf-native server: the env the generic entrypoint
     (`verifiers.v1.toolserver`) reads to rebuild it — the class and config-class refs
-    (`module:qualname`), and the `config` + this rollout's `task` as JSON — plus the env package's
-    local `source_dir` (uploaded + installed when the runtime is a sandbox)."""
-    cls, cfg_cls, task_cls = type(inst), type(inst.config), type(task)
+    (`module:qualname`) + the `config` as JSON — plus the env package's local `source_dir`
+    (uploaded + installed when the runtime is a sandbox). `task` (this rollout's task) is shipped
+    too unless it's `None` — a `shared` server is task-agnostic, so it gets no task and one that
+    reads it fails loudly in `setup` rather than silently serving one task's data to every rollout."""
+    cls, cfg_cls = type(inst), type(inst.config)
     env = {
         "VF_SERVER": f"{cls.__module__}:{cls.__qualname__}",
         "VF_CONFIG_CLS": f"{cfg_cls.__module__}:{cfg_cls.__qualname__}",
-        "VF_TASK_CLS": f"{task_cls.__module__}:{task_cls.__qualname__}",
         "VF_CONFIG": inst.config.model_dump_json(),
-        "VF_TASK": task.model_dump_json(),
     }
+    if task is not None:
+        env["VF_TASK_CLS"] = f"{type(task).__module__}:{type(task).__qualname__}"
+        env["VF_TASK"] = task.model_dump_json()
     return _Launch(name=inst.server_name, env=env, source_dir=_source_dir(cls))
 
 
@@ -390,11 +393,12 @@ async def serve(server: ServerBase, task, agent_runtime: Runtime | None = None, 
 
 
 @contextlib.asynccontextmanager
-async def serve_shared(toolsets: list[Toolset], task):
+async def serve_shared(toolsets: list[Toolset]):
     """Start the SHARED tool servers (placement `shared`) ONCE for a whole eval, each in its OWN
     `runtime`, and yield `{name: url}` reachable by every rollout's harness (a prime tool runtime
     publishes its port; a host one is localhost, for host-network harnesses). Torn down when the
-    eval ends. Used by `Environment` so an expensive corpus is built once, not per rollout."""
+    eval ends. Used by `Environment` so an expensive corpus is built once, not per rollout. A shared
+    server is task-agnostic, so its `setup` gets no task (`serve(toolset, None)`)."""
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
         for toolset in toolsets:
@@ -405,7 +409,7 @@ async def serve_shared(toolsets: list[Toolset], task):
             if cfg.url:  # already running remotely
                 urls[name] = cfg.url
             else:
-                urls[name] = await stack.enter_async_context(serve(toolset, task))
+                urls[name] = await stack.enter_async_context(serve(toolset, None))
             logger.info("shared tool server '%s': %s", name, urls[name])
         yield urls
 
