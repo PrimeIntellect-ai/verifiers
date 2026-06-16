@@ -9,19 +9,16 @@ these — inherit `BaseClientConfig` to get the endpoint/header handling for fre
 """
 
 import os
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from openai import AsyncOpenAI
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
+from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.eval import EvalClient
-
-try:
-    from renderers import RendererConfig
-except ImportError:
-    RendererConfig = dict[str, Any]
+from verifiers.v1.clients.train import TrainClient
 
 PRIME_INFERENCE_HOST = "pinference.ai"
 PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"
@@ -78,8 +75,6 @@ ClientConfig = Annotated[
 def resolve_client(config: BaseClientConfig) -> Client:
     api_key = os.environ.get(config.api_key_var, "EMPTY")
     if isinstance(config, TrainClientConfig):
-        from verifiers.v1.clients import TrainClient
-
         # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
         openai = AsyncOpenAI(
             base_url=config.base_url,
