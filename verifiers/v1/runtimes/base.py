@@ -15,6 +15,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import ClassVar
 
 from tenacity import (
     AsyncRetrying,
@@ -104,6 +105,12 @@ def cleanup_at_exit() -> None:
 
 
 class Runtime(ABC):
+    is_local: ClassVar[bool] = True
+    """Whether this runtime shares the host network — a program inside it reaches a host service
+    at localhost (no tunnel) and a service inside it is reachable at localhost. True for
+    subprocess / docker(--network host); remote runtimes (modal/prime) override to False (they
+    need a tunnel each way: `host_endpoint` inward, `expose` outward)."""
+
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
         """Resource name — the subprocess workdir, docker `--name`, prime sandbox name.
@@ -120,7 +127,7 @@ class Runtime(ABC):
     def published_port(self) -> int | None:
         """A fixed port this runtime exposes to the outside at startup, declared up front to the
         provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
-        here binds it instead of a host-chosen free port, and `public_url` returns its public URL.
+        here binds it instead of a host-chosen free port, and `expose` returns its public URL.
         `None` for host-networked runtimes (subprocess/docker), which pick a free port and are
         reached over the shared host network."""
         return None
@@ -139,14 +146,6 @@ class Runtime(ABC):
         """Free the provisioned resource on the normal path, off the event loop. Override
         only for teardown that must be async (e.g. a remote API call)."""
         await asyncio.to_thread(self.cleanup)
-
-    async def expose(self, port: int) -> str:
-        """A base URL the program (inside this runtime) can use to reach a host service
-        on localhost `port` — the interception endpoint and host-side tool servers both
-        go through this. Default: localhost, which works when the runtime shares the host
-        network (subprocess, docker --network host). Remote runtimes (prime) override to
-        tunnel the port."""
-        return f"http://127.0.0.1:{port}"
 
     @abstractmethod
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
@@ -168,11 +167,12 @@ class Runtime(ABC):
         runtime: subprocess workdir, docker image, prime sandbox id."""
         return None
 
-    async def public_url(self, port: int) -> str | None:
-        """A URL anyone can use to reach `port` running *inside this runtime*, or None if
-        this runtime can't self-publish (it's on the host network, so the caller reaches
-        it via the harness runtime's `expose`). A remote runtime overrides this to publish
-        the port (e.g. a prime sandbox exposes it natively). Cleaned up by `stop()`."""
+    async def expose(self, port: int) -> str | None:
+        """Publish a port running *inside this runtime* to a URL reachable from the host/outside,
+        or None when local (it's on the host network — reach it at localhost). A remote runtime
+        overrides this with the provider's native port exposure (modal `tunnels()`, prime
+        `client.expose`), torn down with the sandbox in `stop()`. The reverse of `host_endpoint`
+        (which reaches a host port from inside a runtime)."""
         return None
 
     @abstractmethod
@@ -260,9 +260,6 @@ class RetryingRuntime(Runtime):
     def cleanup(self) -> None:
         self.inner.cleanup()
 
-    async def expose(self, port: int) -> str:
-        return await self._retry(self.inner.expose, port)
-
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         return await self._retry(self.inner.run, argv, env)
 
@@ -280,14 +277,47 @@ class RetryingRuntime(Runtime):
         return self.inner.published_port
 
     @property
+    def is_local(self) -> bool:
+        return self.inner.is_local
+
+    @property
     def descriptor(self) -> str | None:
         return self.inner.descriptor
 
-    async def public_url(self, port: int) -> str | None:
-        return await self._retry(self.inner.public_url, port)
+    async def expose(self, port: int) -> str | None:
+        return await self._retry(self.inner.expose, port)
 
     async def read(self, path: str) -> bytes:
         return await self._retry(self.inner.read, path)
 
     async def write(self, path: str, data: bytes) -> None:
         await self._retry(self.inner.write, path, data)
+
+
+@contextlib.asynccontextmanager
+async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = None):
+    """Yield a URL a program *inside a runtime* uses to reach a HOST service on `port`. A local
+    runtime shares the host network → localhost; a remote one needs a host-side reverse tunnel
+    (`prime_tunnel`), torn down on exit. This is the host-side, provider-agnostic counterpart to
+    `Runtime.expose` (which publishes a port running *inside* a runtime) — so the runtime only
+    reports `is_local` and callers (interception pool, rollout, tool serving) bridge to the host
+    here, rather than every runtime reimplementing the tunnel."""
+    if is_local:
+        yield f"http://127.0.0.1:{port}"
+        return
+    from prime_tunnel import Tunnel
+
+    from verifiers.v1.errors import ProgramError
+    from verifiers.v1.runtimes.limiters import TUNNEL_LIMITER
+
+    tunnel = Tunnel(local_port=port, labels=labels or None)
+    try:
+        async with TUNNEL_LIMITER:  # shared prime_tunnel rate (512/min, runtime-independent)
+            url = str(await tunnel.start()).rstrip("/")
+    except Exception as e:
+        raise ProgramError(f"host tunnel failed (port {port}): {e}") from e
+    try:
+        yield url
+    finally:
+        with contextlib.suppress(Exception):
+            tunnel.sync_stop()

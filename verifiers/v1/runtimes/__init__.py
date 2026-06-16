@@ -15,6 +15,7 @@ from verifiers.v1.runtimes.base import (
     ProgramResult,
     RetryingRuntime,
     Runtime,
+    host_endpoint,
     register,
 )
 from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime
@@ -28,17 +29,28 @@ RuntimeConfig = Annotated[
 ]
 
 
-def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
+def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
     if isinstance(config, PrimeConfig):
-        runtime: Runtime = PrimeRuntime(config, name)
-    elif isinstance(config, ModalConfig):
-        runtime = ModalRuntime(config, name)
-    elif isinstance(config, DockerConfig):
-        runtime = DockerRuntime(config, name)
-    else:
-        runtime = SubprocessRuntime(config, name)
+        return PrimeRuntime
+    if isinstance(config, ModalConfig):
+        return ModalRuntime
+    if isinstance(config, DockerConfig):
+        return DockerRuntime
+    return SubprocessRuntime
+
+
+def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
+    runtime = _runtime_cls(config)(config, name)
     register(runtime)
     return runtime
+
+
+def runtime_is_local(config: RuntimeConfig) -> bool:
+    """Whether a runtime of this config shares the host network (so a program inside it reaches a
+    host service at localhost, no tunnel) — read off the runtime class, without provisioning one.
+    The interception pool / rollout use it to decide whether to tunnel their host port via
+    `host_endpoint`."""
+    return _runtime_cls(config).is_local
 
 
 __all__ = [
@@ -47,6 +59,8 @@ __all__ = [
     "Runtime",
     "RuntimeConfig",
     "make_runtime",
+    "runtime_is_local",
+    "host_endpoint",
     "SubprocessConfig",
     "SubprocessRuntime",
     "DockerConfig",

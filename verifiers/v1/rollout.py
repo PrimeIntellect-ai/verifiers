@@ -29,6 +29,7 @@ from verifiers.v1.runtimes import (
     RetryingRuntime,
     Runtime,
     RuntimeConfig,
+    host_endpoint,
     make_runtime,
 )
 from verifiers.v1.task import Task
@@ -108,8 +109,8 @@ class Rollout:
         else:
             async with InterceptionServer() as server:
                 secret = server.register(session)
-                endpoint = f"{await runtime.expose(server.port)}/v1"
-                yield endpoint, secret
+                async with host_endpoint(server.port, runtime.is_local) as url:
+                    yield f"{url}/v1", secret
 
     async def run(
         self,

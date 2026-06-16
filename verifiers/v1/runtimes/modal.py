@@ -1,10 +1,10 @@
-"""Remote Modal sandbox runtime: run the program in a Modal sandbox, reached via tunnels.
+"""Remote Modal sandbox runtime: run the program in a Modal sandbox, reached via a tunnel.
 
-Two directions, two mechanisms. `expose` (host port -> sandbox) uses the host-side
-`prime_tunnel`, so a program in the sandbox can reach the host interception server. `public_url`
-(sandbox port -> public internet) uses Modal's own forwarding (a port named via `encrypted_ports`
-at `Sandbox.create`, read back from `sandbox.tunnels()`), so a host-side harness/framework can
-reach a tool/user server hosted in the sandbox.
+`expose` (sandbox port -> public internet) uses Modal's own forwarding — a port named via
+`encrypted_ports` at `Sandbox.create`, read back from `sandbox.tunnels()` — so a host-side
+harness/framework can reach a tool/user server hosted in the sandbox. The reverse direction (a
+program in the sandbox reaching a host service) is the shared host-side `host_endpoint` tunnel,
+not the runtime's concern.
 """
 
 import asyncio
@@ -12,13 +12,13 @@ import contextlib
 import logging
 import shlex
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime
-from verifiers.v1.runtimes.limiters import TUNNEL_LIMITER, creation_limiter
+from verifiers.v1.runtimes.limiters import creation_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +59,13 @@ class ModalConfig(BaseConfig):
 class ModalRuntime(Runtime):
     """Runs the program in a Modal sandbox; the server is reached via a tunnel."""
 
+    is_local: ClassVar[bool] = False
+
     def __init__(self, config: ModalConfig, name: str | None = None) -> None:
         super().__init__(name)
         self.config = config
         self._sandbox = None
         self._sandbox_id: str | None = None
-        self._tunnels: list = []
 
     @property
     def descriptor(self) -> str | None:
@@ -113,10 +114,10 @@ class ModalRuntime(Runtime):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise ProgramError(f"modal sandbox provisioning failed: {e}") from e
 
-    async def public_url(self, port: int) -> str | None:
-        # Reach a server hosted IN the sandbox: Modal forwards `port` (named via `encrypted_ports`
-        # at creation) to a public URL, read back from `sandbox.tunnels()`. Only the pre-declared
-        # `server_port` is forwarded; any other port has no tunnel.
+    async def expose(self, port: int) -> str | None:
+        # Publish a server hosted IN the sandbox: Modal forwards `port` (named via
+        # `encrypted_ports` at creation) to a public URL, read back from `sandbox.tunnels()`.
+        # Only the pre-declared SERVICE_PORT is forwarded; any other port has no tunnel.
         if self._sandbox is None:
             return None
         try:
@@ -125,23 +126,6 @@ class ModalRuntime(Runtime):
             raise ProgramError(f"modal tunnels unavailable (port {port}): {e}") from e
         tunnel = tunnels.get(port)
         return str(tunnel.url).rstrip("/") if tunnel else None
-
-    async def expose(self, port: int) -> str:
-        # The reverse direction: a program in the sandbox reaches a HOST port. Modal's own
-        # forwarding only publishes sandbox ports, so use the host-side `prime_tunnel` here.
-        from prime_tunnel import Tunnel
-
-        tunnel = Tunnel(local_port=port)
-        try:
-            async with (
-                TUNNEL_LIMITER
-            ):  # shared prime_tunnel rate (512/min, runtime-independent)
-                url = str(await tunnel.start()).rstrip("/")
-        except Exception as e:
-            raise ProgramError(f"modal tunnel failed (host port {port}): {e}") from e
-        self._tunnels.append(tunnel)
-        logger.info("modal: tunnel up at %s (host port %d)", url, port)
-        return url
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
@@ -198,28 +182,18 @@ class ModalRuntime(Runtime):
             raise ProgramError(f"write {path!r}: {e}") from e
 
     def cleanup(self) -> None:
-        # Synchronous atexit backstop (the async API can't run once the loop is gone): stop
-        # the already-sync tunnels and terminate the sandbox via Modal's sync API, so the
-        # costly resource isn't left to its max-lifetime. Idempotent — the async `stop`
-        # handles the normal path, and a second terminate is a no-op.
-        for tunnel in self._tunnels:
-            with contextlib.suppress(Exception):
-                tunnel.sync_stop()
-        self._tunnels = []
+        # Synchronous atexit backstop (the async API can't run once the loop is gone): terminate
+        # the sandbox via Modal's sync API so the costly resource isn't left to its max-lifetime.
+        # Idempotent — the async `stop` handles the normal path, and a second terminate is a no-op.
         sandbox, self._sandbox = self._sandbox, None
         if sandbox is not None:  # `_sandbox_id` kept so descriptor survives teardown
             with contextlib.suppress(Exception):
                 sandbox.terminate()
 
     async def stop(self) -> None:
-        # Best-effort, idempotent teardown on the normal path: tunnels first, then the
-        # sandbox (the costly resource) via the async API. Runs from the rollout's
-        # `finally`, so it fires on success, error, and cancellation; `_sandbox` is nulled
-        # as the idempotency guard (the atexit `cleanup` then no-ops).
-        for tunnel in self._tunnels:
-            with contextlib.suppress(Exception):
-                tunnel.sync_stop()
-        self._tunnels = []
+        # Best-effort, idempotent teardown on the normal path: terminate the sandbox (the costly
+        # resource) via the async API. Runs from the rollout's `finally`, so it fires on success,
+        # error, and cancellation; `_sandbox` is nulled as the idempotency guard (atexit no-ops).
         sandbox, self._sandbox = self._sandbox, None
         if sandbox is None:
             return

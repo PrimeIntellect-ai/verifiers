@@ -1,17 +1,23 @@
-"""Remote Prime sandbox runtime: run the program in a sandbox, server via tunnel."""
+"""Remote Prime sandbox runtime: run the program in a sandbox, reached via native port exposure.
+
+`expose` (sandbox port -> public URL) uses the SDK's native exposure (`client.expose`), so a
+host-side harness/framework can reach a tool/user server hosted in the sandbox. The reverse
+direction (a program in the sandbox reaching a host service) is the shared host-side
+`host_endpoint` tunnel, not the runtime's concern.
+"""
 
 import base64
 import contextlib
 import logging
 import shlex
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime, parse_gpu
-from verifiers.v1.runtimes.limiters import TUNNEL_LIMITER, creation_limiter
+from verifiers.v1.runtimes.limiters import creation_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +63,13 @@ class PrimeConfig(BaseConfig):
 class PrimeRuntime(Runtime):
     """Runs the program in a Prime sandbox; the server is reached via a tunnel."""
 
+    is_local: ClassVar[bool] = False
+
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         super().__init__(name)
         self.config = config
         self._client = None
         self._sandbox_id: str | None = None
-        self._tunnels: list = []
 
     @property
     def descriptor(self) -> str | None:
@@ -124,22 +131,6 @@ class PrimeRuntime(Runtime):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise ProgramError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def expose(self, port: int) -> str:
-        # The sandbox is remote, so reach a host port via a tunnel (one per port).
-        from prime_tunnel import Tunnel
-
-        tunnel = Tunnel(local_port=port, labels=self.config.labels or None)
-        try:
-            async with (
-                TUNNEL_LIMITER
-            ):  # shared prime_tunnel rate (512/min, runtime-independent)
-                url = str(await tunnel.start()).rstrip("/")
-        except Exception as e:
-            raise ProgramError(f"prime tunnel failed (host port {port}): {e}") from e
-        self._tunnels.append(tunnel)
-        logger.info("prime: tunnel up at %s (host port %d)", url, port)
-        return url
-
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
             result = await self._client.run_background_job(
@@ -163,18 +154,18 @@ class PrimeRuntime(Runtime):
             stderr=result.stderr or "",
         )
 
-    async def public_url(self, port: int) -> str | None:
-        # Native sandbox port exposure → a public HTTPS URL reachable from anywhere
-        # (incl. another sandbox). The exposure is removed when the sandbox is deleted
-        # in stop(), so a tool in its own prime sandbox needs no host middleman/tunnel.
-        # TODO: `expose` currently only works in a default-region sandbox (port <= 9000), so a
-        # tool/user-sim in its own prime sandbox needs the region pinned. Fix once prime
-        # supports port exposure in any region (then drop the e2e `skip_if_unexposable` guard).
+    async def expose(self, port: int) -> str | None:
+        # Publish a server hosted IN the sandbox via the SDK's native port exposure → a public
+        # HTTPS URL reachable from anywhere (incl. another sandbox). The exposure is removed when
+        # the sandbox is deleted in stop(), so a tool in its own prime sandbox needs no host tunnel.
+        # TODO: `client.expose` currently only works in a default-region sandbox (port <= 9000), so
+        # a tool/user-sim in its own prime sandbox needs the region pinned. Fix once prime supports
+        # port exposure in any region (then drop the e2e `skip_if_unexposable` guard).
         try:
             exposed = await self._client.expose(self._sandbox_id, port)
         except Exception as e:  # surface prime's exposure constraints actionably
             raise ProgramError(
-                "prime port exposure failed — `expose` currently needs a default-region "
+                "prime port exposure failed — `client.expose` currently needs a default-region "
                 "sandbox and port <= 9000; pin `tools.runtime.region` to a supported "
                 f"region, or use a host/docker tools.runtime instead. ({e})"
             ) from e

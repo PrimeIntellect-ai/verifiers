@@ -36,7 +36,13 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes import Runtime, RuntimeConfig, SubprocessConfig, make_runtime
+from verifiers.v1.runtimes import (
+    Runtime,
+    RuntimeConfig,
+    SubprocessConfig,
+    host_endpoint,
+    make_runtime,
+)
 from verifiers.v1.runtimes.base import _ENSURE_UV
 
 if TYPE_CHECKING:
@@ -363,8 +369,8 @@ async def serve(server: ServerBase, task, agent_runtime: Runtime | None = None, 
     (A remote `url` toolset is short-circuited by the caller — it isn't launched.) Reachability
     depends on who consumes it: `for_host` (a user sim the framework drives) yields a
     host-reachable URL; otherwise (a tool the model calls) a harness-reachable one — localhost
-    in-sandbox when colocated, else the tool runtime's `public_url` bridged by the harness's
-    `expose` (or, eval-level with no `agent_runtime`, `public_url` or localhost for a shared one)."""
+    in-sandbox when colocated, else the tool runtime's `expose` (its published URL) or, for a
+    host-side tool reached by an in-sandbox harness, a `host_endpoint` tunnel to the host port."""
     cfg = server.config
     if getattr(cfg, "shared", False) and task is not None:
         raise ValueError(
@@ -372,30 +378,27 @@ async def serve(server: ServerBase, task, agent_runtime: Runtime | None = None, 
             "is built once for the whole eval and must be task-agnostic — it receives no task. "
             "Drop `shared` to run it per-rollout (with the task), or make its `setup` task-independent."
         )
-    own = None
-    if cfg.colocated and agent_runtime is not None:
-        runtime = agent_runtime
-    else:
-        own = make_runtime(cfg.runtime)
-        await own.start()
-        runtime = own
-    try:
+    async with contextlib.AsyncExitStack() as stack:
+        if cfg.colocated and agent_runtime is not None:
+            runtime = agent_runtime
+        else:
+            runtime = make_runtime(cfg.runtime)
+            await runtime.start()
+            stack.push_async_callback(runtime.stop)
         port = runtime.published_port or _free_port()
         await serve_in_runtime(server_to_launch(server, task), runtime, port)
         local = f"http://127.0.0.1:{port}"
         if for_host:  # the framework reaches it from the host
-            base = await runtime.public_url(port) or local
+            base = await runtime.expose(port) or local
         elif runtime is agent_runtime:  # colocated tool: the model reaches it in-sandbox
             base = local
         elif agent_runtime is not None:  # own-runtime tool: the harness bridges to it
-            base = await runtime.public_url(port) or await agent_runtime.expose(port)
+            base = await runtime.expose(port) or await stack.enter_async_context(
+                host_endpoint(port, agent_runtime.is_local)
+            )
         else:  # shared tool, eval-level (no single agent to bridge through)
-            base = await runtime.public_url(port) or local
+            base = await runtime.expose(port) or local
         yield f"{base.rstrip('/')}/mcp"
-    finally:
-        if own is not None:
-            with contextlib.suppress(Exception):
-                await own.stop()
 
 
 @contextlib.asynccontextmanager
