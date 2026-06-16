@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # The verifiers source tree's wheel-build inputs — uploaded into a sandbox so it installs the
 # developer's working-tree verifiers (deps resolve from PyPI off the uploaded pyproject), with no
 # publish or git pin to keep in sync.
-_VERIFIERS_BUILD_INPUTS = ["pyproject.toml", "README.md", "LICENSE", "verifiers"]
+VF_BUILD_INPUTS = ["pyproject.toml", "README.md", "LICENSE", "verifiers"]
 
 
 class ToolsetConfig(BaseConfig):
@@ -326,7 +326,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
         )
     root = "/tmp/vf-src"
     vf, env = _verifiers_root(), Path(source_dir)
-    await runtime.write(f"{root}/{vf.name}.tar.gz", _tar_source(vf, _VERIFIERS_BUILD_INPUTS))
+    await runtime.write(f"{root}/{vf.name}.tar.gz", _tar_source(vf, VF_BUILD_INPUTS))
     await runtime.write(f"{root}/{env.name}.tar.gz", _tar_source(env))
     venv = "/tmp/vf-venv"
     setup = (
