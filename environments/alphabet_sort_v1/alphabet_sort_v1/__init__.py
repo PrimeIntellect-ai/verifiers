@@ -43,8 +43,6 @@ class AlphabetSortConfig(vf.TasksetConfig):
     split: Literal["train"] = "train"
     """Split of the source author-names dataset to build the episodes from."""
     user: vf.UserConfig = vf.UserConfig()
-    """Placement for the user simulator, CLI-tunable (e.g. `--taskset.user.colocated true`,
-    `--taskset.user.runtime.type docker`)."""
 
 
 class AlphabetSortTask(vf.Task):
@@ -55,8 +53,7 @@ class AlphabetSortTask(vf.Task):
 
 class AlphabetSortUser(vf.User[vf.UserConfig]):
     """Replays the episode's pre-generated follow-up turns: one `respond` per assistant turn,
-    injecting the next follow-up as a user message until all turns are done. This colocates
-    v0's `MultiTurnEnv.env_response` with the agent — the framework drives it, never the model."""
+    injecting the next follow-up as a user message until all turns are done."""
 
     async def setup(self, task) -> None:
         self.follow_ups = task.info["follow_ups"]  # per-task input, from the task

@@ -38,6 +38,8 @@ Response:
 Respond either "yes" or "no" only. If a response contains incoherent text, respond \
 with "no" even if the correct answer is also present."""
 
+DATASET = "willcb/rare-wiki-pages"
+
 
 # The question bank and count are fixed properties of this env, not eval-time
 # knobs (the searchable corpus is built in `WikiSearchToolset.setup`).
@@ -65,12 +67,9 @@ class WikiSearchConfig(vf.TasksetConfig):
 
 class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
     """Read-only search/view/read over the wiki corpus. The corpus + chroma index (expensive) are
-    built once in `setup`, in the server process — self-contained (no sibling imports), so the
-    rendered server ships with just `chromadb` + `datasets`. Every tool call is a read."""
+    built once in `setup`, in the server process. Every tool call is a read."""
 
-    name = "wiki"  # the model sees `wiki_search_pages` / `wiki_view_sections` / `wiki_read_section`
-    deps = ["chromadb", "datasets"]
-    dataset = "willcb/rare-wiki-pages"
+    TOOL_PREFIX = "wiki"  # the model sees `wiki_search_pages` / `wiki_view_sections` / `wiki_read_section`
 
     async def setup(self, task) -> None:
         import os
@@ -82,7 +81,7 @@ class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
         import chromadb
         from datasets import load_dataset
 
-        rows = load_dataset(self.dataset, split="train")
+        rows = load_dataset(DATASET, split="train")
         self.pages = {r["id"]: {"title": r["title"], "content": r["content"]} for r in rows}
         cache = os.environ.get("WIKI_SEARCH_CACHE", str(Path.home() / ".cache" / "wiki_search"))
         col = chromadb.PersistentClient(path=f"{cache}/chroma").get_or_create_collection(

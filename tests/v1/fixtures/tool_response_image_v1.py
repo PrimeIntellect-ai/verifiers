@@ -13,8 +13,7 @@ SYSTEM = "Call the requested tool before answering."
 
 
 class VisionToolset(vf.Toolset[vf.ToolsetConfig]):
-    name = "vision"  # the model sees `vision_snapshot`
-    png = PNG_DATA
+    TOOL_PREFIX = "vision"  # the model sees `vision_snapshot`
 
     @vf.tool
     def snapshot(self) -> list:
@@ -23,7 +22,7 @@ class VisionToolset(vf.Toolset[vf.ToolsetConfig]):
 
         return [
             TextContent(type="text", text="tiny test image"),
-            ImageContent(type="image", data=self.png, mimeType="image/png"),
+            ImageContent(type="image", data=PNG_DATA, mimeType="image/png"),
         ]
 
 

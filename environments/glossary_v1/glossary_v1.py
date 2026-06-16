@@ -1,14 +1,10 @@
-"""glossary: a custom COLOCATED tool server, authored as a vf-native class.
+"""glossary: a custom tool server, authored as a vf-native class.
 
 Each task asks the model to look up an entity. The taskset declares its tool server as a
 `vf.Toolset` subclass with `@vf.tool` methods (no FastMCP boilerplate, no separate server
-file): the framework serializes it, launches it in the harness's runtime, and surfaces its
-`lookup` tool as `facts_lookup`. The reward checks the looked-up fact reached the answer.
-
-This is the colocated example (`tools.colocated=True`, the default): the server is small and
-self-contained, so it runs *inside the harness's own runtime*, reached over localhost with no
-tunnel. The right placement for a lightweight, per-rollout tool — contrast `wikispeedia` (its
-own runtime), `wiki_search` (shared), and `deepwiki` (a remote URL).
+file): the framework launches it in its own runtime and surfaces its `lookup` tool as
+`facts_lookup`. The reward checks the looked-up fact reached the answer. The simplest tool
+example — contrast `wikispeedia` (per-task state), `wiki_search` (shared), `deepwiki` (remote).
 """
 
 import json
@@ -20,19 +16,13 @@ HERE = Path(__file__).resolve().parent
 FACTS: dict[str, str] = json.loads((HERE / "facts.json").read_text())
 
 
-class GlossaryToolsetConfig(vf.ToolsetConfig):
-    facts: dict[str, str] = {}
-    """The corpus the `lookup` tool serves — server data, shipped in the config (so the server
-    is self-contained), injected by the taskset rather than tuned on the CLI."""
-
-
-class GlossaryToolset(vf.Toolset[GlossaryToolsetConfig]):
-    name = "facts"  # the model sees `facts_lookup` (matches the instruction)
+class GlossaryToolset(vf.Toolset[vf.ToolsetConfig]):
+    TOOL_PREFIX = "facts"  # the model sees `facts_lookup` (matches the instruction)
 
     @vf.tool
     def lookup(self, name: str) -> str:
         """Look up what a person or thing is known for."""
-        return self.config.facts.get(name.strip().lower(), "no entry found")
+        return FACTS.get(name.strip().lower(), "no entry found")
 
 
 class GlossaryTask(vf.Task):
@@ -41,9 +31,7 @@ class GlossaryTask(vf.Task):
 
 
 class GlossaryConfig(vf.TasksetConfig):
-    tools: GlossaryToolsetConfig = GlossaryToolsetConfig()
-    """Placement for the facts tool server, CLI-tunable (e.g.
-    `--taskset.tools.runtime.type docker`, `--taskset.tools.colocated true`)."""
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
 
 
 class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
@@ -62,7 +50,7 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
         ]
 
     def tools(self, task: GlossaryTask) -> list[vf.Toolset]:
-        return [GlossaryToolset(self.config.tools.model_copy(update={"facts": FACTS}))]
+        return [GlossaryToolset(self.config.tools)]
 
     @vf.reward(weight=1.0)
     async def looked_up(

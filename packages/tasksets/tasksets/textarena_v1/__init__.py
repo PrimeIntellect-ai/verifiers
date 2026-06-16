@@ -2,7 +2,7 @@
 
 Each task is one episode of a TextArena game (the working example is Wordle). The model
 plays by emitting moves; the framework's interception server drives a `vf.User` (the game
-engine, see `server.py`) that replies with the game's feedback as a user turn — so a whole
+engine, `TextArenaUser` below) that replies with the game's feedback as a user turn — so a whole
 game is one rollout of alternating assistant/user turns, and the harness/program never see
 the simulator. The user simulator runs colocated in the harness's runtime (host-reachable
 for the subprocess/docker runtimes), so this taskset uses the subprocess runtime.
@@ -36,16 +36,14 @@ SYSTEM_PROMPT = (
     "bracketed token, so don't put other words in brackets."
 )
 
+OUTCOME_FILE = "textarena_outcome.json"
+
 class TextArenaUser(vf.User[vf.UserConfig]):
     """The TextArena game engine as a framework-driven conversation partner. Holds one game in
     memory (set up from the task's `game` id + RNG `seed`, reproducing the taskset's episode) and,
     per `respond`, steps the game with the model's move and returns the next observation as a user
-    turn plus whether the episode is over. Self-contained (`deps=["textarena","nltk"]`): when the
-    game ends it writes the game's own outcome to `OUTCOME_FILE` in the runtime, which the reward
-    reads back."""
-
-    deps = ["textarena==0.7.4", "nltk>=3.9.2"]
-    OUTCOME_FILE = "textarena_outcome.json"
+    turn plus whether the episode is over. When the game ends it writes the game's own outcome to
+    `OUTCOME_FILE` in the runtime, which the reward reads back."""
 
     async def setup(self, task) -> None:
         # textarena derives a game's whole setup from the global RNG at reset, so seeding it
@@ -76,7 +74,7 @@ class TextArenaUser(vf.User[vf.UserConfig]):
         if env.state.done:
             reward = float((env.state.rewards or {}).get(0, 0.0))
             reason = str(env.state.game_info[0]["reason"])
-            with open(self.OUTCOME_FILE, "w") as f:
+            with open(OUTCOME_FILE, "w") as f:
                 json.dump({"reward": reward, "reason": reason}, f)
             return [{"role": "user", "content": reason}], True
         _, observation = env.get_observation()
@@ -97,8 +95,6 @@ class TextArenaConfig(vf.TasksetConfig):
     num_tasks: int = 1000
     """How many seeded episodes to generate; the eval/orchestrator selects from these."""
     user: vf.UserConfig = vf.UserConfig()
-    """Placement for the game-engine user simulator, CLI-tunable (e.g.
-    `--taskset.user.runtime.type docker`)."""
 
 
 class TextArenaTask(vf.Task):
@@ -145,7 +141,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         # The simulator wrote the game's own outcome to the runtime when the episode ended;
         # a missing file means the game never finished (e.g. every move was invalid).
         try:
-            data = await runtime.read(TextArenaUser.OUTCOME_FILE)
+            data = await runtime.read(OUTCOME_FILE)
         except (FileNotFoundError, OSError):
             return 0.0
         return float(json.loads(data)["reward"])

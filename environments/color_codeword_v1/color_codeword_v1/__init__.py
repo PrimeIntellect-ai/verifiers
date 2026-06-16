@@ -101,7 +101,6 @@ class ColorCodewordConfig(vf.TasksetConfig):
     images_per_turn: int = Field(2, ge=1)
     """Colored squares shown per turn."""
     user: vf.UserConfig = vf.UserConfig()
-    """Placement for the user simulator, CLI-tunable (e.g. `--taskset.user.runtime.type docker`)."""
 
 
 class ColorCodewordTask(vf.Task):
@@ -114,15 +113,7 @@ class ColorCodewordTask(vf.Task):
 class ColorCodewordUser(vf.User[vf.UserConfig]):
     """Reveals each turn's colored squares after the prior answer: one `respond` per assistant
     turn, injecting the next turn's squares (image_url parts) as a user message until every
-    `max_turns` turn is answered. Self-contained (renders the squares itself, `deps=["pillow"]`),
-    so it ships standalone; the framework drives it, never the model."""
-
-    deps = ["pillow"]
-    rgb = {
-        "red": (255, 0, 0), "green": (0, 255, 0), "blue": (0, 0, 255),
-        "yellow": (255, 255, 0), "purple": (128, 0, 128), "cyan": (0, 255, 255),
-        "orange": (255, 165, 0), "white": (255, 255, 255), "black": (0, 0, 0),
-    }
+    `max_turns` turn is answered."""
 
     async def setup(self, task) -> None:
         self.colors_per_turn = task.info["colors_per_turn"]  # per-task input, from the task
@@ -138,7 +129,7 @@ class ColorCodewordUser(vf.User[vf.UserConfig]):
         parts = []
         for color in colors:
             buf = BytesIO()
-            Image.new("RGB", (100, 100), self.rgb[color]).save(buf, format="PNG")
+            Image.new("RGB", (100, 100), COLOR_RGB[color]).save(buf, format="PNG")
             url = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
             parts.append({"type": "image_url", "image_url": {"url": url}})
         return parts + [{"type": "text", "text": text}]

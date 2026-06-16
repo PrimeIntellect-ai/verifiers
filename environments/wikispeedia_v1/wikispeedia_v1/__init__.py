@@ -72,18 +72,15 @@ class WikispeediaConfig(vf.TasksetConfig):
     seed: int = 0
     max_turns: int = 30
     tools: WikiToolsetConfig = WikiToolsetConfig()
-    """Placement + rendering for the navigation tool server, CLI-tunable (e.g.
-    `--taskset.tools.links_only false`, `--taskset.tools.runtime.type docker`)."""
 
 
 class WikiToolset(vf.Toolset[WikiToolsetConfig]):
     """Holds the rollout's navigation state (current article + path) and serves
     `click_link`/`go_back`. On reaching the target it emits a `TARGET REACHED` marker in the
-    tool result — which lands in the trace, where the reward reads it. Self-contained: `setup`
-    pulls + parses the SNAP article/link graph itself (stdlib only, cached on disk), so the
-    rendered server ships standalone."""
+    tool result — which lands in the trace, where the reward reads it. `setup` pulls + parses
+    the SNAP article/link graph itself (stdlib only, cached on disk)."""
 
-    name = "wiki"  # the model sees `wiki_click_link` / `wiki_go_back`
+    TOOL_PREFIX = "wiki"  # the model sees `wiki_click_link` / `wiki_go_back`
 
     async def setup(self, task) -> None:
         import os

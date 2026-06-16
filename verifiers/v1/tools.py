@@ -114,20 +114,21 @@ class ServerBase(Generic[ConfigT]):
     Build expensive/non-serializable state in `setup` — set it as plain instance attributes (it
     runs in the server process). The server's deps come from its env package's `pyproject` (the
     install in a sandbox), so the class may freely `import verifiers`, import siblings, and use
-    module globals; `deps` is an extra hook for ad-hoc PyPI requirements."""
+    module globals."""
 
-    name: ClassVar[str] = ""
-    """MCP server name — an identity (the model sees tools as `<name>_<tool>`), set on the
-    class, not the config. Defaults to the class name snake-cased."""
-    deps: ClassVar[list[str]] = []
+    TOOL_PREFIX: ClassVar[str] = ""
+    """Prefix the model sees on this server's tools (`<TOOL_PREFIX>_<tool>`), set on the class,
+    not the config. Empty falls back to the class name snake-cased — set it explicitly for a
+    toolset the model calls (e.g. `wiki` -> `wiki_search`)."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
     @property
     def server_name(self) -> str:
-        """The MCP server name: the class's `name` ClassVar, else the class name snake-cased."""
-        return self.name or "".join(
+        """The server's identity (MCP name, log + namespace key): `TOOL_PREFIX`, else the class
+        name snake-cased."""
+        return self.TOOL_PREFIX or "".join(
             ("_" + c.lower() if c.isupper() else c) for c in type(self).__name__
         ).lstrip("_")
 

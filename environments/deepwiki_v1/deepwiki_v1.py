@@ -23,7 +23,7 @@ TASKS = [
 
 
 class DeepWikiToolset(vf.Toolset[vf.ToolsetConfig]):
-    name = "deepwiki"  # a remote server (config.url) — no @tool methods; model sees `deepwiki_<tool>`
+    TOOL_PREFIX = "deepwiki"  # a remote server (config.url) — no @tool methods; model sees `deepwiki_<tool>`
 
 
 class DeepWikiTask(vf.Task):
@@ -33,7 +33,6 @@ class DeepWikiTask(vf.Task):
 
 class DeepWikiConfig(vf.TasksetConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig(url=DEEPWIKI_URL)
-    """Points at the remote DeepWiki MCP endpoint; CLI-tunable (e.g. `--taskset.tools.url ...`)."""
 
 
 class DeepWikiTaskset(vf.Taskset[DeepWikiTask, DeepWikiConfig]):
