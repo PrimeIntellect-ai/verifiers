@@ -2,19 +2,23 @@ import verifiers.v1 as vf
 
 
 class AlphabetSortUser(vf.User[vf.UserConfig]):
-    """Replays the episode's pre-generated follow-up turns: one `respond` per assistant turn,
-    injecting the next follow-up as a user message until all turns are done."""
+    """Replays the episode's pre-generated user turns: one `respond` delivers the next queued
+    turn as a user message, until the queue is exhausted (then `done`). The queue is the
+    follow-ups; when the task opens from the user (`info["instruction"]` is set, i.e. the task
+    carries no prompt), the initial sort prompt is delivered first as the opening turn."""
 
     async def setup_task(self, task) -> None:
-        self.follow_ups = task.info["follow_ups"]
-        self.num_turns = task.info["num_turns"]
-        self.turns = 0
+        opening = task.info.get("instruction")
+        follow_ups = task.info["follow_ups"]
+        self.queue = [opening, *follow_ups] if opening is not None else list(follow_ups)
+        self.i = 0
 
     async def respond(self, message: str) -> tuple[vf.Messages, bool]:
-        self.turns += 1
-        if self.turns >= self.num_turns:
+        if self.i >= len(self.queue):
             return [], True
-        return [{"role": "user", "content": self.follow_ups[self.turns - 1]}], False
+        content = self.queue[self.i]
+        self.i += 1
+        return [{"role": "user", "content": content}], False
 
 
 if __name__ == "__main__":

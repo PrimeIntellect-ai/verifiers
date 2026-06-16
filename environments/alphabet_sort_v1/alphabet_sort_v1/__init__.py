@@ -12,6 +12,10 @@ injects the next follow-up as a user message, so the whole episode is one rollou
 only ever sees as a single exchange. The simulator runs on the host (not colocated in the
 agent's runtime), so the host-driven loop reaches it on every runtime. The episodes are
 pre-generated in `load_tasks`; the simulator replays them.
+
+With `user_initiates`, the task carries no prompt (`instruction=None`) and the simulator opens
+the conversation too — it delivers the initial sort prompt as its first turn, before the model
+is ever called, exercising the framework's user-opens-the-conversation path.
 """
 
 import difflib
@@ -44,13 +48,19 @@ class AlphabetSortConfig(vf.TasksetConfig):
     """Power-scale each turn then average (True), or average raw similarities then power once (False)."""
     split: Literal["train"] = "train"
     """Split of the source author-names dataset to build the episodes from."""
+    user_initiates: bool = False
+    """Open the conversation from the user simulator instead of the task: the task carries no
+    prompt (`instruction=None`) and the simulator delivers the initial sort prompt as its first
+    turn (then the follow-ups), exercising the framework's user-opens-the-conversation path."""
     user: vf.UserConfig = vf.UserConfig()
 
 
 class AlphabetSortTask(vf.Task):
     info: dict
     """The pre-generated episode: the `follow_ups` the user simulator reveals turn by turn, the
-    per-turn `ground_truths` the reward grades against, and `num_turns`."""
+    per-turn `ground_truths` the reward grades against, and `num_turns`. When `user_initiates`,
+    also `instruction` — the opening sort prompt the simulator delivers first (the task itself
+    then carries no prompt)."""
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
@@ -127,15 +137,19 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
                     prompt += " Follow the same format as before."
                 follow_ups.append(prompt)
 
+            info = {
+                "follow_ups": follow_ups,
+                "ground_truths": ground_truths,
+                "num_turns": len(turns),
+            }
+            if c.user_initiates:
+                # No prompt on the task: the simulator opens with the sort prompt (then follow-ups).
+                info["instruction"] = instruction
             tasks.append(
                 AlphabetSortTask(
                     idx=len(tasks),
-                    instruction=instruction,
-                    info={
-                        "follow_ups": follow_ups,
-                        "ground_truths": ground_truths,
-                        "num_turns": len(turns),
-                    },
+                    instruction=None if c.user_initiates else instruction,
+                    info=info,
                 )
             )
         return tasks
