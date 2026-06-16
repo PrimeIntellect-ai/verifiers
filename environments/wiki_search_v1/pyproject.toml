@@ -3,7 +3,7 @@ name = "wiki-search-v1"
 version = "0.1.0"
 description = "wiki-search-v1 — answer trivia by searching a wiki corpus (read-only MCP tools + judge)."
 requires-python = ">=3.10"
-dependencies = ["chromadb", "datasets"]
+dependencies = ["verifiers", "chromadb", "datasets"]
 
 [build-system]
 requires = ["hatchling"]

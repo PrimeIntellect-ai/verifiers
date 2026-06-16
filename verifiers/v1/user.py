@@ -38,10 +38,10 @@ logger = logging.getLogger(__name__)
 
 class UserConfig(BaseConfig):
     """Where the user simulator runs (placement). The framework always drives it from the host.
-    Default — its own host (`subprocess`) runtime — runs it where `verifiers` + the taskset
-    package live, reachable from any harness runtime, so the sandbox needs nothing. Set
-    `colocated` to run it inside the harness's runtime instead (only when its deps resolve
-    there). Subclass to add the user's own knobs (the data its `respond` reads)."""
+    Default — its own host (`subprocess`) runtime — runs it where `verifiers` + the env module
+    already live, reachable from any harness runtime (nothing to fetch). Set `colocated` to run it
+    inside the harness's runtime instead (in a sandbox that uploads + installs the env package, a
+    per-rollout cost). Subclass to add the user's own knobs (the data its `respond` reads)."""
 
     colocated: bool = False
     """Run the user simulator inside the harness's runtime, reusing it (its port is published

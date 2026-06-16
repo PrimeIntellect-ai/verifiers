@@ -1,29 +1,32 @@
 """Tools: how a task gives the harness tools, via `vf.Toolset`s it declares from `Taskset.tools`.
 
-A `Toolset` (and a `User`) is authored as a vf-native class; the framework renders it to a plain
-PEP 723 uv-script (`server_to_tools` → `_render_script`) that, launched in a runtime, rebuilds
-the class and serves it over streamable HTTP on `MCP_PORT`. On a host (`subprocess`) runtime the
-script is run with the eval's own interpreter — deps already installed, nothing fetched, no
-publishing; in a sandbox it's `uv run`, resolving the header's deps from PyPI. A `Toolset` can
-instead point at an already-running remote endpoint (`ToolsetConfig.url`, e.g. deepwiki).
+A `Toolset` (and a `User`) is authored as a vf-native class. The framework launches it with a
+generic entrypoint (`python -m verifiers.v1.toolserver`) that imports the real class from its
+(installed) env module and serves it over streamable HTTP on `MCP_PORT`. On a host (`subprocess`)
+runtime that's the eval's own interpreter — `verifiers` and the env module are already installed,
+nothing is fetched. In a sandbox the env module is uploaded and `uv pip install`ed (pulling
+`verifiers`, a git-pinned dependency of the env package, plus the env's own deps), then the same
+entrypoint runs. A `Toolset` can instead point at an already-running remote endpoint
+(`ToolsetConfig.url`, e.g. deepwiki).
 
 `serve` is the single internal launcher (any server, any placement). `serve_tools` brings a
 task's servers up for a rollout (each in its `config`'s placement — colocated, own runtime);
-`serve_shared` brings up shared ones once per eval. `run_mcp_server` is the server-side serve
-loop. The wire types the model sees (`Tool`, `ToolCall`, …) live in `types`.
+`serve_shared` brings up shared ones once per eval. `serve_server`/`run_mcp_server` run the
+server-side serve loop (called by the entrypoint). The wire types the model sees (`Tool`,
+`ToolCall`, …) live in `types`.
 """
 
 from __future__ import annotations
 
 import contextlib
-import hashlib
-import inspect
+import io
 import logging
 import os
 import random
+import shlex
 import socket
 import sys
-import uuid
+import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
@@ -41,16 +44,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# `verifiers` isn't on PyPI at the v1 version, so a sandbox installs it from git (the env package
+# declares it as a dependency; this supplies the pin). Locally the editable workspace is used.
+_VERIFIERS_PIN = "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@3f154b7"
+
 
 class ToolsetConfig(BaseConfig):
     """Where one tool server runs (placement). The default — its own host (`subprocess`)
-    runtime — is the robust one: the server runs in the eval process's environment, where
-    `verifiers` and the taskset package are already installed, and the harness reaches it over
-    the host network (docker `--network host`) or a tunnel (prime), so the sandbox needs nothing
-    installed. `colocated` and `shared` trade that off:
+    runtime — is the cheap one: the server runs in the eval process's environment, where
+    `verifiers` and the env module are already installed (nothing to fetch), and the harness
+    reaches it over the host network (docker `--network host`) or a tunnel (prime). `colocated`
+    and `shared` trade that off:
       - neither (default): its own `runtime`, per rollout (host by default).
-      - colocated: in the harness's OWN runtime, per rollout (no tunnel) — only works when the
-        server's deps resolve there (a self-contained published script), not a bare sandbox.
+      - colocated: in the harness's OWN runtime, per rollout (no tunnel). In a sandbox this means
+        the env module is uploaded and `uv pip install`ed there (pulling git-pinned `verifiers`),
+        so it costs a per-rollout install.
       - shared: one instance for the whole eval, in its own `runtime`.
     Subclass to add the server's own knobs (the data its `@tool` methods / `respond` read).
     The server name is the class's `name` ClassVar, not a field here — it's an identity (the
@@ -58,9 +66,9 @@ class ToolsetConfig(BaseConfig):
 
     colocated: bool = False
     """Run the server inside the harness's runtime (reached in-sandbox, no tunnel). Off by
-    default: a vf-native server imports `verifiers` + its taskset package, which a fresh
-    sandbox doesn't have — so it runs host-side instead. Turn on only for a self-contained
-    server whose deps resolve inside the harness runtime."""
+    default — on the host it's free, but in a sandbox the harness runtime must install the env
+    package + `verifiers` (a per-rollout cost), so prefer the default own-runtime placement
+    unless co-locating genuinely helps."""
     shared: bool = False
     """Run one server instance for the whole eval, shared across rollouts (in its own
     `runtime`). Mutually exclusive with `colocated`."""
@@ -81,14 +89,15 @@ class ToolsetConfig(BaseConfig):
 
 @dataclass(frozen=True)
 class _Launch:
-    """Internal: a rendered PEP 723 uv-script that serves a tool/user server over streamable HTTP
-    on `MCP_PORT`, plus the env (serialized config + task refs) it reads. What `server_to_tools`
-    produces and `serve_in_runtime` `uv run`s. Authors never construct this — they write a
-    `Toolset`/`User` and the framework renders it."""
+    """Internal: everything `serve_in_runtime` needs to start a server with the generic entrypoint
+    (`python -m verifiers.v1.toolserver`). `env` carries the serialized class/config/task refs the
+    entrypoint reads; `source_dir` is the env package's local directory (the one with `pyproject`),
+    uploaded + installed when the runtime is a sandbox (`None` for a non-local/ambient module).
+    What `server_to_launch` produces; authors never construct it."""
 
     name: str
-    script: bytes
     env: dict[str, str] = field(default_factory=dict)
+    source_dir: str | None = None
 
 
 ConfigT = TypeVar("ConfigT", bound=BaseConfig)
@@ -98,12 +107,13 @@ class ServerBase(Generic[ConfigT]):
     """A vf-native server authored as a class, initialized from its config — the same shape as
     `Taskset`/`TasksetConfig`: the config (a `ToolsetConfig`/`UserConfig` subclass) is the
     serializable data (placement + the server's own knobs); the class is the behaviour. The
-    framework renders a PEP 723 uv-script from it (`server_to_tools`), `uv run`s it in a runtime
-    where it rebuilds `cls(config)` and serves over MCP — no FastMCP boilerplate. Subclassed by `Toolset`
-    (`@tool` methods) and `User` (a `respond` hook). Declare extra PyPI deps in `deps`
-    (class-level, the uv-script PEP 723 equivalent) so the framework can resolve them in any
-    runtime; build expensive/non-serializable state in `setup` — set it as plain instance
-    attributes (it runs in the server process)."""
+    framework launches it with the generic entrypoint (`python -m verifiers.v1.toolserver`), which
+    imports this class from its env module, rebuilds `cls(config)`, and serves over MCP — no
+    FastMCP boilerplate. Subclassed by `Toolset` (`@tool` methods) and `User` (a `respond` hook).
+    Build expensive/non-serializable state in `setup` — set it as plain instance attributes (it
+    runs in the server process). The server's deps come from its env package's `pyproject` (the
+    install in a sandbox), so the class may freely `import verifiers`, import siblings, and use
+    module globals; `deps` is an extra hook for ad-hoc PyPI requirements."""
 
     name: ClassVar[str] = ""
     """MCP server name — an identity (the model sees tools as `<name>_<tool>`), set on the
@@ -167,59 +177,39 @@ def serve_server(inst: ServerBase, task) -> None:
     run_mcp_server(mcp)
 
 
-# The server-side runtime, vendored verbatim into every rendered script (NOT imported at serve
-# time) — so the script depends on neither `verifiers` nor the taskset package, only public PyPI.
-_SERVERKIT = (Path(__file__).parent / "_serverkit.py").read_text()
+def _source_dir(cls: type) -> str | None:
+    """The local directory of `cls`'s env package — the nearest ancestor of its module file that
+    holds a `pyproject.toml` (what gets uploaded + installed in a sandbox). `None` when the module
+    has no on-disk package (a hub install in site-packages, or a built-in)."""
+    module = sys.modules.get(cls.__module__)
+    path = getattr(module, "__file__", None)
+    if not path:
+        return None
+    for parent in Path(path).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return str(parent)
+    return None
 
 
-def _render_script(inst: ServerBase, deps: list[str]) -> bytes:
-    """Render a STANDALONE PEP 723 uv-script for `inst`: a public-PyPI dep header
-    (`mcp`/`pydantic`/`uvicorn` + the class's own `deps`), the vendored runtime, then the server's
-    config + class source inlined and reconstructed from the env. It imports neither `verifiers`
-    nor the taskset package — so it runs in any runtime (and a fresh sandbox) with no publishing."""
-    cls = type(inst)
-    cfg_cls = type(inst.config)
-    # An author config subclass carries the server's data and is inlined; the bare runtime base
-    # (placement only — irrelevant here) is already in the vendored kit.
-    cfg_src = "" if cfg_cls.__module__.startswith("verifiers") else inspect.getsource(cfg_cls)
-    header = "\n".join(
-        ["# /// script", '# requires-python = ">=3.10"', "# dependencies = ["]
-        + [f'#   "{d}",' for d in ["mcp", "pydantic", "uvicorn", *deps]]
-        + ["# ]", "# ///"]
-    )
-    body = f'''
-import os as _os, sys as _sys
-
-vf = _sys.modules[__name__]  # the authored class refers to `vf.Toolset` / `@vf.tool` / `vf.UserConfig`
-
-{cfg_src}
-
-{inspect.getsource(cls)}
-
-_inst = {cls.__name__}({cfg_cls.__name__}.model_validate_json(_os.environ["VF_CONFIG"]))
-serve_server(_inst, Task.model_validate_json(_os.environ["VF_TASK"]))
-'''
-    return (header + "\n" + _SERVERKIT + body).encode()
-
-
-def server_to_tools(inst: ServerBase, task) -> _Launch:
-    """Render a vf-native server to a `_Launch` — a standalone PEP 723 uv-script (the vendored
-    runtime + the server's inlined config/class) that rebuilds `cls(config)`, runs `setup(task)`,
-    and serves. The `config` + this rollout's `task` cross the wire as JSON in the env; the
-    script's only deps are `mcp`/`pydantic`/`uvicorn` + the class's declared `deps` — all public
-    PyPI, no `verifiers` or taskset package, so it needs nothing pre-installed in a sandbox."""
+def server_to_launch(inst: ServerBase, task) -> _Launch:
+    """Build the `_Launch` for a vf-native server: the env the generic entrypoint
+    (`verifiers.v1.toolserver`) reads to rebuild it — the class and config-class refs
+    (`module:qualname`), and the `config` + this rollout's `task` as JSON — plus the env package's
+    local `source_dir` (uploaded + installed when the runtime is a sandbox)."""
+    cls, cfg_cls, task_cls = type(inst), type(inst.config), type(task)
     env = {
+        "VF_SERVER": f"{cls.__module__}:{cls.__qualname__}",
+        "VF_CONFIG_CLS": f"{cfg_cls.__module__}:{cfg_cls.__qualname__}",
+        "VF_TASK_CLS": f"{task_cls.__module__}:{task_cls.__qualname__}",
         "VF_CONFIG": inst.config.model_dump_json(),
         "VF_TASK": task.model_dump_json(),
     }
-    return _Launch(
-        name=inst.server_name, script=_render_script(inst, list(type(inst).deps)), env=env
-    )
+    return _Launch(name=inst.server_name, env=env, source_dir=_source_dir(cls))
 
 
 def run_mcp_server(mcp: "FastMCP") -> None:
     """Serve a FastMCP server on the port the harness passes via `MCP_PORT`, mounting
-    streamable HTTP at `/mcp`. Call this at the end of a uv-script tool server."""
+    streamable HTTP at `/mcp`. Called by the server entrypoint (`verifiers.v1.toolserver`)."""
     import uvicorn
 
     port = int(os.environ["MCP_PORT"])
@@ -260,21 +250,49 @@ def _free_port() -> int:
     raise ProgramError("could not find a free port in [3000, 9000)")
 
 
+async def _install_in_sandbox(launch: _Launch, runtime: Runtime) -> str:
+    """Make the env module importable in a sandbox: upload its package directory (a tarball over
+    `write`), create a venv, and `uv pip install` git-pinned `verifiers` then the package (which
+    pulls the env's own deps). Returns the venv's python. The env package's `verifiers` dependency
+    is satisfied by the pre-installed git pin, so it resolves to the v1 version, not PyPI."""
+    if launch.source_dir is None:
+        raise ProgramError(
+            f"server {launch.name!r} runs in a {runtime.type} runtime but its module is not a "
+            "local package (no pyproject) — sandbox launch needs a local env package to upload"
+        )
+    src = Path(launch.source_dir)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        tar.add(src, arcname=src.name)
+    await runtime.write("/tmp/vf-env/pkg.tar.gz", buf.getvalue())
+    venv, pkg = "/tmp/vf-venv", f"/tmp/vf-env/{src.name}"
+    setup = (
+        f"{_ENSURE_UV}; set -e; "
+        "tar -xzf /tmp/vf-env/pkg.tar.gz -C /tmp/vf-env && "
+        f"uv venv {venv} && "
+        f"uv pip install --python {venv} {shlex.quote(_VERIFIERS_PIN)} && "
+        f"uv pip install --python {venv} {shlex.quote(pkg)}"
+    )
+    result = await runtime.run(["sh", "-c", setup], {})
+    if result.exit_code != 0:
+        raise ProgramError(
+            f"server {launch.name!r} install failed in runtime: "
+            f"{(result.stderr or result.stdout).strip()[-2000:]}"
+        )
+    return f"{venv}/bin/python"
+
+
 async def serve_in_runtime(launch: _Launch, runtime: Runtime, port: int) -> None:
-    """Start the launch's script inside `runtime` on `port` (background) and wait until it serves.
-    On a host (`subprocess`) runtime it runs with the eval's own interpreter — deps already
-    installed, so the PEP 723 header is ignored and nothing is fetched; in any other runtime it's
-    `uv run`, resolving the header's deps from PyPI. Written to a stable, content-addressed path
-    so uv keys one resolved environment per distinct script, shared across rollouts."""
+    """Start the server inside `runtime` on `port` (background, via the generic entrypoint) and
+    wait until it serves. On a host (`subprocess`) runtime it runs with the eval's own interpreter
+    — `verifiers` and the env module are already installed, nothing is fetched. In a sandbox the
+    env package is uploaded + installed first (`_install_in_sandbox`), then run with that venv."""
     log = f"vf_tool_{launch.name}.log"
-    path = f"/tmp/vf-scripts/{hashlib.sha256(launch.script).hexdigest()}.py"
-    tmp = f"{path}.{uuid.uuid4().hex}.tmp"  # publish atomically — concurrent rollouts share it
-    await runtime.write(tmp, launch.script)
-    await runtime.run(["sh", "-c", f"mkdir -p /tmp/vf-scripts && mv -f {tmp} {path}"], {})
-    if runtime.type == "subprocess":  # host: deps already installed — run with the eval's python
-        argv = [sys.executable, path]
-    else:  # sandbox: uv resolves the script's PEP 723 deps from PyPI
-        argv = ["sh", "-c", f"{_ENSURE_UV}; exec uv run --quiet {path}"]
+    if runtime.type == "subprocess":  # host: verifiers + env module already installed
+        python = sys.executable
+    else:  # sandbox: upload + install the env package (pulls git-pinned verifiers)
+        python = await _install_in_sandbox(launch, runtime)
+    argv = [python, "-m", "verifiers.v1.toolserver"]
     await runtime.run_background(argv, {**launch.env, "MCP_PORT": str(port)}, log)
     probe = await runtime.run(
         ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
@@ -310,7 +328,7 @@ async def serve(server: ServerBase, task, agent_runtime: Runtime | None = None, 
         runtime = own
     try:
         port = _free_port()
-        await serve_in_runtime(server_to_tools(server, task), runtime, port)
+        await serve_in_runtime(server_to_launch(server, task), runtime, port)
         local = f"http://127.0.0.1:{port}"
         if for_host:  # the framework reaches it from the host
             base = await runtime.public_url(port) or local
