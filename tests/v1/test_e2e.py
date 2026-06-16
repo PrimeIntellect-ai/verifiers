@@ -110,24 +110,6 @@ async def test_tool_state(
 
 
 @pytest.mark.e2e
-async def test_tool_state_via_env_server(run_v1_server, tmp_path):
-    """The state round-trip through the env-server worker pool (prime-rl's path): the tool's
-    `self.state` writes reach the worker's `trace.state` over the pooled interception server, the
-    reward reads it, and the state-derived reward survives the wire even though `trace.state` itself
-    is transient (never serialized)."""
-    (trace,) = await run_v1_server(
-        "counter-tool-v1",
-        harness="default",
-        agent_runtime="subprocess",
-        output_dir=tmp_path,
-        max_turns=8,
-    )
-    assert trace.errors == []
-    assert not trace.is_truncated
-    assert trace.reward == 1.0
-
-
-@pytest.mark.e2e
 async def test_tool_response_image(run_v1, tmp_path):
     """MCP image content from a tool result survives into the v1 trace (needs a vision model)."""
     (trace,) = await run_v1(

@@ -248,7 +248,3 @@ class SWELegoTaskset(vf.Taskset[SWELegoTask, vf.TasksetConfig]):
         raise vf.ProgramError(
             f"{label} apply failed: exit={result.exit_code} {result.stderr.strip()[-500:]}"
         )
-
-
-def load_taskset(config: vf.TasksetConfig) -> SWELegoTaskset:
-    return SWELegoTaskset(config)

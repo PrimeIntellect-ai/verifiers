@@ -66,8 +66,7 @@ class ReverseTaskset(vf.Taskset[ReverseTask, ReverseConfig]):
         return float(trace.assistant_messages[-1].content.strip() == task.answer)
 
 
-def load_taskset(config: ReverseConfig) -> ReverseTaskset:
-    return ReverseTaskset(config=config)
+__all__ = ["ReverseTaskset"]   # vf resolves the taskset by finding this Taskset subclass
 ```
 
 ### Scoring
@@ -249,8 +248,8 @@ You rarely need this — a custom harness is for a rollout loop the built-ins ca
 (context compaction, subagents, a bespoke agent CLI). Define a `HarnessConfig` (its `id` plus
 any knobs, which surface as `--harness.*`), subclass `vf.Harness[ConfigT]`, declare the
 capability flags, and implement `launch` — it drives the model however it likes and returns the
-program's result (the base `run` wraps it and errors on a non-zero exit). Export
-`load_harness(config)`.
+program's result (the base `run` wraps it and errors on a non-zero exit). Export the harness
+class via `__all__`.
 
 A harness never builds the trace itself: it just points *a program* at `endpoint` (authorized
 with `secret`), and the interception server records every call. The program can be any
@@ -284,8 +283,7 @@ class MyHarness(vf.Harness[MyHarnessConfig]):
         return await runtime.run_uv_script(PROGRAM, args=[instruction], env=env)
 
 
-def load_harness(config: MyHarnessConfig) -> MyHarness:
-    return MyHarness(config)
+__all__ = ["MyHarness"]   # vf resolves the harness by finding this Harness subclass
 ```
 
 Copy `environments/compact` (a context-rewrite loop) as a starting point.

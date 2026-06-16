@@ -58,8 +58,7 @@ class CounterTaskset(vf.Taskset[CounterTask, CounterConfig, CounterState]):
         return float(trace.state.count >= 2)
 
 
-def load_taskset(config: CounterConfig) -> CounterTaskset:
-    return CounterTaskset(config)
+__all__ = ["CounterTaskset"]
 
 
 if __name__ == "__main__":

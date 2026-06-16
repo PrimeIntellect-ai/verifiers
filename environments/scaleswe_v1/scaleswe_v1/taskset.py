@@ -256,7 +256,3 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
             if (await runtime.run(["sh", "-c", cmd], ENV)).exit_code == 0:
                 return True
         return False
-
-
-def load_taskset(config: ScaleSWEConfig) -> ScaleSWETaskset:
-    return ScaleSWETaskset(config)
