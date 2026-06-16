@@ -103,6 +103,11 @@ class RolloutSession:
     When set, each model turn with no tool call is followed by the simulator's reply,
     injected as a user turn, and the model is re-prompted — all within one program request,
     transparently to the harness."""
+    opening: tuple[Messages, bool] | None = None
+    """Cached result of the opening `respond("")` for a no-prompt task (its messages + done flag).
+    Computed once and re-injected on every request until the first turn lands on the trace — so a
+    retried opening request (e.g. the harness SDK retrying a transient model 502, before any turn
+    is recorded) never calls `respond` twice and advances the simulator's queue past the opening."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
@@ -195,13 +200,18 @@ class InterceptionServer:
         # first model call, seed the simulator's opening user turn(s) into both the wire request
         # and the trace prompt, so the model answers the user rather than an empty prompt. Guarded
         # to the opening (`num_turns == 0`), so a later program request (e.g. after a tool call)
-        # never re-seeds. The post-turn loop below then drives the remaining turns as usual.
+        # never re-seeds. The opening `respond("")` is cached on the session and reused, so a
+        # retried opening request (e.g. the harness SDK retrying a transient model 502, before any
+        # turn is recorded) doesn't advance the simulator's queue and skip the opening turn. The
+        # post-turn loop below then drives the remaining turns as usual.
         if (
             session.user is not None
             and session.trace.task.instruction is None
             and session.trace.num_turns == 0
         ):
-            seed_messages, done = await session.user("")
+            if session.opening is None:
+                session.opening = await session.user("")
+            seed_messages, done = session.opening
             body = dialect.extend(body, None, seed_messages)
             prompt = [*prompt, *seed_messages]
             if done:
