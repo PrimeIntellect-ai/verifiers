@@ -70,6 +70,9 @@ class User(ServerBase[ConfigT, StateT]):
         None`); end the trajectory by setting `self.state.done = True`."""
         raise NotImplementedError
 
+    def _uses_state(self) -> bool:
+        return True  # a user sim always syncs: it ends the trajectory via `self.state.done`
+
     def _register(self, mcp: FastMCP) -> None:
         from verifiers.v1.dialects.chat import message_to_wire
 

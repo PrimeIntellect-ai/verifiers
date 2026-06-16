@@ -207,12 +207,11 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     Use `metrics` for numbers that aggregate, this for everything else. Values must be
     JSON-serializable — a non-serializable value fails the trace dump rather than being dropped."""
     state: StateT = Field(default_factory=State, exclude=True)
-    """Transient per-rollout runtime state (see `verifiers.v1.state.State`) — shared with the
-    rollout's tool/user servers (read+written as `self.state`, synced over the interception server)
-    and read+written here by scoring. Excluded from every dump (`model_dump` + `to_wire`): runtime
-    scratch (counters, game state, the `done` end-of-trajectory flag), not a persisted artifact —
-    use `info` for things that must reach `results.jsonl`. Subclass `State` and parameterize the
-    taskset (`Taskset[Task, Config, MyState]`) to type it; defaults to the base `State`."""
+    """Transient per-rollout runtime state (see `verifiers.v1.state.State`): shared with the tool/user
+    servers as `self.state` (synced over the interception server) and read+written by scoring. Runtime
+    scratch (counters, game state, the `done` flag) — excluded from every dump (`model_dump` +
+    `to_wire`), unlike `info` which persists. Type it via `Taskset[Task, Config, MyState]`; defaults
+    to the base `State`."""
 
     is_completed: bool = False
     stop_condition: str | None = None

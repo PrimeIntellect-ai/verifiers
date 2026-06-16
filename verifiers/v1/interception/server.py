@@ -113,13 +113,9 @@ class RolloutSession:
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
-        call halts the harness (its model call errors out); Harness.run treats it as clean."""
-        if (
-            self.trace.state.done
-        ):  # a tool (or user) ended the trajectory via shared state
-            self.trace.stop("done")
-            logger.debug("state.done set: id=%s", self.trace.id)
-            return "done"
+        call halts the harness (its model call errors out); Harness.run treats it as clean. The
+        shared-state end signal (`trace.state.done`) is one of the `@stop`s — the built-in
+        `Taskset.done` — so it's checked here generically, not special-cased."""
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)
