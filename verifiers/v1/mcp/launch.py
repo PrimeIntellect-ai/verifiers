@@ -95,13 +95,26 @@ def _source_dir(cls: type) -> str | None:
     return None
 
 
+_TAR_EXCLUDE = {
+    "__pycache__",
+    ".venv",
+    ".git",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "node_modules",
+}
+"""Directory names never uploaded to a sandbox — build/VCS/cache trees that aren't package source
+and can be gigabytes (a `.venv` alone is many GB), which would otherwise stall the upload."""
+
+
 def _tar_source(src: Path, members: list[str] | None = None) -> bytes:
-    """Gzipped tarball of a local package dir, rooted at `src.name/` and excluding `__pycache__`.
+    """Gzipped tarball of a local package dir, rooted at `src.name/`, skipping `_TAR_EXCLUDE` dirs.
     `members` limits it to those top-level entries (the verifiers tree only needs its package +
     project files); otherwise the whole dir (a small env package)."""
 
     def keep(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
-        return None if "__pycache__" in info.name.split("/") else info
+        return None if _TAR_EXCLUDE & set(info.name.split("/")) else info
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
