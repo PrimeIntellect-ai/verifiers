@@ -69,7 +69,12 @@ class ModalRuntime(Runtime):
         return self._sandbox_id
 
     async def start(self) -> None:
-        import modal
+        try:
+            import modal
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                "ModalRuntime requires the Modal SDK; install `verifiers[modal]`."
+            ) from e
 
         timeout = (
             _MAX_TIMEOUT_SECONDS
