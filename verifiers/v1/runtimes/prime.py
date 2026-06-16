@@ -213,14 +213,9 @@ class PrimeRuntime(Runtime):
             raise ProgramError(f"write {path!r}: {e}") from e
 
     def cleanup(self) -> None:
-        # Synchronous atexit backstop (the async client can't run once the loop is gone):
-        # stop the already-sync tunnels and delete the sandbox via the sync client, so the
-        # costly resource isn't left to its max-lifetime. Idempotent — the async `stop`
-        # deletes it on the normal path, and a second delete just 404s (suppressed).
-        for tunnel in self._tunnels:
-            with contextlib.suppress(Exception):
-                tunnel.sync_stop()
-        self._tunnels = []
+        # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
+        # the sandbox via the sync client, so the costly resource isn't left to its max-lifetime.
+        # Idempotent — the async `stop` deletes it on the normal path, a second delete 404s.
         if self._sandbox_id is not None:
             from prime_sandboxes import SandboxClient
             from prime_sandboxes.core import APIClient
@@ -229,13 +224,8 @@ class PrimeRuntime(Runtime):
                 SandboxClient(APIClient()).delete(self._sandbox_id)
 
     async def stop(self) -> None:
-        # Best-effort, idempotent teardown: each step is independent so one failure
-        # never skips the sandbox delete (the costly resource). Runs from the
+        # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs from the
         # rollout's `finally`, so it fires on success, error, and cancellation.
-        for tunnel in self._tunnels:
-            with contextlib.suppress(Exception):
-                tunnel.sync_stop()
-        self._tunnels = []
         client, self._client = self._client, None  # `_client` is the idempotency guard
         if client is None:
             return
