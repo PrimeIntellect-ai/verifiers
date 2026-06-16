@@ -37,6 +37,7 @@ dependencies = [
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
     "modal>=1.4.0",
+    "daytona>=0.184.0",
     "prime-tunnel>=0.1.8",
     "prime-sandboxes>=0.2.27",
     "pydantic>=2.11.9",
@@ -165,6 +166,12 @@ prime-tunnel = false
 prime-sandboxes = false
 prime-pydantic-config = false
 renderers = false
+# Daytona-published on PyPI (the daytona runtime's SDK + its generated API clients)
+daytona = false
+daytona-api-client = false
+daytona-api-client-async = false
+daytona-toolbox-api-client = false
+daytona-toolbox-api-client-async = false
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
