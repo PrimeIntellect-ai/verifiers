@@ -38,6 +38,7 @@ SYSTEM_PROMPT = (
 
 OUTCOME_FILE = "textarena_outcome.json"
 
+
 class TextArenaUser(vf.User[vf.UserConfig]):
     """The TextArena game engine as a framework-driven conversation partner. Holds one game in
     memory (set up from the task's `game` id + RNG `seed`, reproducing the taskset's episode) and,
@@ -58,7 +59,9 @@ class TextArenaUser(vf.User[vf.UserConfig]):
 
         import textarena
 
-        self.env = textarena.make(env_id=task.info["game"])  # per-task input, from the task
+        self.env = textarena.make(
+            env_id=task.info["game"]
+        )  # per-task input, from the task
         random.seed(task.info["seed"])  # per-task input
         self.env.reset(num_players=1)
 
@@ -67,13 +70,17 @@ class TextArenaUser(vf.User[vf.UserConfig]):
         """Trim feedback to the latest block (after `Feedback:` in the last `[GAME]` message) so
         each injected user turn stays small and doesn't duplicate the history."""
         latest = observation.split("[GAME]")[-1].strip()
-        return latest.split("Feedback:")[-1].strip() if "Feedback:" in latest else latest
+        return (
+            latest.split("Feedback:")[-1].strip() if "Feedback:" in latest else latest
+        )
 
     async def respond(self, message: str) -> tuple[vf.Messages, bool]:
         import json
 
         env = self.env
-        env.step(message)  # TextArena parses the bracketed move out of the message itself
+        env.step(
+            message
+        )  # TextArena parses the bracketed move out of the message itself
         if env.state.done:
             reward = float((env.state.rewards or {}).get(0, 0.0))
             reason = str(env.state.game_info[0]["reason"])
@@ -81,7 +88,9 @@ class TextArenaUser(vf.User[vf.UserConfig]):
                 json.dump({"reward": reward, "reason": reason}, f)
             return [{"role": "user", "content": reason}], True
         _, observation = env.get_observation()
-        return [{"role": "user", "content": self._latest_feedback(str(observation))}], False
+        return [
+            {"role": "user", "content": self._latest_feedback(str(observation))}
+        ], False
 
 
 class TextArenaConfig(vf.TasksetConfig):
