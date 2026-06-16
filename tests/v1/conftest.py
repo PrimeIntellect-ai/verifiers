@@ -98,6 +98,19 @@ def harness_supports():
     return _supports
 
 
+def pytest_configure(config) -> None:
+    """Self-launching tool/user servers run `python -m <module>` in a fresh subprocess, which
+    inherits `PYTHONPATH` but not pytest's in-process `pythonpath`. Put the fixture dir on
+    `PYTHONPATH` so a fixture server module (e.g. `echo_multi_v1`, `tool_response_image_v1`)
+    resolves there too — an installed example package (e.g. `glossary_v1`) already would."""
+    fixtures = str(Path(__file__).parent / "fixtures")
+    existing = os.environ.get("PYTHONPATH", "")
+    if fixtures not in existing.split(os.pathsep):
+        os.environ["PYTHONPATH"] = (
+            f"{fixtures}{os.pathsep}{existing}" if existing else fixtures
+        )
+
+
 def pytest_collection_modifyitems(config, items) -> None:
     """Skip the live-model tests (marked `e2e`) when no model endpoint is configured, so the
     rest of the suite (e.g. config parsing) still runs in a keyless environment."""
