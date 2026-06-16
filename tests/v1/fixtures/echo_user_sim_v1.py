@@ -64,8 +64,7 @@ class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
         return matched / len(phrases)
 
 
-def load_taskset(config: EchoUserSimConfig) -> EchoUserSimTaskset:
-    return EchoUserSimTaskset(config)
+__all__ = ["EchoUserSimTaskset"]
 
 
 if __name__ == "__main__":
