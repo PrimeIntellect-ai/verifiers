@@ -12,11 +12,15 @@ from verifiers.v1.clients.eval import EvalClient
 
 
 def __getattr__(name: str):
-    if name == "TrainClient":
+    if name != "TrainClient":
+        raise AttributeError(name)
+    try:
         from verifiers.v1.clients.train import TrainClient
-
-        return TrainClient
-    raise AttributeError(name)
+    except ModuleNotFoundError as e:
+        raise ImportError(
+            "TrainClient requires the renderers extra; install `verifiers[renderers]`."
+        ) from e
+    return TrainClient
 
 
 __all__ = [

@@ -78,7 +78,7 @@ ClientConfig = Annotated[
 def resolve_client(config: BaseClientConfig) -> Client:
     api_key = os.environ.get(config.api_key_var, "EMPTY")
     if isinstance(config, TrainClientConfig):
-        from verifiers.v1.clients.train import TrainClient
+        from verifiers.v1.clients import TrainClient
 
         # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
         openai = AsyncOpenAI(
