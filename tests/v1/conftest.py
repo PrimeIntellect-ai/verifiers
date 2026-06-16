@@ -25,18 +25,60 @@ from verifiers.v1.trace import Trace
 # tests/v1/fixtures, added to the path via `pythonpath` in pyproject so the v1 loader and the
 # v0 legacy bridge both resolve them by id (no install).
 
-# Built-in runtimes, modal excluded. docker needs the daemon; prime provisions real
+# The agent (harness) runtime, modal excluded. docker needs the daemon; prime provisions real
 # sandboxes + tunnels (network + PRIME credentials), so both are marked to deselect easily.
-RUNTIMES = [
+AGENT_RUNTIMES = [
     "subprocess",
     pytest.param("docker", marks=pytest.mark.slow),
     pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime]),
 ]
 
 
-@pytest.fixture(params=RUNTIMES)
-def runtime(request) -> str:
+@pytest.fixture(params=AGENT_RUNTIMES)
+def agent_runtime(request) -> str:
     return request.param
+
+
+# The user simulator's runtime: inside the agent's runtime (`colocated`) or its own runtime; this
+# fans the user test across both (reusing the runtime markers for the own-runtime cases).
+USER_RUNTIMES = [
+    "colocated",
+    "subprocess",
+    pytest.param("docker", marks=pytest.mark.slow),
+    pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime]),
+]
+
+
+@pytest.fixture(params=USER_RUNTIMES)
+def user_runtime(request) -> dict:
+    """A `taskset.user` override placing the user simulator: `colocated` (inside the agent's
+    runtime) or its own runtime, by type."""
+    if request.param == "colocated":
+        return {"colocated": True}
+    return {"colocated": False, "runtime": {"type": request.param}}
+
+
+# The tool server's runtime: inside the agent's runtime (`colocated`), shared once per eval, or its
+# own runtime per rollout; this fans the tool test across all of them (runtime markers for the
+# own-runtime cases — colocated/shared use the host subprocess runtime).
+TOOL_RUNTIMES = [
+    "colocated",
+    "shared",
+    "subprocess",
+    pytest.param("docker", marks=pytest.mark.slow),
+    pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime]),
+]
+
+
+@pytest.fixture(params=TOOL_RUNTIMES)
+def tool_runtime(request) -> dict:
+    """A `taskset.tools` override placing the tool server: `colocated` (inside the agent's
+    runtime), `shared` (one instance for the whole eval), or its own runtime, by type."""
+    if request.param == "colocated":
+        return {"colocated": True}
+    if request.param == "shared":
+        return {"shared": True}
+    return {"runtime": {"type": request.param}}
 
 
 @pytest.fixture
@@ -57,7 +99,7 @@ def skip_if_unexposable():
     return _skip
 
 
-# Built-in harnesses (bundled in the `harnesses` package), composed with `runtime` for the
+# Built-in harnesses (bundled in the `harnesses` package), composed with `agent_runtime` for the
 # plain-task harness x runtime matrix. compact is an example harness, not built-in, so it's
 # excluded. Agent CLI harnesses install their dependencies at rollout, so they're marked slow.
 @pytest.fixture(
@@ -82,26 +124,10 @@ def agentic_harness(request) -> str:
     return request.param
 
 
-@pytest.fixture
-def harness_supports():
-    """Read a capability flag (e.g. `SUPPORTS_TASK_TOOLS`, `SUPPORTS_USER_SIM`) off an harness
-    by id — the matrix tests use it to decide whether a harness/task pairing should run, be
-    rejected, or be skipped."""
-    from verifiers.v1.loaders import load_harness
-
-    def _supports(harness_id: str, flag: str) -> bool:
-        harness = load_harness(
-            EvalConfig.model_validate({"harness": {"id": harness_id}}).harness
-        )
-        return getattr(harness, flag)
-
-    return _supports
-
-
 def pytest_configure(config) -> None:
     """Self-launching tool/user servers run `python -m <module>` in a fresh subprocess, which
     inherits `PYTHONPATH` but not pytest's in-process `pythonpath`. Put the fixture dir on
-    `PYTHONPATH` so a fixture server module (e.g. `echo_multi_v1`, `tool_response_image_v1`)
+    `PYTHONPATH` so a fixture server module (e.g. `echo_user_sim_v1`, `tool_response_image_v1`)
     resolves there too — an installed example package (e.g. `glossary_v1`) already would."""
     fixtures = str(Path(__file__).parent / "fixtures")
     existing = os.environ.get("PYTHONPATH", "")
@@ -127,7 +153,7 @@ def pytest_collection_modifyitems(config, items) -> None:
 def _eval_config(
     taskset: str,
     *,
-    runtime: str,
+    agent_runtime: str,
     output_dir: Path,
     harness: str = "default",
     n: int = 1,
@@ -137,14 +163,16 @@ def _eval_config(
     enable_bash: bool = False,
     taskset_overrides: dict | None = None,
     pool: dict | None = None,
+    model: str | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
-    (`run_v1`) and env-server (`run_v1_server`) fixtures.
+    (`run_v1`) and env-server (`run_v1_server`) fixtures. `model` overrides the default text model
+    (e.g. a VLM for an image task).
 
     `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
     risks truncating the reasoning before the answer (which tanks the reward)."""
-    harness_config: dict = {"id": harness, "runtime": {"type": runtime}}
+    harness_config: dict = {"id": harness, "runtime": {"type": agent_runtime}}
     if enable_bash:
         harness_config["enable_bash"] = True
     return EvalConfig(
@@ -159,6 +187,7 @@ def _eval_config(
         rich=False,
         output_dir=output_dir,
         **({"pool": pool} if pool else {}),
+        **({"model": model} if model else {}),
     )
 
 

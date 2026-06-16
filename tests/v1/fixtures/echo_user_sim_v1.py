@@ -1,9 +1,10 @@
-"""echo (v1, multi-turn): echo a phrase per turn, driven by a `vf.User` simulator.
+"""echo (v1, user simulator): echo a phrase per turn, driven by a `vf.User` simulator.
 
-The v1 multi-turn fixture for the e2e matrix. The user simulator is a `vf.User` class: it runs
-host-side (its own subprocess runtime, the default) and the framework drives it, so it's
-reachable whatever runtime the harness runs in. A user-sim is a task tool, so this needs a
-tool-supporting harness.
+The v1 user-sim fixture for the e2e matrix. The user simulator is a `vf.User` class whose
+placement is CLI-tunable (`--taskset.user.colocated`, `--taskset.user.runtime.type`): it runs
+either inside the harness's runtime (`colocated`) or in its own runtime (the default), and
+either way the framework drives it and reaches it from wherever the harness runs. A user-sim is
+a task tool, so this needs a tool-supporting harness.
 """
 
 import verifiers.v1 as vf
@@ -16,16 +17,16 @@ def _key(text: str) -> str:
     return "".join(c for c in text.casefold() if c.isalnum())
 
 
-class EchoMultiTask(vf.Task):
+class EchoUserSimTask(vf.Task):
     phrases: list[str]
 
 
-class EchoMultiConfig(vf.TasksetConfig):
+class EchoUserSimConfig(vf.TasksetConfig):
     phrases: list[str] = PHRASES
     user: vf.UserConfig = vf.UserConfig()
 
 
-class EchoMultiUser(vf.User[vf.UserConfig]):
+class EchoUserSimUser(vf.User[vf.UserConfig]):
     """Injects the next phrase as a user turn until the episode's phrases run out."""
 
     async def setup_task(self, task) -> None:
@@ -39,10 +40,10 @@ class EchoMultiUser(vf.User[vf.UserConfig]):
         return [{"role": "user", "content": self.phrases[self.turns]}], False
 
 
-class EchoMultiTaskset(vf.Taskset[EchoMultiTask, EchoMultiConfig]):
-    def load_tasks(self) -> list[EchoMultiTask]:
+class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
+    def load_tasks(self) -> list[EchoUserSimTask]:
         return [
-            EchoMultiTask(
+            EchoUserSimTask(
                 idx=0,
                 instruction=self.config.phrases[0],
                 system_prompt=SYSTEM,
@@ -50,11 +51,11 @@ class EchoMultiTaskset(vf.Taskset[EchoMultiTask, EchoMultiConfig]):
             )
         ]
 
-    def user(self, task: EchoMultiTask) -> vf.User:
-        return EchoMultiUser(self.config.user)
+    def user(self, task: EchoUserSimTask) -> vf.User:
+        return EchoUserSimUser(self.config.user)
 
     @vf.reward(weight=1.0)
-    async def echoed(self, task: EchoMultiTask, trace: vf.Trace) -> float:
+    async def echoed(self, task: EchoUserSimTask, trace: vf.Trace) -> float:
         replies = [m.content for m in trace.assistant_messages]
         phrases = task.phrases
         if len(replies) < len(phrases):
@@ -63,9 +64,9 @@ class EchoMultiTaskset(vf.Taskset[EchoMultiTask, EchoMultiConfig]):
         return matched / len(phrases)
 
 
-def load_taskset(config: EchoMultiConfig) -> EchoMultiTaskset:
-    return EchoMultiTaskset(config)
+def load_taskset(config: EchoUserSimConfig) -> EchoUserSimTaskset:
+    return EchoUserSimTaskset(config)
 
 
 if __name__ == "__main__":
-    EchoMultiUser.run()
+    EchoUserSimUser.run()

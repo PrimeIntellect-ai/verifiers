@@ -1,24 +1,27 @@
 """End-to-end eval runs on trivial tasksets — each scores reward 1.0, with no errors.
 
 Every task is one greedy rollout (`temperature=0`, set in `run_v1`) on a single task with
-turn/timeout caps. The reward tests fan out across the full **harness x runtime** matrix (the
-`harness` x `runtime` fixtures): the built-in harnesses (default, rlm) x the runtimes
-(subprocess/docker/prime, modal excluded).
+turn/timeout caps. The matrix axes are the three runtimes a rollout places things in: the
+**agent** (harness) runtime (`agent_runtime`), the **user** simulator's runtime (`user_runtime`),
+and the **tool** server's runtime (`tool_runtime`) — each spanning subprocess/docker/prime (modal
+excluded), with docker/prime marked `slow`/`prime` so the default run stays on subprocess.
 
-The capability-sensitive tests read the harness flags: the tools test expects a harness
-without `SUPPORTS_TASK_TOOLS` to be refused up front (raise); the multi-turn test skips a
-harness without `SUPPORTS_USER_SIM`. Bash-first harnesses use the agentic task instead of the
-direct-response task.
+`test_user` and `test_tool` fan a server's own runtime against the agent runtime (the full
+reachability matrix); `test_single_turn`/`test_agentic` fan the harness against the agent runtime.
 """
 
 import pytest
 
 
 @pytest.mark.e2e
-async def test_single_turn(run_v1, harness, runtime, tmp_path):
+async def test_single_turn(run_v1, harness, agent_runtime, tmp_path):
     """Single-turn (echo a short phrase back)."""
     (trace,) = await run_v1(
-        "echo-v1", harness=harness, runtime=runtime, output_dir=tmp_path, max_turns=2
+        "echo-v1",
+        harness=harness,
+        agent_runtime=agent_runtime,
+        output_dir=tmp_path,
+        max_turns=2,
     )
     assert trace.errors == []
     assert not trace.is_truncated
@@ -27,21 +30,19 @@ async def test_single_turn(run_v1, harness, runtime, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_multi_turn(
-    run_v1, harness, runtime, harness_supports, skip_if_unexposable, tmp_path
-):
-    """Multi-turn, driven by a (container-safe) user simulator. Skipped on harnesses without
-    `SUPPORTS_USER_SIM` (rlm: a single-instruction interface that can't take injected turns)."""
-    if not harness_supports(harness, "SUPPORTS_USER_SIM"):
-        pytest.skip(f"{harness} does not support a user simulator")
+async def test_user(run_v1, user_runtime, agent_runtime, skip_if_unexposable, tmp_path):
+    """Multi-turn, driven by a (container-safe) `vf.User` simulator, across the full matrix of the
+    user's runtime (`user_runtime`: colocated in the agent's runtime, or its own runtime) x the
+    agent `runtime`. Either way the framework drives the user and must reach it from wherever the
+    agent runs."""
     (trace,) = await run_v1(
-        "echo-multi-v1",
-        harness=harness,
-        runtime=runtime,
+        "echo-user-sim-v1",
+        harness="default",
+        agent_runtime=agent_runtime,
         output_dir=tmp_path,
         max_turns=6,
+        taskset_overrides={"user": user_runtime},
     )
-    # the colocated user-sim must publish its port back to the host (prime: region-limited)
     skip_if_unexposable(trace)
     assert trace.errors == []
     assert not trace.is_truncated
@@ -50,44 +51,29 @@ async def test_multi_turn(
 
 
 @pytest.mark.e2e
-async def test_multi_turn_with_tools(
-    run_v1, harness, runtime, harness_supports, tmp_path
+async def test_tool(
+    run_v1, run_v1_server, tool_runtime, agent_runtime, skip_if_unexposable, tmp_path
 ):
-    """Multi-turn with a colocated tool. An harness whose `SUPPORTS_TASK_TOOLS` is False can't
-    drive the task's tools, so the pairing is refused at build time instead of running."""
-    if not harness_supports(harness, "SUPPORTS_TASK_TOOLS"):
-        with pytest.raises(ValueError, match="task tools"):
-            await run_v1(
-                "glossary-v1", harness=harness, runtime=runtime, output_dir=tmp_path
-            )
-        return
-    (trace,) = await run_v1(
-        "glossary-v1",
-        harness=harness,
-        runtime=runtime,
+    """A `vf.Toolset` (an echo tool) across the full matrix of its runtime (`tool_runtime`:
+    colocated in the agent's runtime, shared once per eval, or its own runtime) x the agent
+    `runtime`. The tool stamps its output with a token the prompt never reveals, so reward 1.0
+    proves the tool was reachable from wherever the agent runs and actually ran.
+
+    The `shared` case runs through the env-server worker pool (`run_v1_server`, prime-rl's path,
+    where serving the shared tool once is the server's job) — a regression guard for the env server
+    running rollouts without entering its serving context (a shared server would otherwise be rebuilt
+    per rollout or error with "shared server was launched with a task"). Other runtimes run
+    in-process."""
+    run = run_v1_server if tool_runtime.get("shared") else run_v1
+    (trace,) = await run(
+        "echo-tool-v1",
+        harness="default",
+        agent_runtime=agent_runtime,
         output_dir=tmp_path,
         max_turns=6,
+        taskset_overrides={"tools": tool_runtime},
     )
-    assert trace.errors == []
-    assert not trace.is_truncated
-    assert trace.num_turns >= 2  # tool call + answer
-    assert trace.reward == 1.0
-
-
-@pytest.mark.e2e
-async def test_shared_tools_via_env_server(run_v1_server, tmp_path):
-    """A *shared* tool server (stood up once per eval, not per rollout) driven through the
-    env-server worker pool — the path prime-rl trains through. Serving the shared tools is the
-    server's job; a rollout just reuses the shared URL. Regression guard: the env server used to
-    run rollouts without entering its serving context, so a shared server was rebuilt per rollout
-    or errored outright ("shared server was launched with a task")."""
-    (trace,) = await run_v1_server(
-        "glossary-v1",
-        runtime="subprocess",
-        output_dir=tmp_path,
-        max_turns=6,
-        taskset_overrides={"tools": {"shared": True}},
-    )
+    skip_if_unexposable(trace)
     assert trace.errors == []
     assert not trace.is_truncated
     assert trace.num_turns >= 2  # tool call + answer
@@ -96,11 +82,12 @@ async def test_shared_tools_via_env_server(run_v1_server, tmp_path):
 
 @pytest.mark.e2e
 async def test_tool_response_image(run_v1, tmp_path):
-    """MCP image content from a tool result survives into the v1 trace."""
+    """MCP image content from a tool result survives into the v1 trace (needs a vision model)."""
     (trace,) = await run_v1(
         "tool-response-image-v1",
         harness="default",
-        runtime="subprocess",
+        agent_runtime="subprocess",
+        model="qwen/qwen3-vl-8b-instruct",
         output_dir=tmp_path,
         max_turns=4,
     )
@@ -111,13 +98,13 @@ async def test_tool_response_image(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_agentic(run_v1, agentic_harness, runtime, tmp_path):
+async def test_agentic(run_v1, agentic_harness, agent_runtime, tmp_path):
     """Agentic: write a phrase to a file with the harness's bash tool, checked in the runtime."""
     (trace,) = await run_v1(
         "echo-agentic-v1",
         harness=agentic_harness,
         enable_bash=agentic_harness == "default",
-        runtime=runtime,
+        agent_runtime=agent_runtime,
         output_dir=tmp_path,
         max_turns=10,
     )
