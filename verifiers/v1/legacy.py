@@ -305,6 +305,10 @@ class LegacyEnvServer(EnvServer):
         sampling — never drives tokenizer loading. An OpenAI config (chat-completions, eval)
         builds a v0 chat-completions client. The per-request ``model`` selects the sampling
         target in ``run_rollout``."""
+        if not isinstance(client_config.base_url, str):
+            raise ValueError(
+                "multiple client base URLs require a native v1 environment"
+            )
         is_renderer = isinstance(client_config, TrainClientConfig)
         renderer_model = (
             client_config.renderer_model_name if is_renderer else None
@@ -380,6 +384,8 @@ def _eval_client(client_config: ClientConfig, model: str):
     from verifiers.clients import resolve_client
     from verifiers.types import ClientConfig as V0ClientConfig
 
+    if not isinstance(client_config.base_url, str):
+        raise ValueError("multiple client base URLs require a native v1 environment")
     return resolve_client(
         V0ClientConfig(
             client_type="openai_chat_completions",

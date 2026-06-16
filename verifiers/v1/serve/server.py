@@ -4,9 +4,9 @@ A ZMQ ROUTER front end (msgpack frames) over a v1 `Environment`. The server
 owns the environment — taskset, harness, runtime — and is the only process that ever
 loads it. A caller (e.g. the orchestrator) stays env-agnostic: it asks `info` for
 the task count + whether group scoring is needed, then `run_rollout` / `run_group`
-by task index. Per request the server resolves a `Client` from the request's
-`client` config (cached, so a renderer's tokenizer is built once), wraps it in a
-`RolloutContext`, and runs `env.episode(task, ctx, n).run()`, returning each
+by task index. Per request the server resolves the `Client`s from the request's
+`client` config (cached, so renderer tokenizers are built once), wraps them in
+`RolloutContext`s, and runs `env.episode(task, contexts, n).run()`, returning each
 `Trace` as a JSON dict (with its computed `branches`).
 
 Minimal port of `verifiers.serve` (ROUTER + msgpack), single async process: each
@@ -59,9 +59,8 @@ class EnvServer:
         self.requires_group_scoring = bool(
             discover_decorated(self.env.taskset, "group_reward")
         )
-        self._clients: dict[
-            tuple[str, str], Client
-        ] = {}  # (client_config, model) -> Client
+        self._clients: dict[tuple[str, str, int], Client] = {}
+        """(client config, model, endpoint index) -> Client."""
         self.pool: InterceptionPool | None = None  # set in run() (v1 only)
 
         self.ctx = zmq.asyncio.Context()
@@ -86,21 +85,25 @@ class EnvServer:
             address_queue.put(server.address)
         asyncio.run(server.run())
 
-    def _client(self, client_config: ClientConfig, model: str) -> Client:
-        """Resolve (and cache) a `Client` for this config+model. Cached because a
-        renderer client builds the model's tokenizer pool on first use — doing that
-        per request would be ruinous."""
-        key = (client_config.model_dump_json(), model)
-        if key not in self._clients:
-            self._clients[key] = resolve_client(client_config)
-        return self._clients[key]
-
-    def _context(
+    def _contexts(
         self, client_config: ClientConfig, model: str, sampling: SamplingConfig
-    ) -> RolloutContext:
-        return RolloutContext(
-            client=self._client(client_config, model), model=model, sampling=sampling
+    ) -> list[RolloutContext]:
+        """Build and cache one context per endpoint."""
+        base_urls = (
+            [client_config.base_url]
+            if isinstance(client_config.base_url, str)
+            else client_config.base_url
         )
+        clients = []
+        for i in range(len(base_urls)):
+            key = (client_config.model_dump_json(), model, i)
+            if key not in self._clients:
+                self._clients[key] = resolve_client(client_config, i)
+            clients.append(self._clients[key])
+        return [
+            RolloutContext(client=client, model=model, sampling=sampling)
+            for client in clients
+        ]
 
     def interception_pool(self):
         """Context for the server's shared interception pool, entered for the server's
@@ -109,14 +112,14 @@ class EnvServer:
         return self.env.interception_pool()
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
-        ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=1)
+        contexts = self._contexts(req.client, req.model, req.sampling)
+        episode = self.env.episode(self.tasks[req.task_idx], contexts, n=1)
         traces = await episode.run(interception=self.pool)
         return RunRolloutResponse(trace=traces[0].to_wire())
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
-        ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=req.n)
+        contexts = self._contexts(req.client, req.model, req.sampling)
+        episode = self.env.episode(self.tasks[req.task_idx], contexts, n=req.n)
         traces = await episode.run(interception=self.pool)
         return RunGroupResponse(traces=[t.to_wire() for t in traces])
 

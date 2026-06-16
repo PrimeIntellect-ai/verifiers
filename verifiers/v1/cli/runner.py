@@ -24,12 +24,20 @@ _SHUFFLE_SEED = (
 
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
-    client = resolve_client(config.client)
     tasks = env.taskset.load_tasks()
     if config.shuffle:
         random.Random(_SHUFFLE_SEED).shuffle(tasks)
     tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
-    ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
+    base_urls = (
+        [config.client.base_url]
+        if isinstance(config.client.base_url, str)
+        else config.client.base_url
+    )
+    clients = [resolve_client(config.client, i) for i in range(len(base_urls))]
+    contexts = [
+        RolloutContext(client=client, model=config.model, sampling=config.sampling)
+        for client in clients
+    ]
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.
     semaphore = (
@@ -49,7 +57,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
         tasks = [task for task in tasks if owed.get(task.idx)]
-        episodes = [env.episode(task, ctx, n=owed[task.idx]) for task in tasks]
+        episodes = [env.episode(task, contexts, n=owed[task.idx]) for task in tasks]
         resume.rewrite_results(out, keep)
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
@@ -58,7 +66,9 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             sum(owed.values()),
         )
     else:
-        episodes = [env.episode(task, ctx, n=config.num_rollouts) for task in tasks]
+        episodes = [
+            env.episode(task, contexts, n=config.num_rollouts) for task in tasks
+        ]
         save_config(config, out)
         logger.info(
             "running %dx%d rollouts on %s",
@@ -91,7 +101,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             )
         )
     traces = [trace for episode_traces in results for trace in episode_traces]
-    await client.close()
+    await asyncio.gather(*(client.close() for client in clients))
     return traces
 
 
