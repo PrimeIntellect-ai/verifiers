@@ -115,7 +115,6 @@ def skip_if_unexposable():
     params=[
         pytest.param("default", id="default-harness"),
         pytest.param("rlm", marks=pytest.mark.slow, id="rlm-harness"),
-        pytest.param("codex", marks=pytest.mark.slow, id="codex-harness"),
         pytest.param("kimi-code", marks=pytest.mark.slow, id="kimi-code-harness"),
     ]
 )
@@ -123,12 +122,16 @@ def harness(request) -> str:
     return request.param
 
 
+# `codex` lives here, not in `harness`: it's an autonomous coding agent, so on a no-op chat task
+# (`test_single_turn`'s echo) it often just completes its loop without ever replying (0 model calls),
+# which is flaky; on a task with a concrete action (writing a file) it's reliable.
 @pytest.fixture(
     params=[
         pytest.param("default", id="default-harness"),
         pytest.param(
             "mini-swe-agent", marks=pytest.mark.slow, id="mini-swe-agent-harness"
         ),
+        pytest.param("codex", marks=pytest.mark.slow, id="codex-harness"),
     ]
 )
 def agentic_harness(request) -> str:
