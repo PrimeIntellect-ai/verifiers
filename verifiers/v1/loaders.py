@@ -7,7 +7,7 @@ to its namespaced module under the group package (`harnesses.rlm`, `tasksets.har
 any other id names a flat module — a local package (hyphens → underscores), or an
 `org/name[@version]` package installed on demand from the Environments Hub.
 Built-ins live under `packages/`, installed by default via the `tasksets`/`harnesses` extras;
-custom ones live under `examples/`, on `sys.path`, or on the hub. The CLI introspects the
+custom ones live under `environments/`, on `sys.path`, or on the hub. The CLI introspects the
 hook's parameter annotation to narrow the plugin's config for `--taskset.*` /
 `--harness.*` flags; `task_type` reads the return annotation.
 """

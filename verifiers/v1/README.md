@@ -97,10 +97,11 @@ and live in two places:
 - **`packages/`** — shipped, installed by default. Commonly-used **harnesses** (`default`,
   `rlm`, `codex`, ...) and **taskset integrations** that wrap a whole benchmark family (`harbor-v1` — 
   the agentic-benchmark registry; `textarena-v1` — TextArena games).
-- **`examples/`** — small reference implementations to copy when **authoring your own**,
-  split by kind into `examples/tasksets/` and `examples/harnesses/`. Each shows one pattern.
+- **`environments/`** — small reference implementations to copy when **authoring your own**
+  (the `*_v1` tasksets and the `compact` harness), co-located with the standalone v0
+  environments. Each shows one pattern.
 
-Taskset examples (`examples/tasksets/`):
+Taskset examples (the `*_v1` packages under `environments/`):
 
 | example | pattern it shows |
 | --- | --- |
@@ -115,7 +116,7 @@ Taskset examples (`examples/tasksets/`):
 | `wordle-v1` | configuring the vendored `textarena-v1` integration |
 | `terminal-bench-2-v1` | configuring the vendored `harbor-v1` integration |
 
-Harness examples (`examples/harnesses/`):
+Harness examples (under `environments/`):
 
 | example | pattern it shows |
 | --- | --- |

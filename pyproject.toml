@@ -83,7 +83,7 @@ dev = [
     "nltk",
     "textarena",
 ]
-# v1 plugins vendored under packages/ and examples/, resolved by id via
+# v1 plugins vendored under packages/ and environments/, resolved by id via
 # [tool.uv.sources]. Installed by default (tool.uv.default-groups) so the v1 CLIs
 # (eval --taskset.id <id>, serve) run straight from this repo.
 tasksets = ["tasksets"]
@@ -138,26 +138,26 @@ default = true
 
 [tool.uv.sources]
 # Shipped v1 plugins are bundled in the `tasksets` / `harnesses` packages (vendored by
-# default); example plugins are standalone under examples/.
+# default); example plugins are standalone under environments/.
 tasksets = { path = "packages/tasksets", editable = true }
 harnesses = { path = "packages/harnesses", editable = true }
-compact = { path = "examples/harnesses/compact", editable = true }
-glossary-v1 = { path = "examples/tasksets/glossary_v1", editable = true }
-deepwiki-v1 = { path = "examples/tasksets/deepwiki_v1", editable = true }
-wikispeedia-v1 = { path = "examples/tasksets/wikispeedia_v1", editable = true }
-wiki-search-v1 = { path = "examples/tasksets/wiki_search_v1", editable = true }
-gsm8k-v1 = { path = "examples/tasksets/gsm8k_v1", editable = true }
-code-golf-v1 = { path = "examples/tasksets/code_golf_v1", editable = true }
-reverse-text-v1 = { path = "examples/tasksets/reverse_text_v1", editable = true }
-wordle-v1 = { path = "examples/tasksets/wordle_v1", editable = true }
-terminal-bench-2-v1 = { path = "examples/tasksets/terminal_bench_2_v1", editable = true }
-math-env-v1 = { path = "examples/tasksets/math_env_v1", editable = true }
-aime24-v1 = { path = "examples/tasksets/aime24_v1", editable = true }
-color-codeword-v1 = { path = "examples/tasksets/color_codeword_v1", editable = true }
-r2e-gym-v1 = { path = "examples/tasksets/r2e_gym_v1", editable = true }
-scaleswe-v1 = { path = "examples/tasksets/scaleswe_v1", editable = true }
-swelego-v1 = { path = "examples/tasksets/swelego_v1", editable = true }
-alphabet-sort-v1 = { path = "examples/tasksets/alphabet_sort_v1", editable = true }
+compact = { path = "environments/compact", editable = true }
+glossary-v1 = { path = "environments/glossary_v1", editable = true }
+deepwiki-v1 = { path = "environments/deepwiki_v1", editable = true }
+wikispeedia-v1 = { path = "environments/wikispeedia_v1", editable = true }
+wiki-search-v1 = { path = "environments/wiki_search_v1", editable = true }
+gsm8k-v1 = { path = "environments/gsm8k_v1", editable = true }
+code-golf-v1 = { path = "environments/code_golf_v1", editable = true }
+reverse-text-v1 = { path = "environments/reverse_text_v1", editable = true }
+wordle-v1 = { path = "environments/wordle_v1", editable = true }
+terminal-bench-2-v1 = { path = "environments/terminal_bench_2_v1", editable = true }
+math-env-v1 = { path = "environments/math_env_v1", editable = true }
+aime24-v1 = { path = "environments/aime24_v1", editable = true }
+color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
+r2e-gym-v1 = { path = "environments/r2e_gym_v1", editable = true }
+scaleswe-v1 = { path = "environments/scaleswe_v1", editable = true }
+swelego-v1 = { path = "environments/swelego_v1", editable = true }
+alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
