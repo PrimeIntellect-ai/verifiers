@@ -111,6 +111,15 @@ class Runtime(ABC):
         """The runtime's config discriminator ("subprocess" / "docker" / "prime" / "modal")."""
         return self.config.type
 
+    @property
+    def published_port(self) -> int | None:
+        """A fixed port this runtime exposes to the outside at startup, declared up front to the
+        provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
+        here binds it instead of a host-chosen free port, and `public_url` returns its public URL.
+        `None` for host-networked runtimes (subprocess/docker), which pick a free port and are
+        reached over the shared host network."""
+        return None
+
     @abstractmethod
     async def start(self) -> None:
         """Provision execution (workspace / container / sandbox). Use `expose` to turn a
@@ -260,6 +269,10 @@ class RetryingRuntime(Runtime):
     @property
     def type(self) -> str:
         return self.inner.type
+
+    @property
+    def published_port(self) -> int | None:
+        return self.inner.published_port
 
     @property
     def descriptor(self) -> str | None:

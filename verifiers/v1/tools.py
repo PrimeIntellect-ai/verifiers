@@ -213,8 +213,9 @@ def run_mcp_server(mcp: "FastMCP") -> None:
     import uvicorn
 
     port = int(os.environ["MCP_PORT"])
+    host = os.environ.get("MCP_HOST", "127.0.0.1")
     config = uvicorn.Config(
-        mcp.streamable_http_app(), host="127.0.0.1", port=port, log_level="critical"
+        mcp.streamable_http_app(), host=host, port=port, log_level="critical"
     )
     uvicorn.Server(config).run()
 
@@ -295,7 +296,10 @@ async def serve_in_runtime(launch: _Launch, runtime: Runtime, port: int) -> None
     else:  # sandbox: upload + install the env package (pulls git-pinned verifiers)
         python = await _install_in_sandbox(launch, runtime)
     argv = [python, "-m", "verifiers.v1.toolserver"]
-    await runtime.run_background(argv, {**launch.env, "MCP_PORT": str(port)}, log)
+    env = {**launch.env, "MCP_PORT": str(port)}
+    if runtime.published_port is not None:  # a self-publishing runtime (modal) forwards to all
+        env["MCP_HOST"] = "0.0.0.0"  # interfaces, not just loopback
+    await runtime.run_background(argv, env, log)
     probe = await runtime.run(
         ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
     )
@@ -329,7 +333,7 @@ async def serve(server: ServerBase, task, agent_runtime: Runtime | None = None, 
         await own.start()
         runtime = own
     try:
-        port = _free_port()
+        port = runtime.published_port or _free_port()
         await serve_in_runtime(server_to_launch(server, task), runtime, port)
         local = f"http://127.0.0.1:{port}"
         if for_host:  # the framework reaches it from the host
