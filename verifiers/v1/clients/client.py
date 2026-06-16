@@ -6,7 +6,7 @@ abstract method. Each concrete client owns its own wire translation internally.
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
 from tenacity import (
@@ -33,11 +33,11 @@ cold on a random shard each turn."""
 
 @dataclass
 class RelayReply:
-    """A relayed upstream response streamed back: its content type + body chunks (one chunk for
-    a JSON body, many for SSE). The connection closes when `chunks` is exhausted."""
+    """A relayed upstream response: content type, complete SSE events, and connection cleanup."""
 
     content_type: str
     chunks: AsyncIterator[bytes]
+    close: Callable[[], Awaitable[None]]
 
 
 class Client(ABC):
