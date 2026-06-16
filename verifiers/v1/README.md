@@ -33,7 +33,9 @@ uv sync   # core + the shipped packages + examples (eval, serve, all runtimes)
 ## Quickstart
 
 ```bash
+uv run init my-task-v1           # scaffold a new environment (--add-tool/--add-user/--add-harness)
 uv run eval gsm8k-v1 -n 5 -r 3   # single-turn math; default harness; docker runtime
+uv run validate gsm8k-v1 -n 5    # model-free: run each task's gold check (the `validate` hook)
 uv run eval -h                   # typed help (+ the local example tasksets/harnesses)
 ```
 

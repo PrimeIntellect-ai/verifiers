@@ -39,8 +39,10 @@ flag names are the dotted config path (`--harness.runtime.type docker`).
 
 ## Authoring a taskset
 
-A taskset is a package selected by `id`. Copy the closest `environments/<name>_v1` and edit.
-Minimal shape:
+A taskset is a package selected by `id`. Scaffold one with `uv run init my-task-v1` (add
+`--add-tool` / `--add-user` / `--add-harness` for more pieces, `--v0` for a legacy environment),
+or copy the closest `environments/<name>_v1` and edit. The scaffold runs out of the box; replace
+`load_tasks` and the `@reward`. Minimal shape:
 
 ```python
 import verifiers.v1 as vf
