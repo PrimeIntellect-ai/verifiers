@@ -69,25 +69,32 @@ class Harness(ABC, Generic[ConfigT]):
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
-    def resolve_prompt(self, task: Task) -> tuple[str | None, str | Messages]:
+    def resolve_prompt(self, task: Task) -> tuple[str | None, str | Messages | None]:
         """Resolve `(system_prompt, user_instruction)` for this harness. If the harness
         appends the system prompt natively, returns it separately; otherwise folds it into
         the user instruction (warning that it isn't sent as a system message). A `Messages`
         instruction (e.g. an image-bearing prompt) is only allowed for harnesses that set
-        `SUPPORTS_MESSAGE_INSTRUCTION`."""
+        `SUPPORTS_MESSAGE_INSTRUCTION`. A `None` instruction means the task has no prompt —
+        the user simulator opens the conversation (see `Taskset.user`); the harness emits no
+        opening user message."""
         instruction = task.instruction
-        if not isinstance(instruction, str) and not self.SUPPORTS_MESSAGE_INSTRUCTION:
+        if (
+            instruction is not None
+            and not isinstance(instruction, str)
+            and not self.SUPPORTS_MESSAGE_INSTRUCTION
+        ):
             raise ValueError(
                 f"Harness {self.config.id!r} does not support a Messages instruction; "
-                "task.instruction must be a string."
+                "task.instruction must be a string or None."
             )
         system = task.system_prompt
         if system is None or self.APPENDS_SYSTEM_PROMPT:
             return system if self.APPENDS_SYSTEM_PROMPT else None, instruction
         if not isinstance(instruction, str):
             raise ValueError(
-                f"Harness {self.config.id!r} cannot fold a system prompt into a Messages "
-                "instruction; set APPENDS_SYSTEM_PROMPT to emit it as a system message."
+                f"Harness {self.config.id!r} cannot fold a system prompt into a "
+                f"{'Messages' if instruction is not None else 'None'} instruction; set "
+                "APPENDS_SYSTEM_PROMPT to emit it as a system message."
             )
         logger.warning(
             "Harness %r does not support a separate system prompt; prepending "

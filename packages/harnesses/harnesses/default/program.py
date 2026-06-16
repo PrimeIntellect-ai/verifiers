@@ -132,11 +132,13 @@ async def main() -> None:
             [{"role": "system", "content": system_prompt}] if system_prompt else []
         )
         # A Messages instruction (e.g. an image-bearing prompt) arrives pre-built as OpenAI
-        # wire dicts; otherwise the single argv string is the first user message.
+        # wire dicts; otherwise the single argv string is the first user message. An empty argv
+        # means the task has no prompt — the framework's user simulator seeds the opening turn,
+        # so send no user message and let the interception server inject it.
         initial = json.loads(os.environ.get("INITIAL_MESSAGES", "[]"))
         if initial:
             messages.extend(initial)
-        else:
+        elif sys.argv[1]:
             messages.append({"role": "user", "content": sys.argv[1]})
         while True:
             message = await chat(messages, tools)

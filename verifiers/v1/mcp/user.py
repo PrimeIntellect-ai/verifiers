@@ -5,7 +5,10 @@ MCP server with a runtime) exposing a single `respond` tool. Unlike a tool serve
 to the model: the framework drives it. After each model turn the interception server calls `respond`
 with the model's last message, appends the simulated user message(s), and re-prompts — so a
 multi-turn game plays out as alternating assistant/user turns in the trace, the harness none the
-wiser. The host side that drives it lives in `launch` (`serve_user` / `connect_user`).
+wiser. When the task carries no prompt (`task.instruction is None`), the simulator also opens the
+conversation: the interception server calls `respond("")` once before the first model turn and seeds
+its reply as the initial user message. The host side that drives it lives in `launch` (`serve_user` /
+`connect_user`).
 """
 
 from __future__ import annotations
@@ -62,6 +65,9 @@ class User(ServerBase[ConfigT, StateT]):
     """
 
     async def respond(self, message: str) -> Messages:
+        """The model's last assistant text in → the next user message(s) out. Called once with an
+        empty `message` to open the conversation when the task has no prompt (`task.instruction is
+        None`); end the trajectory by setting `self.state.done = True`."""
         raise NotImplementedError
 
     def _register(self, mcp: FastMCP) -> None:

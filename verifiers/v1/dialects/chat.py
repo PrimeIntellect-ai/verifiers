@@ -242,12 +242,14 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
         # the sampling knobs it set (later keys win, so the eval's override the program's).
         return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
 
-    def extend(self, body: dict, completion: dict, user_messages: Messages) -> dict:
+    def extend(
+        self, body: dict, completion: dict | None, user_messages: Messages
+    ) -> dict:
         # Append the model's turn (the verbatim assistant message, so its reasoning survives for
         # the next turn's passback) and the simulator's injected user turn(s) to the wire history.
-        messages = [
-            *body.get("messages", []),
-            completion["choices"][0]["message"],
-            *(message_to_wire(m) for m in user_messages),
-        ]
+        # A None completion seeds the opening turn (no model message yet) — only the user turn(s).
+        messages = [*body.get("messages", [])]
+        if completion is not None:
+            messages.append(completion["choices"][0]["message"])
+        messages.extend(message_to_wire(m) for m in user_messages)
         return {**body, "messages": messages}

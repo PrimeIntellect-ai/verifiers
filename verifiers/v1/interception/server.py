@@ -14,7 +14,9 @@ one tunnel) per pool member rather than one each — see `interception.pool`.
 When a rollout sets a user simulator (see `verifiers.v1.mcp.user`), the session also drives it:
 after each model turn it injects the simulator's reply as a user turn and re-prompts the
 model, so a multi-turn exchange plays out within one program request, transparently to the
-harness. Tools are handled out-of-band (run by the harness).
+harness. When the task carries no prompt (`task.instruction is None`), the simulator also
+opens the conversation: its first turn is seeded before the model is ever called. Tools are
+handled out-of-band (run by the harness).
 """
 
 import asyncio
@@ -101,6 +103,12 @@ class RolloutSession:
     When set, each model turn with no tool call is followed by the simulator's reply,
     injected as a user turn, and the model is re-prompted — all within one program request,
     transparently to the harness."""
+    opening: Messages | None = None
+    """Cached opening `respond("")` messages for a no-prompt task. Computed once and re-injected on
+    every request until the first turn lands on the trace — so a retried opening request (e.g. the
+    harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`
+    twice and advances the simulator's queue past the opening. (The opening's done lives on
+    `trace.state.done`, set by that same `respond("")` over the state channel.)"""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
@@ -199,6 +207,29 @@ class InterceptionServer:
         # extends both each turn (`dialect.extend` for the wire, `prompt` for the trace).
         prompt: Messages
         prompt, _ = dialect.parse_request(body)
+        # A task with no prompt has its conversation opened by the user simulator: before the
+        # first model call, seed the simulator's opening user turn(s) into both the wire request
+        # and the trace prompt, so the model answers the user rather than an empty prompt. Guarded
+        # to the opening (`num_turns == 0`), so a later program request (e.g. after a tool call)
+        # never re-seeds. The opening `respond("")` is cached on the session and reused, so a
+        # retried opening request (e.g. the harness SDK retrying a transient model 502, before any
+        # turn is recorded) doesn't advance the simulator's queue and skip the opening turn. The
+        # post-turn loop below then drives the remaining turns as usual.
+        if (
+            session.user is not None
+            and session.trace.task.instruction is None
+            and session.trace.num_turns == 0
+        ):
+            if session.opening is None:
+                session.opening = await session.user("")
+            body = dialect.extend(body, None, session.opening)
+            prompt = [*prompt, *session.opening]
+            if session.trace.state.done:
+                # Degenerate: the simulator ended before any model turn — halt the harness clean.
+                session.trace.stop("user_completed")
+                return web.json_response(
+                    dialect.error_body("rollout stopped: user_completed"), status=400
+                )
         if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt)
         # A user simulator turns one program request into a multi-turn exchange: after each
