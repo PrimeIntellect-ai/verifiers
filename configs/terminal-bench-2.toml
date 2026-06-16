@@ -6,6 +6,9 @@ num_tasks = 10
 
 [taskset]
 id = "terminal-bench-2-v1"
+# Scale the task's declared agent/verifier timeouts and CPU/memory/disk resources.
+# timeout_multiplier = 2.0
+# resource_multiplier = 2.0
 
 [harness]
 id = "default"
