@@ -32,11 +32,10 @@ from verifiers.v1.runtimes import (
     host_endpoint,
     make_runtime,
 )
+from verifiers.v1.mcp import serve_tools, serve_user
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
-from verifiers.v1.tools import serve_tools
 from verifiers.v1.trace import Trace
-from verifiers.v1.user import serve_user
 
 if TYPE_CHECKING:
     from verifiers.v1.interception import InterceptionPool

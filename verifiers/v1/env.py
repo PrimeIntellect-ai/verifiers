@@ -32,7 +32,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
-from verifiers.v1.tools import serve_shared
+from verifiers.v1.mcp import serve_shared
 
 
 class TimeoutConfig(BaseConfig):

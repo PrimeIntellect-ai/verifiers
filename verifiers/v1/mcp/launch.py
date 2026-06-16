@@ -1,51 +1,37 @@
-"""Tools: how a task gives the harness tools, via `vf.Toolset`s it declares from `Taskset.tools`.
+"""Host-side launching: bring a vf-native server up in a runtime and reach it.
 
-A `Toolset` (and a `User`) is authored as a vf-native class whose env module ends with
-`if __name__ == "__main__": <Server>.run()`. The framework launches it by running that module
-(`python -m <module>`); `ServerBase.run()` rebuilds the server from the environment and serves it
-over streamable HTTP on `MCP_PORT`. On a host (`subprocess`) runtime that's the eval's own
-interpreter — `verifiers` and the env module are already installed, nothing is fetched. In a sandbox
-the working-tree `verifiers` source and the env module are uploaded and `uv pip install`ed (deps
-resolve from PyPI), then the module runs the same way — no publish or pin to keep in sync. A
-`Toolset` can instead point at an already-running remote endpoint (`ToolsetConfig.url`, e.g. deepwiki).
-
-`serve` is the single internal launcher (any server, any placement). `serve_tools` brings a
-task's servers up for a rollout (each in its `config`'s placement — colocated, own runtime);
-`serve_shared` brings up shared ones once per eval. `ServerBase.run` → `ServerBase._serve` is the
-server-side serve loop (in the launched process). The wire types the model sees (`Tool`,
-`ToolCall`, …) live in `types`.
+`serve` is the single launcher (any server, any placement); `serve_tools` / `serve_shared` /
+`serve_user` are thin wrappers for a rollout's tools, the eval's shared tools, and the user sim.
+`serve_in_runtime` runs the server's module (`python -m <module>`) in a runtime — host (ambient) or
+sandbox (after `_install_in_sandbox` uploads + installs the working-tree `verifiers` source + the env
+package). `connect_user` is the MCP client the framework drives the user sim through.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
+import json
 import logging
-import os
 import random
 import shlex
 import socket
 import sys
 import tarfile
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar, get_args
+from typing import TYPE_CHECKING
 
-from pydantic import model_validator
-from pydantic_config import BaseConfig
-
-from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes import (
-    Runtime,
-    RuntimeConfig,
-    SubprocessConfig,
-    host_endpoint,
-    make_runtime,
-)
-from verifiers.v1.runtimes.base import _ENSURE_UV, SERVICE_PORT
+from verifiers.v1.errors import ProgramError, RolloutError
+from verifiers.v1.mcp.server import ServerBase
+from verifiers.v1.runtimes import Runtime, host_endpoint, make_runtime
+from verifiers.v1.runtimes.base import _ENSURE_UV
+from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from verifiers.v1.mcp.toolset import Toolset
+    from verifiers.v1.mcp.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -54,202 +40,15 @@ logger = logging.getLogger(__name__)
 # publish or git pin to keep in sync.
 VF_BUILD_INPUTS = ["pyproject.toml", "README.md", "LICENSE", "verifiers"]
 
+# The model's last assistant text in; the next user messages + a done flag out.
+Respond = Callable[[str], Awaitable[tuple[Messages, bool]]]
 
-class ToolsetConfig(BaseConfig):
-    """Where one tool server runs (placement). The default — its own host (`subprocess`)
-    runtime — is the cheap one: the server runs in the eval process's environment, where
-    `verifiers` and the env module are already installed (nothing to fetch), and the harness
-    reaches it over the host network (docker `--network host`) or a tunnel (prime). `colocated`
-    and `shared` trade that off:
-      - neither (default): its own `runtime`, per rollout (host by default).
-      - colocated: in the harness's OWN runtime, per rollout (no tunnel). In a sandbox this means
-        the `verifiers` source + the env module are uploaded and `uv pip install`ed there, so it
-        costs a per-rollout install.
-      - shared: one instance for the whole eval, in its own `runtime`.
-    Subclass to add the server's own knobs (the data its `@tool` methods / `respond` read).
-    The server name is the class's `name` ClassVar, not a field here — it's an identity (the
-    model sees `<name>_<tool>`, baked into the taskset's instruction), not a tunable knob."""
-
-    colocated: bool = False
-    """Run the server inside the harness's runtime (reached in-sandbox, no tunnel). Off by
-    default — on the host it's free, but in a sandbox the harness runtime must install the env
-    package + `verifiers` (a per-rollout cost), so prefer the default own-runtime placement
-    unless co-locating genuinely helps."""
-    shared: bool = False
-    """Run one server instance for the whole eval, shared across rollouts (in its own
-    `runtime`). Mutually exclusive with `colocated`."""
-    runtime: RuntimeConfig = SubprocessConfig()
-    """The server's own runtime, used unless `colocated` (host/subprocess by default — always
-    reachable from any harness runtime; set docker/prime to isolate it in its own sandbox)."""
-    url: str | None = None
-    """An already-running streamable-HTTP MCP endpoint to connect to instead of launching a
-    server (e.g. a public remote like DeepWiki). When set, placement is ignored — the toolset
-    needs no `@tool` methods, the model just sees the remote's tools as `<name>_<tool>`."""
-
-    @model_validator(mode="after")
-    def reject_colocated_and_shared(self) -> "ToolsetConfig":
-        if self.colocated and self.shared:
-            raise ValueError("colocated and shared are mutually exclusive")
-        return self
-
-
-ConfigT = TypeVar("ConfigT", bound=BaseConfig)
-
-
-class ServerBase(Generic[ConfigT]):
-    """A vf-native server authored as a class, initialized from its config — the same shape as
-    `Taskset`/`TasksetConfig`: the config (a `ToolsetConfig`/`UserConfig` subclass) is the
-    serializable data (placement + the server's own knobs); the class is the behaviour. The
-    framework launches it by running its env module (`python -m <module>`), whose `__main__` calls
-    `cls.run()` to rebuild `cls(config)` from the environment and serve over MCP — no FastMCP
-    boilerplate. Subclassed by `Toolset` (`@tool` methods) and `User` (a `respond` hook). Build
-    expensive/non-serializable state in `setup` — set it as plain instance attributes (it runs in
-    the server process). The server's deps come from its env package's `pyproject` (the install in
-    a sandbox), so the class may freely `import verifiers`, import siblings, and use module
-    globals."""
-
-    TOOL_PREFIX: ClassVar[str] = ""
-    """Prefix the model sees on this server's tools (`<TOOL_PREFIX>_<tool>`), set on the class,
-    not the config. Empty falls back to the class name snake-cased — set it explicitly for a
-    toolset the model calls (e.g. `wiki` -> `wiki_search`)."""
-
-    def __init__(self, config: ConfigT) -> None:
-        self.config = config
-
-    @property
-    def server_name(self) -> str:
-        """The server's identity (MCP name, log + namespace key): `TOOL_PREFIX`, else the class
-        name snake-cased."""
-        return self.TOOL_PREFIX or "".join(
-            ("_" + c.lower() if c.isupper() else c) for c in type(self).__name__
-        ).lstrip("_")
-
-    async def setup(self) -> None:
-        """Task-agnostic setup, in the server process: global state (a corpus / index / graph loaded
-        from disk or a dataset) as plain instance attributes (`self.x = ...`). Runs for every server
-        — shared or per-rollout. Config knobs stay on `self.config`."""
-
-    async def setup_task(self, task) -> None:
-        """Per-rollout setup, in the server process: per-task input read off `task` (this rollout's
-        task) and initial per-rollout mutable state (counters, paths). Runs only when the server has
-        a task — SKIPPED for a `shared` server (one instance for the whole eval), so don't override
-        it on a shared server (the framework warns loudly if you do)."""
-
-    def _register(self, mcp: FastMCP) -> None:
-        raise NotImplementedError
-
-    def _serve(self, task) -> None:
-        """Run this server's MCP server: `setup` (always) + `setup_task(task)` (only when there's a
-        task — skipped for a shared server), build a FastMCP from the registered tools, and serve it
-        over streamable HTTP on `MCP_PORT`/`MCP_HOST`. Called by `run()`."""
-        import asyncio
-
-        import uvicorn
-        from mcp.server.fastmcp import FastMCP
-
-        async def _setup() -> None:
-            await self.setup()
-            if task is not None:
-                await self.setup_task(task)
-
-        asyncio.run(_setup())
-        # Bound to 0.0.0.0 means a sandbox tunnel reaches us at a non-loopback host (e.g. modal's
-        # *.modal.host); FastMCP's default DNS-rebinding guard allows only localhost and would 421
-        # the tunnel host, so relax it (the tunnel is the trust boundary).
-        host = os.environ.get("MCP_HOST", "127.0.0.1")
-        security = None
-        if host == "0.0.0.0":
-            from mcp.server.transport_security import TransportSecuritySettings
-
-            security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-        mcp = FastMCP(self.server_name, transport_security=security)
-        self._register(mcp)
-        uvicorn.Server(
-            uvicorn.Config(
-                mcp.streamable_http_app(),
-                host=host,
-                port=int(os.environ.get("MCP_PORT", SERVICE_PORT)),
-                log_level="critical",
-            )
-        ).run()
-
-    @classmethod
-    def _config_cls(cls) -> type[BaseConfig]:
-        """The config type from the `Toolset[Config]` / `User[Config]` generic parameter."""
-        for base in getattr(cls, "__orig_bases__", ()):
-            for arg in get_args(base):
-                if isinstance(arg, type) and issubclass(arg, BaseConfig):
-                    return arg
-        raise TypeError(f"{cls.__name__} must parameterize its config, e.g. Toolset[MyConfig]")
-
-    @classmethod
-    def run(cls) -> None:
-        """Entry point a server module calls from `if __name__ == "__main__"`: rebuild this server
-        from the environment the framework set (`VF_CONFIG` JSON + `VF_TASK`/`VF_TASK_CLS`) and serve
-        it over MCP. With no `VF_CONFIG` the config is parsed from the CLI instead (`cli(config)`),
-        so the module is runnable by hand for debugging. `VF_TASK` is absent for a `shared` server."""
-        config_cls = cls._config_cls()
-        if "VF_CONFIG" in os.environ:
-            config = config_cls.model_validate_json(os.environ["VF_CONFIG"])
-        else:
-            from pydantic_config import cli
-
-            config = cli(config_cls)
-        task = None
-        if "VF_TASK" in os.environ:
-            task = _import_ref(os.environ["VF_TASK_CLS"]).model_validate_json(
-                os.environ["VF_TASK"]
-            )
-        cls(config)._serve(task)
-
-
-class Toolset(ServerBase[ConfigT]):
-    """A tool server authored as a class: write `@vf.tool` methods (the model calls them as
-    `<name>_<method>`; the docstring is the tool description), reading config off `self.config`.
-    Example:
-
-        class GlossaryToolsetConfig(vf.ToolsetConfig):
-            facts: dict[str, str] = {}
-
-        class GlossaryToolset(vf.Toolset[GlossaryToolsetConfig]):
-            @vf.tool
-            def lookup(self, name: str) -> str:
-                return self.config.facts.get(name.lower(), "unknown")
-    """
-
-    def _register(self, mcp: FastMCP) -> None:
-        for fn in discover_decorated(self, "tool"):
-            mcp.add_tool(
-                fn,
-                name=getattr(fn, "tool_name", None) or fn.__name__,
-                description=(fn.__doc__ or "").strip() or None,
-            )
-
-
-def _source_dir(cls: type) -> str | None:
-    """The local directory of `cls`'s env package — the nearest ancestor of its module file that
-    holds a `pyproject.toml` (what gets uploaded + installed in a sandbox). `None` when the module
-    has no on-disk package (a hub install in site-packages, or a built-in)."""
-    module = sys.modules.get(cls.__module__)
-    path = getattr(module, "__file__", None)
-    if not path:
-        return None
-    for parent in Path(path).resolve().parents:
-        if (parent / "pyproject.toml").exists():
-            return str(parent)
-    return None
-
-
-def _import_ref(ref: str) -> object:
-    """Resolve a `module:qualname` reference (e.g. `glossary_v1:GlossaryTask`) to the object."""
-    import importlib
-
-    module_name, _, qualname = ref.partition(":")
-    obj: object = importlib.import_module(module_name)
-    for attr in qualname.split("."):
-        obj = getattr(obj, attr)
-    return obj
-
+# The colocated user server is up once its in-runtime probe passes, but under high concurrency
+# it can still momentarily refuse a host connection. Retry the connect before giving up so a
+# transient refusal doesn't fail the rollout.
+_USER_CONNECT_ATTEMPTS = 12
+_USER_CONNECT_BACKOFF = 0.2  # seconds, exponential up to the cap
+_USER_CONNECT_MAX_BACKOFF = 2.0
 
 # Poll a URL from inside a runtime until it serves (any HTTP response — incl. MCP's 406
 # to a bare GET — means up), or the deadline passes. python3 is present in every runtime.
@@ -280,6 +79,20 @@ def _free_port() -> int:
         finally:
             probe.close()
     raise ProgramError("could not find a free port in [3000, 9000)")
+
+
+def _source_dir(cls: type) -> str | None:
+    """The local directory of `cls`'s env package — the nearest ancestor of its module file that
+    holds a `pyproject.toml` (what gets uploaded + installed in a sandbox). `None` when the module
+    has no on-disk package (a hub install in site-packages, or a built-in)."""
+    module = sys.modules.get(cls.__module__)
+    path = getattr(module, "__file__", None)
+    if not path:
+        return None
+    for parent in Path(path).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return str(parent)
+    return None
 
 
 def _tar_source(src: Path, members: list[str] | None = None) -> bytes:
@@ -478,3 +291,82 @@ async def serve_tools(
                 urls[name] = await stack.enter_async_context(serve(toolset, task, agent_runtime))
                 logger.info("tool server '%s': %s", name, urls[name])
         yield urls
+
+
+@contextlib.asynccontextmanager
+async def connect_user(url: str) -> AsyncIterator[Respond]:
+    """Open an MCP client session to a user server at `url` and yield an async
+    `respond(message)` that calls its `respond` tool, parsing the JSON it returns
+    (`{"messages": [...], "done": bool}`) into typed `(messages, done)`.
+
+    Retries the connect — under high concurrency the colocated user server can be slow to
+    accept (or briefly refuse) a connection. A server that stays unreachable raises
+    `ProgramError` (a captured, retryable rollout error), so a transport failure never escapes
+    as a raw `ExceptionGroup`/`ConnectError` that would bypass rollout error handling and crash
+    the batch. The connect is entered and exited in this one frame so anyio's cancel scopes stay
+    correctly nested."""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    from verifiers.v1.dialects import parse_message
+
+    last_exc: Exception | None = None
+    for attempt in range(_USER_CONNECT_ATTEMPTS):
+        connected = False
+        try:
+            async with (
+                streamable_http_client(url) as (read, write, *_),
+                ClientSession(read, write) as session,
+            ):
+                await session.initialize()
+                connected = True
+
+                async def respond(message: str) -> tuple[Messages, bool]:
+                    result = await session.call_tool("respond", {"message": message})
+                    texts = [
+                        b.text
+                        for b in result.content
+                        if getattr(b, "type", None) == "text"
+                    ]
+                    data = json.loads("\n".join(texts))
+                    messages = [parse_message(m) for m in data["messages"]]
+                    return messages, bool(data["done"])
+
+                yield respond
+            return
+        except RolloutError:
+            raise  # a real rollout error surfaced after connecting: propagate as-is
+        except Exception as e:
+            if connected:
+                # the user-sim connection broke mid-rollout/teardown (e.g. the colocated server
+                # was killed under memory pressure): capture it as a retryable rollout error
+                # instead of letting the raw transport ExceptionGroup escape and crash the batch
+                raise ProgramError(
+                    f"user server at {url} connection lost: {e!r}"
+                ) from e
+            last_exc = e  # the connect itself failed: back off and retry
+            await asyncio.sleep(
+                min(_USER_CONNECT_BACKOFF * 2**attempt, _USER_CONNECT_MAX_BACKOFF)
+            )
+    raise ProgramError(
+        f"user server at {url} unreachable after {_USER_CONNECT_ATTEMPTS} attempts: {last_exc!r}"
+    )
+
+
+@contextlib.asynccontextmanager
+async def serve_user(
+    user: User | None,
+    task,
+    agent_runtime: Runtime | None = None,
+) -> AsyncIterator[Respond | None]:
+    """Bring a rollout's user server up (via the shared `serve` launcher, `for_host=True` since
+    the framework drives the user from the HOST) and yield the async `respond` the interception
+    server drives — or `None` when the taskset has no user server. Placement is the user's
+    `config` (colocated in the agent's runtime, or its own); the rollout's `task` is shipped to
+    the server for its `setup`."""
+    if user is None:
+        yield None
+        return
+    async with serve(user, task, agent_runtime, for_host=True) as url:
+        async with connect_user(url) as respond:
+            yield respond

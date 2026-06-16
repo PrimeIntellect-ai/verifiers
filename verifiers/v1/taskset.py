@@ -24,10 +24,9 @@ from pydantic_config import BaseConfig
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.ids import EnvId, env_name
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.mcp import Toolset, User
 from verifiers.v1.task import TaskT
-from verifiers.v1.tools import Toolset
 from verifiers.v1.trace import Trace
-from verifiers.v1.user import User
 
 
 class TasksetConfig(BaseConfig):

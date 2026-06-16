@@ -50,9 +50,11 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Resources, Task, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.tools import (
+from verifiers.v1.mcp import (
     Toolset,
     ToolsetConfig,
+    User,
+    UserConfig,
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
@@ -82,7 +84,6 @@ from verifiers.v1.types import (
     Usage,
     UserMessage,
 )
-from verifiers.v1.user import User, UserConfig
 
 __all__ = [
     # types
