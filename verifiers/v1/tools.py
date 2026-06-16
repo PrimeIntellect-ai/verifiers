@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 # `verifiers` isn't on PyPI at the v1 version, so a sandbox installs it from git (the env package
 # declares it as a dependency; this supplies the pin). Locally the editable workspace is used.
-_VERIFIERS_PIN = "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@3f154b7"
+_VERIFIERS_PIN = "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@be2bd96"
 
 
 class ToolsetConfig(BaseConfig):
@@ -268,6 +268,8 @@ async def _install_in_sandbox(launch: _Launch, runtime: Runtime) -> str:
     venv, pkg = "/tmp/vf-venv", f"/tmp/vf-env/{src.name}"
     setup = (
         f"{_ENSURE_UV}; set -e; "
+        # the git-pinned verifiers install needs a git client (slim base images lack one)
+        "command -v git >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq git >/dev/null; }; "
         "tar -xzf /tmp/vf-env/pkg.tar.gz -C /tmp/vf-env && "
         f"uv venv {venv} && "
         f"uv pip install --python {venv} {shlex.quote(_VERIFIERS_PIN)} && "
