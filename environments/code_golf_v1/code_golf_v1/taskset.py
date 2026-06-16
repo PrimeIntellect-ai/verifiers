@@ -94,7 +94,3 @@ class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
         times = [t.metrics.get("latency", 1e6) for t in traces]
         best = min(times)
         return [1.0 if t == best else 0.0 for t in times]
-
-
-def load_taskset(config: vf.TasksetConfig) -> CodeGolfTaskset:
-    return CodeGolfTaskset(config)

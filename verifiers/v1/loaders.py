@@ -1,22 +1,24 @@
 """Loaders: resolve a plugin id to its taskset or harness.
 
-A plugin (taskset or harness) exposes a single load hook — `load_taskset(config) -> Taskset`
-for tasksets, `load_harness(config) -> Harness` for harnesses. An id (an `EnvId`) resolves to
-the module exposing it: a built-in id (`default`, `rlm`, `harbor_v1`, `textarena_v1`) resolves
-to its namespaced module under the group package (`harnesses.rlm`, `tasksets.harbor_v1`, ...);
-any other id names a flat module — a local package (hyphens → underscores), or an
+A plugin (taskset or harness) is a module that exports its `Taskset` / `Harness` subclass via
+`__all__` — vf walks the exported names and finds the single subclass of the base. An id (an
+`EnvId`) resolves to that module: a built-in id (`default`, `rlm`, `harbor_v1`, `textarena_v1`)
+resolves to its namespaced module under the group package (`harnesses.rlm`, `tasksets.harbor_v1`,
+...); any other id names a flat module — a local package (hyphens → underscores), or an
 `org/name[@version]` package installed on demand from the Environments Hub.
 Built-ins live under `packages/`, installed by default via the `tasksets`/`harnesses` extras;
-custom ones live under `environments/`, on `sys.path`, or on the hub. The CLI introspects the
-hook's parameter annotation to narrow the plugin's config for `--taskset.*` /
-`--harness.*` flags; `task_type` reads the return annotation.
+custom ones live under `environments/`, on `sys.path`, or on the hub.
+
+The taskset/harness class carries its types as generic args — `Taskset[TaskT, ConfigT]`,
+`Harness[ConfigT]` — which the CLI reads to narrow the plugin's config for `--taskset.*` /
+`--harness.*` flags (`taskset_config_type` / `harness_config_type`) and to type the wire trace
+(`task_type`).
 """
 
 import importlib
 import importlib.util
-import inspect
 from types import ModuleType
-from typing import Callable, get_args
+from typing import Callable, get_args, get_origin
 
 from pydantic_config import BaseConfig
 
@@ -58,18 +60,52 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     except ModuleNotFoundError as e:
         raise ModuleNotFoundError(
             f"{kind} {plugin_id!r} not found (tried to import {target!r}). A {kind} is a "
-            f"package exposing load_{kind}(config) — the built-in ones are bundled in the "
-            f"`{group}` package (vendored by default), installed from the Environments Hub "
-            f"(`org/name`), or authored yourself."
+            f"package exporting its {kind.capitalize()} subclass via `__all__` — the built-in "
+            f"ones are bundled in the `{group}` package (vendored by default), installed from "
+            f"the Environments Hub (`org/name`), or authored yourself."
         ) from e
 
 
-def _config_type(load_fn, default: type) -> type:
-    """The plugin's config type, read off its load hook's single parameter annotation."""
-    param = next(iter(inspect.signature(load_fn).parameters.values()))
-    return (
-        param.annotation if param.annotation is not inspect.Parameter.empty else default
-    )
+def _plugin_class(module: ModuleType, base: type, kind: str) -> type:
+    """The single class exported via `module.__all__` that subclasses `base`. A taskset/harness
+    module exports exactly one such class — the walk filters its public names down to subclasses
+    of the base, and rejects anything other than exactly one with an informative error."""
+    names = getattr(module, "__all__", None)
+    if names is None:
+        raise AttributeError(
+            f"{kind} module {module.__name__!r} defines no `__all__`; a {kind} must export its "
+            f"{base.__name__} subclass via `__all__` (e.g. `__all__ = ['My{base.__name__}']`)."
+        )
+    matches = [
+        obj
+        for name in names
+        if isinstance(obj := getattr(module, name, None), type)
+        and issubclass(obj, base)
+        and obj is not base
+    ]
+    if not matches:
+        raise TypeError(
+            f"{kind} module {module.__name__!r} exports no {base.__name__} subclass via "
+            f"`__all__` (found {list(names)}); export exactly one."
+        )
+    if len(matches) > 1:
+        raise TypeError(
+            f"{kind} module {module.__name__!r} exports {len(matches)} {base.__name__} "
+            f"subclasses via `__all__` ({[c.__name__ for c in matches]}); export exactly one."
+        )
+    return matches[0]
+
+
+def _generic_args(cls: type, base: type) -> list:
+    """Type args of every `base[...]` specialization across `cls`'s MRO, most-derived first —
+    so a subclass that re-binds a type param (e.g. a thin wrapper narrowing the config) wins
+    over the base it inherits from."""
+    args: list = []
+    for klass in cls.__mro__:
+        for orig in getattr(klass, "__orig_bases__", ()):
+            if get_origin(orig) is base:
+                args.extend(get_args(orig))
+    return args
 
 
 def import_taskset(taskset_id: str) -> ModuleType:
@@ -80,38 +116,48 @@ def import_harness(harness_id: str) -> ModuleType:
     return _import_plugin(harness_id, "harness", "harnesses")
 
 
+def taskset_class(taskset_id: str) -> type[Taskset]:
+    """The taskset's `Taskset` subclass, exported via its module's `__all__`."""
+    return _plugin_class(import_taskset(taskset_id), Taskset, "taskset")
+
+
+def harness_class(harness_id: str) -> type[Harness]:
+    """The harness's `Harness` subclass, exported via its module's `__all__`."""
+    return _plugin_class(import_harness(harness_id), Harness, "harness")
+
+
 def load_taskset(config: TasksetConfig) -> Taskset:
     """Build the taskset for a config by dispatching on its `id` (the taskset id)."""
-    return import_taskset(config.id).load_taskset(config)
+    return taskset_class(config.id)(config)
 
 
 def load_harness(config: HarnessConfig) -> Harness:
     """Build the harness for a config by dispatching on its `id` (the harness id)."""
-    return import_harness(config.id).load_harness(config)
+    return harness_class(config.id)(config)
 
 
 def taskset_config_type(taskset_id: str) -> type[TasksetConfig]:
-    """The taskset's `TasksetConfig` subclass, from `load_taskset`'s parameter annotation."""
-    return _config_type(import_taskset(taskset_id).load_taskset, TasksetConfig)
+    """The taskset's `TasksetConfig` subclass, from its `Taskset[TaskT, ConfigT]` generic."""
+    for arg in _generic_args(taskset_class(taskset_id), Taskset):
+        if isinstance(arg, type) and issubclass(arg, TasksetConfig):
+            return arg
+    return TasksetConfig
 
 
 def harness_config_type(harness_id: str) -> type[HarnessConfig]:
-    """The harness's config subclass, from `load_harness`'s parameter annotation."""
-    return _config_type(import_harness(harness_id).load_harness, HarnessConfig)
+    """The harness's config subclass, from its `Harness[ConfigT]` generic."""
+    for arg in _generic_args(harness_class(harness_id), Harness):
+        if isinstance(arg, type) and issubclass(arg, HarnessConfig):
+            return arg
+    return HarnessConfig
 
 
 def task_type(taskset_id: str) -> type[Task]:
-    """The taskset's `Task` subclass, read off `load_taskset`'s return annotation
-    (`Taskset[TaskT, ConfigT]`) — no data is loaded, so a caller that imports the taskset
-    can cheaply build a typed `Trace[TaskT]` for the otherwise taskset-specific (loose
-    dict) wire trace. Falls back to the base `Task` when no subclass is annotated."""
-    taskset_type = inspect.signature(
-        import_taskset(taskset_id).load_taskset
-    ).return_annotation
-    candidates = list(get_args(taskset_type))
-    for base in getattr(taskset_type, "__orig_bases__", ()):
-        candidates += get_args(base)
-    for arg in candidates:
+    """The taskset's `Task` subclass, read off its `Taskset[TaskT, ConfigT]` generic — no data
+    is loaded, so a caller that imports the taskset can cheaply build a typed `Trace[TaskT]` for
+    the otherwise taskset-specific (loose dict) wire trace. Falls back to the base `Task` when
+    no subclass is given."""
+    for arg in _generic_args(taskset_class(taskset_id), Taskset):
         if isinstance(arg, type) and issubclass(arg, Task):
             return arg
     return Task

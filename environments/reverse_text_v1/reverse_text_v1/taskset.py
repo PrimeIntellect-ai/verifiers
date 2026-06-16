@@ -55,7 +55,3 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTask, ReverseTextConfig]):
         match = _TAG.search(completion or "")
         response = match.group(1).strip() if match else ""
         return SequenceMatcher(None, response, task.answer).ratio()
-
-
-def load_taskset(config: ReverseTextConfig) -> ReverseTextTaskset:
-    return ReverseTextTaskset(config)
