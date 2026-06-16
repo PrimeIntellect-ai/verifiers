@@ -208,6 +208,7 @@ class InterceptionServer:
                         dialect.error_body(f"rollout stopped: {refused}"), status=400
                     )
                 return web.json_response(completion)
+            turn = graph.prepare_turn(session.trace, prompt)
             try:
                 response = await session.ctx.client.get_response(
                     dialect,
@@ -215,6 +216,7 @@ class InterceptionServer:
                     session.ctx.model,
                     session.ctx.sampling,
                     session_id=session.trace.id,
+                    turn=turn,
                 )
             except OverlongPromptError:
                 # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
@@ -234,7 +236,7 @@ class InterceptionServer:
             # `Response.raw` is the wire response handed to the program 1:1 — the provider's
             # verbatim bytes (proxy) or the client's serialized completion (renderer).
             completion = response.raw
-            graph.add_turn(session.trace, prompt, response)  # one node per new message;
+            turn.commit(response)  # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
@@ -267,6 +269,7 @@ class InterceptionServer:
                 dialect.error_body(f"rollout stopped: {refused}"), status=400
             )
         try:
+            turn = graph.prepare_turn(session.trace, prompt)
             reply = await session.ctx.client.relay(
                 dialect,
                 body,
@@ -313,7 +316,7 @@ class InterceptionServer:
             await reply.close()
 
         try:
-            graph.add_turn(session.trace, prompt, dialect.parse_stream(bytes(buffer)))
+            turn.commit(dialect.parse_stream(bytes(buffer)))
         finally:
             with contextlib.suppress(ConnectionResetError):
                 await resp.write_eof()

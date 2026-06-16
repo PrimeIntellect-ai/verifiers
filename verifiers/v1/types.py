@@ -116,6 +116,8 @@ class ToolMessage(StrictBaseModel):
     role: Literal["tool"] = "tool"
     tool_call_id: str
     content: MessageContent
+    name: str | None = None
+    """The originating tool/function name when it can be recovered from the prompt."""
 
 
 Message = Annotated[

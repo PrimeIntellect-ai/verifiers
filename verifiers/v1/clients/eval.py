@@ -18,6 +18,7 @@ import httpx
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
+from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, SamplingConfig
 
 _SSE_EVENT_END = re.compile(rb"(?:\r\n|\r|\n){2}")
@@ -45,6 +46,7 @@ class EvalClient(Client):
         model: str,
         sampling_args: SamplingConfig,
         session_id: str | None = None,
+        turn: PendingTurn | None = None,
     ) -> Response:
         # Byte-exact forward, save for the eval's model + sampling (imposed by the dialect).
         url, headers, upstream = self._upstream(
