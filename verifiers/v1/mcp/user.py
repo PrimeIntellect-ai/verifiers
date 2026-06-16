@@ -20,6 +20,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.mcp.server import ServerBase
 from verifiers.v1.runtimes import RuntimeConfig, SubprocessConfig
+from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
@@ -43,25 +44,36 @@ class UserConfig(BaseConfig):
 ConfigT = TypeVar("ConfigT", bound=UserConfig)
 
 
-class User(ServerBase[ConfigT]):
+class User(ServerBase[ConfigT, StateT]):
     """A user simulator authored as a vf-native class, initialized from its config: implement
-    `respond` (the model's last message in → the next user message(s) + a done flag out).
-    Consumed by the framework (the interception server drives it), never shown to the model.
-    Example:
+    `respond` (the model's last message in → the next user message(s) out). Consumed by the framework
+    (the interception server drives it), never shown to the model. To end the trajectory, set a flag
+    on the shared `self.state` and have the taskset declare a `@vf.stop` over it (the framework holds
+    no built-in end signal — see `verifiers.v1.state`). Example:
 
-        class HagglerUserConfig(vf.UserConfig):
-            target_price: int = 0
+        class HagglerState(vf.State):
+            deal_closed: bool = False
 
-        class HagglerUser(vf.User[HagglerUserConfig]):
-            async def respond(self, message: str) -> tuple[vf.Messages, bool]:
+        class HagglerUser(vf.User[vf.UserConfig, HagglerState]):
+            async def respond(self, message: str) -> vf.Messages:
                 ...
-                return [{"role": "user", "content": reply}], done
+                if deal_done:
+                    self.state.deal_closed = True   # the taskset's @vf.stop ends it on this
+                return [{"role": "user", "content": reply}]
+
+        class HagglerTaskset(vf.Taskset[HagglerTask, HagglerConfig, HagglerState]):
+            @vf.stop
+            async def deal_closed(self, trace) -> bool:
+                return trace.state.deal_closed
+
+    Parameterize the user with the same `State` subclass — `User[Config, MyState]` — so `self.state`
+    is typed; it defaults to the base `State`.
     """
 
-    async def respond(self, message: str) -> tuple[Messages, bool]:
-        """The model's last assistant text in → the next user message(s) + a done flag out.
-        Called once with an empty `message` to open the conversation when the task has no
-        prompt (`task.instruction is None`)."""
+    async def respond(self, message: str) -> Messages:
+        """The model's last assistant text in → the next user message(s) out. Called once with an
+        empty `message` to open the conversation when the task has no prompt (`task.instruction is
+        None`); end the trajectory by setting a `self.state` flag a taskset `@vf.stop` checks."""
         raise NotImplementedError
 
     def _register(self, mcp: FastMCP) -> None:
@@ -70,8 +82,8 @@ class User(ServerBase[ConfigT]):
         user = self
 
         async def respond(message: str) -> str:
-            messages, done = await user.respond(message)
+            messages = await user.respond(message)
             wire = [m if isinstance(m, dict) else message_to_wire(m) for m in messages]
-            return json.dumps({"messages": wire, "done": done})
+            return json.dumps({"messages": wire})
 
-        mcp.add_tool(respond, name="respond")
+        mcp.add_tool(self._with_state(respond), name="respond")

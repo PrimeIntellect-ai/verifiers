@@ -21,6 +21,7 @@ from renderers.base import MultiModalData
 
 from verifiers.v1 import graph
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.state import State, StateT
 from verifiers.v1.task import TaskT
 from verifiers.v1.types import (
     AssistantMessage,
@@ -181,7 +182,7 @@ class Branch(StrictBaseModel):
         return sum(n.usage.completion_tokens for n in self.nodes if n.usage is not None)
 
 
-class Trace(StrictBaseModel, Generic[TaskT]):
+class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """The full record of one rollout. Subclass to add typed fields."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
@@ -205,6 +206,12 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     dict (`trace.info["build_log"] = ...`); it round-trips through the wire to `results.jsonl`.
     Use `metrics` for numbers that aggregate, this for everything else. Values must be
     JSON-serializable — a non-serializable value fails the trace dump rather than being dropped."""
+    state: StateT = Field(default_factory=State, exclude=True)
+    """Transient per-rollout runtime state (see `verifiers.v1.state.State`): shared with the tool/user
+    servers as `self.state` (synced over the interception server) and read+written by scoring. Runtime
+    scratch (counters, game progress, end-of-trajectory flags) — excluded from every dump (`model_dump`
+    + `to_wire`), unlike `info` which persists. Type it via `Taskset[Task, Config, MyState]`; defaults
+    to the base `State`."""
 
     is_completed: bool = False
     stop_condition: str | None = None
