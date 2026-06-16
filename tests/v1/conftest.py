@@ -31,9 +31,7 @@ from verifiers.v1.trace import Trace
 AGENT_RUNTIMES = [
     pytest.param("subprocess", id="in-subprocess"),
     pytest.param("docker", marks=pytest.mark.slow, id="in-docker"),
-    pytest.param(
-        "prime", marks=[pytest.mark.slow, pytest.mark.prime], id="in-prime"
-    ),
+    pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime], id="in-prime"),
 ]
 
 
@@ -47,9 +45,7 @@ def agent_runtime(request) -> str:
 USER_RUNTIMES = [
     pytest.param("colocated", id="with-user-colocated"),
     pytest.param("subprocess", id="with-user-in-subprocess"),
-    pytest.param(
-        "docker", marks=pytest.mark.slow, id="with-user-in-docker"
-    ),
+    pytest.param("docker", marks=pytest.mark.slow, id="with-user-in-docker"),
     pytest.param(
         "prime",
         marks=[pytest.mark.slow, pytest.mark.prime],
@@ -74,9 +70,7 @@ TOOL_RUNTIMES = [
     pytest.param("colocated", id="with-tool-colocated"),
     pytest.param("shared", id="with-tool-shared"),
     pytest.param("subprocess", id="with-tool-in-subprocess"),
-    pytest.param(
-        "docker", marks=pytest.mark.slow, id="with-tool-in-docker"
-    ),
+    pytest.param("docker", marks=pytest.mark.slow, id="with-tool-in-docker"),
     pytest.param(
         "prime",
         marks=[pytest.mark.slow, pytest.mark.prime],
@@ -132,7 +126,9 @@ def harness(request) -> str:
 @pytest.fixture(
     params=[
         pytest.param("default", id="default-harness"),
-        pytest.param("mini-swe-agent", marks=pytest.mark.slow, id="mini-swe-agent-harness"),
+        pytest.param(
+            "mini-swe-agent", marks=pytest.mark.slow, id="mini-swe-agent-harness"
+        ),
     ]
 )
 def agentic_harness(request) -> str:

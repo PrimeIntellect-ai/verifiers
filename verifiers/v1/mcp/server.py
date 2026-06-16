@@ -116,7 +116,9 @@ class ServerBase(Generic[ConfigT]):
             for arg in get_args(base):
                 if isinstance(arg, type) and issubclass(arg, BaseConfig):
                     return arg
-        raise TypeError(f"{cls.__name__} must parameterize its config, e.g. Toolset[MyConfig]")
+        raise TypeError(
+            f"{cls.__name__} must parameterize its config, e.g. Toolset[MyConfig]"
+        )
 
     @classmethod
     def run(cls) -> None:
@@ -133,7 +135,11 @@ class ServerBase(Generic[ConfigT]):
             config = cli(config_cls)
         task = None
         if "VF_TASK" in os.environ:
-            task = _import_ref(os.environ["VF_TASK_CLS"]).model_validate_json(
-                os.environ["VF_TASK"]
-            )
+            task_cls = os.environ.get("VF_TASK_CLS")
+            if task_cls is None:
+                raise ValueError(
+                    "VF_TASK is set but VF_TASK_CLS is not; the framework sets both together "
+                    "(VF_TASK_CLS names the Task subclass to rebuild the task with)"
+                )
+            task = _import_ref(task_cls).model_validate_json(os.environ["VF_TASK"])
         cls(config)._serve(task)

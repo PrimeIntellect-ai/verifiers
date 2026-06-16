@@ -185,7 +185,9 @@ async def serve_in_runtime(
     if task is not None:
         env["VF_TASK_CLS"] = f"{type(task).__module__}:{type(task).__qualname__}"
         env["VF_TASK"] = task.model_dump_json()
-    if runtime.published_port is not None:  # a self-publishing runtime (modal/prime) forwards to
+    if (
+        runtime.published_port is not None
+    ):  # a self-publishing runtime (modal/prime) forwards to
         env["MCP_HOST"] = "0.0.0.0"  # all interfaces, not just loopback
     if runtime.type == "subprocess":  # host: verifiers + env module already installed
         python = sys.executable
@@ -206,7 +208,12 @@ async def serve_in_runtime(
 
 
 @contextlib.asynccontextmanager
-async def serve(server: ServerBase, task, agent_runtime: Runtime | None = None, for_host: bool = False):
+async def serve(
+    server: ServerBase,
+    task,
+    agent_runtime: Runtime | None = None,
+    for_host: bool = False,
+):
     """The single internal launcher for a vf-native server — a `Toolset` OR a `User`. Brings it
     up in its configured placement and yields one reachable URL, tearing down any runtime it
     owns. Placement comes from `server.config`:
@@ -244,7 +251,9 @@ async def serve(server: ServerBase, task, agent_runtime: Runtime | None = None, 
         local = f"http://127.0.0.1:{port}"
         if for_host:  # the framework reaches it from the host
             base = await runtime.expose(port) or local
-        elif runtime is agent_runtime:  # colocated tool: the model reaches it in-sandbox
+        elif (
+            runtime is agent_runtime
+        ):  # colocated tool: the model reaches it in-sandbox
             base = local
         elif agent_runtime is not None:  # own-runtime tool: the harness bridges to it
             base = await runtime.expose(port) or await stack.enter_async_context(
@@ -301,7 +310,9 @@ async def serve_tools(
                 urls[name] = shared_urls[name]
                 logger.info("tool server '%s' (shared): %s", name, shared_urls[name])
             else:
-                urls[name] = await stack.enter_async_context(serve(toolset, task, agent_runtime))
+                urls[name] = await stack.enter_async_context(
+                    serve(toolset, task, agent_runtime)
+                )
                 logger.info("tool server '%s': %s", name, urls[name])
         yield urls
 
