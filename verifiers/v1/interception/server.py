@@ -394,13 +394,14 @@ class InterceptionServer:
         state_cls = type(session.trace.state)
         try:
             new_state = state_cls.model_validate(await request.json())
-        except ValidationError as e:
-            # The pushed state doesn't fit the trace's `State` type — almost always a mismatch
-            # between the taskset's `StateT` and a server's. Surface a clean 400 (with the reason)
-            # rather than a 500, so the server's failed PUT fails the rollout legibly.
+        except (ValidationError, ValueError) as e:
+            # Malformed JSON (`request.json()` -> JSONDecodeError, a ValueError) or a pushed state
+            # that doesn't fit the trace's `State` type (almost always a `StateT` mismatch between the
+            # taskset and a server). Surface a clean 400 (with the reason) rather than a 500, so the
+            # server's failed PUT fails the rollout legibly.
             logger.warning("state PUT rejected: id=%s %s", session.trace.id, e)
             return web.json_response(
-                {"error": f"state does not match {state_cls.__name__}: {e}"}, status=400
+                {"error": f"invalid state PUT for {state_cls.__name__}: {e}"}, status=400
             )
         session.trace.state = new_state
         return web.json_response({"ok": True})
