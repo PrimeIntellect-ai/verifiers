@@ -213,6 +213,7 @@ async def serve(
     task,
     agent_runtime: Runtime | None = None,
     for_host: bool = False,
+    agent_is_local: bool = True,
 ):
     """The single internal launcher for a vf-native server — a `Toolset` OR a `User`. Brings it
     up in its configured placement and yields one reachable URL, tearing down any runtime it
@@ -255,22 +256,29 @@ async def serve(
             runtime is agent_runtime
         ):  # colocated tool: the model reaches it in-sandbox
             base = local
-        elif agent_runtime is not None:  # own-runtime tool: the harness bridges to it
-            base = await runtime.expose(port) or await stack.enter_async_context(
-                host_endpoint(port, agent_runtime.is_local)
+        else:  # own-runtime or shared tool — reach it from wherever the harness runs
+            # The tool's own runtime may publish a URL (a remote tool runtime); otherwise, if the
+            # harness runs remotely, bridge to the host port. A per-rollout tool has the harness's
+            # runtime; a shared tool has no single agent instance, so its caller passes the harness
+            # locality (`agent_is_local`) — one host tunnel, reused by every rollout.
+            harness_local = (
+                agent_runtime.is_local if agent_runtime is not None else agent_is_local
             )
-        else:  # shared tool, eval-level (no single agent to bridge through)
-            base = await runtime.expose(port) or local
+            base = await runtime.expose(port) or await stack.enter_async_context(
+                host_endpoint(port, harness_local)
+            )
         yield f"{base.rstrip('/')}/mcp"
 
 
 @contextlib.asynccontextmanager
-async def serve_shared(toolsets: list[Toolset]):
+async def serve_shared(toolsets: list[Toolset], agent_is_local: bool = True):
     """Start the SHARED tool servers (placement `shared`) ONCE for a whole eval, each in its OWN
-    `runtime`, and yield `{name: url}` reachable by every rollout's harness (a prime tool runtime
-    publishes its port; a host one is localhost, for host-network harnesses). Torn down when the
-    eval ends. Used by `Environment` so an expensive corpus is built once, not per rollout. A shared
-    server is task-agnostic, so its `setup` gets no task (`serve(toolset, None)`)."""
+    `runtime`, and yield `{name: url}` reachable by every rollout's harness. Reachability mirrors a
+    per-rollout tool, but there's no single agent runtime to read locality off — the caller
+    (`Environment.shared_tools`) passes the harness runtime's `agent_is_local`, so a host tool gets
+    one host bridge (tunnel) when the harness runs remotely, and a remote tool runtime publishes its
+    own URL. Torn down when the eval ends. A shared server is task-agnostic, so its `setup` gets no
+    task (`serve(toolset, None)`)."""
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
         for toolset in toolsets:
@@ -281,7 +289,9 @@ async def serve_shared(toolsets: list[Toolset]):
             if cfg.url:  # already running remotely
                 urls[name] = cfg.url
             else:
-                urls[name] = await stack.enter_async_context(serve(toolset, None))
+                urls[name] = await stack.enter_async_context(
+                    serve(toolset, None, agent_is_local=agent_is_local)
+                )
             logger.info("shared tool server '%s': %s", name, urls[name])
         yield urls
 

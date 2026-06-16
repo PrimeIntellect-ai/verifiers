@@ -29,6 +29,7 @@ from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
+    runtime_is_local,
 )
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
@@ -351,10 +352,13 @@ class Environment:
         own `runtime`) and yield `{name: url}` to inject into every rollout — so an expensive
         corpus is built once, not per rollout. No-op ({}) when none are shared. A shared server
         must be task-agnostic: its `setup` gets no task (so it can't silently serve one task's
-        data to every rollout); `tools(tasks[0])` here only builds the toolset instances."""
+        data to every rollout); `tools(tasks[0])` here only builds the toolset instances. A shared
+        server on a host runtime is bridged to the host once (a tunnel) when the harness runs
+        remotely, so an in-sandbox harness can still reach it (see `serve_shared`)."""
         servers = self.taskset.tools(tasks[0]) if tasks else []
         if not any(server.config.shared for server in servers):
             yield {}
             return
-        async with serve_shared(servers) as urls:
+        agent_is_local = runtime_is_local(self.harness.config.runtime)
+        async with serve_shared(servers, agent_is_local=agent_is_local) as urls:
             yield urls
