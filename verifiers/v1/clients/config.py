@@ -9,7 +9,7 @@ these — inherit `BaseClientConfig` to get the endpoint/header handling for fre
 """
 
 import os
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import Annotated, Any, Literal
 
 from openai import AsyncOpenAI
 from pydantic import Field, model_validator
@@ -18,11 +18,10 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.eval import EvalClient
 
-if TYPE_CHECKING:
+try:
     from renderers import RendererConfig
-else:
-    # TrainClient validates this once the optional renderer package is loaded.
-    RendererConfig = Any
+except ImportError:
+    RendererConfig = dict[str, Any]
 
 PRIME_INFERENCE_HOST = "pinference.ai"
 PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"

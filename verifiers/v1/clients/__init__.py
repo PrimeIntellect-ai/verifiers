@@ -10,6 +10,15 @@ from verifiers.v1.clients.config import (
 )
 from verifiers.v1.clients.eval import EvalClient
 
+
+def __getattr__(name: str):
+    if name == "TrainClient":
+        from verifiers.v1.clients.train import TrainClient
+
+        return TrainClient
+    raise AttributeError(name)
+
+
 __all__ = [
     "Client",
     "RetryingClient",
@@ -20,4 +29,5 @@ __all__ = [
     "TrainClientConfig",
     "resolve_client",
     "EvalClient",
+    "TrainClient",
 ]

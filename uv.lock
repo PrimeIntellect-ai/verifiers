@@ -2104,18 +2104,6 @@ wheels = [
 ]
 
 [[package]]
-name = "linkify-it-py"
-version = "2.1.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "uc-micro-py" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/2e/c9/06ea13676ef354f0af6169587ae292d3e2406e212876a413bf9eece4eb23/linkify_it_py-2.1.0.tar.gz", hash = "sha256:43360231720999c10e9328dc3691160e27a718e280673d444c38d7d3aaa3b98b", size = 29158, upload-time = "2026-03-01T07:48:47.683Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b4/de/88b3be5c31b22333b3ca2f6ff1de4e863d8fe45aaea7485f591970ec1d3e/linkify_it_py-2.1.0-py3-none-any.whl", hash = "sha256:0d252c1594ecba2ecedc444053db5d3a9b7ec1b0dd929c8f1d74dce89f86c05e", size = 19878, upload-time = "2026-03-01T07:48:46.098Z" },
-]
-
-[[package]]
 name = "llguidance"
 version = "0.7.30"
 source = { registry = "https://pypi.org/simple" }
@@ -2201,14 +2189,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5b/f5/4ec618ed16cc4f8fb3b701563655a69816155e79e24a17b651541804721d/markdown_it_py-4.0.0.tar.gz", hash = "sha256:cb0a2b4aa34f932c007117b194e945bd74e0ec24133ceb5bac59009cda1cb9f3", size = 73070, upload-time = "2025-08-11T12:57:52.854Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/94/54/e7d793b573f298e1c9013b8c4dade17d481164aa517d1d7148619c2cedbf/markdown_it_py-4.0.0-py3-none-any.whl", hash = "sha256:87327c59b172c5011896038353a81343b6754500a08cd7a4973bb48c6d578147", size = 87321, upload-time = "2025-08-11T12:57:51.923Z" },
-]
-
-[package.optional-dependencies]
-linkify = [
-    { name = "linkify-it-py" },
-]
-plugins = [
-    { name = "mdit-py-plugins" },
 ]
 
 [[package]]
@@ -2372,18 +2352,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/8b/eb/c0cfc62075dc6e1ec1c64d352ae09ac051d9334311ed226f1f425312848a/mcp-1.27.0.tar.gz", hash = "sha256:d3dc35a7eec0d458c1da4976a48f982097ddaab87e278c5511d5a4a56e852b83", size = 607509, upload-time = "2026-04-02T14:48:08.88Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9c/46/f6b4ad632c67ef35209a66127e4bddc95759649dd595f71f13fba11bdf9a/mcp-1.27.0-py3-none-any.whl", hash = "sha256:5ce1fa81614958e267b21fb2aa34e0aea8e2c6ede60d52aba45fd47246b4d741", size = 215967, upload-time = "2026-04-02T14:48:07.24Z" },
-]
-
-[[package]]
-name = "mdit-py-plugins"
-version = "0.5.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "markdown-it-py" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b2/fd/a756d36c0bfba5f6e39a1cdbdbfdd448dc02692467d83816dff4592a1ebc/mdit_py_plugins-0.5.0.tar.gz", hash = "sha256:f4918cb50119f50446560513a8e311d574ff6aaed72606ddae6d35716fe809c6", size = 44655, upload-time = "2025-08-11T07:25:49.083Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/fb/86/dd6e5db36df29e76c7a7699123569a4a18c1623ce68d826ed96c62643cae/mdit_py_plugins-0.5.0-py3-none-any.whl", hash = "sha256:07a08422fc1936a5d26d146759e9155ea466e842f5ab2f7d2266dd084c8dab1f", size = 57205, upload-time = "2025-08-11T07:25:47.597Z" },
 ]
 
 [[package]]
@@ -5261,22 +5229,6 @@ wheels = [
 ]
 
 [[package]]
-name = "textual"
-version = "6.2.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "markdown-it-py", extra = ["linkify", "plugins"] },
-    { name = "platformdirs" },
-    { name = "pygments" },
-    { name = "rich" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a2/30/38b615f7d4b16f6fdd73e4dcd8913e2d880bbb655e68a076e3d91181a7ee/textual-6.2.1.tar.gz", hash = "sha256:4699d8dfae43503b9c417bd2a6fb0da1c89e323fe91c4baa012f9298acaa83e1", size = 1570645, upload-time = "2025-10-01T16:11:24.467Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c5/93/02c7adec57a594af28388d85da9972703a4af94ae1399542555cd9581952/textual-6.2.1-py3-none-any.whl", hash = "sha256:3c7190633cd4d8bfe6049ae66808b98da91ded2edb85cef54e82bf77b03d2a54", size = 710702, upload-time = "2025-10-01T16:11:22.161Z" },
-]
-
-[[package]]
 name = "tiktoken"
 version = "0.12.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5669,15 +5621,6 @@ wheels = [
 ]
 
 [[package]]
-name = "uc-micro-py"
-version = "2.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/78/67/9a363818028526e2d4579334460df777115bdec1bb77c08f9db88f6389f2/uc_micro_py-2.0.0.tar.gz", hash = "sha256:c53691e495c8db60e16ffc4861a35469b0ba0821fe409a8a7a0a71864d33a811", size = 6611, upload-time = "2026-03-01T06:31:27.526Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/61/73/d21edf5b204d1467e06500080a50f79d49ef2b997c79123a536d4a17d97c/uc_micro_py-2.0.0-py3-none-any.whl", hash = "sha256:3603a3859af53e5a39bc7677713c78ea6589ff188d70f4fee165db88e22b242c", size = 6383, upload-time = "2026-03-01T06:31:26.257Z" },
-]
-
-[[package]]
 name = "urllib3"
 version = "2.6.3"
 source = { registry = "https://pypi.org/simple" }
@@ -5747,11 +5690,9 @@ dependencies = [
     { name = "datasets" },
     { name = "gepa" },
     { name = "httpx" },
-    { name = "jinja2" },
     { name = "loguru" },
     { name = "math-verify" },
     { name = "mcp" },
-    { name = "modal" },
     { name = "msgpack" },
     { name = "nest-asyncio" },
     { name = "numpy" },
@@ -5764,13 +5705,10 @@ dependencies = [
     { name = "pydantic" },
     { name = "pymupdf" },
     { name = "pyzmq" },
-    { name = "regex" },
-    { name = "renderers" },
     { name = "requests" },
     { name = "rich" },
     { name = "setproctitle" },
     { name = "tenacity" },
-    { name = "textual" },
     { name = "tomli-w" },
     { name = "typing-extensions", marker = "python_full_version < '3.12'" },
     { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'" },
@@ -5781,6 +5719,9 @@ browser = [
     { name = "aiohttp" },
     { name = "python-dotenv" },
     { name = "stagehand" },
+]
+modal = [
+    { name = "modal" },
 ]
 renderers = [
     { name = "renderers" },
@@ -5818,6 +5759,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "python-dotenv" },
     { name = "reasoning-gym" },
+    { name = "renderers" },
     { name = "ruff" },
     { name = "stagehand" },
     { name = "textarena" },
@@ -5862,12 +5804,11 @@ requires-dist = [
     { name = "flash-attn", marker = "extra == 'rl'", specifier = ">=2.8.3" },
     { name = "gepa" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "jinja2", specifier = ">=3.1.6" },
     { name = "liger-kernel", marker = "extra == 'rl'", specifier = ">=0.5.10" },
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "math-verify", specifier = ">=0.8.0" },
     { name = "mcp", specifier = ">=1.14.1" },
-    { name = "modal", specifier = ">=1.4.0" },
+    { name = "modal", marker = "extra == 'modal'", specifier = ">=1.4.0" },
     { name = "msgpack", specifier = ">=1.1.2" },
     { name = "nest-asyncio", specifier = ">=1.6.0" },
     { name = "nltk", marker = "extra == 'ta'" },
@@ -5884,8 +5825,6 @@ requires-dist = [
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
-    { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", specifier = ">=0.1.8.dev40" },
     { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev40" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
@@ -5894,8 +5833,6 @@ requires-dist = [
     { name = "stagehand", marker = "extra == 'browser'", specifier = ">=3.0.0" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'" },
-    { name = "textual" },
-    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "tomli-w", specifier = ">=1.0.0" },
     { name = "torch", marker = "extra == 'rl'", specifier = ">=2.8.0,<2.9.0" },
     { name = "transformers", marker = "extra == 'rl'", specifier = ">=4.56.2" },
@@ -5904,7 +5841,7 @@ requires-dist = [
     { name = "vllm", marker = "extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
     { name = "wandb", marker = "extra == 'rl'" },
 ]
-provides-extras = ["browser", "renderers", "rg", "rl", "ta"]
+provides-extras = ["browser", "modal", "renderers", "rg", "rl", "ta"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -5919,6 +5856,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym" },
+    { name = "renderers", specifier = ">=0.1.8.dev40" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "textarena" },
