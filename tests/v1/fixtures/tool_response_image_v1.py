@@ -56,8 +56,7 @@ class ToolResponseImageTaskset(vf.Taskset[ToolResponseImageTask, vf.TasksetConfi
         return 0.0
 
 
-def load_taskset(config: vf.TasksetConfig) -> ToolResponseImageTaskset:
-    return ToolResponseImageTaskset(config)
+__all__ = ["ToolResponseImageTaskset"]
 
 
 if __name__ == "__main__":
