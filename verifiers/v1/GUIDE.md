@@ -170,7 +170,9 @@ boilerplate) authored from a config — the same shape as a taskset:
   `tools(task) -> list[vf.Toolset]`.
 - A **user simulator** is a `vf.User[ConfigT]` with one `async def respond(message) -> (Messages,
   bool)` hook (the framework calls it after each assistant turn for the next user message + a done
-  flag). A taskset supplies one via `user(task) -> vf.User | None`.
+  flag). A taskset supplies one via `user(task) -> vf.User | None`. If a task carries no prompt
+  (`instruction=None`), the simulator also **opens the conversation**: the framework calls
+  `respond("")` once before the first model turn and seeds its reply as the initial user message.
 
 A taskset may expose **both** at once (tools the model calls *and* a user sim driving the turns) —
 they're served together each rollout; a harness just needs to support both.

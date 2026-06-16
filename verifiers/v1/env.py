@@ -234,6 +234,15 @@ class Environment:
                 f"{self.taskset.config.id!r} exposes tool servers (MCP). Run it with a harness "
                 f"that supports task tools (e.g. --harness.id default), or use a taskset without tools."
             )
+        if (
+            not self.harness.SUPPORTS_USER_SIM
+            and type(self.taskset).user is not Taskset.user
+        ):
+            raise ValueError(
+                f"Harness {self.harness.config.id!r} does not drive a user simulator, but taskset "
+                f"{self.taskset.config.id!r} defines one (Taskset.user). Run it with a harness that "
+                f"supports user simulation (e.g. --harness.id default), or use a taskset without one."
+            )
         if self.taskset.NEEDS_CONTAINER and isinstance(
             self.harness.config.runtime, SubprocessConfig
         ):
