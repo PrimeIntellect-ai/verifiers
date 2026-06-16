@@ -13,8 +13,6 @@ from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar, get_args
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.runtimes.base import SERVICE_PORT
-
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
@@ -75,13 +73,28 @@ class ServerBase(Generic[ConfigT]):
         raise NotImplementedError
 
     def _serve(self, task) -> None:
-        """Run this server's MCP server: `setup` (always) + `setup_task(task)` (only when there's a
-        task — skipped for a shared server), build a FastMCP from the registered tools, and serve it
-        over streamable HTTP on `MCP_PORT`/`MCP_HOST`. Called by `run()`."""
+        """Run this server's MCP server: bind its port, `setup` (always) + `setup_task(task)` (only
+        when there's a task — skipped for a shared server), build a FastMCP from the registered tools,
+        and serve it over streamable HTTP on `MCP_HOST`. Called by `run()`."""
         import asyncio
+        import socket
+        from pathlib import Path
 
         import uvicorn
         from mcp.server.fastmcp import FastMCP
+
+        host = os.environ.get("MCP_HOST", "127.0.0.1")
+        # Bind our own socket up front: `MCP_PORT` when the framework fixed one (a self-publishing
+        # runtime's forwarded port), else 0 = an OS-assigned free port — guaranteed free in whatever
+        # environment we run in (host or sandbox), so the launcher never probes for a free port.
+        # Report the bound port back via `MCP_PORT_FILE` before setup, so the launcher learns it
+        # without waiting on a slow `setup` (its readiness probe absorbs that).
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, int(os.environ.get("MCP_PORT", 0))))
+        port_file = os.environ.get("MCP_PORT_FILE")
+        if port_file:
+            Path(port_file).write_text(str(sock.getsockname()[1]))
 
         async def _setup() -> None:
             await self.setup()
@@ -92,7 +105,6 @@ class ServerBase(Generic[ConfigT]):
         # Bound to 0.0.0.0 means a sandbox tunnel reaches us at a non-loopback host (e.g. modal's
         # *.modal.host); FastMCP's default DNS-rebinding guard allows only localhost and would 421
         # the tunnel host, so relax it (the tunnel is the trust boundary).
-        host = os.environ.get("MCP_HOST", "127.0.0.1")
         security = None
         if host == "0.0.0.0":
             from mcp.server.transport_security import TransportSecuritySettings
@@ -100,14 +112,10 @@ class ServerBase(Generic[ConfigT]):
             security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
         mcp = FastMCP(self.server_name, transport_security=security)
         self._register(mcp)
-        uvicorn.Server(
-            uvicorn.Config(
-                mcp.streamable_http_app(),
-                host=host,
-                port=int(os.environ.get("MCP_PORT", SERVICE_PORT)),
-                log_level="critical",
-            )
-        ).run()
+        server = uvicorn.Server(
+            uvicorn.Config(mcp.streamable_http_app(), log_level="critical")
+        )
+        asyncio.run(server.serve(sockets=[sock]))
 
     @classmethod
     def _config_cls(cls) -> type[BaseConfig]:

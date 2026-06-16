@@ -14,11 +14,10 @@ import contextlib
 import io
 import json
 import logging
-import random
 import shlex
-import socket
 import sys
 import tarfile
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -63,28 +62,6 @@ for _ in range(180):
         time.sleep(1)
 sys.exit(1)
 """
-
-
-def _free_port() -> int:
-    """A free host port in [3000, 9000) — also free in a fresh container/sandbox, and
-    within prime's port-exposure cap (<= 9000).
-
-    The probe socket is closed before the port is handed to the server, so there's a small TOCTOU
-    window: two concurrent host rollouts can pick the same port, and the second server then fails to
-    bind. That surfaces as the server's probe timing out (a retryable rollout error), so the rollout
-    retry covers it — rare enough under host concurrency not to warrant holding the socket open across
-    the launch. Remote runtimes use the fixed `published_port` and don't race."""
-    for _ in range(50):
-        port = random.randint(3000, 8999)
-        probe = socket.socket()
-        try:
-            probe.bind(("127.0.0.1", port))
-            return port
-        except OSError:
-            continue
-        finally:
-            probe.close()
-    raise ProgramError("could not find a free port in [3000, 9000)")
 
 
 def _source_dir(cls: type) -> str | None:
@@ -177,17 +154,30 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     return f"{venv}/bin/python"
 
 
+async def _read_back_port(runtime: Runtime, path: str) -> int:
+    """The port the server bound and wrote to `path` in its runtime. The server writes it the moment
+    it binds (before setup/serving), so this resolves quickly; poll because it's a separate process."""
+    for _ in range(180):
+        with contextlib.suppress(Exception):
+            data = (await runtime.read(path)).decode().strip()
+            if data.isdigit():
+                return int(data)
+        await asyncio.sleep(1)
+    raise ProgramError(f"server did not report its port at {path} in its runtime")
+
+
 async def serve_in_runtime(
-    server: ServerBase, task, runtime: Runtime, port: int
-) -> None:
-    """Start `server` inside `runtime` on `port` (background, by running its env module —
-    `python -m <module>`, whose `__main__` calls `ServerBase.run()`) and wait until it serves. The
-    `config` + this rollout's `task` cross to the server as env JSON (a `shared` server passes
-    `None`). On a host (`subprocess`) runtime it runs with the eval's own interpreter — `verifiers`
-    and the env module are already installed, nothing is fetched. In a sandbox the working-tree
-    `verifiers` source + the env package are uploaded and installed first (`_install_in_sandbox`),
-    then run from that venv."""
-    env = {"VF_CONFIG": server.config.model_dump_json(), "MCP_PORT": str(port)}
+    server: ServerBase, task, runtime: Runtime, *, exposed: bool
+) -> int:
+    """Start `server` inside `runtime` (background, by running its env module — `python -m <module>`,
+    whose `__main__` calls `ServerBase.run()`), wait until it serves, and return the port it bound.
+    An `exposed` server (reached from outside its runtime) binds the runtime's fixed `published_port`
+    (modal/prime forward only that); otherwise the server binds an OS-assigned free port in its own
+    environment and reports it back (`MCP_PORT_FILE`) — so the launcher never probes for a free port.
+    The `config` + this rollout's `task` cross as env JSON (a `shared` server passes `None`). On a
+    host (`subprocess`) runtime it runs with the eval's own interpreter; in a sandbox the working-tree
+    `verifiers` source + the env package are uploaded and installed first (`_install_in_sandbox`)."""
+    env = {"VF_CONFIG": server.config.model_dump_json()}
     if task is not None:
         env["VF_TASK_CLS"] = f"{type(task).__module__}:{type(task).__qualname__}"
         env["VF_TASK"] = task.model_dump_json()
@@ -195,12 +185,20 @@ async def serve_in_runtime(
         runtime.published_port is not None
     ):  # a self-publishing runtime (modal/prime) forwards to
         env["MCP_HOST"] = "0.0.0.0"  # all interfaces, not just loopback
+    fixed = runtime.published_port if exposed else None
+    port_file = None
+    if fixed is not None:
+        env["MCP_PORT"] = str(fixed)
+    else:  # bind an OS-assigned free port in the server's own environment, reported back here
+        port_file = f"/tmp/vf-port-{uuid.uuid4().hex}"
+        env["MCP_PORT_FILE"] = port_file
     if runtime.type == "subprocess":  # host: verifiers + env module already installed
         python = sys.executable
     else:  # sandbox: upload + install the verifiers source + the env package
         python = await _install_in_sandbox(server, runtime)
     log = f"vf_tool_{server.server_name}.log"
     await runtime.run_background([python, "-m", type(server).__module__], env, log)
+    port = fixed if fixed is not None else await _read_back_port(runtime, port_file)
     probe = await runtime.run(
         ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
     )
@@ -211,6 +209,7 @@ async def serve_in_runtime(
         raise ProgramError(
             f"tool server {server.server_name!r} not serving in runtime: {tail}"
         )
+    return port
 
 
 @contextlib.asynccontextmanager
@@ -253,17 +252,13 @@ async def serve(
             runtime = make_runtime(cfg.runtime)
             await runtime.start()
             stack.push_async_callback(runtime.stop)
-        # A colocated tool is reached in-sandbox at localhost, so it only needs a free in-sandbox
-        # port; binding the runtime's published_port (a fixed SERVICE_PORT) would clash if two
-        # colocated servers shared one remote sandbox. Only an EXPOSED port — a `for_host` server, or
-        # a tool in its own remote runtime reached from outside — uses the published port.
-        in_sandbox_only = runtime is agent_runtime and not for_host
-        port = (
-            _free_port()
-            if in_sandbox_only
-            else (runtime.published_port or _free_port())
-        )
-        await serve_in_runtime(server, task, runtime, port)
+        # `exposed` = the port is reached from OUTSIDE the server's runtime — a `for_host` server (the
+        # host reaches it) or a tool in its own runtime (the harness, elsewhere, reaches it) — so it
+        # binds the runtime's fixed published_port. A colocated tool is reached in-sandbox at localhost
+        # and binds an OS-assigned free port instead (two colocated servers can't then clash on the
+        # published SERVICE_PORT). `serve_in_runtime` returns the actual bound port.
+        exposed = for_host or runtime is not agent_runtime
+        port = await serve_in_runtime(server, task, runtime, exposed=exposed)
         # Who consumes the server decides reachability (see `reachable_url`): a user sim is reached
         # by the host (`for_host`); a tool by the harness — its `agent_runtime` per rollout, or, for
         # a shared eval-level tool with no single agent, just the harness locality (`agent_is_local`).
