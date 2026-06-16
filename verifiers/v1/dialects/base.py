@@ -89,6 +89,10 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     def parse_response(self, response: RespT) -> Response:
         """A native (non-streamed) response -> the vf `Response` we consume."""
 
+    def validate_response(self, raw: dict) -> RespT:
+        """Validate a native response, normalizing provider-compatible extensions if needed."""
+        return self.response_type.model_validate(raw)
+
     @abstractmethod
     def parse_stream(self, raw: bytes) -> Response:
         """A complete native SSE byte stream -> the vf `Response` (assembling the final message
