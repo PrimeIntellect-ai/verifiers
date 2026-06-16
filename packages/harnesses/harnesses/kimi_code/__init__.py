@@ -7,6 +7,7 @@ Task-owned MCP servers live in an isolated Kimi home.
 
 import json
 import logging
+import shlex
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.errors import ProgramError
@@ -73,9 +74,12 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         logger.info(
             "kimi-code: ensuring Kimi Code %s is installed", self.config.version
         )
-        install = await runtime.run(
-            ["sh", "-c", INSTALL.replace("{version}", self.config.version)], {}
+        script = INSTALL.replace("{version}", self.config.version)
+        guarded = (
+            "mkdir -p /tmp/vf-kimi-code && "
+            f"flock /tmp/vf-kimi-code/install.lock sh -c {shlex.quote(script)}"
         )
+        install = await runtime.run(["sh", "-c", guarded], {})
         if install.exit_code != 0:
             raise ProgramError(
                 f"Kimi Code install failed: {install.stderr.strip()[-500:]}"
@@ -83,6 +87,7 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
 
         mcp = {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
         await runtime.write(f"{KIMI_HOME}/mcp.json", json.dumps(mcp).encode())
+        # `--prompt` is Kimi Code's non-interactive print mode.
         return await runtime.run([BINARY, "--prompt", instruction], env)
 
 
