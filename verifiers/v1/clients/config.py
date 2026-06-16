@@ -9,16 +9,24 @@ these — inherit `BaseClientConfig` to get the endpoint/header handling for fre
 """
 
 import os
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from openai import AsyncOpenAI
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
-from renderers import RendererConfig
 
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.eval import EvalClient
-from verifiers.v1.clients.train import TrainClient
+
+if TYPE_CHECKING:
+    from renderers import RendererConfig
+else:
+    try:
+        from renderers import RendererConfig
+    except ModuleNotFoundError as exc:
+        if exc.name != "renderers" and not (exc.name or "").startswith("renderers."):
+            raise
+        RendererConfig = Any
 
 PRIME_INFERENCE_HOST = "pinference.ai"
 PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"
@@ -75,6 +83,17 @@ ClientConfig = Annotated[
 def resolve_client(config: BaseClientConfig) -> Client:
     api_key = os.environ.get(config.api_key_var, "EMPTY")
     if isinstance(config, TrainClientConfig):
+        try:
+            from verifiers.v1.clients.train import TrainClient
+        except ModuleNotFoundError as exc:
+            if exc.name != "renderers" and not (exc.name or "").startswith(
+                "renderers."
+            ):
+                raise
+            raise ImportError(
+                "TrainClient requires the renderers extra; install "
+                "`verifiers[renderers]`."
+            ) from exc
         # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
         openai = AsyncOpenAI(
             base_url=config.base_url,

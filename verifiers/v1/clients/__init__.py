@@ -9,7 +9,21 @@ from verifiers.v1.clients.config import (
     resolve_client,
 )
 from verifiers.v1.clients.eval import EvalClient
-from verifiers.v1.clients.train import TrainClient
+
+
+def __getattr__(name: str):
+    if name != "TrainClient":
+        raise AttributeError(f"module 'verifiers.v1.clients' has no attribute '{name}'")
+    try:
+        from verifiers.v1.clients.train import TrainClient
+    except ModuleNotFoundError as exc:
+        if exc.name != "renderers" and not (exc.name or "").startswith("renderers."):
+            raise
+        raise ImportError(
+            "TrainClient requires the renderers extra; install `verifiers[renderers]`."
+        ) from exc
+    return TrainClient
+
 
 __all__ = [
     "Client",

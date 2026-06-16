@@ -24,12 +24,13 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from pydantic import ConfigDict, Field, field_serializer, field_validator
-from renderers.base import MultiModalData, PlaceholderRange
 
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     Message,
+    MultiModalData,
+    PlaceholderRange,
     Response,
     StrictBaseModel,
     ToolMessage,

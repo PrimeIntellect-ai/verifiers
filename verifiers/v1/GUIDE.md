@@ -274,6 +274,9 @@ uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sand
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox
 ```
 
+The Modal runtime is optional. Install it with `uv add "verifiers[modal]"` before
+selecting `--harness.runtime.type modal`.
+
 ## Evals
 
 ```bash
@@ -309,7 +312,7 @@ Common aliases: `-m`/`--model`, `-n`/`--num-tasks`, `-r`/`--num-rollouts`,
   of a previous run.
 - **Clients** — eval (default) is a plain chat-completions relay. `--client.type train`
   tokenizes client-side so each node carries the exact `token_ids` / `mask` / `logprobs`
-  (needs a vLLM engine via `--client.base-url`).
+  (needs a vLLM engine via `--client.base-url` and `uv add "verifiers[renderers]"`).
 - **Validate** — `uv run validate gsm8k-v1` runs each taskset's `validate` hook (model-free
   gold check), no model needed.
 

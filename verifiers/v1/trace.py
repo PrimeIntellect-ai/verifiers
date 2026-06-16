@@ -17,7 +17,6 @@ from typing import Any, Generic, TypeVar
 
 import numpy as np
 from pydantic import Field, PrivateAttr, computed_field
-from renderers.base import MultiModalData
 
 from verifiers.v1 import graph
 from verifiers.v1.graph import MessageNode
@@ -25,6 +24,7 @@ from verifiers.v1.task import TaskT
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
+    MultiModalData,
     StrictBaseModel,
     ToolMessage,
 )

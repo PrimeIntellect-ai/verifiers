@@ -146,6 +146,9 @@ uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sand
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox (requires auth)
 ```
 
+The Modal runtime is optional. Install it with `uv add "verifiers[modal]"` before
+selecting `--harness.runtime.type modal`.
+
 The framework manages each runtime's full lifecycle — provisioning through
 guaranteed cleanup of its resources, even on exit/interrupt.
 
@@ -221,6 +224,7 @@ uv run eval gsm8k-v1 -n 1 --client.type train \      # train: client-side tokeni
 ```
 
 `eval` is the default; `train` is only needed for the prime-rl training integration (it tokenizes client-side so each branch comes back as a ready training sample).
+Install it with `uv add "verifiers[renderers]"` before selecting `--client.type train`.
 
 ### Budgets
 
