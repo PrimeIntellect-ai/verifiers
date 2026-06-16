@@ -179,10 +179,19 @@ def parse_task(task_dir: Path, idx: int, require_image: bool) -> HarborTask:
         raise ValueError(
             f"{task_dir.name}: verifier network_mode='allowlist' is not supported"
         )
+    artifact_config = config.get("artifacts", [])
+    if any(
+        isinstance(artifact, dict) and artifact.get("service", "main") != "main"
+        for artifact in artifact_config
+    ):
+        raise ValueError(f"{task_dir.name}: sidecar artifacts are not supported")
     artifacts = [
         artifact if isinstance(artifact, str) else artifact["source"]
-        for artifact in config.get("artifacts", [])
+        for artifact in artifact_config
     ]
+    verifier_env = verifier_config.get("env", {})
+    if separate:
+        verifier_env = verifier_environment.get("env", {}) | verifier_env
 
     authors = [Author(**a) for a in task.get("authors", [])]
     if not authors and meta.get("author_name"):
@@ -209,10 +218,7 @@ def parse_task(task_dir: Path, idx: int, require_image: bool) -> HarborTask:
             if separate
             else Resources(),
             network_access=network_mode == "public",
-            env={
-                str(key): str(value)
-                for key, value in verifier_config.get("env", {}).items()
-            },
+            env={str(key): str(value) for key, value in verifier_env.items()},
             artifacts=artifacts,
             upload_tests=separate and verifier_config.get("environment") is None,
         ),
