@@ -28,7 +28,7 @@ import re
 import subprocess
 import tarfile
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from pydantic import Field
 
@@ -259,6 +259,9 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                 raise ProgramError(
                     "separate Harbor verification needs a docker, prime, or modal runtime"
                 )
+            artifact_paths = list(
+                dict.fromkeys(["/logs/artifacts", *verifier.artifacts])
+            )
             result = await runtime.run(["mkdir", "-p", "/logs/artifacts"], {})
             if result.exit_code:
                 raise ProgramError(
@@ -270,7 +273,7 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                     "tar",
                     "-czf",
                     archive,
-                    *dict.fromkeys(["/logs/artifacts", *verifier.artifacts]),
+                    *artifact_paths,
                 ],
                 {},
             )
@@ -279,7 +282,43 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                     f"Harbor artifact collection failed: "
                     f"{result.stderr or result.stdout}"
                 )
-            archive_data = await runtime.read(archive)
+            # The agent controls these bytes; repack only declared regular files and dirs.
+            unsafe_archive = await runtime.read(archive)
+            allowed = [PurePosixPath(path.lstrip("/")) for path in artifact_paths]
+            buffer = io.BytesIO()
+            try:
+                with (
+                    tarfile.open(
+                        fileobj=io.BytesIO(unsafe_archive), mode="r:gz"
+                    ) as source,
+                    tarfile.open(fileobj=buffer, mode="w:gz") as safe_archive,
+                ):
+                    for member in source:
+                        path = PurePosixPath(member.name)
+                        if (
+                            path.is_absolute()
+                            or ".." in path.parts
+                            or not any(path.is_relative_to(root) for root in allowed)
+                            or not (member.isfile() or member.isdir())
+                        ):
+                            raise ProgramError(
+                                f"Harbor artifact collection produced unsafe entry "
+                                f"{member.name!r}"
+                            )
+                        clean = tarfile.TarInfo(path.as_posix())
+                        clean.type = member.type
+                        clean.mode = member.mode & 0o777
+                        clean.mtime = member.mtime
+                        clean.size = member.size
+                        safe_archive.addfile(
+                            clean,
+                            source.extractfile(member) if member.isfile() else None,
+                        )
+            except (OSError, tarfile.TarError) as e:
+                raise ProgramError(
+                    "Harbor artifact collection produced invalid tar"
+                ) from e
+            archive_data = buffer.getvalue()
 
             config_type = type(runtime_config)
             updates = {}
