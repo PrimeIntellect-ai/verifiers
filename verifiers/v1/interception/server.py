@@ -401,7 +401,8 @@ class InterceptionServer:
             # server's failed PUT fails the rollout legibly.
             logger.warning("state PUT rejected: id=%s %s", session.trace.id, e)
             return web.json_response(
-                {"error": f"invalid state PUT for {state_cls.__name__}: {e}"}, status=400
+                {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},
+                status=400,
             )
         session.trace.state = new_state
         return web.json_response({"ok": True})
