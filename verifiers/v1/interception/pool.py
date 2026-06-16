@@ -63,7 +63,9 @@ class InterceptionPool:
         await self._stack.enter_async_context(server)
         # Turn the server's host port into the URL the harness reaches: a tunnel for a remote
         # runtime, localhost otherwise. Owned by the pool's stack, torn down with the server.
-        url = await self._stack.enter_async_context(host_endpoint(server.port, self.is_local))
+        url = await self._stack.enter_async_context(
+            host_endpoint(server.port, self.is_local)
+        )
         entry = PooledServer(server, f"{url}/v1")
         self._servers.append(entry)
         logger.info(

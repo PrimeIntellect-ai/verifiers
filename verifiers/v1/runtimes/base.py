@@ -312,7 +312,9 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
 
     tunnel = Tunnel(local_port=port, labels=labels or None)
     try:
-        async with TUNNEL_LIMITER:  # shared prime_tunnel rate (512/min, runtime-independent)
+        async with (
+            TUNNEL_LIMITER
+        ):  # shared prime_tunnel rate (512/min, runtime-independent)
             url = str(await tunnel.start()).rstrip("/")
     except Exception as e:
         raise ProgramError(f"host tunnel failed (port {port}): {e}") from e
