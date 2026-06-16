@@ -50,7 +50,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Resources, Task, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig, ToolsConfig
-from verifiers.v1.tools import Tools, run_mcp_server
+from verifiers.v1.tools import Tools, current_rollout_id, run_mcp_server
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     Branch,
@@ -166,6 +166,7 @@ __all__ = [
     # mcp
     "Tools",
     "run_mcp_server",
+    "current_rollout_id",
     # user simulator
     "User",
 ]
