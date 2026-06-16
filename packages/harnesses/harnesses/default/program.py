@@ -46,7 +46,7 @@ client = AsyncOpenAI()
 def run_bash(command: str) -> str:
     try:
         result = subprocess.run(
-            ["bash", "-c", command], capture_output=True, text=True, timeout=60
+            ["bash", "-c", command], capture_output=True, text=True, timeout=3600
         )
         return result.stdout + result.stderr
     except Exception as e:
@@ -96,11 +96,27 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
     return tool_schemas, dispatch
 
 
-async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str:
+def mcp_content_to_chat_content(blocks) -> str | list[dict]:
+    parts = []
+    for block in blocks:
+        if block.type == "text":
+            parts.append({"type": "text", "text": block.text})
+        elif block.type == "image":
+            url = f"data:{block.mimeType};base64,{block.data}"
+            parts.append({"type": "image_url", "image_url": {"url": url}})
+        else:
+            parts.append({"type": "text", "text": str(block)})
+    if not parts:
+        return str(blocks)
+    if all(part["type"] == "text" for part in parts):
+        return "\n".join(part["text"] for part in parts)
+    return parts
+
+
+async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str | list[dict]:
     session, raw = dispatch[name]
     result = await session.call_tool(raw, arguments)
-    texts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
-    return "\n".join(texts) if texts else str(result.content)
+    return mcp_content_to_chat_content(result.content)
 
 
 async def main() -> None:

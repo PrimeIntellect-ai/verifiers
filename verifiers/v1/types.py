@@ -115,7 +115,7 @@ class ToolMessage(StrictBaseModel):
 
     role: Literal["tool"] = "tool"
     tool_call_id: str
-    content: str
+    content: MessageContent
 
 
 Message = Annotated[
@@ -205,6 +205,7 @@ class SamplingConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
     temperature: float | None = None
     top_p: float | None = None
+    reasoning_effort: str | None = None
     max_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_tokens", "max_completion_tokens")
     )

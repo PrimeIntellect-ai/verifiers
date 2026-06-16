@@ -65,6 +65,7 @@ def skip_if_unexposable():
         "default",
         pytest.param("rlm", marks=pytest.mark.slow),
         pytest.param("codex", marks=pytest.mark.slow),
+        pytest.param("kimi-code", marks=pytest.mark.slow),
     ]
 )
 def harness(request) -> str:

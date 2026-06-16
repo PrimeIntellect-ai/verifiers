@@ -114,7 +114,7 @@ def _to_v1_messages(msgs: Any) -> list:
             out.append(
                 ToolMessage(
                     tool_call_id=m.get("tool_call_id") or "",
-                    content=_text(m.get("content")),
+                    content=content_to_parts(m.get("content")),
                 )
             )
     return out

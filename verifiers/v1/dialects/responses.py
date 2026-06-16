@@ -178,12 +178,15 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
                 run.append(item)
             elif item.get("type") == "function_call_output":
                 output = item.get("output")
+                content = (
+                    parse_content(output)
+                    if isinstance(output, (str, list))
+                    else json.dumps(output)
+                )
                 prompt.append(
                     ToolMessage(
                         tool_call_id=item.get("call_id", ""),
-                        content=output
-                        if isinstance(output, str)
-                        else json.dumps(output),
+                        content=content,
                     )
                 )
             elif item.get("role") in ("system", "developer"):
@@ -228,6 +231,11 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             overrides["top_p"] = s["top_p"]
         if "max_tokens" in s:
             overrides["max_output_tokens"] = s["max_tokens"]
+        if "reasoning_effort" in s:
+            overrides["reasoning"] = {
+                **dict(body.get("reasoning") or {}),
+                "effort": s["reasoning_effort"],
+            }
         steered = {
             k: v
             for k, v in body.items()

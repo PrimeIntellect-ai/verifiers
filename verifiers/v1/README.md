@@ -61,6 +61,34 @@ Common knobs have short aliases:
 | `-o`  | `--output-dir`     | where to write results        | a fresh per-run dir          |
 |       | `--no-rich`        | disable the live dashboard    | dashboard on                 |
 
+### Sampling
+
+Sampling is provider-neutral config. Set reasoning effort with the optional string
+`sampling.reasoning_effort`, alongside the standard sampling knobs:
+
+```bash
+uv run eval gsm8k-v1 \
+  --sampling.temperature 0 \
+  --sampling.max-tokens 2048 \
+  --sampling.reasoning-effort medium
+```
+
+```toml
+[sampling]
+temperature = 0
+max_tokens = 2048
+reasoning_effort = "medium"
+```
+
+The request dialect maps `reasoning_effort` to the provider's wire shape:
+
+- OpenAI chat-completions: `reasoning_effort`
+- OpenAI Responses: `reasoning.effort`
+- Anthropic Messages: `output_config.effort`
+
+The value is a string rather than a fixed enum because providers support different effort
+levels.
+
 ## Tasksets & harnesses
 
 Tasksets (data + scoring) and harnesses (the rollout driver) are Python packages 
@@ -69,10 +97,11 @@ and live in two places:
 - **`packages/`** — shipped, installed by default. Commonly-used **harnesses** (`default`,
   `rlm`, `codex`, ...) and **taskset integrations** that wrap a whole benchmark family (`harbor-v1` — 
   the agentic-benchmark registry; `textarena-v1` — TextArena games).
-- **`examples/`** — small reference implementations to copy when **authoring your own**,
-  split by kind into `examples/tasksets/` and `examples/harnesses/`. Each shows one pattern.
+- **`environments/`** — small reference implementations to copy when **authoring your own**
+  (the `*_v1` tasksets and the `compact` harness), co-located with the standalone v0
+  environments. Each shows one pattern.
 
-Taskset examples (`examples/tasksets/`):
+Taskset examples (the `*_v1` packages under `environments/`):
 
 | example | pattern it shows |
 | --- | --- |
@@ -87,7 +116,7 @@ Taskset examples (`examples/tasksets/`):
 | `wordle-v1` | configuring the vendored `textarena-v1` integration |
 | `terminal-bench-2-v1` | configuring the vendored `harbor-v1` integration |
 
-Harness examples (`examples/harnesses/`):
+Harness examples (under `environments/`):
 
 | example | pattern it shows |
 | --- | --- |

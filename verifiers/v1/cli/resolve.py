@@ -14,8 +14,6 @@ fully-specified config runs with just `@ file.toml`. We only avoid pre-narrowing
 config file may set, and leave that to the validator.
 """
 
-from pathlib import Path
-
 import verifiers.v1 as vf
 
 
@@ -66,17 +64,3 @@ def narrow_config(base: type, argv: list[str]) -> type:
             annotations[field] = ftype
             fields[field] = ftype(id=ident)
     return type(base.__name__, (base,), {"__annotations__": annotations, **fields})
-
-
-def local_examples(rel: str) -> list[str]:
-    """Best-effort: plugin ids found under a local examples dir, for the help hint only.
-    A plugin is resolved by id (or path) at run time — we just import it and use its load
-    hook — so this is not an authoritative list, and it's empty outside this repo."""
-    root = Path(rel)
-    if not root.is_dir():
-        return []
-    return sorted(
-        path.name.replace("_", "-")
-        for path in root.iterdir()
-        if path.is_dir() and not path.name.startswith((".", "__"))
-    )

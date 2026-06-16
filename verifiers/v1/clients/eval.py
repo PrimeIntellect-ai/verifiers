@@ -11,12 +11,16 @@ new wire format (incl. non-OpenAI providers like Anthropic) is just a new `Diale
 change. Endpoint config (base url, api key, billing headers) comes from the client config.
 """
 
+import re
+
 import httpx
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.types import Response, SamplingConfig
+
+_SSE_EVENT_END = re.compile(rb"(?:\r\n|\r|\n){2}")
 
 
 class EvalClient(Client):
@@ -56,7 +60,7 @@ class EvalClient(Client):
         except httpx.HTTPError as e:  # connect / read timeout / transport failure
             raise model_error(str(e)) from e
         raw = resp.json()
-        response = dialect.parse_response(dialect.response_type.model_validate(raw))
+        response = dialect.parse_response(dialect.validate_response(raw))
         response.raw = raw  # the program gets the provider's bytes back 1:1
         return response
 
@@ -88,9 +92,8 @@ class EvalClient(Client):
         sampling_args: SamplingConfig,
         session_id: str | None = None,
     ) -> RelayReply:
-        # Stream the provider's response bytes through (SSE for a streaming request). An error
-        # status is read fully and mapped before any byte is handed back, so the retry +
-        # truncation machinery treat a relayed call exactly like a non-streamed one.
+        # Relay complete SSE events so the interception server can safely insert keepalives
+        # between them. Error responses are mapped before any event is handed back.
         url, headers, upstream = self._upstream(
             dialect, body, model, sampling_args, session_id
         )
@@ -107,15 +110,19 @@ class EvalClient(Client):
             raise model_error(f"upstream {resp.status_code}: {text}")
 
         async def chunks():
-            try:
-                async for chunk in resp.aiter_bytes():
-                    yield chunk
-            finally:
-                await resp.aclose()
+            buffer = bytearray()
+            async for chunk in resp.aiter_bytes():
+                buffer += chunk
+                while match := _SSE_EVENT_END.search(buffer):
+                    yield bytes(buffer[: match.end()])
+                    del buffer[: match.end()]
+            if buffer:
+                yield bytes(buffer)
 
         return RelayReply(
             content_type=resp.headers.get("content-type", "text/event-stream"),
             chunks=chunks(),
+            close=resp.aclose,
         )
 
     async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
