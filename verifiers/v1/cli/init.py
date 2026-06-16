@@ -73,7 +73,7 @@ def _pyproject(dash: str, pkg: str) -> str:
 name = "{dash}"
 version = "0.1.0"
 description = "{dash} — <one-line description>."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["verifiers"]
 
 [build-system]
