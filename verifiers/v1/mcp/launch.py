@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 from verifiers.v1.errors import ProgramError, RolloutError
 from verifiers.v1.mcp.server import ServerBase
-from verifiers.v1.runtimes import Runtime, host_endpoint, make_runtime
+from verifiers.v1.runtimes import HOST, Runtime, make_runtime, reachable_url
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.types import Messages
 
@@ -264,24 +264,15 @@ async def serve(
             else (runtime.published_port or _free_port())
         )
         await serve_in_runtime(server, task, runtime, port)
-        local = f"http://127.0.0.1:{port}"
-        if for_host:  # the framework reaches it from the host
-            base = await runtime.expose(port) or local
-        elif (
-            runtime is agent_runtime
-        ):  # colocated tool: the model reaches it in-sandbox
-            base = local
-        else:  # own-runtime or shared tool — reach it from wherever the harness runs
-            # The tool's own runtime may publish a URL (a remote tool runtime); otherwise, if the
-            # harness runs remotely, bridge to the host port. A per-rollout tool has the harness's
-            # runtime; a shared tool has no single agent instance, so its caller passes the harness
-            # locality (`agent_is_local`) — one host tunnel, reused by every rollout.
-            harness_local = (
-                agent_runtime.is_local if agent_runtime is not None else agent_is_local
+        # Who consumes the server decides reachability (see `reachable_url`): a user sim is reached
+        # by the host (`for_host`); a tool by the harness — its `agent_runtime` per rollout, or, for
+        # a shared eval-level tool with no single agent, just the harness locality (`agent_is_local`).
+        consumer = HOST if for_host else agent_runtime
+        base = await stack.enter_async_context(
+            reachable_url(
+                runtime, port, consumer=consumer, consumer_is_local=agent_is_local
             )
-            base = await runtime.expose(port) or await stack.enter_async_context(
-                host_endpoint(port, harness_local)
-            )
+        )
         yield f"{base.rstrip('/')}/mcp"
 
 

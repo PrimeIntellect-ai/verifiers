@@ -323,3 +323,45 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
     finally:
         with contextlib.suppress(Exception):
             tunnel.sync_stop()
+
+
+class _Host:
+    """The host network as a `reachable_url` location: shares the host network (so it's `is_local`)
+    and publishes nothing itself (it's reached *into* via `host_endpoint`, not via `expose`)."""
+
+    is_local = True
+
+
+HOST = _Host()
+"""The host network, as a service location (e.g. the interception server) or a consumer (the
+framework driving a user sim) — see `reachable_url`."""
+
+
+@contextlib.asynccontextmanager
+async def reachable_url(
+    service, port: int, *, consumer=None, consumer_is_local: bool = True
+):
+    """Yield a URL for the service at (`service`, `port`) reachable from its consumer — the single
+    place tool / user / interception reachability is decided, over the two primitives `expose`
+    (publish *out* of a runtime) and `host_endpoint` (reach *into* the host from a runtime).
+
+    `service` is the `Runtime` the service runs in, or `HOST` (a host-network service). `consumer` is
+    the consuming `Runtime` (used for the colocated check and its locality); leave it `None` for a
+    host consumer or an eval-level consumer with no single instance (a shared tool reused by every
+    rollout's harness) and pass its locality as `consumer_is_local`:
+
+    - same location (a colocated tool in the consumer's own runtime, or host -> host): localhost;
+    - the service runs in a sandbox (a remote runtime): its own published URL (`expose`), reachable
+      from anywhere;
+    - the service is on the host network: localhost to a host-network consumer, else a host tunnel
+      (`host_endpoint`)."""
+    is_local = consumer.is_local if consumer is not None else consumer_is_local
+    if service is consumer:  # colocated in the consumer's runtime (or host -> host)
+        yield f"http://127.0.0.1:{port}"
+    elif (
+        service is not HOST and not service.is_local
+    ):  # in a sandbox → it publishes its own port
+        yield await service.expose(port)
+    else:  # on the host network → reach it from wherever the consumer runs
+        async with host_endpoint(port, is_local) as url:
+            yield url

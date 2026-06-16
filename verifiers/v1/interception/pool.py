@@ -17,7 +17,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
 from verifiers.v1.interception.server import InterceptionServer, RolloutSession
-from verifiers.v1.runtimes import RuntimeConfig, host_endpoint, runtime_is_local
+from verifiers.v1.runtimes import HOST, RuntimeConfig, reachable_url, runtime_is_local
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +61,10 @@ class InterceptionPool:
                 return entry
         server = InterceptionServer()
         await self._stack.enter_async_context(server)
-        # Turn the server's host port into the URL the harness reaches: a tunnel for a remote
-        # runtime, localhost otherwise. Owned by the pool's stack, torn down with the server.
+        # The interception server is a HOST service the harness reaches: localhost for a local
+        # harness runtime, a tunnel for a remote one. Owned by the pool's stack, torn down with it.
         url = await self._stack.enter_async_context(
-            host_endpoint(server.port, self.is_local)
+            reachable_url(HOST, server.port, consumer_is_local=self.is_local)
         )
         entry = PooledServer(server, f"{url}/v1")
         self._servers.append(entry)

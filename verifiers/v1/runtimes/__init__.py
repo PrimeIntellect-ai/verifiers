@@ -12,10 +12,12 @@ from typing import Annotated
 from pydantic import Field
 
 from verifiers.v1.runtimes.base import (
+    HOST,
     ProgramResult,
     RetryingRuntime,
     Runtime,
     host_endpoint,
+    reachable_url,
     register,
 )
 from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime
@@ -61,6 +63,8 @@ __all__ = [
     "make_runtime",
     "runtime_is_local",
     "host_endpoint",
+    "reachable_url",
+    "HOST",
     "SubprocessConfig",
     "SubprocessRuntime",
     "DockerConfig",

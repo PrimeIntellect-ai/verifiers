@@ -30,11 +30,12 @@ from verifiers.v1.interception import (
     RolloutSession,
 )
 from verifiers.v1.runtimes import (
+    HOST,
     RetryingRuntime,
     Runtime,
     RuntimeConfig,
-    host_endpoint,
     make_runtime,
+    reachable_url,
 )
 from verifiers.v1.mcp import serve_tools, serve_user
 from verifiers.v1.task import Task
@@ -117,7 +118,8 @@ class Rollout:
         else:
             async with InterceptionServer() as server:
                 secret = server.register(session)
-                async with host_endpoint(server.port, runtime.is_local) as url:
+                # a HOST service the harness (in `runtime`) reaches: localhost or a tunnel
+                async with reachable_url(HOST, server.port, consumer=runtime) as url:
                     yield f"{url}/v1", secret
 
     async def run(self) -> Trace:
