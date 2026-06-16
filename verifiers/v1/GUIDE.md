@@ -185,6 +185,15 @@ class GameTaskset(vf.Taskset[GameTask, GameConfig, GameState]):
         return trace.state.game_over
 ```
 
+> **Concurrency — `self.state` is last-write-wins.** Each `@vf.tool` / `respond` call syncs the
+> *whole* state as a read-modify-write: pull `self.state` from the host, run, push it back. Tool calls
+> a harness runs **concurrently** (several `tool_calls` in one assistant turn) therefore race — each
+> reads the same starting state and the last push wins, so concurrent increments/appends are lost.
+> Tools the harness runs **sequentially** compose correctly. Keep shared-state mutations on the
+> sequential path (or accumulate per-key on the host if you need parallel-safe writes). The taskset
+> and its servers must also share **one** `State` subclass — a server that pushes a mismatching shape
+> is rejected (the rollout fails legibly).
+
 Since `@group_reward` has no runtime, fold any runtime-derived signal (here, pass/fail) into a
 per-rollout `@reward`/`@metric` first, then compare those across the task's rollouts.
 

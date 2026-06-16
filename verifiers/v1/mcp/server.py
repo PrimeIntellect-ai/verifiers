@@ -108,7 +108,11 @@ class ServerBase(Generic[ConfigT, StateT]):
         """Wrap a tool/respond callable so each invocation pulls the latest shared `self.state`
         before running and pushes back any change after — the read/write channel a `@vf.tool` and
         `respond` use via `self.state`. Preserves `fn`'s signature so FastMCP advertises the tool
-        unchanged. A no-op (fresh inert state) when the server runs outside a rollout (no channel)."""
+        unchanged. A no-op (fresh inert state) when the server runs outside a rollout (no channel).
+
+        This is a whole-object read-modify-write, so it is **last-write-wins**: calls a harness runs
+        concurrently (several `tool_calls` in one turn) race and can lose each other's writes; calls
+        run sequentially compose correctly. Keep shared-state mutations on the sequential path."""
 
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
