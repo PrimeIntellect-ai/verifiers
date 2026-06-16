@@ -24,6 +24,7 @@ from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.format import format_count, format_reward, format_time
+from verifiers.utils.pricing_utils import format_cost_usd
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
@@ -151,7 +152,7 @@ def Progress(
     return row
 
 
-def _tokens(trace: Trace) -> str:
+def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None]:
     """Input/output tokens for the main branch: output is every assistant (completion) token
     generated across the branch's turns; input is the last turn's prompt — the full final
     context the model saw. (Output can exceed the final context — reasoning tokens count toward
@@ -159,15 +160,16 @@ def _tokens(trace: Trace) -> str:
 
     Prefers the token-id counts; falls back to provider-reported usage when the endpoint returns
     no token ids (e.g. plain OpenAI completions), so the counts aren't shown as 0/0."""
+    usage = trace.usage
+    cached = usage.cached_input_tokens if usage else None
+    reasoning = usage.reasoning_tokens if usage else None
     branches = trace.branches
     if not branches or not branches[0].nodes:
-        return ""
+        return 0, 0, cached, reasoning
     b = branches[0]
     prompt = b.prompt_len or b.num_prompt_tokens
     completion = b.completion_len or b.num_completion_tokens
-    if not prompt and not completion:
-        return ""
-    return f"{format_count(prompt)}/{format_count(completion)} tokens"
+    return prompt, completion, cached, reasoning
 
 
 def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
@@ -225,13 +227,20 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                 or t.timing.generation.end
                 or now
             )
+            prompt, completion, cached, reasoning = _tokens(t)
+            cost = t.usage.cost if t.usage else None
             left = [
                 f"task {label}",
                 t.id[:8],
                 runtime,
                 f"{turns} turn{'s' * (turns != 1)}",
                 f"{nbranches} branch{'es' * (nbranches != 1)}",
-                _tokens(t),
+                f"{format_count(prompt)}/{format_count(completion)} tokens"
+                if prompt or completion
+                else "",
+                f"{format_count(cached)} cached" if cached is not None else "",
+                f"{format_count(reasoning)} reasoning" if reasoning is not None else "",
+                f"{format_cost_usd(cost)} cost" if cost is not None else "",
                 stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
             ]
             # No start time yet (queued, not generating) → blank, not `now - 0` (~56 years).
@@ -245,10 +254,21 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
         return grid
     # Pad each left section to its max width across rows (drop all-empty ones) so they align,
     # then join with " · ". Text sections left-justified, numeric right.
-    pad = (str.ljust, str.ljust, str.ljust, str.rjust, str.rjust, str.rjust, str.ljust)
-    widths = [max(len(left[i]) for _, _, left, _, _ in rows) for i in range(7)]
+    pad = (
+        str.ljust,
+        str.ljust,
+        str.ljust,
+        str.rjust,
+        str.rjust,
+        str.rjust,
+        str.rjust,
+        str.rjust,
+        str.rjust,
+        str.ljust,
+    )
+    widths = [max(len(left[i]) for _, _, left, _, _ in rows) for i in range(10)]
     for brace, state, left, result, elapsed in rows:
-        sections = [pad[i](left[i], widths[i]) for i in range(7) if widths[i]]
+        sections = [pad[i](left[i], widths[i]) for i in range(10) if widths[i]]
         grid.add_row(
             f"{brace} {_MARK[state]} " + " · ".join(sections),
             f"{result} ·" if result else "",  # trailing dot only when there's a result

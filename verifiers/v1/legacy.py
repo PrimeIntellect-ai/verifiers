@@ -128,9 +128,13 @@ def _to_v1_response(raw: Any, model: str, tokens: TurnTokens | None = None) -> R
     usage_raw = raw.get("usage")
     usage = None
     if isinstance(usage_raw, dict) and "prompt_tokens" in usage_raw:
+        cached = usage_raw.get("cached_input_tokens")
+        reasoning = usage_raw.get("reasoning_tokens")
         usage = Usage(
             prompt_tokens=int(usage_raw.get("prompt_tokens") or 0),
             completion_tokens=int(usage_raw.get("completion_tokens") or 0),
+            cached_input_tokens=int(cached) if cached is not None else None,
+            reasoning_tokens=int(reasoning) if reasoning is not None else None,
         )
     # v0 records finish_reason on the response message; v1 puts it on the response.
     finish = msg.get("finish_reason") or raw.get("finish_reason")

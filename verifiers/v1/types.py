@@ -6,6 +6,7 @@ place raw provider dicts enter is the client implementation, which validates
 them into these models explicitly.
 """
 
+from collections.abc import Iterable
 from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field
@@ -142,14 +143,51 @@ FinishReason = Literal["stop", "length", "tool_calls"] | None
 
 
 class Usage(StrictBaseModel):
-    """Token usage for one model response (total_tokens is derived)."""
+    """Token usage for one model response.
+
+    ``prompt_tokens`` excludes cache-read tokens; ``cached_input_tokens`` carries that
+    disjoint portion when the provider reports it. ``input_tokens`` and ``total_tokens``
+    reconstruct the full logical sequence sizes. ``reasoning_tokens`` is an optional subset
+    of ``completion_tokens`` and is not added again to totals. ``cost`` is the optional
+    provider-reported cost for the response.
+    """
 
     prompt_tokens: int
     completion_tokens: int
+    cached_input_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    cost: float | None = None
+
+    @classmethod
+    def aggregate(cls, usages: Iterable["Usage"]) -> "Usage | None":
+        """Sum per-response usage while preserving whether cache usage was reported."""
+        values = list(usages)
+        if not values:
+            return None
+        cached = [
+            usage.cached_input_tokens
+            for usage in values
+            if usage.cached_input_tokens is not None
+        ]
+        reasoning = [usage.reasoning_tokens for usage in values]
+        costs = [usage.cost for usage in values]
+        return cls(
+            prompt_tokens=sum(usage.prompt_tokens for usage in values),
+            completion_tokens=sum(usage.completion_tokens for usage in values),
+            cached_input_tokens=sum(cached) if cached else None,
+            reasoning_tokens=sum(reasoning)
+            if all(v is not None for v in reasoning)
+            else None,
+            cost=sum(costs) if all(v is not None for v in costs) else None,
+        )
+
+    @property
+    def input_tokens(self) -> int:
+        return self.prompt_tokens + (self.cached_input_tokens or 0)
 
     @property
     def total_tokens(self) -> int:
-        return self.prompt_tokens + self.completion_tokens
+        return self.input_tokens + self.completion_tokens
 
 
 class RoutedExperts(TypedDict):

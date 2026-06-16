@@ -92,10 +92,9 @@ class MessageNode(StrictBaseModel):
     trainer. `Branch.multi_modal_data` concatenates them along the path into the training
     `mm_kwargs`. Rides the wire as raw bytes (msgpack `bin`) since pydantic can't JSON the numpy;
     kept off disk by the dump-site `exclude` in prime-rl (the tensors bloat the rollout jsonl)."""
-    usage: Usage | None = Field(default=None, exclude=True)
-    """Provider-reported token usage for this message's response (assistant nodes). Transient
-    (excluded from wire/disk); lets the live dashboard show token counts even when the endpoint
-    returns no token ids (so `token_ids` is empty)."""
+    usage: Usage | None = None
+    """Provider-reported token usage for this message's response (assistant nodes). Preserved
+    on the wire and on disk, including cache-read tokens when the provider reports them."""
     routed_experts: np.ndarray | None = None
     """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
     top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
