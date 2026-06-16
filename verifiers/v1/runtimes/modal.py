@@ -17,8 +17,8 @@ from typing import Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import _SERVICE_PORT, ProgramResult, Runtime
-from verifiers.v1.runtimes.limiters import _TUNNEL_LIMITER, creation_limiter
+from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime
+from verifiers.v1.runtimes.limiters import TUNNEL_LIMITER, creation_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ class ModalRuntime(Runtime):
 
     @property
     def published_port(self) -> int | None:
-        return _SERVICE_PORT
+        return SERVICE_PORT
 
     async def start(self) -> None:
         import modal
@@ -101,7 +101,7 @@ class ModalRuntime(Runtime):
                     region=self.config.region,
                     block_network=not self.config.network_access,
                     timeout=timeout,
-                    encrypted_ports=[_SERVICE_PORT],
+                    encrypted_ports=[SERVICE_PORT],
                 )
             self._sandbox_id = self._sandbox.object_id
             logger.info(
@@ -134,7 +134,7 @@ class ModalRuntime(Runtime):
         tunnel = Tunnel(local_port=port)
         try:
             async with (
-                _TUNNEL_LIMITER
+                TUNNEL_LIMITER
             ):  # shared prime_tunnel rate (512/min, runtime-independent)
                 url = str(await tunnel.start()).rstrip("/")
         except Exception as e:

@@ -52,7 +52,7 @@ _ENSURE_UV = (
 # The single port a self-publishing runtime (modal/prime) forwards to a public URL for a server
 # hosted in its sandbox. A server placed in such a runtime binds this (on 0.0.0.0) and is reached
 # at the runtime's public URL.
-_SERVICE_PORT = 8000
+SERVICE_PORT = 8000
 
 
 @dataclass(frozen=True)

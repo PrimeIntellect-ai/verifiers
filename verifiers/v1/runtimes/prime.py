@@ -10,8 +10,8 @@ from typing import Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import _SERVICE_PORT, ProgramResult, Runtime, parse_gpu
-from verifiers.v1.runtimes.limiters import _TUNNEL_LIMITER, creation_limiter
+from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime, parse_gpu
+from verifiers.v1.runtimes.limiters import TUNNEL_LIMITER, creation_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class PrimeConfig(BaseConfig):
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
-    and globally — see limiters._TUNNEL_LIMITER.)"""
+    and globally — see limiters.TUNNEL_LIMITER.)"""
 
 
 class PrimeRuntime(Runtime):
@@ -70,7 +70,7 @@ class PrimeRuntime(Runtime):
 
     @property
     def published_port(self) -> int | None:
-        return _SERVICE_PORT
+        return SERVICE_PORT
 
     async def start(self) -> None:
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
@@ -131,7 +131,7 @@ class PrimeRuntime(Runtime):
         tunnel = Tunnel(local_port=port, labels=self.config.labels or None)
         try:
             async with (
-                _TUNNEL_LIMITER
+                TUNNEL_LIMITER
             ):  # shared prime_tunnel rate (512/min, runtime-independent)
                 url = str(await tunnel.start()).rstrip("/")
         except Exception as e:
