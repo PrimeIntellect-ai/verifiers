@@ -39,7 +39,11 @@ SYSTEM_PROMPT = (
 OUTCOME_FILE = "textarena_outcome.json"
 
 
-class TextArenaUser(vf.User[vf.UserConfig]):
+class TextArenaState(vf.State):
+    game_over: bool = False
+
+
+class TextArenaUser(vf.User[vf.UserConfig, TextArenaState]):
     """The TextArena game engine as a framework-driven conversation partner. Holds one game in
     memory (set up from the task's `game` id + RNG `seed`, reproducing the taskset's episode) and,
     per `respond`, steps the game with the model's move and returns the next observation as a user
@@ -93,7 +97,7 @@ class TextArenaUser(vf.User[vf.UserConfig]):
             reason = str(env.state.game_info[0]["reason"])
             with open(OUTCOME_FILE, "w") as f:
                 json.dump({"reward": reward, "reason": reason}, f)
-            self.state.done = True
+            self.state.game_over = True
             return [{"role": "user", "content": reason}]
         _, observation = env.get_observation()
         return [{"role": "user", "content": self._latest_feedback(str(observation))}]
@@ -124,7 +128,11 @@ class TextArenaTask(vf.Task):
     that reproduces the exact episode this task's instruction was built from."""
 
 
-class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
+class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig, TextArenaState]):
+    @vf.stop
+    async def game_over(self, trace: vf.Trace) -> bool:
+        return trace.state.game_over
+
     def load_tasks(self) -> list[TextArenaTask]:
         # One task per RNG seed; the simulator re-seeds to reproduce the same episode. Games
         # that embed the per-episode setup in the prompt (WordLadder's start/target,

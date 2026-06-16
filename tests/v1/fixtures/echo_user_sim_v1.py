@@ -26,7 +26,11 @@ class EchoUserSimConfig(vf.TasksetConfig):
     user: vf.UserConfig = vf.UserConfig()
 
 
-class EchoUserSimUser(vf.User[vf.UserConfig]):
+class EchoUserSimState(vf.State):
+    user_finished: bool = False
+
+
+class EchoUserSimUser(vf.User[vf.UserConfig, EchoUserSimState]):
     """Injects the next phrase as a user turn until the episode's phrases run out."""
 
     async def setup_task(self, task) -> None:
@@ -36,12 +40,18 @@ class EchoUserSimUser(vf.User[vf.UserConfig]):
     async def respond(self, message: str) -> vf.Messages:
         self.turns += 1
         if self.turns >= len(self.phrases):
-            self.state.done = True
+            self.state.user_finished = True
             return []
         return [{"role": "user", "content": self.phrases[self.turns]}]
 
 
-class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
+class EchoUserSimTaskset(
+    vf.Taskset[EchoUserSimTask, EchoUserSimConfig, EchoUserSimState]
+):
+    @vf.stop
+    async def user_finished(self, trace: vf.Trace) -> bool:
+        return trace.state.user_finished
+
     def load_tasks(self) -> list[EchoUserSimTask]:
         return [
             EchoUserSimTask(

@@ -21,7 +21,7 @@ from typing import ClassVar, Generic, TypeVar
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.decorators import discover_decorated, invoke, stop
+from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.ids import EnvId, env_name
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.mcp import Toolset, User
@@ -101,14 +101,6 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         can ignore it). Return False — or raise — to mark the task invalid; the entrypoint
         records the reason (the raised error's message)."""
         return True
-
-    @stop
-    async def done(self, trace: Trace) -> bool:
-        """Built-in stop: end the trajectory when `trace.state.done` is set — the shared-state
-        end-of-trajectory signal a tool or the user simulator raises (see `verifiers.v1.state`).
-        Inherited by every taskset and run by the rollout's `@stop` machinery before each model
-        call, so the interception server needn't special-case the signal. Override to change it."""
-        return trace.state.done
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Score one rollout: run all `@metric` then `@reward` over its trace,

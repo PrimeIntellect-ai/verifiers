@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 VF_BUILD_INPUTS = ["pyproject.toml", "README.md", "LICENSE", "verifiers"]
 
 # The model's last assistant text in; the next user messages out. The user sim ends the trajectory
-# by setting `self.state.done` (over the shared-state channel), not via a return flag.
+# by setting a flag on the shared `self.state` that the taskset's `@vf.stop` checks, not via a return
+# flag — so this hands back only messages.
 Respond = Callable[[str], Awaitable[Messages]]
 
 # The colocated user server is up once its in-runtime probe passes, but under high concurrency
@@ -371,8 +372,8 @@ async def serve_tools(
 async def connect_user(url: str) -> AsyncIterator[Respond]:
     """Open an MCP client session to a user server at `url` and yield an async
     `respond(message)` that calls its `respond` tool, parsing the JSON it returns
-    (`{"messages": [...]}`) into typed `Messages`. End-of-trajectory is signalled out-of-band
-    via the shared `state.done` (the server pushes it over the state channel), not in this reply.
+    (`{"messages": [...]}`) into typed `Messages`. End-of-trajectory is signalled out-of-band: the
+    server sets a flag on the shared state (a taskset `@vf.stop` checks it), not in this reply.
 
     Retries the connect — under high concurrency the colocated user server can be slow to
     accept (or briefly refuse) a connection. A server that stays unreachable raises
@@ -446,7 +447,8 @@ async def serve_user(
     server drives — or `None` when the taskset has no user server. Placement is the user's
     `config` (colocated in the agent's runtime, or its own); the rollout's `task` is shipped to
     the server for its `setup`. `state_port`/`state_secret` wire it to the shared-state channel — how
-    the user sim's `respond` reads/writes `self.state` and ends the trajectory (`self.state.done`)."""
+    the user sim's `respond` reads/writes `self.state` (and ends the trajectory via a flag a taskset
+    `@vf.stop` checks)."""
     if user is None:
         yield None
         return

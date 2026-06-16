@@ -47,27 +47,33 @@ ConfigT = TypeVar("ConfigT", bound=UserConfig)
 class User(ServerBase[ConfigT, StateT]):
     """A user simulator authored as a vf-native class, initialized from its config: implement
     `respond` (the model's last message in → the next user message(s) out). Consumed by the framework
-    (the interception server drives it), never shown to the model. End the trajectory by setting
-    `self.state.done = True` (the shared rollout state, see `verifiers.v1.state`). Example:
+    (the interception server drives it), never shown to the model. To end the trajectory, set a flag
+    on the shared `self.state` and have the taskset declare a `@vf.stop` over it (the framework holds
+    no built-in end signal — see `verifiers.v1.state`). Example:
 
-        class HagglerUserConfig(vf.UserConfig):
-            target_price: int = 0
+        class HagglerState(vf.State):
+            deal_closed: bool = False
 
-        class HagglerUser(vf.User[HagglerUserConfig]):
+        class HagglerUser(vf.User[vf.UserConfig, HagglerState]):
             async def respond(self, message: str) -> vf.Messages:
                 ...
                 if deal_done:
-                    self.state.done = True
+                    self.state.deal_closed = True   # the taskset's @vf.stop ends it on this
                 return [{"role": "user", "content": reply}]
 
-    Parameterize a stateful user with its `State` subclass too — `User[Config, MyState]` — so
-    `self.state` is typed; it defaults to the base `State`.
+        class HagglerTaskset(vf.Taskset[HagglerTask, HagglerConfig, HagglerState]):
+            @vf.stop
+            async def deal_closed(self, trace) -> bool:
+                return trace.state.deal_closed
+
+    Parameterize the user with the same `State` subclass — `User[Config, MyState]` — so `self.state`
+    is typed; it defaults to the base `State`.
     """
 
     async def respond(self, message: str) -> Messages:
         """The model's last assistant text in → the next user message(s) out. Called once with an
         empty `message` to open the conversation when the task has no prompt (`task.instruction is
-        None`); end the trajectory by setting `self.state.done = True`."""
+        None`); end the trajectory by setting a `self.state` flag a taskset `@vf.stop` checks."""
         raise NotImplementedError
 
     def _register(self, mcp: FastMCP) -> None:

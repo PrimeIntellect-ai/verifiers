@@ -52,8 +52,8 @@ class ServerBase(Generic[ConfigT, StateT]):
     `self.state` is the rollout's shared `State` (see `verifiers.v1.state`): a `@vf.tool` / `respond`
     reads+writes it, and each call is bracketed (`_with_state`) to pull the latest from the
     interception server and push back any change — so tools and the user sim share state, and a
-    server can end the trajectory by setting `self.state.done = True`. Parameterize a stateful server
-    with its `State` subclass (`Toolset[Config, MyState]`); `StateT` defaults to the base `State`."""
+    taskset can end the trajectory from it via a `@vf.stop` over a flag a server sets. Parameterize a
+    stateful server with its `State` subclass (`Toolset[Config, MyState]`); defaults to base `State`."""
 
     TOOL_PREFIX: ClassVar[str] = ""
     """Prefix the model sees on this server's tools (`<TOOL_PREFIX>_<tool>`), set on the class,

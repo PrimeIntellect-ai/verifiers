@@ -107,15 +107,14 @@ class RolloutSession:
     """Cached opening `respond("")` messages for a no-prompt task. Computed once and re-injected on
     every request until the first turn lands on the trace — so a retried opening request (e.g. the
     harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`
-    twice and advances the simulator's queue past the opening. (The opening's done lives on
-    `trace.state.done`, set by that same `respond("")` over the state channel.)"""
+    twice and advances the simulator's queue past the opening."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
-        call halts the harness (its model call errors out); Harness.run treats it as clean. The
-        shared-state end signal (`trace.state.done`) is one of the `@stop`s — the built-in
-        `Taskset.done` — so it's checked here generically, not special-cased."""
+        call halts the harness (its model call errors out); Harness.run treats it as clean. A taskset
+        that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
+        so the interception server holds no opinion about the state's contents."""
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)
@@ -220,12 +219,8 @@ class InterceptionServer:
                 session.opening = await session.user("")
             body = dialect.extend(body, None, session.opening)
             prompt = [*prompt, *session.opening]
-            if session.trace.state.done:
-                # Degenerate: the simulator ended before any model turn — halt the harness clean.
-                session.trace.stop("user_completed")
-                return web.json_response(
-                    dialect.error_body("rollout stopped: user_completed"), status=400
-                )
+            # If the simulator ended at the open (its taskset's `@stop` now fires), the loop's
+            # `refused()` below halts the harness before any model call — no special-casing here.
         if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt)
         # A user simulator turns one program request into a multi-turn exchange: after each
@@ -278,14 +273,12 @@ class InterceptionServer:
             if response.message.tool_calls or session.user is None:
                 return web.json_response(completion)
             user_messages = await session.user(response.message.content or "")
-            # The user sim ends the trajectory by setting `self.state.done` (pushed to `trace.state`
-            # over the state channel before `respond` returns, so it's set by the time we're here).
-            if session.trace.state.done:
-                session.trace.stop("user_completed")
-                return web.json_response(completion)
             # Inject the model turn + the simulator's user turn(s): into the wire request for the
             # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
-            # survives) and into the typed prompt for the trace.
+            # survives) and into the typed prompt for the trace. The simulator ends the trajectory
+            # through its taskset's `@stop` (e.g. a `user_finished` flag it set on `self.state`),
+            # caught by `refused()` at the top of the next iteration — the interception server holds
+            # no opinion about the state's contents.
             body = dialect.extend(body, completion, user_messages)
             prompt = [*prompt, response.message, *user_messages]
 
@@ -392,8 +385,8 @@ class InterceptionServer:
 
     async def handle_state_put(self, request: web.Request) -> web.Response:
         """Replace a rollout's shared `trace.state` with a server's pushed copy (validated into the
-        trace's `State` type). Last write wins per call; `state.done` ends the trajectory (checked
-        after the user `respond`, and before each model call in `RolloutSession.refused`)."""
+        trace's `State` type). Last write wins per call. A taskset ends the trajectory from state via
+        its own `@stop` (run in `RolloutSession.refused` before each model call)."""
         session = self._session_for(request)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)

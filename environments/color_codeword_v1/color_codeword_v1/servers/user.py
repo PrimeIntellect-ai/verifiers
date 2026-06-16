@@ -18,10 +18,14 @@ COLOR_RGB = {
 }
 
 
-class ColorCodewordUser(vf.User[vf.UserConfig]):
+class ColorCodewordState(vf.State):
+    user_finished: bool = False
+
+
+class ColorCodewordUser(vf.User[vf.UserConfig, ColorCodewordState]):
     """Reveals each turn's colored squares after the prior answer: one `respond` per assistant
     turn, injecting the next turn's squares (image_url parts) as a user message until every
-    `max_turns` turn is answered."""
+    `max_turns` turn is answered (then it flags `user_finished` for the taskset's `@vf.stop`)."""
 
     async def setup_task(self, task) -> None:
         self.colors_per_turn = task.info[
@@ -42,7 +46,7 @@ class ColorCodewordUser(vf.User[vf.UserConfig]):
     async def respond(self, message: str) -> vf.Messages:
         self.turns += 1
         if self.turns >= self.max_turns:
-            self.state.done = True
+            self.state.user_finished = True
             return []
         colors = self.colors_per_turn[self.turns]
         total = sum(len(self.colors_per_turn[t]) for t in range(self.turns + 1))
