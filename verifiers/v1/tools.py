@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 # `verifiers` isn't on PyPI at the v1 version, so a sandbox installs it from git (the env package
 # declares it as a dependency; this supplies the pin). Locally the editable workspace is used.
-_VERIFIERS_PIN = "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@be2bd96"
+_VERIFIERS_PIN = "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@3f998e3"
 
 
 class ToolsetConfig(BaseConfig):
@@ -172,7 +172,15 @@ def serve_server(inst: ServerBase, task) -> None:
     from mcp.server.fastmcp import FastMCP
 
     asyncio.run(inst.setup(task))
-    mcp = FastMCP(inst.server_name)
+    # Bound to 0.0.0.0 means a sandbox tunnel reaches us at a non-loopback host (e.g. modal's
+    # *.modal.host). FastMCP's default DNS-rebinding guard allows only localhost and 421s the
+    # tunnel host; the tunnel is the trust boundary, so relax it.
+    security = None
+    if os.environ.get("MCP_HOST") == "0.0.0.0":
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    mcp = FastMCP(inst.server_name, transport_security=security)
     inst._register(mcp)
     run_mcp_server(mcp)
 
