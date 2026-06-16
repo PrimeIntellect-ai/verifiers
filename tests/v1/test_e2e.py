@@ -30,7 +30,7 @@ async def test_single_turn(run_v1, harness, agent_runtime, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_user(run_v1, user_runtime, agent_runtime, skip_if_unexposable, tmp_path):
+async def test_user(run_v1, agent_runtime, user_runtime, skip_if_unexposable, tmp_path):
     """Multi-turn, driven by a (container-safe) `vf.User` simulator, across the full matrix of the
     user's runtime (`user_runtime`: colocated in the agent's runtime, or its own runtime) x the
     agent `runtime`. Either way the framework drives the user and must reach it from wherever the
@@ -52,7 +52,7 @@ async def test_user(run_v1, user_runtime, agent_runtime, skip_if_unexposable, tm
 
 @pytest.mark.e2e
 async def test_tool(
-    run_v1, run_v1_server, tool_runtime, agent_runtime, skip_if_unexposable, tmp_path
+    run_v1, run_v1_server, agent_runtime, tool_runtime, skip_if_unexposable, tmp_path
 ):
     """A `vf.Toolset` (an echo tool) across the full matrix of its runtime (`tool_runtime`:
     colocated in the agent's runtime, shared once per eval, or its own runtime) x the agent

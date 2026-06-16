@@ -26,11 +26,14 @@ from verifiers.v1.trace import Trace
 # v0 legacy bridge both resolve them by id (no install).
 
 # The agent (harness) runtime, modal excluded. docker needs the daemon; prime provisions real
-# sandboxes + tunnels (network + PRIME credentials), so both are marked to deselect easily.
+# sandboxes + tunnels (network + PRIME credentials), so both are marked to deselect easily. The
+# `id`s make a test read like `<harness>-harness-in-<rt>-runtime` / `in-<rt>-runtime-with-...`.
 AGENT_RUNTIMES = [
-    "subprocess",
-    pytest.param("docker", marks=pytest.mark.slow),
-    pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime]),
+    pytest.param("subprocess", id="in-subprocess-runtime"),
+    pytest.param("docker", marks=pytest.mark.slow, id="in-docker-runtime"),
+    pytest.param(
+        "prime", marks=[pytest.mark.slow, pytest.mark.prime], id="in-prime-runtime"
+    ),
 ]
 
 
@@ -42,10 +45,16 @@ def agent_runtime(request) -> str:
 # The user simulator's runtime: inside the agent's runtime (`colocated`) or its own runtime; this
 # fans the user test across both (reusing the runtime markers for the own-runtime cases).
 USER_RUNTIMES = [
-    "colocated",
-    "subprocess",
-    pytest.param("docker", marks=pytest.mark.slow),
-    pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime]),
+    pytest.param("colocated", id="with-user-colocated"),
+    pytest.param("subprocess", id="with-user-in-subprocess-runtime"),
+    pytest.param(
+        "docker", marks=pytest.mark.slow, id="with-user-in-docker-runtime"
+    ),
+    pytest.param(
+        "prime",
+        marks=[pytest.mark.slow, pytest.mark.prime],
+        id="with-user-in-prime-runtime",
+    ),
 ]
 
 
@@ -62,11 +71,17 @@ def user_runtime(request) -> dict:
 # own runtime per rollout; this fans the tool test across all of them (runtime markers for the
 # own-runtime cases — colocated/shared use the host subprocess runtime).
 TOOL_RUNTIMES = [
-    "colocated",
-    "shared",
-    "subprocess",
-    pytest.param("docker", marks=pytest.mark.slow),
-    pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime]),
+    pytest.param("colocated", id="with-tool-colocated"),
+    pytest.param("shared", id="with-tool-shared"),
+    pytest.param("subprocess", id="with-tool-in-subprocess-runtime"),
+    pytest.param(
+        "docker", marks=pytest.mark.slow, id="with-tool-in-docker-runtime"
+    ),
+    pytest.param(
+        "prime",
+        marks=[pytest.mark.slow, pytest.mark.prime],
+        id="with-tool-in-prime-runtime",
+    ),
 ]
 
 
@@ -104,10 +119,10 @@ def skip_if_unexposable():
 # excluded. Agent CLI harnesses install their dependencies at rollout, so they're marked slow.
 @pytest.fixture(
     params=[
-        "default",
-        pytest.param("rlm", marks=pytest.mark.slow),
-        pytest.param("codex", marks=pytest.mark.slow),
-        pytest.param("kimi-code", marks=pytest.mark.slow),
+        pytest.param("default", id="default-harness"),
+        pytest.param("rlm", marks=pytest.mark.slow, id="rlm-harness"),
+        pytest.param("codex", marks=pytest.mark.slow, id="codex-harness"),
+        pytest.param("kimi-code", marks=pytest.mark.slow, id="kimi-code-harness"),
     ]
 )
 def harness(request) -> str:
@@ -116,8 +131,8 @@ def harness(request) -> str:
 
 @pytest.fixture(
     params=[
-        "default",
-        pytest.param("mini-swe-agent", marks=pytest.mark.slow),
+        pytest.param("default", id="default-harness"),
+        pytest.param("mini-swe-agent", marks=pytest.mark.slow, id="mini-swe-agent-harness"),
     ]
 )
 def agentic_harness(request) -> str:
