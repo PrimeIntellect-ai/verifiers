@@ -96,9 +96,10 @@ def _init_py(pkg: str, prefix: str, add_harness: bool) -> str:
 
 
 def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str:
-    """The taskset module, assembled so each enabled piece (tool/user) adds its import, config
-    field, and wiring method. Runs out of the box with no flags."""
-    imports = "import re\n\nimport verifiers.v1 as vf"
+    """The taskset module skeleton — a `Task`/`Config`/`Taskset` shell with `load_tasks` and a
+    `@reward` to fill in. Each enabled piece (tool/user) adds its import, config field, and
+    wiring method."""
+    imports = "import verifiers.v1 as vf"
     local_imports: list[str] = []
     config_extra = ""
     methods: list[str] = []
@@ -122,19 +123,15 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str
     return f'''\
 """{pkg.replace("_", "-")} — <one-line description of the task>.
 
-A starter v1 taskset: replace `load_tasks` (your data + prompts) and the `@reward` (how a
-rollout is scored). Runs out of the box: `uv run eval {pkg.replace("_", "-")} -n 3`.
+A starter v1 taskset: implement `load_tasks` (your tasks + prompts) and the `@reward` (how a
+rollout is scored). See `environments/*_v1` for complete examples.
 """
 
 {imports}
 
-WORDS = ["alpha", "bravo", "charlie", "delta", "echo"]
-_ANSWER = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
-
 
 class {prefix}Task(vf.Task):
-    answer: str
-    """The expected answer for this task (read by the reward)."""
+    """A single task. Add task-specific fields here (e.g. a reference answer)."""
 
 
 class {prefix}Config(vf.TasksetConfig):
@@ -144,23 +141,14 @@ class {prefix}Config(vf.TasksetConfig):
 
 class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
     def load_tasks(self) -> list[{prefix}Task]:
-        return [
-            {prefix}Task(
-                idx=i,
-                instruction=f"Repeat the word {{word!r}} inside <answer></answer> tags.",
-                answer=word,
-            )
-            for i, word in enumerate(WORDS[: self.config.num_tasks])
-        ]
+        raise NotImplementedError(
+            "Return this taskset's tasks, e.g. "
+            "[{prefix}Task(idx=i, instruction=...) for i in range(self.config.num_tasks)]."
+        )
 {methods_block}
     @vf.reward(weight=1.0)
-    async def exact_match(self, task: {prefix}Task, trace: vf.Trace) -> float:
-        # Reward 1.0 if any assistant turn answered with the expected word in <answer> tags.
-        for message in trace.assistant_messages:
-            match = _ANSWER.search(message.content or "")
-            if match and match.group(1).strip() == task.answer:
-                return 1.0
-        return 0.0
+    async def reward(self, task: {prefix}Task, trace: vf.Trace) -> float:
+        raise NotImplementedError("Score the rollout and return a float (e.g. in [0, 1]).")
 '''
 
 
@@ -277,7 +265,10 @@ def _readme(
 
 A v1 verifiers environment, scaffolded with `init`.
 
-## Run
+## Develop
+
+1. Implement `load_tasks` and the `@reward` in `{pkg}/taskset.py` (see `environments/*_v1`).
+2. Install + run:
 
 ```bash
 uv pip install -e .        # install this package (or register it in your project)
@@ -288,10 +279,7 @@ uv run eval {dash} -n 3    # evaluate a few tasks with the default harness
 
 {layout_block}
 
-## Next steps
-
-- Replace `load_tasks` and `exact_match` in `{pkg}/taskset.py` with your task and scoring.
-- Tune knobs from the CLI: `--taskset.num-tasks 10`, `--model <id>`, `-n`/`-r`/`-t`/`-T`.
+Tune knobs from the CLI: `--taskset.num-tasks 10`, `--model <id>`, `-n`/`-r`/`-t`/`-T`.
 """
 
 
