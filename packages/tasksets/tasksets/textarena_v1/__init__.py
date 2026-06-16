@@ -106,7 +106,10 @@ class TextArenaConfig(vf.TasksetConfig):
     target), and WordSearch (find words in a grid)."""
     num_tasks: int = 1000
     """How many seeded episodes to generate; the eval/orchestrator selects from these."""
-    user: vf.UserConfig = vf.UserConfig()
+    user: vf.UserConfig = vf.UserConfig(colocated=True)
+    """Colocated is required, not a default: the simulator hands the game outcome to scoring by
+    writing `OUTCOME_FILE` into the runtime workspace that `game_reward` reads back, so it must share
+    the harness's runtime/workdir (a non-colocated user runs in its own workspace → reward always 0)."""
 
 
 class TextArenaTask(vf.Task):
