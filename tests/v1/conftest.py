@@ -27,12 +27,12 @@ from verifiers.v1.trace import Trace
 
 # The agent (harness) runtime, modal excluded. docker needs the daemon; prime provisions real
 # sandboxes + tunnels (network + PRIME credentials), so both are marked to deselect easily. The
-# `id`s make a test read like `<harness>-harness-in-<rt>-runtime` / `in-<rt>-runtime-with-...`.
+# `id`s make a test read like `<harness>-harness-in-<rt>` / `in-<rt>-with-<user|tool>-...`.
 AGENT_RUNTIMES = [
-    pytest.param("subprocess", id="in-subprocess-runtime"),
-    pytest.param("docker", marks=pytest.mark.slow, id="in-docker-runtime"),
+    pytest.param("subprocess", id="in-subprocess"),
+    pytest.param("docker", marks=pytest.mark.slow, id="in-docker"),
     pytest.param(
-        "prime", marks=[pytest.mark.slow, pytest.mark.prime], id="in-prime-runtime"
+        "prime", marks=[pytest.mark.slow, pytest.mark.prime], id="in-prime"
     ),
 ]
 
@@ -46,14 +46,14 @@ def agent_runtime(request) -> str:
 # fans the user test across both (reusing the runtime markers for the own-runtime cases).
 USER_RUNTIMES = [
     pytest.param("colocated", id="with-user-colocated"),
-    pytest.param("subprocess", id="with-user-in-subprocess-runtime"),
+    pytest.param("subprocess", id="with-user-in-subprocess"),
     pytest.param(
-        "docker", marks=pytest.mark.slow, id="with-user-in-docker-runtime"
+        "docker", marks=pytest.mark.slow, id="with-user-in-docker"
     ),
     pytest.param(
         "prime",
         marks=[pytest.mark.slow, pytest.mark.prime],
-        id="with-user-in-prime-runtime",
+        id="with-user-in-prime",
     ),
 ]
 
@@ -73,14 +73,14 @@ def user_runtime(request) -> dict:
 TOOL_RUNTIMES = [
     pytest.param("colocated", id="with-tool-colocated"),
     pytest.param("shared", id="with-tool-shared"),
-    pytest.param("subprocess", id="with-tool-in-subprocess-runtime"),
+    pytest.param("subprocess", id="with-tool-in-subprocess"),
     pytest.param(
-        "docker", marks=pytest.mark.slow, id="with-tool-in-docker-runtime"
+        "docker", marks=pytest.mark.slow, id="with-tool-in-docker"
     ),
     pytest.param(
         "prime",
         marks=[pytest.mark.slow, pytest.mark.prime],
-        id="with-tool-in-prime-runtime",
+        id="with-tool-in-prime",
     ),
 ]
 
