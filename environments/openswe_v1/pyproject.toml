@@ -1,0 +1,13 @@
+[project]
+name = "openswe-v1"
+version = "0.1.0"
+description = "openswe-v1 - OpenSWE issue-resolving tasks (agentic; sandbox eval-script reward)."
+requires-python = ">=3.10"
+dependencies = ["datasets", "huggingface-hub"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["openswe_v1.py", "pyproject.toml"]

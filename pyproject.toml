@@ -94,6 +94,7 @@ examples = [
     "reverse-text-v1", "math-env-v1", "aime24-v1", "color-codeword-v1",
     "wordle-v1", "terminal-bench-2-v1", "alphabet-sort-v1",
     "r2e-gym-v1", "scaleswe-v1", "swelego-v1",
+    "swebench-v1", "openswe-v1", "multiswe-v1", "swerebench-v2-v1", "swesmith-v1",
 ]
 
 [project.optional-dependencies]
@@ -157,6 +158,11 @@ color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
 r2e-gym-v1 = { path = "environments/r2e_gym_v1", editable = true }
 scaleswe-v1 = { path = "environments/scaleswe_v1", editable = true }
 swelego-v1 = { path = "environments/swelego_v1", editable = true }
+swebench-v1 = { path = "environments/swebench_v1", editable = true }
+openswe-v1 = { path = "environments/openswe_v1", editable = true }
+multiswe-v1 = { path = "environments/multiswe_v1", editable = true }
+swerebench-v2-v1 = { path = "environments/swerebench_v2_v1", editable = true }
+swesmith-v1 = { path = "environments/swesmith_v1", editable = true }
 alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 
 [tool.uv.exclude-newer-package]

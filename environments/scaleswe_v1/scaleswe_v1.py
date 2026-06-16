@@ -1,4 +1,4 @@
-"""scaleswe-v1 — Scale-SWE (AweAI-Team/Scale-SWE) as a v1 taskset.
+"""scaleswe-v1 - Scale-SWE (PrimeIntellect/Scale-SWE) as a v1 taskset.
 
 Each row ships a per-task Docker image with the repo checked out, `pre_commands` that
 reset it to the base commit on a clean `scaleswe` branch, F2P/P2P pytest ids, and an
@@ -18,7 +18,7 @@ import verifiers.v1 as vf
 
 logger = logging.getLogger(__name__)
 
-DATASET = "AweAI-Team/Scale-SWE"
+DATASET = "PrimeIntellect/Scale-SWE"
 
 # Prime's private Artifact Registry holds the complete image set, but only runtimes with GCP
 # credentials (e.g. Prime sandboxes) can pull from it. By default images are taken straight from
