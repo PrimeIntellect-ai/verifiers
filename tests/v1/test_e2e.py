@@ -75,6 +75,22 @@ async def test_multi_turn_with_tools(
 
 
 @pytest.mark.e2e
+async def test_tool_response_image(run_v1, tmp_path):
+    """MCP image content from a tool result survives into the v1 trace."""
+    (trace,) = await run_v1(
+        "tool-response-image-v1",
+        harness="default",
+        runtime="subprocess",
+        output_dir=tmp_path,
+        max_turns=4,
+    )
+    assert trace.errors == []
+    assert not trace.is_truncated
+    assert trace.num_turns >= 2  # tool call + answer
+    assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
 async def test_agentic(run_v1, agentic_harness, runtime, tmp_path):
     """Agentic: write a phrase to a file with the harness's bash tool, checked in the runtime."""
     (trace,) = await run_v1(

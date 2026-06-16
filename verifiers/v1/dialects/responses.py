@@ -178,12 +178,15 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
                 run.append(item)
             elif item.get("type") == "function_call_output":
                 output = item.get("output")
+                content = (
+                    parse_content(output)
+                    if isinstance(output, (str, list))
+                    else json.dumps(output)
+                )
                 prompt.append(
                     ToolMessage(
                         tool_call_id=item.get("call_id", ""),
-                        content=output
-                        if isinstance(output, str)
-                        else json.dumps(output),
+                        content=content,
                     )
                 )
             elif item.get("role") in ("system", "developer"):
