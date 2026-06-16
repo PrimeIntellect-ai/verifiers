@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Callable, ClassVar, Generic, TypeVar, get_args
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.state import State, StateT, state_cls
+from verifiers.v1.state import StateT, state_cls
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -104,23 +104,11 @@ class ServerBase(Generic[ConfigT, StateT]):
             )
             resp.raise_for_status()
 
-    def _uses_state(self) -> bool:
-        """Whether this server reads/writes the shared `trace.state`, so its calls sync over the
-        channel. A server that declares a custom `State` subclass (`Toolset[Config, MyState]`) opts
-        in; a base-`State` server is treated as stateless — the common case for tools — and skips
-        the per-call GET/PUT (and the host skips wiring it a channel). `User` overrides this to always
-        sync (it drives the conversation and ends it via `self.state.done`, often on the base
-        `State`). To end a trajectory from a tool, declare a `State` subclass so its channel exists."""
-        return type(self.state) is not State
-
     def _with_state(self, fn: Callable) -> Callable:
         """Wrap a tool/respond callable so each invocation pulls the latest shared `self.state`
         before running and pushes back any change after — the read/write channel a `@vf.tool` and
         `respond` use via `self.state`. Preserves `fn`'s signature so FastMCP advertises the tool
-        unchanged. Returns `fn` untouched for a stateless server (`_uses_state` False), so a pure
-        tool call makes no extra round-trip."""
-        if not self._uses_state():
-            return fn
+        unchanged. A no-op (fresh inert state) when the server runs outside a rollout (no channel)."""
 
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):

@@ -272,12 +272,10 @@ async def serve(
         # published SERVICE_PORT). `serve_in_runtime` returns the actual bound port.
         exposed = for_host or runtime is not agent_runtime
         # The shared-state channel: the interception server is a HOST service the server reaches from
-        # its own runtime — localhost when local, a tunnel when remote. Wired only for a server that
-        # uses state (`_uses_state`) — a stateless tool gets no channel (so no per-call round-trip,
-        # and no tunnel on a remote runtime). Shared/eval-level servers get none either (state is
-        # per-rollout; `state_port` is None for them).
+        # its own runtime — localhost when local, a tunnel when remote. Shared/eval-level servers get
+        # no channel (state is per-rollout; `state_port` is None for them).
         state_url = None
-        if state_port is not None and server._uses_state():
+        if state_port is not None:
             state_base = await stack.enter_async_context(
                 reachable_url(HOST, state_port, consumer=runtime)
             )
