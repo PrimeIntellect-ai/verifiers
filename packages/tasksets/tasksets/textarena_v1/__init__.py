@@ -47,6 +47,13 @@ class TextArenaUser(vf.User[vf.UserConfig]):
     `OUTCOME_FILE` in the runtime, which the reward reads back."""
 
     async def setup(self) -> None:
+        if not self.config.colocated:
+            raise ValueError(
+                "textarena's user simulator must be colocated: it hands the game outcome to scoring "
+                "by writing OUTCOME_FILE into the harness's runtime workspace that `game_reward` reads "
+                "back, so a non-colocated user (its own workspace) would always score 0. Set "
+                "`--taskset.user.colocated true` (the default)."
+            )
         import nltk
 
         nltk.download("words", quiet=True)
