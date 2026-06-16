@@ -14,7 +14,6 @@ from pydantic_config import cli
 from verifiers.v1.cli.log import setup_logging
 from verifiers.v1.cli.resolve import (
     extract_id,
-    local_examples,
     narrow_config,
     references_config_file,
     with_positional_taskset,
@@ -31,9 +30,6 @@ def main(argv: list[str] | None = None) -> None:
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
-        local = local_examples("environments")
-        if local:
-            print("environments:", ", ".join(local))
         sys.argv = [sys.argv[0], "--help"]
         cli(narrow_config(ServeConfig, argv))
         return
