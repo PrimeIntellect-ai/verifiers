@@ -157,6 +157,43 @@ runtime artifacts (the diff above, captured logs, command output) you want persi
 trace for inspection. Like the rewards/metrics it rides along to `results.jsonl`; use `metrics`
 for numbers that aggregate, `trace.info` for everything else.
 
+`trace.state` is the complementary **transient** store: a typed, mutable `vf.State` shared across the
+rollout's tool servers, user simulator, and scoring — the one place per-rollout *runtime* state lives
+(counters, game progress, your own end-of-trajectory flag). Unlike `info` it is **never** persisted to
+disk or sent over the wire. A `@vf.tool` / `respond` reads+writes it as `self.state` (synced over the
+interception server per call, so tools and the user sim see each other's writes); `@reward` /
+`@metric` / `finalize` read+write `trace.state` directly. The base `vf.State` is empty — subclass it
+to declare typed fields and parameterize the taskset (`vf.Taskset[Task, Config, MyState]`) plus any
+stateful server (`vf.Toolset[Config, MyState]` / `vf.User[Config, MyState]`); it defaults to the base.
+To **end a trajectory from state**, set your own flag and declare a `@vf.stop` over it (the framework
+has no built-in end signal):
+
+```python
+class GameState(vf.State):
+    game_over: bool = False
+
+class GameUser(vf.User[vf.UserConfig, GameState]):
+    async def respond(self, message: str) -> vf.Messages:
+        ...
+        if finished:
+            self.state.game_over = True   # the @vf.stop below ends the rollout
+        return [...]
+
+class GameTaskset(vf.Taskset[GameTask, GameConfig, GameState]):
+    @vf.stop
+    async def game_over(self, trace) -> bool:   # stop reason is this method's name
+        return trace.state.game_over
+```
+
+> **Concurrency — `self.state` is last-write-wins.** Each `@vf.tool` / `respond` call syncs the
+> *whole* state as a read-modify-write: pull `self.state` from the host, run, push it back. Tool calls
+> a harness runs **concurrently** (several `tool_calls` in one assistant turn) therefore race — each
+> reads the same starting state and the last push wins, so concurrent increments/appends are lost.
+> Tools the harness runs **sequentially** compose correctly. Keep shared-state mutations on the
+> sequential path (or accumulate per-key on the host if you need parallel-safe writes). The taskset
+> and its servers must also share **one** `State` subclass — a server that pushes a mismatching shape
+> is rejected (the rollout fails legibly).
+
 Since `@group_reward` has no runtime, fold any runtime-derived signal (here, pass/fail) into a
 per-rollout `@reward`/`@metric` first, then compare those across the task's rollouts.
 
@@ -168,11 +205,12 @@ boilerplate) authored from a config — the same shape as a taskset:
 - A **tool server** is a `vf.Toolset[ConfigT]` with `@vf.tool` methods (the model sees
   `<TOOL_PREFIX>_<method>`; the docstring is the description). A taskset exposes a task's tools via
   `tools(task) -> list[vf.Toolset]`.
-- A **user simulator** is a `vf.User[ConfigT]` with one `async def respond(message) -> (Messages,
-  bool)` hook (the framework calls it after each assistant turn for the next user message + a done
-  flag). A taskset supplies one via `user(task) -> vf.User | None`. If a task carries no prompt
-  (`instruction=None`), the simulator also **opens the conversation**: the framework calls
-  `respond("")` once before the first model turn and seeds its reply as the initial user message.
+- A **user simulator** is a `vf.User[ConfigT]` with one `async def respond(message) -> Messages` hook
+  (the framework calls it after each assistant turn for the next user message(s); end the trajectory
+  by setting a `self.state` flag a taskset `@vf.stop` checks — see above). A taskset supplies one via
+  `user(task) -> vf.User | None`. If a task carries no prompt (`instruction=None`), the simulator also
+  **opens the conversation**: the framework calls `respond("")` once before the first model turn and
+  seeds its reply as the initial user message.
 
 A taskset may expose **both** at once (tools the model calls *and* a user sim driving the turns) —
 they're served together each rollout; a harness just needs to support both.
@@ -182,7 +220,9 @@ they're served together each rollout; a harness just needs to support both.
 `python -m <env>.servers.<name>` (host: ambient; sandbox: the env package is uploaded + installed
 first). Build state as plain `self.x` attributes in `async def setup(self)` (task-agnostic, runs for
 every server) or `async def setup_task(self, task)` (per-rollout — **skipped for a `shared`
-server**). Fixed data lives in module constants, not config.
+server**). Those attrs are server-local; for per-rollout state **shared** with the other servers and
+scoring use the typed `self.state` (`trace.state`, above). Fixed data lives in module constants, not
+config.
 
 **Placement** is config on the server's config (a `vf.ToolsetConfig` / `vf.UserConfig` field on the
 taskset's own config), so it's per-server and CLI-tunable (`--taskset.tools.runtime.type docker`,

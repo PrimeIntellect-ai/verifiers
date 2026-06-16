@@ -19,7 +19,11 @@ from pydantic import Field
 
 import verifiers.v1 as vf
 
-from color_codeword_v1.servers.user import COLOR_RGB, ColorCodewordUser
+from color_codeword_v1.servers.user import (
+    COLOR_RGB,
+    ColorCodewordState,
+    ColorCodewordUser,
+)
 
 COLOR_MAP = {
     "red": "A",
@@ -101,7 +105,13 @@ class ColorCodewordTask(vf.Task):
     """The episode the user simulator replays: `colors_per_turn` and `max_turns`."""
 
 
-class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
+class ColorCodewordTaskset(
+    vf.Taskset[ColorCodewordTask, ColorCodewordConfig, ColorCodewordState]
+):
+    @vf.stop
+    async def user_finished(self, trace: vf.Trace) -> bool:
+        return trace.state.user_finished
+
     def load_tasks(self) -> list[ColorCodewordTask]:
         c = self.config
         rng = random.Random(SEED)

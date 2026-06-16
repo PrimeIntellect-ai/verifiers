@@ -81,6 +81,35 @@ async def test_tool(
 
 
 @pytest.mark.e2e
+async def test_tool_state(
+    run_v1, agent_runtime, tool_runtime, skip_if_unexposable, tmp_path
+):
+    """The shared-state round-trip: a `@vf.tool` increments the typed `trace.state` each call (synced
+    over the interception server) and the `@reward` reads it back — reward 1.0 proves tool writes
+    reach the host's `trace.state`. Fanned across the tool's placement (`tool_runtime`) x the agent
+    `runtime`, so the state channel is exercised colocated and own-runtime. `shared` is skipped: a
+    shared server is eval-level (one instance for the whole eval), so per-rollout state isn't wired
+    to it."""
+    if tool_runtime.get("shared"):
+        pytest.skip(
+            "shared tool servers are eval-level — per-rollout state isn't wired to them"
+        )
+    (trace,) = await run_v1(
+        "counter-tool-v1",
+        harness="default",
+        agent_runtime=agent_runtime,
+        output_dir=tmp_path,
+        max_turns=8,
+        taskset_overrides={"tools": tool_runtime},
+    )
+    skip_if_unexposable(trace)
+    assert trace.errors == []
+    assert not trace.is_truncated
+    assert trace.num_turns >= 2  # at least two tool calls accumulated
+    assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
 async def test_tool_response_image(run_v1, tmp_path):
     """MCP image content from a tool result survives into the v1 trace (needs a vision model)."""
     (trace,) = await run_v1(

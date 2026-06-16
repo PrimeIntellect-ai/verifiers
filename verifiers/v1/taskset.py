@@ -25,6 +25,7 @@ from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.ids import EnvId, env_name
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.mcp import Toolset, User
+from verifiers.v1.state import StateT
 from verifiers.v1.task import TaskT
 from verifiers.v1.trace import Trace
 
@@ -46,9 +47,11 @@ class TasksetConfig(BaseConfig):
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
 
 
-class Taskset(Generic[TaskT, ConfigT]):
-    """Generic over its task and config types, so `self.config` and `load_tasks`
-    are fully typed. Subclass: implement `load_tasks`, add @reward/@metric."""
+class Taskset(Generic[TaskT, ConfigT, StateT]):
+    """Generic over its task, config, and (optional) per-rollout `State` types, so `self.config`,
+    `load_tasks`, and the trace's `state` are fully typed. `StateT` defaults to the base `State`, so a
+    taskset that doesn't customize state writes just `Taskset[MyTask, MyConfig]`. Subclass: implement
+    `load_tasks`, add @reward/@metric."""
 
     NEEDS_CONTAINER: ClassVar[bool] = False
     """Whether this taskset only runs in a container runtime (docker/prime). When True the

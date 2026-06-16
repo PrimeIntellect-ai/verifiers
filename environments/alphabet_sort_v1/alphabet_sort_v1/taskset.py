@@ -24,7 +24,7 @@ from datasets import load_dataset
 
 import verifiers.v1 as vf
 
-from alphabet_sort_v1.servers.user import AlphabetSortUser
+from alphabet_sort_v1.servers.user import AlphabetSortState, AlphabetSortUser
 
 DATASET = "kalomaze/alphabetic-arxiv-authors-it1"
 SEED = 1337420
@@ -55,7 +55,13 @@ class AlphabetSortTask(vf.Task):
     and `num_turns`. The task itself carries no prompt — the simulator opens the conversation."""
 
 
-class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
+class AlphabetSortTaskset(
+    vf.Taskset[AlphabetSortTask, AlphabetSortConfig, AlphabetSortState]
+):
+    @vf.stop
+    async def user_finished(self, trace: vf.Trace) -> bool:
+        return trace.state.user_finished
+
     def load_tasks(self) -> list[AlphabetSortTask]:
         c = self.config
         assert 1 <= c.min_turns <= c.max_turns, "need 1 <= min_turns <= max_turns"
