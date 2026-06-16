@@ -66,7 +66,7 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
         ) from e
 
 
-def _plugin_class(module: ModuleType, base: type, kind: str) -> type:
+def _exported_subclass(module: ModuleType, base: type, kind: str) -> type:
     """The single class exported via `module.__all__` that subclasses `base`. A taskset/harness
     module exports exactly one such class — the walk filters its public names down to subclasses
     of the base, and rejects anything other than exactly one with an informative error."""
@@ -118,12 +118,12 @@ def import_harness(harness_id: str) -> ModuleType:
 
 def taskset_class(taskset_id: str) -> type[Taskset]:
     """The taskset's `Taskset` subclass, exported via its module's `__all__`."""
-    return _plugin_class(import_taskset(taskset_id), Taskset, "taskset")
+    return _exported_subclass(import_taskset(taskset_id), Taskset, "taskset")
 
 
 def harness_class(harness_id: str) -> type[Harness]:
     """The harness's `Harness` subclass, exported via its module's `__all__`."""
-    return _plugin_class(import_harness(harness_id), Harness, "harness")
+    return _exported_subclass(import_harness(harness_id), Harness, "harness")
 
 
 def load_taskset(config: TasksetConfig) -> Taskset:
