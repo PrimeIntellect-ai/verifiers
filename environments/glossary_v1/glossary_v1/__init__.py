@@ -1,28 +1,15 @@
 """glossary: a custom tool server, authored as a vf-native class.
 
-Each task asks the model to look up an entity. The taskset declares its tool server as a
-`vf.Toolset` subclass with `@vf.tool` methods (no FastMCP boilerplate, no separate server
-file): the framework launches it in its own runtime and surfaces its `lookup` tool as
-`facts_lookup`. The reward checks the looked-up fact reached the answer. The simplest tool
-example — contrast `wikispeedia` (per-task state), `wiki_search` (shared), `deepwiki` (remote).
+Each task asks the model to look up an entity. The tool server is a `vf.Toolset` subclass in
+`servers/facts.py` (`@vf.tool` methods, no FastMCP boilerplate); the framework launches it in its
+own runtime and surfaces its `lookup` tool as `facts_lookup`. The reward checks the looked-up fact
+reached the answer. The simplest tool example — contrast `wikispeedia` (per-task state),
+`wiki_search` (shared), `deepwiki` (remote).
 """
-
-import json
-from pathlib import Path
 
 import verifiers.v1 as vf
 
-HERE = Path(__file__).resolve().parent
-FACTS: dict[str, str] = json.loads((HERE / "facts.json").read_text())
-
-
-class GlossaryToolset(vf.Toolset[vf.ToolsetConfig]):
-    TOOL_PREFIX = "facts"  # the model sees `facts_lookup` (matches the instruction)
-
-    @vf.tool
-    def lookup(self, name: str) -> str:
-        """Look up what a person or thing is known for."""
-        return FACTS.get(name.strip().lower(), "no entry found")
+from glossary_v1.servers.facts import FACTS, GlossaryToolset
 
 
 class GlossaryTask(vf.Task):
@@ -63,7 +50,3 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
 
 def load_taskset(config: GlossaryConfig) -> GlossaryTaskset:
     return GlossaryTaskset(config)
-
-
-if __name__ == "__main__":
-    GlossaryToolset.run()

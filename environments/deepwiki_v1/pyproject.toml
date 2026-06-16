@@ -9,6 +9,6 @@ dependencies = ["verifiers"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build]
-include = ["deepwiki_v1.py", "pyproject.toml"]
+[tool.hatch.build.targets.wheel]
+packages = ["deepwiki_v1"]
 

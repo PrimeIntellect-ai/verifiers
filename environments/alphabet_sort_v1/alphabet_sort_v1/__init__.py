@@ -6,12 +6,12 @@ on each follow-up turn re-sorts the cumulative list — tagging the newly added 
 `<combined_alphabetical_sorted>` tags. The reward is the per-turn sequence similarity to the
 ground truth, power-scaled.
 
-The follow-up turns are supplied by a `vf.User` simulator (`AlphabetSortUser` below): the
-interception server drives the simulator after every assistant turn and injects the next
-follow-up as a user message, so the whole episode is one rollout the harness only ever sees as
-a single exchange. The simulator runs on the host (not colocated in the agent's runtime), so
-the host-driven loop reaches it on every runtime. The episodes are pre-generated in
-`load_tasks`; the simulator replays them.
+The follow-up turns are supplied by a `vf.User` simulator (`AlphabetSortUser` in
+`servers/user.py`): the interception server drives the simulator after every assistant turn and
+injects the next follow-up as a user message, so the whole episode is one rollout the harness
+only ever sees as a single exchange. The simulator runs on the host (not colocated in the
+agent's runtime), so the host-driven loop reaches it on every runtime. The episodes are
+pre-generated in `load_tasks`; the simulator replays them.
 """
 
 import difflib
@@ -22,6 +22,8 @@ from typing import Literal
 from datasets import load_dataset
 
 import verifiers.v1 as vf
+
+from alphabet_sort_v1.servers.user import AlphabetSortUser
 
 DATASET = "kalomaze/alphabetic-arxiv-authors-it1"
 SEED = 1337420
@@ -49,22 +51,6 @@ class AlphabetSortTask(vf.Task):
     info: dict
     """The pre-generated episode: the `follow_ups` the user simulator reveals turn by turn, the
     per-turn `ground_truths` the reward grades against, and `num_turns`."""
-
-
-class AlphabetSortUser(vf.User[vf.UserConfig]):
-    """Replays the episode's pre-generated follow-up turns: one `respond` per assistant turn,
-    injecting the next follow-up as a user message until all turns are done."""
-
-    async def setup_task(self, task) -> None:
-        self.follow_ups = task.info["follow_ups"]  # per-task input, from the task
-        self.num_turns = task.info["num_turns"]  # per-task input
-        self.turns = 0  # per-rollout mutable state
-
-    async def respond(self, message: str) -> tuple[vf.Messages, bool]:
-        self.turns += 1
-        if self.turns >= self.num_turns:
-            return [], True
-        return [{"role": "user", "content": self.follow_ups[self.turns - 1]}], False
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):

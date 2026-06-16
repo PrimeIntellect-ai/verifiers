@@ -2,10 +2,9 @@
 
 The other tool examples ship a server the harness runs (`glossary` host-side, `wikispeedia`
 its own runtime, `wiki_search` shared); this one points at a live, public streamable-HTTP MCP
-server — DeepWiki (https://mcp.deepwiki.com/mcp), which answers questions about GitHub repos.
-It's a `vf.Toolset` with no `@tool` methods: setting `url` on its config makes the framework
-connect to the remote directly (no launch, placement ignored), and the harness exposes its
-tools as `deepwiki_<tool>`. Each task asks the model to use `deepwiki_ask_question` for a
+server — DeepWiki, which answers questions about GitHub repos. The `DeepWikiToolset` in
+`servers/deepwiki.py` has no `@tool` methods: setting `url` on its config makes the framework
+connect to the remote directly. Each task asks the model to use `deepwiki_ask_question` for a
 repo's primary language; the reward checks the answer.
 
 Runs in docker (the harness installs the mcp client there and needs outbound net).
@@ -13,17 +12,13 @@ Runs in docker (the harness installs the mcp client there and needs outbound net
 
 import verifiers.v1 as vf
 
-DEEPWIKI_URL = "https://mcp.deepwiki.com/mcp"
+from deepwiki_v1.servers.deepwiki import DEEPWIKI_URL, DeepWikiToolset
 
 # (repo, expected language) — unambiguous, well-indexed repos.
 TASKS = [
     ("modelcontextprotocol/python-sdk", "python"),
     ("tokio-rs/tokio", "rust"),
 ]
-
-
-class DeepWikiToolset(vf.Toolset[vf.ToolsetConfig]):
-    TOOL_PREFIX = "deepwiki"  # a remote server (config.url) — no @tool methods; model sees `deepwiki_<tool>`
 
 
 class DeepWikiTask(vf.Task):
