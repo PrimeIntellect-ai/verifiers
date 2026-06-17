@@ -47,6 +47,14 @@ def get_environments() -> list[Path]:
     # Filter out skipped environments
     all_envs = [env for env in all_envs if env.name not in SKIPPED_ENVS]
 
+    # These are v0 smoke tests (vf.load_environment + vf-eval). The v1 plugins (the `_v1`
+    # tasksets + the `compact` harness) are id-referenced and covered by tests/v1/test_envs.py.
+    all_envs = [
+        env
+        for env in all_envs
+        if not env.name.endswith("_v1") and env.name != "compact"
+    ]
+
     # Filter environments if CHANGED_ENVS is set (for PRs)
     changed_envs = os.getenv("CHANGED_ENVS")
     if changed_envs == "none":
