@@ -231,7 +231,9 @@ def serve_forked(app, sock: socket.socket, server) -> None:
             url = f"http://127.0.0.1:{child.port}{scope['path']}" + (
                 f"?{qs}" if qs else ""
             )
-            req = client.build_request(scope["method"], url, headers=headers, content=body)
+            req = client.build_request(
+                scope["method"], url, headers=headers, content=body
+            )
             resp = await client.send(req, stream=True)
             try:
                 out = [
@@ -251,7 +253,9 @@ def serve_forked(app, sock: socket.socket, server) -> None:
                     await send(
                         {"type": "http.response.body", "body": chunk, "more_body": True}
                     )
-                await send({"type": "http.response.body", "body": b"", "more_body": False})
+                await send(
+                    {"type": "http.response.body", "body": b"", "more_body": False}
+                )
             finally:
                 await resp.aclose()
         except Exception as exc:
