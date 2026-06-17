@@ -8,6 +8,7 @@ starts these in a runtime lives in `launch`.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import functools
 import inspect
@@ -54,6 +55,18 @@ def _request_query(name: str) -> str | None:
     except LookupError:
         return None
     return request.query_params.get(name) if request is not None else None
+
+
+def _die_with_parent() -> None:
+    """Ask the kernel to SIGKILL this process when its parent (the launcher) dies, so a server is
+    never orphaned if its launcher is torn down without stopping it (a backstop to the runtime's
+    own cleanup). Linux-only; a no-op elsewhere. Cleared across `fork`, so a forked child must call
+    it again."""
+    import ctypes
+    import signal
+
+    with contextlib.suppress(Exception):
+        ctypes.CDLL(None).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
 
 
 def _import_ref(ref: str) -> object:
@@ -214,6 +227,7 @@ class ServerBase(Generic[ConfigT, StateT]):
         import uvicorn
         from mcp.server.fastmcp import FastMCP
 
+        _die_with_parent()  # never outlive the launcher that started us, even if it skips cleanup
         host = os.environ.get("MCP_HOST", "127.0.0.1")
         # Bind our own socket up front: `MCP_PORT` when the framework fixed one (a self-publishing
         # runtime's forwarded port), else 0 = an OS-assigned free port — guaranteed free in whatever
@@ -240,9 +254,14 @@ class ServerBase(Generic[ConfigT, StateT]):
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
         mcp = FastMCP(self.server_name, transport_security=security)
         self._register(mcp)
-        server = uvicorn.Server(
-            uvicorn.Config(mcp.streamable_http_app(), log_level="critical")
-        )
+        app = mcp.streamable_http_app()
+        if getattr(self.config, "fork", False):
+            # `setup` ran once above (warm); fork a child per rollout that inherits it (see multiplex).
+            from verifiers.v1.mcp.multiplex import serve_forked
+
+            serve_forked(app, sock)
+            return
+        server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
         asyncio.run(server.serve(sockets=[sock]))
 
     @classmethod

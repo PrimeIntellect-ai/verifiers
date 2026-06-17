@@ -47,6 +47,13 @@ class ToolsetConfig(BaseConfig):
     server's URL), so concurrent rollouts don't corrupt each other — provided the shared server runs
     on a local runtime (the default), which can reach the host's interception server. Mutually
     exclusive with `colocated`."""
+    fork: bool = False
+    """For a `shared` server: fork a child process per rollout (copy-on-write memory + a private
+    working dir), so per-rollout state that can't live in `self.state` — module globals, a mutated
+    in-memory object, relative-path on-disk writes — is isolated per rollout automatically. The
+    expensive `setup` runs once in the parent; each child inherits it warm (see
+    `verifiers.v1.mcp.multiplex`). Requires `shared` + a local runtime. Linux/fork only; not for
+    CUDA/GPU state or background threads in the server."""
     runtime: RuntimeConfig = SubprocessConfig()
     """The server's own runtime, used unless `colocated` (host/subprocess by default — always
     reachable from any harness runtime; set docker/prime to isolate it in its own sandbox)."""
@@ -56,9 +63,13 @@ class ToolsetConfig(BaseConfig):
     needs no `@tool` methods, the model just sees the remote's tools as `<name>_<tool>`."""
 
     @model_validator(mode="after")
-    def reject_colocated_and_shared(self) -> "ToolsetConfig":
+    def _validate_placement(self) -> "ToolsetConfig":
         if self.colocated and self.shared:
             raise ValueError("colocated and shared are mutually exclusive")
+        if self.fork and not self.shared:
+            raise ValueError(
+                "fork requires shared — a per-rollout server already runs in its own process"
+            )
         return self
 
 

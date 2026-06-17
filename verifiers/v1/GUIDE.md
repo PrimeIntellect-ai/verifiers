@@ -236,6 +236,7 @@ taskset's own config), so it's per-server and CLI-tunable (`--taskset.tools.runt
 | own per-rollout runtime | `runtime = {type = "docker"/"prime"}`, reached over a tunnel |
 | colocated | `colocated = true` — inside the harness's runtime (reached in-sandbox, no tunnel) |
 | shared (tools only) | `shared = true` — one instance built once for the whole eval (still writable: each rollout's `self.state` stays isolated) |
+| shared + fork (tools only) | `shared = true, fork = true` — fork a child per rollout (copy-on-write) so per-rollout state that can't live in `self.state` (module globals, on-disk writes) is isolated too |
 | remote (tools only) | an existing server, by `url` |
 
 ### Learn from the examples
@@ -251,7 +252,7 @@ The `*_v1` tasksets under `environments/` are the reference library — each sho
 | `glossary-v1` | the simplest tool server (own host runtime) |
 | `wikispeedia-v1` | a stateful tool server (global `setup` + per-task `setup_task`) |
 | `wiki-search-v1` | a shared, read-only tool server (built once) + an LLM judge |
-| `scratchpad-v1` | a shared, **writable** tool server — per-rollout state isolated via `self.state` |
+| `scratchpad-v1` | a shared, **writable** tool server — per-rollout state isolated via `self.state` (or `--taskset.tools.fork true` for state outside it) |
 | `deepwiki-v1` | an existing remote tool server, by URL |
 | `color-codeword-v1` | a multimodal (image) task |
 | `scaleswe-v1`, `swelego-v1`, `r2e-gym-v1` | containerized SWE tasks (rlm harness, prime runtime) |

@@ -277,6 +277,11 @@ async def serve(
             "task-agnostic work into `setup`, or drop `shared` to run it per-rollout.",
             server.server_name,
         )
+    if shared and getattr(cfg, "fork", False) and not runtime_is_local(cfg.runtime):
+        raise ValueError(
+            f"forked shared server {server.server_name!r} needs a local runtime — the per-rollout "
+            "key is only tagged onto a local shared server's URL (set its runtime back to subprocess)"
+        )
     async with contextlib.AsyncExitStack() as stack:
         if cfg.colocated and agent_runtime is not None:
             runtime = agent_runtime
@@ -364,6 +369,19 @@ def _shared_url_for_rollout(
     return urlunsplit(parts._replace(query=urlencode(query)))
 
 
+async def _reap_forked_child(shared_url: str, secret: str) -> None:
+    """Best-effort: POST `/vf/close` to reap this rollout's forked child on teardown (a `fork` shared
+    server, see `multiplex`); the multiplexer also reaps by idle TTL and when it exits."""
+    close_url = (
+        f"{shared_url.rsplit('/mcp', 1)[0]}/vf/close?{STATE_SECRET_PARAM}={secret}"
+    )
+    with contextlib.suppress(Exception):
+        import httpx
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(close_url)
+
+
 @contextlib.asynccontextmanager
 async def serve_tools(
     toolsets: list[Toolset],
@@ -395,6 +413,11 @@ async def serve_tools(
                 # log the untagged base, NOT urls[name] — the per-rollout tag carries the rollout's
                 # bearer secret (`vf_state_secret`), which must not reach a log sink
                 logger.info("tool server '%s' (shared): %s", name, shared_urls[name])
+                if getattr(cfg, "fork", False) and state_secret:
+                    # reap this rollout's forked child when the rollout's tool-serving scope exits
+                    stack.push_async_callback(
+                        _reap_forked_child, shared_urls[name], state_secret
+                    )
             else:
                 urls[name] = await stack.enter_async_context(
                     serve(
