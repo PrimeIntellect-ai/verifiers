@@ -103,7 +103,8 @@ def Overview(config: EvalConfig) -> Table:
                 style="yellow",
             ),
         )
-    grid.add_row("model", f"{config.model}  ({sampling})" if sampling else config.model)
+    model = f"{config.model}  ({sampling})" if sampling else config.model
+    grid.add_row("model", f"{model}  via {config.client.base_url}")
     grid.add_row("limits", _limits(config))
     grid.add_row("timeouts", _timeouts(config))
     grid.add_row("retries", _retries(config))
