@@ -41,8 +41,12 @@ class ToolsetConfig(BaseConfig):
     package + `verifiers` (a per-rollout cost), so prefer the default own-runtime placement
     unless co-locating genuinely helps."""
     shared: bool = False
-    """Run one server instance for the whole eval, shared across rollouts (in its own
-    `runtime`). Mutually exclusive with `colocated`."""
+    """Run one server instance for the whole eval, shared across rollouts (in its own `runtime`) —
+    pays an expensive `setup` (a corpus/index) once. It may still be writable: each rollout reads and
+    writes its OWN `self.state` (the framework tags the per-rollout state channel onto the shared
+    server's URL), so concurrent rollouts don't corrupt each other — provided the shared server runs
+    on a local runtime (the default), which can reach the host's interception server. Mutually
+    exclusive with `colocated`."""
     runtime: RuntimeConfig = SubprocessConfig()
     """The server's own runtime, used unless `colocated` (host/subprocess by default — always
     reachable from any harness runtime; set docker/prime to isolate it in its own sandbox)."""

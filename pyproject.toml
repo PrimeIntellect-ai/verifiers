@@ -84,7 +84,7 @@ examples = [
     "gsm8k-v1", "wikispeedia-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
     "reverse-text-v1", "math-env-v1", "aime24-v1", "color-codeword-v1",
     "wordle-v1", "terminal-bench-2-v1", "alphabet-sort-v1",
-    "r2e-gym-v1", "scaleswe-v1", "swelego-v1",
+    "r2e-gym-v1", "scaleswe-v1", "swelego-v1", "scratchpad-v1",
 ]
 
 [project.optional-dependencies]
@@ -157,6 +157,7 @@ r2e-gym-v1 = { path = "environments/r2e_gym_v1", editable = true }
 scaleswe-v1 = { path = "environments/scaleswe_v1", editable = true }
 swelego-v1 = { path = "environments/swelego_v1", editable = true }
 alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
+scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
