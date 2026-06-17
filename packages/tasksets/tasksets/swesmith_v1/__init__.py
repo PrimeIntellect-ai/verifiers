@@ -13,6 +13,8 @@ from textwrap import dedent
 
 import verifiers.v1 as vf
 
+__all__ = ["SWESmithConfig", "SWESmithTask", "SWESmithTaskset"]
+
 LANGUAGE_TO_DATASET = {
     "py": "SWE-bench/SWE-smith-py",
     "go": "SWE-bench/SWE-smith-go",

@@ -15,6 +15,8 @@ import verifiers.v1 as vf
 # example package does not unexpectedly change repo logging behavior.
 import swebench  # noqa: F401
 
+__all__ = ["SWEBenchConfig", "SWEBenchTask", "SWEBenchTaskset"]
+
 logging.root.handlers.clear()
 logger = logging.getLogger(__name__)
 

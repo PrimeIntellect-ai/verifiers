@@ -15,6 +15,8 @@ import verifiers.v1 as vf
 from . import log_parsers
 from .test_patch import get_modified_files, get_new_files
 
+__all__ = ["SWERebenchV2Config", "SWERebenchV2Task", "SWERebenchV2Taskset"]
+
 DATASET = "PrimeIntellect/SWE-rebench-V2"
 
 ENV = {

@@ -11,6 +11,8 @@ from typing import Any
 
 import verifiers.v1 as vf
 
+__all__ = ["MultiSWEConfig", "MultiSWETask", "MultiSWETaskset"]
+
 DATASET = "PrimeIntellect/Multi-SWE-RL"
 REGISTRY = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
 SCRIPT = (Path(__file__).parent / "extract_fix_patch.sh").read_bytes()

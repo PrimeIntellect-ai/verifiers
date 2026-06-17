@@ -10,6 +10,8 @@ import re
 
 import verifiers.v1 as vf
 
+__all__ = ["OpenSWEConfig", "OpenSWETask", "OpenSWETaskset"]
+
 DATASET = "GAIR/OpenSWE"
 CONFIG = "openswe_oss"
 PRIME_TEAM = "team-clyvldofb0000gg1kx39rgzjq"
