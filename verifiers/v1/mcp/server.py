@@ -8,6 +8,7 @@ starts these in a runtime lives in `launch`.
 
 from __future__ import annotations
 
+import contextvars
 import functools
 import inspect
 import os
@@ -15,7 +16,7 @@ from typing import TYPE_CHECKING, Callable, ClassVar, Generic, TypeVar, get_args
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.state import StateT, state_cls
+from verifiers.v1.state import State, StateT, state_cls
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -24,6 +25,35 @@ ConfigT = TypeVar("ConfigT", bound=BaseConfig)
 
 STATE_TIMEOUT = 30.0
 """Seconds for a state-channel GET/PUT (localhost, or a tunnel to the host)."""
+
+# A `shared` server is one process for the whole eval, so it can't take a per-rollout state channel
+# from its environment like a per-rollout server does. Instead the framework tags each rollout's URL
+# to a shared server with that rollout's channel coordinates as these query params (`serve_tools`);
+# `_state_channel` reads them back per call from the MCP request, so `self.state` is the CALLING
+# rollout's state. The secret is the bearer token the harness already holds — no new exposure.
+STATE_URL_PARAM = "vf_state_url"
+STATE_SECRET_PARAM = "vf_state_secret"
+
+# The in-flight call's pulled `self.state`, set per call by `_with_state`. Per-call (not an instance
+# attribute) so concurrent calls — including different rollouts on one `shared` server — each see
+# their own state and never clobber each other.
+_call_state: contextvars.ContextVar[State | None] = contextvars.ContextVar(
+    "vf_call_state", default=None
+)
+
+
+def _request_query(name: str) -> str | None:
+    """A query param of the in-flight tool/respond call's HTTP request, read from MCP's per-call
+    request context (streamable HTTP threads the originating request through to the handler) — or
+    None outside an HTTP call. How a `shared` server reads the per-rollout state coordinates the
+    framework tagged on its URL."""
+    from mcp.server.lowlevel.server import request_ctx
+
+    try:
+        request = request_ctx.get().request
+    except LookupError:
+        return None
+    return request.query_params.get(name) if request is not None else None
 
 
 def _import_ref(ref: str) -> object:
@@ -62,38 +92,56 @@ class ServerBase(Generic[ConfigT, StateT]):
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
-        self.state: StateT = state_cls(type(self))()
-        """The rollout's shared runtime state, refreshed from the channel before each tool/respond
-        call (see `_with_state`). Outside a rollout it's just a fresh, inert `State`."""
+        self._state_cls = state_cls(type(self))
+        self._inert_state: StateT = self._state_cls()  # type: ignore[assignment]
+        """A fresh state used outside a tool/respond call (setup, or a manual debug run) — there's
+        no channel to sync, so writes to it don't escape the process (matches the no-channel case)."""
+
+    @property
+    def state(self) -> StateT:
+        """The rollout's shared runtime state for the in-flight tool/respond call, refreshed from the
+        interception server's channel before the call and pushed back after (see `_with_state`).
+        Backed by a per-call contextvar, so concurrent calls — including different rollouts on one
+        `shared` server — each see their own state and never clobber each other. Outside a call it's
+        a fresh, inert `State`."""
+        current = _call_state.get()
+        return current if current is not None else self._inert_state  # type: ignore[return-value]
 
     def _state_channel(self) -> tuple[str | None, str]:
-        """The interception server's state channel `(url, secret)` the framework injected for this
-        rollout — `(None, "")` when the server runs outside a rollout (a manual debug run)."""
-        return os.environ.get("VF_STATE_URL"), os.environ.get("VF_STATE_SECRET", "")
+        """The interception server's state channel `(url, secret)` for the in-flight call: the
+        per-rollout coordinates the framework tagged on a `shared` server's URL (read per call from
+        the MCP request), else the per-process channel it set in the environment (a per-rollout
+        server), else `(None, "")` (no channel — a manual debug run)."""
+        url = _request_query(STATE_URL_PARAM) or os.environ.get("VF_STATE_URL")
+        secret = _request_query(STATE_SECRET_PARAM) or os.environ.get(
+            "VF_STATE_SECRET", ""
+        )
+        return url, secret
 
-    async def _pull_state(self) -> dict:
-        """Refresh `self.state` from the shared channel (so it reflects other servers' writes) and
-        return its JSON snapshot for change detection. Without a channel, reset to a fresh state."""
+    async def _pull_state(self) -> State:
+        """Fetch the in-flight call's shared state from the channel (so it reflects other servers'
+        writes); a fresh inert state when there's no channel."""
         url, secret = self._state_channel()
-        cls = type(self.state)
+        cls = self._state_cls
         if not url:
-            self.state = cls()
-            return self.state.model_dump(mode="json")
+            return cls()
         import httpx
 
         async with httpx.AsyncClient(timeout=STATE_TIMEOUT) as client:
             resp = await client.get(url, headers={"Authorization": f"Bearer {secret}"})
             resp.raise_for_status()
-            self.state = cls.model_validate(resp.json())
-        return self.state.model_dump(mode="json")
+            return cls.model_validate(resp.json())
 
     async def _push_state(self, before: dict) -> None:
-        """Push `self.state` back to the shared channel if it changed this call. No-op without a
-        channel or when nothing changed."""
+        """Push the in-flight call's `self.state` back to the shared channel if it changed. No-op
+        without a channel or when nothing changed."""
         url, secret = self._state_channel()
         if not url:
             return
-        after = self.state.model_dump(mode="json")
+        state = _call_state.get()
+        after = (state if state is not None else self._inert_state).model_dump(
+            mode="json"
+        )
         if after == before:
             return
         import httpx
@@ -105,10 +153,12 @@ class ServerBase(Generic[ConfigT, StateT]):
             resp.raise_for_status()
 
     def _with_state(self, fn: Callable) -> Callable:
-        """Wrap a tool/respond callable so each invocation pulls the latest shared `self.state`
-        before running and pushes back any change after — the read/write channel a `@vf.tool` and
-        `respond` use via `self.state`. Preserves `fn`'s signature so FastMCP advertises the tool
-        unchanged. A no-op (fresh inert state) when the server runs outside a rollout (no channel).
+        """Wrap a tool/respond callable so each invocation pulls the latest shared state into
+        `self.state` before running and pushes back any change after — the read/write channel a
+        `@vf.tool` and `respond` use via `self.state`. The pulled state lives in a per-call
+        contextvar, so concurrent calls (and concurrent rollouts on a `shared` server) don't share
+        it. Preserves `fn`'s signature so FastMCP advertises the tool unchanged. A no-op (fresh inert
+        state) when the server runs outside a rollout (no channel).
 
         This is a whole-object read-modify-write, so it is **last-write-wins**: calls a harness runs
         concurrently (several `tool_calls` in one turn) race and can lose each other's writes; calls
@@ -116,12 +166,17 @@ class ServerBase(Generic[ConfigT, StateT]):
 
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
-            before = await self._pull_state()
-            result = fn(*args, **kwargs)
-            if inspect.isawaitable(result):
-                result = await result
-            await self._push_state(before)
-            return result
+            state = await self._pull_state()
+            token = _call_state.set(state)
+            try:
+                before = state.model_dump(mode="json")
+                result = fn(*args, **kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
+                await self._push_state(before)
+                return result
+            finally:
+                _call_state.reset(token)
 
         wrapper.__signature__ = inspect.signature(fn)  # type: ignore[attr-defined]
         return wrapper

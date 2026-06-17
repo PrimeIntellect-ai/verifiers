@@ -21,10 +21,17 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from verifiers.v1.errors import ProgramError, RolloutError
-from verifiers.v1.mcp.server import ServerBase
-from verifiers.v1.runtimes import HOST, Runtime, make_runtime, reachable_url
+from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerBase
+from verifiers.v1.runtimes import (
+    HOST,
+    Runtime,
+    make_runtime,
+    reachable_url,
+    runtime_is_local,
+)
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.types import Messages
 
@@ -338,6 +345,25 @@ async def serve_shared(toolsets: list[Toolset], agent_is_local: bool = True):
         yield urls
 
 
+def _shared_url_for_rollout(
+    url: str, toolset: Toolset, state_port: int | None, state_secret: str
+) -> str:
+    """Tag a `shared` server's eval-level URL with this rollout's state-channel coordinates, so the
+    one shared process serves each rollout its OWN `self.state` (the per-rollout isolation a writable
+    shared server needs — read-only ones simply ignore it). Only when the shared server runs on a
+    local runtime, which reaches the host interception server at localhost; a remote shared runtime
+    gets the plain URL (no per-rollout state — read-only-safe, as before). The secret is the bearer
+    token the harness already holds, so tagging it on the URL is no new exposure."""
+    if state_port is None or not runtime_is_local(toolset.config.runtime):
+        return url
+    state_url = f"http://127.0.0.1:{state_port}/state"
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query))
+    query[STATE_URL_PARAM] = state_url
+    query[STATE_SECRET_PARAM] = state_secret
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
 @contextlib.asynccontextmanager
 async def serve_tools(
     toolsets: list[Toolset],
@@ -363,8 +389,10 @@ async def serve_tools(
                 urls[name] = cfg.url
                 logger.info("tool server '%s' (remote): %s", name, cfg.url)
             elif name in shared_urls:  # one shared instance, started eval-level
-                urls[name] = shared_urls[name]
-                logger.info("tool server '%s' (shared): %s", name, shared_urls[name])
+                urls[name] = _shared_url_for_rollout(
+                    shared_urls[name], toolset, state_port, state_secret
+                )
+                logger.info("tool server '%s' (shared): %s", name, urls[name])
             else:
                 urls[name] = await stack.enter_async_context(
                     serve(
