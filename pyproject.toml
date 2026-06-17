@@ -29,11 +29,11 @@ classifiers = [
 dependencies = [
     "anthropic>=0.78.0",
     "datasets>=3.0.0, <4.7.0",
-    "docstring-parser>=0.18.0",
     "numpy",
     "math-verify>=0.8.0",
     "mcp>=1.14.1",
     "openai>=1.108.1",
+    "openai-agents>=0.0.7",
     "prime-tunnel>=0.1.8",
     "prime-sandboxes>=0.2.27",
     "pydantic>=2.11.9",

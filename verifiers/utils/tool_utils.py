@@ -1,10 +1,6 @@
-import inspect
-from collections.abc import Callable
 from typing import Any
 
-from docstring_parser import parse_from_object
-from mcp.server.fastmcp.utilities.func_metadata import func_metadata
-from openai import pydantic_function_tool
+from agents.function_schema import function_schema
 
 from verifiers.types import Tool
 
@@ -26,27 +22,12 @@ def is_valid_tool_content_parts(value: Any) -> bool:
     return True
 
 
-def convert_func_to_tool_def(func: Callable[..., Any]) -> Tool:
+def convert_func_to_tool_def(func: Any) -> Tool:
     """Convert *func* to a provider-agnostic vf.Tool definition."""
-    name = getattr(func, "__name__")
-    doc = parse_from_object(func)
-    model = func_metadata(func, structured_output=False).arg_model
-    model.model_config["title"] = f"{name}_args"
-
-    fields = dict(model.model_fields)
-    fields.update({field.alias: field for field in fields.values() if field.alias})
-    descriptions = {param.arg_name: param.description for param in doc.params}
-    for param in inspect.signature(func).parameters.values():
-        field = fields[param.name]
-        field.description = descriptions.get(param.name) or field.description
-        if param.annotation is inspect.Parameter.empty:
-            field.metadata = []
-    model.model_rebuild(force=True)
-
-    return Tool.model_validate(
-        pydantic_function_tool(
-            model,
-            name=name,
-            description=(doc.description or "").strip(),
-        )["function"]
+    function_schema_obj = function_schema(func)
+    return Tool(
+        name=func.__name__,
+        description=function_schema_obj.description or "",
+        parameters=function_schema_obj.params_json_schema,
+        strict=function_schema_obj.strict_json_schema,
     )
