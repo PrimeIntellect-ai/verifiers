@@ -117,7 +117,14 @@ class ToolMessage(StrictBaseModel):
     tool_call_id: str
     content: MessageContent
     name: str | None = None
-    """The originating tool/function name when it can be recovered from the prompt."""
+    """The originating tool/function name, recovered from the prompt's matching tool call.
+
+    Most renderers key a tool result off `tool_call_id` alone, but some render the function name into
+    the template (GPT-OSS Harmony emits `functions.<name>`, falling back to `functions.unknown`
+    without it — which breaks token parity). The bridge makes this load-bearing: it renders only the
+    new tail (e.g. `[tool, user]`), so the issuing assistant's tool call sits in the already-reused
+    prefix and isn't re-sent — the name can't be recovered from the tail. So the dialect recovers it
+    once while parsing the full prompt and attaches it here, where it rides along into later bridge tails."""
 
 
 Message = Annotated[
