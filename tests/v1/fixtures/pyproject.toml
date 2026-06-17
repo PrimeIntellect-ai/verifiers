@@ -13,6 +13,7 @@ build-backend = "hatchling.build"
 # be importable there. The others (echo_v1, echo_*_v0) have no server, so they never get installed.
 [tool.hatch.build]
 include = [
+    "counter_tool_v1.py",
     "echo_tool_v1.py",
     "echo_user_sim_v1.py",
     "tool_response_image_v1.py",
