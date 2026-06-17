@@ -239,6 +239,12 @@ uv run eval gsm8k-v1 -n 1 --retries.model.max-retries 5 --retries.runtime.max-re
 uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.include ProgramError  # whole-rollout, by exception type
 ```
 
+**Errors.** Expected rollout failures persist on `trace.errors` with their boundary intact:
+provider/auth/schema failures use the `Provider*Error` types, agent implementation or exit
+failures use `HarnessError`, task-tool construction/server failures use `ToolError`, and
+other runtime process/sandbox/tunnel failures use `ProgramError`. MCP `isError` tool results
+remain in-band so the model can recover.
+
 ### Integrations
 
 Some tasksets wrap a whole benchmark family rather than a single task — shipped, installed by

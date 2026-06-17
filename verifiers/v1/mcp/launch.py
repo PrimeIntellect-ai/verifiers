@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from verifiers.v1.errors import ProgramError, RolloutError
+from verifiers.v1.errors import ProgramError, RolloutError, ToolError
 from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerBase
 from verifiers.v1.runtimes import (
     HOST,
@@ -353,9 +353,17 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
             if cfg.url:  # already running remotely
                 urls[name] = cfg.url
             else:
-                urls[name] = await stack.enter_async_context(
-                    serve(toolset, None, harness_is_local=harness_is_local)
-                )
+                try:
+                    urls[name] = await stack.enter_async_context(
+                        serve(toolset, None, harness_is_local=harness_is_local)
+                    )
+                except ToolError:
+                    raise
+                except Exception as e:
+                    raise ToolError(
+                        f"shared tool server {name!r} failed to start: "
+                        f"{type(e).__name__}: {e}"
+                    ) from e
             logger.info("shared tool server '%s': %s", name, urls[name])
         yield urls
 
@@ -441,15 +449,22 @@ async def serve_tools(
                         reap_forked_child, shared_urls[name], state_secret
                     )
             else:
-                urls[name] = await stack.enter_async_context(
-                    serve(
-                        toolset,
-                        task,
-                        harness_runtime,
-                        state_port=state_port,
-                        state_secret=state_secret,
+                try:
+                    urls[name] = await stack.enter_async_context(
+                        serve(
+                            toolset,
+                            task,
+                            harness_runtime,
+                            state_port=state_port,
+                            state_secret=state_secret,
+                        )
                     )
-                )
+                except ToolError:
+                    raise
+                except Exception as e:
+                    raise ToolError(
+                        f"tool server {name!r} failed to start: {type(e).__name__}: {e}"
+                    ) from e
                 logger.info("tool server '%s': %s", name, urls[name])
         yield urls
 

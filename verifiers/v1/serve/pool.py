@@ -10,8 +10,8 @@ A broker binds the client-facing ROUTER (the *same* wire protocol as a lone
 own ipc address — load-balancing requests to the least-busy worker over a `DEALER` per
 worker. The worker's `client_id` (its reply identity) is the broker's DEALER identity;
 the broker holds the real client identity in `pending` and routes the reply back by
-`request_id`. `health` is answered inline (no worker needed); everything else goes to a
-worker.
+`request_id`. `health` is answered inline once every initial worker has entered its
+serving resources; everything else goes to a ready worker.
 
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
@@ -65,7 +65,13 @@ def _arm_teardown(death_pipe=None) -> None:
 
 
 def _worker_entry(
-    *, server_kwargs: dict, address: str, death_pipe, legacy: bool, log_setup=None
+    *,
+    server_kwargs: dict,
+    address: str,
+    death_pipe,
+    ready_event,
+    legacy: bool,
+    log_setup=None,
 ) -> None:
     """Spawned worker: an ordinary EnvServer/LegacyEnvServer bound to `address` (ipc).
     A native config arrives as a dict (`config_data`): the eval/serve CLI's narrowed
@@ -82,7 +88,7 @@ def _worker_entry(
             "config": EnvConfig.model_validate(server_kwargs["config_data"])
         }
     cls = LegacyEnvServer if legacy else EnvServer
-    cls.run_server(address=address, **server_kwargs)
+    cls.run_server(address=address, ready_event=ready_event, **server_kwargs)
 
 
 class EnvServerPool:
@@ -132,12 +138,14 @@ class EnvServerPool:
         i = len(self.workers)  # upscale-only, so the next index is the current count
         address = f"ipc://{self._worker_path(i)}"
         parent_conn, child_conn = self._mpctx.Pipe()
+        ready = self._mpctx.Event()
         proc = self._mpctx.Process(
             target=_worker_entry,
             kwargs=dict(
                 server_kwargs=self.server_kwargs,
                 address=address,
                 death_pipe=child_conn,
+                ready_event=ready,
                 legacy=self.legacy,
                 log_setup=self.log_setup,
             ),
@@ -153,6 +161,7 @@ class EnvServerPool:
                 "process": proc,
                 "dealer": dealer,
                 "pipe": parent_conn,
+                "ready": ready,
                 "active": 0,
                 "index": i,
             }
@@ -199,7 +208,13 @@ class EnvServerPool:
         )
         try:
             while True:
-                events = dict(await self._poller.poll())
+                events = dict(await self._poller.poll(timeout=100))
+                dead = [w for w in self.workers if not w["process"].is_alive()]
+                if dead:
+                    workers = ", ".join(str(w["index"]) for w in dead)
+                    raise RuntimeError(
+                        f"env server worker(s) {workers} exited unexpectedly"
+                    )
                 if self.frontend in events:
                     (
                         client_id,
@@ -208,11 +223,14 @@ class EnvServerPool:
                         payload,
                     ) = await self.frontend.recv_multipart()
                     if method == b"health":
+                        if not all(w["ready"].is_set() for w in self.workers):
+                            continue
                         await self.frontend.send_multipart(
                             [client_id, request_id, _HEALTH]
                         )
                     else:
-                        worker = min(self.workers, key=lambda w: w["active"])
+                        ready = [w for w in self.workers if w["ready"].is_set()]
+                        worker = min(ready or self.workers, key=lambda w: w["active"])
                         worker["active"] += 1
                         pending[request_id] = {"client_id": client_id, "worker": worker}
                         # forward without client_id — the DEALER identity is the worker's

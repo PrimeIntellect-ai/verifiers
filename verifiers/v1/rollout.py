@@ -22,7 +22,7 @@ from enum import StrEnum
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RetryingClient, RolloutContext
 from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.errors import ProgramError, RolloutError
+from verifiers.v1.errors import ProgramError, RolloutError, ToolError
 from verifiers.v1.interception import (
     InterceptionPool,
     InterceptionServer,
@@ -176,7 +176,14 @@ class Rollout:
                 state_port,
                 state_base,
             ):
-                tool_servers = self.taskset.tools(self.task)
+                try:
+                    tool_servers = self.taskset.tools(self.task)
+                except RolloutError:
+                    raise
+                except Exception as e:
+                    raise ToolError(
+                        f"taskset failed to build tool servers: {type(e).__name__}: {e}"
+                    ) from e
                 async with (
                     serve_tools(
                         tool_servers,
@@ -214,10 +221,18 @@ class Rollout:
                             self.harness_timeout,
                         )
                     except TimeoutError:
+                        if session.error is not None:
+                            raise session.error
                         # A timeout is a budget limit, not a crash — score whatever the
                         # harness produced (like max_turns), don't error out. `is_truncated`
                         # is computed from this stop condition.
                         trace.stop("harness_timeout")
+                    except RolloutError as e:
+                        if session.error is not None:
+                            raise session.error from e
+                        raise
+                    if session.error is not None:
+                        raise session.error
             now = time.time()
             trace.timing.generation.end = now
             trace.timing.finalize.start = now

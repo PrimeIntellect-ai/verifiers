@@ -172,10 +172,12 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
         # The SDK sends the key as `x-api-key`; an ANTHROPIC_AUTH_TOKEN arrives as Bearer.
         return headers.get("x-api-key") or super().secret(headers)
 
-    def error_body(self, message: str) -> dict:
+    def error_body(
+        self, message: str, error_type: str = "invalid_request_error"
+    ) -> dict:
         return {
             "type": "error",
-            "error": {"type": "invalid_request_error", "message": message},
+            "error": {"type": error_type, "message": message},
         }
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:

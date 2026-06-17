@@ -75,19 +75,17 @@ class EnvServer:
         self.address = self.frontend.getsockopt_string(zmq.LAST_ENDPOINT)
 
     @classmethod
-    def run_server(cls, address_queue=None, **kwargs) -> None:
+    def run_server(cls, address_queue=None, ready_event=None, **kwargs) -> None:
         """Build and run a server (entry point for a spawned process). If
-        `address_queue` is given, report the concrete bound address on it (so a
-        spawner that passed a `:0` address learns the OS-assigned port) before
-        serving."""
+        `address_queue` is given, report the concrete bound address after the
+        environment's serving resources are ready. Pool workers signal the same
+        point through `ready_event`."""
         # This worker loads the taskset (and any HF datasets it pulls in) and is killed at
         # teardown; pin tqdm to a threading lock first so it never leaks a multiprocessing
         # semaphore (resource_tracker warning at shutdown).
         use_threading_tqdm_lock()
         server = cls(**kwargs)
-        if address_queue is not None:
-            address_queue.put(server.address)
-        asyncio.run(server.run())
+        asyncio.run(server.run(address_queue, ready_event))
 
     def _client(self, client_config: ClientConfig, model: str) -> Client:
         """Resolve (and cache) a `Client` for this config+model. Cached because a
@@ -163,14 +161,7 @@ class EnvServer:
         except zmq.ZMQError as e:
             logger.warning("failed to send response: %s", e)
 
-    async def run(self) -> None:
-        logger.info(
-            "EnvServer up: taskset=%s address=%s tasks=%d group_scoring=%s",
-            self.taskset_id,
-            self.address,
-            len(self.tasks),
-            self.requires_group_scoring,
-        )
+    async def run(self, address_queue=None, ready_event=None) -> None:
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
         tasks: set[asyncio.Task] = set()
@@ -178,6 +169,17 @@ class EnvServer:
         # server's lifetime so they're reused across requests; episodes built per request
         # inherit them (the legacy bridge overrides this to a no-op).
         async with self.serving():
+            if address_queue is not None:
+                address_queue.put(self.address)
+            if ready_event is not None:
+                ready_event.set()
+            logger.info(
+                "EnvServer up: taskset=%s address=%s tasks=%d group_scoring=%s",
+                self.taskset_id,
+                self.address,
+                len(self.tasks),
+                self.requires_group_scoring,
+            )
             try:
                 while True:
                     events = dict(await poller.poll(timeout=100))

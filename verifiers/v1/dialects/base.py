@@ -77,9 +77,11 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         """Whether the request asks for a streamed (SSE) response."""
         return bool(body.get("stream"))
 
-    def error_body(self, message: str) -> dict:
+    def error_body(
+        self, message: str, error_type: str = "invalid_request_error"
+    ) -> dict:
         """An error payload in this format's error shape (OpenAI by default)."""
-        return {"error": {"message": message, "type": "invalid_request_error"}}
+        return {"error": {"message": message, "type": error_type}}
 
     @abstractmethod
     def parse_request(self, body: ReqT) -> tuple[Messages, list[Tool] | None]:

@@ -127,13 +127,16 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
 
     async def score_group(self, traces: list[Trace]) -> None:
         """Score a group of rollouts of one task: run every `@group_reward` over all
-        the traces at once (pairwise/preference rewards), each returning one score per
-        trace, aligned to `traces`. A group reward declares what it needs — `task` (the
-        shared task) and `traces` — and compares trace metadata (anything from the
-        runtime is recorded per rollout as a `@metric` first). Scores are weighted into
-        each trace's reward, alongside the per-rollout rewards. No-op without `@group_reward`s."""
+        successful traces at once (pairwise/preference rewards), each returning one score
+        per trace, aligned to that filtered list. Errored traces never enter environment
+        scoring; if fewer than two valid samples remain, group scoring is skipped. A group
+        reward declares what it needs — `task` (the shared task) and `traces` — and compares
+        trace metadata (anything from the runtime is recorded per rollout as a `@metric`
+        first). Scores are weighted into each trace's reward, alongside the per-rollout
+        rewards. No-op without `@group_reward`s."""
         rewards = discover_decorated(self, "group_reward")
-        if not rewards:
+        traces = [trace for trace in traces if not trace.has_error]
+        if not rewards or len(traces) < 2:
             return
         available = {"task": traces[0].task, "traces": traces}
         for fn, scores in zip(

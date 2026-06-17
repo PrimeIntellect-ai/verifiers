@@ -33,7 +33,13 @@ from pydantic import ValidationError
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1 import graph
-from verifiers.v1.errors import OverlongPromptError
+from verifiers.v1.errors import (
+    OverlongPromptError,
+    ProviderHTTPError,
+    ProviderResponseError,
+    RolloutError,
+    ensure_model_output,
+)
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 
@@ -109,6 +115,10 @@ class RolloutSession:
     every request until the first turn lands on the trace — so a retried opening request (e.g. the
     harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`
     twice and advances the simulator's queue past the opening."""
+    error: RolloutError | None = None
+    """The latest unresolved model-provider failure. The harness sees it as an HTTP error;
+    the rollout later re-raises this original error instead of flattening it into the
+    harness process's secondary ProgramError. A subsequent successful retry clears it."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
@@ -246,6 +256,7 @@ class InterceptionServer:
                     )
                 return web.json_response(completion)
             turn = graph.prepare_turn(session.trace, prompt)
+            session.error = None
             try:
                 response = await session.ctx.client.get_response(
                     dialect,
@@ -256,6 +267,13 @@ class InterceptionServer:
                     session_id=session.trace.id,
                     turn=turn,
                 )
+                # `Response.raw` is the wire response handed to the program 1:1 — the
+                # provider's verbatim bytes (proxy) or the client's serialized completion
+                # (renderer). Commit before returning so an empty response becomes a typed
+                # rollout error rather than reaching scoring.
+                completion = response.raw
+                ensure_model_output(response)
+                turn.commit(response)
             except OverlongPromptError:
                 # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
                 # as a truncation — return the last turn if there is one, else refuse to halt
@@ -268,6 +286,18 @@ class InterceptionServer:
                         status=400,
                     )
                 return web.json_response(completion)
+            except RolloutError as e:
+                session.error = e
+                logger.warning(
+                    "model call failed: id=%s %s: %s",
+                    session.trace.id,
+                    type(e).__name__,
+                    e,
+                )
+                status = e.status_code if isinstance(e, ProviderHTTPError) else 502
+                return web.json_response(
+                    dialect.error_body(str(e), type(e).__name__), status=status
+                )
             except Exception as e:  # surface to the program as an API error
                 logger.warning(
                     "model call failed: id=%s %s: %s",
@@ -275,11 +305,10 @@ class InterceptionServer:
                     type(e).__name__,
                     e,
                 )
-                return web.json_response(dialect.error_body(str(e)), status=502)
-            # `Response.raw` is the wire response handed to the program 1:1 — the provider's
-            # verbatim bytes (proxy) or the client's serialized completion (renderer).
-            completion = response.raw
-            turn.commit(response)  # one node per new message;
+                return web.json_response(
+                    dialect.error_body(str(e), type(e).__name__), status=502
+                )
+            # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
@@ -314,6 +343,7 @@ class InterceptionServer:
             return web.json_response(
                 dialect.error_body(f"rollout stopped: {refused}"), status=400
             )
+        session.error = None
         try:
             turn = graph.prepare_turn(session.trace, prompt)
             reply = await session.ctx.client.relay(
@@ -330,9 +360,23 @@ class InterceptionServer:
             return web.json_response(
                 dialect.error_body("rollout stopped: context_length"), status=400
             )
+        except RolloutError as e:
+            session.error = e
+            logger.warning(
+                "model call failed: id=%s %s: %s",
+                session.trace.id,
+                type(e).__name__,
+                e,
+            )
+            status = e.status_code if isinstance(e, ProviderHTTPError) else 502
+            return web.json_response(
+                dialect.error_body(str(e), type(e).__name__), status=status
+            )
         except Exception as e:  # surface to the program as an API error
             logger.warning("model call failed: id=%s %s", session.trace.id, e)
-            return web.json_response(dialect.error_body(str(e)), status=502)
+            return web.json_response(
+                dialect.error_body(str(e), type(e).__name__), status=502
+            )
         resp = web.StreamResponse(
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
         )
@@ -357,13 +401,45 @@ class InterceptionServer:
                 next_chunk = asyncio.create_task(anext(chunks, None))
         except ConnectionResetError:
             return resp
+        except RolloutError as e:
+            session.error = e
+            logger.warning(
+                "model stream failed: id=%s %s: %s",
+                session.trace.id,
+                type(e).__name__,
+                e,
+            )
         finally:
             next_chunk.cancel()
             await asyncio.gather(next_chunk, return_exceptions=True)
             await reply.close()
 
+        if session.error is not None:
+            with contextlib.suppress(ConnectionResetError):
+                await resp.write_eof()
+            return resp
         try:
-            turn.commit(dialect.parse_stream(bytes(buffer)))
+            response = dialect.parse_stream(bytes(buffer))
+            ensure_model_output(response)
+            turn.commit(response)
+        except RolloutError as e:
+            session.error = e
+            logger.warning(
+                "model stream failed: id=%s %s: %s",
+                session.trace.id,
+                type(e).__name__,
+                e,
+            )
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError) as e:
+            session.error = ProviderResponseError(
+                f"provider stream did not match {type(dialect).__name__}: {e}"
+            )
+            logger.warning(
+                "model stream failed: id=%s %s: %s",
+                session.trace.id,
+                type(session.error).__name__,
+                session.error,
+            )
         finally:
             with contextlib.suppress(ConnectionResetError):
                 await resp.write_eof()
@@ -377,13 +453,28 @@ class InterceptionServer:
         session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
             return web.json_response(dialect.error_body("unauthorized"), status=401)
+        session.error = None
         try:
             result = await session.ctx.client.relay_aux(
                 dialect, route, await request.json()
             )
+        except RolloutError as e:
+            session.error = e
+            logger.warning(
+                "aux call failed: id=%s %s: %s",
+                session.trace.id,
+                type(e).__name__,
+                e,
+            )
+            status = e.status_code if isinstance(e, ProviderHTTPError) else 502
+            return web.json_response(
+                dialect.error_body(str(e), type(e).__name__), status=status
+            )
         except Exception as e:
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
-            return web.json_response(dialect.error_body(str(e)), status=502)
+            return web.json_response(
+                dialect.error_body(str(e), type(e).__name__), status=502
+            )
         return web.json_response(result)
 
     def _session_for(self, request: web.Request) -> RolloutSession | None:

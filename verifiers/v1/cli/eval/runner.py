@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import queue
 import random
 import time
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 _SHUFFLE_SEED = (
     0  # fixed so `--shuffle` samples the same tasks every run (reproducible)
 )
+_SERVER_STARTUP_TIMEOUT = 600
 
 
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
@@ -143,10 +145,40 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
     )
     proc.start()
     child_conn.close()  # the child holds its end; we keep parent_conn so our exit closes it
+    client = None
     try:
-        address = await asyncio.to_thread(address_queue.get, timeout=600)
+        deadline = time.monotonic() + _SERVER_STARTUP_TIMEOUT
+        while True:
+            try:
+                address = address_queue.get_nowait()
+                break
+            except queue.Empty:
+                if not proc.is_alive():
+                    raise RuntimeError(
+                        "env server exited before reporting its address "
+                        f"(exit code {proc.exitcode}); see the worker traceback above"
+                    )
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        "env server did not report its address within "
+                        f"{_SERVER_STARTUP_TIMEOUT}s"
+                    )
+                await asyncio.sleep(0.05)
         client = EnvClient(address=address)
-        await client.wait_for_server_startup(timeout=600)
+        startup = asyncio.create_task(
+            client.wait_for_server_startup(timeout=_SERVER_STARTUP_TIMEOUT)
+        )
+        while not startup.done():
+            if not proc.is_alive():
+                startup.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await startup
+                raise RuntimeError(
+                    "env server exited before becoming healthy "
+                    f"(exit code {proc.exitcode}); see the worker traceback above"
+                )
+            await asyncio.sleep(0.05)
+        await startup
         info = await client.info()
         idxs = list(range(info.num_tasks))
         if config.shuffle:
@@ -217,10 +249,12 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         else:
             units = [run_rollout_unit(i) for i in idxs for _ in range(owed[i])]
         results = await asyncio.gather(*units)
-        await client.close()
         return [trace for unit_traces in results for trace in unit_traces]
     finally:
-        proc.terminate()
+        if client is not None:
+            await client.close()
+        if proc.is_alive():
+            proc.terminate()
         with contextlib.suppress(Exception):
             await asyncio.to_thread(proc.join, 10)
         with contextlib.suppress(Exception):

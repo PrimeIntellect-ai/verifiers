@@ -26,7 +26,22 @@ from verifiers.v1.env import (
     pool_serve_kwargs,
 )
 from verifiers.v1.episode import Episode
-from verifiers.v1.errors import ModelError, ProgramError, RolloutError, ToolError
+from verifiers.v1.errors import (
+    EmptyModelResponseError,
+    HarnessError,
+    InvalidModelResponseError,
+    ModelError,
+    ProgramError,
+    ProviderAuthenticationError,
+    ProviderError,
+    ProviderHTTPError,
+    ProviderRateLimitError,
+    ProviderResponseError,
+    ProviderTimeoutError,
+    ProviderTransportError,
+    RolloutError,
+    ToolError,
+)
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.loaders import (
     harness_config_type,
@@ -133,6 +148,16 @@ __all__ = [
     # errors
     "RolloutError",
     "ModelError",
+    "ProviderError",
+    "ProviderHTTPError",
+    "ProviderAuthenticationError",
+    "ProviderRateLimitError",
+    "ProviderTransportError",
+    "ProviderTimeoutError",
+    "InvalidModelResponseError",
+    "ProviderResponseError",
+    "EmptyModelResponseError",
+    "HarnessError",
     "ToolError",
     "ProgramError",
     # clients

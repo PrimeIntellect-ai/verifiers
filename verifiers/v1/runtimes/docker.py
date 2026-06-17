@@ -39,12 +39,19 @@ class DockerConfig(BaseConfig):
 
 async def docker(*args: str) -> ProgramResult:
     """Run a `docker` CLI command, capturing its result."""
-    proc = await asyncio.create_subprocess_exec(
-        "docker",
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as e:
+        raise ProgramError(
+            "docker runtime selected but the `docker` CLI is not installed"
+        ) from e
+    except OSError as e:
+        raise ProgramError(f"docker command failed to start: {e}") from e
     stdout, stderr = await proc.communicate()
     return ProgramResult(
         exit_code=proc.returncode or 0,
@@ -68,12 +75,7 @@ class DockerRuntime(Runtime):
         return self._container_id
 
     async def start(self) -> None:
-        try:
-            version = await docker("version", "--format", "{{.Server.Version}}")
-        except FileNotFoundError as e:
-            raise RuntimeError(
-                "docker runtime selected but the `docker` CLI is not installed"
-            ) from e
+        version = await docker("version", "--format", "{{.Server.Version}}")
         if version.exit_code != 0:
             detail = (version.stderr or version.stdout).strip()
             hint = ""
@@ -83,7 +85,7 @@ class DockerRuntime(Runtime):
                     'under `sg docker -c "..."`, or add yourself with '
                     "`sudo usermod -aG docker $USER` and start a new login shell."
                 )
-            raise RuntimeError(
+            raise ProgramError(
                 f"docker runtime selected but the Docker daemon is not reachable: {detail}{hint}"
             )
         self._container = self.name
@@ -146,17 +148,20 @@ class DockerRuntime(Runtime):
             raise ProgramError(f"docker exec -d failed: {run.stderr.strip()}")
 
     async def read(self, path: str) -> bytes:
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "exec",
-            "--workdir",
-            self.config.workdir,
-            self._container,
-            "cat",
-            path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "exec",
+                "--workdir",
+                self.config.workdir,
+                self._container,
+                "cat",
+                path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as e:
+            raise ProgramError(f"read {path!r}: docker exec failed: {e}") from e
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             raise ProgramError(
@@ -166,20 +171,23 @@ class DockerRuntime(Runtime):
 
     async def write(self, path: str, data: bytes) -> None:
         parent = shlex.quote(str(PurePosixPath(path).parent))
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "exec",
-            "-i",
-            "--workdir",
-            self.config.workdir,
-            self._container,
-            "sh",
-            "-c",
-            f"mkdir -p {parent} && cat > {shlex.quote(path)}",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "exec",
+                "-i",
+                "--workdir",
+                self.config.workdir,
+                self._container,
+                "sh",
+                "-c",
+                f"mkdir -p {parent} && cat > {shlex.quote(path)}",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as e:
+            raise ProgramError(f"write {path!r}: docker exec failed: {e}") from e
         _, stderr = await proc.communicate(input=data)
         if proc.returncode != 0:
             raise ProgramError(

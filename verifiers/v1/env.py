@@ -22,7 +22,7 @@ from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
-from verifiers.v1.types import EnvId
+from verifiers.v1.errors import ToolError
 from verifiers.v1.interception import InterceptionPool, RolloutLimits
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
@@ -34,6 +34,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
 from verifiers.v1.mcp import serve_shared
+from verifiers.v1.types import EnvId
 
 
 class TimeoutConfig(BaseConfig):
@@ -374,7 +375,15 @@ class Environment:
         data to every rollout); `tools(tasks[0])` here only builds the toolset instances. A shared
         server on a host runtime is bridged to the host once (a tunnel) when the harness runs
         remotely, so an in-sandbox harness can still reach it (see `serve_shared`)."""
-        servers = self.taskset.tools(tasks[0]) if tasks else []
+        try:
+            servers = self.taskset.tools(tasks[0]) if tasks else []
+        except ToolError:
+            raise
+        except Exception as e:
+            raise ToolError(
+                f"taskset failed to build tools for shared-tool discovery: "
+                f"{type(e).__name__}: {e}"
+            ) from e
         if not any(server.config.shared for server in servers):
             yield {}
             return

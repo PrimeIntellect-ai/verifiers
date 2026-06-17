@@ -20,7 +20,12 @@ from renderers import RendererConfig
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
 from verifiers.v1.dialects.chat import message_to_wire
-from verifiers.v1.errors import OverlongPromptError, model_error
+from verifiers.v1.errors import (
+    OverlongPromptError,
+    ProviderResponseError,
+    ensure_model_output,
+    model_error,
+)
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import (
     AssistantMessage,
@@ -274,7 +279,13 @@ class TrainClient(Client):
             raise OverlongPromptError(str(e)) from e
         except OpenAIError as e:
             raise model_error(e) from e
-        response = response_from_generate(result, model, bridged_turn)
+        try:
+            response = response_from_generate(result, model, bridged_turn)
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError) as e:
+            raise ProviderResponseError(
+                f"provider response did not match the renderer schema: {e}"
+            ) from e
+        ensure_model_output(response)
         # No provider response to relay (we generated), so serialize one for the program; the
         # interception server hands `Response.raw` back regardless of client.
         response.raw = serialize_completion(response, model)

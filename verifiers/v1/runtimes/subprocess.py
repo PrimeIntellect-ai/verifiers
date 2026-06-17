@@ -17,6 +17,7 @@ from typing import Literal
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes.base import _ENSURE_UV, ProgramResult, Runtime
 
 # A local subprocess inherits the host environment EXCEPT any var whose name
@@ -54,19 +55,27 @@ class SubprocessRuntime(Runtime):
 
     async def start(self) -> None:
         self.workdir = Path("/tmp") / self.name
-        self.workdir.mkdir()
+        try:
+            self.workdir.mkdir()
+        except OSError as e:
+            raise ProgramError(
+                f"subprocess workspace creation failed at {self.workdir}: {e}"
+            ) from e
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
         full_env.update(env)
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            env=full_env,
-            cwd=self.workdir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,  # own process group, so we can reap the whole tree
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                env=full_env,
+                cwd=self.workdir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,  # own process group, so we can reap the whole tree
+            )
+        except OSError as e:
+            raise ProgramError(f"subprocess launch failed for {argv[0]!r}: {e}") from e
         try:
             stdout, stderr = await proc.communicate()
         finally:
@@ -103,15 +112,20 @@ class SubprocessRuntime(Runtime):
         if sha not in self._interpreters:
             async with self._locks.setdefault(sha, asyncio.Lock()):
                 if sha not in self._interpreters:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(data)
+                    try:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(data)
+                    except OSError as e:
+                        raise ProgramError(
+                            f"failed to stage uv script at {path}: {e}"
+                        ) from e
                     # `uv sync` locks its own cache, so concurrent workers building the same
                     # script are safe; `uv python find` prints the resolved env's interpreter.
                     s = shlex.quote(str(path))
                     cmd = f"{_ENSURE_UV}; uv sync --script {s} -q && uv python find --script {s}"
                     provision = await self.run(["sh", "-c", cmd], {})
                     if provision.exit_code != 0:
-                        raise RuntimeError(
+                        raise ProgramError(
                             f"failed to provision env for {path}: {provision.stderr}"
                         )
                     self._interpreters[sha] = provision.stdout.strip().splitlines()[-1]
@@ -125,28 +139,39 @@ class SubprocessRuntime(Runtime):
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
         full_env.update(env)
         logfile = self.workdir / log
-        with logfile.open(
-            "wb"
-        ) as f:  # child dups the fd; safe to close ours after spawn
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                env=full_env,
-                cwd=self.workdir,
-                stdout=f,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,  # own process group, so cleanup() reaps the whole tree
-            )
+        try:
+            with logfile.open(
+                "wb"
+            ) as f:  # child dups the fd; safe to close ours after spawn
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    env=full_env,
+                    cwd=self.workdir,
+                    stdout=f,
+                    stderr=asyncio.subprocess.STDOUT,
+                    start_new_session=True,  # own process group, so cleanup() reaps the whole tree
+                )
+        except OSError as e:
+            raise ProgramError(
+                f"background subprocess launch failed for {argv[0]!r}: {e}"
+            ) from e
         self._background.append(
             proc
         )  # killed in stop() — a host process won't die on its own
 
     async def read(self, path: str) -> bytes:
-        return await asyncio.to_thread((self.workdir / path).read_bytes)
+        try:
+            return await asyncio.to_thread((self.workdir / path).read_bytes)
+        except OSError as e:
+            raise ProgramError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
         target = self.workdir / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(target.write_bytes, data)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(target.write_bytes, data)
+        except OSError as e:
+            raise ProgramError(f"write {path!r}: {e}") from e
 
     def cleanup(self) -> None:
         for proc in self._background:

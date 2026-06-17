@@ -19,7 +19,13 @@ import httpx
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.dialects import ChatDialect, Dialect
-from verifiers.v1.errors import model_error
+from verifiers.v1.errors import (
+    ProviderResponseError,
+    ProviderTimeoutError,
+    ProviderTransportError,
+    ensure_model_output,
+    provider_http_error,
+)
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, SamplingConfig
 
@@ -89,8 +95,17 @@ class EvalClient(Client):
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
         )
-        raw = resp.json()
-        response = dialect.parse_response(dialect.validate_response(raw))
+        try:
+            raw = resp.json()
+        except ValueError as e:
+            raise ProviderResponseError(f"provider returned malformed JSON: {e}") from e
+        try:
+            response = dialect.parse_response(dialect.validate_response(raw))
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError) as e:
+            raise ProviderResponseError(
+                f"provider response did not match {type(dialect).__name__}: {e}"
+            ) from e
+        ensure_model_output(response)
         response.raw = raw  # the program gets the provider's bytes back 1:1
         return response
 
@@ -129,16 +144,16 @@ class EvalClient(Client):
         request = self.http.build_request("POST", url, json=body, headers=headers)
         try:
             response = await self.http.send(request, stream=stream)
+        except httpx.TimeoutException as e:
+            raise ProviderTimeoutError(f"provider request timed out: {e}") from e
         except httpx.HTTPError as e:
-            raise model_error(str(e)) from e
+            raise ProviderTransportError(f"provider transport failed: {e}") from e
         if not stream:
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
-                # include the status — an empty/HTML body (e.g. a 404 from a base_url missing
-                # `/v1`) would otherwise make an information-free ModelError
-                raise model_error(
-                    f"upstream {e.response.status_code}: {e.response.text}"
+                raise provider_http_error(
+                    e.response.status_code, e.response.text
                 ) from e
             return response
         if response.status_code < 400:
@@ -147,7 +162,7 @@ class EvalClient(Client):
             text = (await response.aread()).decode("utf-8", errors="replace")
         finally:
             await response.aclose()
-        raise model_error(f"upstream {response.status_code}: {text}")
+        raise provider_http_error(response.status_code, text)
 
     async def relay(
         self,
@@ -169,11 +184,16 @@ class EvalClient(Client):
 
         async def chunks():
             buffer = bytearray()
-            async for chunk in resp.aiter_bytes():
-                buffer += chunk
-                while match := _SSE_EVENT_END.search(buffer):
-                    yield bytes(buffer[: match.end()])
-                    del buffer[: match.end()]
+            try:
+                async for chunk in resp.aiter_bytes():
+                    buffer += chunk
+                    while match := _SSE_EVENT_END.search(buffer):
+                        yield bytes(buffer[: match.end()])
+                        del buffer[: match.end()]
+            except httpx.TimeoutException as e:
+                raise ProviderTimeoutError(f"provider stream timed out: {e}") from e
+            except httpx.HTTPError as e:
+                raise ProviderTransportError(f"provider stream failed: {e}") from e
             if buffer:
                 yield bytes(buffer)
 
@@ -190,7 +210,17 @@ class EvalClient(Client):
             body,
             self._headers(dialect, None, None),
         )
-        return resp.json()
+        try:
+            raw = resp.json()
+        except ValueError as e:
+            raise ProviderResponseError(
+                f"provider returned malformed JSON for {route}: {e}"
+            ) from e
+        if not isinstance(raw, dict):
+            raise ProviderResponseError(
+                f"provider returned {type(raw).__name__}, expected an object for {route}"
+            )
+        return raw
 
     async def close(self) -> None:
         await self.http.aclose()
