@@ -11,7 +11,7 @@ from functools import partial
 
 from pydantic_config import cli
 
-from verifiers.v1.cli.log import setup_logging
+from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,

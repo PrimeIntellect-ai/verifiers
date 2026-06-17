@@ -240,4 +240,4 @@ def _validate_env_id(env_id: str) -> str:
 EnvId = Annotated[str, AfterValidator(_validate_env_id)]
 """A taskset / harness / environment id — ``name``, ``org/name``, or ``org/name@version``. A
 plain validated ``str``; derive its package/module name with `env_name` / `env_module`
-(`verifiers.v1.utils`)."""
+(`verifiers.v1.utils.install`)."""

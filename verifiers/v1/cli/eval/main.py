@@ -18,7 +18,7 @@ import sys
 from pydantic_config import cli
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.log import setup_logging
+from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,

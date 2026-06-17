@@ -19,7 +19,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.utils import env_name
+from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import (
     ProgramResult,
     Runtime,

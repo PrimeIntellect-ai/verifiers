@@ -22,7 +22,7 @@ from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
-from verifiers.v1.cli.log import setup_logging
+from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.cli.resolve import (
     extract_id,
     references_config_file,

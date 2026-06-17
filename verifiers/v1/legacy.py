@@ -263,7 +263,7 @@ class LegacyEnvServer(EnvServer):
         extra_env_kwargs: dict | None = None,
     ) -> None:
         from verifiers import load_environment
-        from verifiers.v1.utils import ensure_installed, env_name
+        from verifiers.v1.utils.install import ensure_installed, env_name
 
         self.address = address
         # Install from the env hub on demand for an `org/name[@version]` id, then load the
@@ -394,7 +394,7 @@ def _eval_client(client_config: ClientConfig, model: str):
 def _legacy_output_dir(config) -> Path:
     """The legacy run's output dir, mirroring the native `output_path` shape but keyed by
     the v0 env id (`outputs/<id>--<model>--legacy/<uuid>`); honors `--output-dir`."""
-    from verifiers.v1.utils import env_name
+    from verifiers.v1.utils.install import env_name
 
     if config.output_dir is not None:
         return config.output_dir
@@ -418,7 +418,7 @@ async def run_legacy_eval(config) -> list[Trace]:
     from verifiers import load_environment
 
     from verifiers.v1.cli.output import append_trace, save_config
-    from verifiers.v1.utils import ensure_installed
+    from verifiers.v1.utils.install import ensure_installed
 
     # Install from the env hub on demand for an `org/name[@version]` id (a local id is
     # already importable), then load by module name.

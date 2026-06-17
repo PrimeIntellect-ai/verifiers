@@ -23,7 +23,7 @@ from typing import Callable, get_args, get_origin
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.utils import ensure_installed
+from verifiers.v1.utils.install import ensure_installed
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 

@@ -27,7 +27,7 @@ from verifiers.v1.retries import run_with_retry
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils import trim_memory_periodically
+from verifiers.v1.utils.memory import trim_memory_periodically
 
 if TYPE_CHECKING:
     from verifiers.v1.retries import RolloutRetryConfig
