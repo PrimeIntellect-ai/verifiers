@@ -13,7 +13,7 @@ from pydantic import ConfigDict
 from verifiers.v1.types import Messages, StrictBaseModel
 
 
-class Resources(StrictBaseModel):
+class TaskResources(StrictBaseModel):
     """Runtime resources a task requests (all optional), in Modal's units. Applied to the
     runtime config where the field exists; a field the runtime doesn't support is warned
     about and ignored. Precedence: cli/toml > task > the runtime default (`None` here =
@@ -29,6 +29,23 @@ class Resources(StrictBaseModel):
     """GPU spec, e.g. "A100" or "A100:2" (type[:count])."""
     disk: float | None = None
     """Disk in GB (enforced by prime; advisory on docker/modal)."""
+
+
+class TaskTimeout(StrictBaseModel):
+    """Per-task wall-clock timeout overrides (seconds, all optional), one per rollout stage. Each
+    merges with the eval's `timeout` (`TimeoutConfig`): cli/toml > this > default (no limit).
+    Frozen, like `TaskResources`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    setup: float | None = None
+    """The taskset's `setup` hook."""
+    harness: float | None = None
+    """The harness run."""
+    finalize: float | None = None
+    """The taskset's `finalize` hook."""
+    scoring: float | None = None
+    """Verify + rewards/metrics."""
 
 
 class Task(StrictBaseModel):
@@ -62,19 +79,9 @@ class Task(StrictBaseModel):
     the runtime config's `workdir` (where the runtime supports one). For a containerized
     task whose image puts the working tree at a non-default path (e.g. a SWE row's
     `/workspace/<repo>`)."""
-    setup_timeout: float | None = None
-    """Optional per-task setup timeout (seconds). Merges with the eval's
-    `setup_timeout`: cli/toml > this > default (no limit)."""
-    harness_timeout: float | None = None
-    """Optional per-task harness timeout (seconds). Merges with the eval's
-    `harness_timeout`: cli/toml > this > default (no limit)."""
-    finalize_timeout: float | None = None
-    """Optional per-task finalize timeout (seconds). Merges with the eval's
-    `finalize_timeout`: cli/toml > this > default (no limit)."""
-    scoring_timeout: float | None = None
-    """Optional per-task scoring timeout (seconds). Merges with the eval's
-    `scoring_timeout`: cli/toml > this > default (no limit)."""
-    resources: Resources = Resources()
+    timeout: TaskTimeout = TaskTimeout()
+    """Optional per-task timeout overrides, one per rollout stage (merge with the eval's `timeout`)."""
+    resources: TaskResources = TaskResources()
     """Optional runtime resources this task requests (applied where supported)."""
 
 

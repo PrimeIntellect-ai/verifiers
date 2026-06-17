@@ -79,7 +79,7 @@ async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> dict
     if config.retries.runtime.max_retries > 0:
         runtime = RetryingRuntime(runtime, config.retries.runtime.max_retries)
     setup_timeout = (
-        config.setup_timeout if config.setup_timeout is not None else task.setup_timeout
+        config.setup_timeout if config.setup_timeout is not None else task.timeout.setup
     )
     valid, exc = False, None
     try:

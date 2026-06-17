@@ -49,7 +49,7 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
 )
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import Resources, Task, WireTask
+from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.mcp import (
     Toolset,
@@ -112,7 +112,8 @@ __all__ = [
     # task / trace / state
     "Task",
     "WireTask",
-    "Resources",
+    "TaskResources",
+    "TaskTimeout",
     "Trace",
     "WireTrace",
     "State",

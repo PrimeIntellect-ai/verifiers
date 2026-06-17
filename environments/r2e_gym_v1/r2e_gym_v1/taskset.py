@@ -199,7 +199,7 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
                 workdir=REPO_PATH,
                 expected_output_json=row["expected_output_json"],
                 parsed_commit_content=row.get("parsed_commit_content") or "",
-                resources=vf.Resources(cpu=4, memory=4, disk=10),
+                resources=vf.TaskResources(cpu=4, memory=4, disk=10),
             )
             for i, row in enumerate(rows)
         ]

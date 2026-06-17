@@ -29,7 +29,7 @@ from pydantic import Field
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import Resources, Task
+from verifiers.v1.task import Task, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import StrictBaseModel
@@ -128,9 +128,9 @@ def resolve_image(
     return None
 
 
-def parse_resources(env: dict, multiplier: float = 1.0) -> Resources:
-    """Map a task.toml [environment] block to Resources (0 gpus -> unset)."""
-    return Resources(
+def parse_resources(env: dict, multiplier: float = 1.0) -> TaskResources:
+    """Map a task.toml [environment] block to TaskResources (0 gpus -> unset)."""
+    return TaskResources(
         cpu=env["cpus"] * multiplier if env.get("cpus") else None,
         memory=env["memory_mb"] / 1024 * multiplier if env.get("memory_mb") else None,
         gpu=str(env["gpus"]) if env.get("gpus") else None,
@@ -159,12 +159,14 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
             harbor_config.require_image,
             harbor_config.use_harness_image,
         ),
-        harness_timeout=harness_timeout * harbor_config.timeout_multiplier
-        if harness_timeout is not None
-        else None,
-        scoring_timeout=scoring_timeout * harbor_config.timeout_multiplier
-        if scoring_timeout is not None
-        else None,
+        timeout=TaskTimeout(
+            harness=harness_timeout * harbor_config.timeout_multiplier
+            if harness_timeout is not None
+            else None,
+            scoring=scoring_timeout * harbor_config.timeout_multiplier
+            if scoring_timeout is not None
+            else None,
+        ),
         resources=parse_resources(
             config.get("environment", {}), harbor_config.resource_multiplier
         ),

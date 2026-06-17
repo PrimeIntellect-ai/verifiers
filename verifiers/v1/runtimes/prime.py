@@ -44,7 +44,7 @@ class PrimeConfig(BaseConfig):
     """Max sandbox lifetime in seconds (default 6h; or "auto" = the highest prime
     supports). A hard backstop: the sandbox self-terminates even if local cleanup is
     skipped."""
-    # Resources, in Modal's units (also settable per-task via Task.resources, with
+    # TaskResources, in Modal's units (also settable per-task via Task.resources, with
     # precedence cli/toml > task > this default). Mapped to prime's API in `start`.
     cpu: float = 1.0
     """CPU cores."""

@@ -300,22 +300,22 @@ class Environment:
             )
         runtime_config = self.runtime_for(task)
         setup_timeout = (
-            self.setup_timeout if self.setup_timeout is not None else task.setup_timeout
+            self.setup_timeout if self.setup_timeout is not None else task.timeout.setup
         )
         harness_timeout = (
             self.harness_timeout
             if self.harness_timeout is not None
-            else task.harness_timeout
+            else task.timeout.harness
         )
         finalize_timeout = (
             self.finalize_timeout
             if self.finalize_timeout is not None
-            else task.finalize_timeout
+            else task.timeout.finalize
         )
         scoring_timeout = (
             self.scoring_timeout
             if self.scoring_timeout is not None
-            else task.scoring_timeout
+            else task.timeout.scoring
         )
         retries = self.config.retries
         rollouts = [

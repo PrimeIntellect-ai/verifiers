@@ -40,7 +40,7 @@ class ModalConfig(BaseConfig):
     timeout: int | Literal["auto"] = 21600
     """Max sandbox lifetime in seconds (default 6h; or "auto" = the highest Modal supports,
     24h). A hard backstop: the sandbox self-terminates even if local cleanup is skipped."""
-    # Resources, in Modal's native units (also settable per-task via Task.resources, with
+    # TaskResources, in Modal's native units (also settable per-task via Task.resources, with
     # precedence cli/toml > task > this default).
     cpu: float = 1.0
     """CPU cores."""
