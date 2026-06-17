@@ -50,6 +50,8 @@ class HarnessConfig(BaseConfig):
     env: dict[str, str] = Field(default_factory=dict)
     """Additional environment variables for the harness program. Harness-owned endpoint,
     authentication, and model variables take precedence."""
+    disabled_tools: list[str] | None = None
+    """Harness-specific tool names to disable."""
 
     @property
     def name(self) -> str:
