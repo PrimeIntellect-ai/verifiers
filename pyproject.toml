@@ -111,9 +111,6 @@ quest = [
     "pillow",
     "pymupdf",
 ]
-renderers = [
-    "renderers>=0.1.8.dev40",
-]
 rl = [
     "torch>=2.8.0,<2.9.0",
     "transformers>=4.56.2",

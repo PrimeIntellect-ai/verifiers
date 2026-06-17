@@ -12,21 +12,6 @@ from verifiers.clients.openai_responses_client import OpenAIResponsesClient
 from verifiers.types import ClientConfig
 
 
-def _load_renderer_client():
-    try:
-        from verifiers.clients.renderer_client import RendererClient
-    except ModuleNotFoundError as e:
-        missing = e.name or ""
-        if missing == "renderers" or missing.startswith("renderers."):
-            raise ImportError(
-                "RendererClient requires the renderers extra; install "
-                "`verifiers[renderers]`."
-            ) from e
-        raise
-
-    return RendererClient
-
-
 def resolve_client(client_or_config: Client | ClientConfig) -> Client:
     """Resolves a client or client config to a client."""
     if isinstance(client_or_config, Client):
@@ -44,7 +29,8 @@ def resolve_client(client_or_config: Client | ClientConfig) -> Client:
             case "openai_responses":
                 return OpenAIResponsesClient(client_or_config)
             case "renderer":
-                RendererClient = _load_renderer_client()
+                from verifiers.clients.renderer_client import RendererClient
+
                 return RendererClient(client_or_config)
             case "anthropic_messages":
                 return AnthropicMessagesClient(client_or_config)
@@ -56,7 +42,9 @@ def resolve_client(client_or_config: Client | ClientConfig) -> Client:
 
 def __getattr__(name: str):
     if name == "RendererClient":
-        return _load_renderer_client()
+        from verifiers.clients.renderer_client import RendererClient
+
+        return RendererClient
     raise AttributeError(f"module 'verifiers.clients' has no attribute '{name}'")
 
 

@@ -5728,9 +5728,6 @@ quest = [
     { name = "pillow" },
     { name = "pymupdf" },
 ]
-renderers = [
-    { name = "renderers" },
-]
 rg = [
     { name = "reasoning-gym" },
 ]
@@ -5830,7 +5827,6 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "renderers", specifier = ">=0.1.8.dev40" },
-    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev40" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
@@ -5846,7 +5842,7 @@ requires-dist = [
     { name = "vllm", marker = "extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
     { name = "wandb", marker = "extra == 'rl'" },
 ]
-provides-extras = ["browser", "modal", "notebook", "quest", "renderers", "rg", "rl", "ta"]
+provides-extras = ["browser", "modal", "notebook", "quest", "rg", "rl", "ta"]
 
 [package.metadata.requires-dev]
 dev = [
