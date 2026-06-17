@@ -3,7 +3,13 @@ name = "tasksets"
 version = "0.1.0"
 description = "Built-in tasksets"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "datasets",
+    "huggingface-hub",
+    "multi-swe-bench",
+    "swebench",
+    "swesmith",
+]
 
 [project.optional-dependencies]
 # textarena_v1 (the TextArena taskset) needs the game engine; kept optional so the other

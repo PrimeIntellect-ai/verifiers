@@ -14,7 +14,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-06-09T22:03:15.026746486Z"
+exclude-newer = "2026-06-10T13:15:32.882351953Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -2862,21 +2862,6 @@ wheels = [
 ]
 
 [[package]]
-name = "multiswe-v1"
-version = "0.1.0"
-source = { editable = "environments/multiswe_v1" }
-dependencies = [
-    { name = "datasets" },
-    { name = "multi-swe-bench" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "multi-swe-bench" },
-]
-
-[[package]]
 name = "mypy-extensions"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3270,21 +3255,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4b/33/b5db29a6c00eb8f50708110d8d453747ca125c8b805bc437b289dbdcc057/opencv_python_headless-4.13.0.92-cp37-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:0bd48544f77c68b2941392fcdf9bcd2b9cdf00e98cb8c29b2455d194763cf99e", size = 60391106, upload-time = "2026-02-05T10:30:14.236Z" },
     { url = "https://files.pythonhosted.org/packages/fb/c3/52cfea47cd33e53e8c0fbd6e7c800b457245c1fda7d61660b4ffe9596a7f/opencv_python_headless-4.13.0.92-cp37-abi3-win32.whl", hash = "sha256:a7cf08e5b191f4ebb530791acc0825a7986e0d0dee2a3c491184bd8599848a4b", size = 30812232, upload-time = "2026-02-05T07:02:29.594Z" },
     { url = "https://files.pythonhosted.org/packages/4a/90/b338326131ccb2aaa3c2c85d00f41822c0050139a4bfe723cfd95455bd2d/opencv_python_headless-4.13.0.92-cp37-abi3-win_amd64.whl", hash = "sha256:77a82fe35ddcec0f62c15f2ba8a12ecc2ed4207c17b0902c7a3151ae29f37fb6", size = 40070414, upload-time = "2026-02-05T07:02:26.448Z" },
-]
-
-[[package]]
-name = "openswe-v1"
-version = "0.1.0"
-source = { editable = "environments/openswe_v1" }
-dependencies = [
-    { name = "datasets" },
-    { name = "huggingface-hub" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "huggingface-hub" },
 ]
 
 [[package]]
@@ -5421,35 +5391,9 @@ wheels = [
 ]
 
 [[package]]
-name = "swebench-v1"
-version = "0.1.0"
-source = { editable = "environments/swebench_v1" }
-dependencies = [
-    { name = "datasets" },
-    { name = "swebench" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "swebench" },
-]
-
-[[package]]
 name = "swelego-v1"
 version = "0.1.0"
 source = { editable = "environments/swelego_v1" }
-dependencies = [
-    { name = "datasets" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "datasets" }]
-
-[[package]]
-name = "swerebench-v2-v1"
-version = "0.1.0"
-source = { editable = "environments/swerebench_v2_v1" }
 dependencies = [
     { name = "datasets" },
 ]
@@ -5464,23 +5408,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/07/97/e506b20fa59debc66e4660a86b0e98b45d32c87f23b994ad739e9c5d542a/swesmith-0.0.9.tar.gz", hash = "sha256:1726124ea43577853c6efb0a5a0db5fa3ce5c340e1bed479afa5bab85d8a69da", size = 214830, upload-time = "2026-02-27T01:06:13.455Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/80/2d/71b6ac5dadbe7199085de3815624775744d51b6c554efeeddfb12dc45ce1/swesmith-0.0.9-py3-none-any.whl", hash = "sha256:cbb98a52fc573b38032cde1179b6ce5f5862ce7c31d6931cfd5b8ad4969ce900", size = 275800, upload-time = "2026-02-27T01:06:11.864Z" },
-]
-
-[[package]]
-name = "swesmith-v1"
-version = "0.1.0"
-source = { editable = "environments/swesmith_v1" }
-dependencies = [
-    { name = "datasets" },
-    { name = "swebench" },
-    { name = "swesmith" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets" },
-    { name = "swebench" },
-    { name = "swesmith" },
 ]
 
 [[package]]
@@ -5520,6 +5447,13 @@ wheels = [
 name = "tasksets"
 version = "0.1.0"
 source = { editable = "packages/tasksets" }
+dependencies = [
+    { name = "datasets" },
+    { name = "huggingface-hub" },
+    { name = "multi-swe-bench" },
+    { name = "swebench" },
+    { name = "swesmith" },
+]
 
 [package.optional-dependencies]
 textarena = [
@@ -5529,7 +5463,12 @@ textarena = [
 
 [package.metadata]
 requires-dist = [
+    { name = "datasets" },
+    { name = "huggingface-hub" },
+    { name = "multi-swe-bench" },
     { name = "nltk", marker = "extra == 'textarena'", specifier = ">=3.9.2" },
+    { name = "swebench" },
+    { name = "swesmith" },
     { name = "textarena", marker = "extra == 'textarena'", specifier = "==0.7.4" },
 ]
 provides-extras = ["textarena"]
@@ -6167,15 +6106,10 @@ examples = [
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
     { name = "math-env-v1" },
-    { name = "multiswe-v1" },
-    { name = "openswe-v1" },
     { name = "r2e-gym-v1" },
     { name = "reverse-text-v1" },
     { name = "scaleswe-v1" },
-    { name = "swebench-v1" },
     { name = "swelego-v1" },
-    { name = "swerebench-v2-v1" },
-    { name = "swesmith-v1" },
     { name = "terminal-bench-2-v1" },
     { name = "wiki-search-v1" },
     { name = "wikispeedia-v1" },
@@ -6273,15 +6207,10 @@ examples = [
     { name = "glossary-v1", editable = "environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "environments/gsm8k_v1" },
     { name = "math-env-v1", editable = "environments/math_env_v1" },
-    { name = "multiswe-v1", editable = "environments/multiswe_v1" },
-    { name = "openswe-v1", editable = "environments/openswe_v1" },
     { name = "r2e-gym-v1", editable = "environments/r2e_gym_v1" },
     { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
     { name = "scaleswe-v1", editable = "environments/scaleswe_v1" },
-    { name = "swebench-v1", editable = "environments/swebench_v1" },
     { name = "swelego-v1", editable = "environments/swelego_v1" },
-    { name = "swerebench-v2-v1", editable = "environments/swerebench_v2_v1" },
-    { name = "swesmith-v1", editable = "environments/swesmith_v1" },
     { name = "terminal-bench-2-v1", editable = "environments/terminal_bench_2_v1" },
     { name = "wiki-search-v1", editable = "environments/wiki_search_v1" },
     { name = "wikispeedia-v1", editable = "environments/wikispeedia_v1" },

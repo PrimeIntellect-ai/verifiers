@@ -11,13 +11,9 @@ import re
 import shlex
 
 import verifiers.v1 as vf
-from verifiers.envs.experimental.composable.tasksets.swe.shared.test_patch import (
-    get_modified_files,
-    get_new_files,
-)
-from verifiers.envs.experimental.composable.tasksets.swe.swe_rebench_v2 import (
-    log_parsers,
-)
+
+from . import log_parsers
+from .test_patch import get_modified_files, get_new_files
 
 DATASET = "PrimeIntellect/SWE-rebench-V2"
 
