@@ -269,7 +269,12 @@ class InterceptionServer:
                     )
                 return web.json_response(completion)
             except Exception as e:  # surface to the program as an API error
-                logger.warning("model call failed: id=%s %s", session.trace.id, e)
+                logger.warning(
+                    "model call failed: id=%s %s: %s",
+                    session.trace.id,
+                    type(e).__name__,
+                    e,
+                )
                 return web.json_response(dialect.error_body(str(e)), status=502)
             # `Response.raw` is the wire response handed to the program 1:1 — the provider's
             # verbatim bytes (proxy) or the client's serialized completion (renderer).

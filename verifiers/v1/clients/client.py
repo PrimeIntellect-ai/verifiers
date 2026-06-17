@@ -106,11 +106,12 @@ class RetryingClient(Client):
     def _log_retry(self, state: RetryCallState) -> None:
         # before_sleep fires after a failed attempt, before the imminent retry — so
         # attempt_number is the retry index (1 on the first retry); count out of max_retries.
+        exc = state.outcome.exception()
         logger.warning(
             "retrying model call (retry %d/%d) after error: %s",
             state.attempt_number,
             self.max_retries,
-            state.outcome.exception(),
+            f"{type(exc).__name__}: {exc}",  # name too — some errors stringify empty
         )
 
     async def get_response(

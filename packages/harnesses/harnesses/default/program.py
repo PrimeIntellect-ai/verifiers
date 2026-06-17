@@ -22,8 +22,9 @@ from contextlib import AsyncExitStack
 
 from openai import AsyncOpenAI
 
-# base_url + api_key come from OPENAI_BASE_URL / OPENAI_API_KEY.
-client = AsyncOpenAI()
+# base_url + api_key come from OPENAI_BASE_URL / OPENAI_API_KEY. max_retries=0: the framework
+# already retries model calls at the interception relay, so the SDK's own retries would just nest.
+client = AsyncOpenAI(max_retries=0)
 
 
 async def chat(messages: list[dict], tools: list[dict]):
