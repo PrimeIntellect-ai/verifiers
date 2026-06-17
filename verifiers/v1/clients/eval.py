@@ -135,7 +135,11 @@ class EvalClient(Client):
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
-                raise model_error(e.response.text) from e
+                # include the status — an empty/HTML body (e.g. a 404 from a base_url missing
+                # `/v1`) would otherwise make an information-free ModelError
+                raise model_error(
+                    f"upstream {e.response.status_code}: {e.response.text}"
+                ) from e
             return response
         if response.status_code < 400:
             return response
