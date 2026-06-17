@@ -73,6 +73,19 @@ def _timeouts(config: EvalConfig) -> str:
     return "  ·  ".join(parts)
 
 
+def _warning(config: EvalConfig) -> Text | None:
+    """A local-runtime caution for a code-running harness (none for the tool-less `default`),
+    shown above the overview rather than as a row in it."""
+    if config.harness.id != "default" and config.harness.runtime.type == "subprocess":
+        return Text(
+            "warning  Runs on the local system; local files and settings may affect this "
+            "evaluation. Use subprocess only for debugging, or use docker or prime for an "
+            "isolated run.",
+            style="yellow",
+        )
+    return None
+
+
 def Overview(config: EvalConfig) -> Table:
     sampling = ", ".join(
         f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items()
@@ -84,16 +97,6 @@ def Overview(config: EvalConfig) -> Table:
         "env",
         f"{config.taskset.name}  ·  {config.harness.name} harness  ·  {config.harness.runtime.type} runtime",
     )
-    if config.harness.id != "default" and config.harness.runtime.type == "subprocess":
-        grid.add_row(
-            "warning",
-            Text(
-                "Runs on the local system; local files and settings may affect this "
-                "evaluation. Use subprocess only for debugging, or use docker or prime "
-                "for an isolated run.",
-                style="yellow",
-            ),
-        )
     model = f"{config.model}  ({sampling})" if sampling else config.model
     grid.add_row("model", f"{model}  via {config.client.base_url}")
     grid.add_row("limits", _limits(config))
@@ -230,9 +233,11 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
 
 
 def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
+    warning = _warning(config)
+    # `{warning}\n\n{overview}` — the caution sits at the very top, blank line, then the overview.
+    header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
     return Group(
-        Overview(config),
-        Rule(style="dim"),
+        header,
         Progress(rollouts, start),
         Rule(style="dim"),
         Rows(_groups(rollouts), time.time(), config.harness.runtime.type),
