@@ -244,8 +244,9 @@ uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.incl
 Some tasksets wrap a whole benchmark family rather than a single task — shipped, installed by
 default. For example, `textarena-v1` (TextArena games) and `harbor-v1` (the agentic-
 benchmark registry). Harbor is the showcase: it pulls tasks straight from the Harbor registry
-via the `harbor` CLI (`uv tool install harbor`), each in its own declared, pullable container
-image — e.g. Terminal-Bench 2:
+via the `harbor` CLI (`uv tool install harbor`). Declared container images are used directly;
+Dockerfile-only tasks reuse a matching Prime image or create one through the authenticated
+Prime API — e.g. Terminal-Bench 2:
 
 ```bash
 uv run eval harbor-v1 --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm

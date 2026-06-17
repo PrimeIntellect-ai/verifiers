@@ -11,11 +11,11 @@ The harness runs in a container and edits /app; then the task's verifier
 taskset (the `solved` reward), so a harbor task runs under ANY harness.
 
 A task's declared [environment].docker_image becomes a first-class `Task.image`
-the Environment injects into the runtime (docker/prime both pull it). A task whose
-environment is only a `Dockerfile` has no pullable image — we don't build Dockerfiles
-(a locally-built image isn't pullable by a remote sandbox) — so it's rejected unless
-`ignore_dockerfile`, which runs it on the harness runtime's image instead. A task with
-no environment at all also runs on that image, unless `require_image`.
+the Environment injects into the runtime. For a task that only ships an
+environment/Dockerfile, the taskset reuses a matching image from the authenticated
+Prime image list or creates one with the Prime CLI. `ignore_dockerfile` instead runs
+the task on the harness runtime's image. A task with no environment also runs on that
+image, unless `require_image`.
 """
 
 import io
@@ -26,6 +26,7 @@ from pathlib import Path
 
 from pydantic import Field
 
+from tasksets.harbor_v1.images import ensure_prime_images
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes import Runtime
@@ -49,14 +50,11 @@ class HarborConfig(TasksetConfig):
     """Scale each task's CPU, memory, and disk requests. GPU requests are unchanged."""
     require_image: bool = False
     """For a task with NO declared environment at all (no docker_image, no Dockerfile),
-    whether to reject it (True) or run it on the runtime's default image (False). A task
-    whose environment is a `Dockerfile` is rejected too (building Dockerfiles isn't
-    supported), unless `ignore_dockerfile`."""
+    whether to reject it (True) or run it on the runtime's default image (False)."""
     ignore_dockerfile: bool = False
     """Run a task whose environment is only a `Dockerfile` on the harness runtime's image
-    instead of rejecting it. The Dockerfile is NOT built, so the task scores against the
-    harness image rather than its declared environment — only correct when that image already
-    has what the task needs (e.g. you've pointed the runtime at the right image)."""
+    instead of resolving or building a Prime image. Only correct when the harness image
+    already has what the task needs."""
 
 
 class Author(StrictBaseModel):
@@ -66,7 +64,7 @@ class Author(StrictBaseModel):
 
 class HarborTask(Task):
     """A Harbor task. The base fields carry instruction.md (`prompt`), the
-    resolved container `image`, the `harness_timeout`/`scoring_timeout`/`resources`
+    resolved container `image`, the `timeout`/`resources`
     (from task.toml's [harness]/[verifier]/[environment]), and [task].name/description;
     the rest mirror [metadata]."""
 
@@ -101,26 +99,18 @@ def resolve_image(
     config: dict,
     require_image: bool,
     ignore_dockerfile: bool = False,
+    prime_image: str | None = None,
 ) -> str | None:
-    """The task's declared registry image (usable by docker or prime). A pullable
-    `[environment].docker_image` is used directly. A task whose environment is a
-    `Dockerfile` is rejected — we don't build Dockerfiles, and running it on the default
-    image would silently score against the wrong environment (e.g. SWE-bench's `/testbed`
-    repo would be missing) — unless `ignore_dockerfile`, which returns None to run it on the
-    harness runtime's image. A task with no environment at all runs on that image too, unless
-    `require_image`. None means "use the runtime's own image"."""
+    """Resolve a declared image, a Prime-built Dockerfile image, or the runtime image."""
     declared = config.get("environment", {}).get("docker_image")
     if declared:
         return declared
-    if (task_dir / "environment" / "Dockerfile").exists():
+    if (task_dir / "environment" / "Dockerfile").is_file():
         if ignore_dockerfile:
             return None
-        raise ValueError(
-            f"{task_dir.name}: environment is a Dockerfile, not a pullable "
-            "[environment].docker_image — building Dockerfiles isn't supported, so this "
-            "task can't run (it would otherwise score against the wrong default image). "
-            "Pass --taskset.ignore-dockerfile to run it on the harness runtime's image instead."
-        )
+        if prime_image:
+            return prime_image
+        raise RuntimeError(f"{task_dir.name}: Prime image resolution returned no image")
     if require_image:
         raise ValueError(
             f"{task_dir.name}: no [environment].docker_image and require_image=True"
@@ -138,7 +128,12 @@ def parse_resources(env: dict, multiplier: float = 1.0) -> TaskResources:
     )
 
 
-def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborTask:
+def parse_task(
+    task_dir: Path,
+    idx: int,
+    harbor_config: HarborConfig,
+    prime_image: str | None = None,
+) -> HarborTask:
     """Read a harbor task dir (task.toml + instruction.md) into a typed task,
     handling both the [task].authors and legacy [metadata].author_name layouts."""
     config = tomllib.loads((task_dir / "task.toml").read_text())
@@ -157,7 +152,8 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
             task_dir,
             config,
             harbor_config.require_image,
-            harbor_config.ignore_dockerfile,
+            ignore_dockerfile=harbor_config.ignore_dockerfile,
+            prime_image=prime_image,
         ),
         timeout=TaskTimeout(
             harness=harness_timeout * harbor_config.timeout_multiplier
@@ -201,8 +197,18 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         ]
         if not task_dirs:
             raise ValueError(f"no harbor tasks found in {root}")
+        prime_images = (
+            {}
+            if self.config.ignore_dockerfile
+            else ensure_prime_images(self.config.dataset, task_dirs)
+        )
         return [
-            parse_task(task_dir, idx, self.config)
+            parse_task(
+                task_dir,
+                idx,
+                self.config,
+                prime_image=prime_images.get(task_dir),
+            )
             for idx, task_dir in enumerate(task_dirs)
         ]
 
