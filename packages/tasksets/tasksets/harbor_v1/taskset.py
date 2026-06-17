@@ -271,6 +271,7 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         verifier_runtime: Runtime | None = None
         verifier = task.verifier
         archive = "/tmp/vf-harbor-artifacts.tgz"
+        archive_member = PurePosixPath(archive.lstrip("/"))
         archive_data = b""
         if verifier.image is not None:
             runtime_config = runtime.config
@@ -292,8 +293,10 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                 for path in artifact_paths
                 if not (await runtime.run(["test", "-e", path], {})).exit_code
             ]
+            # Pre-create and exclude the archive so /tmp can itself be an artifact.
+            await runtime.write(archive, b"")
             result = await runtime.run(
-                ["tar", "-czf", archive, *artifact_paths],
+                ["tar", f"--exclude={archive}", "-czf", archive, *artifact_paths],
                 {},
             )
             if result.exit_code:
@@ -318,6 +321,7 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                         if (
                             path.is_absolute()
                             or ".." in path.parts
+                            or path.is_relative_to(archive_member)
                             or not any(path.is_relative_to(root) for root in allowed)
                             or not (member.isfile() or member.isdir())
                         ):
