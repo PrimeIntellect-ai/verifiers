@@ -18,14 +18,10 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-verifiers = "2099-12-31T23:00:00Z"
-prime-pydantic-config = false
-tasksets = "2099-12-31T23:00:00Z"
 prime-tunnel = false
 prime-sandboxes = false
+prime-pydantic-config = false
 renderers = false
-harnesses = "2099-12-31T23:00:00Z"
-prime = "2099-12-31T23:00:00Z"
 
 [[package]]
 name = "accelerate"
