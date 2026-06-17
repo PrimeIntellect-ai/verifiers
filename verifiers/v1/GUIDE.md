@@ -226,18 +226,67 @@ server**). Those attrs are server-local; for per-rollout state **shared** with t
 scoring use the typed `self.state` (`trace.state`, above). Fixed data lives in module constants, not
 config.
 
-**Placement** is config on the server's config (a `vf.ToolsetConfig` / `vf.UserConfig` field on the
-taskset's own config), so it's per-server and CLI-tunable (`--taskset.tools.runtime.type docker`,
-`--taskset.tools.shared true`, `--taskset.user.colocated true`):
+#### Placement & isolation modes
 
-| placement | how |
-| --- | --- |
-| own host runtime (default) | its own `subprocess` runtime on the host, reached over the host network |
-| own per-rollout runtime | `runtime = {type = "docker"/"prime"}`, reached over a tunnel |
-| colocated | `colocated = true` — inside the harness's runtime (reached in-sandbox, no tunnel) |
-| shared (tools only) | `shared = true` — one instance built once for the whole eval (still writable: each rollout's `self.state` stays isolated) |
-| shared + fork (tools only) | `shared = true, fork = true` — fork a child per rollout (copy-on-write) so per-rollout state that can't live in `self.state` (module globals, on-disk writes) is isolated too |
-| remote (tools only) | an existing server, by `url` |
+**Placement** is config on the server's config (a `vf.ToolsetConfig` / `vf.UserConfig` field on the
+taskset's own config), so it's per-server and CLI-tunable without touching code
+(`--taskset.tools.runtime.type docker`, `--taskset.tools.shared true`, `--taskset.user.colocated
+true`). It decides two things: **where** the server runs (which runtime) and **how many** there are
+(one per rollout, or one shared). The default is the cheapest correct thing; the rest trade setup
+cost against isolation.
+
+| mode | config | what |
+| --- | --- | --- |
+| own host runtime (default) | *(nothing)* | its own `subprocess` runtime on the host, **one per rollout** |
+| own per-rollout runtime | `runtime = {type = "docker"\|"prime"}` | its own **sandbox**, one per rollout, reached over a tunnel |
+| colocated | `colocated = true` | inside the **harness's** runtime, one per rollout (reached in-sandbox, no tunnel) |
+| shared | `shared = true` | **one instance** for the whole eval, in its own runtime |
+| shared + fork | `shared = true, fork = true` | one warm parent, a **forked child per rollout** (copy-on-write) |
+| remote (tools only) | `url = "https://…"` | connect to an **already-running** MCP endpoint; placement ignored |
+
+Pros / cons / when to reach for each:
+
+- **own host runtime (default).** Tool server runs on the host where `verifiers` + the env module are
+  already installed, reached from any harness runtime (host network or a tunnel).
+  - *Pros:* nothing to fetch (cheapest launch); one process per rollout ⇒ full isolation, no shared-state worries.
+  - *Cons:* pays `setup` **every rollout** (reloads the corpus/index each time) — wasteful if setup is expensive.
+  - *Use when:* the default. Tools with cheap or no `setup`.
+- **own per-rollout runtime** (`runtime.type = docker|prime`). Its own sandbox per rollout.
+  - *Pros:* the tool server is isolated in a container (untrusted tool code, system deps, network isolation).
+  - *Cons:* a sandbox spin-up **and** an env-package install (uploads the working-tree `verifiers` + env pkg, `uv pip install`) per rollout; a tunnel per server (rate-capped — the interception pool amortizes those); still pays `setup` per rollout.
+  - *Use when:* the tool genuinely needs its own sandbox.
+- **colocated** (`colocated = true`). Runs inside the harness's own runtime, reached in-sandbox at localhost.
+  - *Pros:* no separate runtime or tunnel — reuses the harness's sandbox, lowest latency; lets a tool act on the harness's own filesystem.
+  - *Cons:* in a sandbox the harness runtime must install the env pkg + `verifiers` (a per-rollout cost); couples the tool's life to the harness's. Mutually exclusive with `shared`; pays `setup` per rollout.
+  - *Use when:* the harness already runs in a sandbox and the tool belongs right there.
+- **shared** (`shared = true`). One instance for the whole eval, reused by every rollout.
+  - *Pros:* pays the expensive `setup` (corpus / index / graph) **once** for the whole eval, not per rollout — the big win. Read-only servers are trivially safe. Per-rollout **writable** state still works **if it lives in `self.state`**: the framework tags each rollout's state-channel coordinates onto the shared server's URL (routed by the per-rollout secret), so `self.state` is the calling rollout's state.
+  - *Cons:* one process serves all concurrent rollouts, so any per-rollout state **not** in `self.state` (module globals, instance attrs a tool mutates, relative-path on-disk writes) is shared and **corrupts across rollouts**. `setup_task` is **skipped** (the instance is task-agnostic). The `self.state` routing needs a **local** runtime (a remote shared runtime is read-only-safe, no per-rollout state); `self.state` sync is whole-object, last-write-wins per call.
+  - *Use when:* expensive `setup` + per-rollout state that fits a `State` model (or no per-rollout state at all).
+- **shared + fork** (`shared = true, fork = true`). Warm `setup` once in a parent, then a child forked per rollout (copy-on-write memory + a private working dir); each child runs `setup_task` for its rollout's task. A thin async proxy routes each rollout to its child. **Linux/fork only; local runtime only.**
+  - *Pros:* `setup` once **and** per-rollout isolation of *arbitrary* in-process / on-disk state (module globals, mutated objects, relative writes) — the only automatic option for state that can't live in `self.state`. `setup_task` runs per child, so a stateful per-rollout server (e.g. `wikispeedia-v1`: a big graph in `setup`, nav state in `setup_task`) works shared.
+  - *Cons:* a child **process per concurrent rollout** (memory); copy-on-write erodes for pure-Python state (refcount churn dirties pages) — keep big shared data off-heap (numpy / mmap / an on-disk index) to actually save memory; the single proxy is a **throughput ceiling** (all tool traffic flows through one event loop); fork warmup latency at batch start; not for CUDA/GPU state or background threads in the server.
+  - *Use when:* expensive `setup` + per-rollout state that can't be `self.state`, at moderate concurrency.
+- **remote** (`url = "https://…"`, tools only). Connect to an existing MCP endpoint; no `@tool` methods needed — the model sees its tools as `<name>_<tool>`.
+  - *Pros:* zero hosting; use a public / third-party MCP server (e.g. DeepWiki).
+  - *Cons:* no isolation, state, or lifecycle control — availability, latency and rate limits are the remote's; no per-rollout anything.
+  - *Use when:* an existing external MCP service is what you want.
+
+**Per-rollout state — which mode?** In order of preference: (1) **read-only** shared resource → `shared`
+(no isolation needed); (2) per-rollout state that fits a `State` model → `shared` + `self.state` (no
+extra process — the scalable default); (3) per-rollout state that can't (module globals, on-disk
+scratch, a stateful C library) → `shared + fork`, or a per-rollout placement (own / colocated) that
+pays `setup` each time; (4) cheap `setup` → just use the default (per-rollout, fully isolated, no
+sharing to reason about).
+
+**Scaling.** `self.state` scales freely (state is JSON over the existing channel, no extra processes).
+`fork` is the heavier escape hatch — a process per concurrent rollout, with copy-on-write that only
+pays off when the shared data is off the Python heap, and a single proxy process as the throughput
+ceiling; it's per-node, not global (one warm parent per env-server process). Prefer `self.state`;
+reach for `fork` only when state genuinely can't live there.
+
+**User simulators** support only the per-rollout placements — own runtime (default) or `colocated`;
+`shared` / `fork` / `url` are tools-only (the framework drives one user sim per rollout).
 
 ### Learn from the examples
 

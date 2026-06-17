@@ -30,7 +30,11 @@ class ToolsetConfig(BaseConfig):
       - colocated: in the harness's OWN runtime, per rollout (no tunnel). In a sandbox this means
         the `verifiers` source + the env module are uploaded and `uv pip install`ed there, so it
         costs a per-rollout install.
-      - shared: one instance for the whole eval, in its own `runtime`.
+      - shared: one instance for the whole eval, in its own `runtime` (pays `setup` once; per-rollout
+        writable state stays isolated via `self.state`).
+      - shared + fork: like shared, but a forked child per rollout (copy-on-write) also isolates
+        state that can't live in `self.state`.
+    See the placement/isolation section of `verifiers/v1/GUIDE.md` for the trade-offs of each.
     Subclass to add the server's own knobs (the data its `@tool` methods read). The server name is
     the class's `TOOL_PREFIX` ClassVar, not a field here — it's an identity (the model sees
     `<prefix>_<tool>`, baked into the taskset's instruction), not a tunable knob."""
