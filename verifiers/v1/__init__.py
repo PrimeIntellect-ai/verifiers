@@ -48,7 +48,7 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
 )
-from verifiers.v1.state import State, StateT, WireState
+from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Resources, Task, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.mcp import (
@@ -116,7 +116,6 @@ __all__ = [
     "Trace",
     "WireTrace",
     "State",
-    "WireState",
     "StateT",
     "MessageNode",
     "Branch",

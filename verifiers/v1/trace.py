@@ -21,7 +21,7 @@ from renderers.base import MultiModalData
 
 from verifiers.v1 import graph
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.state import State, StateT, WireState
+from verifiers.v1.state import State, StateT
 from verifiers.v1.task import TaskT, WireTask
 from verifiers.v1.types import (
     AssistantMessage,
@@ -373,8 +373,8 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
 
 TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]
 
-WireTrace = Trace[WireTask, WireState]
-"""A `Trace` typed for loading a dump without the originating taskset — permissive task + state
-(taskset-specific task fields ride in `task.model_extra`; `state` is never serialized). The dump is
-plain pydantic now (no derived computed fields), so load it directly:
+WireTrace = Trace[WireTask]
+"""A `Trace` typed for loading a dump without the originating taskset: taskset-specific task fields
+ride in `task.model_extra` (`WireTask` allows extras); `state` is never serialized so it needs no
+permissive type. The dump is plain pydantic (no derived computed fields), so load it directly:
 `WireTrace.model_validate(json.loads(line))`."""
