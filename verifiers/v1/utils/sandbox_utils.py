@@ -7,7 +7,7 @@ import shlex
 import tarfile
 import tempfile
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, cast
@@ -45,6 +45,34 @@ if TYPE_CHECKING:
 VF_STATE_INPUT_PATH_KEY = "_vf_state_input_path"
 SANDBOX_RETRY_ATTEMPTS = 6
 SANDBOX_WAIT_FOR_CREATION_ATTEMPTS = 120
+# How many times to create a *fresh* sandbox. A new sandbox is only created when
+# the previous one reached a terminal failed state (ERROR/TERMINATED/TIMEOUT),
+# never because readiness could not be observed yet.
+SANDBOX_CREATE_ATTEMPTS = 3
+# How many times to re-poll the *same* sandbox for readiness when the wait fails
+# for a non-terminal reason (transient API error incl. 429, or the readiness
+# budget elapsing while the sandbox is still provisioning).
+SANDBOX_WAIT_RETRY_ATTEMPTS = 4
+# Terminal sandbox states. Reaching one of these means the sandbox itself failed
+# and a brand-new sandbox is the correct recovery.
+TERMINAL_SANDBOX_STATUSES = frozenset({"ERROR", "TERMINATED", "TIMEOUT"})
+# Substrings that identify admission/rate-limit/quota/auth rejections. Retrying
+# these only amplifies load, so the create path must surface them rather than
+# spinning up more sandboxes.
+_SANDBOX_ADMISSION_MARKERS = (
+    "http 429",
+    "rate exceeded",
+    "too many requests",
+    "memory limit",
+    "quota",
+    "api key unauthorized",
+)
+_SANDBOX_ADMISSION_EXC_NAMES = frozenset(
+    {"UnauthorizedError", "PaymentRequiredError", "TunnelAuthError"}
+)
+_TERMINAL_SANDBOX_EXC_NAMES = frozenset(
+    {"SandboxOOMError", "SandboxTimeoutError", "SandboxImagePullError"}
+)
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
@@ -643,6 +671,51 @@ def _program_channel_setup_handler(
     return setup_handler(handler, priority=priority)
 
 
+def _iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def is_sandbox_admission_error(exc: BaseException) -> bool:
+    """Rate-limit / quota / payment / auth rejections.
+
+    Retrying these does not help and only adds more load to an already saturated
+    API, so the create path surfaces them instead of spinning up new sandboxes.
+    """
+    for inner in _iter_exception_chain(exc):
+        if type(inner).__name__ in _SANDBOX_ADMISSION_EXC_NAMES:
+            return True
+        text = str(inner).lower()
+        if any(marker in text for marker in _SANDBOX_ADMISSION_MARKERS):
+            return True
+    return False
+
+
+def is_terminal_sandbox_failure(exc: BaseException) -> bool:
+    """True only when the sandbox itself reached a terminal failed state.
+
+    Distinguishes a genuinely dead sandbox (status ERROR/TERMINATED/TIMEOUT, or
+    an OOM/timeout/image-pull failure) — for which creating a fresh sandbox is
+    the right recovery — from "could not confirm readiness yet" (a readiness
+    budget elapsing while the sandbox is still provisioning, or a transient API
+    error such as a 429 on a poll), for which we must keep waiting the same
+    sandbox rather than create another one.
+    """
+    for inner in _iter_exception_chain(exc):
+        if type(inner).__name__ in _TERMINAL_SANDBOX_EXC_NAMES:
+            return True
+        if getattr(inner, "error_type", None):
+            return True
+        status = getattr(inner, "status", None)
+        if isinstance(status, str) and status.strip().upper() in TERMINAL_SANDBOX_STATUSES:
+            return True
+    return False
+
+
 async def create_sandbox(
     client: SandboxClient,
     sandbox_config: ConfigData,
@@ -690,16 +763,22 @@ async def create_sandbox(
         else None,
         guaranteed=bool(sandbox_config.get("guaranteed", False)),
     )
-    async def _create_and_wait_once() -> str:
+    async def _start_sandbox() -> SandboxRecord:
+        # Issue the create call exactly once. The SDK already retries safe,
+        # idempotent transport failures internally; wrapping create in our own
+        # retry loop turns a single transient blip into several real sandboxes,
+        # so admission/rate-limit failures here must bubble up instead.
         create_task = asyncio.create_task(client.create(request))
         try:
             create_waiter = asyncio.shield(create_task)
             if sandbox_config.get("create_timeout") is not None:
-                sandbox = await asyncio.wait_for(
-                    create_waiter, int_config(sandbox_config, "create_timeout", 0)
+                return cast(
+                    SandboxRecord,
+                    await asyncio.wait_for(
+                        create_waiter, int_config(sandbox_config, "create_timeout", 0)
+                    ),
                 )
-            else:
-                sandbox = await create_waiter
+            return cast(SandboxRecord, await create_waiter)
         except asyncio.CancelledError as cancel_exc:
             try:
                 sandbox = cast(SandboxRecord, await asyncio.shield(create_task))
@@ -721,37 +800,94 @@ async def create_sandbox(
                     client,
                     str(sandbox.id),
                     close_client=False,
-                    reason="cancelled creation",
+                    reason="create timeout",
                 )
             )
             raise
-        sandbox_id = str(sandbox.id)
-        try:
-            wait = client.wait_for_creation(
-                sandbox_id,
-                max_attempts=SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
-            )
-            if sandbox_config.get("wait_timeout") is not None:
-                await asyncio.wait_for(
-                    wait, int_config(sandbox_config, "wait_timeout", 0)
-                )
-            else:
-                await wait
-        except BaseException:
-            delete_task = asyncio.create_task(
-                delete_sandbox_id(
-                    client,
+
+    async def _wait_until_running(sandbox_id: str) -> None:
+        # Wait for THIS sandbox to become ready. If readiness cannot be observed
+        # for a non-terminal reason (a transient API error, including a 429 on a
+        # poll, or the readiness budget elapsing while the sandbox is still
+        # provisioning) we re-poll the same sandbox with backoff. We never delete
+        # and recreate here; only a terminal sandbox state propagates out.
+        for attempt in range(1, SANDBOX_WAIT_RETRY_ATTEMPTS + 1):
+            try:
+                wait = client.wait_for_creation(
                     sandbox_id,
-                    close_client=False,
-                    reason="creation failure",
+                    max_attempts=SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
                 )
+                if sandbox_config.get("wait_timeout") is not None:
+                    await asyncio.wait_for(
+                        wait, int_config(sandbox_config, "wait_timeout", 0)
+                    )
+                else:
+                    await wait
+                return
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                # Caller-imposed wait_timeout: respect the configured bound.
+                raise
+            except BaseException as exc:
+                if is_terminal_sandbox_failure(exc):
+                    raise
+                if attempt >= SANDBOX_WAIT_RETRY_ATTEMPTS:
+                    raise
+                delay = min(2.0**attempt, 30.0)
+                logger.warning(
+                    "Sandbox %s not confirmed running yet (%s: %s); re-polling the "
+                    "same sandbox in %.1fs (attempt %d/%d)",
+                    sandbox_id,
+                    type(exc).__name__,
+                    exc,
+                    delay,
+                    attempt,
+                    SANDBOX_WAIT_RETRY_ATTEMPTS,
+                )
+                await asyncio.sleep(delay)
+
+    async def _abandon_sandbox(sandbox_id: str, *, reason: str) -> None:
+        logger.warning("Abandoning sandbox %s (%s); deleting it", sandbox_id, reason)
+        await asyncio.shield(
+            delete_sandbox_id(
+                client,
+                sandbox_id,
+                close_client=False,
+                reason=reason,
             )
-            await asyncio.shield(delete_task)
-            raise
-        return sandbox_id
+        )
 
     try:
-        return await with_sandbox_retry(_create_and_wait_once)
+        last_exc: BaseException | None = None
+        for cycle in range(1, SANDBOX_CREATE_ATTEMPTS + 1):
+            sandbox = await _start_sandbox()
+            sandbox_id = str(sandbox.id)
+            try:
+                await _wait_until_running(sandbox_id)
+                return sandbox_id
+            except asyncio.CancelledError:
+                await _abandon_sandbox(sandbox_id, reason="cancelled creation")
+                raise
+            except BaseException as exc:
+                await _abandon_sandbox(sandbox_id, reason="provisioning failure")
+                if not is_terminal_sandbox_failure(exc):
+                    # Not recoverable by a fresh sandbox: explicit create/wait
+                    # timeout, persistent rate limiting, or exhausted transient
+                    # re-polls. Surface it rather than spawn more sandboxes.
+                    raise
+                last_exc = exc
+                if cycle < SANDBOX_CREATE_ATTEMPTS:
+                    logger.warning(
+                        "Sandbox %s reached a terminal state (%s); creating a fresh "
+                        "sandbox (cycle %d/%d)",
+                        sandbox_id,
+                        exc,
+                        cycle,
+                        SANDBOX_CREATE_ATTEMPTS,
+                    )
+        assert last_exc is not None
+        raise last_exc
     except BaseException:
         if owns_client:
             await close_sandbox_client(client)
