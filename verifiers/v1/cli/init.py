@@ -12,35 +12,15 @@ a legacy v0 `load_environment` package instead (via `verifiers.scripts.init`).
 import sys
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
-from pydantic_config import BaseConfig, cli
+from pydantic_config import cli
+
+from verifiers.v1.configs.init import InitConfig
 
 USAGE = (
-    "usage: uv run init <name> [--path ./environments] [--add-tool] [--add-user] "
-    "[--add-harness] [--v0]\n"
+    "usage: uv run init <name> [--path ./environments] [-T/--add-tool] [-U/--add-user] "
+    "[-H/--add-harness] [--v0]\n"
     "       scaffold a new v1 environment package (use --v0 for a legacy v0 environment)"
 )
-
-
-class InitConfig(BaseConfig):
-    """What to scaffold. The `name` is the new environment id (a leading bare token, e.g.
-    `init my-task-v1`); the package dir, ids, and class names are derived from it. The
-    `--add-*` flags add optional pieces (tool server, user simulator, custom harness)."""
-
-    name: str = ""
-    """The new environment id, e.g. `my-task-v1` (positional: `init my-task-v1`)."""
-    path: str = Field("./environments", validation_alias=AliasChoices("path", "p"))
-    """Parent directory the package is created in (default `./environments`)."""
-    add_tool: bool = False
-    """Also scaffold a `vf.Toolset` tool server (`servers/tool.py`), wired into the taskset."""
-    add_user: bool = False
-    """Also scaffold a `vf.User` simulator (`servers/user.py`), wired into the taskset."""
-    add_harness: bool = False
-    """Also scaffold a custom `vf.Harness` (`harness.py`), selectable via `--harness.id <name>`."""
-    v0: bool = False
-    """Scaffold a legacy v0 environment (a `load_environment` package) instead of a v1 taskset."""
-    force: bool = False
-    """Overwrite files that already exist (default: keep them, scaffold only what's missing)."""
 
 
 def _names(name: str) -> tuple[str, str, str, str]:
@@ -103,6 +83,9 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str
     local_imports: list[str] = []
     config_extra = ""
     methods: list[str] = []
+    # a user simulator carries per-rollout state and a stop condition, so the taskset is typed with
+    # its `State` subclass; without one it stays on the default `State`.
+    state_param = ""
     if add_tool:
         local_imports.append(f"from {pkg}.servers.tool import {prefix}Toolset")
         config_extra += "\n    tools: vf.ToolsetConfig = vf.ToolsetConfig()"
@@ -111,22 +94,24 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str
             f"        return [{prefix}Toolset(self.config.tools)]"
         )
     if add_user:
-        local_imports.append(f"from {pkg}.servers.user import {prefix}User")
+        local_imports.append(
+            f"from {pkg}.servers.user import {prefix}State, {prefix}User"
+        )
         config_extra += "\n    user: vf.UserConfig = vf.UserConfig()"
+        state_param = f", {prefix}State"
         methods.append(
             f"    def user(self, task: {prefix}Task) -> vf.User:\n"
             f"        return {prefix}User(self.config.user)"
+        )
+        methods.append(
+            "    @vf.stop\n"
+            "    async def user_done(self, trace: vf.Trace) -> bool:\n"
+            "        return trace.state.done"
         )
     if local_imports:
         imports += "\n\n" + "\n".join(local_imports)
     methods_block = "".join(f"\n{m}\n" for m in methods)
     return f'''\
-"""{pkg.replace("_", "-")} — <one-line description of the task>.
-
-A starter v1 taskset: implement `load_tasks` (your tasks + prompts) and the `@reward` (how a
-rollout is scored). See `environments/*_v1` for complete examples.
-"""
-
 {imports}
 
 
@@ -139,11 +124,11 @@ class {prefix}Config(vf.TasksetConfig):
     """How many tasks to build."""{config_extra}
 
 
-class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
+class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config{state_param}]):
     def load_tasks(self) -> list[{prefix}Task]:
         raise NotImplementedError(
             "Return this taskset's tasks, e.g. "
-            "[{prefix}Task(idx=i, instruction=...) for i in range(self.config.num_tasks)]."
+            "[{prefix}Task(idx=i, prompt=...) for i in range(self.config.num_tasks)]."
         )
 {methods_block}
     @vf.reward(weight=1.0)
@@ -154,12 +139,6 @@ class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
 
 def _tool_py(stem: str, prefix: str) -> str:
     return f'''\
-"""A tool server for {stem.replace("_", "-")} — a vf-native `Toolset` (no FastMCP boilerplate).
-
-The framework launches it and surfaces each `@vf.tool` method to the model as `{stem}_<method>`.
-Replace `echo` with your task's tools.
-"""
-
 import verifiers.v1 as vf
 
 
@@ -177,44 +156,30 @@ if __name__ == "__main__":
 '''
 
 
-def _user_py(stem: str, prefix: str) -> str:
-    return f'''\
-"""A user simulator for {stem.replace("_", "-")} — a vf-native `User` driving the conversation.
-
-The framework calls `respond` after each model turn for the next user message(s) + a done flag.
-If a task carries no prompt (`instruction=None`), `respond("")` is called first to open the
-conversation. Replace the logic with your simulated user.
-"""
-
+def _user_py(prefix: str) -> str:
+    return f"""\
 import verifiers.v1 as vf
 
 
-class {prefix}User(vf.User[vf.UserConfig]):
-    async def setup_task(self, task) -> None:
-        self.replied = False
+class {prefix}State(vf.State):
+    done: bool = False
 
-    async def respond(self, message: str) -> tuple[vf.Messages, bool]:
-        if self.replied:
-            return [], True
-        self.replied = True
-        return [{{"role": "user", "content": "Thanks - anything else?"}}], False
+
+class {prefix}User(vf.User[vf.UserConfig, {prefix}State]):
+    async def respond(self, message: str) -> vf.Messages:
+        if self.state.done:
+            return []
+        self.state.done = True
+        return [vf.UserMessage(content="Thanks - anything else?")]
 
 
 if __name__ == "__main__":
     {prefix}User.run()
-'''
+"""
 
 
 def _harness_py(dash: str, prefix: str) -> str:
     return f'''\
-"""A custom harness for {dash} — replace `launch` with how your agent runs.
-
-A harness drives the rollout: it runs a program in `runtime` whose model calls hit the
-interception server at `endpoint` (bearer token `secret`); `mcp_urls` are the task's tool
-servers to wire in. See verifiers' built-in `default` harness for a chat-loop reference. This
-package exports it alongside the taskset, so select it with `--harness.id {dash}`.
-"""
-
 import verifiers.v1 as vf
 
 
@@ -288,6 +253,10 @@ def scaffold(config: InitConfig) -> Path:
     dash, pkg, stem, prefix = _names(config.name)
     env_dir = Path(config.path) / pkg
     pkg_dir = env_dir / pkg
+    if env_dir.exists() and not config.force:
+        raise SystemExit(
+            f"error: {env_dir} already exists - refusing to overwrite (pass --force to overwrite)"
+        )
     print(f"scaffolding v1 environment {dash!r} in {env_dir}")
 
     _write(env_dir / "pyproject.toml", _pyproject(dash, pkg), config.force)
@@ -317,7 +286,7 @@ def scaffold(config: InitConfig) -> Path:
     if config.add_tool:
         _write(pkg_dir / "servers" / "tool.py", _tool_py(stem, prefix), config.force)
     if config.add_user:
-        _write(pkg_dir / "servers" / "user.py", _user_py(stem, prefix), config.force)
+        _write(pkg_dir / "servers" / "user.py", _user_py(prefix), config.force)
 
     print(f"\ndone. next:\n  uv pip install -e {env_dir}\n  uv run eval {dash} -n 3")
     return env_dir

@@ -10,7 +10,7 @@ for the subprocess/docker runtimes), so this taskset uses the subprocess runtime
 Scoring is game-authoritative: when the episode ends the user simulator writes the game's
 own outcome (`env.state.rewards`) to `OUTCOME_FILE` in the runtime, and the reward reads it
 back — so the taskset needs no per-game guess parsing. Each task is reproduced from an RNG
-seed (carried in `info`): the taskset seeds the game to build the instruction and the
+seed (carried in `info`): the taskset seeds the game to build the prompt and the
 simulator re-seeds to the same episode, so no per-game word-list or state-key knowledge is
 needed and any single-player TextArena game fits.
 """
@@ -65,7 +65,7 @@ class TextArenaUser(vf.User[vf.UserConfig, TextArenaState]):
 
     async def setup_task(self, task) -> None:
         # textarena derives a game's whole setup from the global RNG at reset, so seeding it
-        # reproduces the exact episode the taskset built the instruction from — no per-game keys.
+        # reproduces the exact episode the taskset built the prompt from — no per-game keys.
         import random
 
         import textarena
@@ -125,7 +125,7 @@ class TextArenaConfig(vf.TasksetConfig):
 class TextArenaTask(vf.Task):
     info: dict
     """What the user simulator needs to set up the game: the `game` id and the RNG `seed`
-    that reproduces the exact episode this task's instruction was built from."""
+    that reproduces the exact episode this task's prompt was built from."""
 
 
 class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig, TextArenaState]):
@@ -136,7 +136,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig, TextArenaState
     def load_tasks(self) -> list[TextArenaTask]:
         # One task per RNG seed; the simulator re-seeds to reproduce the same episode. Games
         # that embed the per-episode setup in the prompt (WordLadder's start/target,
-        # WordSearch's grid) need the instruction built under each seed; games whose prompt
+        # WordSearch's grid) need the prompt built under each seed; games whose prompt
         # is seed-invariant (Wordle, Hangman) build it once.
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
@@ -153,7 +153,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig, TextArenaState
             TextArenaTask(
                 idx=i,
                 name=f"{self.config.game}#{i}",
-                instruction=observation(i) if seed_specific else first,
+                prompt=observation(i) if seed_specific else first,
                 system_prompt=SYSTEM_PROMPT,
                 info={"game": self.config.game, "seed": i},
             )
@@ -174,3 +174,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig, TextArenaState
         except (FileNotFoundError, OSError):
             return 0.0
         return float(json.loads(data)["reward"])
+
+
+if __name__ == "__main__":
+    TextArenaUser.run()

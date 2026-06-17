@@ -51,7 +51,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        system_prompt, instruction = self.resolve_prompt(trace.task)
+        system_prompt, prompt = self.resolve_prompt(trace.task)
         # rlm reaches the interception server via OPENAI_BASE_URL/API_KEY (its
         # provider precedence falls back to OPENAI_*), and reads RLM_* for itself.
         env = {
@@ -92,7 +92,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         result = await runtime.run(["sh", "-c", guarded], env)
         if result.exit_code != 0:
             raise ProgramError(f"rlm install failed: {result.stderr.strip()[-500:]}")
-        return await runtime.run([RLM_BIN, instruction], env)
+        return await runtime.run([RLM_BIN, prompt], env)
 
     @metric
     async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:

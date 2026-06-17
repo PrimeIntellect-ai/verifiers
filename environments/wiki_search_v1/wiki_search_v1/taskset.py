@@ -74,7 +74,7 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
                 idx=i,
                 question=row["question"],
                 answer=str(row["answer"]),
-                instruction=f"{SYSTEM}\n\nQuestion: {row['question']}",
+                prompt=f"{SYSTEM}\n\nQuestion: {row['question']}",
             )
             for i, row in enumerate(rows.select(range(min(NUM_QUESTIONS, len(rows)))))
         ]

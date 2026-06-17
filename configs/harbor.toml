@@ -1,5 +1,5 @@
 # harbor-v1 — Terminal-Bench 2, each task run in its own declared container image (needs docker).
-# enable_bash turns on the shell tool the agent drives the terminal with.
+# The `bash` harness gives the agent the shell tool it drives the terminal with.
 #
 #   uv run eval @ configs/harbor.toml
 num_tasks = 10
@@ -9,6 +9,5 @@ id = "harbor-v1"
 dataset = "terminal-bench/terminal-bench-2"
 
 [harness]
-id = "default"
+id = "bash"
 runtime = { type = "docker" }
-enable_bash = true

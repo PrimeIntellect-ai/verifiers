@@ -28,7 +28,6 @@ from verifiers.v1.env import (
 from verifiers.v1.episode import Episode
 from verifiers.v1.errors import ModelError, ProgramError, RolloutError, ToolError
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.ids import EnvId, ensure_installed, env_name
 from verifiers.v1.loaders import (
     harness_config_type,
     import_harness,
@@ -49,7 +48,7 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
 )
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import Resources, Task, WireTask
+from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.mcp import (
     Toolset,
@@ -64,16 +63,19 @@ from verifiers.v1.trace import (
     TimeSpan,
     Timing,
     Trace,
+    WireTrace,
 )
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
+    EnvId,
     ImageUrlContentPart,
     ImageUrlSource,
     Message,
     MessageContent,
     Messages,
     Response,
+    Sampling,
     SamplingConfig,
     StrictBaseModel,
     SystemMessage,
@@ -89,8 +91,6 @@ from verifiers.v1.types import (
 __all__ = [
     # types
     "EnvId",
-    "ensure_installed",
-    "env_name",
     "AssistantMessage",
     "ContentPart",
     "ImageUrlContentPart",
@@ -99,6 +99,7 @@ __all__ = [
     "MessageContent",
     "Messages",
     "Response",
+    "Sampling",
     "SamplingConfig",
     "StrictBaseModel",
     "SystemMessage",
@@ -111,8 +112,10 @@ __all__ = [
     # task / trace / state
     "Task",
     "WireTask",
-    "Resources",
+    "TaskResources",
+    "TaskTimeout",
     "Trace",
+    "WireTrace",
     "State",
     "StateT",
     "MessageNode",

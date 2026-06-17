@@ -1,10 +1,9 @@
-"""The built-in default harness: runs a small chat-loop program as a uv script.
+"""The built-in bash harness: the default chat loop plus a single local `bash` tool.
 
-A growing-message-list chat loop with the taskset's MCP tools (host-side, resolved to URLs by
-the Environment) — and no tools of its own. The program is a uv script (deps: openai, mcp),
-launched via `runtime.run_uv_script` — so it works on any runtime with `uv` (the harness
-bootstraps it), with no runtime-specific setup. For a shell-driving agent, use a dedicated
-agentic harness (e.g. `mini-swe-agent`).
+The same growing-message-list chat loop as the `default` harness, but its program also offers a
+`bash` tool that runs shell commands in the runtime — for agentic tasks that drive a terminal
+(e.g. harbor / terminal-bench). MCP tools from the taskset are wired in too. A uv script (deps:
+openai, mcp), launched via `runtime.run_uv_script`, so it works on any runtime with `uv`.
 """
 
 import json
@@ -18,15 +17,18 @@ from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
+# Tells the model it can run shell commands (a pure-text chat loop gets no harness-injected prompt).
+BASH_SYSTEM_PROMPT = "You have access to a bash tool; use it to run shell commands."
 
-class DefaultHarnessConfig(HarnessConfig):
-    """The built-in harness. A uv script (deps: openai, mcp), so it runs in any runtime that
+
+class BashHarnessConfig(HarnessConfig):
+    """The built-in bash harness. A uv script (deps: openai, mcp), so it runs in any runtime that
     has `uv` (the harness bootstraps it) with no other setup."""
 
-    id: str = "default"
+    id: str = "bash"
 
 
-class DefaultHarness(Harness[DefaultHarnessConfig]):
+class BashHarness(Harness[BashHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_USER_SIM = True
     SUPPORTS_MESSAGE_PROMPT = True
@@ -41,12 +43,13 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
+        system_prompt = "\n\n".join(p for p in (BASH_SYSTEM_PROMPT, system_prompt) if p)
         env = {
             **self.config.env,
             "OPENAI_BASE_URL": endpoint,
             "OPENAI_API_KEY": secret,
             "OPENAI_MODEL": ctx.model,
-            "APPEND_SYSTEM_PROMPT": system_prompt or "",
+            "APPEND_SYSTEM_PROMPT": system_prompt,
         }
         if mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard

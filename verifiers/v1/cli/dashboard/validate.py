@@ -17,7 +17,7 @@ from rich.text import Text
 
 from verifiers.v1.cli.dashboard.base import live_view
 from verifiers.v1.configs.validate import ValidateConfig
-from verifiers.v1.utils import format_time
+from verifiers.v1.utils.format import format_time
 
 _STYLE = {
     "pending": "dim",

@@ -185,14 +185,14 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
             ScaleSWETask(
                 idx=i,
                 name=row["instance_id"],
-                instruction=row["problem_statement"],
+                prompt=row["problem_statement"],
                 image=(
                     f"{REGISTRY}/{row['image_url']}"
                     if self.config.use_prime_registry
                     else row["image_url"]
                 ),
                 workdir=row["workdir"],
-                resources=vf.Resources(cpu=4, memory=4, disk=10),
+                resources=vf.TaskResources(cpu=4, memory=4, disk=10),
                 base_commit=row.get("parent_commit") or row.get("base_commit") or "",
                 pre_commands=(row.get("pre_commands") or "")
                 .strip()

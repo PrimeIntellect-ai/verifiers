@@ -18,7 +18,7 @@ import sys
 from pydantic_config import cli
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.log import setup_logging
+from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
@@ -26,8 +26,8 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
-from verifiers.v1.cli.resume import load_resume_config, split_resume
-from verifiers.v1.cli.runner import run_eval
+from verifiers.v1.cli.eval.resume import load_resume_config, split_resume
+from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.configs.eval import EvalConfig
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> None:
         env = vf.Environment(config)
         traces = asyncio.run(run_eval(env, config))
     else:  # drive rollouts through the env server's worker pool
-        from verifiers.v1.cli.runner import run_eval_server
+        from verifiers.v1.cli.eval.runner import run_eval_server
 
         traces = asyncio.run(run_eval_server(config))
     if not rich:  # --rich is the whole output; otherwise dump each trace as JSON

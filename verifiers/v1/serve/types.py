@@ -58,7 +58,7 @@ class RunRolloutResponse(BaseResponse):
 
     @field_serializer("trace")
     def _ser_trace(self, trace: "Trace[WireTask] | None") -> dict | None:
-        return trace.to_wire() if trace is not None else None
+        return trace.model_dump() if trace is not None else None
 
 
 class RunGroupRequest(BaseRequest):
@@ -76,4 +76,4 @@ class RunGroupResponse(BaseResponse):
 
     @field_serializer("traces")
     def _ser_traces(self, traces: "list[Trace[WireTask]] | None") -> list[dict] | None:
-        return [t.to_wire() for t in traces] if traces is not None else None
+        return [t.model_dump() for t in traces] if traces is not None else None

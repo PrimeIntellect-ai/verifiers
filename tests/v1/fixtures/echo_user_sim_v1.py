@@ -56,7 +56,7 @@ class EchoUserSimTaskset(
         return [
             EchoUserSimTask(
                 idx=0,
-                instruction=self.config.phrases[0],
+                prompt=self.config.phrases[0],
                 system_prompt=SYSTEM,
                 phrases=self.config.phrases,
             )

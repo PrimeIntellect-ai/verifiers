@@ -16,13 +16,13 @@ from collections.abc import Mapping
 from typing import Any, Generic, TypeVar
 
 import numpy as np
-from pydantic import Field, PrivateAttr, computed_field
+from pydantic import Field, PrivateAttr
 from renderers.base import MultiModalData
 
 from verifiers.v1 import graph
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import TaskT
+from verifiers.v1.task import TaskT, WireTask
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -34,12 +34,12 @@ logger = logging.getLogger(__name__)
 
 
 class TimeSpan(StrictBaseModel):
-    """A start/end wall-clock span with a computed duration in seconds."""
+    """A start/end wall-clock span. `duration` is derived (seconds) — a plain property, not
+    serialized, so it never has to be stripped from a wire/disk dump (it's just `end - start`)."""
 
     start: float = 0.0
     end: float = 0.0
 
-    @computed_field
     @property
     def duration(self) -> float:
         return max(0.0, self.end - self.start) if self.end else 0.0
@@ -62,9 +62,7 @@ class Error(StrictBaseModel):
 
     type: str
     message: str
-    traceback: str | None = (
-        None  # synthetic errors (cancels, empty trajectory) have none
-    )
+    traceback: str | None = None
 
 
 class Branch(StrictBaseModel):
@@ -76,7 +74,6 @@ class Branch(StrictBaseModel):
     index: int
     nodes: list[MessageNode]
 
-    @computed_field
     @property
     def num_turns(self) -> int:
         """Model turns (sampled responses) in this branch — prompt-supplied assistant
@@ -224,12 +221,10 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """`(parent, msg_hash) -> node_id` for the graph builder (`graph.prepare_turn` / `commit`);
     rebuilt lazily from `nodes` after deserialization."""
 
-    @computed_field
     @property
     def reward(self) -> float:
         return sum(self.rewards.values())
 
-    @computed_field
     @property
     def error(self) -> Error | None:
         """The most recent captured error (the rest are earlier retry attempts)."""
@@ -295,7 +290,6 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         assistant messages don't count."""
         return sum(1 for n in self.nodes if n.sampled)
 
-    @computed_field
     @property
     def is_truncated(self) -> bool:
         """Whether the rollout was cut off by a budget/limit rather than ending on its
@@ -376,27 +370,11 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         )
         self.stop("error")
 
-    def to_wire(self) -> dict:
-        """Dump for the wire, dropping the derived (computed) fields at every level —
-        the top-level ones (reward, branches, num_branches, num_turns) and the per-span
-        timing durations. A strict `Trace` can't round-trip them as input, and the
-        consumer recomputes them, so we avoid re-running branching + duplicating the
-        trajectory on every reply. The full `model_dump` (with derived fields) is what
-        gets written to disk.
-
-        Dumped in `mode="python"` (not `"json"`) so per-node numpy arrays survive as raw bytes
-        in their `__nd__` dicts — the env-server packs the result with a numpy-aware msgpack
-        encoder so the arrays ride the `bin` wire untouched. `mode="json"` would coerce the
-        bytes to str."""
-        exclude: dict = {field: True for field in type(self).model_computed_fields}
-        # Drop each timing span's computed `duration` — derived per `TimeSpan` field of
-        # `Timing` (setup/generation/scoring, and any future span) so none leaks to the wire.
-        exclude["timing"] = {
-            name: {f: True for f in TimeSpan.model_computed_fields}
-            for name, info in Timing.model_fields.items()
-            if info.annotation is TimeSpan
-        }
-        return self.model_dump(mode="python", exclude=exclude)
-
 
 TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]
+
+WireTrace = Trace[WireTask]
+"""A `Trace` typed for loading a dump without the originating taskset: taskset-specific task fields
+ride in `task.model_extra` (`WireTask` allows extras); `state` is never serialized so it needs no
+permissive type. The dump is plain pydantic (no derived computed fields), so load it directly:
+`WireTrace.model_validate(json.loads(line))`."""

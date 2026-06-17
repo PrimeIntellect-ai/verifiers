@@ -39,7 +39,7 @@ def test_routed_experts_attributed_and_aligned_across_turns():
     nodes get this turn's slice and reused nodes keep theirs, so `Branch.routed_experts`
     concatenates back to a `[tokens, layers, top_k]` array aligned 1:1 with `branch.token_ids` —
     and survives the base64 wire round-trip."""
-    trace = vf.Trace(task=vf.Task(idx=0, instruction="x"))
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="x"))
     user = vf.UserMessage(content="u1")
     graph.prepare_turn(trace, [user]).commit(
         vf.Response(
@@ -79,7 +79,7 @@ def test_routed_experts_attributed_and_aligned_across_turns():
     assert re is not None
     assert re.shape[0] == len(branch.token_ids)
 
-    restored = type(trace).model_validate(trace.to_wire())
+    restored = type(trace).model_validate(trace.model_dump())
     re2 = restored.branches[-1].routed_experts
     assert re2 is not None and re2.shape == re.shape and bool((re2 == re).all())
 
@@ -87,7 +87,7 @@ def test_routed_experts_attributed_and_aligned_across_turns():
 def test_routed_experts_none_when_absent():
     """No routing captured (engine ran without `enable_return_routed_experts`) -> the branch
     reports None and the trainer simply skips replay."""
-    trace = vf.Trace(task=vf.Task(idx=0, instruction="x"))
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="x"))
     graph.prepare_turn(trace, [vf.UserMessage(content="u1")]).commit(
         vf.Response(
             id="a",
@@ -119,7 +119,7 @@ def test_tool_call_hash_matches_v0_content_and_arguments_normalization():
 
 
 def test_reasoning_content_participates_in_graph_prefix_matching():
-    task = vf.Task(idx=0, instruction="use a tool")
+    task = vf.Task(idx=0, prompt="use a tool")
     trace = vf.Trace(task=task)
     user = vf.UserMessage(content="use a tool")
     call = vf.ToolCall(id="call_0", name="lookup", arguments="{}")
@@ -196,14 +196,14 @@ def test_renderer_level_break_forks_by_token_id():
         )
 
     # Control: the prior turn re-renders to the same tokens -> stays one linear branch.
-    linear = vf.Trace(task=vf.Task(idx=0, instruction="x"))
+    linear = vf.Trace(task=vf.Task(idx=0, prompt="x"))
     first_turn(linear)
     second_turn(linear, [1, 2, 3, 4, 5, 6, 7])
     assert linear.num_branches == 1
     assert linear.branches[0].token_ids == [1, 2, 3, 4, 5, 6, 7, 8]
 
     # Break: the assistant turn retokenizes (4 -> 99), so prompt_ids diverge at that node.
-    broken = vf.Trace(task=vf.Task(idx=0, instruction="x"))
+    broken = vf.Trace(task=vf.Task(idx=0, prompt="x"))
     first_turn(broken)
     second_turn(broken, [1, 2, 3, 99, 5, 6, 7])
     assert broken.num_branches == 2
@@ -214,7 +214,7 @@ def test_renderer_level_break_forks_by_token_id():
 
 
 def test_prompt_supplied_assistant_messages_are_not_sampled_turns():
-    task = vf.Task(idx=0, instruction="few-shot")
+    task = vf.Task(idx=0, prompt="few-shot")
     trace = vf.Trace(task=task)
     fabricated = vf.AssistantMessage(
         content=None,

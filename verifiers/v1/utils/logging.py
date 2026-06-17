@@ -1,7 +1,7 @@
-"""Route the library's stdlib logging through loguru for the eval CLI.
+"""Route the library's stdlib logging through loguru for the CLIs.
 
 The library (`verifiers.v1`) logs via stdlib logging and is silent by default
-(a NullHandler on the package root). The eval CLI opts in: it points loguru at
+(a NullHandler on the package root). A CLI opts in: it points loguru at
 stderr — so logs never mix with the results printed to stdout — and installs an
 `InterceptHandler` on the `verifiers.v1` logger so those records render through
 loguru. Mirrors prime-rl's `intercept_vf_logging`.

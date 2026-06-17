@@ -8,20 +8,9 @@ them into these models explicitly.
 
 from typing import Annotated, Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field
 from renderers.base import MultiModalData
 from typing_extensions import TypedDict
-
-
-class RoutedExperts(TypedDict):
-    """The raw MoE expert-routing data a `generate` response carries for router replay:
-    base64 `data` (uint8 `[tokens, layers, top_k]`), its `shape`, and `start` — the prompt
-    offset where the routing begins (0 = full prompt+completion). Kept opaque (`Any` data)
-    so pydantic never validates the encoded blob."""
-
-    data: Any
-    shape: list[int]
-    start: int
 
 
 class StrictBaseModel(BaseModel):
@@ -163,6 +152,17 @@ class Usage(StrictBaseModel):
         return self.prompt_tokens + self.completion_tokens
 
 
+class RoutedExperts(TypedDict):
+    """The raw MoE expert-routing data a `generate` response carries for router replay:
+    base64 `data` (uint8 `[tokens, layers, top_k]`), its `shape`, and `start` — the prompt
+    offset where the routing begins (0 = full prompt+completion). Kept opaque (`Any` data)
+    so pydantic never validates the encoded blob."""
+
+    data: Any
+    shape: list[int]
+    start: int
+
+
 class TurnTokens(StrictBaseModel):
     """Token ids + sampling logprobs for one response, for training. Populated by the
     renderer client (client-side tokenization) or the chat client (parsed from vLLM's
@@ -218,3 +218,26 @@ class SamplingConfig(BaseModel):
     max_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_tokens", "max_completion_tokens")
     )
+
+
+Sampling = SamplingConfig
+"""Alias for `SamplingConfig` — the terse name for a `sampling` field/arg."""
+
+
+# --- ids ----------------------------------------------------------------------
+
+
+def _validate_env_id(env_id: str) -> str:
+    """Validate the id's shape — a hub id must be a well-formed ``org/name[@version]``; a
+    local id is any module name. Returns it unchanged (the value stays a plain ``str``)."""
+    from verifiers.utils.install_utils import is_hub_env, parse_env_id
+
+    if is_hub_env(env_id):
+        parse_env_id(env_id)  # raises ValueError on a malformed org/name[@version]
+    return env_id
+
+
+EnvId = Annotated[str, AfterValidator(_validate_env_id)]
+"""A taskset / harness / environment id — ``name``, ``org/name``, or ``org/name@version``. A
+plain validated ``str``; derive its package/module name with `env_name` / `env_module`
+(`verifiers.v1.utils.install`)."""

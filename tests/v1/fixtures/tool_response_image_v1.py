@@ -35,7 +35,7 @@ class ToolResponseImageTaskset(vf.Taskset[ToolResponseImageTask, vf.TasksetConfi
         return [
             ToolResponseImageTask(
                 idx=0,
-                instruction=(
+                prompt=(
                     "Call the `vision_snapshot` tool exactly once. After it returns, "
                     "reply with exactly `done`."
                 ),

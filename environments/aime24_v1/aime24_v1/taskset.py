@@ -41,7 +41,7 @@ class AIME24Taskset(vf.Taskset[AIME24Task, AIME24Config]):
         return [
             AIME24Task(
                 idx=i,
-                instruction=INSTRUCTION + row["problem"],
+                prompt=INSTRUCTION + row["problem"],
                 answer=str(int(row["answer"])),
             )
             for i, row in enumerate(rows)

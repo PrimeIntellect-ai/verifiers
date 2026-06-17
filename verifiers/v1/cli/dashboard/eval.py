@@ -12,7 +12,7 @@ above a rule.
 import contextlib
 import time
 
-from rich.console import Group
+from rich.console import Console, Group
 from rich.progress_bar import ProgressBar
 from rich.rule import Rule
 from rich.table import Table
@@ -23,7 +23,12 @@ from verifiers.v1.cli.output import output_path
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils import format_count, format_reward, format_time
+from verifiers.v1.utils.format import format_count, format_reward, format_time
+
+# For sizing pages to the terminal: detects the real terminal height/width each access (the live
+# view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
+_CONSOLE = Console()
+_PAGE_SECONDS = 3.0  # rotate to the next page of rollouts this often when they overflow
 
 _STYLE = {
     "setup": "yellow",
@@ -43,12 +48,68 @@ _MARK = {
 }
 
 
-def Overview(config: EvalConfig) -> Table:
-    sampling = (
-        ", ".join(
-            f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items()
+def _limits(config: EvalConfig) -> list[str]:
+    """Per-rollout caps for the overview (concurrency first, then turns, tokens). An unset cap
+    reads as 'no ...' rather than being hidden."""
+    toks = []
+    if config.max_input_tokens:
+        toks.append(f"in≤{config.max_input_tokens}")
+    if config.max_output_tokens:
+        toks.append(f"out≤{config.max_output_tokens}")
+    if config.max_total_tokens:
+        toks.append(f"total≤{config.max_total_tokens}")
+    return [
+        f"≤{config.max_concurrent} concurrent"
+        if config.max_concurrent
+        else "no concurrency cap",
+        f"{config.max_turns} turns" if config.max_turns else "no turn cap",
+        f"{', '.join(toks)} tokens" if toks else "no token cap",
+    ]
+
+
+def _timeouts(config: EvalConfig) -> list[str]:
+    """Per-stage rollout timeouts for the overview, each stage enumerated (unset → 'no <stage>
+    timeout')."""
+    return [
+        f"{stage} {v:g}s"
+        if (v := getattr(config.timeout, stage))
+        else f"no {stage} timeout"
+        for stage in ("setup", "rollout", "finalize", "scoring")
+    ]
+
+
+def _aligned(rows: list[list[str]]) -> list[str]:
+    """Join each row's `·`-separated segments, padding shared columns to a common width so the
+    separators line up across rows (each row's last segment is left ragged)."""
+    widths: dict[int, int] = {}
+    for row in rows:
+        for i, seg in enumerate(row):
+            widths[i] = max(widths.get(i, 0), len(seg))
+    return [
+        "  ·  ".join(
+            seg.ljust(widths[i]) if i < len(row) - 1 else seg
+            for i, seg in enumerate(row)
         )
-        or "default"
+        for row in rows
+    ]
+
+
+def _warning(config: EvalConfig) -> Text | None:
+    """A local-runtime caution for a code-running harness (none for the tool-less `default`),
+    shown above the overview rather than as a row in it."""
+    if config.harness.id != "default" and config.harness.runtime.type == "subprocess":
+        return Text(
+            "warning  Runs on the local system; local files and settings may affect this "
+            "evaluation. Use subprocess only for debugging, or use docker or prime for an "
+            "isolated run.",
+            style="yellow",
+        )
+    return None
+
+
+def Overview(config: EvalConfig) -> Table:
+    sampling = ", ".join(
+        f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items()
     )
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim")
@@ -57,36 +118,34 @@ def Overview(config: EvalConfig) -> Table:
         "env",
         f"{config.taskset.name}  ·  {config.harness.name} harness  ·  {config.harness.runtime.type} runtime",
     )
-    if config.harness.id != "default" and config.harness.runtime.type == "subprocess":
-        grid.add_row(
-            "warning",
-            Text(
-                "Runs on the local system; local files and settings may affect this "
-                "evaluation. Use subprocess only for debugging, or use docker or prime "
-                "for an isolated run.",
-                style="yellow",
-            ),
-        )
-    grid.add_row("model", f"{config.model}  ({sampling})")
+    model = f"{config.model}  ({sampling})" if sampling else config.model
+    grid.add_row("model", f"{model}  via {config.client.base_url}")
+    limits, timeouts = _aligned([_limits(config), _timeouts(config)])
+    grid.add_row("limits", limits)
+    grid.add_row("timeouts", timeouts)
     grid.add_row("output", str(output_path(config)))
     return grid
 
 
-def Progress(rollouts: list[Rollout], start: float) -> Table:
+def Progress(
+    rollouts: list[Rollout], start: float, page: tuple[int, int] | None = None
+) -> Table:
     done = [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
     # Headline reward = mean over non-errored; when any errored, `format_reward` appends the
     # global avg (errored count as 0) in parens. `err` is the share that errored.
     reward = format_reward(done)
     err = f"{sum(t.has_error for t in done) / len(done):.2f}" if done else "—"
     stats = (
-        f" {len(done)}/{len(rollouts)} · {format_time(time.time() - start)} · "
+        f"{len(done)}/{len(rollouts)} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
     )
-    row = Table.grid()
-    row.add_column()
-    row.add_column()
+    if page is not None:  # rollouts overflow the screen — show which page is on screen
+        stats += f"  (page {page[0]}/{page[1]})"
+    row = Table.grid(expand=True, padding=(0, 1))
+    row.add_column(ratio=1)  # bar stretches to fill the width left of the stats
+    row.add_column(justify="right", no_wrap=True)
     row.add_row(
-        ProgressBar(total=len(rollouts) or 1, completed=len(done), width=32),
+        ProgressBar(total=len(rollouts) or 1, completed=len(done)),
         Text(stats),
     )
     return row
@@ -142,9 +201,14 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             if rollout.phase == Phase.DONE:  # fully scored — reward is final
                 state = "error" if t.has_error else "success"
                 result = t.error.type if t.has_error else f"reward={t.reward:.2f}"
-                stop = (
-                    "" if t.has_error else (t.stop_condition or "")
-                )  # error shown instead
+                if t.has_error:
+                    stop = ""  # error shown instead
+                else:
+                    stop = t.stop_condition or ""
+                    if (
+                        t.is_truncated
+                    ):  # flag a clipped rollout next to its stop condition
+                        stop = f"{stop} (truncated)".strip()
             else:
                 state, result, stop = rollout.phase, "", ""
             label = f"name={t.task.name[:32]}" if t.task.name else f"idx={t.task.idx}"
@@ -153,6 +217,7 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             )
             runtime = f"{runtime_type}({descriptor})" if descriptor else runtime_type
             turns = t.num_turns
+            nbranches = len(t.branches)
             start = t.timing.generation.start
             end = (
                 t.timing.scoring.end
@@ -165,6 +230,7 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                 t.id[:8],
                 runtime,
                 f"{turns} turn{'s' * (turns != 1)}",
+                f"{nbranches} branch{'es' * (nbranches != 1)}",
                 _tokens(t),
                 stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
             ]
@@ -179,10 +245,10 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
         return grid
     # Pad each left section to its max width across rows (drop all-empty ones) so they align,
     # then join with " · ". Text sections left-justified, numeric right.
-    pad = (str.ljust, str.ljust, str.ljust, str.rjust, str.rjust, str.ljust)
-    widths = [max(len(left[i]) for _, _, left, _, _ in rows) for i in range(6)]
+    pad = (str.ljust, str.ljust, str.ljust, str.rjust, str.rjust, str.rjust, str.ljust)
+    widths = [max(len(left[i]) for _, _, left, _, _ in rows) for i in range(7)]
     for brace, state, left, result, elapsed in rows:
-        sections = [pad[i](left[i], widths[i]) for i in range(6) if widths[i]]
+        sections = [pad[i](left[i], widths[i]) for i in range(7) if widths[i]]
         grid.add_row(
             f"{brace} {_MARK[state]} " + " · ".join(sections),
             f"{result} ·" if result else "",  # trailing dot only when there's a result
@@ -192,12 +258,45 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
     return grid
 
 
+def _paginate(
+    groups: list[list[Rollout]], rows_per_page: int, now: float
+) -> tuple[list[list[Rollout]], int, int]:
+    """Pack groups (a task's rollouts kept together) into pages of at most `rows_per_page` rows,
+    cycling to the next page every `_PAGE_SECONDS`. Returns (this page's groups, 0-based index,
+    page count) — a single page when everything already fits."""
+    if sum(len(g) for g in groups) <= rows_per_page:
+        return groups, 0, 1
+    pages: list[list[list[Rollout]]] = []
+    current: list[list[Rollout]] = []
+    used = 0
+    for group in groups:
+        if current and used + len(group) > rows_per_page:
+            pages.append(current)
+            current, used = [], 0
+        current.append(group)
+        used += len(group)
+    if current:
+        pages.append(current)
+    index = int(now / _PAGE_SECONDS) % len(pages)
+    return pages[index], index, len(pages)
+
+
 def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
+    now = time.time()
+    warning = _warning(config)
+    # `{warning}\n\n{overview}` — the caution sits at the very top, blank line, then the overview.
+    header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
+    # Measure the fixed top (header + progress + rule) so the rollout rows fill the rest of the
+    # screen; page through them on a timer when they'd overflow (rich would otherwise truncate).
+    top = Group(header, Progress(rollouts, start), Rule(style="dim"))
+    rows_per_page = max(1, _CONSOLE.size.height - len(_CONSOLE.render_lines(top)) - 1)
+    page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, now)
+    progress = Progress(rollouts, start, page=(index + 1, count) if count > 1 else None)
     return Group(
-        Overview(config),
-        Progress(rollouts, start),
+        header,
+        progress,
         Rule(style="dim"),
-        Rows(_groups(rollouts), time.time(), config.harness.runtime.type),
+        Rows(page_groups, now, config.harness.runtime.type),
     )
 
 
