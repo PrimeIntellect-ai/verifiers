@@ -218,13 +218,13 @@ def resolve_runtime_config(
 
 
 class Environment:
-    def __init__(self, config: EnvConfig) -> None:
+    def __init__(self, config: EnvConfig, taskset=None, harness=None) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
         from verifiers.v1.taskset import Taskset
 
         self.config = config
-        self.taskset = load_taskset(config.taskset)
-        self.harness = load_harness(config.harness)
+        self.taskset = taskset if taskset is not None else load_taskset(config.taskset)
+        self.harness = harness if harness is not None else load_harness(config.harness)
         if (
             not self.harness.SUPPORTS_TASK_TOOLS
             and type(self.taskset).tools is not Taskset.tools

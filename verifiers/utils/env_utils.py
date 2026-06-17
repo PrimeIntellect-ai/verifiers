@@ -20,9 +20,26 @@ def load_environment(env_id: str, **env_args) -> Environment:
             module, "load_environment", None
         )
         if env_load_func is None:
+            if hasattr(module, "load_taskset"):
+                from verifiers.v1.compat import load_v1_environment_from_module
+
+                env_instance = load_v1_environment_from_module(module, env_id, env_args)
+                logger.info(f"Successfully loaded v1 environment '{env_id}'")
+                return env_instance
             raise AttributeError(
                 f"Module '{module.__name__}' does not expose load_environment."
             )
+
+        from verifiers.v1.compat import (
+            as_v0_environment,
+            is_v1_load_environment,
+            load_v1_environment_from_module,
+        )
+
+        if is_v1_load_environment(env_load_func, module):
+            env_instance = load_v1_environment_from_module(module, env_id, env_args)
+            logger.info(f"Successfully loaded v1 environment '{env_id}'")
+            return env_instance
 
         sig = inspect.signature(env_load_func)
         provided_params = set(env_args.keys())
@@ -40,7 +57,9 @@ def load_environment(env_id: str, **env_args) -> Environment:
             if default_values:
                 logger.info(f"Using default args: {', '.join(default_values)}")
 
-        env_instance: Environment = env_load_func(**env_args)
+        env_instance: Environment = as_v0_environment(
+            env_load_func(**env_args), env_id=env_id, env_args=env_args
+        )
         env_instance.env_id = env_instance.env_id or env_id
         env_instance.env_args = env_instance.env_args or env_args
 
