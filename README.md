@@ -95,6 +95,14 @@ Alternatively, add `verifiers` to an existing project:
 uv add verifiers && prime lab setup --skip-install
 ```
 
+Optional features are installed with extras:
+
+| Extra | Install | Enables |
+| --- | --- | --- |
+| `modal` | `uv add "verifiers[modal]"` | The v1 Modal sandbox runtime |
+| `notebook` | `uv add "verifiers[notebook]"` | `Environment.generate_sync()` inside Jupyter or another active event loop |
+| `quest` | `uv add "verifiers[quest]"` | QUEST PDF parsing and evaluation |
+
 Environments built with Verifiers are self-contained Python modules. To initialize a fresh environment template, do:
 ```bash
 prime env init my-env # creates a new template in ./environments/my_env

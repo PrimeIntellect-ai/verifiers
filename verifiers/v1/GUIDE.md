@@ -267,6 +267,9 @@ Copy `examples/harnesses/compact` (a context-rewrite loop) as a starting point.
 The same `Runtime` contract backs the harness (`--harness.runtime`), a task's tools
 (`--taskset.tools.runtime`), and the user simulator:
 
+The Modal runtime is optional. In this checkout, install it with
+`uv sync --extra modal`; package consumers use `uv add "verifiers[modal]"`.
+
 ```bash
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container (eval default)

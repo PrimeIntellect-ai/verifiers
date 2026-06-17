@@ -53,6 +53,7 @@ dependencies = [
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
     "renderers>=0.1.8.dev40",
+    "typing_extensions; python_version < '3.12'",
 ]
 
 [dependency-groups]
