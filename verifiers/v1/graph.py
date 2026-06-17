@@ -253,11 +253,9 @@ class PendingTurn:
         if any(not sampled for sampled in last.mask[first_sampled:]):
             return None
 
-        prompt_ids = [
-            token
-            for nid in self.prefix_node_ids[:-1]
-            for token in self.trace.nodes[nid].token_ids
-        ]
+        prompt_ids: list[int] = []
+        for nid in self.prefix_node_ids[:-1]:
+            prompt_ids.extend(self.trace.nodes[nid].token_ids)
         prompt_ids.extend(last.token_ids[:first_sampled])
         completion_ids = list(last.token_ids[first_sampled:])
         if not prompt_ids or not completion_ids:
@@ -405,21 +403,18 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     prefix = turn.prefix_node_ids
     path_len = turn.path_len  # cumulative stored token length of the reused prefix
     if tokens is not None and prefix:
-        stored: list[int] = []
-        node_end: list[int] = []
+        # Compare node by node against the prompt_ids slice at the running offset (C-level list
+        # ==, short-circuits at the first divergent node) — no full concatenation materialized.
+        keep = 0
+        off = 0
         for nid in prefix:
-            stored.extend(trace.nodes[nid].token_ids)
-            node_end.append(len(stored))
-        lcp = 0
-        while (
-            lcp < len(stored)
-            and lcp < len(prompt_ids)
-            and stored[lcp] == prompt_ids[lcp]
-        ):
-            lcp += 1
-        keep = sum(1 for end in node_end if end <= lcp)
+            node_tokens = trace.nodes[nid].token_ids
+            if prompt_ids[off : off + len(node_tokens)] != node_tokens:
+                break
+            off += len(node_tokens)
+            keep += 1
         prefix = prefix[:keep]
-        path_len = node_end[keep - 1] if keep else 0
+        path_len = off
     num_reused = len(prefix)
     parent = prefix[-1] if prefix else None
     # cursor: in prompt_ids, the end of the previous *new* message's tokens

@@ -225,12 +225,15 @@ class TrainClient(Client):
         sampling_params = sampling_args.model_dump(exclude_none=True)
         bridged_turn: PendingTurn | None = None
 
-        previous_ids = turn.previous_token_ids() if turn is not None else None
-        if (
-            previous_ids is not None
+        # Only build the (O(context)) previous-turn token ids once the cheap guards pass — a
+        # multimodal prompt or a tail that isn't a clean `[tool*, user?]` extension can't bridge.
+        can_bridge = (
+            turn is not None
             and not _has_multimodal_content(prompt)
             and _is_valid_incremental_tail(wire_messages[turn.tail_start :])
-        ):
+        )
+        previous_ids = turn.previous_token_ids() if can_bridge else None
+        if previous_ids is not None:
             previous_prompt_ids, previous_completion_ids = previous_ids
 
             def bridge():
