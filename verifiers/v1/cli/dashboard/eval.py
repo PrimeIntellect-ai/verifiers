@@ -79,11 +79,8 @@ def _retries(config: EvalConfig) -> str:
 
 
 def Overview(config: EvalConfig) -> Table:
-    sampling = (
-        ", ".join(
-            f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items()
-        )
-        or "default"
+    sampling = ", ".join(
+        f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items()
     )
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim")
@@ -102,7 +99,7 @@ def Overview(config: EvalConfig) -> Table:
                 style="yellow",
             ),
         )
-    grid.add_row("model", f"{config.model}  ({sampling})")
+    grid.add_row("model", f"{config.model}  ({sampling})" if sampling else config.model)
     grid.add_row("limits", _limits(config))
     grid.add_row("retries", _retries(config))
     grid.add_row("output", str(output_path(config)))
