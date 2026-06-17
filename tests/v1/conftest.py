@@ -90,24 +90,6 @@ def tool_runtime(request) -> dict:
     return {"runtime": {"type": request.param}}
 
 
-# The SHARED tool server's OWN runtime (its placement is fixed to `shared`; this fans WHERE that one
-# shared instance runs). The harness runs on the same runtime in the test, so the shared server can
-# always reach the interception `/state` + `/task` channel (localhost when both local; the pool's
-# tunnel when both remote — a remote shared server needs a remote harness). modal excluded.
-SHARED_TOOL_RUNTIMES = [
-    pytest.param("subprocess", id="shared-in-subprocess"),
-    pytest.param("docker", marks=pytest.mark.slow, id="shared-in-docker"),
-    pytest.param(
-        "prime", marks=[pytest.mark.slow, pytest.mark.prime], id="shared-in-prime"
-    ),
-]
-
-
-@pytest.fixture(params=SHARED_TOOL_RUNTIMES)
-def shared_tool_runtime(request) -> str:
-    return request.param
-
-
 @pytest.fixture
 def skip_if_unexposable():
     """Skip when a trace failed because the server's runtime couldn't publish its port to the
