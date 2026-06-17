@@ -15,7 +15,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from tenacity import (
     AsyncRetrying,
@@ -52,6 +52,11 @@ _ENSURE_UV = (
     "|| pip install -q uv 2>/dev/null "
     f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
 )
+
+# The single port a self-publishing runtime (modal/prime) forwards to a public URL for a server
+# hosted in its sandbox. A server placed in such a runtime binds this (on 0.0.0.0) and is reached
+# at the runtime's public URL.
+SERVICE_PORT = 8000
 
 
 @dataclass(frozen=True)
@@ -104,6 +109,11 @@ def cleanup_at_exit() -> None:
 
 class Runtime(ABC):
     config: "RuntimeConfig"
+    is_local: ClassVar[bool] = True
+    """Whether this runtime shares the host network — a program inside it reaches a host service
+    at localhost (no tunnel) and a service inside it is reachable at localhost. True for
+    subprocess / docker(--network host); remote runtimes (modal/prime) override to False (they
+    need a tunnel each way: `host_endpoint` inward, `expose` outward)."""
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
@@ -111,6 +121,20 @@ class Runtime(ABC):
         The rollout passes its trace id, so the provisioned resource is greppable back to
         the rollout it serves; falls back to a unique `vf-` name (standalone / tool
         runtimes, where there's no single owning rollout)."""
+
+    @property
+    def type(self) -> str:
+        """The runtime's config discriminator ("subprocess" / "docker" / "prime" / "modal")."""
+        return self.config.type
+
+    @property
+    def published_port(self) -> int | None:
+        """A fixed port this runtime exposes to the outside at startup, declared up front to the
+        provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
+        here binds it instead of a host-chosen free port, and `expose` returns its public URL.
+        `None` for host-networked runtimes (subprocess/docker), which pick a free port and are
+        reached over the shared host network."""
+        return None
 
     @abstractmethod
     async def start(self) -> None:
@@ -126,14 +150,6 @@ class Runtime(ABC):
         """Free the provisioned resource on the normal path, off the event loop. Override
         only for teardown that must be async (e.g. a remote API call)."""
         await asyncio.to_thread(self.cleanup)
-
-    async def expose(self, port: int) -> str:
-        """A base URL the program (inside this runtime) can use to reach a host service
-        on localhost `port` — the interception endpoint and host-side tool servers both
-        go through this. Default: localhost, which works when the runtime shares the host
-        network (subprocess, docker --network host). Remote runtimes (prime) override to
-        tunnel the port."""
-        return f"http://127.0.0.1:{port}"
 
     @abstractmethod
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
@@ -155,11 +171,12 @@ class Runtime(ABC):
         runtime: subprocess workdir, docker image, prime sandbox id."""
         return None
 
-    async def public_url(self, port: int) -> str | None:
-        """A URL anyone can use to reach `port` running *inside this runtime*, or None if
-        this runtime can't self-publish (it's on the host network, so the caller reaches
-        it via the harness runtime's `expose`). A remote runtime overrides this to publish
-        the port (e.g. a prime sandbox exposes it natively). Cleaned up by `stop()`."""
+    async def expose(self, port: int) -> str | None:
+        """Publish a port running *inside this runtime* to a URL reachable from the host/outside,
+        or None when local (it's on the host network — reach it at localhost). A remote runtime
+        overrides this with the provider's native port exposure (modal `tunnels()`, prime
+        `client.expose`), torn down with the sandbox in `stop()`. The reverse of `host_endpoint`
+        (which reaches a host port from inside a runtime)."""
         return None
 
     @abstractmethod
@@ -248,9 +265,6 @@ class RetryingRuntime(Runtime):
     def cleanup(self) -> None:
         self.inner.cleanup()
 
-    async def expose(self, port: int) -> str:
-        return await self._retry(self.inner.expose, port)
-
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         return await self._retry(self.inner.run, argv, env)
 
@@ -260,14 +274,99 @@ class RetryingRuntime(Runtime):
         await self._retry(self.inner.run_background, argv, env, log)
 
     @property
+    def type(self) -> str:
+        return self.inner.type
+
+    @property
+    def published_port(self) -> int | None:
+        return self.inner.published_port
+
+    @property
+    def is_local(self) -> bool:
+        return self.inner.is_local
+
+    @property
     def descriptor(self) -> str | None:
         return self.inner.descriptor
 
-    async def public_url(self, port: int) -> str | None:
-        return await self._retry(self.inner.public_url, port)
+    async def expose(self, port: int) -> str | None:
+        return await self._retry(self.inner.expose, port)
 
     async def read(self, path: str) -> bytes:
         return await self._retry(self.inner.read, path)
 
     async def write(self, path: str, data: bytes) -> None:
         await self._retry(self.inner.write, path, data)
+
+
+@contextlib.asynccontextmanager
+async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = None):
+    """Yield a URL a program *inside a runtime* uses to reach a HOST service on `port`. A local
+    runtime shares the host network → localhost; a remote one needs a host-side reverse tunnel
+    (`prime_tunnel`), torn down on exit. This is the host-side, provider-agnostic counterpart to
+    `Runtime.expose` (which publishes a port running *inside* a runtime) — so the runtime only
+    reports `is_local` and callers (interception pool, rollout, tool serving) bridge to the host
+    here, rather than every runtime reimplementing the tunnel."""
+    if is_local:
+        yield f"http://127.0.0.1:{port}"
+        return
+    from prime_tunnel import Tunnel
+
+    from verifiers.v1.errors import ProgramError
+    from verifiers.v1.runtimes.limiters import TUNNEL_LIMITER
+
+    tunnel = Tunnel(local_port=port, labels=labels or None)
+    try:
+        async with (
+            TUNNEL_LIMITER
+        ):  # shared prime_tunnel rate (512/min, runtime-independent)
+            url = str(await tunnel.start()).rstrip("/")
+    except Exception as e:
+        raise ProgramError(f"host tunnel failed (port {port}): {e}") from e
+    try:
+        yield url
+    finally:
+        with contextlib.suppress(Exception):
+            tunnel.sync_stop()
+
+
+class _Host:
+    """The host network as a `reachable_url` location: shares the host network (so it's `is_local`)
+    and publishes nothing itself (it's reached *into* via `host_endpoint`, not via `expose`)."""
+
+    is_local = True
+
+
+HOST = _Host()
+"""The host network, as a service location (e.g. the interception server) or a consumer (the
+framework driving a user sim) — see `reachable_url`."""
+
+
+@contextlib.asynccontextmanager
+async def reachable_url(
+    service, port: int, *, consumer=None, consumer_is_local: bool = True
+):
+    """Yield a URL for the service at (`service`, `port`) reachable from its consumer — the single
+    place tool / user / interception reachability is decided, over the two primitives `expose`
+    (publish *out* of a runtime) and `host_endpoint` (reach *into* the host from a runtime).
+
+    `service` is the `Runtime` the service runs in, or `HOST` (a host-network service). `consumer` is
+    the consuming `Runtime` (used for the colocated check and its locality); leave it `None` for a
+    host consumer or an eval-level consumer with no single instance (a shared tool reused by every
+    rollout's harness) and pass its locality as `consumer_is_local`:
+
+    - same location (a colocated tool in the consumer's own runtime, or host -> host): localhost;
+    - the service runs in a sandbox (a remote runtime): its own published URL (`expose`), reachable
+      from anywhere;
+    - the service is on the host network: localhost to a host-network consumer, else a host tunnel
+      (`host_endpoint`)."""
+    is_local = consumer.is_local if consumer is not None else consumer_is_local
+    if service is consumer:  # colocated in the consumer's runtime (or host -> host)
+        yield f"http://127.0.0.1:{port}"
+    elif (
+        service is not HOST and not service.is_local
+    ):  # in a sandbox → it publishes its own port
+        yield await service.expose(port)
+    else:  # on the host network → reach it from wherever the consumer runs
+        async with host_endpoint(port, is_local) as url:
+            yield url

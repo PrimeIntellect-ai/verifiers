@@ -15,11 +15,13 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Generic, TypeVar
 
+import numpy as np
 from pydantic import Field, PrivateAttr, computed_field
 from renderers.base import MultiModalData
 
 from verifiers.v1 import graph
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.state import State, StateT
 from verifiers.v1.task import TaskT
 from verifiers.v1.types import (
     AssistantMessage,
@@ -133,6 +135,20 @@ class Branch(StrictBaseModel):
         return merged if found else None
 
     @property
+    def routed_experts(self) -> np.ndarray | None:
+        """The branch's MoE expert-routing array — every node's expert ids concatenated in path
+        (token) order, uint8 `[len(token_ids), layers, top_k]` aligned 1:1 with `token_ids`.
+        All-or-nothing: returns None unless every token-bearing node carries routing and the
+        concatenation matches the branch length (partial routing can't be safely aligned, so the
+        trainer skips replay). None when the rollout ran without `enable_return_routed_experts`."""
+        nodes = [n for n in self.nodes if n.token_ids]
+        if not nodes or any(n.routed_experts is None for n in nodes):
+            return None
+        merged = np.concatenate([n.routed_experts for n in nodes], axis=0)
+        total = sum(len(n.token_ids) for n in nodes)
+        return merged if merged.shape[0] == total else None
+
+    @property
     def completion_len(self) -> int:
         """All assistant-generated (model-sampled) tokens across this branch."""
         return sum(sum(n.mask) for n in self.nodes)
@@ -166,7 +182,7 @@ class Branch(StrictBaseModel):
         return sum(n.usage.completion_tokens for n in self.nodes if n.usage is not None)
 
 
-class Trace(StrictBaseModel, Generic[TaskT]):
+class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """The full record of one rollout. Subclass to add typed fields."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
@@ -190,6 +206,12 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     dict (`trace.info["build_log"] = ...`); it round-trips through the wire to `results.jsonl`.
     Use `metrics` for numbers that aggregate, this for everything else. Values must be
     JSON-serializable — a non-serializable value fails the trace dump rather than being dropped."""
+    state: StateT = Field(default_factory=State, exclude=True)
+    """Transient per-rollout runtime state (see `verifiers.v1.state.State`): shared with the tool/user
+    servers as `self.state` (synced over the interception server) and read+written by scoring. Runtime
+    scratch (counters, game progress, end-of-trajectory flags) — excluded from every dump (`model_dump`
+    + `to_wire`), unlike `info` which persists. Type it via `Taskset[Task, Config, MyState]`; defaults
+    to the base `State`."""
 
     is_completed: bool = False
     stop_condition: str | None = None
@@ -199,8 +221,8 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
-    """`(parent, msg_hash) -> node_id` for the graph builder (`graph.add_turn`); rebuilt
-    lazily from `nodes` after deserialization."""
+    """`(parent, msg_hash) -> node_id` for the graph builder (`graph.prepare_turn` / `commit`);
+    rebuilt lazily from `nodes` after deserialization."""
 
     @computed_field
     @property
@@ -360,7 +382,12 @@ class Trace(StrictBaseModel, Generic[TaskT]):
         timing durations. A strict `Trace` can't round-trip them as input, and the
         consumer recomputes them, so we avoid re-running branching + duplicating the
         trajectory on every reply. The full `model_dump` (with derived fields) is what
-        gets written to disk."""
+        gets written to disk.
+
+        Dumped in `mode="python"` (not `"json"`) so per-node numpy arrays survive as raw bytes
+        in their `__nd__` dicts — the env-server packs the result with a numpy-aware msgpack
+        encoder so the arrays ride the `bin` wire untouched. `mode="json"` would coerce the
+        bytes to str."""
         exclude: dict = {field: True for field in type(self).model_computed_fields}
         # Drop each timing span's computed `duration` — derived per `TimeSpan` field of
         # `Timing` (setup/generation/scoring, and any future span) so none leaks to the wire.
@@ -369,7 +396,7 @@ class Trace(StrictBaseModel, Generic[TaskT]):
             for name, info in Timing.model_fields.items()
             if info.annotation is TimeSpan
         }
-        return self.model_dump(mode="json", exclude=exclude)
+        return self.model_dump(mode="python", exclude=exclude)
 
 
 TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]

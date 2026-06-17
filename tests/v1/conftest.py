@@ -25,32 +25,79 @@ from verifiers.v1.trace import Trace
 # tests/v1/fixtures, added to the path via `pythonpath` in pyproject so the v1 loader and the
 # v0 legacy bridge both resolve them by id (no install).
 
-# Built-in runtimes, modal excluded. docker needs the daemon; prime provisions real
-# sandboxes + tunnels (network + PRIME credentials), so both are marked to deselect easily.
-RUNTIMES = [
-    "subprocess",
-    pytest.param("docker", marks=pytest.mark.slow),
-    pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime]),
+# The agent (harness) runtime, modal excluded. docker needs the daemon; prime provisions real
+# sandboxes + tunnels (network + PRIME credentials), so both are marked to deselect easily. The
+# `id`s make a test read like `<harness>-harness-in-<rt>` / `in-<rt>-with-<user|tool>-...`.
+AGENT_RUNTIMES = [
+    pytest.param("subprocess", id="in-subprocess"),
+    pytest.param("docker", marks=pytest.mark.slow, id="in-docker"),
+    pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime], id="in-prime"),
 ]
 
 
-@pytest.fixture(params=RUNTIMES)
-def runtime(request) -> str:
+@pytest.fixture(params=AGENT_RUNTIMES)
+def agent_runtime(request) -> str:
     return request.param
 
 
-# The runtime a tool / user-sim server runs in (its OWN, not colocated in the agent's), so the
-# task-tools and user-sim tests can cover every runtime independent of the agent's.
-@pytest.fixture(params=RUNTIMES)
-def server_runtime(request) -> str:
-    return request.param
+# The user simulator's runtime: inside the agent's runtime (`colocated`) or its own runtime; this
+# fans the user test across both (reusing the runtime markers for the own-runtime cases).
+USER_RUNTIMES = [
+    pytest.param("colocated", id="with-user-colocated"),
+    pytest.param("subprocess", id="with-user-in-subprocess"),
+    pytest.param("docker", marks=pytest.mark.slow, id="with-user-in-docker"),
+    pytest.param(
+        "prime",
+        marks=[pytest.mark.slow, pytest.mark.prime],
+        id="with-user-in-prime",
+    ),
+]
+
+
+@pytest.fixture(params=USER_RUNTIMES)
+def user_runtime(request) -> dict:
+    """A `taskset.user` override placing the user simulator: `colocated` (inside the agent's
+    runtime) or its own runtime, by type."""
+    if request.param == "colocated":
+        return {"colocated": True}
+    return {"colocated": False, "runtime": {"type": request.param}}
+
+
+# The tool server's runtime: inside the agent's runtime (`colocated`), shared once per eval, or its
+# own runtime per rollout; this fans the tool test across all of them (runtime markers for the
+# own-runtime cases — colocated/shared use the host subprocess runtime).
+TOOL_RUNTIMES = [
+    pytest.param("colocated", id="with-tool-colocated"),
+    pytest.param("shared", id="with-tool-shared"),
+    pytest.param("subprocess", id="with-tool-in-subprocess"),
+    pytest.param("docker", marks=pytest.mark.slow, id="with-tool-in-docker"),
+    pytest.param(
+        "prime",
+        marks=[pytest.mark.slow, pytest.mark.prime],
+        id="with-tool-in-prime",
+    ),
+]
+
+
+@pytest.fixture(params=TOOL_RUNTIMES)
+def tool_runtime(request) -> dict:
+    """A `taskset.tools` override placing the tool server: `colocated` (inside the agent's
+    runtime), `shared` (one instance for the whole eval), or its own runtime, by type."""
+    if request.param == "colocated":
+        return {"colocated": True}
+    if request.param == "shared":
+        return {"shared": True}
+    return {"runtime": {"type": request.param}}
 
 
 @pytest.fixture
 def skip_if_unexposable():
     """Skip when a trace failed because the server's runtime couldn't publish its port to the
     host — a prime sandbox whose region doesn't support port exposure (a known infra limit, not
-    a code bug). subprocess/docker share the host network, so they never hit this."""
+    a code bug). subprocess/docker share the host network, so they never hit this.
+
+    TODO: re-enable the prime cases once prime supports port exposure in all regions (or the
+    runtime publishes the port via an in-sandbox tunnel)."""
 
     def _skip(trace) -> None:
         if any("port exposure" in str(e) for e in trace.errors):
@@ -61,34 +108,47 @@ def skip_if_unexposable():
     return _skip
 
 
-# Built-in harnesses (bundled in the `harnesses` package), composed with `runtime` for the
-# harness x runtime matrix. compact is an example harness, not built-in, so it's excluded. rlm
-# and codex install a heavy agent binary at rollout, so they're marked slow.
+# Built-in harnesses (bundled in the `harnesses` package), composed with `agent_runtime` for the
+# plain-task harness x runtime matrix. compact is an example harness, not built-in, so it's
+# excluded. Agent CLI harnesses install their dependencies at rollout, so they're marked slow.
 @pytest.fixture(
     params=[
-        "default",
-        pytest.param("rlm", marks=pytest.mark.slow),
-        pytest.param("codex", marks=pytest.mark.slow),
+        pytest.param("default", id="default-harness"),
+        pytest.param("rlm", marks=pytest.mark.slow, id="rlm-harness"),
+        pytest.param("kimi-code", marks=pytest.mark.slow, id="kimi-code-harness"),
     ]
 )
 def harness(request) -> str:
     return request.param
 
 
-@pytest.fixture
-def harness_supports():
-    """Read a capability flag (e.g. `SUPPORTS_TASK_TOOLS`, `SUPPORTS_USER_SIM`) off an harness
-    by id — the matrix tests use it to decide whether a harness/task pairing should run, be
-    rejected, or be skipped."""
-    from verifiers.v1.loaders import load_harness
+# `codex` lives here, not in `harness`: it's an autonomous coding agent, so on a no-op chat task
+# (`test_single_turn`'s echo) it often just completes its loop without ever replying (0 model calls),
+# which is flaky; on a task with a concrete action (writing a file) it's reliable.
+@pytest.fixture(
+    params=[
+        pytest.param("default", id="default-harness"),
+        pytest.param(
+            "mini-swe-agent", marks=pytest.mark.slow, id="mini-swe-agent-harness"
+        ),
+        pytest.param("codex", marks=pytest.mark.slow, id="codex-harness"),
+    ]
+)
+def agentic_harness(request) -> str:
+    return request.param
 
-    def _supports(harness_id: str, flag: str) -> bool:
-        harness = load_harness(
-            EvalConfig.model_validate({"harness": {"id": harness_id}}).harness
+
+def pytest_configure(config) -> None:
+    """Self-launching tool/user servers run `python -m <module>` in a fresh subprocess, which
+    inherits `PYTHONPATH` but not pytest's in-process `pythonpath`. Put the fixture dir on
+    `PYTHONPATH` so a fixture server module (e.g. `echo_user_sim_v1`, `tool_response_image_v1`)
+    resolves there too — an installed example package (e.g. `glossary_v1`) already would."""
+    fixtures = str(Path(__file__).parent / "fixtures")
+    existing = os.environ.get("PYTHONPATH", "")
+    if fixtures not in existing.split(os.pathsep):
+        os.environ["PYTHONPATH"] = (
+            f"{fixtures}{os.pathsep}{existing}" if existing else fixtures
         )
-        return getattr(harness, flag)
-
-    return _supports
 
 
 def pytest_collection_modifyitems(config, items) -> None:
@@ -104,43 +164,72 @@ def pytest_collection_modifyitems(config, items) -> None:
             item.add_marker(skip)
 
 
-@pytest.fixture
-def run_v1():
-    """Run a v1 taskset end-to-end (the eval CLI's native path) and return its traces.
+def _eval_config(
+    taskset: str,
+    *,
+    agent_runtime: str,
+    output_dir: Path,
+    harness: str = "default",
+    n: int = 1,
+    max_tokens: int = 2048,
+    max_turns: int | None = 4,
+    rollout_timeout: float = 180,
+    enable_bash: bool = False,
+    taskset_overrides: dict | None = None,
+    pool: dict | None = None,
+    model: str | None = None,
+) -> EvalConfig:
+    """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
+    (`run_v1`) and env-server (`run_v1_server`) fixtures. `model` overrides the default text model
+    (e.g. a VLM for an image task).
 
     `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
     risks truncating the reasoning before the answer (which tanks the reward)."""
+    harness_config: dict = {"id": harness, "runtime": {"type": agent_runtime}}
+    if enable_bash:
+        harness_config["enable_bash"] = True
+    return EvalConfig(
+        taskset={"id": taskset, **(taskset_overrides or {})},
+        harness=harness_config,
+        num_tasks=1,
+        num_rollouts=n,
+        max_turns=max_turns,
+        max_output_tokens=max_tokens,
+        sampling={"max_tokens": max_tokens, "temperature": 0},
+        timeout={"rollout": rollout_timeout, "scoring": 60},
+        rich=False,
+        output_dir=output_dir,
+        **({"pool": pool} if pool else {}),
+        **({"model": model} if model else {}),
+    )
 
-    async def _run(
-        taskset: str,
-        *,
-        runtime: str,
-        output_dir: Path,
-        harness: str = "default",
-        n: int = 1,
-        max_tokens: int = 2048,
-        max_turns: int | None = 4,
-        rollout_timeout: float = 180,
-        enable_bash: bool = False,
-        taskset_overrides: dict | None = None,
-    ) -> list[Trace]:
-        harness_config: dict = {"id": harness, "runtime": {"type": runtime}}
-        if enable_bash:
-            harness_config["enable_bash"] = True
-        config = EvalConfig(
-            taskset={"id": taskset, **(taskset_overrides or {})},
-            harness=harness_config,
-            num_tasks=1,
-            num_rollouts=n,
-            max_turns=max_turns,
-            max_output_tokens=max_tokens,
-            sampling={"max_tokens": max_tokens, "temperature": 0},
-            timeout={"rollout": rollout_timeout, "scoring": 60},
-            rich=False,
-            output_dir=output_dir,
-        )
+
+@pytest.fixture
+def run_v1():
+    """Run a v1 taskset end-to-end in-process (`run_eval`, the `--rich` CLI path) and return
+    its traces."""
+
+    async def _run(taskset: str, **kwargs) -> list[Trace]:
+        config = _eval_config(taskset, **kwargs)
         return await run_eval(Environment(config), config)
+
+    return _run
+
+
+@pytest.fixture
+def run_v1_server():
+    """Run a v1 taskset through the env-server worker pool (`run_eval_server`) — the path a
+    non-`--rich` CLI run and prime-rl training both take. Spawns the broker + a worker, so it's
+    the only fixture that exercises serving resources (shared tool servers, interception pool)
+    being stood up by the *server* rather than the in-process runner. Pinned to a single static
+    worker for determinism."""
+    from verifiers.v1.cli.runner import run_eval_server
+
+    async def _run(taskset: str, **kwargs) -> list[Trace]:
+        kwargs.setdefault("pool", {"type": "static", "num_workers": 1})
+        config = _eval_config(taskset, **kwargs)
+        return await run_eval_server(config)
 
     return _run
 

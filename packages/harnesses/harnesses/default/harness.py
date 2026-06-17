@@ -68,8 +68,11 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
         # A Messages instruction (e.g. an image-bearing prompt) seeds the chat loop directly;
-        # a plain string is the single first user message.
-        if isinstance(instruction, str):
+        # a plain string is the single first user message; None means the task has no prompt and
+        # the framework's user simulator opens the conversation (no opening user message here).
+        if instruction is None:
+            args = [""]
+        elif isinstance(instruction, str):
             args = [instruction]
         else:
             env["INITIAL_MESSAGES"] = json.dumps(

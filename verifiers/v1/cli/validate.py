@@ -25,7 +25,6 @@ from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
 from verifiers.v1.cli.log import setup_logging
 from verifiers.v1.cli.resolve import (
     extract_id,
-    local_examples,
     references_config_file,
     with_positional_taskset,
 )
@@ -166,9 +165,6 @@ def main(argv: list[str] | None = None) -> None:
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
-        local = local_examples("examples/tasksets")
-        if local:
-            print("example tasksets:", ", ".join(local))
         sys.argv = [sys.argv[0], "--help"]
         cli(_narrow(argv))  # full option help, narrowed to the given taskset
         return

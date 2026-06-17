@@ -24,12 +24,12 @@ import msgpack
 import zmq
 import zmq.asyncio
 
+from verifiers.utils.serve_utils import msgpack_encoder
 from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import EnvConfig, Environment
-from verifiers.v1.interception import InterceptionPool
 from verifiers.v1.serve.types import (
     BaseResponse,
     HealthResponse,
@@ -61,7 +61,6 @@ class EnvServer:
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client
-        self.pool: InterceptionPool | None = None  # set in run() (v1 only)
 
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
@@ -101,22 +100,23 @@ class EnvServer:
             client=self._client(client_config, model), model=model, sampling=sampling
         )
 
-    def interception_pool(self):
-        """Context for the server's shared interception pool, entered for the server's
-        lifetime so its tunnels are reused across requests. The legacy v0 bridge overrides
-        this (it runs its own rollouts, with no v1 interception)."""
-        return self.env.interception_pool()
+    def serving(self):
+        """Context for the server's eval-level serving resources (shared tool servers +
+        interception pool), entered for the server's lifetime so they're reused across
+        requests; episodes built inside it inherit them (see `Environment.serving`). The
+        legacy v0 bridge overrides this (it runs its own rollouts, with no v1 serving)."""
+        return self.env.serving(self.tasks)
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         episode = self.env.episode(self.tasks[req.task_idx], ctx, n=1)
-        traces = await episode.run(interception=self.pool)
+        traces = await episode.run()
         return RunRolloutResponse(trace=traces[0].to_wire())
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         episode = self.env.episode(self.tasks[req.task_idx], ctx, n=req.n)
-        traces = await episode.run(interception=self.pool)
+        traces = await episode.run()
         return RunGroupResponse(traces=[t.to_wire() for t in traces])
 
     async def _handle(
@@ -147,7 +147,11 @@ class EnvServer:
         ) as e:  # a failed request is data, not a crash — report and keep serving
             logger.warning("request failed: %s", e, exc_info=True)
             response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
-        data = msgpack.packb(response.model_dump(mode="json"), use_bin_type=True)
+        data = msgpack.packb(
+            response.model_dump(mode="python"),
+            default=msgpack_encoder,
+            use_bin_type=True,
+        )
         try:
             await self.frontend.send_multipart([client_id, request_id, data])
         except zmq.ZMQError as e:
@@ -164,9 +168,10 @@ class EnvServer:
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
         tasks: set[asyncio.Task] = set()
-        # Enter the interception pool for the server's lifetime so its tunnels are reused
-        # across requests (the legacy bridge overrides this to a no-op).
-        async with self.interception_pool() as self.pool:
+        # Enter the serving resources (shared tool servers + interception pool) for the
+        # server's lifetime so they're reused across requests; episodes built per request
+        # inherit them (the legacy bridge overrides this to a no-op).
+        async with self.serving():
             try:
                 while True:
                     events = dict(await poller.poll(timeout=100))

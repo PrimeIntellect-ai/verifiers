@@ -6,7 +6,7 @@
   they are not known to be available there yet.
 - Validation: ✅ means the taskset has a linked `prime-data` PR and was
   validated with
-  [`SWEDebugEnv`](../../../../../../docs/environments.md#integrations-and-experimental-environments),
+  [`SandboxDebugEnv`](../../../../../../docs/environments.md#integrations-and-experimental-environments),
   — not yet complete.
 
 ## Progress
@@ -306,6 +306,6 @@
    filtered Prime dataset through `prime-data` when validation identifies rows
    to exclude.
 4. Validate with
-   [`SWEDebugEnv`](../../swe_debug_env.py): no-op runs should fail real tasks,
+   [`SandboxDebugEnv`](../../sandbox_debug_env.py): no-op runs should fail real tasks,
    gold-patch runs should pass, and repeated passes should separate task
    quality issues from sandbox or infrastructure failures.

@@ -6,7 +6,7 @@ abstract method. Each concrete client owns its own wire translation internally.
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
 from tenacity import (
@@ -19,18 +19,26 @@ from tenacity import (
 
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import ModelError, OverlongPromptError
+from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, SamplingConfig
 
 logger = logging.getLogger(__name__)
 
+SESSION_ID_HEADER = "X-Session-ID"
+"""Per-rollout routing header. Every turn of one rollout sends the same value (the trace id),
+so a session-affinity router (e.g. vLLM's ``consistent_hash`` policy keyed on its
+``request_id_headers``) pins all of a rollout's turns to the same engine — keeping the
+growing cross-turn prefix warm in that engine's KV cache instead of re-prefilling it
+cold on a random shard each turn."""
+
 
 @dataclass
 class RelayReply:
-    """A relayed upstream response streamed back: its content type + body chunks (one chunk for
-    a JSON body, many for SSE). The connection closes when `chunks` is exhausted."""
+    """A relayed upstream response: content type, complete SSE events, and connection cleanup."""
 
     content_type: str
     chunks: AsyncIterator[bytes]
+    close: Callable[[], Awaitable[None]]
 
 
 class Client(ABC):
@@ -41,10 +49,17 @@ class Client(ABC):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        session_id: str | None = None,
+        turn: PendingTurn | None = None,
     ) -> Response:
         """Run one completion -> a vf `Response`. The proxy client forwards `body` 1:1 and
         parses the provider response via `dialect` (carrying the raw on `Response.raw`); the
-        renderer derives the typed prompt from `body` via `dialect` and tokenizes it."""
+        renderer derives the typed prompt from `body` via `dialect` and tokenizes it.
+
+        `session_id` is the rollout's stable id (the trace id); when set, the client sends it
+        as the `SESSION_ID_HEADER` so a session-affinity router keeps the rollout's turns on
+        one engine for cross-turn prefix-cache reuse. `turn` is the graph-resolved prompt
+        prefix; train clients may use it for renderer bridging, while relay clients ignore it."""
 
     async def relay(
         self,
@@ -52,6 +67,7 @@ class Client(ABC):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        session_id: str | None = None,
     ) -> RelayReply:
         """Stream a (possibly SSE) response back, relaying the provider's bytes — the proxy's
         path for a streaming request. Only the relay (eval) client supports it; the renderer
@@ -99,9 +115,17 @@ class RetryingClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        session_id: str | None = None,
+        turn: PendingTurn | None = None,
     ) -> Response:
         return await self._retrying(
-            self.inner.get_response, dialect, body, model, sampling_args
+            self.inner.get_response,
+            dialect,
+            body,
+            model,
+            sampling_args,
+            session_id,
+            turn,
         )
 
     async def relay(
@@ -110,11 +134,12 @@ class RetryingClient(Client):
         body: dict,
         model: str,
         sampling_args: SamplingConfig,
+        session_id: str | None = None,
     ) -> RelayReply:
         # Safe to retry: relay raises (and is retried) before any response byte is handed back;
         # once a `RelayReply` is returned, streaming is already underway.
         return await self._retrying(
-            self.inner.relay, dialect, body, model, sampling_args
+            self.inner.relay, dialect, body, model, sampling_args, session_id
         )
 
     async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:

@@ -30,7 +30,7 @@ trains on.
 
 ```bash
 uv sync                          # core + shipped packages + examples
-uv run eval gsm8k-v1 -n 5 -r 3   # 5 tasks, 3 rollouts each; default harness, docker runtime
+uv run eval gsm8k-v1 -n 5 -r 3   # 5 tasks, 3 rollouts each; default harness, subprocess runtime
 uv run eval -h                   # typed help (lists local tasksets + harnesses)
 ```
 
@@ -39,8 +39,10 @@ flag names are the dotted config path (`--harness.runtime.type docker`).
 
 ## Authoring a taskset
 
-A taskset is a package selected by `id`. Copy the closest `examples/tasksets/<name>` and edit.
-Minimal shape:
+A taskset is a package selected by `id`. Scaffold one with `uv run init my-task-v1` (add
+`--add-tool` / `--add-user` / `--add-harness` for more pieces, `--v0` for a legacy environment),
+or copy the closest `environments/<name>_v1` and edit. The scaffold runs out of the box; replace
+`load_tasks` and the `@reward`. Minimal shape:
 
 ```python
 import verifiers.v1 as vf
@@ -66,8 +68,7 @@ class ReverseTaskset(vf.Taskset[ReverseTask, ReverseConfig]):
         return float(trace.assistant_messages[-1].content.strip() == task.answer)
 
 
-def load_taskset(config: ReverseConfig) -> ReverseTaskset:
-    return ReverseTaskset(config=config)
+__all__ = ["ReverseTaskset"]   # vf resolves the taskset by finding this Taskset subclass
 ```
 
 ### Scoring
@@ -158,29 +159,88 @@ runtime artifacts (the diff above, captured logs, command output) you want persi
 trace for inspection. Like the rewards/metrics it rides along to `results.jsonl`; use `metrics`
 for numbers that aggregate, `trace.info` for everything else.
 
+`trace.state` is the complementary **transient** store: a typed, mutable `vf.State` shared across the
+rollout's tool servers, user simulator, and scoring — the one place per-rollout *runtime* state lives
+(counters, game progress, your own end-of-trajectory flag). Unlike `info` it is **never** persisted to
+disk or sent over the wire. A `@vf.tool` / `respond` reads+writes it as `self.state` (synced over the
+interception server per call, so tools and the user sim see each other's writes); `@reward` /
+`@metric` / `finalize` read+write `trace.state` directly. The base `vf.State` is empty — subclass it
+to declare typed fields and parameterize the taskset (`vf.Taskset[Task, Config, MyState]`) plus any
+stateful server (`vf.Toolset[Config, MyState]` / `vf.User[Config, MyState]`); it defaults to the base.
+To **end a trajectory from state**, set your own flag and declare a `@vf.stop` over it (the framework
+has no built-in end signal):
+
+```python
+class GameState(vf.State):
+    game_over: bool = False
+
+class GameUser(vf.User[vf.UserConfig, GameState]):
+    async def respond(self, message: str) -> vf.Messages:
+        ...
+        if finished:
+            self.state.game_over = True   # the @vf.stop below ends the rollout
+        return [...]
+
+class GameTaskset(vf.Taskset[GameTask, GameConfig, GameState]):
+    @vf.stop
+    async def game_over(self, trace) -> bool:   # stop reason is this method's name
+        return trace.state.game_over
+```
+
+> **Concurrency — `self.state` is last-write-wins.** Each `@vf.tool` / `respond` call syncs the
+> *whole* state as a read-modify-write: pull `self.state` from the host, run, push it back. Tool calls
+> a harness runs **concurrently** (several `tool_calls` in one assistant turn) therefore race — each
+> reads the same starting state and the last push wins, so concurrent increments/appends are lost.
+> Tools the harness runs **sequentially** compose correctly. Keep shared-state mutations on the
+> sequential path (or accumulate per-key on the host if you need parallel-safe writes). The taskset
+> and its servers must also share **one** `State` subclass — a server that pushes a mismatching shape
+> is rejected (the rollout fails legibly).
+
 Since `@group_reward` has no runtime, fold any runtime-derived signal (here, pass/fail) into a
 per-rollout `@reward`/`@metric` first, then compare those across the task's rollouts.
 
 ### Tools and user simulators
 
-A taskset exposes a task's tools via `tools(task) -> list[vf.Tools]` (each an MCP server — a
-single-file uv script, so it runs in any runtime). Placement is config on `taskset.tools`:
+Both a tool server and a user simulator are **vf-native classes** (not raw MCP, no FastMCP
+boilerplate) authored from a config — the same shape as a taskset:
+
+- A **tool server** is a `vf.Toolset[ConfigT]` with `@vf.tool` methods (the model sees
+  `<TOOL_PREFIX>_<method>`; the docstring is the description). A taskset exposes a task's tools via
+  `tools(task) -> list[vf.Toolset]`.
+- A **user simulator** is a `vf.User[ConfigT]` with one `async def respond(message) -> Messages` hook
+  (the framework calls it after each assistant turn for the next user message(s); end the trajectory
+  by setting a `self.state` flag a taskset `@vf.stop` checks — see above). A taskset supplies one via
+  `user(task) -> vf.User | None`. If a task carries no prompt (`instruction=None`), the simulator also
+  **opens the conversation**: the framework calls `respond("")` once before the first model turn and
+  seeds its reply as the initial user message.
+
+A taskset may expose **both** at once (tools the model calls *and* a user sim driving the turns) —
+they're served together each rollout; a harness just needs to support both.
+
+**Where they live.** Each server is its own self-launching module under the env package's
+`servers/`, ending with `if __name__ == "__main__": <Server>.run()`; the framework launches it with
+`python -m <env>.servers.<name>` (host: ambient; sandbox: the env package is uploaded + installed
+first). Build state as plain `self.x` attributes in `async def setup(self)` (task-agnostic, runs for
+every server) or `async def setup_task(self, task)` (per-rollout — **skipped for a `shared`
+server**). Those attrs are server-local; for per-rollout state **shared** with the other servers and
+scoring use the typed `self.state` (`trace.state`, above). Fixed data lives in module constants, not
+config.
+
+**Placement** is config on the server's config (a `vf.ToolsetConfig` / `vf.UserConfig` field on the
+taskset's own config), so it's per-server and CLI-tunable (`--taskset.tools.runtime.type docker`,
+`--taskset.tools.shared true`, `--taskset.user.colocated true`):
 
 | placement | how |
 | --- | --- |
-| colocated (default) | in the harness's own runtime, reached on localhost |
-| own per-rollout runtime | `taskset.tools.runtime = {...}`, reached over a tunnel |
-| shared | one instance built once for the whole eval |
-| remote | an existing server, by URL |
-
-A multi-turn, stateful task drives the conversation with a user simulator —
-`user(task) -> vf.User | None` (structurally a tool server; the framework calls it after each
-assistant turn for the next user message + a done flag). `UserConfig.colocated` controls
-whether it runs in the harness's runtime or its own.
+| own host runtime (default) | its own `subprocess` runtime on the host, reached over the host network |
+| own per-rollout runtime | `runtime = {type = "docker"/"prime"}`, reached over a tunnel |
+| colocated | `colocated = true` — inside the harness's runtime (reached in-sandbox, no tunnel) |
+| shared (tools only) | `shared = true` — one instance built once for the whole eval |
+| remote (tools only) | an existing server, by `url` |
 
 ### Learn from the examples
 
-`examples/tasksets/` is the reference library — each shows one pattern:
+The `*_v1` tasksets under `environments/` are the reference library — each shows one pattern:
 
 | example | pattern |
 | --- | --- |
@@ -188,8 +248,8 @@ whether it runs in the harness's runtime or its own.
 | `gsm8k-v1`, `aime24-v1`, `math-env-v1` | single-turn + in-runtime scoring (a `@reward` uv script) |
 | `code-golf-v1` | group rewards (`@group_reward` over a task's N rollouts) |
 | `alphabet-sort-v1` | multi-turn, stateful, driven by a `vf.User` simulator |
-| `glossary-v1` | a colocated tool server |
-| `wikispeedia-v1` | a tool server in its own per-rollout runtime |
+| `glossary-v1` | the simplest tool server (own host runtime) |
+| `wikispeedia-v1` | a stateful tool server (global `setup` + per-task `setup_task`) |
 | `wiki-search-v1` | a shared tool server (built once) + an LLM judge |
 | `deepwiki-v1` | an existing remote tool server, by URL |
 | `color-codeword-v1` | a multimodal (image) task |
@@ -221,8 +281,8 @@ You rarely need this — a custom harness is for a rollout loop the built-ins ca
 (context compaction, subagents, a bespoke agent CLI). Define a `HarnessConfig` (its `id` plus
 any knobs, which surface as `--harness.*`), subclass `vf.Harness[ConfigT]`, declare the
 capability flags, and implement `launch` — it drives the model however it likes and returns the
-program's result (the base `run` wraps it and errors on a non-zero exit). Export
-`load_harness(config)`.
+program's result (the base `run` wraps it and errors on a non-zero exit). Export the harness
+class via `__all__`.
 
 A harness never builds the trace itself: it just points *a program* at `endpoint` (authorized
 with `secret`), and the interception server records every call. The program can be any
@@ -256,11 +316,10 @@ class MyHarness(vf.Harness[MyHarnessConfig]):
         return await runtime.run_uv_script(PROGRAM, args=[instruction], env=env)
 
 
-def load_harness(config: MyHarnessConfig) -> MyHarness:
-    return MyHarness(config)
+__all__ = ["MyHarness"]   # vf resolves the harness by finding this Harness subclass
 ```
 
-Copy `examples/harnesses/compact` (a context-rewrite loop) as a starting point.
+Copy `environments/compact` (a context-rewrite loop) as a starting point.
 
 ## Runtimes
 
@@ -268,8 +327,8 @@ The same `Runtime` contract backs the harness (`--harness.runtime`), a task's to
 (`--taskset.tools.runtime`), and the user simulator:
 
 ```bash
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container (eval default)
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process (eval default)
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sandbox
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox
 ```
@@ -288,6 +347,20 @@ Common aliases: `-m`/`--model`, `-n`/`--num-tasks`, `-r`/`--num-rollouts`,
 `-c`/`--max-concurrent`, `-s`/`--shuffle`, `-o`/`--output-dir`, `-v`/`--verbose`,
 `--no-rich` (disable the live dashboard).
 
+- **Sampling** — set provider-neutral generation knobs under `sampling`, for example
+  `--sampling.temperature 0 --sampling.max-tokens 2048 --sampling.reasoning-effort medium`,
+  or:
+
+  ```toml
+  [sampling]
+  temperature = 0
+  max_tokens = 2048
+  reasoning_effort = "medium"
+  ```
+
+  The active dialect maps the string field `reasoning_effort` to the top-level
+  `reasoning_effort` field for chat-completions, `reasoning.effort` for Responses, or
+  `output_config.effort` for Anthropic Messages.
 - **Configs** — a saved run is `uv run eval @ config.toml` (the taskset/harness `id`s live in
   the file); CLI flags still override. `--dry-run` writes the resolved `config.toml` without
   running. Logs are teed to `<output_dir>/eval.log`.

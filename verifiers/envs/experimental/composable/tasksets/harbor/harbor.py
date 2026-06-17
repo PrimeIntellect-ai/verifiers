@@ -124,7 +124,7 @@ class HarborTaskSet(SandboxTaskSet):
             tar_path = Path(tmp_file.name)
 
         try:
-            with tarfile.open(tar_path, "w:gz") as tar:
+            with tarfile.open(tar_path, "w:gz", dereference=True) as tar:
                 instruction_path = task_dir / "instruction.md"
                 if instruction_path.exists():
                     tar.add(instruction_path, arcname="task/instruction.md")
@@ -136,7 +136,7 @@ class HarborTaskSet(SandboxTaskSet):
             await sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
             await sandbox_client.execute_command(
                 sandbox_id,
-                f"mkdir -p /task /logs/verifier /oracle /tests /app && tar -xzf {remote_tar} -C / && rm {remote_tar}",
+                f"mkdir -p /task /app && tar -xzf {remote_tar} -C / && rm {remote_tar}",
             )
         finally:
             tar_path.unlink(missing_ok=True)
@@ -147,44 +147,71 @@ class HarborTaskSet(SandboxTaskSet):
         sandbox_id: str,
         state: dict,
         test_timeout: int,
+        allow_existing_oracle: bool = False,
     ) -> str:
-        """Upload tests/ and solution/ then run test.sh. Return reward string."""
+        """Upload tests/, run test.sh, and return the verifier reward string."""
         task_dir = Path(state["info"]["task_dir"])
-        solution_dir = task_dir / "solution"
         tests_dir = task_dir / "tests"
 
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
             tar_path = Path(tmp_file.name)
 
         try:
-            with tarfile.open(tar_path, "w:gz") as tar:
-                if solution_dir.exists():
-                    for item in solution_dir.iterdir():
-                        tar.add(item, arcname=f"oracle/{item.name}")
+            with tarfile.open(tar_path, "w:gz", dereference=True) as tar:
                 if tests_dir.exists():
                     for item in tests_dir.iterdir():
                         tar.add(item, arcname=f"tests/{item.name}")
 
             remote_tar = "/tmp/harbor_tests.tar.gz"
             await sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
-            await sandbox_client.execute_command(
+            oracle_cleanup = "rm -rf /oracle; " if not allow_existing_oracle else ""
+            setup_result = await sandbox_client.execute_command(
                 sandbox_id,
-                f"mkdir -p /oracle /tests && tar -xzf {remote_tar} -C / && rm {remote_tar}",
+                "if [ -e /logs ] && { [ ! -d /logs ] || [ -L /logs ]; }; then "
+                'echo "reserved verifier path already exists: /logs" >&2; '
+                "exit 1; "
+                "fi; "
+                "rm -rf /tests /logs/verifier; "
+                f"{oracle_cleanup}"
+                f"mkdir -p /tests /logs/verifier && tar -xzf {remote_tar} -C / && rm {remote_tar}",
                 timeout=900,
             )
+            if setup_result.exit_code != 0:
+                output = (setup_result.stdout or "") + (setup_result.stderr or "")
+                state["harbor_test_setup"] = {
+                    "returncode": setup_result.exit_code,
+                    "stdout": setup_result.stdout or "",
+                    "stderr": setup_result.stderr or "",
+                }
+                raise RuntimeError(
+                    f"test setup failed: exit_code={setup_result.exit_code} "
+                    f"output={output[:500]}"
+                )
         finally:
             tar_path.unlink(missing_ok=True)
 
-        await sandbox_client.run_background_job(
+        test_result = await sandbox_client.run_background_job(
             sandbox_id, "bash test.sh", timeout=test_timeout, working_dir="/tests"
         )
+        state["harbor_tests"] = {
+            "returncode": test_result.exit_code,
+            "stdout": test_result.stdout or "",
+            "stderr": test_result.stderr or "",
+        }
 
         reward_result = await sandbox_client.execute_command(
             sandbox_id,
             "if [ -s /logs/verifier/reward.txt ]; then cat /logs/verifier/reward.txt; "
             "elif [ -s /logs/verifier/reward.json ]; then cat /logs/verifier/reward.json; fi",
         )
-        return (reward_result.stdout or "").strip()
+        reward_output = (reward_result.stdout or "").strip()
+        if not reward_output and test_result.exit_code != 0:
+            output = (test_result.stdout or "") + (test_result.stderr or "")
+            raise RuntimeError(
+                f"test.sh failed before writing reward: "
+                f"exit_code={test_result.exit_code} output={output[:500]}"
+            )
+        return reward_output
 
     def _calculate_reward(self, test_output: str, info: dict) -> float:
         """Parse reward string: try float, fallback JSON with .reward key."""
@@ -214,7 +241,7 @@ class HarborTaskSet(SandboxTaskSet):
             tar_path = Path(tmp_file.name)
 
         try:
-            with tarfile.open(tar_path, "w:gz") as tar:
+            with tarfile.open(tar_path, "w:gz", dereference=True) as tar:
                 for item in solution_dir.iterdir():
                     tar.add(item, arcname=f"oracle/{item.name}")
 
@@ -228,7 +255,10 @@ class HarborTaskSet(SandboxTaskSet):
             tar_path.unlink(missing_ok=True)
 
         results = await sandbox_client.execute_command(
-            sandbox_id, "bash /oracle/solve.sh", working_dir="/app", timeout=120
+            sandbox_id,
+            "bash /oracle/solve.sh",
+            working_dir="/app",
+            timeout=int(state.get("solution_timeout", 120)),
         )
         if results.exit_code != 0:
             stderr = (results.stderr or "")[:500]
@@ -250,7 +280,11 @@ class HarborTaskSet(SandboxTaskSet):
         sandbox_id = state["sandbox_id"]
         await self._apply_gold_patch(sandbox_client, sandbox_id, state)
         test_output = await self._run_tests(
-            sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
+            sandbox_client,
+            sandbox_id,
+            state,
+            state.get("test_timeout", 900),
+            allow_existing_oracle=True,
         )
         state["test_output"] = test_output
         info = state.get("info") or {}
@@ -368,9 +402,16 @@ class HarborDatasetTaskSet(SandboxTaskSet):
         sandbox_id: str,
         state: dict,
         test_timeout: int,
+        allow_existing_oracle: bool = False,
     ) -> str:
         task = HarborTaskSet(state["info"]["task_dir"])
-        return await task._run_tests(sandbox_client, sandbox_id, state, test_timeout)
+        return await task._run_tests(
+            sandbox_client,
+            sandbox_id,
+            state,
+            test_timeout,
+            allow_existing_oracle=allow_existing_oracle,
+        )
 
     def _calculate_reward(self, test_output: str, info: dict) -> float:
         task = HarborTaskSet(info["task_dir"])
