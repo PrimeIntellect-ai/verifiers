@@ -13,17 +13,6 @@ from renderers.base import MultiModalData
 from typing_extensions import TypedDict
 
 
-class RoutedExperts(TypedDict):
-    """The raw MoE expert-routing data a `generate` response carries for router replay:
-    base64 `data` (uint8 `[tokens, layers, top_k]`), its `shape`, and `start` — the prompt
-    offset where the routing begins (0 = full prompt+completion). Kept opaque (`Any` data)
-    so pydantic never validates the encoded blob."""
-
-    data: Any
-    shape: list[int]
-    start: int
-
-
 class StrictBaseModel(BaseModel):
     """A pydantic base that rejects unknown fields. Use for all closed data types."""
 
@@ -161,6 +150,17 @@ class Usage(StrictBaseModel):
     @property
     def total_tokens(self) -> int:
         return self.prompt_tokens + self.completion_tokens
+
+
+class RoutedExperts(TypedDict):
+    """The raw MoE expert-routing data a `generate` response carries for router replay:
+    base64 `data` (uint8 `[tokens, layers, top_k]`), its `shape`, and `start` — the prompt
+    offset where the routing begins (0 = full prompt+completion). Kept opaque (`Any` data)
+    so pydantic never validates the encoded blob."""
+
+    data: Any
+    shape: list[int]
+    start: int
 
 
 class TurnTokens(StrictBaseModel):
