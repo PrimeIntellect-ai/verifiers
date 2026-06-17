@@ -108,8 +108,9 @@ uv run eval gsm8k-v1 -n 1 --harness.id rlm    # the rlm harness
 uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
 ```
 
-The same drivers on an agentic terminal task — harbor's `hello-world` (needs docker). `default`
-is excluded: it has no built-in tool to touch the runtime's filesystem, which terminal tasks need.
+The same drivers on an agentic terminal task — harbor's `hello-world`. The task acts on a
+filesystem, so run it under a containerized runtime: `docker` locally, or a remote `prime` /
+`modal` sandbox (not the default `subprocess`).
 
 ```bash
 uv run eval harbor-v1 -n 1 --harness.runtime.type docker --harness.id bash            # bash-only agent
