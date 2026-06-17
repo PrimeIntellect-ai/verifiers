@@ -111,13 +111,6 @@ The token-identity check in `commit` is the backstop for when the bridge can't a
 returns `None`, multimodal, the eval relay): the break still surfaces as honest branches rather than
 silent corruption.
 
-Tests (`tests/v1/test_graph.py`): `test_message_level_branch_from_compaction` (hash fork +
-invariant), `test_renderer_level_break_forks_only_with_token_ids` (token drift forks under the train
-client, is invisible under the eval relay, invariant per branch), and `test_no_drift_stays_linear`.
-Validated end-to-end on alphabet-sort-v1 with Qwen3.5 (interleaved thinking): without the bridge the
-follow-up turn's tokens drift (a re-rendered prompt node loses its tokens) and the trajectory forks
-per turn; with the bridge it stays one branch with correct per-node tokens.
-
 ## Model access — interception, dialects, clients
 
 When the harness POSTs a completion to its localhost endpoint, the `InterceptionServer`
