@@ -102,7 +102,7 @@ class AlphabetSortTaskset(
             first = turns[0][:]
             rng.shuffle(first)
             shown = rng.randint(c.min_names_per_turn, c.max_names_per_turn)
-            prompt = (
+            initial_prompt = (
                 f"Sort these names in alphabetical order by {label} name: {', '.join(first)}\n\n"
                 "Use exactly this format:\n<alphabetical_sorted>\n"
                 + "\n".join(f"Name{j}" for j in range(1, shown + 1))
@@ -142,7 +142,7 @@ class AlphabetSortTaskset(
                     # follow-ups — one user turn per `user_turns` entry.
                     prompt=None,
                     info={
-                        "user_turns": [prompt, *follow_ups],
+                        "user_turns": [initial_prompt, *follow_ups],
                         "ground_truths": ground_truths,
                         "num_turns": len(turns),
                     },
