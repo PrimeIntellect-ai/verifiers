@@ -5,7 +5,7 @@ import shlex
 import tempfile
 from pathlib import Path
 from textwrap import dedent
-from typing import Any
+from typing import Any, cast
 
 import verifiers as vf
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
@@ -71,9 +71,8 @@ def _get_logs_eval(test_spec, content: str) -> tuple[dict[str, str], bool]:
     repo = test_spec.repo
     version = test_spec.version
     log_parser = MAP_REPO_TO_PARSER[repo]
-    test_cmd = MAP_REPO_VERSION_TO_SPECS[repo][version]["test_cmd"]
-    if isinstance(test_cmd, list):
-        test_cmd = test_cmd[-1]
+    test_cmd_raw = MAP_REPO_VERSION_TO_SPECS[repo][version]["test_cmd"]
+    test_cmd = str(test_cmd_raw[-1] if isinstance(test_cmd_raw, list) else test_cmd_raw)
 
     bad_codes = [
         code
@@ -105,21 +104,28 @@ def _get_test_commands(
     conda_env = "testbed"
     repo_directory = "/testbed"
 
-    test_command = MAP_REPO_VERSION_TO_SPECS[repo][version]["test_cmd"]
-    if isinstance(test_command, list):
-        test_command = test_command[-1]
-    repo_specific_setup_command = MAP_REPO_VERSION_TO_SPECS[repo][version].get(
-        "eval_commands", []
+    specs = MAP_REPO_VERSION_TO_SPECS[repo][version]
+    test_command_raw = specs["test_cmd"]
+    test_command = str(
+        test_command_raw[-1] if isinstance(test_command_raw, list) else test_command_raw
     )
-    repo_specific_install_command = MAP_REPO_VERSION_TO_SPECS[repo][version].get(
-        "install", ""
-    )
+    setup_raw = specs.get("eval_commands", [])
+    if isinstance(setup_raw, str):
+        repo_specific_setup_command = [setup_raw]
+    elif isinstance(setup_raw, list):
+        repo_specific_setup_command = [str(command) for command in setup_raw]
+    else:
+        repo_specific_setup_command = []
+    install_raw = specs.get("install", "")
+    repo_specific_install_command = install_raw if isinstance(install_raw, str) else ""
 
     if repo == "scikit-learn/scikit-learn":
         repo_specific_install_command = ""
 
     test_patch_files = re.findall(r"--- a/(.*)", test_patch)
-    test_files = get_test_directives({"repo": repo, "test_patch": test_patch})
+    test_files = get_test_directives(
+        cast(Any, {"repo": repo, "test_patch": test_patch})
+    )
 
     newline = "\n"
     eval_script = dedent(
@@ -474,7 +480,7 @@ class SWEBenchTaskSet(SandboxTaskSet):
                 if not needs_rebuild:
                     specs = MAP_REPO_VERSION_TO_SPECS[test_spec.repo][test_spec.version]
                     install_cmd = specs.get("install")
-                    if install_cmd:
+                    if isinstance(install_cmd, str) and install_cmd:
                         eval_lines = [
                             line
                             for line in test_spec.eval_script_list
