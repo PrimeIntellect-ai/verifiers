@@ -171,6 +171,7 @@ def _eval_config(
     output_dir: Path,
     harness: str = "default",
     n: int = 1,
+    num_tasks: int = 1,
     max_tokens: int = 2048,
     max_turns: int | None = 4,
     rollout_timeout: float = 180,
@@ -192,7 +193,7 @@ def _eval_config(
     return EvalConfig(
         taskset={"id": taskset, **(taskset_overrides or {})},
         harness=harness_config,
-        num_tasks=1,
+        num_tasks=num_tasks,
         num_rollouts=n,
         max_turns=max_turns,
         max_output_tokens=max_tokens,
