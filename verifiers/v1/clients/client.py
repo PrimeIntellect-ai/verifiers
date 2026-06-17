@@ -20,7 +20,7 @@ from tenacity import (
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import ModelError, OverlongPromptError
 from verifiers.v1.graph import PendingTurn
-from verifiers.v1.types import Response, SamplingConfig
+from verifiers.v1.types import Response, Sampling, SamplingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +168,6 @@ class RolloutContext:
     """The collaborators a single rollout needs (client + model + sampling), bundled
     so harnesses hold no rollout state. Built by the Environment."""
 
-    client: Client
     model: str
-    sampling: SamplingConfig
+    client: Client
+    sampling: Sampling

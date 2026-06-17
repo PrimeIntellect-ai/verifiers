@@ -220,6 +220,10 @@ class SamplingConfig(BaseModel):
     )
 
 
+Sampling = SamplingConfig
+"""Alias for `SamplingConfig` — the terse name for a `sampling` field/arg."""
+
+
 # --- ids ----------------------------------------------------------------------
 
 
