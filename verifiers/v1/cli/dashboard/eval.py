@@ -67,7 +67,7 @@ def _timeouts(config: EvalConfig) -> str:
     """Per-stage rollout timeouts for the overview, each stage enumerated (unset → 'no <stage>
     timeout')."""
     parts = []
-    for stage in ("setup", "rollout", "scoring"):
+    for stage in ("setup", "rollout", "finalize", "scoring"):
         value = getattr(config.timeout, stage)
         parts.append(f"{stage} {value:g}s" if value else f"no {stage} timeout")
     return "  ·  ".join(parts)
@@ -181,9 +181,14 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             if rollout.phase == Phase.DONE:  # fully scored — reward is final
                 state = "error" if t.has_error else "success"
                 result = t.error.type if t.has_error else f"reward={t.reward:.2f}"
-                stop = (
-                    "" if t.has_error else (t.stop_condition or "")
-                )  # error shown instead
+                if t.has_error:
+                    stop = ""  # error shown instead
+                else:
+                    stop = t.stop_condition or ""
+                    if (
+                        t.is_truncated
+                    ):  # flag a clipped rollout next to its stop condition
+                        stop = f"{stop} (truncated)".strip()
             else:
                 state, result, stop = rollout.phase, "", ""
             label = f"name={t.task.name[:32]}" if t.task.name else f"idx={t.task.idx}"
