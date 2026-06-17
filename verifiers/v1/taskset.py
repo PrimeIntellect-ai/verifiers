@@ -19,57 +19,15 @@ import asyncio
 from collections.abc import Mapping
 from typing import ClassVar, Generic, TypeVar
 
-from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.ids import EnvId, env_name
-from verifiers.v1.runtimes import Runtime, RuntimeConfig, SubprocessConfig
+from verifiers.v1.runtimes import Runtime
+from verifiers.v1.mcp import Toolset, User
+from verifiers.v1.state import StateT
 from verifiers.v1.task import TaskT
-from verifiers.v1.tools import Tools
 from verifiers.v1.trace import Trace
-from verifiers.v1.user import User
-
-
-class ToolsConfig(BaseConfig):
-    """How a taskset's `tools` are run (`colocated` and `shared` are mutually
-    exclusive; reachability — localhost vs tunnel — is then inferred):
-      - colocated: in the harness's runtime, per rollout (localhost; `runtime` ignored).
-      - shared:    one instance for the whole eval, in its own `runtime`.
-      - neither:   its own `runtime`, per rollout."""
-
-    colocated: bool = True
-    """Run each tool server inside the harness's runtime (localhost, per rollout). The
-    default: a self-contained uv-script server runs anywhere. A data-heavy server that
-    re-fetches per rollout should opt out (host-served, or `shared`)."""
-    shared: bool = False
-    """Run one tool-server instance for the whole eval, shared across rollouts (in its
-    own `runtime`). Mutually exclusive with `colocated`."""
-    runtime: RuntimeConfig = SubprocessConfig()
-    """The tool server's own runtime, used when not colocated (colocated uses the
-    harness's runtime)."""
-
-    @model_validator(mode="after")
-    def _exclusive(self) -> "ToolsConfig":
-        if self.colocated and self.shared:
-            raise ValueError("tools.colocated and tools.shared are mutually exclusive")
-        return self
-
-
-class UserConfig(BaseConfig):
-    """How a taskset's user simulator is run. The framework always drives it from the host
-    (`public_url` for a remote sandbox, localhost otherwise). By default it is `colocated` in
-    the agent's runtime — reusing the runtime already up for the harness, so there's no extra
-    runtime per rollout. Set `colocated = false` to give it its own `runtime` (e.g. a remote
-    sandbox that can't publish the colocated port back to the host)."""
-
-    colocated: bool = True
-    """Run the user simulator inside the agent's (harness's) runtime, per rollout, reusing it
-    rather than starting a separate runtime. Its port is published back to the host so the
-    framework can still drive it."""
-    runtime: RuntimeConfig = SubprocessConfig()
-    """The user simulator's own runtime, used when not colocated: host (subprocess) by default
-    — always localhost-reachable; set docker/prime to isolate it in its own sandbox."""
 
 
 class TasksetConfig(BaseConfig):
@@ -79,8 +37,6 @@ class TasksetConfig(BaseConfig):
     """The taskset id, which selects this taskset: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
     `EnvId`). Set via `--taskset.id`."""
-    tools: ToolsConfig = ToolsConfig()
-    user: UserConfig = UserConfig()
 
     @property
     def name(self) -> str:
@@ -91,9 +47,11 @@ class TasksetConfig(BaseConfig):
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
 
 
-class Taskset(Generic[TaskT, ConfigT]):
-    """Generic over its task and config types, so `self.config` and `load_tasks`
-    are fully typed. Subclass: implement `load_tasks`, add @reward/@metric."""
+class Taskset(Generic[TaskT, ConfigT, StateT]):
+    """Generic over its task, config, and (optional) per-rollout `State` types, so `self.config`,
+    `load_tasks`, and the trace's `state` are fully typed. `StateT` defaults to the base `State`, so a
+    taskset that doesn't customize state writes just `Taskset[MyTask, MyConfig]`. Subclass: implement
+    `load_tasks`, add @reward/@metric."""
 
     NEEDS_CONTAINER: ClassVar[bool] = False
     """Whether this taskset only runs in a container runtime (docker/prime). When True the
@@ -106,9 +64,10 @@ class Taskset(Generic[TaskT, ConfigT]):
     def load_tasks(self) -> list[TaskT]:
         raise NotImplementedError
 
-    def tools(self, task: TaskT) -> list[Tools]:
-        """MCP servers exposing this task's tools, launched in the runtime by the
-        harness. Empty by default; override to give a task tools."""
+    def tools(self, task: TaskT) -> list[Toolset]:
+        """Tool servers exposing this task's tools to the model — `vf.Toolset`s (classes with
+        `@vf.tool` methods), each carrying its `config` (placement / runtime; a remote `url`
+        for an already-running server). Empty by default; override to give a task tools."""
         return []
 
     def user(self, task: TaskT) -> User | None:

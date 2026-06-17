@@ -20,11 +20,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from pydantic import ConfigDict, Field, field_serializer, field_validator
-from renderers.base import MultiModalData, PlaceholderRange
+from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
 from verifiers.v1.types import (
     AssistantMessage,
@@ -68,7 +69,7 @@ class MessageNode(StrictBaseModel):
     message: Message
     """The message this node carries (system / user / assistant / tool)."""
     sampled: bool = False
-    """True iff a model call produced this message (the response in `add_turn`); False for
+    """True iff a model call produced this message (the response passed to `commit`); False for
     every prompt-supplied message — including assistant/tool messages fabricated as context
     the model never generated, which role alone can't tell apart from real turns."""
     token_ids: list[int] = Field(default_factory=list)
@@ -197,7 +198,7 @@ def message_hash(message: Message) -> str:
     return hashlib.blake2b("\x00".join(parts).encode(), digest_size=16).hexdigest()
 
 
-def _head_index(trace: "Trace") -> dict[tuple[int | None, str], int]:
+def _head_index(trace: Trace) -> dict[tuple[int | None, str], int]:
     """`(parent, msg_hash) -> node_id`, rebuilt lazily from `nodes` after deserialization."""
     if not trace._head_index and trace.nodes:
         trace._head_index = {
@@ -207,14 +208,99 @@ def _head_index(trace: "Trace") -> dict[tuple[int | None, str], int]:
     return trace._head_index
 
 
+@dataclass(frozen=True)
+class PendingTurn:
+    """A resolved prompt waiting on model inference.
+
+    `prepare_turn` does the one canonical graph prefix walk. Training clients use the resolved
+    prefix for renderer bridging before inference, and `commit` uses the same prefix after
+    inference to add only the prompt tail plus the sampled assistant response.
+    """
+
+    trace: Trace
+    prompt: list[Message]
+    prefix_node_ids: list[int]
+    path_len: int
+
+    @property
+    def tail_start(self) -> int:
+        return len(self.prefix_node_ids)
+
+    @property
+    def tail(self) -> list[Message]:
+        return self.prompt[self.tail_start :]
+
+    @property
+    def parent(self) -> int | None:
+        return self.prefix_node_ids[-1] if self.prefix_node_ids else None
+
+    def previous_token_ids(self) -> tuple[list[int], list[int]] | None:
+        """Return `(previous_prompt_ids, previous_completion_ids)` for a bridge anchor.
+
+        The anchor must end at a sampled assistant node. That node stores generation-prompt
+        scaffold followed by sampled completion tokens, so split at the first sampled token.
+        """
+        if not self.prefix_node_ids:
+            return None
+        last = self.trace.nodes[self.prefix_node_ids[-1]]
+        if not last.sampled:
+            return None
+        first_sampled = next(
+            (i for i, sampled in enumerate(last.mask) if sampled), None
+        )
+        if first_sampled is None:
+            return None
+        if any(not sampled for sampled in last.mask[first_sampled:]):
+            return None
+
+        prompt_ids: list[int] = []
+        for nid in self.prefix_node_ids[:-1]:
+            prompt_ids.extend(self.trace.nodes[nid].token_ids)
+        prompt_ids.extend(last.token_ids[:first_sampled])
+        completion_ids = list(last.token_ids[first_sampled:])
+        if not prompt_ids or not completion_ids:
+            return None
+        return prompt_ids, completion_ids
+
+    def prompt_message_spans(
+        self, tail_attribution: RenderedTokens
+    ) -> list[tuple[int, int] | None]:
+        """Convert tail-relative bridge spans into full-prompt message spans."""
+        return [None] * self.tail_start + tail_attribution.message_token_spans()
+
+    def commit(self, response: Response) -> None:
+        _commit_turn(self, response)
+
+
+def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
+    """Resolve `prompt` against the trace graph without mutating it."""
+    idx = _head_index(trace)
+    parent: int | None = None
+    path_len = 0
+    prefix_node_ids: list[int] = []
+    for msg in prompt:
+        existing = idx.get((parent, message_hash(msg)))
+        if existing is None:
+            break
+        prefix_node_ids.append(existing)
+        parent = existing
+        path_len += len(trace.nodes[existing].token_ids)
+    return PendingTurn(
+        trace=trace,
+        prompt=prompt,
+        prefix_node_ids=prefix_node_ids,
+        path_len=path_len,
+    )
+
+
 def _part_modality(part) -> str | None:
     """The multimodal modality a content part introduces (currently only images), or None."""
     return "image" if getattr(part, "type", None) == "image_url" else None
 
 
 def _attribute_mm(
-    trace: "Trace",
-    path: "list[tuple[int, Message]]",
+    trace: Trace,
+    path: list[tuple[int, Message]],
     num_reused: int,
     mmd: MultiModalData | None,
 ) -> None:
@@ -255,8 +341,8 @@ def _attribute_mm(
 
 
 def _attribute_routed_experts(
-    trace: "Trace",
-    new_node_ids: "list[int]",
+    trace: Trace,
+    new_node_ids: list[int],
     path_len: int,
     payload: Any,
 ) -> None:
@@ -286,11 +372,8 @@ def _attribute_routed_experts(
         off += n
 
 
-def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> None:
-    """Insert one model turn (its prompt messages + its response) into the graph. Reuses any
-    existing prefix nodes (by `(parent, hash)`), creates a node per new message attributing
-    its tokens, and appends a fresh assistant node holding the generation-prompt scaffold +
-    the sampled completion.
+def _commit_turn(turn: PendingTurn, response: Response) -> None:
+    """Insert one prepared model turn into the graph.
 
     Token attribution anchors new tokens to the cumulative *stored* length of the reused
     prefix (`path_len`), not message spans — the previous assistant's closing scaffold lives
@@ -299,28 +382,48 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
     messages by span (leading template scaffold folds into the following message), and the
     trailing generation prompt goes on the assistant node before its sampled completion. By
     construction `concat(node.token_ids along the path) == prompt_ids + completion_ids`."""
+    trace = turn.trace
+    prompt = turn.prompt
     tokens = response.tokens
     prompt_ids = list(tokens.prompt_ids) if tokens else []
     spans = tokens.message_spans if tokens else None
     idx = _head_index(trace)
 
-    parent: int | None = None
-    path_len = 0  # cumulative stored token length of the reused prefix
+    # Token-based prefix reuse. `prepare_turn` matched the prefix by message hash (content); when
+    # this turn carries token ids, tighten that to token identity — the stored prefix must be an
+    # exact token prefix of what the model saw this turn (`prompt_ids`). Reuse whole nodes within
+    # the longest common token prefix and fork at the first divergence, so a retokenized prior
+    # (BPE drift, dropped `<think>`, rewritten tool calls) branches off with this turn's real
+    # tokens instead of silently inheriting stale ones. Comparing the *concatenated* prefix (not
+    # per-message spans) is what makes this correct: a prior assistant's stored generation form
+    # and its re-rendered input form place the turn-close scaffold in different nodes but at the
+    # same position, so only a genuine content/token change shifts the common prefix. The bridge
+    # keeps the prior verbatim so it matches fully (stays linear); the eval relay carries no token
+    # ids and keeps the message-hash prefix.
+    prefix = turn.prefix_node_ids
+    path_len = turn.path_len  # cumulative stored token length of the reused prefix
+    if tokens is not None and prefix:
+        # Compare node by node against the prompt_ids slice at the running offset (C-level list
+        # ==, short-circuits at the first divergent node) — no full concatenation materialized.
+        keep = 0
+        off = 0
+        for nid in prefix:
+            node_tokens = trace.nodes[nid].token_ids
+            if prompt_ids[off : off + len(node_tokens)] != node_tokens:
+                break
+            off += len(node_tokens)
+            keep += 1
+        prefix = prefix[:keep]
+        path_len = off
+    num_reused = len(prefix)
+    parent = prefix[-1] if prefix else None
     # cursor: in prompt_ids, the end of the previous *new* message's tokens
     cursor: int | None = None
     # (node_id, message) per prompt message (reused prefix first, then new), for multimodal
     # attribution; `num_reused` marks where the newly-created nodes begin.
-    path: list[tuple[int, Message]] = []
-    num_reused = 0
-    for i, msg in enumerate(prompt):
+    path: list[tuple[int, Message]] = [(nid, prompt[i]) for i, nid in enumerate(prefix)]
+    for i, msg in enumerate(prompt[num_reused:], start=num_reused):
         key = (parent, message_hash(msg))
-        existing = idx.get(key)
-        if cursor is None and existing is not None:  # still extending the shared prefix
-            parent = existing
-            path_len += len(trace.nodes[existing].token_ids)
-            path.append((existing, msg))
-            num_reused += 1
-            continue
         start = path_len if cursor is None else cursor
         span = spans[i] if spans and i < len(spans) else None
         end = span[1] if span else start
@@ -372,7 +475,7 @@ def add_turn(trace: "Trace", prompt: "list[Message]", response: Response) -> Non
 # --- walking the graph (views) ---------------------------------------------------------
 
 
-def leaves(trace: "Trace") -> list[int]:
+def leaves(trace: Trace) -> list[int]:
     """Node ids that are no node's parent — one per branch (the last node of each). The
     `Trace.branches` view walks each leaf's parents back to its root to build the branch."""
     has_child = {n.parent for n in trace.nodes if n.parent is not None}

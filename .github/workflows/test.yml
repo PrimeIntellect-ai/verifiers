@@ -61,7 +61,11 @@ jobs:
 
       - name: Run tests
         run: |
-          uv run pytest tests/ -v --ignore=tests/test_envs.py -m "not prime_sandbox" --cov=verifiers --cov-report=xml --cov-report=term
+          uv run pytest tests/ -v --ignore=tests/test_envs.py --ignore=tests/v1 -m "not prime_sandbox" --cov=verifiers --cov-report=xml --cov-report=term
+
+      - name: Run v1 tests
+        run: |
+          uv run pytest tests/v1 -vv -n auto -m "not prime_sandbox" --cov=verifiers --cov-append --cov-report=xml --cov-report=term
   test-envs:
     name: Environments
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository

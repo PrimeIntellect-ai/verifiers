@@ -33,7 +33,9 @@ uv sync   # core + the shipped packages + examples (eval, serve, all runtimes)
 ## Quickstart
 
 ```bash
-uv run eval gsm8k-v1 -n 5 -r 3   # single-turn math; default harness; docker runtime
+uv run init my-task-v1           # scaffold a new environment (--add-tool/--add-user/--add-harness)
+uv run eval gsm8k-v1 -n 5 -r 3   # single-turn math; default harness; subprocess runtime
+uv run validate gsm8k-v1 -n 5    # model-free: run each task's gold check (the `validate` hook)
 uv run eval -h                   # typed help (+ the local example tasksets/harnesses)
 ```
 
@@ -141,8 +143,8 @@ uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
 simulator (`--taskset.user.runtime`) — all structurally MCP servers in a runtime:
 
 ```bash
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container (default)
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process (default)
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sandbox (requires auth)
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox (requires auth)
 ```

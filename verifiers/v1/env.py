@@ -29,10 +29,11 @@ from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
+    runtime_is_local,
 )
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
-from verifiers.v1.tools import serve_shared
+from verifiers.v1.mcp import serve_shared
 
 
 class TimeoutConfig(BaseConfig):
@@ -233,6 +234,15 @@ class Environment:
                 f"{self.taskset.config.id!r} exposes tool servers (MCP). Run it with a harness "
                 f"that supports task tools (e.g. --harness.id default), or use a taskset without tools."
             )
+        if (
+            not self.harness.SUPPORTS_USER_SIM
+            and type(self.taskset).user is not Taskset.user
+        ):
+            raise ValueError(
+                f"Harness {self.harness.config.id!r} does not drive a user simulator, but taskset "
+                f"{self.taskset.config.id!r} defines one (Taskset.user). Run it with a harness that "
+                f"supports user simulation (e.g. --harness.id default), or use a taskset without one."
+            )
         if self.taskset.NEEDS_CONTAINER and isinstance(
             self.harness.config.runtime, SubprocessConfig
         ):
@@ -252,6 +262,11 @@ class Environment:
             max_total_tokens=config.max_total_tokens,
         )
         self._warned_resources: set[tuple[str, str]] = set()
+        self._shared_urls: dict[str, str] = {}
+        self._interception: InterceptionPool | None = None
+        """Eval-level serving resources, live only inside `serving()`: shared tool servers
+        ({name: url}) and the interception pool. `episode()` injects them into every rollout
+        so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
         """Resolve the runtime config for a task off the harness's runtime (see
@@ -307,10 +322,31 @@ class Environment:
                 limits=self.limits,
                 model_retries=retries.model.max_retries,
                 runtime_retries=retries.runtime.max_retries,
+                shared_urls=self._shared_urls,
+                interception=self._interception,
             )
             for _ in range(n)
         ]
         return Episode(rollouts, self.taskset, retry=retries.rollout)
+
+    @contextlib.asynccontextmanager
+    async def serving(self, tasks: list[Task]):
+        """Hold the env-level serving resources for the duration of an eval: the shared tool
+        servers (built once, see `shared_tools`) and the interception pool. Stash them so
+        every `episode()` built inside this context injects them into its rollouts — that's
+        what keeps both eval runners (in-process and env-server) on one serving path. Build
+        episodes inside this context; the resources are torn down on exit."""
+        async with (
+            self.shared_tools(tasks) as shared_urls,
+            self.interception_pool() as interception,
+        ):
+            self._shared_urls = shared_urls
+            self._interception = interception
+            try:
+                yield
+            finally:
+                self._shared_urls = {}
+                self._interception = None
 
     def interception_pool(self) -> InterceptionPool:
         """The shared interception pool for this env's rollouts — one server (+ tunnel
@@ -321,13 +357,17 @@ class Environment:
 
     @contextlib.asynccontextmanager
     async def shared_tools(self, tasks: list[Task]):
-        """When `tools.shared` is set, start the taskset's tool servers ONCE for the eval
-        (in their own `tools.runtime`) and yield `{name: url}` to inject into every
-        rollout — so an expensive corpus is built once, not per rollout. No-op ({}) when
-        not shared. Shared servers must be task-agnostic, so they're read off any task."""
-        tools = self.taskset.config.tools
-        if not (tools.shared and tasks):
+        """Start any tool servers whose placement is `shared` ONCE for the eval (each in its
+        own `runtime`) and yield `{name: url}` to inject into every rollout — so an expensive
+        corpus is built once, not per rollout. No-op ({}) when none are shared. A shared server
+        must be task-agnostic: its `setup` gets no task (so it can't silently serve one task's
+        data to every rollout); `tools(tasks[0])` here only builds the toolset instances. A shared
+        server on a host runtime is bridged to the host once (a tunnel) when the harness runs
+        remotely, so an in-sandbox harness can still reach it (see `serve_shared`)."""
+        servers = self.taskset.tools(tasks[0]) if tasks else []
+        if not any(server.config.shared for server in servers):
             yield {}
             return
-        async with serve_shared(self.taskset.tools(tasks[0]), tools.runtime) as urls:
+        agent_is_local = runtime_is_local(self.harness.config.runtime)
+        async with serve_shared(servers, agent_is_local=agent_is_local) as urls:
             yield urls

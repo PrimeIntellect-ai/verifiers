@@ -11,10 +11,12 @@ own secret (the bearer token the harness already sends), and the server routes b
 secret to the right session. So N rollouts need one server (and, behind a remote runtime,
 one tunnel) per pool member rather than one each — see `interception.pool`.
 
-When a rollout sets a user simulator (see `verifiers.v1.user`), the session also drives it:
+When a rollout sets a user simulator (see `verifiers.v1.mcp.user`), the session also drives it:
 after each model turn it injects the simulator's reply as a user turn and re-prompts the
 model, so a multi-turn exchange plays out within one program request, transparently to the
-harness. Tools are handled out-of-band (run by the harness).
+harness. When the task carries no prompt (`task.instruction is None`), the simulator also
+opens the conversation: its first turn is seeded before the model is ever called. Tools are
+handled out-of-band (run by the harness).
 """
 
 import asyncio
@@ -26,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from aiohttp import web
+from pydantic import ValidationError
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
@@ -35,7 +38,7 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
-    from verifiers.v1.user import Respond
+    from verifiers.v1.mcp import Respond
 
 logger = logging.getLogger(__name__)
 
@@ -97,15 +100,22 @@ class RolloutSession:
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
     user: "Respond | None" = None
-    """A user simulator the rollout sets before the harness runs (see `verifiers.v1.user`).
+    """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
     injected as a user turn, and the model is re-prompted — all within one program request,
     transparently to the harness."""
+    opening: Messages | None = None
+    """Cached opening `respond("")` messages for a no-prompt task. Computed once and re-injected on
+    every request until the first turn lands on the trace — so a retried opening request (e.g. the
+    harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`
+    twice and advances the simulator's queue past the opening."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
-        call halts the harness (its model call errors out); Harness.run treats it as clean."""
+        call halts the harness (its model call errors out); Harness.run treats it as clean. A taskset
+        that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
+        so the interception server holds no opinion about the state's contents."""
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)
@@ -163,6 +173,10 @@ class InterceptionServer:
                 app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
+        # The shared-state back-channel (see `verifiers.v1.state`): a rollout's tool/user servers
+        # GET/PUT their `self.state` here, keyed by the same bearer secret as the model routes.
+        app.router.add_get("/state", self.handle_state_get)
+        app.router.add_put("/state", self.handle_state_put)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -189,6 +203,25 @@ class InterceptionServer:
         # extends both each turn (`dialect.extend` for the wire, `prompt` for the trace).
         prompt: Messages
         prompt, _ = dialect.parse_request(body)
+        # A task with no prompt has its conversation opened by the user simulator: before the
+        # first model call, seed the simulator's opening user turn(s) into both the wire request
+        # and the trace prompt, so the model answers the user rather than an empty prompt. Guarded
+        # to the opening (`num_turns == 0`), so a later program request (e.g. after a tool call)
+        # never re-seeds. The opening `respond("")` is cached on the session and reused, so a
+        # retried opening request (e.g. the harness SDK retrying a transient model 502, before any
+        # turn is recorded) doesn't advance the simulator's queue and skip the opening turn. The
+        # post-turn loop below then drives the remaining turns as usual.
+        if (
+            session.user is not None
+            and session.trace.task.instruction is None
+            and session.trace.num_turns == 0
+        ):
+            if session.opening is None:
+                session.opening = await session.user("")
+            body = dialect.extend(body, None, session.opening)
+            prompt = [*prompt, *session.opening]
+            # If the simulator ended at the open (its taskset's `@stop` now fires), the loop's
+            # `refused()` below halts the harness before any model call — no special-casing here.
         if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt)
         # A user simulator turns one program request into a multi-turn exchange: after each
@@ -208,6 +241,7 @@ class InterceptionServer:
                         dialect.error_body(f"rollout stopped: {refused}"), status=400
                     )
                 return web.json_response(completion)
+            turn = graph.prepare_turn(session.trace, prompt)
             try:
                 response = await session.ctx.client.get_response(
                     dialect,
@@ -215,6 +249,7 @@ class InterceptionServer:
                     session.ctx.model,
                     session.ctx.sampling,
                     session_id=session.trace.id,
+                    turn=turn,
                 )
             except OverlongPromptError:
                 # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
@@ -234,19 +269,19 @@ class InterceptionServer:
             # `Response.raw` is the wire response handed to the program 1:1 — the provider's
             # verbatim bytes (proxy) or the client's serialized completion (renderer).
             completion = response.raw
-            graph.add_turn(session.trace, prompt, response)  # one node per new message;
+            turn.commit(response)  # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
                 return web.json_response(completion)
-            user_messages, done = await session.user(response.message.content or "")
-            if done:
-                session.trace.stop("user_completed")
-                return web.json_response(completion)
+            user_messages = await session.user(response.message.content or "")
             # Inject the model turn + the simulator's user turn(s): into the wire request for the
             # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
-            # survives) and into the typed prompt for the trace.
+            # survives) and into the typed prompt for the trace. The simulator ends the trajectory
+            # through its taskset's `@stop` (e.g. a `user_finished` flag it set on `self.state`),
+            # caught by `refused()` at the top of the next iteration — the interception server holds
+            # no opinion about the state's contents.
             body = dialect.extend(body, completion, user_messages)
             prompt = [*prompt, response.message, *user_messages]
 
@@ -267,6 +302,7 @@ class InterceptionServer:
                 dialect.error_body(f"rollout stopped: {refused}"), status=400
             )
         try:
+            turn = graph.prepare_turn(session.trace, prompt)
             reply = await session.ctx.client.relay(
                 dialect,
                 body,
@@ -313,7 +349,7 @@ class InterceptionServer:
             await reply.close()
 
         try:
-            graph.add_turn(session.trace, prompt, dialect.parse_stream(bytes(buffer)))
+            turn.commit(dialect.parse_stream(bytes(buffer)))
         finally:
             with contextlib.suppress(ConnectionResetError):
                 await resp.write_eof()
@@ -335,3 +371,41 @@ class InterceptionServer:
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
         return web.json_response(result)
+
+    def _session_for(self, request: web.Request) -> RolloutSession | None:
+        """The session a state request belongs to, by its `Authorization: Bearer <secret>` — the
+        same per-rollout secret the model routes use (dialect-independent, so parsed directly)."""
+        auth = request.headers.get("Authorization", "")
+        secret = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
+        return self.sessions.get(secret)
+
+    async def handle_state_get(self, request: web.Request) -> web.Response:
+        """Hand a rollout's tool/user server the current shared `trace.state` (it pulls before each
+        `@vf.tool`/`respond` call, so it sees writes from the other servers)."""
+        session = self._session_for(request)
+        if session is None:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        return web.json_response(session.trace.state.model_dump(mode="json"))
+
+    async def handle_state_put(self, request: web.Request) -> web.Response:
+        """Replace a rollout's shared `trace.state` with a server's pushed copy (validated into the
+        trace's `State` type). Last write wins per call. A taskset ends the trajectory from state via
+        its own `@stop` (run in `RolloutSession.refused` before each model call)."""
+        session = self._session_for(request)
+        if session is None:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        state_cls = type(session.trace.state)
+        try:
+            new_state = state_cls.model_validate(await request.json())
+        except (ValidationError, ValueError) as e:
+            # Malformed JSON (`request.json()` -> JSONDecodeError, a ValueError) or a pushed state
+            # that doesn't fit the trace's `State` type (almost always a `StateT` mismatch between the
+            # taskset and a server). Surface a clean 400 (with the reason) rather than a 500, so the
+            # server's failed PUT fails the rollout legibly.
+            logger.warning("state PUT rejected: id=%s %s", session.trace.id, e)
+            return web.json_response(
+                {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},
+                status=400,
+            )
+        session.trace.state = new_state
+        return web.json_response({"ok": True})

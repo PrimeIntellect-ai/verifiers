@@ -24,7 +24,6 @@ from tenacity import (
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.interception import InterceptionPool
     from verifiers.v1.rollout import Rollout
     from verifiers.v1.trace import Trace
 
@@ -79,8 +78,6 @@ def should_retry(trace: Trace, retry: RolloutRetryConfig) -> bool:
 
 async def run_with_retry(
     rollout: Rollout,
-    shared_urls: dict[str, str] | None,
-    interception: InterceptionPool | None,
     retry: RolloutRetryConfig,
 ) -> Trace:
     """Run the whole rollout, retrying it while its trace ends with a retryable error.
@@ -88,7 +85,7 @@ async def run_with_retry(
     so the final trace shows the full history; the last attempt's trace is returned
     as-is once attempts run out (or the rollout succeeds / hits a non-retryable error)."""
     if retry.max_retries < 1:
-        return await rollout.run(shared_urls, interception)
+        return await rollout.run()
 
     history: list = []
 
@@ -111,7 +108,7 @@ async def run_with_retry(
         before_sleep=record,
         retry_error_callback=lambda state: state.outcome.result(),
     )
-    trace = await retrying(rollout.run, shared_urls, interception)
+    trace = await retrying(rollout.run)
     if trace.errors:  # final attempt errored too → prepend the earlier attempts'
         trace.errors = history + trace.errors
     return trace

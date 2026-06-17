@@ -216,10 +216,8 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         if not isinstance(step, dict):
             continue
         tokens = _to_v1_tokens(step.get("tokens"))
-        graph.add_turn(
-            trace,
-            _to_v1_messages(step.get("prompt")),
-            _to_v1_response(step.get("response"), model, tokens),
+        graph.prepare_turn(trace, _to_v1_messages(step.get("prompt"))).commit(
+            _to_v1_response(step.get("response"), model, tokens)
         )
     return trace
 
@@ -294,8 +292,9 @@ class LegacyEnvServer(EnvServer):
         self.frontend.bind(self.address)
         self.address = self.frontend.getsockopt_string(zmq.LAST_ENDPOINT)
 
-    def interception_pool(self):
-        # The v0 bridge runs its own rollouts (no v1 interception), so no pool to enter.
+    def serving(self):
+        # The v0 bridge runs its own rollouts (no v1 shared tools / interception), so there
+        # are no serving resources to enter.
         return contextlib.nullcontext()
 
     def _v0_client(self, client_config: ClientConfig, model: str):

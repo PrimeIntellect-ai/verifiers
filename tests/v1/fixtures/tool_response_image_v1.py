@@ -11,32 +11,19 @@ PNG_DATA = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8DwHwAF
 EXPECTED_URL = f"data:image/png;base64,{PNG_DATA}"
 SYSTEM = "Call the requested tool before answering."
 
-TOOL_SERVER = f'''# /// script
-# requires-python = ">=3.11"
-# dependencies = ["mcp"]
-# ///
-"""Image-returning MCP tool server for the v1 e2e fixture."""
 
-import os
+class VisionToolset(vf.Toolset[vf.ToolsetConfig]):
+    TOOL_PREFIX = "vision"  # the model sees `vision_snapshot`
 
-from mcp.server.fastmcp import FastMCP
-from mcp.types import ImageContent, TextContent
+    @vf.tool
+    def snapshot(self) -> list:
+        """Return a tiny PNG image."""
+        from mcp.types import ImageContent, TextContent
 
-PNG_DATA = "{PNG_DATA}"
-mcp = FastMCP("vision", host="127.0.0.1", port=int(os.environ["MCP_PORT"]))
-
-
-@mcp.tool()
-def snapshot():
-    """Return a tiny PNG image."""
-    return [
-        TextContent(type="text", text="tiny test image"),
-        ImageContent(type="image", data=PNG_DATA, mimeType="image/png"),
-    ]
-
-
-mcp.run(transport="streamable-http")
-'''.encode()
+        return [
+            TextContent(type="text", text="tiny test image"),
+            ImageContent(type="image", data=PNG_DATA, mimeType="image/png"),
+        ]
 
 
 class ToolResponseImageTask(vf.Task):
@@ -56,8 +43,8 @@ class ToolResponseImageTaskset(vf.Taskset[ToolResponseImageTask, vf.TasksetConfi
             )
         ]
 
-    def tools(self, task: ToolResponseImageTask) -> list[vf.Tools]:
-        return [vf.Tools(name="vision", script=TOOL_SERVER)]
+    def tools(self, task: ToolResponseImageTask) -> list[vf.Toolset]:
+        return [VisionToolset(vf.ToolsetConfig())]
 
     @vf.reward(weight=1.0)
     async def preserved_image_tool_result(self, trace: vf.Trace) -> float:
@@ -69,5 +56,8 @@ class ToolResponseImageTaskset(vf.Taskset[ToolResponseImageTask, vf.TasksetConfi
         return 0.0
 
 
-def load_taskset(config: vf.TasksetConfig) -> ToolResponseImageTaskset:
-    return ToolResponseImageTaskset(config)
+__all__ = ["ToolResponseImageTaskset"]
+
+
+if __name__ == "__main__":
+    VisionToolset.run()
