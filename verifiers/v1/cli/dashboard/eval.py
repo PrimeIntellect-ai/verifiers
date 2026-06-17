@@ -43,6 +43,41 @@ _MARK = {
 }
 
 
+def _limits(config: EvalConfig) -> str:
+    """Per-rollout caps for the overview: turns, tokens, concurrency, and any set stage
+    timeouts. An unset cap reads as 'no ...' rather than being hidden."""
+    parts = [f"{config.max_turns} turns" if config.max_turns else "no turn cap"]
+    toks = []
+    if config.max_input_tokens:
+        toks.append(f"in≤{config.max_input_tokens}")
+    if config.max_output_tokens:
+        toks.append(f"out≤{config.max_output_tokens}")
+    if config.max_total_tokens:
+        toks.append(f"total≤{config.max_total_tokens}")
+    parts.append(f"{', '.join(toks)} tokens" if toks else "no token cap")
+    parts.append(
+        f"≤{config.max_concurrent} concurrent"
+        if config.max_concurrent
+        else "no concurrency cap"
+    )
+    timeouts = [
+        f"{stage} {value:g}s"
+        for stage in ("setup", "rollout", "scoring")
+        if (value := getattr(config.timeout, stage))
+    ]
+    parts.append(f"timeout {', '.join(timeouts)}" if timeouts else "no timeout")
+    return "  ·  ".join(parts)
+
+
+def _retries(config: EvalConfig) -> str:
+    """Per-call (model, runtime) and whole-rollout retry budgets for the overview."""
+    r = config.retries
+    return (
+        f"model ×{r.model.max_retries}  ·  runtime ×{r.runtime.max_retries}  ·  "
+        f"rollout ×{r.rollout.max_retries}"
+    )
+
+
 def Overview(config: EvalConfig) -> Table:
     sampling = (
         ", ".join(
@@ -68,6 +103,8 @@ def Overview(config: EvalConfig) -> Table:
             ),
         )
     grid.add_row("model", f"{config.model}  ({sampling})")
+    grid.add_row("limits", _limits(config))
+    grid.add_row("retries", _retries(config))
     grid.add_row("output", str(output_path(config)))
     return grid
 
@@ -153,6 +190,7 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             )
             runtime = f"{runtime_type}({descriptor})" if descriptor else runtime_type
             turns = t.num_turns
+            nbranches = len(t.branches)
             start = t.timing.generation.start
             end = (
                 t.timing.scoring.end
@@ -165,6 +203,7 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                 t.id[:8],
                 runtime,
                 f"{turns} turn{'s' * (turns != 1)}",
+                f"{nbranches} branch{'es' * (nbranches != 1)}",
                 _tokens(t),
                 stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
             ]
@@ -179,10 +218,10 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
         return grid
     # Pad each left section to its max width across rows (drop all-empty ones) so they align,
     # then join with " · ". Text sections left-justified, numeric right.
-    pad = (str.ljust, str.ljust, str.ljust, str.rjust, str.rjust, str.ljust)
-    widths = [max(len(left[i]) for _, _, left, _, _ in rows) for i in range(6)]
+    pad = (str.ljust, str.ljust, str.ljust, str.rjust, str.rjust, str.rjust, str.ljust)
+    widths = [max(len(left[i]) for _, _, left, _, _ in rows) for i in range(7)]
     for brace, state, left, result, elapsed in rows:
-        sections = [pad[i](left[i], widths[i]) for i in range(6) if widths[i]]
+        sections = [pad[i](left[i], widths[i]) for i in range(7) if widths[i]]
         grid.add_row(
             f"{brace} {_MARK[state]} " + " · ".join(sections),
             f"{result} ·" if result else "",  # trailing dot only when there's a result
