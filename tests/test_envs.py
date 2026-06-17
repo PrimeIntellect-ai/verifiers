@@ -9,7 +9,7 @@ import tomllib
 INSTALL_TIMEOUT = 600  # 10 minutes for venv creation + package install
 IMPORT_TIMEOUT = 120  # 2 minutes for importing a package
 LOAD_TIMEOUT = 300  # 5 minutes for loading an environment (may download datasets)
-EVAL_TIMEOUT = 600  # 10 minutes for running a capped eval (-n 1 -r 1)
+EVAL_TIMEOUT = 600  # 10 minutes for running vf-eval with -n 1 -r 1
 
 SKIPPED_ENVS = [
     # Requires fix for completion dataset setup
@@ -28,12 +28,6 @@ SKIPPED_ENVS = [
     # Uses prime-tunnel which is still experimental and has low usage limits
     "terminus_harbor",
     "opencode_harbor",
-    # v1 SWE / container tasksets: need a docker/prime runtime + image-backed
-    # sandboxes, so they can't run in plain CI — covered by dedicated v1 e2e tests.
-    "r2e_gym_v1",
-    "scaleswe_v1",
-    "swelego_v1",
-    "terminal_bench_2_v1",
 ]
 
 SKIPPED_ENV_LOADING_ENVS = [
@@ -45,20 +39,6 @@ SKIPPED_ENV_LOADING_ENVS = [
     "rlm_swe_v1",
 ]
 
-# v1 plugins are resolved by id (a `_v1` taskset, or the `compact` harness) instead of
-# `verifiers.load_environment`, so they don't follow the v0 hub-env conventions (tags +
-# README) and are evaluated through the unified `eval` CLI, not `vf-eval`.
-V1_HARNESSES = {"compact"}
-
-# Envs that install/import/load fine but can't run the capped smoke eval here:
-#   self_reward: scores only with @group_reward (no individual reward), but the v0 legacy
-#                `--id` bridge scores per-rollout (requires an individual-level reward).
-SKIPPED_EVAL_ENVS = {"self_reward"}
-
-
-def is_v1(env_dir: Path) -> bool:
-    return env_dir.name.endswith("_v1") or env_dir.name in V1_HARNESSES
-
 
 def get_environments() -> list[Path]:
     """Get all subdirectories of `environments/`, or only changed environments if CHANGED_ENVS is set."""
@@ -66,6 +46,14 @@ def get_environments() -> list[Path]:
 
     # Filter out skipped environments
     all_envs = [env for env in all_envs if env.name not in SKIPPED_ENVS]
+
+    # These are v0 smoke tests (vf.load_environment + vf-eval). The v1 plugins (the `_v1`
+    # tasksets + the `compact` harness) are id-referenced and covered by tests/v1/test_envs.py.
+    all_envs = [
+        env
+        for env in all_envs
+        if not env.name.endswith("_v1") and env.name != "compact"
+    ]
 
     # Filter environments if CHANGED_ENVS is set (for PRs)
     changed_envs = os.getenv("CHANGED_ENVS")
@@ -87,8 +75,7 @@ def test_pyproject_exists(env_dir: Path):
 
 @pytest.mark.parametrize("env_dir", get_environments(), ids=lambda x: x.name)
 def test_pyproject_has_metadata(env_dir: Path):
-    """Test that the pyproject.toml file has the required metadata. `tags` are a v0 hub-env
-    convention, so they're only required of v0 envs (v1 plugins are resolved by id)."""
+    """Test that the pyproject.toml file has the required metadata."""
     with open(env_dir / "pyproject.toml", "rb") as f:
         pyproject = tomllib.load(f)
     assert "name" in pyproject["project"], "pyproject.toml does not have a name"
@@ -99,19 +86,15 @@ def test_pyproject_has_metadata(env_dir: Path):
     assert pyproject["project"]["description"] != "Your environment description here", (
         "Still uses placeholder description"
     )
-    if not is_v1(env_dir):
-        assert "tags" in pyproject["project"], "pyproject.toml does not have tags"
-        assert pyproject["project"]["tags"] != ["placeholder-tag", "train", "eval"], (
-            "Still uses placeholder tags"
-        )
+    assert "tags" in pyproject["project"], "pyproject.toml does not have tags"
+    assert pyproject["project"]["tags"] != ["placeholder-tag", "train", "eval"], (
+        "Still uses placeholder tags"
+    )
 
 
 @pytest.mark.parametrize("env_dir", get_environments(), ids=lambda x: x.name)
 def test_readme_exists(env_dir: Path):
-    """Test that the README.md file exists for the given environment directory (v0 hub
-    convention; v1 plugins are documented in their module docstring instead)."""
-    if is_v1(env_dir):
-        pytest.skip(f"{env_dir.name} is a v1 plugin (no hub README requirement)")
+    """Test that the README.md file exists for the given environment directory."""
     assert (env_dir / "README.md").exists(), "README.md does not exist"
 
 
@@ -155,88 +138,66 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     help_test_can_eval_env(tmp_venv_dir, env_dir)
 
 
-def _run_in_venv(
-    tmp_venv_dir: Path, inner: str, timeout: int, what: str, env_name: str
-):
-    cmd = f"cd {tmp_venv_dir} && source .venv/bin/activate && {inner}"
+def help_test_can_import_env(tmp_venv_dir: Path, env_dir: Path):
+    """Test that the environment can be imported as a package."""
+    import_cmd = f"cd {tmp_venv_dir} && source .venv/bin/activate && uv run python -c 'import {env_dir.name}'"
     try:
         process = subprocess.run(
-            cmd,
+            import_cmd,
             shell=True,
             executable="/bin/bash",
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=IMPORT_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
-        pytest.fail(f"Timed out after {timeout}s {what} {env_name}")
-    assert process.returncode == 0, (
-        f"Failed to {what} {env_name}: {(process.stderr or process.stdout)[-2000:]}"
-    )
-
-
-def help_test_can_import_env(tmp_venv_dir: Path, env_dir: Path):
-    """Test that the environment can be imported as a package."""
-    _run_in_venv(
-        tmp_venv_dir,
-        f"uv run python -c 'import {env_dir.name}'",
-        IMPORT_TIMEOUT,
-        "importing",
-        env_dir.name,
-    )
+        pytest.fail(f"Timed out after {IMPORT_TIMEOUT}s importing {env_dir.name}")
+    assert process.returncode == 0, "Failed to import environment"
 
 
 def help_test_can_load_env(tmp_venv_dir: Path, env_dir: Path):
-    """Test that the environment can be loaded — a v0 env via `verifiers.load_environment`,
-    a v1 plugin via its id-based loader (taskset, or harness for `compact`)."""
-    if env_dir.name in V1_HARNESSES:
-        inner = (
-            f"uv run python -c 'from verifiers.v1.loaders import harness_class; "
-            f'harness_class("{env_dir.name}")\''
+    """Test that the environment can be loaded."""
+    load_cmd = f"""cd {tmp_venv_dir} && source .venv/bin/activate && uv run python -c 'import verifiers as vf; vf.load_environment("{env_dir.name}")'"""
+    try:
+        process = subprocess.run(
+            load_cmd,
+            shell=True,
+            executable="/bin/bash",
+            capture_output=True,
+            text=True,
+            timeout=LOAD_TIMEOUT,
         )
-    elif is_v1(env_dir):
-        inner = (
-            f"uv run python -c 'from verifiers.v1.loaders import taskset_class; "
-            f'taskset_class("{env_dir.name}")\''
-        )
-    else:
-        inner = f"uv run python -c 'import verifiers as vf; vf.load_environment(\"{env_dir.name}\")'"
-    _run_in_venv(tmp_venv_dir, inner, LOAD_TIMEOUT, "loading", env_dir.name)
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"Timed out after {LOAD_TIMEOUT}s loading {env_dir.name}")
+    assert process.returncode == 0, "Failed to load environment"
 
 
 def help_test_can_eval_env(tmp_venv_dir: Path, env_dir: Path):
-    """Smoke-eval the environment through the unified `eval` CLI: a v1 taskset via
-    `--taskset.id`/`--harness.id`, a v0 env via the legacy `--id` bridge. Capped to one
-    short rollout so CI stays quick."""
-    if env_dir.name in V1_HARNESSES:
-        pytest.skip(f"{env_dir.name} is a harness, not an evaluatable taskset")
-    if env_dir.name in SKIPPED_EVAL_ENVS:
-        pytest.skip(f"{env_dir.name}: not runnable via the capped `eval` smoke test")
+    """Test that the environment can be run via vf-eval."""
+    if env_dir.name == "tau2_bench_v1" and not os.getenv("PRIME_API_KEY"):
+        pytest.skip(
+            "Skipping tau2 default eval because PRIME_API_KEY is not configured"
+        )
     if os.getenv("PRIME_API_KEY"):
-        model_flags = (
-            "-m openai/gpt-4.1-mini "
-            "--client.base-url https://api.pinference.ai/api/v1 "
-            "--client.api-key-var PRIME_API_KEY"
-        )
+        model_flags = "-m openai/gpt-4.1-mini -b https://api.pinference.ai/api/v1 -k PRIME_API_KEY"
     elif os.getenv("OPENAI_API_KEY"):
-        model_flags = (
-            "-m gpt-4.1-mini "
-            "--client.base-url https://api.openai.com/v1 "
-            "--client.api-key-var OPENAI_API_KEY"
-        )
+        model_flags = "-m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY"
     else:
-        pytest.skip("Skipping eval smoke test because no API key is configured")
+        pytest.skip("Skipping vf-eval smoke test because no API key is configured")
 
-    # `-r 2`: a taskset with @group_reward(s) needs >=2 rollouts to compare.
-    caps = "-n 1 -r 2 --max-turns 4 --sampling.max-tokens 512 --rich false"
-    if is_v1(env_dir):
-        selector = f"--taskset.id {env_dir.name} --harness.id default"
-    else:
-        selector = f"--id {env_dir.name}"
-    _run_in_venv(
-        tmp_venv_dir,
-        f"uv run eval {selector} {model_flags} {caps}",
-        EVAL_TIMEOUT,
-        "evaluating",
-        env_dir.name,
+    eval_cmd = (
+        f"cd {tmp_venv_dir} && source .venv/bin/activate && "
+        f"uv run vf-eval {env_dir.name} {model_flags} -n 1 -r 1 -t 512"
     )
+    try:
+        process = subprocess.run(
+            eval_cmd,
+            shell=True,
+            executable="/bin/bash",
+            capture_output=True,
+            text=True,
+            timeout=EVAL_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"Timed out after {EVAL_TIMEOUT}s evaluating {env_dir.name}")
+    assert process.returncode == 0, "Failed to evaluate environment"
