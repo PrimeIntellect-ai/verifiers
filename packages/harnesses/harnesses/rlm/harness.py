@@ -64,8 +64,12 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
-        if self.config.tools is not None:
-            env["RLM_TOOLS"] = ",".join(self.config.tools)
+        if self.config.tools is not None or self.config.disabled_tools:
+            tools = self.config.tools if self.config.tools is not None else ["ipython"]
+            disabled_tools = set(self.config.disabled_tools or [])
+            env["RLM_TOOLS"] = ",".join(
+                tool for tool in tools if tool not in disabled_tools
+            )
         # Install rlm only if the binary isn't already there (no runtime-type checks): a no-op
         # where it's present, a fresh install otherwise. install.sh fetches curl/uv (and git,
         # via the runtime's package manager) itself when missing, so the only thing we add is

@@ -49,7 +49,10 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, instruction = self.resolve_prompt(trace.task)
-        if self.config.enable_bash:
+        enable_bash = self.config.enable_bash and "bash" not in (
+            self.config.disabled_tools or []
+        )
+        if enable_bash:
             system_prompt = "\n\n".join(
                 p for p in (BASH_SYSTEM_PROMPT, system_prompt) if p
             )
@@ -58,7 +61,7 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             "OPENAI_BASE_URL": endpoint,
             "OPENAI_API_KEY": secret,
             "OPENAI_MODEL": ctx.model,
-            "ENABLE_BASH": "1" if self.config.enable_bash else "0",
+            "ENABLE_BASH": "1" if enable_bash else "0",
             "APPEND_SYSTEM_PROMPT": system_prompt or "",
         }
         if mcp_urls:

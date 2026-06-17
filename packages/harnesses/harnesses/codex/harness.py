@@ -78,6 +78,13 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         install = await runtime.run(["sh", "-c", guarded], {})
         if install.exit_code != 0:
             raise ProgramError(f"codex install failed: {install.stderr.strip()[-500:]}")
+        # Values are Codex feature names such as `shell_tool`; Codex owns validation.
+        # https://developers.openai.com/codex/config-reference#features
+        tool_config = [
+            arg
+            for tool in self.config.disabled_tools or []
+            for arg in ("--disable", tool)
+        ]
         # `-c` values parse as TOML, falling back to a raw string (so the url / `responses`
         # come through literally); `requires_openai_auth=false` parses as a bool.
         argv = [
@@ -99,6 +106,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             f"model_providers.{PROVIDER}.wire_api=responses",
             "-c",
             f"model_providers.{PROVIDER}.requires_openai_auth=false",
+            *tool_config,
             instruction,
         ]
         return await runtime.run(argv, env)
