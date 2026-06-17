@@ -73,6 +73,51 @@ end to end: each surviving context window is just another root→leaf path.
 `usage`. Multimodal pixel tensors *do* travel — base64-encoded by a field serializer on
 `MessageNode.multi_modal_data` (`graph.py`) so they survive JSON + msgpack to the trainer.
 
+### Branching: message-level vs renderer-level, and the token invariant
+
+The graph guarantees one **invariant**: walking any leaf back to the root and concatenating node
+`token_ids` reproduces *exactly* the `prompt_ids + completion_ids` the inference engine saw and
+produced for that trajectory. Everything below exists to keep that true, turn after turn.
+
+A turn is committed in two steps (`graph.py`). `prepare_turn(trace, prompt)` walks the graph once,
+reusing the longest prefix whose `(parent, message_hash)` matches — the *message-level* prefix.
+`commit(response)` then attributes only the new tail. There are two distinct ways a turn can fail
+to extend the previous one linearly — two true kinds of branching:
+
+- **Message-level branch** — the harness rewrites the message *sequence* (compaction drops history
+  for a notes summary; a subagent runs its own context). The messages genuinely differ, so
+  `message_hash` diverges and the graph forks, sharing the common prefix. This needs no token ids,
+  so it surfaces under both the eval relay and the train client. Canonical example: the `compact`
+  harness (a fresh `[system, notes]` every turn → one branch per turn).
+- **Renderer-level break** — the message sequence is *unchanged* but the renderer **retokenizes**
+  the prior turn, so the tokens drift while `message_hash` stays identical: BPE drift, a rewritten
+  tool call, or a chat template that **drops a prior assistant's `<think>` across a user turn**
+  (Qwen3.5 does this; it *preserves* thinking between tool calls, so agentic tool loops are
+  unaffected). Message-hash dedup is blind to this — it would silently reuse the stale prefix
+  tokens and corrupt the invariant. So `commit` *tightens* the message-hash prefix to **token
+  identity** when token ids are present: it takes the longest common token prefix of the stored
+  prefix vs this turn's `prompt_ids` (comparing the concatenation, not per-message spans — a prior
+  assistant's stored generation form and its re-rendered input form place the turn-close scaffold
+  in different nodes but at the same position, so only a real content change shifts the prefix) and
+  forks at the first divergence. Each resulting branch is token-consistent; the invariant holds.
+  This is detectable **only at the token level** — the eval relay carries no token ids and falls
+  back to message-hash, so a renderer-level break is invisible to it.
+
+The renderer client avoids the break entirely when it can: instead of re-rendering the whole prompt
+each turn, the train client (`clients/train.py`) calls `renderer.bridge_to_next_turn(...)`, which
+keeps the prior `prompt_ids + completion_ids` **verbatim** and only renders the new tail. Verbatim
+prior ⇒ the stored prefix matches token-for-token ⇒ no fork, one linear branch, invariant intact.
+The token-identity check in `commit` is the backstop for when the bridge can't apply (the renderer
+returns `None`, multimodal, the eval relay): the break still surfaces as honest branches rather than
+silent corruption.
+
+Tests (`tests/v1/test_graph.py`): `test_message_level_branch_from_compaction` (hash fork +
+invariant), `test_renderer_level_break_forks_only_with_token_ids` (token drift forks under the train
+client, is invisible under the eval relay, invariant per branch), and `test_no_drift_stays_linear`.
+Validated end-to-end on alphabet-sort-v1 with Qwen3.5 (interleaved thinking): without the bridge the
+follow-up turn's tokens drift (a re-rendered prompt node loses its tokens) and the trajectory forks
+per turn; with the bridge it stays one branch with correct per-node tokens.
+
 ## Model access — interception, dialects, clients
 
 When the harness POSTs a completion to its localhost endpoint, the `InterceptionServer`

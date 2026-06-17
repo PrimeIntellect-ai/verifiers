@@ -251,14 +251,113 @@ def _turn(prompt, message, prompt_ids, completion_ids, message_spans):
     )
 
 
-def test_token_prefix_reuse_stays_linear_when_tokens_match():
-    """A faithful re-render (prefix retokenizes identically) reuses the whole prefix → 1 branch."""
+def _branch_tokens_by_leaf(trace) -> dict:
+    """{leaf message content -> concatenated token_ids along that branch's root→leaf path}.
+
+    The graph invariant under test: that concat is the exact `prompt_ids + completion_ids` the
+    inference engine saw and produced for the trajectory ending at that leaf."""
+    return {b.nodes[-1].message.content: b.token_ids for b in trace.branches}
+
+
+# Two true kinds of branching, and the leaf→root token invariant each must preserve.
+#
+# 1. MESSAGE-LEVEL branch: the harness rewrites the message *sequence* (compaction, subagents),
+#    so the conversation legitimately forks. Detected by `message_hash` divergence — no token ids
+#    needed, so it shows up under both the eval relay and the train client.
+# 2. RENDERER-LEVEL break: the message sequence is unchanged but the renderer *retokenizes* the
+#    prior turn (e.g. Qwen3.5 drops a prior assistant's `<think>` across a user turn), so the
+#    tokens drift while the message hash stays identical. Only the train client carries token ids,
+#    so this is detectable only at the token level — message-hash dedup is blind to it.
+#
+# In every case the invariant holds: walking a leaf back to the root and concatenating node
+# `token_ids` reproduces exactly what that trajectory's engine saw + produced.
+
+
+def test_message_level_branch_from_compaction():
+    """Message-level branch (the `compact` harness pattern): turn 2 replaces the history with a
+    fresh `[system, notes]`, so the user message diverges by hash. The graph forks — sharing the
+    system root, not duplicating it — and each branch's concat is that turn's true token sequence.
+    Hash-based, so it surfaces with or without token ids."""
+    trace = vf.Trace(task=vf.Task(idx=0, instruction="x"))
+    system = vf.SystemMessage(content="sys")
+    # turn 1: [system, user(task)] -> a1. system=[1], user=[2], gen=[3], completion=[4].
+    graph.add_turn(
+        trace,
+        *_turn(
+            [system, vf.UserMessage(content="task")],
+            vf.AssistantMessage(content="a1"),
+            [1, 2, 3],
+            [4],
+            [(0, 1), (1, 2)],
+        ),
+    )
+    # turn 2 = compaction: history replaced by a notes message (system shared, user diverges).
+    graph.add_turn(
+        trace,
+        *_turn(
+            [system, vf.UserMessage(content="notes")],
+            vf.AssistantMessage(content="a2"),
+            [1, 6, 7],
+            [8],
+            [(0, 1), (1, 2)],
+        ),
+    )
+    assert trace.num_branches == 2  # the compaction fork
+    roots = [n for n in trace.nodes if n.parent is None]
+    assert len(roots) == 1 and roots[0].message.content == "sys"  # system shared, not duplicated
+    bt = _branch_tokens_by_leaf(trace)
+    assert bt["a1"] == [1, 2, 3, 4]  # invariant: turn 1's prompt_ids + completion_ids
+    assert bt["a2"] == [1, 6, 7, 8]  # invariant: turn 2's prompt_ids + completion_ids
+
+
+def test_renderer_level_break_forks_only_with_token_ids():
+    """Renderer-level break: same message sequence, but turn 2's re-render drops the prior
+    assistant's `<think>` (token drift, identical message hash). With token ids (train client) the
+    token prefix diverges → the trajectory forks at the assistant, the user node is shared, and each
+    branch's concat is exactly what that turn's engine saw. Without token ids (eval relay) the hash
+    matches → the break is invisible (one linear branch) — so it's detectable only at the token level."""
+    user = vf.UserMessage(content="u1")
+    a1 = vf.AssistantMessage(content="a1")
+    user2 = vf.UserMessage(content="u2")
+
+    # train client: token ids present → the drift surfaces as a branch.
+    trace = vf.Trace(task=vf.Task(idx=0, instruction="x"))
+    # turn 1: user=[10,11], gen=[12], completion=[20,21,22] (think=[20,21] + content=[22]).
+    graph.add_turn(trace, *_turn([user], a1, [10, 11, 12], [20, 21, 22], [(0, 2)]))
+    # turn 2 re-render drops a1's think: a1 input=[12,22,13] (no [20,21]); user2=[30,31]; gen=[14].
+    graph.add_turn(
+        trace,
+        *_turn(
+            [user, a1, user2],
+            vf.AssistantMessage(content="a2"),
+            [10, 11, 12, 22, 13, 30, 31, 14],
+            [40],
+            [(0, 2), (2, 5), (5, 7)],
+        ),
+    )
+    assert trace.num_branches == 2  # the renderer break, surfaced at the token level
+    roots = [n for n in trace.nodes if n.parent is None]
+    assert len(roots) == 1 and roots[0].message.content == "u1"  # shared user, not duplicated
+    bt = _branch_tokens_by_leaf(trace)
+    assert bt["a1"] == [10, 11, 12, 20, 21, 22]  # invariant: turn 1's true tokens (with think)
+    assert bt["a2"] == [10, 11, 12, 22, 13, 30, 31, 14, 40]  # invariant: turn 2's true tokens
+
+    # eval relay: no token ids → the same break is undetectable, one linear branch.
+    relay = vf.Trace(task=vf.Task(idx=0, instruction="x"))
+    graph.add_turn(relay, [user], _response(vf.AssistantMessage(content="a1")))
+    graph.add_turn(
+        relay, [user, a1, user2], _response(vf.AssistantMessage(content="a2"))
+    )
+    assert relay.num_branches == 1
+
+
+def test_no_drift_stays_linear():
+    """A faithful re-render (the renderer retokenizes the prefix identically, or the bridge keeps
+    the prior verbatim) reuses the whole prefix → one linear branch, invariant intact."""
     trace = vf.Trace(task=vf.Task(idx=0, instruction="x"))
     user = vf.UserMessage(content="u1")
     a1 = vf.AssistantMessage(content="a1")
-    # turn 1: [user] -> a1. user=[10,11], gen scaffold=[12], completion=[20,21].
     graph.add_turn(trace, *_turn([user], a1, [10, 11, 12], [20, 21], [(0, 2)]))
-    # turn 2 full re-render: user=[10,11] (same), a1 input=[12,20,21,13], user2=[30,31], gen=[14].
     user2 = vf.UserMessage(content="u2")
     graph.add_turn(
         trace,
@@ -271,44 +370,4 @@ def test_token_prefix_reuse_stays_linear_when_tokens_match():
         ),
     )
     assert trace.num_branches == 1
-
-
-def test_token_prefix_reuse_forks_on_assistant_retokenization():
-    """When a re-render drops the prior assistant's `<think>` (token drift inside the assistant
-    node), the token prefix diverges there: the user node is shared but the assistant forks a new
-    branch carrying this turn's actual tokens, instead of silently reusing the stale ones."""
-    trace = vf.Trace(task=vf.Task(idx=0, instruction="x"))
-    user = vf.UserMessage(content="u1")
-    a1 = vf.AssistantMessage(content="a1")
-    # turn 1: user=[10,11], gen scaffold=[12], completion=[20,21,22] (e.g. think=[20,21]+content=[22]).
-    graph.add_turn(trace, *_turn([user], a1, [10, 11, 12], [20, 21, 22], [(0, 2)]))
-    # turn 2 re-render with the think dropped: a1 input=[12,22,13] (no [20,21]); user2=[30,31].
-    user2 = vf.UserMessage(content="u2")
-    graph.add_turn(
-        trace,
-        *_turn(
-            [user, a1, user2],
-            vf.AssistantMessage(content="a2"),
-            [10, 11, 12, 22, 13, 30, 31, 14],
-            [40],
-            [(0, 2), (2, 5), (5, 7)],
-        ),
-    )
-    assert trace.num_branches == 2  # drift surfaced as a branch
-    # the shared user node is reused (not duplicated): 1 user node at the root
-    roots = [n for n in trace.nodes if n.parent is None]
-    assert len(roots) == 1 and roots[0].message.content == "u1"
-
-
-def test_token_prefix_reuse_falls_back_to_hash_without_tokens():
-    """The eval relay carries no token ids; prefix reuse falls back to message-hash → 1 branch."""
-    trace = vf.Trace(task=vf.Task(idx=0, instruction="x"))
-    user = vf.UserMessage(content="u1")
-    graph.add_turn(trace, [user], _response(vf.AssistantMessage(content="a1")))
-    user2 = vf.UserMessage(content="u2")
-    graph.add_turn(
-        trace,
-        [user, vf.AssistantMessage(content="a1"), user2],
-        _response(vf.AssistantMessage(content="a2")),
-    )
-    assert trace.num_branches == 1
+    assert trace.branches[-1].token_ids == [10, 11, 12, 20, 21, 13, 30, 31, 14, 40]
