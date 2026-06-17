@@ -374,7 +374,7 @@ def _shared_url_for_rollout(
     return urlunsplit(parts._replace(query=urlencode(query)))
 
 
-async def _reap_forked_child(shared_url: str, secret: str) -> None:
+async def reap_forked_child(shared_url: str, secret: str) -> None:
     """Best-effort: POST `/vf/close` to reap this rollout's forked child on teardown (a `fork` shared
     server, see `multiplex`); the multiplexer also reaps by idle TTL and when it exits."""
     close_url = (
@@ -421,7 +421,7 @@ async def serve_tools(
                 if getattr(cfg, "fork", False) and state_secret:
                     # reap this rollout's forked child when the rollout's tool-serving scope exits
                     stack.push_async_callback(
-                        _reap_forked_child, shared_urls[name], state_secret
+                        reap_forked_child, shared_urls[name], state_secret
                     )
             else:
                 urls[name] = await stack.enter_async_context(
