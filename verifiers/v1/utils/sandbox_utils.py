@@ -691,9 +691,7 @@ async def create_sandbox(
         guaranteed=bool(sandbox_config.get("guaranteed", False)),
     )
     async def _create_and_wait_once() -> str:
-        create_task = asyncio.create_task(
-            with_sandbox_retry(lambda: client.create(request))
-        )
+        create_task = asyncio.create_task(client.create(request))
         try:
             create_waiter = asyncio.shield(create_task)
             if sandbox_config.get("create_timeout") is not None:
@@ -702,7 +700,21 @@ async def create_sandbox(
                 )
             else:
                 sandbox = await create_waiter
-        except (asyncio.CancelledError, TimeoutError):
+        except asyncio.CancelledError as cancel_exc:
+            try:
+                sandbox = cast(SandboxRecord, await asyncio.shield(create_task))
+            except BaseException:
+                raise cancel_exc
+            await asyncio.shield(
+                delete_sandbox_id(
+                    client,
+                    str(sandbox.id),
+                    close_client=False,
+                    reason="cancelled creation",
+                )
+            )
+            raise
+        except TimeoutError:
             sandbox = cast(SandboxRecord, await asyncio.shield(create_task))
             await asyncio.shield(
                 delete_sandbox_id(
