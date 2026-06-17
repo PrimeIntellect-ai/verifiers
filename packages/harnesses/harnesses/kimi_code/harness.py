@@ -86,6 +86,22 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             )
 
         mcp = {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
+        # Values are Kimi permission patterns such as `Bash` or `Bash(rm -rf*)`.
+        # https://moonshotai.github.io/kimi-code/en/configuration/config-files#permission
+        permission_rules = "\n".join(
+            "\n".join(
+                (
+                    "[[permission.rules]]",
+                    'decision = "deny"',
+                    'scope = "user"',
+                    f"pattern = {json.dumps(tool)}",
+                    'reason = "Disabled by Verifiers harness configuration."',
+                )
+            )
+            for tool in self.config.disabled_tools or []
+        )
+        if permission_rules:
+            await runtime.write(f"{KIMI_HOME}/config.toml", permission_rules.encode())
         await runtime.write(f"{KIMI_HOME}/mcp.json", json.dumps(mcp).encode())
         # `--prompt` is Kimi Code's non-interactive print mode.
         return await runtime.run([BINARY, "--prompt", instruction], env)
