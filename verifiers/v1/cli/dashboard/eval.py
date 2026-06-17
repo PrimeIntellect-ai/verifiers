@@ -12,7 +12,7 @@ above a rule.
 import contextlib
 import time
 
-from rich.console import Group
+from rich.console import Console, Group
 from rich.progress_bar import ProgressBar
 from rich.rule import Rule
 from rich.table import Table
@@ -24,6 +24,11 @@ from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils import format_count, format_reward, format_time
+
+# For sizing pages to the terminal: detects the real terminal height/width each access (the live
+# view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
+_CONSOLE = Console()
+_PAGE_SECONDS = 3.0  # rotate to the next page of rollouts this often when they overflow
 
 _STYLE = {
     "setup": "yellow",
@@ -122,7 +127,9 @@ def Overview(config: EvalConfig) -> Table:
     return grid
 
 
-def Progress(rollouts: list[Rollout], start: float) -> Table:
+def Progress(
+    rollouts: list[Rollout], start: float, page: tuple[int, int] | None = None
+) -> Table:
     done = [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
     # Headline reward = mean over non-errored; when any errored, `format_reward` appends the
     # global avg (errored count as 0) in parens. `err` is the share that errored.
@@ -132,6 +139,8 @@ def Progress(rollouts: list[Rollout], start: float) -> Table:
         f"{len(done)}/{len(rollouts)} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
     )
+    if page is not None:  # rollouts overflow the screen — show which page is on screen
+        stats += f"  (page {page[0]}/{page[1]})"
     row = Table.grid(expand=True, padding=(0, 1))
     row.add_column(ratio=1)  # bar stretches to fill the width left of the stats
     row.add_column(justify="right", no_wrap=True)
@@ -249,15 +258,45 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
     return grid
 
 
+def _paginate(
+    groups: list[list[Rollout]], rows_per_page: int, now: float
+) -> tuple[list[list[Rollout]], int, int]:
+    """Pack groups (a task's rollouts kept together) into pages of at most `rows_per_page` rows,
+    cycling to the next page every `_PAGE_SECONDS`. Returns (this page's groups, 0-based index,
+    page count) — a single page when everything already fits."""
+    if sum(len(g) for g in groups) <= rows_per_page:
+        return groups, 0, 1
+    pages: list[list[list[Rollout]]] = []
+    current: list[list[Rollout]] = []
+    used = 0
+    for group in groups:
+        if current and used + len(group) > rows_per_page:
+            pages.append(current)
+            current, used = [], 0
+        current.append(group)
+        used += len(group)
+    if current:
+        pages.append(current)
+    index = int(now / _PAGE_SECONDS) % len(pages)
+    return pages[index], index, len(pages)
+
+
 def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
+    now = time.time()
     warning = _warning(config)
     # `{warning}\n\n{overview}` — the caution sits at the very top, blank line, then the overview.
     header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
+    # Measure the fixed top (header + progress + rule) so the rollout rows fill the rest of the
+    # screen; page through them on a timer when they'd overflow (rich would otherwise truncate).
+    top = Group(header, Progress(rollouts, start), Rule(style="dim"))
+    rows_per_page = max(1, _CONSOLE.size.height - len(_CONSOLE.render_lines(top)) - 1)
+    page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, now)
+    progress = Progress(rollouts, start, page=(index + 1, count) if count > 1 else None)
     return Group(
         header,
-        Progress(rollouts, start),
+        progress,
         Rule(style="dim"),
-        Rows(_groups(rollouts), time.time(), config.harness.runtime.type),
+        Rows(page_groups, now, config.harness.runtime.type),
     )
 
 
