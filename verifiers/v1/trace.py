@@ -214,8 +214,8 @@ class Trace(StrictBaseModel, Generic[TaskT]):
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
-    """`(parent, msg_hash) -> node_id` for the graph builder (`graph.add_turn`); rebuilt
-    lazily from `nodes` after deserialization."""
+    """`(parent, msg_hash) -> node_id` for the graph builder (`graph.prepare_turn` / `commit`);
+    rebuilt lazily from `nodes` after deserialization."""
 
     @computed_field
     @property

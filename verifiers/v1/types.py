@@ -175,15 +175,15 @@ class TurnTokens(StrictBaseModel):
     completion_logprobs: list[float] = Field(default_factory=list)
 
     # Transient carrier (excluded): per-message token spans into `prompt_ids` from the renderer,
-    # consumed by `graph.add_turn` to attribute tokens per message, then dropped.
+    # consumed by the turn's `commit` to attribute tokens per message, then dropped.
     message_spans: list[tuple[int, int] | None] | None = Field(
         default=None, exclude=True
     )
     # Transient carrier (excluded): the renderer's multimodal sidecar (image tensors + offsets),
-    # attributed per node by `graph.add_turn`, then dropped — never persisted.
+    # attributed per node by the turn's `commit`, then dropped — never persisted.
     multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the MoE expert-routing data from `generate` (expert ids
-    # per token), attributed per node by `graph.add_turn` into `MessageNode.routed_experts`,
+    # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
     routed_experts: RoutedExperts | None = Field(default=None, exclude=True)
 

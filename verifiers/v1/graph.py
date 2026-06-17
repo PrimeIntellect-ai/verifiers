@@ -69,7 +69,7 @@ class MessageNode(StrictBaseModel):
     message: Message
     """The message this node carries (system / user / assistant / tool)."""
     sampled: bool = False
-    """True iff a model call produced this message (the response in `add_turn`); False for
+    """True iff a model call produced this message (the response passed to `commit`); False for
     every prompt-supplied message — including assistant/tool messages fabricated as context
     the model never generated, which role alone can't tell apart from real turns."""
     token_ids: list[int] = Field(default_factory=list)
@@ -470,11 +470,6 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     _attribute_routed_experts(
         trace, new_node_ids, path_len, tokens.routed_experts if tokens else None
     )
-
-
-def add_turn(trace: Trace, prompt: list[Message], response: Response) -> None:
-    """Compatibility helper for callers that do not need pre-inference turn planning."""
-    prepare_turn(trace, prompt).commit(response)
 
 
 # --- walking the graph (views) ---------------------------------------------------------

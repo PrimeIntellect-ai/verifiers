@@ -216,10 +216,8 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         if not isinstance(step, dict):
             continue
         tokens = _to_v1_tokens(step.get("tokens"))
-        graph.add_turn(
-            trace,
-            _to_v1_messages(step.get("prompt")),
-            _to_v1_response(step.get("response"), model, tokens),
+        graph.prepare_turn(trace, _to_v1_messages(step.get("prompt"))).commit(
+            _to_v1_response(step.get("response"), model, tokens)
         )
     return trace
 
