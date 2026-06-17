@@ -104,9 +104,18 @@ The program that drives the rollout — same taskset, different driver:
 
 ```bash
 uv run eval gsm8k-v1 -n 1                     # default: bare agent (MCP tools only)
-uv run eval gsm8k-v1 -n 1 --harness.id bash   # bash-only agent
 uv run eval gsm8k-v1 -n 1 --harness.id rlm    # the rlm harness
 uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
+```
+
+The same drivers on an agentic terminal task — harbor's `hello-world` (needs docker). `default`
+is excluded: it has no built-in tool to touch the runtime's filesystem, which terminal tasks need.
+
+```bash
+uv run eval harbor-v1 -n 1 --harness.runtime.type docker --harness.id bash            # bash-only agent
+uv run eval harbor-v1 -n 1 --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
+uv run eval harbor-v1 -n 1 --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
+uv run eval harbor-v1 -n 1 --harness.runtime.type docker --harness.id codex           # the codex CLI agent
 ```
 
 ### Swappable runtime
