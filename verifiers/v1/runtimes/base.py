@@ -240,11 +240,13 @@ class RetryingRuntime(Runtime):
         )
 
     def _log_retry(self, state: RetryCallState) -> None:
+        # before_sleep fires after a failed attempt, before the imminent retry — so
+        # attempt_number is the retry index (1 on the first retry); count out of max_retries.
         logger.warning(
-            "retrying runtime.%s (attempt %d/%d) after error: %s",
+            "retrying runtime.%s (retry %d/%d) after error: %s",
             getattr(state.fn, "__name__", "call"),
             state.attempt_number,
-            self.max_retries + 1,
+            self.max_retries,
             state.outcome.exception(),
         )
 
