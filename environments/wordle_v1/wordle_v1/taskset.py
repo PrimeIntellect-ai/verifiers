@@ -8,12 +8,19 @@ and game-authoritative scoring — is inherited unchanged.
 from typing import Literal
 
 import verifiers.v1 as vf
-from tasksets.textarena_v1 import TextArenaConfig, TextArenaTask, TextArenaTaskset
+from tasksets.textarena_v1 import (
+    TextArenaConfig,
+    TextArenaState,
+    TextArenaTask,
+    TextArenaTaskset,
+)
 
 
 class WordleConfig(TextArenaConfig):
     game: Literal["Wordle-v0"] = "Wordle-v0"
 
 
-class WordleTaskset(TextArenaTaskset, vf.Taskset[TextArenaTask, WordleConfig]):
+class WordleTaskset(
+    TextArenaTaskset, vf.Taskset[TextArenaTask, WordleConfig, TextArenaState]
+):
     pass

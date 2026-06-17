@@ -174,3 +174,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig, TextArenaState
         except (FileNotFoundError, OSError):
             return 0.0
         return float(json.loads(data)["reward"])
+
+
+if __name__ == "__main__":
+    TextArenaUser.run()
