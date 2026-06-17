@@ -209,16 +209,25 @@ async def serve_in_runtime(
         python = await _install_in_sandbox(server, runtime)
     log = f"vf_tool_{server.server_name}.log"
     await runtime.run_background([python, "-m", type(server).__module__], env, log)
-    port = fixed if fixed is not None else await _read_back_port(runtime, port_file)
+
+    async def _log_tail() -> str:
+        with contextlib.suppress(Exception):
+            return (await runtime.read(log)).decode(errors="replace").strip()[-2000:]
+        return ""
+
+    if fixed is not None:
+        port = fixed
+    else:
+        try:
+            port = await _read_back_port(runtime, port_file)
+        except ProgramError as e:
+            raise ProgramError(f"{e}: {await _log_tail()}") from e
     probe = await runtime.run(
         ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
     )
     if probe.exit_code != 0:
-        tail = ""
-        with contextlib.suppress(Exception):
-            tail = (await runtime.read(log)).decode(errors="replace").strip()[-2000:]
         raise ProgramError(
-            f"tool server {server.server_name!r} not serving in runtime: {tail}"
+            f"tool server {server.server_name!r} not serving in runtime: {await _log_tail()}"
         )
     return port
 
