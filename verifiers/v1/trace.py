@@ -21,8 +21,8 @@ from renderers.base import MultiModalData
 
 from verifiers.v1 import graph
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.state import State, StateT
-from verifiers.v1.task import TaskT
+from verifiers.v1.state import State, StateT, WireState
+from verifiers.v1.task import TaskT, WireTask
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -398,5 +398,38 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         }
         return self.model_dump(mode="python", exclude=exclude)
 
+    @classmethod
+    def from_wire(cls, data: dict) -> "Trace":
+        """Load a trace dumped by `to_wire` (or the full `model_dump` on disk) back into a model —
+        the inverse of `to_wire`. Drops the derived (computed) fields a strict `Trace` rejects as
+        input: the top-level ones (`reward`, `error`, `is_truncated`) and each timing span's
+        `duration`. Everything else round-trips, branches included (each node keeps its `parent`).
+
+        Use the permissive `WireTask` / `WireState` to load a dump without importing the originating
+        taskset: `Trace[WireTask, WireState].from_wire(d)`, i.e. `WireTrace.from_wire(d)`."""
+        data = dict(data)
+        for field in cls.model_computed_fields:
+            data.pop(field, None)
+        timing = data.get("timing")
+        if isinstance(timing, dict):
+            data["timing"] = {
+                name: (
+                    {
+                        k: v
+                        for k, v in span.items()
+                        if k not in TimeSpan.model_computed_fields
+                    }
+                    if isinstance(span, dict)
+                    else span
+                )
+                for name, span in timing.items()
+            }
+        return cls.model_validate(data)
+
 
 TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]
+
+WireTrace = Trace[WireTask, WireState]
+"""A `Trace` typed for loading a dump without the originating taskset — permissive task + state
+(extras preserved on `task`, ignored-but-fine on `state`, which is never dumped). Pair with
+`from_wire`: `WireTrace.from_wire(json.loads(line))`."""

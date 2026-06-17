@@ -14,6 +14,7 @@ add your own flag and a `@vf.stop` that checks it (e.g. `user_finished`) — see
 
 from typing import get_args
 
+from pydantic import ConfigDict
 from typing_extensions import TypeVar
 
 from verifiers.v1.types import StrictBaseModel
@@ -25,6 +26,15 @@ class State(StrictBaseModel):
     (fields need defaults so the framework can build the initial state). Strict (unknown fields are
     rejected) and transient: never persisted to disk or sent over the wire (use the free-form
     `Trace.info` for artifacts that must persist)."""
+
+
+class WireState(State):
+    """A `State` that accepts (and preserves) extra fields, for typing a `Trace` loaded off the wire
+    without the originating taskset's `State` — the symmetric counterpart to `WireTask`. `state` is
+    excluded from every dump, so a loaded trace's `state` is empty regardless; this is a typing
+    convenience so `Trace[WireTask, WireState]` (see `WireTrace`) reads cleanly."""
+
+    model_config = ConfigDict(extra="allow")
 
 
 StateT = TypeVar("StateT", bound=State, default=State)
