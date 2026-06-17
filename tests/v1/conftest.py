@@ -18,7 +18,7 @@ import pytest
 
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.env import Environment
-from verifiers.v1.cli.runner import run_eval
+from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.trace import Trace
 
 # Fixture tasksets/envs (echo-v1, echo-agentic-v1, echo-v0, echo-multi-v0) live in
@@ -223,7 +223,7 @@ def run_v1_server():
     the only fixture that exercises serving resources (shared tool servers, interception pool)
     being stood up by the *server* rather than the in-process runner. Pinned to a single static
     worker for determinism."""
-    from verifiers.v1.cli.runner import run_eval_server
+    from verifiers.v1.cli.eval.runner import run_eval_server
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         kwargs.setdefault("pool", {"type": "static", "num_workers": 1})
