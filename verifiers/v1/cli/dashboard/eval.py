@@ -43,10 +43,9 @@ _MARK = {
 }
 
 
-def _limits(config: EvalConfig) -> str:
-    """Per-rollout caps for the overview: turns, tokens, concurrency. An unset cap reads as
-    'no ...' rather than being hidden."""
-    parts = [f"{config.max_turns} turns" if config.max_turns else "no turn cap"]
+def _limits(config: EvalConfig) -> list[str]:
+    """Per-rollout caps for the overview (concurrency first, then turns, tokens). An unset cap
+    reads as 'no ...' rather than being hidden."""
     toks = []
     if config.max_input_tokens:
         toks.append(f"in≤{config.max_input_tokens}")
@@ -54,23 +53,40 @@ def _limits(config: EvalConfig) -> str:
         toks.append(f"out≤{config.max_output_tokens}")
     if config.max_total_tokens:
         toks.append(f"total≤{config.max_total_tokens}")
-    parts.append(f"{', '.join(toks)} tokens" if toks else "no token cap")
-    parts.append(
+    return [
         f"≤{config.max_concurrent} concurrent"
         if config.max_concurrent
-        else "no concurrency cap"
-    )
-    return "  ·  ".join(parts)
+        else "no concurrency cap",
+        f"{config.max_turns} turns" if config.max_turns else "no turn cap",
+        f"{', '.join(toks)} tokens" if toks else "no token cap",
+    ]
 
 
-def _timeouts(config: EvalConfig) -> str:
+def _timeouts(config: EvalConfig) -> list[str]:
     """Per-stage rollout timeouts for the overview, each stage enumerated (unset → 'no <stage>
     timeout')."""
-    parts = []
-    for stage in ("setup", "rollout", "finalize", "scoring"):
-        value = getattr(config.timeout, stage)
-        parts.append(f"{stage} {value:g}s" if value else f"no {stage} timeout")
-    return "  ·  ".join(parts)
+    return [
+        f"{stage} {v:g}s"
+        if (v := getattr(config.timeout, stage))
+        else f"no {stage} timeout"
+        for stage in ("setup", "rollout", "finalize", "scoring")
+    ]
+
+
+def _aligned(rows: list[list[str]]) -> list[str]:
+    """Join each row's `·`-separated segments, padding shared columns to a common width so the
+    separators line up across rows (each row's last segment is left ragged)."""
+    widths: dict[int, int] = {}
+    for row in rows:
+        for i, seg in enumerate(row):
+            widths[i] = max(widths.get(i, 0), len(seg))
+    return [
+        "  ·  ".join(
+            seg.ljust(widths[i]) if i < len(row) - 1 else seg
+            for i, seg in enumerate(row)
+        )
+        for row in rows
+    ]
 
 
 def _warning(config: EvalConfig) -> Text | None:
@@ -99,8 +115,9 @@ def Overview(config: EvalConfig) -> Table:
     )
     model = f"{config.model}  ({sampling})" if sampling else config.model
     grid.add_row("model", f"{model}  via {config.client.base_url}")
-    grid.add_row("limits", _limits(config))
-    grid.add_row("timeouts", _timeouts(config))
+    limits, timeouts = _aligned([_limits(config), _timeouts(config)])
+    grid.add_row("limits", limits)
+    grid.add_row("timeouts", timeouts)
     grid.add_row("output", str(output_path(config)))
     return grid
 
