@@ -57,6 +57,16 @@ def Overview(config: EvalConfig) -> Table:
         "env",
         f"{config.taskset.name}  ·  {config.harness.name} harness  ·  {config.harness.runtime.type} runtime",
     )
+    if config.harness.id != "default" and config.harness.runtime.type == "subprocess":
+        grid.add_row(
+            "warning",
+            Text(
+                "Runs on the local system; local files and settings may affect this "
+                "evaluation. Use subprocess only for debugging, or use docker or prime "
+                "for an isolated run.",
+                style="yellow",
+            ),
+        )
     grid.add_row("model", f"{config.model}  ({sampling})")
     grid.add_row("output", str(output_path(config)))
     return grid
