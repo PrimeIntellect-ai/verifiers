@@ -103,6 +103,9 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str
     local_imports: list[str] = []
     config_extra = ""
     methods: list[str] = []
+    # a user simulator carries per-rollout state and a stop condition, so the taskset is typed with
+    # its `State` subclass; without one it stays on the default `State`.
+    state_param = ""
     if add_tool:
         local_imports.append(f"from {pkg}.servers.tool import {prefix}Toolset")
         config_extra += "\n    tools: vf.ToolsetConfig = vf.ToolsetConfig()"
@@ -111,11 +114,19 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str
             f"        return [{prefix}Toolset(self.config.tools)]"
         )
     if add_user:
-        local_imports.append(f"from {pkg}.servers.user import {prefix}User")
+        local_imports.append(
+            f"from {pkg}.servers.user import {prefix}State, {prefix}User"
+        )
         config_extra += "\n    user: vf.UserConfig = vf.UserConfig()"
+        state_param = f", {prefix}State"
         methods.append(
             f"    def user(self, task: {prefix}Task) -> vf.User:\n"
             f"        return {prefix}User(self.config.user)"
+        )
+        methods.append(
+            "    @vf.stop\n"
+            "    async def user_done(self, trace: vf.Trace) -> bool:\n"
+            "        return trace.state.done"
         )
     if local_imports:
         imports += "\n\n" + "\n".join(local_imports)
@@ -139,7 +150,7 @@ class {prefix}Config(vf.TasksetConfig):
     """How many tasks to build."""{config_extra}
 
 
-class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
+class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config{state_param}]):
     def load_tasks(self) -> list[{prefix}Task]:
         raise NotImplementedError(
             "Return this taskset's tasks, e.g. "
@@ -181,23 +192,25 @@ def _user_py(stem: str, prefix: str) -> str:
     return f'''\
 """A user simulator for {stem.replace("_", "-")} — a vf-native `User` driving the conversation.
 
-The framework calls `respond` after each model turn for the next user message(s) + a done flag.
-If a task carries no prompt (`instruction=None`), `respond("")` is called first to open the
-conversation. Replace the logic with your simulated user.
+The framework calls `respond` after each model turn for the next user message(s). If a task carries
+no prompt (`instruction=None`), `respond("")` is called first to open the conversation. End the
+trajectory by flagging `self.state`, which the taskset's `@vf.stop` ends on. Replace the logic with
+your simulated user.
 """
 
 import verifiers.v1 as vf
 
 
-class {prefix}User(vf.User[vf.UserConfig]):
-    async def setup_task(self, task) -> None:
-        self.replied = False
+class {prefix}State(vf.State):
+    done: bool = False
 
-    async def respond(self, message: str) -> tuple[vf.Messages, bool]:
-        if self.replied:
-            return [], True
-        self.replied = True
-        return [{{"role": "user", "content": "Thanks - anything else?"}}], False
+
+class {prefix}User(vf.User[vf.UserConfig, {prefix}State]):
+    async def respond(self, message: str) -> vf.Messages:
+        if self.state.done:
+            return []
+        self.state.done = True
+        return [{{"role": "user", "content": "Thanks - anything else?"}}]
 
 
 if __name__ == "__main__":
