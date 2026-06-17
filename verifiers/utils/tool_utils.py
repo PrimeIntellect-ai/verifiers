@@ -1,6 +1,11 @@
+import inspect
+from copy import copy
 from typing import Any
+from typing import get_type_hints
 
-from agents.function_schema import function_schema
+from openai import pydantic_function_tool
+from pydantic import Field, create_model
+from pydantic.fields import FieldInfo
 
 from verifiers.types import Tool
 
@@ -24,10 +29,43 @@ def is_valid_tool_content_parts(value: Any) -> bool:
 
 def convert_func_to_tool_def(func: Any) -> Tool:
     """Convert *func* to a provider-agnostic vf.Tool definition."""
-    function_schema_obj = function_schema(func)
+    doc = inspect.getdoc(func) or ""
+    description = doc.split("\n\n", 1)[0]
+    param_descriptions: dict[str, str] = {}
+    in_args = False
+    for line in doc.splitlines():
+        stripped = line.strip()
+        if stripped in {"Args:", "Arguments:"}:
+            in_args = True
+            continue
+        if not in_args:
+            continue
+        if not line.startswith((" ", "\t")):
+            break
+        name, separator, param_description = stripped.partition(":")
+        if separator:
+            param_descriptions[name.split(" ", 1)[0]] = param_description.strip()
+
+    fields: dict[str, Any] = {}
+    type_hints = get_type_hints(func, include_extras=True)
+    for name, param in inspect.signature(func).parameters.items():
+        annotation = type_hints.get(name, Any)
+        default = ... if param.default is inspect.Parameter.empty else param.default
+        param_description = param_descriptions.get(name)
+        if isinstance(default, FieldInfo) and param_description:
+            default = copy(default)
+            default.description = param_description
+        elif param_description:
+            default = Field(default=default, description=param_description)
+        fields[name] = (annotation, default)
+
+    model = create_model(f"{func.__name__}_args", **fields)
+    function = pydantic_function_tool(
+        model, name=func.__name__, description=description
+    )["function"]
     return Tool(
-        name=func.__name__,
-        description=function_schema_obj.description or "",
-        parameters=function_schema_obj.params_json_schema,
-        strict=function_schema_obj.strict_json_schema,
+        name=function["name"],
+        description=function.get("description", ""),
+        parameters=function["parameters"],
+        strict=function["strict"],
     )
