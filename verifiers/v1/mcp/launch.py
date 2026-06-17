@@ -156,6 +156,14 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     return f"{venv}/bin/python"
 
 
+async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
+    """The tail of a program's `log` file in `runtime`, empty if it can't be read — for
+    enriching an error with what the program (e.g. a tool server) wrote before it died."""
+    with contextlib.suppress(Exception):
+        return (await runtime.read(log)).decode(errors="replace").strip()[-limit:]
+    return ""
+
+
 async def _read_back_port(runtime: Runtime, path: str) -> int:
     """The port the server bound and wrote to `path` in its runtime. The server writes it the moment
     it binds (before setup/serving), so this resolves quickly; poll because it's a separate process."""
@@ -209,25 +217,19 @@ async def serve_in_runtime(
         python = await _install_in_sandbox(server, runtime)
     log = f"vf_tool_{server.server_name}.log"
     await runtime.run_background([python, "-m", type(server).__module__], env, log)
-
-    async def _log_tail() -> str:
-        with contextlib.suppress(Exception):
-            return (await runtime.read(log)).decode(errors="replace").strip()[-2000:]
-        return ""
-
     if fixed is not None:
         port = fixed
     else:
         try:
             port = await _read_back_port(runtime, port_file)
         except ProgramError as e:
-            raise ProgramError(f"{e}: {await _log_tail()}") from e
+            raise ProgramError(f"{e}: {await log_tail(runtime, log)}") from e
     probe = await runtime.run(
         ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
     )
     if probe.exit_code != 0:
         raise ProgramError(
-            f"tool server {server.server_name!r} not serving in runtime: {await _log_tail()}"
+            f"tool server {server.server_name!r} not serving in runtime: {await log_tail(runtime, log)}"
         )
     return port
 
