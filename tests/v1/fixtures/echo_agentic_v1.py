@@ -3,8 +3,8 @@
 Like harbor's hello-world but with no Dockerfile to build — it runs on the runtime's default
 image, so the whole agentic loop works end to end: the model issues bash commands and the
 reward reads the file back out of the runtime (`runtime.read`, runtime-opaque like harbor's
-verifier). The minimal reward-1 agentic task for the e2e suite. Needs a harness with the bash
-tool (`--harness.enable-bash true`).
+verifier). The minimal reward-1 agentic task for the e2e suite. Needs an agentic (shell) harness,
+e.g. `bash`.
 """
 
 import verifiers.v1 as vf
@@ -40,7 +40,7 @@ class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
         return [
             EchoAgenticTask(
                 idx=0,
-                instruction=(
+                prompt=(
                     f"Use the bash tool to write exactly the text '{phrase}' to a file named "
                     f"{TARGET} in the current directory, then finish."
                 ),

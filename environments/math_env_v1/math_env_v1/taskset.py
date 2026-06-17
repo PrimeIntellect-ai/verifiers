@@ -45,7 +45,7 @@ class MathTaskset(vf.Taskset[MathTask, MathConfig]):
         return [
             MathTask(
                 idx=i,
-                instruction=INSTRUCTION + row[self.config.question_key],
+                prompt=INSTRUCTION + row[self.config.question_key],
                 answer=str(row[self.config.answer_key]),
             )
             for i, row in enumerate(rows)

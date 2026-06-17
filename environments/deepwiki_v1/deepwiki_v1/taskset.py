@@ -36,7 +36,7 @@ class DeepWikiTaskset(vf.Taskset[DeepWikiTask, DeepWikiConfig]):
             DeepWikiTask(
                 idx=i,
                 name=repo,
-                instruction=(
+                prompt=(
                     f"Use the `deepwiki_ask_question` tool to ask what programming "
                     f'language the "{repo}" GitHub repository is primarily written in. '
                     "Then reply with just the language name."

@@ -101,7 +101,7 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
 
 # --- vf -> chat wire ----------------------------------------------------------
 # `message_to_wire` (chat-only): used by `extend` (user-sim turn injection), the default harness
-# (a Messages instruction), and the train client (its generate request). The proxy never
+# (a Messages prompt), and the train client (its generate request). The proxy never
 # serializes — it relays the provider's raw bytes.
 
 

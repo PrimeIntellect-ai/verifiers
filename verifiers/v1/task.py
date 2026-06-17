@@ -13,7 +13,7 @@ from pydantic import ConfigDict
 from verifiers.v1.types import Messages, StrictBaseModel
 
 
-class Resources(StrictBaseModel):
+class TaskResources(StrictBaseModel):
     """Runtime resources a task requests (all optional), in Modal's units. Applied to the
     runtime config where the field exists; a field the runtime doesn't support is warned
     about and ignored. Precedence: cli/toml > task > the runtime default (`None` here =
@@ -31,6 +31,23 @@ class Resources(StrictBaseModel):
     """Disk in GB (enforced by prime; advisory on docker/modal)."""
 
 
+class TaskTimeout(StrictBaseModel):
+    """Per-task wall-clock timeout overrides (seconds, all optional), one per rollout stage. Each
+    merges with the eval's `timeout` (`TimeoutConfig`): cli/toml > this > default (no limit).
+    Frozen, like `TaskResources`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    setup: float | None = None
+    """The taskset's `setup` hook."""
+    harness: float | None = None
+    """The harness run."""
+    finalize: float | None = None
+    """The taskset's `finalize` hook."""
+    scoring: float | None = None
+    """Verify + rewards/metrics."""
+
+
 class Task(StrictBaseModel):
     """A single problem to solve. Subclass to add typed task-specific fields."""
 
@@ -42,16 +59,16 @@ class Task(StrictBaseModel):
     """Optional human-readable task name/label (for display/filtering)."""
     description: str | None = None
     """Optional human-readable task description."""
-    instruction: str | Messages | None
+    prompt: str | Messages | None
     """The user message shown to the model (the task's question/framing). Usually a `str`; a
     `Messages` list seeds a full initial conversation (e.g. a user message carrying images) and
-    is only accepted by harnesses that set `SUPPORTS_MESSAGE_INSTRUCTION`. Required — set it
+    is only accepted by harnesses that set `SUPPORTS_MESSAGE_PROMPT`. Required — set it
     explicitly to `None` to mean the task carries no prompt: the taskset's user simulator
     (`Taskset.user`) then opens the conversation, its first `respond` supplying the initial user
     turn before the model is ever called."""
     system_prompt: str | None = None
     """Optional system prompt. Harnesses that set `APPENDS_SYSTEM_PROMPT` emit it as a real
-    system message (or their own mechanism); others prepend it to `instruction` (with a
+    system message (or their own mechanism); others prepend it to `prompt` (with a
     warning). See `Harness.resolve_prompt`."""
     image: str | None = None
     """Container image this task needs (e.g. its harbor environment). When set, the
@@ -62,19 +79,9 @@ class Task(StrictBaseModel):
     the runtime config's `workdir` (where the runtime supports one). For a containerized
     task whose image puts the working tree at a non-default path (e.g. a SWE row's
     `/workspace/<repo>`)."""
-    setup_timeout: float | None = None
-    """Optional per-task setup timeout (seconds). Merges with the eval's
-    `setup_timeout`: cli/toml > this > default (no limit)."""
-    harness_timeout: float | None = None
-    """Optional per-task harness timeout (seconds). Merges with the eval's
-    `harness_timeout`: cli/toml > this > default (no limit)."""
-    finalize_timeout: float | None = None
-    """Optional per-task finalize timeout (seconds). Merges with the eval's
-    `finalize_timeout`: cli/toml > this > default (no limit)."""
-    scoring_timeout: float | None = None
-    """Optional per-task scoring timeout (seconds). Merges with the eval's
-    `scoring_timeout`: cli/toml > this > default (no limit)."""
-    resources: Resources = Resources()
+    timeout: TaskTimeout = TaskTimeout()
+    """Optional per-task timeout overrides, one per rollout stage (merge with the eval's `timeout`)."""
+    resources: TaskResources = TaskResources()
     """Optional runtime resources this task requests (applied where supported)."""
 
 

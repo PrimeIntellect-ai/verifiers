@@ -8,7 +8,7 @@ import time
 
 from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.cli import resume
+from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.decorators import discover_decorated
@@ -103,7 +103,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
     import multiprocessing as mp
     from functools import partial
 
-    from verifiers.v1.cli.log import setup_logging
+    from verifiers.v1.utils.logging import setup_logging
     from verifiers.v1.env import pool_serve_kwargs
     from verifiers.v1.serve import EnvClient, env_config_data, serve_env
 

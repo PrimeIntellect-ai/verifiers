@@ -49,7 +49,8 @@ def model_error(e: OpenAIError | str) -> ModelError:
     """Map a provider failure to our error type, distinguishing an overlong prompt from any
     other model-call failure (auth, rate limit, a genuine bad request, ...). Accepts either an
     SDK error (the renderer) or the provider's raw error body (the httpx proxy)."""
-    text = str(e).casefold()
-    if any(phrase in text for phrase in _CONTEXT_LENGTH_PHRASES):
-        return OverlongPromptError(str(e))
-    return ModelError(str(e))
+    # Some SDK errors stringify empty; fall back to the type so the message is never blank.
+    text = str(e) or (type(e).__name__ if isinstance(e, BaseException) else "")
+    if any(phrase in text.casefold() for phrase in _CONTEXT_LENGTH_PHRASES):
+        return OverlongPromptError(text)
+    return ModelError(text)

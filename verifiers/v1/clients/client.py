@@ -20,7 +20,7 @@ from tenacity import (
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import ModelError, OverlongPromptError
 from verifiers.v1.graph import PendingTurn
-from verifiers.v1.types import Response, SamplingConfig
+from verifiers.v1.types import Response, Sampling, SamplingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -104,11 +104,14 @@ class RetryingClient(Client):
         )
 
     def _log_retry(self, state: RetryCallState) -> None:
+        # before_sleep fires after a failed attempt, before the imminent retry — so
+        # attempt_number is the retry index (1 on the first retry); count out of max_retries.
+        exc = state.outcome.exception()
         logger.warning(
-            "retrying model call (attempt %d/%d) after error: %s",
+            "retrying model call (retry %d/%d) after error: %s",
             state.attempt_number,
-            self.max_retries + 1,
-            state.outcome.exception(),
+            self.max_retries,
+            f"{type(exc).__name__}: {exc}",  # name too — some errors stringify empty
         )
 
     async def get_response(
@@ -165,6 +168,6 @@ class RolloutContext:
     """The collaborators a single rollout needs (client + model + sampling), bundled
     so harnesses hold no rollout state. Built by the Environment."""
 
-    client: Client
     model: str
-    sampling: SamplingConfig
+    client: Client
+    sampling: Sampling

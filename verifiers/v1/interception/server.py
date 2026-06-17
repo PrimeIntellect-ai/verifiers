@@ -14,7 +14,7 @@ one tunnel) per pool member rather than one each — see `interception.pool`.
 When a rollout sets a user simulator (see `verifiers.v1.mcp.user`), the session also drives it:
 after each model turn it injects the simulator's reply as a user turn and re-prompts the
 model, so a multi-turn exchange plays out within one program request, transparently to the
-harness. When the task carries no prompt (`task.instruction is None`), the simulator also
+harness. When the task carries no prompt (`task.prompt is None`), the simulator also
 opens the conversation: its first turn is seeded before the model is ever called. Tools are
 handled out-of-band (run by the harness).
 """
@@ -216,7 +216,7 @@ class InterceptionServer:
         # post-turn loop below then drives the remaining turns as usual.
         if (
             session.user is not None
-            and session.trace.task.instruction is None
+            and session.trace.task.prompt is None
             and session.trace.num_turns == 0
         ):
             if session.opening is None:
@@ -269,7 +269,12 @@ class InterceptionServer:
                     )
                 return web.json_response(completion)
             except Exception as e:  # surface to the program as an API error
-                logger.warning("model call failed: id=%s %s", session.trace.id, e)
+                logger.warning(
+                    "model call failed: id=%s %s: %s",
+                    session.trace.id,
+                    type(e).__name__,
+                    e,
+                )
                 return web.json_response(dialect.error_body(str(e)), status=502)
             # `Response.raw` is the wire response handed to the program 1:1 — the provider's
             # verbatim bytes (proxy) or the client's serialized completion (renderer).

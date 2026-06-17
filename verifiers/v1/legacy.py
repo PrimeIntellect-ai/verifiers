@@ -185,7 +185,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     """Map a v0 ``RolloutOutput`` into a v1 ``Trace``, preserving the meta a native v1
     trace carries: per-turn prompt messages, the response message (content / reasoning /
     tool calls), ``finish_reason`` and ``usage``, the token ids/logprobs, and the task's
-    system prompt / instruction / answer. ``is_truncated`` is a computed v1 field derived
+    system prompt / prompt / answer. ``is_truncated`` is a computed v1 field derived
     from the final turn's ``finish_reason`` and the stop condition."""
     model = str(out.get("model") or "")
 
@@ -224,7 +224,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
 
 def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTask:
     """Carry the v0 prompt's meta onto the v1 task: the system message becomes
-    ``system_prompt``, the user message(s) become ``instruction``, and the reference
+    ``system_prompt``, the user message(s) become ``prompt``, and the reference
     ``answer`` rides along as a taskset-extra field (``WireTask`` allows extras)."""
     system_prompt: str | None = None
     user_texts: list[str] = []
@@ -239,7 +239,7 @@ def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTask:
     extra = {"answer": answer} if answer else {}
     return WireTask(
         idx=task_idx,
-        instruction="\n\n".join(user_texts),
+        prompt="\n\n".join(user_texts),
         system_prompt=system_prompt,
         **extra,
     )
@@ -263,7 +263,7 @@ class LegacyEnvServer(EnvServer):
         extra_env_kwargs: dict | None = None,
     ) -> None:
         from verifiers import load_environment
-        from verifiers.v1.ids import ensure_installed, env_name
+        from verifiers.v1.utils.install import ensure_installed, env_name
 
         self.address = address
         # Install from the env hub on demand for an `org/name[@version]` id, then load the
@@ -352,7 +352,7 @@ class LegacyEnvServer(EnvServer):
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
         return RunRolloutResponse(
-            trace=rollout_output_to_trace(out, req.task_idx).to_wire()
+            trace=rollout_output_to_trace(out, req.task_idx).model_dump()
         )
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
@@ -365,7 +365,9 @@ class LegacyEnvServer(EnvServer):
             sampling_args=req.sampling.model_dump(exclude_none=True),
             state_columns=["trajectory"],
         )
-        traces = [rollout_output_to_trace(out, req.task_idx).to_wire() for out in outs]
+        traces = [
+            rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs
+        ]
         return RunGroupResponse(traces=traces)
 
 
@@ -392,7 +394,7 @@ def _eval_client(client_config: ClientConfig, model: str):
 def _legacy_output_dir(config) -> Path:
     """The legacy run's output dir, mirroring the native `output_path` shape but keyed by
     the v0 env id (`outputs/<id>--<model>--legacy/<uuid>`); honors `--output-dir`."""
-    from verifiers.v1.ids import env_name
+    from verifiers.v1.utils.install import env_name
 
     if config.output_dir is not None:
         return config.output_dir
@@ -416,7 +418,7 @@ async def run_legacy_eval(config) -> list[Trace]:
     from verifiers import load_environment
 
     from verifiers.v1.cli.output import append_trace, save_config
-    from verifiers.v1.ids import ensure_installed
+    from verifiers.v1.utils.install import ensure_installed
 
     # Install from the env hub on demand for an `org/name[@version]` id (a local id is
     # already importable), then load by module name.

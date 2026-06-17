@@ -81,3 +81,16 @@ def terminate_processes(
         t.start()
     for t in threads:
         t.join()
+
+
+def use_threading_tqdm_lock() -> None:
+    """Pin tqdm to a threading lock so it never lazily creates an `mp.RLock` a killed worker would
+    leak (a `resource_tracker` semaphore warning). No-op if tqdm isn't installed."""
+    try:
+        import threading
+
+        import tqdm
+
+        tqdm.tqdm.set_lock(threading.RLock())
+    except Exception:
+        pass

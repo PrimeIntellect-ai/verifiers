@@ -63,41 +63,13 @@ Common knobs have short aliases:
 | `-o`  | `--output-dir`     | where to write results        | a fresh per-run dir          |
 |       | `--no-rich`        | disable the live dashboard    | dashboard on                 |
 
-### Sampling
-
-Sampling is provider-neutral config. Set reasoning effort with the optional string
-`sampling.reasoning_effort`, alongside the standard sampling knobs:
-
-```bash
-uv run eval gsm8k-v1 \
-  --sampling.temperature 0 \
-  --sampling.max-tokens 2048 \
-  --sampling.reasoning-effort medium
-```
-
-```toml
-[sampling]
-temperature = 0
-max_tokens = 2048
-reasoning_effort = "medium"
-```
-
-The request dialect maps `reasoning_effort` to the provider's wire shape:
-
-- OpenAI chat-completions: `reasoning_effort`
-- OpenAI Responses: `reasoning.effort`
-- Anthropic Messages: `output_config.effort`
-
-The value is a string rather than a fixed enum because providers support different effort
-levels.
-
 ## Tasksets & harnesses
 
 Tasksets (data + scoring) and harnesses (the rollout driver) are Python packages 
 and live in two places:
 
 - **`packages/`** — shipped, installed by default. Commonly-used **harnesses** (`default`,
-  `rlm`, `codex`, ...) and **taskset integrations** that wrap a whole benchmark family (`harbor-v1` — 
+  `bash`, `rlm`, `codex`, ...) and **taskset integrations** that wrap a whole benchmark family (`harbor-v1` — 
   the agentic-benchmark registry; `textarena-v1` — TextArena games).
 - **`environments/`** — small reference implementations to copy when **authoring your own**
   (the `*_v1` tasksets and the `compact` harness), co-located with the standalone v0
@@ -131,20 +103,31 @@ Harness examples (under `environments/`):
 The program that drives the rollout — same taskset, different driver:
 
 ```bash
-uv run eval gsm8k-v1 -n 1                     # default: a tiny OpenAI chat loop (bash tool opt-in)
+uv run eval gsm8k-v1 -n 1                     # default: bare agent (MCP tools only)
 uv run eval gsm8k-v1 -n 1 --harness.id rlm    # the rlm harness
 uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
 ```
 
+The same drivers on an agentic terminal task — harbor's `hello-world`. The task acts on a
+filesystem, so run it under a containerized runtime: `docker` locally, or a remote `prime` /
+`modal` sandbox (not the default `subprocess`). 
+
+```bash
+uv run eval harbor-v1 -n 1 --taskset.use-harness-image --harness.runtime.type docker --harness.id bash            # bash-only agent
+uv run eval harbor-v1 -n 1 --taskset.use-harness-image --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
+uv run eval harbor-v1 -n 1 --taskset.use-harness-image --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
+uv run eval harbor-v1 -n 1 --taskset.use-harness-image --harness.runtime.type docker --harness.id codex           # the codex CLI agent
+```
+
 ### Swappable runtime
 
-*Where* code runs, behind one `Runtime` contract — the same contract backs the harness
+Where code runs, behind one `Runtime` contract — the same contract backs the harness
 (`--harness.runtime`), a task's own tool servers (`--taskset.tools.runtime`), and the user
 simulator (`--taskset.user.runtime`) — all structurally MCP servers in a runtime:
 
 ```bash
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process (default)
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container (requires local docker)
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sandbox (requires auth)
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox (requires auth)
 ```
@@ -223,7 +206,9 @@ uv run eval gsm8k-v1 -n 1 --client.type train \      # train: client-side tokeni
   --client.base-url http://localhost:8000/v1
 ```
 
-`eval` is the default; `train` is only needed for the prime-rl training integration (it tokenizes client-side so each branch comes back as a ready training sample).
+`eval` is the default; `train` is only needed for the prime-rl training
+integration (it tokenizes client-side so each branch comes back as a ready
+training sample).
 
 ### Budgets
 

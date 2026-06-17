@@ -22,7 +22,7 @@ from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
-from verifiers.v1.cli.log import setup_logging
+from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.cli.resolve import (
     extract_id,
     references_config_file,
@@ -79,7 +79,7 @@ async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> dict
     if config.retries.runtime.max_retries > 0:
         runtime = RetryingRuntime(runtime, config.retries.runtime.max_retries)
     setup_timeout = (
-        config.setup_timeout if config.setup_timeout is not None else task.setup_timeout
+        config.setup_timeout if config.setup_timeout is not None else task.timeout.setup
     )
     valid, exc = False, None
     try:

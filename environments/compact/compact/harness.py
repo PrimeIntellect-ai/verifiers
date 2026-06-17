@@ -50,5 +50,5 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
         return await runtime.run_uv_script(
-            PROGRAM_SOURCE, args=[trace.task.instruction], env=env
+            PROGRAM_SOURCE, args=[trace.task.prompt], env=env
         )

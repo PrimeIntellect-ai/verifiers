@@ -18,7 +18,7 @@ import pytest
 
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.env import Environment
-from verifiers.v1.cli.runner import run_eval
+from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.trace import Trace
 
 # Fixture tasksets/envs (echo-v1, echo-agentic-v1, echo-v0, echo-multi-v0) live in
@@ -122,12 +122,13 @@ def harness(request) -> str:
     return request.param
 
 
-# `codex` lives here, not in `harness`: it's an autonomous coding agent, so on a no-op chat task
-# (`test_single_turn`'s echo) it often just completes its loop without ever replying (0 model calls),
-# which is flaky; on a task with a concrete action (writing a file) it's reliable.
+# `bash` (and `codex`) live here, not in `harness`: a bash/CLI agent on a no-op chat task
+# (`test_single_turn`'s echo) may run a shell command or complete its loop without replying, which
+# is flaky; on a task with a concrete action (writing a file) it's reliable. `bash` is the built-in
+# chat loop + a bash tool, so it installs nothing and runs fast (not marked slow).
 @pytest.fixture(
     params=[
-        pytest.param("default", id="default-harness"),
+        pytest.param("bash", id="bash-harness"),
         pytest.param(
             "mini-swe-agent", marks=pytest.mark.slow, id="mini-swe-agent-harness"
         ),
@@ -222,7 +223,7 @@ def run_v1_server():
     the only fixture that exercises serving resources (shared tool servers, interception pool)
     being stood up by the *server* rather than the in-process runner. Pinned to a single static
     worker for determinism."""
-    from verifiers.v1.cli.runner import run_eval_server
+    from verifiers.v1.cli.eval.runner import run_eval_server
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         kwargs.setdefault("pool", {"type": "static", "num_workers": 1})

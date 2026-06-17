@@ -85,7 +85,7 @@ class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
                 source=source,
                 target=target,
                 shortest_path=dist,
-                instruction=(
+                prompt=(
                     f"{SYSTEM}\n\nYour mission: {source} >> {target}\n\n"
                     f"Here is the starting article:\n\n"
                     f"{format_article(wiki, source, self.config.tools.links_only)}"

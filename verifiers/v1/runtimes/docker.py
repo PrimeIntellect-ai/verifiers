@@ -24,7 +24,7 @@ class DockerConfig(BaseConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
     workdir: str = "/app"
-    # Resources in Modal's units (also settable per-task via Task.resources).
+    # TaskResources in Modal's units (also settable per-task via Task.resources).
     cpu: float | None = None
     """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
     memory: float | None = None

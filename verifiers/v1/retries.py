@@ -43,8 +43,10 @@ class RolloutRetryConfig(BaseConfig):
     rollout-level retries). Matching is by the error's exception type name, so
     `include`/`exclude` name exception classes (e.g. ``ModelError``, ``ProgramError``)."""
 
-    max_retries: int = Field(1, ge=0)
-    """Whole-rollout retries beyond the first attempt (0 = no retry, N = up to N retries)."""
+    max_retries: int = Field(0, ge=0)
+    """Whole-rollout retries beyond the first attempt (0 = no retry, the default, N = up to N
+    retries). Off by default — per-call `model`/`runtime` retries already cover transient faults;
+    rerunning a whole trajectory is opt-in (set this, plus `include`/`exclude`)."""
     include: list[str] = []
     """Only retry errors whose type is listed. Empty = retry anything not excluded."""
     exclude: list[str] = []

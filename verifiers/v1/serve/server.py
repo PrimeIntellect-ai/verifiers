@@ -24,6 +24,7 @@ import msgpack
 import zmq
 import zmq.asyncio
 
+from verifiers.utils.process_utils import use_threading_tqdm_lock
 from verifiers.utils.serve_utils import msgpack_encoder
 from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.clients.client import Client
@@ -79,6 +80,10 @@ class EnvServer:
         `address_queue` is given, report the concrete bound address on it (so a
         spawner that passed a `:0` address learns the OS-assigned port) before
         serving."""
+        # This worker loads the taskset (and any HF datasets it pulls in) and is killed at
+        # teardown; pin tqdm to a threading lock first so it never leaks a multiprocessing
+        # semaphore (resource_tracker warning at shutdown).
+        use_threading_tqdm_lock()
         server = cls(**kwargs)
         if address_queue is not None:
             address_queue.put(server.address)
@@ -111,13 +116,14 @@ class EnvServer:
         ctx = self._context(req.client, req.model, req.sampling)
         episode = self.env.episode(self.tasks[req.task_idx], ctx, n=1)
         traces = await episode.run()
-        return RunRolloutResponse(trace=traces[0].to_wire())
+        # dump to a dict so the `Trace[WireTask]` field re-types the concrete task to WireTask
+        return RunRolloutResponse(trace=traces[0].model_dump())
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         episode = self.env.episode(self.tasks[req.task_idx], ctx, n=req.n)
         traces = await episode.run()
-        return RunGroupResponse(traces=[t.to_wire() for t in traces])
+        return RunGroupResponse(traces=[t.model_dump() for t in traces])
 
     async def _handle(
         self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes

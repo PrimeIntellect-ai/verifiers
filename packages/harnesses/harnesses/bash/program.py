@@ -2,29 +2,56 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp"]
 # ///
-"""The default harness's program: a chat loop with the taskset's MCP tools (and none of its own).
+"""The bash harness's program: a chat loop with a local `bash` tool (+ optional MCP tools).
 
-A growing-message-list chat loop. When the harness sets MCP_CONFIG (a standard `mcpServers` URL
-map) it connects to those servers over streamable HTTP, exposes their tools to the model as
+A growing-message-list chat loop. It always offers a local `bash` tool that runs shell commands
+in the runtime; when the harness sets MCP_CONFIG (a standard `mcpServers` URL map) it also
+connects to those servers over streamable HTTP, exposes their tools to the model as
 `<server>_<tool>`, and routes those calls to the server. The loop runs until the model answers
-without a tool call (immediately, when no tools are offered).
+without a tool call.
 
-It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the
-SDKs — the harness bootstraps `uv` in the runtime. Model calls go to the interception
-server (OPENAI_BASE_URL/API_KEY).
+It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the SDKs — the
+harness bootstraps `uv` in the runtime. Model calls go to the interception server
+(OPENAI_BASE_URL/API_KEY); the bash tool runs locally in the runtime.
 """
 
 import asyncio
 import json
 import os
+import subprocess
 import sys
 from contextlib import AsyncExitStack
 
 from openai import AsyncOpenAI
 
+BASH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "bash",
+        "description": "Run a bash command and return its combined stdout and stderr.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The bash command to run."}
+            },
+            "required": ["command"],
+        },
+    },
+}
+
 # base_url + api_key come from OPENAI_BASE_URL / OPENAI_API_KEY. max_retries=0: the framework
 # already retries model calls at the interception relay, so the SDK's own retries would just nest.
 client = AsyncOpenAI(max_retries=0)
+
+
+def run_bash(command: str) -> str:
+    try:
+        result = subprocess.run(
+            ["bash", "-c", command], capture_output=True, text=True, timeout=3600
+        )
+        return result.stdout + result.stderr
+    except Exception as e:
+        return f"error: {e}"
 
 
 async def chat(messages: list[dict], tools: list[dict]):
@@ -96,9 +123,10 @@ async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str | list[dic
 async def main() -> None:
     config = json.loads(os.environ.get("MCP_CONFIG", "{}"))
     async with AsyncExitStack() as stack:
-        tools, dispatch = (
+        mcp_tools, dispatch = (
             await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
         )
+        tools = [BASH_TOOL] + mcp_tools
         system_prompt = os.environ.get("APPEND_SYSTEM_PROMPT", "")
         messages = (
             [{"role": "system", "content": system_prompt}] if system_prompt else []
@@ -122,6 +150,8 @@ async def main() -> None:
                 args = json.loads(call.function.arguments or "{}")
                 if name in dispatch:
                     content = await call_mcp(dispatch, name, args)
+                elif name == "bash":
+                    content = await asyncio.to_thread(run_bash, args.get("command", ""))
                 else:
                     content = f"error: unknown tool {name!r}"
                 messages.append(

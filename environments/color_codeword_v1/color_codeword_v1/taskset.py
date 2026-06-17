@@ -2,7 +2,7 @@
 
 Each turn shows colored squares that map to letters (Red=A, Green=B, ...); the model accumulates
 the codeword across turns and, on the final turn, outputs the whole thing. Turn 0's squares are
-seeded in the task's `instruction` (a `Messages` prompt carrying images); the later turns are
+seeded in the task's `prompt` (a `Messages` prompt carrying images); the later turns are
 injected by a colocated `vf.User` (`ColorCodewordUser` below) the interception server drives
 after each assistant turn. Reward is an exact match of the final codeword; a partial-match
 metric tracks per-position accuracy. Images carry through the v1 message graph as `mm_kwargs`
@@ -136,7 +136,7 @@ class ColorCodewordTaskset(
             tasks.append(
                 ColorCodewordTask(
                     idx=idx,
-                    instruction=[vf.UserMessage(content=parts)],
+                    prompt=[vf.UserMessage(content=parts)],
                     system_prompt=SYSTEM_PROMPT,
                     answer=answer,
                     info={"colors_per_turn": colors_per_turn, "max_turns": MAX_TURNS},

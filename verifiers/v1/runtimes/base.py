@@ -118,34 +118,37 @@ class Runtime(ABC):
         the rollout it serves; falls back to a unique `vf-` name (standalone / tool
         runtimes, where there's no single owning rollout)."""
 
+    # --- identity / display ---
+
     @property
     def type(self) -> str:
         """The runtime's config discriminator ("subprocess" / "docker" / "prime" / "modal")."""
         return self.config.type
 
     @property
-    def published_port(self) -> int | None:
-        """A fixed port this runtime exposes to the outside at startup, declared up front to the
-        provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
-        here binds it instead of a host-chosen free port, and `expose` returns its public URL.
-        `None` for host-networked runtimes (subprocess/docker), which pick a free port and are
-        reached over the shared host network."""
+    def descriptor(self) -> str | None:
+        """A short resolved id for display (None until provisioned). Overridden per
+        runtime: subprocess workdir, docker image, prime sandbox id."""
         return None
+
+    # --- lifecycle ---
 
     @abstractmethod
     async def start(self) -> None:
         """Provision execution (workspace / container / sandbox). Use `expose` to turn a
         host port into a URL the program can reach."""
 
+    async def stop(self) -> None:
+        """Free the provisioned resource on the normal path, off the event loop. Override
+        only for teardown that must be async (e.g. a remote API call)."""
+        await asyncio.to_thread(self.cleanup)
+
     def cleanup(self) -> None:
         """Synchronously free the provisioned resource — best-effort and idempotent. The
         source of truth for teardown: usable from the atexit backstop where async machinery
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
 
-    async def stop(self) -> None:
-        """Free the provisioned resource on the normal path, off the event loop. Override
-        only for teardown that must be async (e.g. a remote API call)."""
-        await asyncio.to_thread(self.cleanup)
+    # --- execution ---
 
     @abstractmethod
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
@@ -160,29 +163,6 @@ class Runtime(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not support run_background"
         )
-
-    @property
-    def descriptor(self) -> str | None:
-        """A short resolved id for display (None until provisioned). Overridden per
-        runtime: subprocess workdir, docker image, prime sandbox id."""
-        return None
-
-    async def expose(self, port: int) -> str | None:
-        """Publish a port running *inside this runtime* to a URL reachable from the host/outside,
-        or None when local (it's on the host network — reach it at localhost). A remote runtime
-        overrides this with the provider's native port exposure (modal `tunnels()`, prime
-        `client.expose`), torn down with the sandbox in `stop()`. The reverse of `host_endpoint`
-        (which reaches a host port from inside a runtime)."""
-        return None
-
-    @abstractmethod
-    async def read(self, path: str) -> bytes:
-        """Read a file from the runtime's workspace. The caller need not know
-        whether that's the host fs or across a container/sandbox boundary."""
-
-    @abstractmethod
-    async def write(self, path: str, data: bytes) -> None:
-        """Write a file into the runtime's workspace, creating parent dirs."""
 
     async def run_uv_script(
         self,
@@ -215,6 +195,36 @@ class Runtime(ABC):
         command = f'{_ENSURE_UV}; exec uv run {shlex.quote(path)} "$@"'
         return await self.run(["sh", "-c", command, path, *(args or [])], env or {})
 
+    # --- filesystem ---
+
+    @abstractmethod
+    async def read(self, path: str) -> bytes:
+        """Read a file from the runtime's workspace. The caller need not know
+        whether that's the host fs or across a container/sandbox boundary."""
+
+    @abstractmethod
+    async def write(self, path: str, data: bytes) -> None:
+        """Write a file into the runtime's workspace, creating parent dirs."""
+
+    # --- networking ---
+
+    @property
+    def published_port(self) -> int | None:
+        """A fixed port this runtime exposes to the outside at startup, declared up front to the
+        provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
+        here binds it instead of a host-chosen free port, and `expose` returns its public URL.
+        `None` for host-networked runtimes (subprocess/docker), which pick a free port and are
+        reached over the shared host network."""
+        return None
+
+    async def expose(self, port: int) -> str | None:
+        """Publish a port running *inside this runtime* to a URL reachable from the host/outside,
+        or None when local (it's on the host network — reach it at localhost). A remote runtime
+        overrides this with the provider's native port exposure (modal `tunnels()`, prime
+        `client.expose`), torn down with the sandbox in `stop()`. The reverse of `host_endpoint`
+        (which reaches a host port from inside a runtime)."""
+        return None
+
 
 class RetryingRuntime(Runtime):
     """Wraps a runtime to retry each call on a transient error (tenacity, up to
@@ -240,11 +250,13 @@ class RetryingRuntime(Runtime):
         )
 
     def _log_retry(self, state: RetryCallState) -> None:
+        # before_sleep fires after a failed attempt, before the imminent retry — so
+        # attempt_number is the retry index (1 on the first retry); count out of max_retries.
         logger.warning(
-            "retrying runtime.%s (attempt %d/%d) after error: %s",
+            "retrying runtime.%s (retry %d/%d) after error: %s",
             getattr(state.fn, "__name__", "call"),
             state.attempt_number,
-            self.max_retries + 1,
+            self.max_retries,
             state.outcome.exception(),
         )
 

@@ -37,7 +37,7 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
         return [
             GSM8KTask(
                 idx=i,
-                instruction=f"{SYSTEM}\n\n{row['question']}",
+                prompt=f"{SYSTEM}\n\n{row['question']}",
                 answer=row["answer"].split("####")[-1].strip(),
             )
             for i, row in enumerate(rows)
