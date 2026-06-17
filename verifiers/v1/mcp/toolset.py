@@ -57,9 +57,9 @@ class ToolsetConfig(BaseConfig):
     in-memory object, relative-path on-disk writes — is isolated per rollout automatically. The
     expensive `setup` runs once in the parent; each child inherits it warm and runs `setup_task` for
     its rollout's task (see `verifiers.v1.mcp.multiplex`) — so a stateful per-rollout server pays its
-    `setup` once yet stays isolated. Requires `shared`; works on a local runtime, or a remote one when
-    the harness is also remote (so the interception server is tunnel-reachable). Linux/fork only; not
-    for CUDA/GPU state or background threads in the server."""
+    `setup` once yet stays isolated. Requires `shared`; works on any runtime (a remote one reaches the
+    rollout's state/task channel over a host tunnel). Linux/fork only; not for CUDA/GPU state or
+    background threads in the server."""
     runtime: RuntimeConfig = SubprocessConfig()
     """The server's own runtime, used unless `colocated` (host/subprocess by default — always
     reachable from any harness runtime; set docker/prime to isolate it in its own sandbox)."""

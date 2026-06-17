@@ -282,17 +282,8 @@ async def serve(
             server.server_name,
         )
     if shared and getattr(cfg, "fork", False):
-        # The shared server's forked children reach the rollout's /state + /task over the interception
-        # server's reachable base. A remote harness makes that a public tunnel (any sandbox can reach
-        # it); a LOCAL harness keeps it at localhost, which a remote shared runtime can't reach — the
-        # one combination fork can't be wired for. Local shared, or a remote harness, are both fine.
-        if harness_is_local and not runtime_is_local(cfg.runtime):
-            raise ValueError(
-                f"forked shared server {server.server_name!r} runs on a remote runtime but the harness "
-                "is local, so the interception server is reachable only at localhost — the remote "
-                "shared server can't reach its /state + /task channel. Run the harness remotely too "
-                "(so the interception tunnel is shared), or use a local tool runtime."
-            )
+        # `serve_tools` makes the rollout's /state + /task channel reachable from the shared server's
+        # runtime (a host tunnel when it's remote), so any harness/runtime combo works.
         logger.warning(
             "shared server %r uses fork-per-rollout isolation, which is EXPERIMENTAL",
             server.server_name,
@@ -367,11 +358,10 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
 def _shared_url_for_rollout(url: str, state_base: str | None, state_secret: str) -> str:
     """Tag a `shared` server's eval-level URL with this rollout's state-channel coordinates, so the
     one shared process serves each rollout its OWN `self.state` (and a forked child fetches its task).
-    `state_base` is the interception server's reachable base for THIS rollout — localhost for a local
-    harness, the pool's tunnel for a remote one — so the shared server reaches `/state` + `/task` over
-    it from wherever it runs (the launch-time guard rejects the one combo it can't: a local harness +
-    a remote shared runtime). The secret is the bearer the harness already holds, so it's no new
-    exposure — but it must not be logged (callers log the untagged base)."""
+    `state_base` is the interception server's reachable base for THIS rollout, chosen by the caller to
+    be reachable from the shared server's runtime (localhost, or a host tunnel for a remote runtime).
+    The secret is the bearer the harness already holds, so it's no new exposure — but it must not be
+    logged (callers log the untagged base)."""
     if not state_base:
         return url
     parts = urlsplit(url)
@@ -421,8 +411,21 @@ async def serve_tools(
                 urls[name] = cfg.url
                 logger.info("tool server '%s' (remote): %s", name, cfg.url)
             elif name in shared_urls:  # one shared instance, started eval-level
+                tool_state_base = state_base
+                # `state_base` is the HARNESS-facing interception URL — host loopback when the harness
+                # is local, which a REMOTE shared tool can't reach. Bridge the interception's state
+                # port to a host tunnel the remote tool CAN reach (per-rollout, torn down with this
+                # scope). A remote harness already made `state_base` a public tunnel, so reuse it.
+                if (
+                    state_base
+                    and harness_runtime.is_local
+                    and not runtime_is_local(cfg.runtime)
+                ):
+                    tool_state_base = await stack.enter_async_context(
+                        reachable_url(HOST, state_port, consumer_is_local=False)
+                    )
                 urls[name] = _shared_url_for_rollout(
-                    shared_urls[name], state_base, state_secret
+                    shared_urls[name], tool_state_base, state_secret
                 )
                 # log the untagged base, NOT urls[name] — the per-rollout tag carries the rollout's
                 # bearer secret (`vf_state_secret`), which must not reach a log sink

@@ -9,8 +9,8 @@ docker/prime marked `slow`/`prime` so the default run stays on subprocess.
 `test_user` and `test_tool` fan a server's own runtime against the harness runtime (the full
 reachability matrix); `test_single_turn`/`test_agentic` fan the harness against the harness runtime.
 `test_shared_tool_isolation` runs two concurrent rollouts against one SHARED writable tool server
-(fork off/on) fanned across the shared server's own runtime (`tool_runtime`, harness matched to it),
-asserting each keeps its own state.
+(fork off/on) across the full `harness_runtime` x (shared server's own) `tool_runtime` matrix —
+incl. mixed-locality combos — asserting each keeps its own state.
 """
 
 import pytest
@@ -120,44 +120,54 @@ async def test_tool_state(
     [pytest.param(False, id="fork-off"), pytest.param(True, id="fork-on")],
 )
 async def test_shared_tool_isolation(
-    run_v1_server, tool_runtime, fork, skip_if_unexposable, tmp_path
+    run_v1_server, harness_runtime, tool_runtime, fork, skip_if_unexposable, tmp_path
 ):
     """A SHARED, writable tool server keeps each rollout's state isolated across concurrent rollouts,
-    fanned across the shared server's own runtime (`tool_runtime`) x fork. `scratchpad-v1` gives each
-    task a unique word and rewards 1.0 iff the rollout reads back its OWN word — so two concurrent
-    rollouts (two distinct words on the ONE shared instance) both scoring 1.0 proves no cross-rollout
-    corruption. Each fork mode exercises a different isolation path: fork=off keeps `isolate=True` (the
-    per-rollout `self.state` channel); fork=on sets `isolate=False` (the server writes a process-global
-    slot), so ONLY the forked-child process isolation can keep it correct. `isolate` is a config field
-    (not an env var), so it reaches the shared server in any runtime — including a docker/prime sandbox.
+    over the FULL `harness_runtime` x (shared server's own) `tool_runtime` x fork matrix — including
+    the mixed-locality combos (e.g. a local harness with a remote shared tool), which is exactly where
+    the rollout's `/state` + `/task` channel must be bridged to the tool's runtime. `scratchpad-v1`
+    gives each task a unique word and rewards 1.0 iff the rollout reads back its OWN word, so two
+    concurrent rollouts (two distinct words on the ONE shared instance) both scoring 1.0 proves no
+    cross-rollout corruption. Each fork mode exercises a different isolation path: fork=off keeps
+    `isolate=True` (the per-rollout `self.state` channel); fork=on sets `isolate=False` (the server
+    writes a process-global slot), so ONLY the forked-child process isolation can keep it correct.
+    `isolate` is a config field (not an env var), so it reaches the shared server in any runtime.
 
-    Placement is fixed to `shared` here, so only the own-runtime cases of `tool_runtime` apply (the
-    colocated/shared params have no distinct runtime to fan — skipped). The harness runs on the SAME
-    runtime as the shared server, so the server can reach the rollout's `/state` + `/task` channel
-    (localhost when both local; the interception pool's tunnel when both remote — a remote shared
-    server needs a remote harness). Runs through the env-server pool (`run_v1_server`, prime-rl's
-    path), where serving the one shared instance is the server's job."""
-    runtime = tool_runtime.get("runtime", {}).get("type")
-    if runtime is None:  # colocated / shared placement — no own runtime to fan
+    Placement is fixed to `shared`, so only the own-runtime cases of `tool_runtime` apply (the
+    colocated/shared params have no distinct runtime to fan — skipped). Runs through the env-server
+    pool (`run_v1_server`, prime-rl's path), where serving the one shared instance is the server's
+    job."""
+    # colocated / shared placement has no distinct own runtime to fan here
+    tool_rt = tool_runtime.get("runtime", {}).get("type")
+    if tool_rt is None:
         pytest.skip("shared-isolation fans the tool's own runtime; this case has none")
-    traces = await run_v1_server(
-        "scratchpad-v1",
-        harness="default",
-        # harness on the same runtime as the shared server, so it can reach the /state + /task channel
-        harness_overrides={"runtime": {"type": runtime}},
-        output_dir=tmp_path,
-        num_tasks=2,  # two distinct words, run concurrently against the one shared server
-        n=1,
-        max_turns=4,
-        taskset_overrides={
-            "tools": {
-                "shared": True,
-                "fork": fork,
-                "isolate": not fork,  # fork=on: write a global slot so ONLY fork can isolate it
-                **tool_runtime,  # the tool server's own runtime ({"runtime": {"type": ...}})
-            }
-        },
-    )
+    try:
+        traces = await run_v1_server(
+            "scratchpad-v1",
+            harness="default",
+            harness_overrides={"runtime": {"type": harness_runtime}},
+            output_dir=tmp_path,
+            num_tasks=2,  # two distinct words, run concurrently against the one shared server
+            n=1,
+            max_turns=4,
+            taskset_overrides={
+                "tools": {
+                    "shared": True,
+                    "fork": fork,
+                    "isolate": not fork,  # fork=on: write a global slot so ONLY fork can isolate it
+                    **tool_runtime,  # the shared tool's own runtime ({"runtime": {"type": ...}})
+                }
+            },
+        )
+    except TimeoutError:
+        # A `shared` tool publishes its MCP port up front (`serve_shared`); a prime sandbox in a
+        # non-default region can't (`client.expose` limit) and crashes env-server startup → timeout.
+        # That's an infra limit (cf. `skip_if_unexposable` per-rollout), not a code bug — skip it.
+        if tool_rt == "prime":
+            pytest.skip(
+                "prime tool runtime couldn't expose its port (non-default region)"
+            )
+        raise
     assert len(traces) == 2
     for trace in traces:
         skip_if_unexposable(trace)

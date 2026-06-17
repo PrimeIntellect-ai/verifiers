@@ -15,10 +15,9 @@ ordinary stateful per-rollout server (expensive `setup` + per-rollout `setup_tas
 The rollout key is the per-rollout secret the framework tags onto a shared server's URL
 (`STATE_SECRET_PARAM`, see `serve_tools`), alongside the reachable interception base
 (`STATE_URL_PARAM`) for this rollout's `/state` + `/task`. The proxy routes by the key (intra-sandbox,
-no host needed); the child reaches `/state` + `/task` over that base — localhost when the harness is
-local, the pool's public tunnel when it's remote — so fork works on a remote runtime too. The
-launcher rejects only the one combo where the base is unreachable: a local harness (interception at
-localhost) + a remote shared runtime. Children are reaped on a `POST /vf/close?<key>` from rollout
+no host needed); the child reaches `/state` + `/task` over that base, which `serve_tools` makes
+reachable from the shared server's runtime (localhost, or a host tunnel when it's remote) — so fork
+works on any harness/runtime combo. Children are reaped on a `POST /vf/close?<key>` from rollout
 teardown, by an idle TTL, and when the parent exits (each child also dies with it via `PR_SET_PDEATHSIG`).
 
 Caveats: Linux/fork only; do NOT use with CUDA/GPU state or background threads in the server (fork
