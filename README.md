@@ -103,6 +103,15 @@ Add an explicit harness loader when the environment owns harness behavior:
 ```bash
 prime env init my-env --with-harness
 ```
+
+This will create a new module called `my_env` with a basic environment template.
+```
+environments/my_env/
+├── my_env.py           # Main implementation
+├── pyproject.toml      # Dependencies and metadata
+└── README.md           # Documentation
+```
+
 For OpenEnv integration, start with a v1 environment:
 ```bash
 prime env init my-openenv --v1
@@ -114,14 +123,8 @@ uv run vf-build my-openenv
 ```
 The adapter supports both OpenEnv gym and MCP contracts. See
 `openenv-textarena-v1` and `openenv-echo-v1` for minimal examples.
-
-This will create a new module called `my_env` with a basic environment template.
-```
-environments/my_env/
-├── my_env.py           # Main implementation
-├── pyproject.toml      # Dependencies and metadata
-└── README.md           # Documentation
-```
+OpenEnv's `/mcp` route does not implement standard MCP initialization, so the
+MCP contract uses a small colocated `Toolset` bridge; gym uses a colocated `User`.
 
 Environment modules should expose a `load_environment` function which returns an
 environment object. For simple legacy environments, this can still be a direct

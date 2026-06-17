@@ -148,7 +148,9 @@ async def test_gym_user_drives_openenv_directly(monkeypatch):
     await user.setup_task(task("gym"))
 
     assert await user.respond("") == [{"role": "user", "content": "seed-3"}]
-    assert await user.respond("[crane]") == [{"role": "user", "content": "feedback"}]
+    assert await user.respond('{"guess": "[crane]"}') == [
+        {"role": "user", "content": "feedback"}
+    ]
     assert socket.sent[-1]["data"] == {"message": "[crane]"}
     assert user.state == OpenEnvState(reward=1.0, done=True)
 
@@ -207,7 +209,8 @@ async def test_mcp_toolset_bridges_openenv_tools(monkeypatch):
     toolset._register(mcp)
     registered = await mcp.list_tools()
     assert registered[0].inputSchema["required"] == ["message"]
-    assert await toolset.call_tool("echo", {"message": "hello"}) == "hello"
+    result = await mcp.call_tool("echo", {"message": "hello"})
+    assert result[0].text == "hello"
     assert calls.sent[-1]["data"]["tool_name"] == "echo"
     assert toolset.state == OpenEnvState(reward=0.5, done=True)
 

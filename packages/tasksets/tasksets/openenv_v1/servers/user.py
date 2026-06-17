@@ -4,10 +4,12 @@ from urllib.request import urlopen
 import aiohttp
 
 import verifiers.v1 as vf
-from tasksets.openenv_v1.taskset import OpenEnvState, OpenEnvTask
+from tasksets.openenv_v1.types import OpenEnvState, OpenEnvTask
 
 
 class OpenEnvUser(vf.User[vf.UserConfig, OpenEnvState]):
+    """Drive an OpenEnv gym episode through the v1 user-simulator interface."""
+
     async def setup_task(self, task: OpenEnvTask) -> None:
         self.task = task
         with urlopen(f"http://127.0.0.1:{task.port}/schema", timeout=5) as response:
@@ -27,22 +29,32 @@ class OpenEnvUser(vf.User[vf.UserConfig, OpenEnvState]):
             cleaned = message.strip()
             if cleaned.startswith("```") and cleaned.endswith("```"):
                 cleaned = "\n".join(cleaned.splitlines()[1:-1]).strip()
+            properties = self.action_schema.get("properties", {})
+            required = self.action_schema.get("required", [])
+            fields = required if len(required) == 1 else list(properties)
+            field = (
+                fields[0]
+                if len(fields) == 1
+                and properties.get(fields[0], {}).get("type") == "string"
+                else None
+            )
             try:
                 action = json.loads(cleaned)
             except json.JSONDecodeError:
-                action = None
-            if not isinstance(action, dict):
-                properties = self.action_schema.get("properties", {})
-                required = self.action_schema.get("required", [])
-                fields = required if len(required) == 1 else list(properties)
-                if (
-                    len(fields) != 1
-                    or properties.get(fields[0], {}).get("type") != "string"
-                ):
+                action = cleaned
+            if not isinstance(action, dict) or (
+                field is not None and field not in action
+            ):
+                if field is None:
                     raise ValueError(
                         "Return a JSON object matching the OpenEnv action schema."
                     )
-                action = {fields[0]: cleaned}
+                value = (
+                    next(iter(action.values()))
+                    if isinstance(action, dict) and len(action) == 1
+                    else action
+                )
+                action = {field: value if isinstance(value, str) else cleaned}
             payload = {"type": "step", "data": action}
 
         await self.socket.send_json(payload)

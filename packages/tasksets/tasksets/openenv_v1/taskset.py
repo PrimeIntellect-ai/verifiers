@@ -3,23 +3,11 @@
 import importlib
 import json
 from pathlib import Path
-from typing import Literal
 
 import verifiers.v1 as vf
-
-OpenEnvContract = Literal["gym", "mcp"]
-
-
-class OpenEnvTask(vf.Task):
-    contract: OpenEnvContract
-    port: int
-    start_command: str
-    seed: int
-
-
-class OpenEnvState(vf.State):
-    reward: float = 0.0
-    done: bool = False
+from tasksets.openenv_v1.servers.toolset import OpenEnvToolset
+from tasksets.openenv_v1.servers.user import OpenEnvUser
+from tasksets.openenv_v1.types import OpenEnvState, OpenEnvTask
 
 
 class OpenEnvConfig(vf.TasksetConfig):
@@ -77,15 +65,11 @@ class OpenEnvTaskset(vf.Taskset[OpenEnvTask, OpenEnvConfig, OpenEnvState]):
 
     def tools(self, task: OpenEnvTask) -> list[vf.Toolset]:
         if task.contract == "mcp":
-            from tasksets.openenv_v1.servers.toolset import OpenEnvToolset
-
             return [OpenEnvToolset(vf.ToolsetConfig(colocated=True))]
         return []
 
     def user(self, task: OpenEnvTask) -> vf.User | None:
         if task.contract == "gym":
-            from tasksets.openenv_v1.servers.user import OpenEnvUser
-
             return OpenEnvUser(vf.UserConfig(colocated=True))
         return None
 

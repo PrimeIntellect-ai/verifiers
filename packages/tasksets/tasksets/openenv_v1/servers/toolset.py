@@ -6,10 +6,12 @@ import aiohttp
 from pydantic import WithJsonSchema
 
 import verifiers.v1 as vf
-from tasksets.openenv_v1.taskset import OpenEnvState, OpenEnvTask
+from tasksets.openenv_v1.types import OpenEnvState, OpenEnvTask
 
 
 class OpenEnvToolset(vf.Toolset[vf.ToolsetConfig, OpenEnvState]):
+    """Translate OpenEnv's WebSocket tool actions into a standard v1 toolset."""
+
     TOOL_PREFIX = "openenv"
 
     async def setup_task(self, task: OpenEnvTask) -> None:
@@ -30,60 +32,59 @@ class OpenEnvToolset(vf.Toolset[vf.ToolsetConfig, OpenEnvState]):
         self.socket = None
         self.lock = None
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
-        if self.lock is None:
-            self.lock = asyncio.Lock()
-        async with self.lock:
-            if self.socket is None:
-                self.session = aiohttp.ClientSession()
-                self.socket = await self.session.ws_connect(
-                    f"http://127.0.0.1:{self.task.port}/ws",
-                    max_msg_size=100 << 20,
-                )
-                await self.socket.send_json(
-                    {"type": "reset", "data": {"seed": self.task.seed}}
-                )
-                reset = await self.socket.receive_json()
-                if reset.get("type") == "error":
-                    raise RuntimeError(reset["data"]["message"])
-                self.state.done = reset["data"].get("done", False)
-
-            await self.socket.send_json(
-                {
-                    "type": "step",
-                    "data": {
-                        "type": "call_tool",
-                        "tool_name": name,
-                        "arguments": arguments,
-                    },
-                }
-            )
-            response = await self.socket.receive_json()
-            if response.get("type") == "error":
-                raise RuntimeError(response["data"]["message"])
-            result = response["data"]
-            self.state.reward += result.get("reward") or 0.0
-            self.state.done = result.get("done", False)
-            observation = result.get("observation", {})
-            if observation.get("error") is not None:
-                return {"error": observation["error"]}
-            value = observation.get("result")
-            if isinstance(value, dict) and "data" in value:
-                return value["data"]
-            return value
-
     def _register(self, mcp) -> None:
+        # OpenEnv tool schemas are discovered at runtime, so @vf.tool cannot declare them.
         for tool in self.tools:
 
             async def call(_name=tool["name"], **arguments):
-                return await self.call_tool(
-                    _name,
-                    {
-                        key: value
-                        for key, value in arguments.items()
-                        if value is not None
-                    },
-                )
+                if self.lock is None:
+                    self.lock = asyncio.Lock()
+                async with self.lock:
+                    # Keep shared state and OpenEnv's single socket in one transaction.
+                    before = await self._pull_state()
+                    if self.socket is None:
+                        self.session = aiohttp.ClientSession()
+                        self.socket = await self.session.ws_connect(
+                            f"http://127.0.0.1:{self.task.port}/ws",
+                            max_msg_size=100 << 20,
+                        )
+                        await self.socket.send_json(
+                            {"type": "reset", "data": {"seed": self.task.seed}}
+                        )
+                        reset = await self.socket.receive_json()
+                        if reset.get("type") == "error":
+                            raise RuntimeError(reset["data"]["message"])
+                        self.state.done = reset["data"].get("done", False)
+
+                    await self.socket.send_json(
+                        {
+                            "type": "step",
+                            "data": {
+                                "type": "call_tool",
+                                "tool_name": _name,
+                                "arguments": {
+                                    key: value
+                                    for key, value in arguments.items()
+                                    if value is not None
+                                },
+                            },
+                        }
+                    )
+                    response = await self.socket.receive_json()
+                    if response.get("type") == "error":
+                        raise RuntimeError(response["data"]["message"])
+                    result = response["data"]
+                    self.state.reward += result.get("reward") or 0.0
+                    self.state.done = result.get("done", False)
+                    observation = result.get("observation", {})
+                    if observation.get("error") is not None:
+                        value = {"error": observation["error"]}
+                    else:
+                        value = observation.get("result")
+                        if isinstance(value, dict) and "data" in value:
+                            value = value["data"]
+                    await self._push_state(before)
+                    return value
 
             schema = tool.get("input_schema") or {"properties": {}}
             required = set(schema.get("required", []))
@@ -104,9 +105,7 @@ class OpenEnvToolset(vf.Toolset[vf.ToolsetConfig, OpenEnvState]):
                 return_annotation=Any,
             )
             mcp.add_tool(
-                self._with_state(call),
-                name=tool["name"],
-                description=tool.get("description") or None,
+                call, name=tool["name"], description=tool.get("description") or None
             )
 
 
