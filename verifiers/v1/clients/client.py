@@ -6,7 +6,7 @@ abstract method. Each concrete client owns its own wire translation internally.
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
 from tenacity import (
@@ -51,10 +51,11 @@ class Client(ABC):
         sampling_args: SamplingConfig,
         session_id: str | None = None,
         turn: PendingTurn | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Response:
-        """Run one completion -> a vf `Response`. The proxy client forwards `body` 1:1 and
-        parses the provider response via `dialect` (carrying the raw on `Response.raw`); the
-        renderer derives the typed prompt from `body` via `dialect` and tokenizes it.
+        """Run one completion -> a vf `Response`. The eval client forwards the native JSON and
+        eligible end-to-end headers, then parses a copy via `dialect`; the train client derives
+        the typed prompt from `body` and tokenizes it.
 
         `session_id` is the rollout's stable id (the trace id); when set, the client sends it
         as the `SESSION_ID_HEADER` so a session-affinity router keeps the rollout's turns on
@@ -68,6 +69,7 @@ class Client(ABC):
         model: str,
         sampling_args: SamplingConfig,
         session_id: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
         """Stream a (possibly SSE) response back, relaying the provider's bytes — the proxy's
         path for a streaming request. Only the relay (eval) client supports it; the renderer
@@ -117,6 +119,7 @@ class RetryingClient(Client):
         sampling_args: SamplingConfig,
         session_id: str | None = None,
         turn: PendingTurn | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Response:
         return await self._retrying(
             self.inner.get_response,
@@ -124,8 +127,9 @@ class RetryingClient(Client):
             body,
             model,
             sampling_args,
-            session_id,
-            turn,
+            session_id=session_id,
+            turn=turn,
+            headers=headers,
         )
 
     async def relay(
@@ -135,11 +139,18 @@ class RetryingClient(Client):
         model: str,
         sampling_args: SamplingConfig,
         session_id: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
         # Safe to retry: relay raises (and is retried) before any response byte is handed back;
         # once a `RelayReply` is returned, streaming is already underway.
         return await self._retrying(
-            self.inner.relay, dialect, body, model, sampling_args, session_id
+            self.inner.relay,
+            dialect,
+            body,
+            model,
+            sampling_args,
+            headers=headers,
+            session_id=session_id,
         )
 
     async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:

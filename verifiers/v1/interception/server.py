@@ -224,6 +224,7 @@ class InterceptionServer:
             # `refused()` below halts the harness before any model call — no special-casing here.
         if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt)
+        headers = request.headers.copy()
         # A user simulator turns one program request into a multi-turn exchange: after each
         # model turn the simulator's reply is injected as a user turn and the model is
         # re-prompted, so a whole game plays out here and only the final assistant message
@@ -248,6 +249,7 @@ class InterceptionServer:
                     body,
                     session.ctx.model,
                     session.ctx.sampling,
+                    headers=headers,
                     session_id=session.trace.id,
                     turn=turn,
                 )
@@ -284,6 +286,9 @@ class InterceptionServer:
             # no opinion about the state's contents.
             body = dialect.extend(body, completion, user_messages)
             prompt = [*prompt, response.message, *user_messages]
+            # The simulator changed the payload, so this is a new operation rather than a retry.
+            headers.popall("idempotency-key", None)
+            headers.popall("x-idempotency-key", None)
 
     async def _stream(
         self,
@@ -308,6 +313,7 @@ class InterceptionServer:
                 body,
                 session.ctx.model,
                 session.ctx.sampling,
+                headers=request.headers,
                 session_id=session.trace.id,
             )
         except OverlongPromptError:

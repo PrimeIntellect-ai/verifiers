@@ -9,6 +9,7 @@ needs a running vLLM engine.
 """
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
@@ -197,6 +198,7 @@ class TrainClient(Client):
         sampling_args: SamplingConfig,
         session_id: str | None = None,
         turn: PendingTurn | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Response:
         # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
         # back), so it can't forward the raw request — it parses `body` via the dialect and renders
