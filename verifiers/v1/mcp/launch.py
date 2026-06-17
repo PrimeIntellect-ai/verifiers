@@ -373,7 +373,7 @@ def _shared_url_for_rollout(url: str, state_base: str | None, state_secret: str)
 
 async def reap_forked_child(shared_url: str, secret: str) -> None:
     """Best-effort: POST `/vf/close` to reap this rollout's forked child on teardown (a `fork` shared
-    server, see `multiplex`); the multiplexer also reaps by idle TTL and when it exits."""
+    server, see `multiplex`); the multiplexer otherwise only reaps a child when it exits."""
     close_url = (
         f"{shared_url.rsplit('/mcp', 1)[0]}/vf/close?{STATE_SECRET_PARAM}={secret}"
     )

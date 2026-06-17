@@ -17,8 +17,11 @@ The rollout key is the per-rollout secret the framework tags onto a shared serve
 (`STATE_URL_PARAM`) for this rollout's `/state` + `/task`. The proxy routes by the key (intra-sandbox,
 no host needed); the child reaches `/state` + `/task` over that base, which `serve_tools` makes
 reachable from the shared server's runtime (localhost, or a host tunnel when it's remote) — so fork
-works on any harness/runtime combo. Children are reaped on a `POST /vf/close?<key>` from rollout
-teardown, by an idle TTL, and when the parent exits (each child also dies with it via `PR_SET_PDEATHSIG`).
+works on any harness/runtime combo. A child lives for its whole rollout: it is reaped on a `POST
+/vf/close?<key>` from rollout teardown, and on parent exit (each child also dies with the parent via
+`PR_SET_PDEATHSIG`). There is no idle reaper — idle time can't tell a slow-but-live rollout from a
+leaked one, and reaping a live rollout's child would re-run `setup_task` on the next call and wipe its
+in-process state.
 
 Caveats: Linux/fork only; do NOT use with CUDA/GPU state or background threads in the server (fork
 copies neither safely) — the fork here is from a single-threaded loop, before any such state. Writes
@@ -50,9 +53,6 @@ logger = logging.getLogger(__name__)
 CLOSE_PATH = "/vf/close"
 """The framework POSTs here (with the rollout key) on rollout teardown to reap that child promptly."""
 
-_IDLE_TTL = float(
-    os.environ.get("VF_FORK_TTL", "900")
-)  # reap idle children after N seconds
 _HOP_BY_HOP = {
     "connection",
     "keep-alive",
@@ -65,7 +65,6 @@ _HOP_BY_HOP = {
 class _Child:
     def __init__(self, pid: int, port: int, cwd: str) -> None:
         self.pid, self.port, self.cwd = pid, port, cwd
-        self.last = time.monotonic()
         # set once the child is serving; reap() also sets it, to wake any waiter
         self.ready = asyncio.Event()
 
@@ -148,7 +147,6 @@ def serve_forked(app, sock: socket.socket, server) -> None:
         # Fast path: a live child — no lock, no readiness probe.
         child = children.get(key)
         if child is not None and child.ready.is_set():
-            child.last = time.monotonic()
             return child
         # The lock is held ONLY for the synchronous fork()+register, never the readiness wait — so a
         # cold fork serializes other forks (fork-safety) but doesn't stall traffic to other children.
@@ -164,7 +162,6 @@ def serve_forked(app, sock: socket.socket, server) -> None:
                 children.get(key) is not child
             ):  # reaped / failed to start meanwhile → retry
                 return await ensure(key, state_url)
-            child.last = time.monotonic()
             return child
         # We created it: wait for it to serve OUTSIDE the lock, so other keys fork in parallel.
         try:
@@ -177,7 +174,6 @@ def serve_forked(app, sock: socket.socket, server) -> None:
         child.ready.set()
         # log only the pid (it correlates spawn<->reap) — the key is the rollout's bearer secret
         logger.info("fork: spawned child pid=%d", child.pid)
-        child.last = time.monotonic()
         return child
 
     async def reap(key: str) -> None:
@@ -220,38 +216,55 @@ def serve_forked(app, sock: socket.socket, server) -> None:
             msg = await receive()
             body += msg.get("body", b"")
             more = msg.get("more_body", False)
-        child = await ensure(key, state_url)
-        headers = [
-            (k.decode(), v.decode())
-            for k, v in scope["headers"]
-            if k.decode().lower() not in _HOP_BY_HOP
-        ]
-        qs = scope.get("query_string", b"").decode()
-        url = f"http://127.0.0.1:{child.port}{scope['path']}" + (f"?{qs}" if qs else "")
-        req = client.build_request(scope["method"], url, headers=headers, content=body)
-        resp = await client.send(req, stream=True)
-        out = [
-            (k.encode(), v.encode())
-            for k, v in resp.headers.items()
-            if k.lower() not in _HOP_BY_HOP
-        ]
-        await send(
-            {"type": "http.response.start", "status": resp.status_code, "headers": out}
-        )
-        async for chunk in resp.aiter_raw():
-            await send({"type": "http.response.body", "body": chunk, "more_body": True})
-        await send({"type": "http.response.body", "body": b"", "more_body": False})
-        await resp.aclose()
-
-    async def _reaper() -> None:
-        while True:
-            await asyncio.sleep(30)
-            now = time.monotonic()
-            for key in [k for k, c in children.items() if now - c.last > _IDLE_TTL]:
-                await reap(key)
+        # Bring the child up and stream its response back. Any failure here (child never came up,
+        # `ensure` timed out, upstream errored mid-stream) must not leave the ASGI caller hanging:
+        # send a clean 502 if nothing was sent yet, else end the started body so the client stops.
+        started = False
+        try:
+            child = await ensure(key, state_url)
+            headers = [
+                (k.decode(), v.decode())
+                for k, v in scope["headers"]
+                if k.decode().lower() not in _HOP_BY_HOP
+            ]
+            qs = scope.get("query_string", b"").decode()
+            url = f"http://127.0.0.1:{child.port}{scope['path']}" + (
+                f"?{qs}" if qs else ""
+            )
+            req = client.build_request(scope["method"], url, headers=headers, content=body)
+            resp = await client.send(req, stream=True)
+            try:
+                out = [
+                    (k.encode(), v.encode())
+                    for k, v in resp.headers.items()
+                    if k.lower() not in _HOP_BY_HOP
+                ]
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": resp.status_code,
+                        "headers": out,
+                    }
+                )
+                started = True
+                async for chunk in resp.aiter_raw():
+                    await send(
+                        {"type": "http.response.body", "body": chunk, "more_body": True}
+                    )
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+            finally:
+                await resp.aclose()
+        except Exception as exc:
+            logger.warning("fork: proxy error forwarding to child: %s", exc)
+            if started:
+                with contextlib.suppress(Exception):
+                    await send(
+                        {"type": "http.response.body", "body": b"", "more_body": False}
+                    )
+            else:
+                await _respond(send, 502, b"fork proxy error")
 
     async def _serve() -> None:
-        asyncio.ensure_future(_reaper())
         # timeout_graceful_shutdown=0: exit promptly on SIGTERM (the runtime's teardown) instead of
         # hanging on the long-lived proxied SSE — so `finally` below SIGKILLs the children.
         try:
