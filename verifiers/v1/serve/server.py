@@ -116,13 +116,14 @@ class EnvServer:
         ctx = self._context(req.client, req.model, req.sampling)
         episode = self.env.episode(self.tasks[req.task_idx], ctx, n=1)
         traces = await episode.run()
-        return RunRolloutResponse(trace=traces[0].to_wire())
+        # dump to a dict so the `Trace[WireTask]` field re-types the concrete task to WireTask
+        return RunRolloutResponse(trace=traces[0].model_dump())
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         episode = self.env.episode(self.tasks[req.task_idx], ctx, n=req.n)
         traces = await episode.run()
-        return RunGroupResponse(traces=[t.to_wire() for t in traces])
+        return RunGroupResponse(traces=[t.model_dump() for t in traces])
 
     async def _handle(
         self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes

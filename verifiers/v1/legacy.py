@@ -352,7 +352,7 @@ class LegacyEnvServer(EnvServer):
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
         return RunRolloutResponse(
-            trace=rollout_output_to_trace(out, req.task_idx).to_wire()
+            trace=rollout_output_to_trace(out, req.task_idx).model_dump()
         )
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
@@ -365,7 +365,9 @@ class LegacyEnvServer(EnvServer):
             sampling_args=req.sampling.model_dump(exclude_none=True),
             state_columns=["trajectory"],
         )
-        traces = [rollout_output_to_trace(out, req.task_idx).to_wire() for out in outs]
+        traces = [
+            rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs
+        ]
         return RunGroupResponse(traces=traces)
 
 

@@ -79,7 +79,7 @@ def test_routed_experts_attributed_and_aligned_across_turns():
     assert re is not None
     assert re.shape[0] == len(branch.token_ids)
 
-    restored = type(trace).model_validate(trace.to_wire())
+    restored = type(trace).model_validate(trace.model_dump())
     re2 = restored.branches[-1].routed_experts
     assert re2 is not None and re2.shape == re.shape and bool((re2 == re).all())
 

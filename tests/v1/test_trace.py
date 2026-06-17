@@ -1,6 +1,7 @@
-"""Trace construction + wire round-trip: a dumped trace re-validates via `from_wire` (branches,
-task fields, and recomputed derived fields survive; transient `state` does not), and the permissive
-`WireTrace` loads one without importing the originating taskset."""
+"""Trace construction + serialization round-trip: a dumped trace re-validates with plain pydantic
+(derived values — reward/is_truncated/error/duration — are properties, not serialized, so they just
+recompute on load), transient `state` never crosses the wire, and the permissive `WireTrace` loads a
+dump without importing the originating taskset."""
 
 import json
 
@@ -18,9 +19,9 @@ class _State(vf.State):
 
 
 def test_bare_trace_round_trip():
-    # The minimal trace: a base task, no nodes, no extras — to_wire and back into a plain Trace.
+    # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
     tr = vf.Trace(task=vf.Task(idx=3, instruction="hello"))
-    rt = vf.Trace.from_wire(tr.to_wire())
+    rt = vf.Trace.model_validate(tr.model_dump())
     assert rt.id == tr.id
     assert rt.task.idx == 3 and rt.task.instruction == "hello"
     assert rt.num_turns == 0 and rt.num_branches == 0
@@ -39,13 +40,13 @@ def test_custom_task_state_round_trip():
         ],
     )
     tr.record_reward("r", 0.5)
-    wire = tr.to_wire()
+    wire = tr.model_dump()
     assert "state" not in wire  # transient state is excluded from the dump
 
-    rt = vf.Trace[_Task, _State].from_wire(wire)
+    rt = vf.Trace[_Task, _State].model_validate(wire)
     assert isinstance(rt.task, _Task) and rt.task.answer == "gold"  # typed custom field
     assert rt.num_turns == 1 and rt.num_branches == 1
-    assert rt.reward == 0.5
+    assert rt.reward == 0.5  # property recomputed from `rewards`
 
 
 def test_wire_trace_round_trip():
@@ -63,22 +64,19 @@ def test_wire_trace_round_trip():
     tr.info = {"build": "ok"}
     tr.stop("done")
 
-    # exactly what `results.jsonl` stores (the derived fields ride along on disk)
+    # the dump is plain pydantic — derived values are properties, so they're not serialized
     data = json.loads(tr.model_dump_json(exclude_none=True))
-    assert {
-        "reward",
-        "is_truncated",
-    } <= data.keys()  # derived fields present, would break a strict load
+    assert "reward" not in data and "is_truncated" not in data
 
-    rt = vf.WireTrace.from_wire(data)
+    rt = vf.WireTrace.model_validate(data)
     assert rt.num_branches == tr.num_branches == 2  # branch topology survived
     assert rt.num_turns == tr.num_turns == 2
-    assert rt.reward == 1.0  # recomputed from `rewards`
+    assert rt.reward == 1.0  # property recomputed from `rewards`
     assert rt.stop_condition == "done"
     assert rt.info == {"build": "ok"}
     assert rt.task.model_extra == {
         "answer": "a"
     }  # taskset extras preserved on WireTask
 
-    # the env-server wire format (derived already excluded) loads too
-    assert vf.WireTrace.from_wire(tr.to_wire()).num_branches == 2
+    # the env-server wire form (a plain model_dump) loads too
+    assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
