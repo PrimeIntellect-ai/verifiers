@@ -210,7 +210,7 @@ class {prefix}User(vf.User[vf.UserConfig, {prefix}State]):
         if self.state.done:
             return []
         self.state.done = True
-        return [{{"role": "user", "content": "Thanks - anything else?"}}]
+        return [vf.UserMessage(content="Thanks - anything else?")]
 
 
 if __name__ == "__main__":
