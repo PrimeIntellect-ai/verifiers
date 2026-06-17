@@ -81,7 +81,8 @@ class EvalClient(Client):
         if session_id:
             headers = {**headers, SESSION_ID_HEADER: session_id}
         return (
-            self.base_url + dialect.upstream_path,
+            self.base_url
+            + dialect.upstream_path.format(model=model.rsplit("/", 1)[-1]),
             headers,
             dialect.apply_overrides(body, model, sampling_args),
         )
