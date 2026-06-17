@@ -6,11 +6,10 @@ place raw provider dicts enter is the client implementation, which validates
 them into these models explicitly.
 """
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from renderers.base import MultiModalData
-from typing_extensions import TypedDict
 
 
 class RoutedExperts(TypedDict):

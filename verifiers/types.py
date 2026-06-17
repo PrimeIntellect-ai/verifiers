@@ -11,7 +11,9 @@ from typing import (
     Awaitable,
     Callable,
     Literal,
+    NotRequired,
     TypeAlias,
+    TypedDict,
     TypeVar,
     overload,
     cast,
@@ -48,11 +50,6 @@ else:
         from renderers import RendererConfig
     except ImportError:
         RendererConfig = Any
-
-if sys.version_info < (3, 12):
-    from typing_extensions import NotRequired, TypedDict
-else:
-    from typing import NotRequired, TypedDict
 
 # Client / message type literals
 ClientType = Literal[
