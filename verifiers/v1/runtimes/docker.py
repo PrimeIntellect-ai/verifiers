@@ -24,6 +24,8 @@ class DockerConfig(BaseConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
     workdir: str = "/app"
+    network_access: bool = True
+    """Whether the container can access the network."""
     # Resources in Modal's units (also settable per-task via Task.resources).
     cpu: float | None = None
     """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
@@ -99,7 +101,7 @@ class DockerRuntime(Runtime):
             "run",
             "--detach",
             "--network",
-            "host",
+            "host" if self.config.network_access else "none",
             *limits,
             "--workdir",
             self.config.workdir,

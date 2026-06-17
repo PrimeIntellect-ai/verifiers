@@ -5,10 +5,14 @@
 (`uv tool install harbor`). Each task dir ships task.toml + instruction.md
 (+ tests/, solution/, environment/). Defaults to the registry `hello-world` task.
 
-The harness runs in a container and edits /app; then the task's verifier
-(tests/test.sh) runs in the SAME container and the reward it writes to
-/logs/verifier/reward.txt becomes the score. The verification lives on the
-taskset (the `solved` reward), so a harbor task runs under ANY harness.
+The harness runs in the task's container and edits its filesystem. By default,
+tests/test.sh verifies that same container. Harbor's separate verifier mode starts
+a fresh runtime from [verifier.environment], copies only /logs/artifacts plus the
+task's configured artifacts, and runs /tests/test.sh there. Explicit verifier
+environments need a pullable image that owns the tests; bare separate mode reuses
+the task image and uploads tests because V1 does not build tests/Dockerfile.
+Verification lives on the taskset (the `solved` reward), so a harbor task runs
+under any harness.
 
 A task's declared [environment].docker_image becomes a first-class `Task.image`
 the Environment injects into the runtime (docker/prime both pull it). Tasks that
@@ -18,22 +22,26 @@ build the Dockerfile — a locally-built image isn't pullable by a remote sandbo
 """
 
 import io
+import json
+import os
+import re
 import subprocess
 import tarfile
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from pydantic import Field
 
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import Runtime, SubprocessConfig, make_runtime
 from verifiers.v1.task import Resources, Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"
+ENV_TEMPLATE = re.compile(r"\$\{([^}:]+)(?::-(.*))?\}")
 
 
 class HarborConfig(TasksetConfig):
@@ -58,6 +66,16 @@ class Author(StrictBaseModel):
     email: str | None = None
 
 
+class HarborVerifier(StrictBaseModel):
+    image: str | None = None
+    workdir: str | None = None
+    resources: Resources = Resources()
+    network_access: bool = True
+    env: dict[str, str] = {}
+    artifacts: list[str] = []
+    upload_tests: bool = False
+
+
 class HarborTask(Task):
     """A Harbor task. The base fields carry instruction.md (`instruction`), the
     resolved container `image`, the `harness_timeout`/`scoring_timeout`/`resources`
@@ -71,6 +89,8 @@ class HarborTask(Task):
     tags: list[str] = []
     task_dir: str = Field(exclude=True)
     """Host path to the task dir; used to stage tests/ to verify, not serialized."""
+    verifier: HarborVerifier = Field(exclude=True)
+    """Resolved Harbor verifier mode and environment, used only while scoring."""
 
 
 def dataset_dir(dataset: str) -> Path:
@@ -128,11 +148,61 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
     handling both the [task].authors and legacy [metadata].author_name layouts."""
     config = tomllib.loads((task_dir / "task.toml").read_text())
     task, meta = config.get("task", {}), config.get("metadata", {})
+    environment = config.get("environment", {})
+    verifier_config = config.get("verifier", {})
+    verifier_environment = verifier_config.get("environment")
+    if (
+        verifier_config.get("environment_mode") == "shared"
+        and verifier_environment is not None
+    ):
+        raise ValueError(
+            f"{task_dir.name}: verifier.environment is incompatible with "
+            "environment_mode='shared'"
+        )
+    separate = (
+        verifier_config.get("environment_mode") == "separate"
+        or verifier_environment is not None
+    )
+    verifier_environment = (
+        environment if verifier_environment is None else verifier_environment
+    )
+    if separate and not verifier_environment.get("docker_image"):
+        raise ValueError(
+            f"{task_dir.name}: separate verification needs a pullable docker_image; "
+            "building tests/Dockerfile is not supported"
+        )
+    network_mode = verifier_config.get(
+        "network_mode", verifier_environment.get("network_mode")
+    )
+    if network_mode is None:
+        network_mode = (
+            "public"
+            if verifier_environment.get("allow_internet", True)
+            else "no-network"
+        )
+    if network_mode == "allowlist":
+        raise ValueError(
+            f"{task_dir.name}: verifier network_mode='allowlist' is not supported"
+        )
+    artifact_config = config.get("artifacts", [])
+    if any(
+        isinstance(artifact, dict) and artifact.get("service", "main") != "main"
+        for artifact in artifact_config
+    ):
+        raise ValueError(f"{task_dir.name}: sidecar artifacts are not supported")
+    artifacts = [
+        artifact if isinstance(artifact, str) else artifact["source"]
+        for artifact in artifact_config
+    ]
+    verifier_env = verifier_config.get("env", {})
+    if separate:
+        verifier_env = verifier_environment.get("env", {}) | verifier_env
+
     authors = [Author(**a) for a in task.get("authors", [])]
     if not authors and meta.get("author_name"):
         authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
     harness_timeout = config.get("agent", {}).get("timeout_sec")
-    scoring_timeout = config.get("verifier", {}).get("timeout_sec")
+    scoring_timeout = verifier_config.get("timeout_sec")
     return HarborTask(
         idx=idx,
         name=task.get("name") or task_dir.name,
@@ -145,15 +215,26 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
         scoring_timeout=scoring_timeout * harbor_config.timeout_multiplier
         if scoring_timeout is not None
         else None,
-        resources=parse_resources(
-            config.get("environment", {}), harbor_config.resource_multiplier
-        ),
+        resources=parse_resources(environment, harbor_config.resource_multiplier),
         keywords=task.get("keywords", []),
         authors=authors,
         difficulty=meta.get("difficulty"),
         category=meta.get("category"),
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
+        verifier=HarborVerifier(
+            image=verifier_environment.get("docker_image") if separate else None,
+            workdir=verifier_environment.get("workdir") if separate else None,
+            resources=parse_resources(
+                verifier_environment, harbor_config.resource_multiplier
+            )
+            if separate
+            else Resources(),
+            network_access=network_mode == "public",
+            env={str(key): str(value) for key, value in verifier_env.items()},
+            artifacts=artifacts,
+            upload_tests=separate and verifier_config.get("environment") is None,
+        ),
     )
 
 
@@ -186,21 +267,199 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
 
     @reward(weight=1.0)
     async def solved(self, task: HarborTask, trace: Trace, runtime: Runtime) -> float:
-        # Stage the task's tests into the live runtime, run its harbor verifier, and
-        # read back the reward it writes — runtime-opaque (write/run/read hide whether
-        # that's the host fs or across a container boundary), so it scores under any harness.
-        await runtime.write("/tmp/tests.tgz", make_tar(Path(task.task_dir) / "tests"))
-        await runtime.run(
-            [
-                "sh",
-                "-c",
-                "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests",
-            ],
-            {},
-        )
-        await runtime.run(["sh", "-c", "cd /tests && bash test.sh"], {})
+        target = runtime
+        verifier_runtime: Runtime | None = None
+        verifier = task.verifier
+        archive = "/tmp/vf-harbor-artifacts.tgz"
+        archive_member = PurePosixPath(archive.lstrip("/"))
+        archive_data = b""
+        if verifier.image is not None:
+            runtime_config = runtime.config
+            if isinstance(runtime_config, SubprocessConfig):
+                raise ProgramError(
+                    "separate Harbor verification needs a docker, prime, or modal runtime"
+                )
+            artifact_paths = list(
+                dict.fromkeys(["/logs/artifacts", *verifier.artifacts])
+            )
+            result = await runtime.run(["mkdir", "-p", "/logs/artifacts"], {})
+            if result.exit_code:
+                raise ProgramError(
+                    f"Harbor artifact directory setup failed: "
+                    f"{result.stderr or result.stdout}"
+                )
+            artifact_paths = [
+                path
+                for path in artifact_paths
+                if not (await runtime.run(["test", "-e", path], {})).exit_code
+            ]
+            # Pre-create and exclude the archive so /tmp can itself be an artifact.
+            await runtime.write(archive, b"")
+            result = await runtime.run(
+                ["tar", f"--exclude={archive}", "-czf", archive, *artifact_paths],
+                {},
+            )
+            if result.exit_code:
+                raise ProgramError(
+                    f"Harbor artifact collection failed: "
+                    f"{result.stderr or result.stdout}"
+                )
+
+            # The agent controls these bytes; repack only declared regular files and dirs.
+            unsafe_archive = await runtime.read(archive)
+            allowed = [PurePosixPath(path.lstrip("/")) for path in artifact_paths]
+            buffer = io.BytesIO()
+            try:
+                with (
+                    tarfile.open(
+                        fileobj=io.BytesIO(unsafe_archive), mode="r:gz"
+                    ) as source,
+                    tarfile.open(fileobj=buffer, mode="w:gz") as safe_archive,
+                ):
+                    for member in source:
+                        path = PurePosixPath(member.name)
+                        if (
+                            path.is_absolute()
+                            or ".." in path.parts
+                            or path.is_relative_to(archive_member)
+                            or not any(path.is_relative_to(root) for root in allowed)
+                            or not (member.isfile() or member.isdir())
+                        ):
+                            raise ProgramError(
+                                f"Harbor artifact collection produced unsafe entry "
+                                f"{member.name!r}"
+                            )
+                        clean = tarfile.TarInfo(path.as_posix())
+                        clean.type = member.type
+                        clean.mode = member.mode & 0o777
+                        clean.mtime = member.mtime
+                        clean.size = member.size
+                        safe_archive.addfile(
+                            clean,
+                            source.extractfile(member) if member.isfile() else None,
+                        )
+            except (OSError, tarfile.TarError) as e:
+                raise ProgramError(
+                    "Harbor artifact collection produced invalid tar"
+                ) from e
+            archive_data = buffer.getvalue()
+
+            config_type = type(runtime_config)
+            updates = {}
+            for name in Resources.model_fields:
+                if name not in config_type.model_fields:
+                    continue
+                verifier_value = getattr(verifier.resources, name)
+                agent_value = getattr(task.resources, name)
+                if verifier_value is not None:
+                    updates[name] = verifier_value
+                elif (
+                    agent_value is not None
+                    and getattr(runtime_config, name) == agent_value
+                ):
+                    updates[name] = config_type.model_fields[name].default
+            updates.update(
+                image=verifier.image,
+                network_access=verifier.network_access,
+            )
+            if verifier.workdir is not None:
+                updates["workdir"] = verifier.workdir
+            verifier_runtime = make_runtime(
+                runtime_config.model_copy(update=updates),
+                name=f"{runtime.name}-verifier",
+            )
+
         try:
-            reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
-            return float(reward or 0)
-        except (ProgramError, OSError, ValueError):
-            return 0.0
+            if verifier_runtime is not None:
+                await verifier_runtime.start()
+                target = verifier_runtime
+                await target.write(archive, archive_data)
+                result = await target.run(["tar", "-xzf", archive, "-C", "/"], {})
+                if result.exit_code:
+                    raise ProgramError(
+                        f"Harbor artifact extraction failed: "
+                        f"{result.stderr or result.stdout}"
+                    )
+
+            result = await target.run(
+                [
+                    "sh",
+                    "-c",
+                    "rm -rf /logs/verifier && mkdir -p /logs/verifier /logs/artifacts",
+                ],
+                {},
+            )
+            if result.exit_code:
+                raise ProgramError(
+                    f"Harbor verifier directory setup failed: "
+                    f"{result.stderr or result.stdout}"
+                )
+            if verifier.image is None or verifier.upload_tests:
+                await target.write(
+                    "/tmp/tests.tgz", make_tar(Path(task.task_dir) / "tests")
+                )
+                result = await target.run(
+                    [
+                        "sh",
+                        "-c",
+                        "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests",
+                    ],
+                    {},
+                )
+                if result.exit_code:
+                    raise ProgramError(
+                        f"Harbor test upload failed: {result.stderr or result.stdout}"
+                    )
+
+            env: dict[str, str] = {}
+            for key, value in verifier.env.items():
+                match = ENV_TEMPLATE.fullmatch(value)
+                if match is not None:
+                    name, default = match.groups()
+                    value = os.environ.get(name, default)
+                if value is None:
+                    raise ProgramError(
+                        f"environment variable {name!r} required by Harbor verifier is unset"
+                    )
+                env[key] = value
+
+            await target.run(
+                [
+                    "sh",
+                    "-c",
+                    "bash /tests/test.sh > /logs/verifier/test-stdout.txt 2>&1",
+                ],
+                env,
+            )
+            result = await target.run(
+                [
+                    "sh",
+                    "-c",
+                    "if [ -s /logs/verifier/reward.json ]; then "
+                    "cat /logs/verifier/reward.json; "
+                    "elif [ -s /logs/verifier/reward.txt ]; then "
+                    "cat /logs/verifier/reward.txt; fi",
+                ],
+                {},
+            )
+            if result.exit_code:
+                raise ProgramError(
+                    f"Harbor reward read failed: {result.stderr or result.stdout}"
+                )
+            output = (result.stdout or "").strip()
+            try:
+                return float(output or 0)
+            except ValueError:
+                try:
+                    rewards = {
+                        key: float(value) for key, value in json.loads(output).items()
+                    }
+                except (AttributeError, TypeError, ValueError):
+                    return 0.0
+                trace.record_metrics(rewards)
+                if "reward" in rewards:
+                    return rewards["reward"]
+                return next(iter(rewards.values())) if len(rewards) == 1 else 0.0
+        finally:
+            if verifier_runtime is not None:
+                await verifier_runtime.stop()
