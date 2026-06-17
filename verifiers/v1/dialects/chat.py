@@ -65,6 +65,7 @@ def parse_message(raw: dict) -> Message:
         return ToolMessage(
             tool_call_id=raw.get("tool_call_id", ""),
             content=content_to_parts(content),
+            name=raw.get("name"),
         )
     if role == "assistant":
         calls = [
@@ -131,11 +132,14 @@ def message_to_wire(message: Message) -> dict:
             ]
         return wire
     if message.role == "tool":
-        return {
+        wire = {
             "role": "tool",
             "tool_call_id": message.tool_call_id,
             "content": _content_to_wire(message.content),
         }
+        if message.name:
+            wire["name"] = message.name
+        return wire
     return {"role": message.role, "content": _content_to_wire(message.content)}
 
 
@@ -181,9 +185,19 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
     response_type = ChatCompletion
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
-        return [parse_message(m) for m in body.get("messages", [])], parse_tools(
-            body.get("tools")
-        )
+        messages: Messages = []
+        tool_names: dict[str, str] = {}
+        for raw in body.get("messages", []):
+            message = parse_message(raw)
+            if isinstance(message, ToolMessage) and message.name is None:
+                name = tool_names.get(message.tool_call_id)
+                if name is not None:
+                    message = message.model_copy(update={"name": name})
+            messages.append(message)
+            if isinstance(message, AssistantMessage):
+                for call in message.tool_calls or []:
+                    tool_names[call.id] = call.name
+        return messages, parse_tools(body.get("tools"))
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)

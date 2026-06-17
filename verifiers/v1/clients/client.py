@@ -19,6 +19,7 @@ from tenacity import (
 
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import ModelError, OverlongPromptError
+from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, SamplingConfig
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class Client(ABC):
         model: str,
         sampling_args: SamplingConfig,
         session_id: str | None = None,
+        turn: PendingTurn | None = None,
     ) -> Response:
         """Run one completion -> a vf `Response`. The proxy client forwards `body` 1:1 and
         parses the provider response via `dialect` (carrying the raw on `Response.raw`); the
@@ -56,7 +58,8 @@ class Client(ABC):
 
         `session_id` is the rollout's stable id (the trace id); when set, the client sends it
         as the `SESSION_ID_HEADER` so a session-affinity router keeps the rollout's turns on
-        one engine for cross-turn prefix-cache reuse."""
+        one engine for cross-turn prefix-cache reuse. `turn` is the graph-resolved prompt
+        prefix; train clients may use it for renderer bridging, while relay clients ignore it."""
 
     async def relay(
         self,
@@ -113,9 +116,16 @@ class RetryingClient(Client):
         model: str,
         sampling_args: SamplingConfig,
         session_id: str | None = None,
+        turn: PendingTurn | None = None,
     ) -> Response:
         return await self._retrying(
-            self.inner.get_response, dialect, body, model, sampling_args, session_id
+            self.inner.get_response,
+            dialect,
+            body,
+            model,
+            sampling_args,
+            session_id,
+            turn,
         )
 
     async def relay(
