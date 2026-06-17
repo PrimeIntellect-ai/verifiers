@@ -11,10 +11,11 @@ The harness runs in a container and edits /app; then the task's verifier
 taskset (the `solved` reward), so a harbor task runs under ANY harness.
 
 A task's declared [environment].docker_image becomes a first-class `Task.image`
-the Environment injects into the runtime (docker/prime both pull it). Tasks that
-only ship an environment/Dockerfile have no pullable image: with `require_image`
-they're rejected; otherwise they run on the runtime's default image (we don't
-build the Dockerfile — a locally-built image isn't pullable by a remote sandbox).
+the Environment injects into the runtime (docker/prime both pull it). A task whose
+environment is only a `Dockerfile` has no pullable image — we don't build Dockerfiles
+(a locally-built image isn't pullable by a remote sandbox) — so it's rejected unless
+`use_harness_image`, which runs it on the harness runtime's image instead. A task with
+no environment at all also runs on that image, unless `require_image`.
 """
 
 import io
@@ -48,9 +49,14 @@ class HarborConfig(TasksetConfig):
     """Scale each task's CPU, memory, and disk requests. GPU requests are unchanged."""
     require_image: bool = False
     """For a task with NO declared environment at all (no docker_image, no Dockerfile),
-    whether to reject it (True) or run it on the runtime's default image (False). Tasks
-    whose environment is a `Dockerfile` are always rejected — building Dockerfiles isn't
-    supported, and running them on the default image scores against the wrong env."""
+    whether to reject it (True) or run it on the runtime's default image (False). A task
+    whose environment is a `Dockerfile` is rejected too (building Dockerfiles isn't
+    supported), unless `use_harness_image`."""
+    use_harness_image: bool = False
+    """Run a task whose environment is only a `Dockerfile` on the harness runtime's image
+    instead of rejecting it. The Dockerfile is NOT built, so the task scores against the
+    harness image rather than its declared environment — only correct when that image already
+    has what the task needs (e.g. you've pointed the runtime at the right image)."""
 
 
 class Author(StrictBaseModel):
@@ -90,21 +96,30 @@ def dataset_dir(dataset: str) -> Path:
     return out
 
 
-def resolve_image(task_dir: Path, config: dict, require_image: bool) -> str | None:
+def resolve_image(
+    task_dir: Path,
+    config: dict,
+    require_image: bool,
+    use_harness_image: bool = False,
+) -> str | None:
     """The task's declared registry image (usable by docker or prime). A pullable
     `[environment].docker_image` is used directly. A task whose environment is a
     `Dockerfile` is rejected — we don't build Dockerfiles, and running it on the default
     image would silently score against the wrong environment (e.g. SWE-bench's `/testbed`
-    repo would be missing). A task with no environment at all runs on the runtime's
-    default image, unless `require_image`."""
+    repo would be missing) — unless `use_harness_image`, which returns None to run it on the
+    harness runtime's image. A task with no environment at all runs on that image too, unless
+    `require_image`. None means "use the runtime's own image"."""
     declared = config.get("environment", {}).get("docker_image")
     if declared:
         return declared
     if (task_dir / "environment" / "Dockerfile").exists():
+        if use_harness_image:
+            return None
         raise ValueError(
             f"{task_dir.name}: environment is a Dockerfile, not a pullable "
             "[environment].docker_image — building Dockerfiles isn't supported, so this "
-            "task can't run (it would otherwise score against the wrong default image)."
+            "task can't run (it would otherwise score against the wrong default image). "
+            "Pass --taskset.use-harness-image to run it on the harness runtime's image instead."
         )
     if require_image:
         raise ValueError(
@@ -138,7 +153,12 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
         name=task.get("name") or task_dir.name,
         description=task.get("description"),
         instruction=(task_dir / "instruction.md").read_text().strip(),
-        image=resolve_image(task_dir, config, harbor_config.require_image),
+        image=resolve_image(
+            task_dir,
+            config,
+            harbor_config.require_image,
+            harbor_config.use_harness_image,
+        ),
         harness_timeout=harness_timeout * harbor_config.timeout_multiplier
         if harness_timeout is not None
         else None,
