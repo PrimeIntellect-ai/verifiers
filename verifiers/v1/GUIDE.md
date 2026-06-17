@@ -226,17 +226,34 @@ server**). Those attrs are server-local; for per-rollout state **shared** with t
 scoring use the typed `self.state` (`trace.state`, above). Fixed data lives in module constants, not
 config.
 
-**Placement** is config on the server's config (a `vf.ToolsetConfig` / `vf.UserConfig` field on the
-taskset's own config), so it's per-server and CLI-tunable (`--taskset.tools.runtime.type docker`,
-`--taskset.tools.shared true`, `--taskset.user.colocated true`):
+#### Placement & isolation modes
 
-| placement | how |
-| --- | --- |
-| own host runtime (default) | its own `subprocess` runtime on the host, reached over the host network |
-| own per-rollout runtime | `runtime = {type = "docker"/"prime"}`, reached over a tunnel |
-| colocated | `colocated = true` — inside the harness's runtime (reached in-sandbox, no tunnel) |
-| shared (tools only) | `shared = true` — one instance built once for the whole eval (still writable: each rollout's `self.state` stays isolated) |
-| remote (tools only) | an existing server, by `url` |
+**Placement** lives on the server's config (a `vf.ToolsetConfig` / `vf.UserConfig` field on the
+taskset), so it's per-server and CLI-tunable (`--taskset.tools.shared true`). It decides **where** the
+server runs and **how many** there are. The default is the cheapest correct thing; the rest trade
+setup cost for isolation.
+
+| mode | config | runs | pros | cons |
+| --- | --- | --- | --- | --- |
+| **own host** *(default)* | *(nothing)* | own `subprocess` runtime on the host, one per rollout | cheapest launch (nothing to fetch); full per-rollout isolation | pays `setup` every rollout |
+| **own sandbox** | `runtime = {type = "docker"\|"prime"}` | own sandbox per rollout, over a tunnel | isolates untrusted tool code / deps / network | sandbox spin-up + env install + `setup`, every rollout |
+| **colocated** | `colocated = true` | inside the harness's runtime, one per rollout (no tunnel) | no extra runtime/tunnel; can touch the harness's filesystem | per-rollout env install in a sandbox; couples to harness; `setup` per rollout |
+| **shared** | `shared = true` | one instance for the whole eval | `setup` once; writable per-rollout if state lives in `self.state` (secret-routed) | state outside `self.state` corrupts across rollouts; `setup_task` skipped |
+| **shared + fork** | `shared = true, fork = true` | warm parent + forked child per rollout (copy-on-write) | `setup` once **and** isolates arbitrary in-process/on-disk state; runs `setup_task` per child | a process per concurrent rollout; CoW erodes for pure-Python heap; one proxy = throughput ceiling; Linux only |
+| **remote** *(tools only)* | `url = "https://…"` | connects to an already-running MCP endpoint | zero hosting; use a public/third-party server | no isolation, state, or lifecycle control |
+
+`shared` works on any runtime (local or remote) and `fork` too: the framework makes the rollout's
+`/state` + `/task` channel reachable from the shared server — localhost, or a host tunnel when it's
+remote. Keep big shared data off the Python heap (numpy / mmap / an on-disk index) so fork's
+copy-on-write actually saves memory.
+
+**Choosing per-rollout state:** read-only resource → `shared`; state that fits a `State` model →
+`shared` + `self.state` (no extra process, the scalable default); state that can't (module globals,
+on-disk scratch, a stateful C library) → `shared + fork` or a per-rollout placement that pays `setup`
+each time; cheap `setup` → just use the default.
+
+**User simulators** support only the per-rollout placements (own runtime or `colocated`); `shared` /
+`fork` / `url` are tools-only.
 
 ### Learn from the examples
 
@@ -251,7 +268,7 @@ The `*_v1` tasksets under `environments/` are the reference library — each sho
 | `glossary-v1` | the simplest tool server (own host runtime) |
 | `wikispeedia-v1` | a stateful tool server (global `setup` + per-task `setup_task`) |
 | `wiki-search-v1` | a shared, read-only tool server (built once) + an LLM judge |
-| `scratchpad-v1` | a shared, **writable** tool server — per-rollout state isolated via `self.state` |
+| `scratchpad-v1` | a shared, **writable** tool server — per-rollout state isolated via `self.state` (or `--taskset.tools.fork true` for state outside it) |
 | `deepwiki-v1` | an existing remote tool server, by URL |
 | `color-codeword-v1` | a multimodal (image) task |
 | `scaleswe-v1`, `swelego-v1`, `r2e-gym-v1` | containerized SWE tasks (rlm harness, prime runtime) |

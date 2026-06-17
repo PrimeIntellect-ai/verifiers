@@ -3,14 +3,19 @@
 Each rollout is assigned a unique word and asked to round-trip it through the shared scratchpad
 server, then report what came back. The reward is 1 iff the model reports its own word. The server
 is `shared` (one instance for the whole eval, simulating an expensive build) yet writable, so this
-is a direct test of per-rollout isolation: `uv run eval scratchpad-v1 -n 8 -r 1` should score a mean
-reward of 1.0, while bypassing isolation (`SCRATCHPAD_ISOLATE=0`) lets concurrent rollouts clobber a
-shared slot and report the wrong word.
+is a direct test of per-rollout isolation: `uv run eval scratchpad-v1 -n 8 -r 1` scores a mean reward
+of 1.0, while bypassing `self.state` (`--taskset.tools.isolate false`) lets concurrent rollouts clobber
+a process-global slot and report the wrong word — unless `--taskset.tools.fork true` gives each rollout
+its own process (so `isolate=false, fork=true` should score 1.0 again).
 """
 
 import verifiers.v1 as vf
 
-from scratchpad_v1.servers.scratchpad import ScratchpadState, ScratchpadToolset
+from scratchpad_v1.servers.scratchpad import (
+    ScratchpadState,
+    ScratchpadToolset,
+    ScratchpadToolsetConfig,
+)
 
 WORDS = [
     "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
@@ -32,7 +37,7 @@ class ScratchpadConfig(vf.TasksetConfig):
     # SHARED + writable: one instance for the whole eval (a stand-in for an expensive build), reused
     # across rollouts. Each rollout's writes are isolated via `self.state` (the per-rollout
     # shared-state channel) — the per-rollout isolation a writable shared server needs.
-    tools: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
+    tools: ScratchpadToolsetConfig = ScratchpadToolsetConfig(shared=True)
 
 
 class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig, ScratchpadState]):

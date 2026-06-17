@@ -378,6 +378,6 @@ class Environment:
         if not any(server.config.shared for server in servers):
             yield {}
             return
-        agent_is_local = runtime_is_local(self.harness.config.runtime)
-        async with serve_shared(servers, agent_is_local=agent_is_local) as urls:
+        harness_is_local = runtime_is_local(self.harness.config.runtime)
+        async with serve_shared(servers, harness_is_local=harness_is_local) as urls:
             yield urls

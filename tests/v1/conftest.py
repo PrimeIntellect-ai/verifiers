@@ -25,22 +25,22 @@ from verifiers.v1.trace import Trace
 # tests/v1/fixtures, added to the path via `pythonpath` in pyproject so the v1 loader and the
 # v0 legacy bridge both resolve them by id (no install).
 
-# The agent (harness) runtime, modal excluded. docker needs the daemon; prime provisions real
+# The harness runtime, modal excluded. docker needs the daemon; prime provisions real
 # sandboxes + tunnels (network + PRIME credentials), so both are marked to deselect easily. The
 # `id`s make a test read like `<harness>-harness-in-<rt>` / `in-<rt>-with-<user|tool>-...`.
-AGENT_RUNTIMES = [
+HARNESS_RUNTIMES = [
     pytest.param("subprocess", id="in-subprocess"),
     pytest.param("docker", marks=pytest.mark.slow, id="in-docker"),
     pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime], id="in-prime"),
 ]
 
 
-@pytest.fixture(params=AGENT_RUNTIMES)
-def agent_runtime(request) -> str:
+@pytest.fixture(params=HARNESS_RUNTIMES)
+def harness_runtime(request) -> str:
     return request.param
 
 
-# The user simulator's runtime: inside the agent's runtime (`colocated`) or its own runtime; this
+# The user simulator's runtime: inside the harness's runtime (`colocated`) or its own runtime; this
 # fans the user test across both (reusing the runtime markers for the own-runtime cases).
 USER_RUNTIMES = [
     pytest.param("colocated", id="with-user-colocated"),
@@ -56,14 +56,14 @@ USER_RUNTIMES = [
 
 @pytest.fixture(params=USER_RUNTIMES)
 def user_runtime(request) -> dict:
-    """A `taskset.user` override placing the user simulator: `colocated` (inside the agent's
+    """A `taskset.user` override placing the user simulator: `colocated` (inside the harness's
     runtime) or its own runtime, by type."""
     if request.param == "colocated":
         return {"colocated": True}
     return {"colocated": False, "runtime": {"type": request.param}}
 
 
-# The tool server's runtime: inside the agent's runtime (`colocated`), shared once per eval, or its
+# The tool server's runtime: inside the harness's runtime (`colocated`), shared once per eval, or its
 # own runtime per rollout; this fans the tool test across all of them (runtime markers for the
 # own-runtime cases — colocated/shared use the host subprocess runtime).
 TOOL_RUNTIMES = [
@@ -81,7 +81,7 @@ TOOL_RUNTIMES = [
 
 @pytest.fixture(params=TOOL_RUNTIMES)
 def tool_runtime(request) -> dict:
-    """A `taskset.tools` override placing the tool server: `colocated` (inside the agent's
+    """A `taskset.tools` override placing the tool server: `colocated` (inside the harness's
     runtime), `shared` (one instance for the whole eval), or its own runtime, by type."""
     if request.param == "colocated":
         return {"colocated": True}
@@ -108,7 +108,7 @@ def skip_if_unexposable():
     return _skip
 
 
-# Built-in harnesses (bundled in the `harnesses` package), composed with `agent_runtime` for the
+# Built-in harnesses (bundled in the `harnesses` package), composed with `harness_runtime` for the
 # plain-task harness x runtime matrix. compact is an example harness, not built-in, so it's
 # excluded. Agent CLI harnesses install their dependencies at rollout, so they're marked slow.
 @pytest.fixture(
@@ -167,32 +167,30 @@ def pytest_collection_modifyitems(config, items) -> None:
 def _eval_config(
     taskset: str,
     *,
-    agent_runtime: str,
     output_dir: Path,
     harness: str = "default",
     n: int = 1,
+    num_tasks: int = 1,
     max_tokens: int = 2048,
     max_turns: int | None = 4,
     rollout_timeout: float = 180,
-    enable_bash: bool = False,
     taskset_overrides: dict | None = None,
+    harness_overrides: dict | None = None,
     pool: dict | None = None,
     model: str | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
-    (`run_v1`) and env-server (`run_v1_server`) fixtures. `model` overrides the default text model
-    (e.g. a VLM for an image task).
+    (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` / `harness_overrides`
+    are merged onto the `{id: ...}` config (placement, runtime, etc.); `model` overrides the default
+    text model (e.g. a VLM for an image task).
 
     `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
     risks truncating the reasoning before the answer (which tanks the reward)."""
-    harness_config: dict = {"id": harness, "runtime": {"type": agent_runtime}}
-    if enable_bash:
-        harness_config["enable_bash"] = True
     return EvalConfig(
         taskset={"id": taskset, **(taskset_overrides or {})},
-        harness=harness_config,
-        num_tasks=1,
+        harness={"id": harness, **(harness_overrides or {})},
+        num_tasks=num_tasks,
         num_rollouts=n,
         max_turns=max_turns,
         max_output_tokens=max_tokens,

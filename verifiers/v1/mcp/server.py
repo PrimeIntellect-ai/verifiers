@@ -8,6 +8,7 @@ starts these in a runtime lives in `launch`.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import functools
 import inspect
@@ -54,6 +55,18 @@ def _request_query(name: str) -> str | None:
     except LookupError:
         return None
     return request.query_params.get(name) if request is not None else None
+
+
+def _die_with_parent() -> None:
+    """Ask the kernel to SIGKILL this process when its parent (the launcher) dies, so a server is
+    never orphaned if its launcher is torn down without stopping it (a backstop to the runtime's
+    own cleanup). Linux-only; a no-op elsewhere. Cleared across `fork`, so a forked child must call
+    it again."""
+    import ctypes
+    import signal
+
+    with contextlib.suppress(Exception):
+        ctypes.CDLL(None).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
 
 
 def _import_ref(ref: str) -> object:
@@ -152,6 +165,38 @@ class ServerBase(Generic[ConfigT, StateT]):
             )
             resp.raise_for_status()
 
+    async def _fetch_task(self, state_url: str | None, secret: str):
+        """Fetch this rollout's task from the interception server's `/task` channel (the sibling of
+        `/state`, keyed by the same bearer secret) and rebuild it — how EVERY launched server gets its
+        task to run `setup_task`. `None` when there's no channel (a shared, task-agnostic server)."""
+        if not state_url:
+            return None
+        task_url = (
+            state_url[: -len("/state")] + "/task"
+            if state_url.endswith("/state")
+            else state_url
+        )
+        import httpx
+
+        async with httpx.AsyncClient(timeout=STATE_TIMEOUT) as client:
+            resp = await client.get(
+                task_url, headers={"Authorization": f"Bearer {secret}"}
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        return _import_ref(data["cls"]).model_validate_json(data["task"])
+
+    async def _setup_task_from_channel(
+        self, state_url: str | None, secret: str
+    ) -> None:
+        """Fetch this rollout's task over the state channel and run `setup_task` for it — a no-op
+        without a channel or task (a shared, task-agnostic server). The single place task setup
+        happens: `_serve` calls it with the env channel; a forked child calls it with its per-request
+        channel (see `verifiers.v1.mcp.multiplex`)."""
+        task = await self._fetch_task(state_url, secret)
+        if task is not None:
+            await self.setup_task(task)
+
     def _with_state(self, fn: Callable) -> Callable:
         """Wrap a tool/respond callable so each invocation pulls the latest shared state into
         `self.state` before running and pushes back any change after — the read/write channel a
@@ -203,10 +248,11 @@ class ServerBase(Generic[ConfigT, StateT]):
     def _register(self, mcp: FastMCP) -> None:
         raise NotImplementedError
 
-    def _serve(self, task) -> None:
-        """Run this server's MCP server: bind its port, `setup` (always) + `setup_task(task)` (only
-        when there's a task — skipped for a shared server), build a FastMCP from the registered tools,
-        and serve it over streamable HTTP on `MCP_HOST`. Called by `run()`."""
+    def _serve(self) -> None:
+        """Run this server's MCP server: bind its port, `setup` (always) + `setup_task` for the
+        rollout's task (fetched from the interception `/task` channel — skipped for a shared server,
+        which has no channel), build a FastMCP from the registered tools, and serve it over streamable
+        HTTP on `MCP_HOST`. Called by `run()`."""
         import asyncio
         import socket
         from pathlib import Path
@@ -214,6 +260,7 @@ class ServerBase(Generic[ConfigT, StateT]):
         import uvicorn
         from mcp.server.fastmcp import FastMCP
 
+        _die_with_parent()  # never outlive the launcher that started us, even if it skips cleanup
         host = os.environ.get("MCP_HOST", "127.0.0.1")
         # Bind our own socket up front: `MCP_PORT` when the framework fixed one (a self-publishing
         # runtime's forwarded port), else 0 = an OS-assigned free port — guaranteed free in whatever
@@ -229,8 +276,10 @@ class ServerBase(Generic[ConfigT, StateT]):
 
         async def _setup() -> None:
             await self.setup()
-            if task is not None:
-                await self.setup_task(task)
+            # Per-rollout servers carry the rollout's state channel in their env; fetch this rollout's
+            # task over it and run `setup_task`. A shared server has no env channel (its forked
+            # children fetch /task per-request instead — see multiplex), so this is a no-op for it.
+            await self._setup_task_from_channel(*self._state_channel())
 
         asyncio.run(_setup())
         # Relax FastMCP's DNS-rebinding guard: it 421s a non-localhost Host, but our servers are
@@ -240,9 +289,15 @@ class ServerBase(Generic[ConfigT, StateT]):
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
         mcp = FastMCP(self.server_name, transport_security=security)
         self._register(mcp)
-        server = uvicorn.Server(
-            uvicorn.Config(mcp.streamable_http_app(), log_level="critical")
-        )
+        app = mcp.streamable_http_app()
+        if getattr(self.config, "fork", False):
+            # `setup` ran once above (warm); fork a child per rollout that inherits it and runs
+            # `setup_task` for the rollout's task (see multiplex).
+            from verifiers.v1.mcp.multiplex import serve_forked
+
+            serve_forked(app, sock, self)
+            return
+        server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
         asyncio.run(server.serve(sockets=[sock]))
 
     @classmethod
@@ -262,9 +317,10 @@ class ServerBase(Generic[ConfigT, StateT]):
     @classmethod
     def run(cls) -> None:
         """Entry point a server module calls from `if __name__ == "__main__"`: rebuild this server
-        from the environment the framework set (`VF_CONFIG` JSON + `VF_TASK`/`VF_TASK_CLS`) and serve
-        it over MCP. With no `VF_CONFIG` the config is parsed from the CLI instead (`cli(config)`),
-        so the module is runnable by hand for debugging. `VF_TASK` is absent for a `shared` server."""
+        from the config the framework set (`VF_CONFIG` JSON) and serve it over MCP. The rollout's task
+        is NOT passed in the environment — the server fetches it from the interception `/task` channel
+        at startup (see `_serve` / `_fetch_task`). With no `VF_CONFIG` the config is parsed from the CLI
+        instead (`cli(config)`), so the module is runnable by hand for debugging (no channel, no task)."""
         config_cls = cls._config_cls()
         if "VF_CONFIG" in os.environ:
             config = config_cls.model_validate_json(os.environ["VF_CONFIG"])
@@ -272,13 +328,4 @@ class ServerBase(Generic[ConfigT, StateT]):
             from pydantic_config import cli
 
             config = cli(config_cls)
-        task = None
-        if "VF_TASK" in os.environ:
-            task_cls = os.environ.get("VF_TASK_CLS")
-            if task_cls is None:
-                raise ValueError(
-                    "VF_TASK is set but VF_TASK_CLS is not; the framework sets both together "
-                    "(VF_TASK_CLS names the Task subclass to rebuild the task with)"
-                )
-            task = _import_ref(task_cls).model_validate_json(os.environ["VF_TASK"])
-        cls(config)._serve(task)
+        cls(config)._serve()
