@@ -44,8 +44,8 @@ _MARK = {
 
 
 def _limits(config: EvalConfig) -> str:
-    """Per-rollout caps for the overview: turns, tokens, concurrency, and any set stage
-    timeouts. An unset cap reads as 'no ...' rather than being hidden."""
+    """Per-rollout caps for the overview: turns, tokens, concurrency. An unset cap reads as
+    'no ...' rather than being hidden."""
     parts = [f"{config.max_turns} turns" if config.max_turns else "no turn cap"]
     toks = []
     if config.max_input_tokens:
@@ -60,12 +60,16 @@ def _limits(config: EvalConfig) -> str:
         if config.max_concurrent
         else "no concurrency cap"
     )
-    timeouts = [
-        f"{stage} {value:g}s"
-        for stage in ("setup", "rollout", "scoring")
-        if (value := getattr(config.timeout, stage))
-    ]
-    parts.append(f"timeout {', '.join(timeouts)}" if timeouts else "no timeout")
+    return "  ·  ".join(parts)
+
+
+def _timeouts(config: EvalConfig) -> str:
+    """Per-stage rollout timeouts for the overview, each stage enumerated (unset → 'no <stage>
+    timeout')."""
+    parts = []
+    for stage in ("setup", "rollout", "scoring"):
+        value = getattr(config.timeout, stage)
+        parts.append(f"{stage} {value:g}s" if value else f"no {stage} timeout")
     return "  ·  ".join(parts)
 
 
@@ -101,6 +105,7 @@ def Overview(config: EvalConfig) -> Table:
         )
     grid.add_row("model", f"{config.model}  ({sampling})" if sampling else config.model)
     grid.add_row("limits", _limits(config))
+    grid.add_row("timeouts", _timeouts(config))
     grid.add_row("retries", _retries(config))
     grid.add_row("output", str(output_path(config)))
     return grid
