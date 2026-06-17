@@ -41,9 +41,7 @@ def test_routed_experts_attributed_and_aligned_across_turns():
     and survives the base64 wire round-trip."""
     trace = vf.Trace(task=vf.Task(idx=0, instruction="x"))
     user = vf.UserMessage(content="u1")
-    graph.add_turn(
-        trace,
-        [user],
+    graph.prepare_turn(trace, [user]).commit(
         vf.Response(
             id="a",
             created=0,
@@ -56,11 +54,12 @@ def test_routed_experts_attributed_and_aligned_across_turns():
                 message_spans=[(0, 2)],
                 routed_experts=_routed_payload(5, 0, 0),
             ),
-        ),
+        )
     )
-    graph.add_turn(
+    graph.prepare_turn(
         trace,
         [user, vf.AssistantMessage(content="a1"), vf.UserMessage(content="u2")],
+    ).commit(
         vf.Response(
             id="b",
             created=0,
@@ -73,7 +72,7 @@ def test_routed_experts_attributed_and_aligned_across_turns():
                 message_spans=[(0, 2), None, (5, 7)],
                 routed_experts=_routed_payload(9, 0, 100),
             ),
-        ),
+        )
     )
     branch = trace.branches[-1]
     re = branch.routed_experts
@@ -89,9 +88,7 @@ def test_routed_experts_none_when_absent():
     """No routing captured (engine ran without `enable_return_routed_experts`) -> the branch
     reports None and the trainer simply skips replay."""
     trace = vf.Trace(task=vf.Task(idx=0, instruction="x"))
-    graph.add_turn(
-        trace,
-        [vf.UserMessage(content="u1")],
+    graph.prepare_turn(trace, [vf.UserMessage(content="u1")]).commit(
         vf.Response(
             id="a",
             created=0,
@@ -101,7 +98,7 @@ def test_routed_experts_none_when_absent():
             tokens=TurnTokens(
                 prompt_ids=[1, 2], completion_ids=[3], message_spans=[(0, 2)]
             ),
-        ),
+        )
     )
     assert trace.branches[-1].routed_experts is None
 
@@ -127,18 +124,16 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
     user = vf.UserMessage(content="use a tool")
     call = vf.ToolCall(id="call_0", name="lookup", arguments="{}")
 
-    graph.add_turn(
-        trace,
-        [user],
+    graph.prepare_turn(trace, [user]).commit(
         _response(
             vf.AssistantMessage(
                 content=None,
                 reasoning_content="plan A",
                 tool_calls=[call],
             )
-        ),
+        )
     )
-    graph.add_turn(
+    graph.prepare_turn(
         trace,
         [
             user,
@@ -149,8 +144,7 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
             ),
             vf.ToolMessage(content="result", tool_call_id="call_0"),
         ],
-        _response(vf.AssistantMessage(content="done")),
-    )
+    ).commit(_response(vf.AssistantMessage(content="done")))
 
     tool_call_nodes = [
         node
@@ -158,6 +152,65 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
         if isinstance(node.message, vf.AssistantMessage) and node.message.tool_calls
     ]
     assert len(tool_call_nodes) == 2
+
+
+def test_renderer_level_break_forks_by_token_id():
+    """Two turns with the *same* message sequence and identical message hashes, but the prior
+    assistant turn is retokenized (renderer drift — e.g. a chat template dropping a `<think>`
+    block on re-render): the stored prefix tokens no longer match this turn's `prompt_ids`.
+    Message-hash dedup alone would silently reuse the stale prefix; token-identity prefix reuse
+    must fork at the diverging node. Each branch's leaf→root token concatenation still equals
+    its own `prompt_ids + completion_ids`."""
+    user = vf.UserMessage(content="u1")
+    a1 = vf.AssistantMessage(content="a1")
+    u2 = vf.UserMessage(content="u2")
+
+    def first_turn(trace):
+        graph.prepare_turn(trace, [user]).commit(
+            vf.Response(
+                id="a",
+                created=0,
+                model="t",
+                message=a1,
+                finish_reason="stop",
+                tokens=TurnTokens(
+                    prompt_ids=[1, 2, 3], completion_ids=[4, 5], message_spans=[(0, 2)]
+                ),
+            )
+        )
+
+    def second_turn(trace, prompt_ids):
+        graph.prepare_turn(trace, [user, a1, u2]).commit(
+            vf.Response(
+                id="b",
+                created=0,
+                model="t",
+                message=vf.AssistantMessage(content="a2"),
+                finish_reason="stop",
+                tokens=TurnTokens(
+                    prompt_ids=prompt_ids,
+                    completion_ids=[8],
+                    message_spans=[(0, 2), (2, 5), (5, 7)],
+                ),
+            )
+        )
+
+    # Control: the prior turn re-renders to the same tokens -> stays one linear branch.
+    linear = vf.Trace(task=vf.Task(idx=0, instruction="x"))
+    first_turn(linear)
+    second_turn(linear, [1, 2, 3, 4, 5, 6, 7])
+    assert linear.num_branches == 1
+    assert linear.branches[0].token_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+
+    # Break: the assistant turn retokenizes (4 -> 99), so prompt_ids diverge at that node.
+    broken = vf.Trace(task=vf.Task(idx=0, instruction="x"))
+    first_turn(broken)
+    second_turn(broken, [1, 2, 3, 99, 5, 6, 7])
+    assert broken.num_branches == 2
+    assert sorted(b.token_ids for b in broken.branches) == [
+        [1, 2, 3, 4, 5],
+        [1, 2, 3, 99, 5, 6, 7, 8],
+    ]
 
 
 def test_prompt_supplied_assistant_messages_are_not_sampled_turns():
@@ -169,15 +222,14 @@ def test_prompt_supplied_assistant_messages_are_not_sampled_turns():
     )
     response = vf.AssistantMessage(content="real answer")
 
-    graph.add_turn(
+    graph.prepare_turn(
         trace,
         [
             vf.UserMessage(content="question"),
             fabricated,
             vf.ToolMessage(content="fabricated result", tool_call_id="call_0"),
         ],
-        _response(response),
-    )
+    ).commit(_response(response))
 
     assert [n.sampled for n in trace.nodes] == [False, False, False, True]
     assert trace.num_turns == 1
