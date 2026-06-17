@@ -236,6 +236,7 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
 def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
     return Group(
         Overview(config),
+        Text(""),  # blank line between the overview and the progress bar
         Progress(rollouts, start),
         Rule(style="dim"),
         Rows(_groups(rollouts), time.time(), config.harness.runtime.type),
