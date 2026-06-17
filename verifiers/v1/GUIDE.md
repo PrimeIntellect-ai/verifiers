@@ -280,7 +280,8 @@ Built-ins, selected with `--harness.id`:
 
 | id | what it is |
 | --- | --- |
-| `default` | a tiny OpenAI chat loop (bash tool opt-in via `--harness.enable-bash`) |
+| `default` | a tiny OpenAI chat loop (MCP tools only, no tools of its own) |
+| `bash` | the `default` chat loop plus a local `bash` tool, for shell-driving agents |
 | `rlm` | the RLM CLI agent |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
 
@@ -319,7 +320,7 @@ PROGRAM = (Path(__file__).parent / "program.py").read_text()  # a uv script, dep
 
 class MyHarnessConfig(vf.HarnessConfig):
     id: str = "my-harness"
-    enable_bash: bool = False        # a harness-specific knob; surfaces as --harness.enable-bash
+    max_steps: int = 50              # a harness-specific knob; surfaces as --harness.max-steps
 
 
 class MyHarness(vf.Harness[MyHarnessConfig]):
@@ -330,7 +331,7 @@ class MyHarness(vf.Harness[MyHarnessConfig]):
         system, instruction = self.resolve_prompt(trace.task)
         env = {"OPENAI_BASE_URL": endpoint, "OPENAI_API_KEY": secret,
                "OPENAI_MODEL": ctx.model, "SYSTEM_PROMPT": system or "",
-               "ENABLE_BASH": "1" if self.config.enable_bash else "0"}
+               "MAX_STEPS": str(self.config.max_steps)}
         return await runtime.run_uv_script(PROGRAM, args=[instruction], env=env)
 
 
@@ -400,7 +401,7 @@ TOML form. In a prime-rl config:
 [[orchestrator.train.env]]
 name    = "gsm8k"
 taskset = { id = "math-env-v1", dataset_name = "..." }              # any v1 taskset id
-harness = { id = "default", enable_bash = false, runtime = { type = "subprocess" } }
+harness = { id = "default", runtime = { type = "subprocess" } }
 timeout = { scoring = 10 }                                          # per-stage cap (default: no limit)
 # pool  = { type = "elastic", max_workers = 8, multiplex = 128 }    # env-server pool (default elastic, self-sizing)
 ```

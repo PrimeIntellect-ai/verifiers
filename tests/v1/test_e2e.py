@@ -197,15 +197,11 @@ async def test_tool_response_image(run_v1, tmp_path):
 
 @pytest.mark.e2e
 async def test_agentic(run_v1, agentic_harness, harness_runtime, tmp_path):
-    """Agentic: write a phrase to a file with the harness's bash tool, checked in the runtime."""
+    """Agentic: write a phrase to a file with the agent's shell, checked in the runtime."""
     (trace,) = await run_v1(
         "echo-agentic-v1",
         harness=agentic_harness,
-        harness_overrides={
-            "runtime": {"type": harness_runtime},
-            # the default harness gates its bash tool behind this flag; the agent CLIs don't take it
-            **({"enable_bash": True} if agentic_harness == "default" else {}),
-        },
+        harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=10,
     )

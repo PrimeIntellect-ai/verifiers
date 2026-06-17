@@ -122,12 +122,13 @@ def harness(request) -> str:
     return request.param
 
 
-# `codex` lives here, not in `harness`: it's an autonomous coding agent, so on a no-op chat task
-# (`test_single_turn`'s echo) it often just completes its loop without ever replying (0 model calls),
-# which is flaky; on a task with a concrete action (writing a file) it's reliable.
+# `bash` (and `codex`) live here, not in `harness`: a bash/CLI agent on a no-op chat task
+# (`test_single_turn`'s echo) may run a shell command or complete its loop without replying, which
+# is flaky; on a task with a concrete action (writing a file) it's reliable. `bash` is the built-in
+# chat loop + a bash tool, so it installs nothing and runs fast (not marked slow).
 @pytest.fixture(
     params=[
-        pytest.param("default", id="default-harness"),
+        pytest.param("bash", id="bash-harness"),
         pytest.param(
             "mini-swe-agent", marks=pytest.mark.slow, id="mini-swe-agent-harness"
         ),

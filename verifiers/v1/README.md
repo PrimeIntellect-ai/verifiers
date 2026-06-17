@@ -69,7 +69,7 @@ Tasksets (data + scoring) and harnesses (the rollout driver) are Python packages
 and live in two places:
 
 - **`packages/`** — shipped, installed by default. Commonly-used **harnesses** (`default`,
-  `rlm`, `codex`, ...) and **taskset integrations** that wrap a whole benchmark family (`harbor-v1` — 
+  `bash`, `rlm`, `codex`, ...) and **taskset integrations** that wrap a whole benchmark family (`harbor-v1` — 
   the agentic-benchmark registry; `textarena-v1` — TextArena games).
 - **`environments/`** — small reference implementations to copy when **authoring your own**
   (the `*_v1` tasksets and the `compact` harness), co-located with the standalone v0
@@ -103,7 +103,8 @@ Harness examples (under `environments/`):
 The program that drives the rollout — same taskset, different driver:
 
 ```bash
-uv run eval gsm8k-v1 -n 1                     # default: a tiny OpenAI chat loop (bash tool opt-in)
+uv run eval gsm8k-v1 -n 1                     # default: bare agent (MCP tools only)
+uv run eval gsm8k-v1 -n 1 --harness.id bash   # bash-only agent
 uv run eval gsm8k-v1 -n 1 --harness.id rlm    # the rlm harness
 uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
 ```
