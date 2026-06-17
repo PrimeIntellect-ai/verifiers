@@ -103,14 +103,17 @@ Add an explicit harness loader when the environment owns harness behavior:
 ```bash
 prime env init my-env --with-harness
 ```
-For OpenEnv integration, use:
+For OpenEnv integration, start with a v1 environment:
 ```bash
-prime env init my-openenv --openenv
+prime env init my-openenv --v1
 ```
-Then copy your OpenEnv project into `environments/my_openenv/proj/` and build the image with:
+Subclass the reusable `tasksets.openenv_v1.OpenEnvTaskset`, put the OpenEnv project
+inside the package at `my_openenv/proj/`, and build its image with:
 ```bash
 uv run vf-build my-openenv
 ```
+The adapter supports both OpenEnv gym and MCP contracts. See
+`openenv-textarena-v1` and `openenv-echo-v1` for minimal examples.
 
 This will create a new module called `my_env` with a basic environment template.
 ```

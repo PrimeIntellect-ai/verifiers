@@ -27,3 +27,13 @@ def test_resolve_env_push_target_uses_explicit_environment_path_when_env_id_miss
 
     assert env_name == "already-normalized"
     assert env_path == explicit_env_path.resolve()
+
+
+def test_resolve_project_dir_accepts_project_inside_package(tmp_path: Path):
+    environments = tmp_path / "environments"
+    project = environments / "my_env" / "my_env" / "proj"
+    project.mkdir(parents=True)
+    (project / "openenv.yaml").touch()
+    (project / "pyproject.toml").touch()
+
+    assert build._resolve_project_dir(environments, "my_env") == project

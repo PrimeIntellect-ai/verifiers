@@ -1,0 +1,10 @@
+{
+  "app": "server.app:app",
+  "contract": "gym",
+  "environment_id": "openenv-textarena-v1",
+  "image": "team-clyvldofb0000gg1kx39rgzjq/openenv-textarena-v1:latest",
+  "image_status": "COMPLETED",
+  "port": 8001,
+  "schema_version": 1,
+  "start_command": "sh -lc \"cd /app/env && /app/.venv/bin/uvicorn server.app:app --host 0.0.0.0 --port 8001\""
+}

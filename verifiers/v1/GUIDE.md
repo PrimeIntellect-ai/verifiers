@@ -440,6 +440,7 @@ The `*_v1` tasksets under `environments/` are the reference library — each sho
 | `color-codeword-v1` | a multimodal (image) task |
 | `scaleswe-v1`, `swelego-v1`, `r2e-gym-v1` | containerized SWE tasks (rlm harness, prime runtime) |
 | `wordle-v1`, `terminal-bench-2-v1` | thin configs over the shipped `textarena-v1` / `harbor-v1` integrations |
+| `openenv-echo-v1`, `openenv-textarena-v1` | thin MCP/gym configs over the shipped `openenv-v1` adapter |
 
 ---
 

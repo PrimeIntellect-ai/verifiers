@@ -42,10 +42,12 @@ def _resolve_project_dir(environments_root: Path, env_id_underscore: str) -> Pat
         )
 
     project_dir = env_path / "proj"
+    if not project_dir.is_dir():
+        project_dir = env_path / env_id_underscore / "proj"
     if not project_dir.exists() or not project_dir.is_dir():
         raise FileNotFoundError(
             f"Embedded project directory not found: {project_dir}. "
-            "Required structure: environments/<env_id_underscore>/proj/"
+            "Expected environments/<name>/proj/ or environments/<name>/<package>/proj/."
         )
 
     required = [
@@ -309,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Build and register a Docker image for an environment using the enforced "
-            "layout: environments/<env_id_underscore>/proj."
+            "layout: environments/<env>/proj or environments/<env>/<package>/proj."
         )
     )
     parser.add_argument(
