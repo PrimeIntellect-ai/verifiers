@@ -391,16 +391,42 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     spans = tokens.message_spans if tokens else None
     idx = _head_index(trace)
 
-    parent = turn.parent
+    # Token-based prefix reuse. `prepare_turn` matched the prefix by message hash (content); when
+    # this turn carries token ids, tighten that to token identity — the stored prefix must be an
+    # exact token prefix of what the model saw this turn (`prompt_ids`). Reuse whole nodes within
+    # the longest common token prefix and fork at the first divergence, so a retokenized prior
+    # (BPE drift, dropped `<think>`, rewritten tool calls) branches off with this turn's real
+    # tokens instead of silently inheriting stale ones. Comparing the *concatenated* prefix (not
+    # per-message spans) is what makes this correct: a prior assistant's stored generation form
+    # and its re-rendered input form place the turn-close scaffold in different nodes but at the
+    # same position, so only a genuine content/token change shifts the common prefix. The bridge
+    # keeps the prior verbatim so it matches fully (stays linear); the eval relay carries no token
+    # ids and keeps the message-hash prefix.
+    prefix = turn.prefix_node_ids
     path_len = turn.path_len  # cumulative stored token length of the reused prefix
+    if tokens is not None and prefix:
+        stored: list[int] = []
+        node_end: list[int] = []
+        for nid in prefix:
+            stored.extend(trace.nodes[nid].token_ids)
+            node_end.append(len(stored))
+        lcp = 0
+        while (
+            lcp < len(stored)
+            and lcp < len(prompt_ids)
+            and stored[lcp] == prompt_ids[lcp]
+        ):
+            lcp += 1
+        keep = sum(1 for end in node_end if end <= lcp)
+        prefix = prefix[:keep]
+        path_len = node_end[keep - 1] if keep else 0
+    num_reused = len(prefix)
+    parent = prefix[-1] if prefix else None
     # cursor: in prompt_ids, the end of the previous *new* message's tokens
     cursor: int | None = None
     # (node_id, message) per prompt message (reused prefix first, then new), for multimodal
     # attribution; `num_reused` marks where the newly-created nodes begin.
-    path: list[tuple[int, Message]] = [
-        (nid, prompt[i]) for i, nid in enumerate(turn.prefix_node_ids)
-    ]
-    num_reused = len(turn.prefix_node_ids)
+    path: list[tuple[int, Message]] = [(nid, prompt[i]) for i, nid in enumerate(prefix)]
     for i, msg in enumerate(prompt[num_reused:], start=num_reused):
         key = (parent, message_hash(msg))
         start = path_len if cursor is None else cursor

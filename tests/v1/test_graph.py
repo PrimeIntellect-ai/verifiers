@@ -234,3 +234,81 @@ def test_prepare_turn_exposes_bridge_anchor_and_commits_on_same_prefix():
         vf.AssistantMessage(content="a2"),
     ]
     assert trace.branches[-1].token_ids == [10, 11, 12, 20, 21, 30, 31, 32, 40]
+
+
+def _turn(prompt, message, prompt_ids, completion_ids, message_spans):
+    return prompt, vf.Response(
+        id="",
+        created=0,
+        model="test",
+        message=message,
+        finish_reason="stop",
+        tokens=TurnTokens(
+            prompt_ids=prompt_ids,
+            completion_ids=completion_ids,
+            message_spans=message_spans,
+        ),
+    )
+
+
+def test_token_prefix_reuse_stays_linear_when_tokens_match():
+    """A faithful re-render (prefix retokenizes identically) reuses the whole prefix → 1 branch."""
+    trace = vf.Trace(task=vf.Task(idx=0, instruction="x"))
+    user = vf.UserMessage(content="u1")
+    a1 = vf.AssistantMessage(content="a1")
+    # turn 1: [user] -> a1. user=[10,11], gen scaffold=[12], completion=[20,21].
+    graph.add_turn(trace, *_turn([user], a1, [10, 11, 12], [20, 21], [(0, 2)]))
+    # turn 2 full re-render: user=[10,11] (same), a1 input=[12,20,21,13], user2=[30,31], gen=[14].
+    user2 = vf.UserMessage(content="u2")
+    graph.add_turn(
+        trace,
+        *_turn(
+            [user, a1, user2],
+            vf.AssistantMessage(content="a2"),
+            [10, 11, 12, 20, 21, 13, 30, 31, 14],
+            [40],
+            [(0, 2), (2, 6), (6, 8)],
+        ),
+    )
+    assert trace.num_branches == 1
+
+
+def test_token_prefix_reuse_forks_on_assistant_retokenization():
+    """When a re-render drops the prior assistant's `<think>` (token drift inside the assistant
+    node), the token prefix diverges there: the user node is shared but the assistant forks a new
+    branch carrying this turn's actual tokens, instead of silently reusing the stale ones."""
+    trace = vf.Trace(task=vf.Task(idx=0, instruction="x"))
+    user = vf.UserMessage(content="u1")
+    a1 = vf.AssistantMessage(content="a1")
+    # turn 1: user=[10,11], gen scaffold=[12], completion=[20,21,22] (e.g. think=[20,21]+content=[22]).
+    graph.add_turn(trace, *_turn([user], a1, [10, 11, 12], [20, 21, 22], [(0, 2)]))
+    # turn 2 re-render with the think dropped: a1 input=[12,22,13] (no [20,21]); user2=[30,31].
+    user2 = vf.UserMessage(content="u2")
+    graph.add_turn(
+        trace,
+        *_turn(
+            [user, a1, user2],
+            vf.AssistantMessage(content="a2"),
+            [10, 11, 12, 22, 13, 30, 31, 14],
+            [40],
+            [(0, 2), (2, 5), (5, 7)],
+        ),
+    )
+    assert trace.num_branches == 2  # drift surfaced as a branch
+    # the shared user node is reused (not duplicated): 1 user node at the root
+    roots = [n for n in trace.nodes if n.parent is None]
+    assert len(roots) == 1 and roots[0].message.content == "u1"
+
+
+def test_token_prefix_reuse_falls_back_to_hash_without_tokens():
+    """The eval relay carries no token ids; prefix reuse falls back to message-hash → 1 branch."""
+    trace = vf.Trace(task=vf.Task(idx=0, instruction="x"))
+    user = vf.UserMessage(content="u1")
+    graph.add_turn(trace, [user], _response(vf.AssistantMessage(content="a1")))
+    user2 = vf.UserMessage(content="u2")
+    graph.add_turn(
+        trace,
+        [user, vf.AssistantMessage(content="a1"), user2],
+        _response(vf.AssistantMessage(content="a2")),
+    )
+    assert trace.num_branches == 1
