@@ -41,12 +41,19 @@ _MARK = {
     "success": "✓",
     "error": "✗",
 }
+# Overview rows dim the structural bits (separators, unit/connector words, "no ..." entries)
+# so the actual values — names, numbers, the endpoint — are what the eye lands on.
+_SEP = "  [dim]·[/dim]  "
 
 
 def _limits(config: EvalConfig) -> str:
     """Per-rollout caps for the overview: turns, tokens, concurrency. An unset cap reads as
     'no ...' rather than being hidden."""
-    parts = [f"{config.max_turns} turns" if config.max_turns else "no turn cap"]
+    parts = [
+        f"{config.max_turns} [dim]turns[/dim]"
+        if config.max_turns
+        else "[dim]no turn cap[/dim]"
+    ]
     toks = []
     if config.max_input_tokens:
         toks.append(f"in≤{config.max_input_tokens}")
@@ -54,13 +61,15 @@ def _limits(config: EvalConfig) -> str:
         toks.append(f"out≤{config.max_output_tokens}")
     if config.max_total_tokens:
         toks.append(f"total≤{config.max_total_tokens}")
-    parts.append(f"{', '.join(toks)} tokens" if toks else "no token cap")
     parts.append(
-        f"≤{config.max_concurrent} concurrent"
-        if config.max_concurrent
-        else "no concurrency cap"
+        f"{', '.join(toks)} [dim]tokens[/dim]" if toks else "[dim]no token cap[/dim]"
     )
-    return "  ·  ".join(parts)
+    parts.append(
+        f"≤{config.max_concurrent} [dim]concurrent[/dim]"
+        if config.max_concurrent
+        else "[dim]no concurrency cap[/dim]"
+    )
+    return _SEP.join(parts)
 
 
 def _timeouts(config: EvalConfig) -> str:
@@ -69,16 +78,24 @@ def _timeouts(config: EvalConfig) -> str:
     parts = []
     for stage in ("setup", "rollout", "finalize", "scoring"):
         value = getattr(config.timeout, stage)
-        parts.append(f"{stage} {value:g}s" if value else f"no {stage} timeout")
-    return "  ·  ".join(parts)
+        parts.append(
+            f"[dim]{stage}[/dim] {value:g}s"
+            if value
+            else f"[dim]no {stage} timeout[/dim]"
+        )
+    return _SEP.join(parts)
 
 
 def _retries(config: EvalConfig) -> str:
     """Per-call (model, runtime) and whole-rollout retry budgets for the overview."""
     r = config.retries
-    return (
-        f"model ×{r.model.max_retries}  ·  runtime ×{r.runtime.max_retries}  ·  "
-        f"rollout ×{r.rollout.max_retries}"
+    return _SEP.join(
+        f"[dim]{name}[/dim] ×{cfg.max_retries}"
+        for name, cfg in (
+            ("model", r.model),
+            ("runtime", r.runtime),
+            ("rollout", r.rollout),
+        )
     )
 
 
@@ -91,7 +108,8 @@ def Overview(config: EvalConfig) -> Table:
     grid.add_column()
     grid.add_row(
         "env",
-        f"{config.taskset.name}  ·  {config.harness.name} harness  ·  {config.harness.runtime.type} runtime",
+        f"{config.taskset.name}{_SEP}{config.harness.name} [dim]harness[/dim]"
+        f"{_SEP}{config.harness.runtime.type} [dim]runtime[/dim]",
     )
     if config.harness.id != "default" and config.harness.runtime.type == "subprocess":
         grid.add_row(
@@ -103,12 +121,13 @@ def Overview(config: EvalConfig) -> Table:
                 style="yellow",
             ),
         )
-    model = f"{config.model}  ({sampling})" if sampling else config.model
-    grid.add_row("model", f"{model}  via {config.client.base_url}")
+    model = f"{config.model}  [dim]({sampling})[/dim]" if sampling else config.model
+    grid.add_row("model", f"{model}  [dim]via[/dim] {config.client.base_url}")
     grid.add_row("limits", _limits(config))
     grid.add_row("timeouts", _timeouts(config))
     grid.add_row("retries", _retries(config))
-    grid.add_row("output", str(output_path(config)))
+    path = output_path(config)
+    grid.add_row("output", f"[dim]{path.parent}/[/dim]{path.name}")
     return grid
 
 
