@@ -28,7 +28,6 @@ from verifiers.v1.env import (
 from verifiers.v1.episode import Episode
 from verifiers.v1.errors import ModelError, ProgramError, RolloutError, ToolError
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.ids import EnvId, ensure_installed, env_name
 from verifiers.v1.loaders import (
     harness_config_type,
     import_harness,
@@ -69,6 +68,7 @@ from verifiers.v1.trace import (
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
+    EnvId,
     ImageUrlContentPart,
     ImageUrlSource,
     Message,
@@ -90,8 +90,6 @@ from verifiers.v1.types import (
 __all__ = [
     # types
     "EnvId",
-    "ensure_installed",
-    "env_name",
     "AssistantMessage",
     "ContentPart",
     "ImageUrlContentPart",

@@ -22,7 +22,8 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.ids import EnvId, env_name
+from verifiers.v1.types import EnvId
+from verifiers.v1.utils import env_name
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.mcp import Toolset, User
 from verifiers.v1.state import StateT
