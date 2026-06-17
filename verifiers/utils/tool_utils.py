@@ -33,11 +33,12 @@ def convert_func_to_tool_def(func: Callable[..., Any]) -> Tool:
     model = func_metadata(func, structured_output=False).arg_model
     model.model_config["title"] = f"{name}_args"
 
-    fields = {field.alias or name: field for name, field in model.model_fields.items()}
+    fields = dict(model.model_fields)
+    fields.update({field.alias: field for field in fields.values() if field.alias})
     descriptions = {param.arg_name: param.description for param in doc.params}
     for param in inspect.signature(func).parameters.values():
         field = fields[param.name]
-        field.description = field.description or descriptions.get(param.name)
+        field.description = descriptions.get(param.name) or field.description
         if param.annotation is inspect.Parameter.empty:
             field.metadata = []
     model.model_rebuild(force=True)
@@ -46,6 +47,6 @@ def convert_func_to_tool_def(func: Callable[..., Any]) -> Tool:
         pydantic_function_tool(
             model,
             name=name,
-            description=doc.short_description or "",
+            description=(doc.description or "").strip(),
         )["function"]
     )
