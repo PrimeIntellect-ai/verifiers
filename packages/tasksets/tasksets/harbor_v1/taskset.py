@@ -287,6 +287,11 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
                     f"Harbor artifact directory setup failed: "
                     f"{result.stderr or result.stdout}"
                 )
+            artifact_paths = [
+                path
+                for path in artifact_paths
+                if not (await runtime.run(["test", "-e", path], {})).exit_code
+            ]
             result = await runtime.run(
                 ["tar", "-czf", archive, *artifact_paths],
                 {},
