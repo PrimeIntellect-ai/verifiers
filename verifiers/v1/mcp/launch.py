@@ -282,10 +282,21 @@ async def serve(
             "(each rollout gets a forked child that runs `setup_task`).",
             server.server_name,
         )
-    if shared and getattr(cfg, "fork", False) and not runtime_is_local(cfg.runtime):
+    if (
+        shared
+        and getattr(cfg, "fork", False)
+        and agent_is_local
+        and not runtime_is_local(cfg.runtime)
+    ):
+        # The shared server's forked children reach the rollout's /state + /task over the interception
+        # server's reachable base. A remote harness makes that a public tunnel (any sandbox can reach
+        # it); a LOCAL harness keeps it at localhost, which a remote shared runtime can't reach — the
+        # one combination fork can't be wired for. Local shared, or a remote harness, are both fine.
         raise ValueError(
-            f"forked shared server {server.server_name!r} needs a local runtime — the per-rollout "
-            "key is only tagged onto a local shared server's URL (set its runtime back to subprocess)"
+            f"forked shared server {server.server_name!r} runs on a remote runtime but the harness is "
+            "local, so the interception server is reachable only at localhost — the remote shared "
+            "server can't reach its /state + /task channel. Run the harness remotely too (so the "
+            "interception tunnel is shared), or use a local tool runtime."
         )
     async with contextlib.AsyncExitStack() as stack:
         if cfg.colocated and agent_runtime is not None:
@@ -355,21 +366,19 @@ async def serve_shared(toolsets: list[Toolset], agent_is_local: bool = True):
         yield urls
 
 
-def _shared_url_for_rollout(
-    url: str, toolset: Toolset, state_port: int | None, state_secret: str
-) -> str:
+def _shared_url_for_rollout(url: str, state_base: str | None, state_secret: str) -> str:
     """Tag a `shared` server's eval-level URL with this rollout's state-channel coordinates, so the
-    one shared process serves each rollout its OWN `self.state` (the per-rollout isolation a writable
-    shared server needs — read-only ones simply ignore it). Only when the shared server runs on a
-    local runtime, which reaches the host interception server at localhost; a remote shared runtime
-    gets the plain URL (no per-rollout state — read-only-safe, as before). The secret is the bearer
-    token the harness already holds, so tagging it on the URL is no new exposure."""
-    if state_port is None or not runtime_is_local(toolset.config.runtime):
+    one shared process serves each rollout its OWN `self.state` (and a forked child fetches its task).
+    `state_base` is the interception server's reachable base for THIS rollout — localhost for a local
+    harness, the pool's tunnel for a remote one — so the shared server reaches `/state` + `/task` over
+    it from wherever it runs (the launch-time guard rejects the one combo it can't: a local harness +
+    a remote shared runtime). The secret is the bearer the harness already holds, so it's no new
+    exposure — but it must not be logged (callers log the untagged base)."""
+    if not state_base:
         return url
-    state_url = f"http://127.0.0.1:{state_port}/state"
     parts = urlsplit(url)
     query = dict(parse_qsl(parts.query))
-    query[STATE_URL_PARAM] = state_url
+    query[STATE_URL_PARAM] = f"{state_base.rstrip('/')}/state"
     query[STATE_SECRET_PARAM] = state_secret
     return urlunsplit(parts._replace(query=urlencode(query)))
 
@@ -396,12 +405,14 @@ async def serve_tools(
     *,
     state_port: int | None = None,
     state_secret: str = "",
+    state_base: str | None = None,
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches. A `shared`
     toolset reuses the eval-level instance in `shared_urls`; the rest are launched by `serve`
     (placement off each one's `config`, the rollout's `task` for its `setup`) — so different
     servers can run in different runtimes. `state_port`/`state_secret` wire each per-rollout server to
-    the interception server's shared-state channel."""
+    the interception server's shared-state channel; `state_base` (its reachable URL for this rollout)
+    wires a `shared` server, which can't take a per-process channel, via its per-request URL tag."""
     shared_urls = shared_urls or {}
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
@@ -413,7 +424,7 @@ async def serve_tools(
                 logger.info("tool server '%s' (remote): %s", name, cfg.url)
             elif name in shared_urls:  # one shared instance, started eval-level
                 urls[name] = _shared_url_for_rollout(
-                    shared_urls[name], toolset, state_port, state_secret
+                    shared_urls[name], state_base, state_secret
                 )
                 # log the untagged base, NOT urls[name] — the per-rollout tag carries the rollout's
                 # bearer secret (`vf_state_secret`), which must not reach a log sink

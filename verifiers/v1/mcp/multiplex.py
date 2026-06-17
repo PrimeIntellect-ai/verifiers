@@ -13,9 +13,13 @@ ordinary stateful per-rollout server (expensive `setup` + per-rollout `setup_tas
 `wikispeedia-v1`) is isolated per rollout with no rollout-aware code.
 
 The rollout key is the per-rollout secret the framework tags onto a shared server's URL
-(`STATE_SECRET_PARAM`, see `serve_tools`) — which is only added for a local shared runtime, so fork
-requires one. Children are reaped on a `POST /vf/close?<key>` from rollout teardown, by an idle TTL,
-and when the parent exits (each child also dies with its parent via `PR_SET_PDEATHSIG`).
+(`STATE_SECRET_PARAM`, see `serve_tools`), alongside the reachable interception base
+(`STATE_URL_PARAM`) for this rollout's `/state` + `/task`. The proxy routes by the key (intra-sandbox,
+no host needed); the child reaches `/state` + `/task` over that base — localhost when the harness is
+local, the pool's public tunnel when it's remote — so fork works on a remote runtime too. The
+launcher rejects only the one combo where the base is unreachable: a local harness (interception at
+localhost) + a remote shared runtime. Children are reaped on a `POST /vf/close?<key>` from rollout
+teardown, by an idle TTL, and when the parent exits (each child also dies with it via `PR_SET_PDEATHSIG`).
 
 Caveats: Linux/fork only; do NOT use with CUDA/GPU state or background threads in the server (fork
 copies neither safely) — the fork here is from a single-threaded loop, before any such state. Writes
