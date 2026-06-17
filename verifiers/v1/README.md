@@ -206,7 +206,9 @@ uv run eval gsm8k-v1 -n 1 --client.type train \      # train: client-side tokeni
   --client.base-url http://localhost:8000/v1
 ```
 
-`eval` is the default; `train` is only needed for the prime-rl training integration (it tokenizes client-side so each branch comes back as a ready training sample).
+`eval` is the default; `train` is only needed for the prime-rl training
+integration (it tokenizes client-side so each branch comes back as a ready
+training sample).
 
 ### Budgets
 
