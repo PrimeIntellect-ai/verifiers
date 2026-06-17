@@ -251,6 +251,16 @@ class Environment:
                 "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
                 "use --harness.runtime.type docker or prime."
             )
+        if self.harness.config.id != "default" and isinstance(
+            self.harness.config.runtime, SubprocessConfig
+        ):
+            logger.warning(
+                "Harness %r is running in the subprocess runtime on the local system. "
+                "Local files and settings may affect the evaluation; use subprocess only "
+                "for debugging. Use --harness.runtime.type docker or prime for an isolated "
+                "run.",
+                self.harness.config.id,
+            )
         self.setup_timeout = config.timeout.setup
         self.harness_timeout = config.timeout.rollout
         self.finalize_timeout = config.timeout.finalize
