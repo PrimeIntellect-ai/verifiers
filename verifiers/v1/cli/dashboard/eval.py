@@ -86,19 +86,6 @@ def _timeouts(config: EvalConfig) -> str:
     return _SEP.join(parts)
 
 
-def _retries(config: EvalConfig) -> str:
-    """Per-call (model, runtime) and whole-rollout retry budgets for the overview."""
-    r = config.retries
-    return _SEP.join(
-        f"[dim]{name}[/dim] ×{cfg.max_retries}"
-        for name, cfg in (
-            ("model", r.model),
-            ("runtime", r.runtime),
-            ("rollout", r.rollout),
-        )
-    )
-
-
 def Overview(config: EvalConfig) -> Table:
     sampling = ", ".join(
         f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items()
@@ -125,7 +112,6 @@ def Overview(config: EvalConfig) -> Table:
     grid.add_row("model", f"{model}  [dim]via[/dim] {config.client.base_url}")
     grid.add_row("limits", _limits(config))
     grid.add_row("timeouts", _timeouts(config))
-    grid.add_row("retries", _retries(config))
     path = output_path(config)
     grid.add_row("output", f"[dim]{path.parent}/[/dim]{path.name}")
     return grid
