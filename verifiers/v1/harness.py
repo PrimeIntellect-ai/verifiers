@@ -20,7 +20,12 @@ from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.ids import EnvId, env_name
-from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeConfig, SubprocessConfig
+from verifiers.v1.runtimes import (
+    ProgramResult,
+    Runtime,
+    RuntimeConfig,
+    SubprocessConfig,
+)
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
