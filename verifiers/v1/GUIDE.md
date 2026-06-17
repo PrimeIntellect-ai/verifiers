@@ -378,7 +378,8 @@ Common aliases: `-m`/`--model`, `-n`/`--num-tasks`, `-r`/`--num-rollouts`,
 
   The active dialect maps the string field `reasoning_effort` to the top-level
   `reasoning_effort` field for chat-completions, `reasoning.effort` for Responses, or
-  `output_config.effort` for Anthropic Messages.
+  `output_config.effort` for Anthropic Messages — a string, not a fixed enum, since
+  providers expose different effort levels.
 - **Configs** — a saved run is `uv run eval @ config.toml` (the taskset/harness `id`s live in
   the file); CLI flags still override. `--dry-run` writes the resolved `config.toml` without
   running. Logs are teed to `<output_dir>/eval.log`.
