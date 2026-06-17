@@ -30,7 +30,7 @@ trains on.
 
 ```bash
 uv sync                          # core + shipped packages + examples
-uv run eval gsm8k-v1 -n 5 -r 3   # 5 tasks, 3 rollouts each; default harness, docker runtime
+uv run eval gsm8k-v1 -n 5 -r 3   # 5 tasks, 3 rollouts each; default harness, subprocess runtime
 uv run eval -h                   # typed help (lists local tasksets + harnesses)
 ```
 
@@ -327,8 +327,8 @@ The same `Runtime` contract backs the harness (`--harness.runtime`), a task's to
 (`--taskset.tools.runtime`), and the user simulator:
 
 ```bash
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container (eval default)
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process (eval default)
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sandbox
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox
 ```

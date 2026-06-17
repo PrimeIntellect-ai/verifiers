@@ -12,4 +12,3 @@ max_turns = 2
 
 [harness]
 id = "default"
-runtime = { type = "subprocess" }

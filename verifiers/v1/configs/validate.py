@@ -2,9 +2,10 @@
 
 Validation is per-task and model-free — it runs the taskset's `validate` hook (apply a gold
 solution, run a verifier) in a runtime, not a harness rollout. So the config carries just the
-taskset, the `runtime` its hook runs in (docker by default, like `eval`), the stage timeouts,
-and the run knobs. No harness, model, or sampling — and it's fire-and-forget: nothing is
-written to disk, so there's no output dir / resume / dry-run.
+taskset, the `runtime` its hook runs in (docker by default — a gold check often needs the
+task's declared container), the stage timeouts, and the run knobs. No harness, model, or
+sampling — and it's fire-and-forget: nothing is written to disk, so there's no output dir /
+resume / dry-run.
 """
 
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
@@ -19,13 +20,14 @@ class ValidateConfig(BaseConfig):
     """A taskset plus how to validate it. The taskset is selected by `--taskset.id` (with a
     bare positional shorthand, `validate gsm8k-v1`); its fields stay typed and overridable
     via dotted flags (`--taskset.split test`). The `validate` hook runs in `--runtime.*`
-    (docker by default, like `eval`; SWE rows carry their own per-task image)."""
+    (docker by default; SWE rows carry their own per-task image)."""
 
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     runtime: RuntimeConfig = DockerConfig()
-    """Where each task's `validate` hook runs. Docker by default (like `eval`); a SWE task
-    overrides the image per task. Use `--runtime.type subprocess` for a check that needs no
-    container — one that only reads task data or runs a uv-script verifier (e.g. gsm8k)."""
+    """Where each task's `validate` hook runs. Docker by default — unlike the eval harness
+    (subprocess), a gold check often needs the task's declared container; a SWE task overrides
+    the image per task. Use `--runtime.type subprocess` for a check that needs no container —
+    one that only reads task data or runs a uv-script verifier (e.g. gsm8k)."""
     retries: RetryConfig = RetryConfig()
     """Reused only for `retries.runtime` — retry a task on a transient runtime fault (sandbox
     create/exec), each retry on a fresh runtime. Model/rollout retries don't apply here."""
