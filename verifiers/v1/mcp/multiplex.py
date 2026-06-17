@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import os
 import shutil
@@ -154,7 +155,12 @@ def serve_forked(app, sock: socket.socket, server) -> None:
             child = children.get(key)
             if child is None:
                 port = _free_port()
-                cwd = os.path.join(base, key or "_default")
+                # name the private dir by a hash, not `key` — `key` is the rollout's bearer secret,
+                # which shouldn't appear as a filesystem path
+                slug = (
+                    hashlib.sha256(key.encode()).hexdigest()[:16] if key else "_default"
+                )
+                cwd = os.path.join(base, slug)
                 os.makedirs(cwd, exist_ok=True)
                 pid = os.fork()
                 if pid == 0:
@@ -162,9 +168,9 @@ def serve_forked(app, sock: socket.socket, server) -> None:
                     _serve_child(app, port, cwd, server, state_url, key)
                 children[key] = child = _Child(pid, port, cwd)
                 await _wait_up(port)
-                logger.info(
-                    "fork: child pid=%d for rollout %s", pid, (key or "_default")[:12]
-                )
+                # log only the pid (it correlates spawn<->reap) — the key is the rollout's bearer
+                # secret and must not reach a log sink
+                logger.info("fork: spawned child pid=%d", pid)
             child.last = time.monotonic()
             return child
 
@@ -177,11 +183,7 @@ def serve_forked(app, sock: socket.socket, server) -> None:
         with contextlib.suppress(Exception):
             os.waitpid(child.pid, 0)
         shutil.rmtree(child.cwd, ignore_errors=True)
-        logger.info(
-            "fork: reaped child pid=%d for rollout %s",
-            child.pid,
-            (key or "_default")[:12],
-        )
+        logger.info("fork: reaped child pid=%d", child.pid)
 
     async def _respond(send, status: int, body: bytes) -> None:
         await send({"type": "http.response.start", "status": status, "headers": []})
