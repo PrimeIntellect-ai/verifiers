@@ -155,7 +155,9 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     help_test_can_eval_env(tmp_venv_dir, env_dir)
 
 
-def _run_in_venv(tmp_venv_dir: Path, inner: str, timeout: int, what: str, env_name: str):
+def _run_in_venv(
+    tmp_venv_dir: Path, inner: str, timeout: int, what: str, env_name: str
+):
     cmd = f"cd {tmp_venv_dir} && source .venv/bin/activate && {inner}"
     try:
         process = subprocess.run(
@@ -198,9 +200,7 @@ def help_test_can_load_env(tmp_venv_dir: Path, env_dir: Path):
             f'taskset_class("{env_dir.name}")\''
         )
     else:
-        inner = (
-            f'uv run python -c \'import verifiers as vf; vf.load_environment("{env_dir.name}")\''
-        )
+        inner = f"uv run python -c 'import verifiers as vf; vf.load_environment(\"{env_dir.name}\")'"
     _run_in_venv(tmp_venv_dir, inner, LOAD_TIMEOUT, "loading", env_dir.name)
 
 
