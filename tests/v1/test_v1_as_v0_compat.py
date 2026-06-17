@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import verifiers as vf
+from verifiers.types import (
+    Response,
+    ResponseMessage,
+    ResponseTokens,
+    Usage,
+)
+from verifiers.v1.compat import V1AsV0Environment
+
+
+class FakeV0Client:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def get_response(
+        self,
+        prompt,
+        model: str,
+        sampling_args: dict,
+        tools=None,
+        **kwargs,
+    ) -> Response:
+        del tools
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "model": model,
+                "sampling_args": sampling_args,
+                "state": kwargs.get("state"),
+            }
+        )
+        text = f"echo: {_last_user_text(prompt)}"
+        prompt_ids = [1, 2, 3, 4]
+        completion_ids = [10 + len(self.calls), 20 + len(self.calls)]
+        return Response(
+            id=f"fake-{len(self.calls)}",
+            created=0,
+            model=model,
+            usage=Usage(
+                prompt_tokens=len(prompt_ids),
+                reasoning_tokens=0,
+                completion_tokens=len(completion_ids),
+                total_tokens=len(prompt_ids) + len(completion_ids),
+            ),
+            message=ResponseMessage(
+                content=text,
+                reasoning_content=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tool_calls=None,
+                tokens=ResponseTokens(
+                    prompt_ids=prompt_ids,
+                    prompt_mask=[0] * len(prompt_ids),
+                    completion_ids=completion_ids,
+                    completion_mask=[1] * len(completion_ids),
+                    completion_logprobs=[-0.1, -0.2],
+                ),
+            ),
+        )
+
+
+async def test_v1_taskset_loads_as_v0_and_runs_rollout() -> None:
+    env = vf.load_environment(
+        "compat-taskset-v1",
+        phrase="alpha",
+        harness={"id": "compat-harness-v1"},
+    )
+    try:
+        assert isinstance(env, V1AsV0Environment)
+        row = env.get_dataset(n=1).to_list()[0]
+
+        out = await env.run_rollout(
+            row,
+            client=FakeV0Client(),
+            model="fake/model",
+            sampling_args={"max_tokens": 8, "temperature": 0},
+            state_columns=["trajectory"],
+        )
+
+        assert out["example_id"] == 0
+        assert out["reward"] == 1.0
+        assert out["metrics"]["turns"] == 1.0
+        assert out["token_usage"]["final_input_tokens"] == 4.0
+        assert out["token_usage"]["final_output_tokens"] == 2.0
+        assert out["completion"][0]["content"] == "echo: alpha"
+        assert out["trajectory"][0]["tokens"]["prompt_ids"] == [1, 2, 3, 4]
+        assert out["trajectory"][0]["tokens"]["completion_ids"] == [11, 21]
+        assert out["info"]["v1"]["task_idx"] == 0
+    finally:
+        await env._teardown()
+
+
+async def test_v1_group_reward_runs_through_v0_run_group() -> None:
+    env = vf.load_environment(
+        "compat-group-taskset-v1",
+        harness={"id": "compat-harness-v1"},
+    )
+    try:
+        assert isinstance(env, V1AsV0Environment)
+        assert env.rubric.has_group_rewards
+        assert any(
+            env.rubric._is_group_func(func) for func in env.rubric._get_reward_funcs()
+        )
+        row = env.get_dataset(n=1).to_list()[0]
+
+        outs = await env.run_group(
+            [row, row],
+            client=FakeV0Client(),
+            model="fake/model",
+            sampling_args={"max_tokens": 8, "temperature": 0},
+            state_columns=["trajectory"],
+        )
+
+        assert [out["reward"] for out in outs] == [2.0, 3.0]
+        assert all(out["trajectory"] for out in outs)
+    finally:
+        await env._teardown()
+
+
+def _last_user_text(prompt) -> str:
+    for message in reversed(prompt):
+        role = getattr(message, "role", None)
+        if role != "user":
+            continue
+        content = getattr(message, "content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return " ".join(
+                str(part.get("text", "")) for part in content if isinstance(part, dict)
+            )
+    return ""
