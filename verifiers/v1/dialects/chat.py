@@ -48,7 +48,7 @@ def reasoning_text(data: Mapping[str, Any]) -> str | None:
 
 
 def _content_text(content) -> str:
-    """Flatten content to text — for roles that never carry images (assistant, tool)."""
+    """Flatten content to text for roles that never carry images."""
     if isinstance(content, list):
         return "".join(p.get("text", "") for p in content if isinstance(p, dict))
     return content or ""
@@ -56,14 +56,16 @@ def _content_text(content) -> str:
 
 def parse_message(raw: dict) -> Message:
     """An OpenAI chat request message dict -> a typed Message. User/system bodies keep their
-    image parts (multimodal ingress); assistant/tool bodies flatten to text."""
+    image parts (multimodal ingress); assistant bodies flatten to text."""
     role = raw.get("role")
     content = raw.get("content")
     if role == "system":
         return SystemMessage(content=content_to_parts(content))
     if role == "tool":
         return ToolMessage(
-            tool_call_id=raw.get("tool_call_id", ""), content=_content_text(content)
+            tool_call_id=raw.get("tool_call_id", ""),
+            content=content_to_parts(content),
+            name=raw.get("name"),
         )
     if role == "assistant":
         calls = [
@@ -130,11 +132,14 @@ def message_to_wire(message: Message) -> dict:
             ]
         return wire
     if message.role == "tool":
-        return {
+        wire = {
             "role": "tool",
             "tool_call_id": message.tool_call_id,
-            "content": message.content,
+            "content": _content_to_wire(message.content),
         }
+        if message.name:
+            wire["name"] = message.name
+        return wire
     return {"role": message.role, "content": _content_to_wire(message.content)}
 
 
@@ -180,9 +185,19 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
     response_type = ChatCompletion
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
-        return [parse_message(m) for m in body.get("messages", [])], parse_tools(
-            body.get("tools")
-        )
+        messages: Messages = []
+        tool_names: dict[str, str] = {}
+        for raw in body.get("messages", []):
+            message = parse_message(raw)
+            if isinstance(message, ToolMessage) and message.name is None:
+                name = tool_names.get(message.tool_call_id)
+                if name is not None:
+                    message = message.model_copy(update={"name": name})
+            messages.append(message)
+            if isinstance(message, AssistantMessage):
+                for call in message.tool_calls or []:
+                    tool_names[call.id] = call.name
+        return messages, parse_tools(body.get("tools"))
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
@@ -241,12 +256,14 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
         # the sampling knobs it set (later keys win, so the eval's override the program's).
         return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
 
-    def extend(self, body: dict, completion: dict, user_messages: Messages) -> dict:
+    def extend(
+        self, body: dict, completion: dict | None, user_messages: Messages
+    ) -> dict:
         # Append the model's turn (the verbatim assistant message, so its reasoning survives for
         # the next turn's passback) and the simulator's injected user turn(s) to the wire history.
-        messages = [
-            *body.get("messages", []),
-            completion["choices"][0]["message"],
-            *(message_to_wire(m) for m in user_messages),
-        ]
+        # A None completion seeds the opening turn (no model message yet) — only the user turn(s).
+        messages = [*body.get("messages", [])]
+        if completion is not None:
+            messages.append(completion["choices"][0]["message"])
+        messages.extend(message_to_wire(m) for m in user_messages)
         return {**body, "messages": messages}

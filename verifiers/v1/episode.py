@@ -30,7 +30,6 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.utils import trim_memory_periodically
 
 if TYPE_CHECKING:
-    from verifiers.v1.interception import InterceptionPool
     from verifiers.v1.retries import RolloutRetryConfig
 
 
@@ -45,25 +44,22 @@ class Episode:
     async def run(
         self,
         semaphore: asyncio.Semaphore | None = None,
-        shared_urls: dict[str, str] | None = None,
         on_complete: Callable[[Trace], None] = lambda _trace: None,
-        interception: "InterceptionPool | None" = None,
     ) -> list[Trace]:
         """Run all rollouts (each under `semaphore`), then group-score across their
         traces. Without `@group_reward`s a rollout's reward is final the moment its own
         scoring ends, so it's marked DONE then (no waiting for slower siblings); with
         them, the whole group is marked DONE together after `score_group` — the reward
-        isn't final until every rollout is in. `shared_urls` are eval-level shared tool
-        servers passed through to each rollout. `on_complete` (the runner's persist hook)
-        is called with each trace the instant it's finalized (DONE) — per rollout without
-        group rewards, or once per trace after group scoring with them."""
+        isn't final until every rollout is in. Each rollout already carries the eval-level
+        shared tool servers / interception pool (injected by `Environment.episode`).
+        `on_complete` (the runner's persist hook) is called with each trace the instant
+        it's finalized (DONE) — per rollout without group rewards, or once per trace after
+        group scoring with them."""
         group_scored = bool(discover_decorated(self.taskset, "group_reward"))
 
         async def run_one(rollout: Rollout) -> Trace:
             async with semaphore or nullcontext():
-                trace = await run_with_retry(
-                    rollout, shared_urls, interception, self.retry
-                )
+                trace = await run_with_retry(rollout, self.retry)
             if not group_scored:  # reward already final → don't wait for the group
                 rollout.phase = Phase.DONE
                 on_complete(trace)

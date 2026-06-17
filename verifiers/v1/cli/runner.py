@@ -40,6 +40,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # durable mid-run, not only at the end). On resume, keep the saved config + good traces and
     # run only the owed rollouts. `append_trace` is a sync single-line append, safe to call from
     # concurrent rollouts in the one event loop.
+    owed: dict[str, int] | None = None
     if config.resume is not None:
         group = bool(discover_decorated(env.taskset, "group_reward"))
         keep, owed = resume.plan(
@@ -49,7 +50,6 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
         tasks = [task for task in tasks if owed.get(task.idx)]
-        episodes = [env.episode(task, ctx, n=owed[task.idx]) for task in tasks]
         resume.rewrite_results(out, keep)
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
@@ -58,7 +58,6 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             sum(owed.values()),
         )
     else:
-        episodes = [env.episode(task, ctx, n=config.num_rollouts) for task in tasks]
         save_config(config, out)
         logger.info(
             "running %dx%d rollouts on %s",
@@ -67,10 +66,6 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             config.model,
         )
     start = time.time()
-    rollouts = [rollout for episode in episodes for rollout in episode.rollouts]
-    display = (
-        dashboard(rollouts, config, start) if config.rich else contextlib.nullcontext()
-    )
     logger.info("results: %s", out)
 
     def on_complete(trace: Trace) -> None:
@@ -78,18 +73,23 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
 
     # Shared tool servers (if any) come up once here and their URLs flow into every rollout
     # (non-shared ones start per rollout inside the episodes); the interception pool comes up
-    # here too, so concurrent rollouts share its servers + tunnels rather than one each.
-    async with (
-        env.shared_tools(tasks) as shared_urls,
-        env.interception_pool() as pool,
-        display,
-    ):
-        results = await asyncio.gather(
-            *(
-                episode.run(semaphore, shared_urls, on_complete, pool)
-                for episode in episodes
-            )
+    # here too, so concurrent rollouts share its servers + tunnels rather than one each. Build
+    # episodes inside `serving` so each rollout is wired to those resources at construction.
+    async with env.serving(tasks):
+        episodes = [
+            env.episode(task, ctx, n=owed[task.idx] if owed else config.num_rollouts)
+            for task in tasks
+        ]
+        rollouts = [rollout for episode in episodes for rollout in episode.rollouts]
+        display = (
+            dashboard(rollouts, config, start)
+            if config.rich
+            else contextlib.nullcontext()
         )
+        async with display:
+            results = await asyncio.gather(
+                *(episode.run(semaphore, on_complete) for episode in episodes)
+            )
     traces = [trace for episode_traces in results for trace in episode_traces]
     await client.close()
     return traces

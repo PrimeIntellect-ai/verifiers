@@ -24,7 +24,10 @@ from verifiers.v1.runtimes.base import _ENSURE_UV, ProgramResult, Runtime
 # key, while still inheriting harmless config (PATH, HOME, UV_CACHE_DIR, HF_HOME,
 # ...). The harness injects its own interception endpoint over OPENAI_* on top
 # (see `run`). A container/sandbox is isolated and inherits nothing, so this
-# allow-by-default model is subprocess-only.
+# allow-by-default model is subprocess-only. NOTE: this strip applies to EVERY
+# program run here, including a task's tool/user server — so a tool server that
+# genuinely needs an API key won't get one on subprocess placement; give it its
+# own runtime (docker/prime) or have it fetch the key itself.
 
 
 class SubprocessConfig(BaseConfig):

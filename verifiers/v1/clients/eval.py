@@ -13,13 +13,14 @@ change. Endpoint config (base url, api key, billing headers) comes from the clie
 """
 
 from collections.abc import Mapping
-from contextlib import aclosing
+import re
 
 import httpx
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.dialects import ChatDialect, Dialect
 from verifiers.v1.errors import model_error
+from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, SamplingConfig
 
 # These fields describe the localhost request, its original bytes, or its connection. HTTPX
@@ -54,6 +55,7 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
         "signature-input",
     }
 )
+_SSE_EVENT_END = re.compile(rb"(?:\r\n|\r|\n){2}")
 
 
 class EvalClient(Client):
@@ -79,6 +81,7 @@ class EvalClient(Client):
         model: str,
         sampling_args: SamplingConfig,
         session_id: str | None = None,
+        turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         resp = await self._request(
@@ -87,8 +90,8 @@ class EvalClient(Client):
             self._headers(dialect, headers, session_id),
         )
         raw = resp.json()
-        response = dialect.parse_response(dialect.response_type.model_validate(raw))
-        response.raw = raw
+        response = dialect.parse_response(dialect.validate_response(raw))
+        response.raw = raw  # the program gets the provider's bytes back 1:1
         return response
 
     def _headers(
@@ -151,9 +154,8 @@ class EvalClient(Client):
         session_id: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> RelayReply:
-        # Stream the provider's response bytes through (SSE for a streaming request). An error
-        # status is read fully and mapped before any byte is handed back, so the retry +
-        # truncation machinery treat a relayed call exactly like a non-streamed one.
+        # Relay complete SSE events so the interception server can safely insert keepalives
+        # between them. Error responses are mapped before any event is handed back.
         resp = await self._request(
             self.base_url + dialect.upstream_path,
             dialect.apply_overrides(body, model, sampling_args),
@@ -162,13 +164,19 @@ class EvalClient(Client):
         )
 
         async def chunks():
-            async with aclosing(resp):
-                async for chunk in resp.aiter_bytes():
-                    yield chunk
+            buffer = bytearray()
+            async for chunk in resp.aiter_bytes():
+                buffer += chunk
+                while match := _SSE_EVENT_END.search(buffer):
+                    yield bytes(buffer[: match.end()])
+                    del buffer[: match.end()]
+            if buffer:
+                yield bytes(buffer)
 
         return RelayReply(
             content_type=resp.headers.get("content-type", "text/event-stream"),
             chunks=chunks(),
+            close=resp.aclose,
         )
 
     async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:

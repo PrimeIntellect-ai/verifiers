@@ -6,7 +6,7 @@ abstract method. Each concrete client owns its own wire translation internally.
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
 from tenacity import (
@@ -19,6 +19,7 @@ from tenacity import (
 
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import ModelError, OverlongPromptError
+from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, SamplingConfig
 
 logger = logging.getLogger(__name__)
@@ -33,11 +34,11 @@ cold on a random shard each turn."""
 
 @dataclass
 class RelayReply:
-    """A relayed upstream response streamed back: its content type + body chunks (one chunk for
-    a JSON body, many for SSE). The connection closes when `chunks` is exhausted."""
+    """A relayed upstream response: content type, complete SSE events, and connection cleanup."""
 
     content_type: str
     chunks: AsyncIterator[bytes]
+    close: Callable[[], Awaitable[None]]
 
 
 class Client(ABC):
@@ -49,6 +50,7 @@ class Client(ABC):
         model: str,
         sampling_args: SamplingConfig,
         session_id: str | None = None,
+        turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         """Run one completion -> a vf `Response`. The eval client forwards the native JSON and
@@ -57,7 +59,8 @@ class Client(ABC):
 
         `session_id` is the rollout's stable id (the trace id); when set, the client sends it
         as the `SESSION_ID_HEADER` so a session-affinity router keeps the rollout's turns on
-        one engine for cross-turn prefix-cache reuse."""
+        one engine for cross-turn prefix-cache reuse. `turn` is the graph-resolved prompt
+        prefix; train clients may use it for renderer bridging, while relay clients ignore it."""
 
     async def relay(
         self,
@@ -115,6 +118,7 @@ class RetryingClient(Client):
         model: str,
         sampling_args: SamplingConfig,
         session_id: str | None = None,
+        turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         return await self._retrying(
@@ -123,8 +127,9 @@ class RetryingClient(Client):
             body,
             model,
             sampling_args,
-            headers=headers,
             session_id=session_id,
+            turn=turn,
+            headers=headers,
         )
 
     async def relay(

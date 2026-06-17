@@ -10,8 +10,10 @@ needs a running vLLM engine.
 
 import json
 from collections.abc import Mapping
+from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
+from renderers import RenderedTokens
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
@@ -19,6 +21,7 @@ from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import OverlongPromptError, model_error
+from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -83,7 +86,9 @@ def serialize_completion(response: Response, model: str) -> dict:
     }
 
 
-def response_from_generate(result: dict, model: str) -> Response:
+def response_from_generate(
+    result: dict, model: str, bridged_turn: PendingTurn | None = None
+) -> Response:
     """Parse a `renderers.client.generate` result dict into a typed `Response`,
     mirroring the chat client's `response_from_wire` (plus the token encoding)."""
     finish: FinishReason = (
@@ -105,11 +110,14 @@ def response_from_generate(result: dict, model: str) -> Response:
     prompt_ids = result.get("prompt_ids") or []
     completion_ids = result.get("completion_ids") or []
     # Per-message token spans (the renderer's attribution) let the trace graph store each
-    # message's tokens once; carried transiently on TurnTokens and consumed by `graph.add_turn`.
+    # message's tokens once; carried transiently on TurnTokens and consumed by turn.commit().
     attribution = result.get("prompt_attribution")
-    message_spans = (
-        attribution.message_token_spans() if attribution is not None else None
-    )
+    if attribution is None:
+        message_spans = None
+    elif bridged_turn is not None:
+        message_spans = bridged_turn.prompt_message_spans(attribution)
+    else:
+        message_spans = attribution.message_token_spans()
     return Response(
         id=result.get("request_id", ""),
         created=0,
@@ -132,6 +140,29 @@ def response_from_generate(result: dict, model: str) -> Response:
             routed_experts=result.get("routed_experts"),
         ),
     )
+
+
+def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
+    """Renderer bridges may extend sampled assistant turns with tool calls and/or a new user."""
+    if not messages:
+        return False
+    roles = []
+    for message in messages:
+        role = message.get("role")
+        roles.append(role if isinstance(role, str) else None)
+    if roles[-1] == "user":
+        return all(role == "tool" for role in roles[:-1])
+    return all(role == "tool" for role in roles)
+
+
+def _has_multimodal_content(messages) -> bool:
+    for message in messages:
+        content = getattr(message, "content", None)
+        if not isinstance(content, list):
+            continue
+        if any(getattr(part, "type", None) == "image_url" for part in content):
+            return True
+    return False
 
 
 class TrainClient(Client):
@@ -166,6 +197,7 @@ class TrainClient(Client):
         model: str,
         sampling_args: SamplingConfig,
         session_id: str | None = None,
+        turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
@@ -182,24 +214,67 @@ class TrainClient(Client):
                 f"renderer support for it."
             )
         prompt, tools = dialect.parse_request(body)
+        if turn is not None:
+            prompt = turn.prompt
         renderer = self._renderer_pool(model)
-        from renderers.client import generate
+        from renderers.client import _maybe_offload, generate
+
+        wire_messages = [message_to_wire(m) for m in prompt]
+        wire_tools = [tool_to_wire(t) for t in tools] if tools else None
+        prompt_ids: list[int] | None = None
+        multi_modal_data = None
+        prompt_attribution: RenderedTokens | None = None
+        sampling_params = sampling_args.model_dump(exclude_none=True)
+        bridged_turn: PendingTurn | None = None
+
+        # Only build the (O(context)) previous-turn token ids once the cheap guards pass — a
+        # multimodal prompt or a tail that isn't a clean `[tool*, user?]` extension can't bridge.
+        can_bridge = (
+            turn is not None
+            and not _has_multimodal_content(prompt)
+            and _is_valid_incremental_tail(wire_messages[turn.tail_start :])
+        )
+        previous_ids = turn.previous_token_ids() if can_bridge else None
+        if previous_ids is not None:
+            previous_prompt_ids, previous_completion_ids = previous_ids
+
+            def bridge():
+                return renderer.bridge_to_next_turn(
+                    previous_prompt_ids,
+                    previous_completion_ids,
+                    wire_messages[turn.tail_start :],
+                    tools=wire_tools,
+                )
+
+            bridged = await _maybe_offload(renderer, bridge)
+            if bridged is not None:
+                prompt_ids = bridged.token_ids
+                multi_modal_data = bridged.multi_modal_data
+                prompt_attribution = bridged
+                bridged_turn = turn
+                sampling_params["routed_experts_prompt_start"] = max(
+                    len(previous_prompt_ids) + len(previous_completion_ids) - 1,
+                    0,
+                )
 
         try:
             result = await generate(
                 client=self.openai,
                 renderer=renderer,
-                messages=[message_to_wire(m) for m in prompt],
+                messages=wire_messages,
                 model=model,
-                tools=[tool_to_wire(t) for t in tools] if tools else None,
-                sampling_params=sampling_args.model_dump(exclude_none=True),
+                prompt_ids=prompt_ids,
+                multi_modal_data=multi_modal_data,
+                prompt_attribution=prompt_attribution,
+                tools=wire_tools,
+                sampling_params=sampling_params,
                 extra_headers={SESSION_ID_HEADER: session_id} if session_id else None,
             )
         except RendererOverlongPromptError as e:
             raise OverlongPromptError(str(e)) from e
         except OpenAIError as e:
             raise model_error(e) from e
-        response = response_from_generate(result, model)
+        response = response_from_generate(result, model, bridged_turn)
         # No provider response to relay (we generated), so serialize one for the program; the
         # interception server hands `Response.raw` back regardless of client.
         response.raw = serialize_completion(response, model)

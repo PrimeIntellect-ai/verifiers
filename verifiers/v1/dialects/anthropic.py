@@ -57,13 +57,6 @@ def parse_content(content) -> str | list[ContentPart]:
     return parts
 
 
-def block_text(content) -> str:
-    """Flatten a tool_result's content (a string or text blocks) to text."""
-    if isinstance(content, str):
-        return content
-    return "".join(b.get("text", "") for b in content or [] if b.get("type") == "text")
-
-
 def parse_messages(body: dict) -> Messages:
     """The request's top-level `system` + `messages` -> typed messages. Assistant turns fold
     their blocks into one message (thinking -> reasoning, tool_use -> tool calls); a user turn's
@@ -106,7 +99,7 @@ def parse_messages(body: dict) -> Messages:
                 prompt.append(
                     ToolMessage(
                         tool_call_id=block.get("tool_use_id", ""),
-                        content=block_text(block.get("content")),
+                        content=parse_content(block.get("content")),
                     )
                 )
             else:
@@ -200,6 +193,14 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     def parse_response(self, response: AnthropicMessage) -> Response:
         return response_from_wire(response)
 
+    def validate_response(self, raw: dict) -> AnthropicMessage:
+        usage = raw.get("usage")
+        tier = usage.get("service_tier") if usage else None
+        if tier not in (None, "standard", "priority", "batch"):
+            raw = {**raw, "usage": usage.copy()}
+            raw["usage"].pop("service_tier")
+        return super().validate_response(raw)
+
     def parse_stream(self, raw: bytes) -> Response:
         """Assemble message_start / content_block_* / message_delta events into the complete
         message, then parse it."""
@@ -244,8 +245,7 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
         for index, partial in partial_json.items():
             blocks[index]["input"] = json.loads(partial or "{}")
         message["content"] = [blocks[i] for i in sorted(blocks)]
-        message.get("usage", {}).pop("service_tier", None)
-        return response_from_wire(AnthropicMessage.model_validate(message))
+        return response_from_wire(self.validate_response(message))
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
         # Forward verbatim except the eval's model + sampling. `temperature`/`top_p` are
@@ -259,6 +259,11 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
             overrides["top_p"] = s["top_p"]
         if "max_tokens" in s:
             overrides["max_tokens"] = s["max_tokens"]
+        if "reasoning_effort" in s:
+            overrides["output_config"] = {
+                **dict(body.get("output_config") or {}),
+                "effort": s["reasoning_effort"],
+            }
         steered = {
             k: v
             for k, v in body.items()

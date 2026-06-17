@@ -3,9 +3,4 @@
 
 from harnesses.default.harness import DefaultHarness, DefaultHarnessConfig
 
-
-def load_harness(config: DefaultHarnessConfig) -> DefaultHarness:
-    return DefaultHarness(config)
-
-
-__all__ = ["DefaultHarness", "DefaultHarnessConfig", "load_harness"]
+__all__ = ["DefaultHarness", "DefaultHarnessConfig"]

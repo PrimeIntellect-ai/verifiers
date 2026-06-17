@@ -1,0 +1,14 @@
+[project]
+name = "reverse-text-v1"
+version = "0.1.0"
+description = "reverse-text-v1 — reverse a string character-by-character (single-turn, LCS reward)."
+requires-python = ">=3.10"
+dependencies = ["datasets"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["reverse_text_v1"]
+

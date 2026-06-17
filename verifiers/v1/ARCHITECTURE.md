@@ -73,6 +73,44 @@ end to end: each surviving context window is just another root→leaf path.
 `usage`. Multimodal pixel tensors *do* travel — base64-encoded by a field serializer on
 `MessageNode.multi_modal_data` (`graph.py`) so they survive JSON + msgpack to the trainer.
 
+### Branching: message-level vs renderer-level, and the token invariant
+
+The graph guarantees one **invariant**: walking any leaf back to the root and concatenating node
+`token_ids` reproduces *exactly* the `prompt_ids + completion_ids` the inference engine saw and
+produced for that trajectory. Everything below exists to keep that true, turn after turn.
+
+A turn is committed in two steps (`graph.py`). `prepare_turn(trace, prompt)` walks the graph once,
+reusing the longest prefix whose `(parent, message_hash)` matches — the *message-level* prefix.
+`commit(response)` then attributes only the new tail. There are two distinct ways a turn can fail
+to extend the previous one linearly — two true kinds of branching:
+
+- **Message-level branch** — the harness rewrites the message *sequence* (compaction drops history
+  for a notes summary; a subagent runs its own context). The messages genuinely differ, so
+  `message_hash` diverges and the graph forks, sharing the common prefix. This needs no token ids,
+  so it surfaces under both the eval relay and the train client. Canonical example: the `compact`
+  harness (a fresh `[system, notes]` every turn → one branch per turn).
+- **Renderer-level break** — the message sequence is *unchanged* but the renderer **retokenizes**
+  the prior turn, so the tokens drift while `message_hash` stays identical: BPE drift, a rewritten
+  tool call, or a chat template that **drops a prior assistant's `<think>` across a user turn**
+  (Qwen3.5 does this; it *preserves* thinking between tool calls, so agentic tool loops are
+  unaffected). Message-hash dedup is blind to this — it would silently reuse the stale prefix
+  tokens and corrupt the invariant. So `commit` *tightens* the message-hash prefix to **token
+  identity** when token ids are present: it takes the longest common token prefix of the stored
+  prefix vs this turn's `prompt_ids` (comparing the concatenation, not per-message spans — a prior
+  assistant's stored generation form and its re-rendered input form place the turn-close scaffold
+  in different nodes but at the same position, so only a real content change shifts the prefix) and
+  forks at the first divergence. Each resulting branch is token-consistent; the invariant holds.
+  This is detectable **only at the token level** — the eval relay carries no token ids and falls
+  back to message-hash, so a renderer-level break is invisible to it.
+
+The renderer client avoids the break entirely when it can: instead of re-rendering the whole prompt
+each turn, the train client (`clients/train.py`) calls `renderer.bridge_to_next_turn(...)`, which
+keeps the prior `prompt_ids + completion_ids` **verbatim** and only renders the new tail. Verbatim
+prior ⇒ the stored prefix matches token-for-token ⇒ no fork, one linear branch, invariant intact.
+The token-identity check in `commit` is the backstop for when the bridge can't apply (the renderer
+returns `None`, multimodal, the eval relay): the break still surfaces as honest branches rather than
+silent corruption.
+
 ## Model access — interception, dialects, clients
 
 When the harness POSTs a completion to its localhost endpoint, the `InterceptionServer`
@@ -154,7 +192,9 @@ from a native v1 one; both are an `EnvClient` away.
 
 Tasksets and harnesses are packages resolved by `id` (`ids.py`, `loaders.py`). An `EnvId` is
 `name` (a local, importable package), `org/name`, or `org/name@version`; `ensure_installed`
-installs the latter two from the Environments Hub on demand. `load_taskset` / `load_harness`
-import the module and call its loader hook, and `narrow_plugin_field` validates a generic
-config dict into the plugin's concrete config type — so the typed CLI/TOML surfaces each
-plugin's own fields without the core knowing them ahead of time.
+installs the latter two from the Environments Hub on demand. A plugin module exports its
+`Taskset` / `Harness` subclass via `__all__`; `load_taskset` / `load_harness` import the module,
+find that single subclass, and instantiate it, while `narrow_plugin_field` validates a generic
+config dict into the plugin's concrete config type (read off the class's `Taskset[TaskT,
+ConfigT]` / `Harness[ConfigT]` generic) — so the typed CLI/TOML surfaces each plugin's own
+fields without the core knowing them ahead of time.

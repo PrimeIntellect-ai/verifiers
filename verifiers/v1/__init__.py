@@ -15,7 +15,7 @@ from verifiers.v1.clients import (
     RolloutContext,
     resolve_client,
 )
-from verifiers.v1.decorators import group_reward, metric, reward, stop
+from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
 from verifiers.v1.env import (
     ElasticPoolConfig,
     EnvConfig,
@@ -48,9 +48,15 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
 )
+from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Resources, Task, WireTask
-from verifiers.v1.taskset import Taskset, TasksetConfig, ToolsConfig
-from verifiers.v1.tools import Tools, run_mcp_server
+from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.mcp import (
+    Toolset,
+    ToolsetConfig,
+    User,
+    UserConfig,
+)
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     Branch,
@@ -79,7 +85,6 @@ from verifiers.v1.types import (
     Usage,
     UserMessage,
 )
-from verifiers.v1.user import User
 
 __all__ = [
     # types
@@ -103,11 +108,13 @@ __all__ = [
     "ToolMessage",
     "Usage",
     "UserMessage",
-    # task / trace
+    # task / trace / state
     "Task",
     "WireTask",
     "Resources",
     "Trace",
+    "State",
+    "StateT",
     "MessageNode",
     "Branch",
     "TurnTokens",
@@ -116,6 +123,7 @@ __all__ = [
     "Error",
     # decorators
     "stop",
+    "tool",
     "metric",
     "reward",
     "group_reward",
@@ -132,7 +140,6 @@ __all__ = [
     # taskset / harness / runtime / environment
     "Taskset",
     "TasksetConfig",
-    "ToolsConfig",
     "BaseConfig",
     "Harness",
     "HarnessConfig",
@@ -164,10 +171,11 @@ __all__ = [
     "taskset_config_type",
     "harness_config_type",
     # mcp
-    "Tools",
-    "run_mcp_server",
+    "Toolset",
+    "ToolsetConfig",
     # user simulator
     "User",
+    "UserConfig",
 ]
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is

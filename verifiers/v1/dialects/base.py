@@ -89,6 +89,10 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     def parse_response(self, response: RespT) -> Response:
         """A native (non-streamed) response -> the vf `Response` we consume."""
 
+    def validate_response(self, raw: dict) -> RespT:
+        """Validate a native response, normalizing provider-compatible extensions if needed."""
+        return self.response_type.model_validate(raw)
+
     @abstractmethod
     def parse_stream(self, raw: bytes) -> Response:
         """A complete native SSE byte stream -> the vf `Response` (assembling the final message
@@ -100,10 +104,14 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         the only mutation the proxy makes to an otherwise byte-exact forward. Model overlays;
         sampling is authoritative (the program's sampling keys are dropped, the eval's applied)."""
 
-    def extend(self, body: ReqT, completion: dict, user_messages: Messages) -> ReqT:
+    def extend(
+        self, body: ReqT, completion: dict | None, user_messages: Messages
+    ) -> ReqT:
         """For user-sim multi-turn: return `body` with the model's turn (`completion`, native
-        wire) + the simulator's `user_messages` appended, in this protocol's shape. Only the
-        chat dialect implements it — the one harness contract with a user simulator speaks chat."""
+        wire) + the simulator's `user_messages` appended, in this protocol's shape. A `None`
+        `completion` appends only the user turn(s) — used to seed the opening turn of a task
+        with no prompt, before the model has spoken. Only the chat dialect implements it — the
+        one harness contract with a user simulator speaks chat."""
         raise NotImplementedError(
             f"user simulator is not supported over the {type(self).__name__} dialect"
         )

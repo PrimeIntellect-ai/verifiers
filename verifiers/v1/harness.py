@@ -20,7 +20,12 @@ from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.ids import EnvId, env_name
-from verifiers.v1.runtimes import DockerConfig, ProgramResult, Runtime, RuntimeConfig
+from verifiers.v1.runtimes import (
+    ProgramResult,
+    Runtime,
+    RuntimeConfig,
+    SubprocessConfig,
+)
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
@@ -37,9 +42,11 @@ class HarnessConfig(BaseConfig):
     """The harness id, which selects this harness: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
     `EnvId`). Set via `--harness.id`."""
-    runtime: RuntimeConfig = DockerConfig()
-    """Where the harness runs (subprocess / docker / prime). Lives on the harness — it's
-    the harness's box; tool servers have their own placement (see `TasksetConfig.tools`)."""
+    runtime: RuntimeConfig = SubprocessConfig()
+    """Where the harness runs (subprocess / docker / prime). Subprocess by default — a local
+    process on the host; a taskset that needs a container (its own image, or NEEDS_CONTAINER)
+    selects `--harness.runtime.type docker` (or prime/modal). Lives on the harness — it's the
+    harness's box; tool servers have their own placement (see `TasksetConfig.tools`)."""
     env: dict[str, str] = Field(default_factory=dict)
     """Additional environment variables for the harness program. Harness-owned endpoint,
     authentication, and model variables take precedence."""
@@ -69,25 +76,32 @@ class Harness(ABC, Generic[ConfigT]):
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
-    def resolve_prompt(self, task: Task) -> tuple[str | None, str | Messages]:
+    def resolve_prompt(self, task: Task) -> tuple[str | None, str | Messages | None]:
         """Resolve `(system_prompt, user_instruction)` for this harness. If the harness
         appends the system prompt natively, returns it separately; otherwise folds it into
         the user instruction (warning that it isn't sent as a system message). A `Messages`
         instruction (e.g. an image-bearing prompt) is only allowed for harnesses that set
-        `SUPPORTS_MESSAGE_INSTRUCTION`."""
+        `SUPPORTS_MESSAGE_INSTRUCTION`. A `None` instruction means the task has no prompt —
+        the user simulator opens the conversation (see `Taskset.user`); the harness emits no
+        opening user message."""
         instruction = task.instruction
-        if not isinstance(instruction, str) and not self.SUPPORTS_MESSAGE_INSTRUCTION:
+        if (
+            instruction is not None
+            and not isinstance(instruction, str)
+            and not self.SUPPORTS_MESSAGE_INSTRUCTION
+        ):
             raise ValueError(
                 f"Harness {self.config.id!r} does not support a Messages instruction; "
-                "task.instruction must be a string."
+                "task.instruction must be a string or None."
             )
         system = task.system_prompt
         if system is None or self.APPENDS_SYSTEM_PROMPT:
             return system if self.APPENDS_SYSTEM_PROMPT else None, instruction
         if not isinstance(instruction, str):
             raise ValueError(
-                f"Harness {self.config.id!r} cannot fold a system prompt into a Messages "
-                "instruction; set APPENDS_SYSTEM_PROMPT to emit it as a system message."
+                f"Harness {self.config.id!r} cannot fold a system prompt into a "
+                f"{'Messages' if instruction is not None else 'None'} instruction; set "
+                "APPENDS_SYSTEM_PROMPT to emit it as a system message."
             )
         logger.warning(
             "Harness %r does not support a separate system prompt; prepending "
