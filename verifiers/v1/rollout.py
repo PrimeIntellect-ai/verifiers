@@ -111,18 +111,25 @@ class Rollout:
         runtime: Runtime,
         session: RolloutSession,
     ):
-        """Yield `(endpoint, secret, state_port)` for the harness — a slot on the shared `pool` if one
-        is given, else a per-rollout server exposed via this rollout's own runtime. `state_port` is the
-        interception server's host port, for the rollout's servers to reach its shared-state channel."""
+        """Yield `(endpoint, secret, state_port, state_base)` for the harness — a slot on the shared
+        `pool` if one is given, else a per-rollout server exposed via this rollout's own runtime.
+        `endpoint` is the model route; `state_port` the interception server's host port (a per-rollout
+        tool server tunnels to it itself); `state_base` its reachable URL (localhost, or the pool's
+        tunnel) — how a SHARED tool server reaches this rollout's `/state` + `/task` channel."""
         if pool is not None:
-            async with pool.acquire(session) as (endpoint, secret, state_port):
-                yield endpoint, secret, state_port
+            async with pool.acquire(session) as (
+                endpoint,
+                secret,
+                state_port,
+                state_base,
+            ):
+                yield endpoint, secret, state_port, state_base
         else:
             async with InterceptionServer() as server:
                 secret = server.register(session)
                 # a HOST service the harness (in `runtime`) reaches: localhost or a tunnel
                 async with reachable_url(HOST, server.port, consumer=runtime) as url:
-                    yield f"{url}/v1", secret, server.port
+                    yield f"{url}/v1", secret, server.port, url
 
     async def run(self) -> Trace:
         """Run the rollout and return its trace. Captures expected `RolloutError`s onto
@@ -167,6 +174,7 @@ class Rollout:
                 endpoint,
                 secret,
                 state_port,
+                state_base,
             ):
                 tool_servers = self.taskset.tools(self.task)
                 async with (
@@ -177,11 +185,12 @@ class Rollout:
                         shared_urls=self.shared_urls,
                         state_port=state_port,
                         state_secret=secret,
+                        state_base=state_base,
                     ) as urls,
                     serve_user(
                         self.taskset.user(self.task),
                         self.task,
-                        agent_runtime=runtime,
+                        harness_runtime=runtime,
                         state_port=state_port,
                         state_secret=secret,
                     ) as session.user,

@@ -177,6 +177,9 @@ class InterceptionServer:
         # GET/PUT their `self.state` here, keyed by the same bearer secret as the model routes.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
+        # A forked shared server (see `verifiers.v1.mcp.multiplex`) fetches its rollout's task here
+        # to run `setup_task` per child — a shared server gets no task via env, keyed by the secret.
+        app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -392,6 +395,20 @@ class InterceptionServer:
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         return web.json_response(session.trace.state.model_dump(mode="json"))
+
+    async def handle_task_get(self, request: web.Request) -> web.Response:
+        """Hand a forked shared server the rollout's task (class ref + JSON) so its child can run
+        `setup_task` for this rollout — keyed by the same bearer secret as the state channel."""
+        session = self._session_for(request)
+        if session is None:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        task = session.trace.task
+        return web.json_response(
+            {
+                "cls": f"{type(task).__module__}:{type(task).__qualname__}",
+                "task": task.model_dump_json(),
+            }
+        )
 
     async def handle_state_put(self, request: web.Request) -> web.Response:
         """Replace a rollout's shared `trace.state` with a server's pushed copy (validated into the
