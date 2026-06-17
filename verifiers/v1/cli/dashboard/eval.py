@@ -118,14 +118,14 @@ def Progress(rollouts: list[Rollout], start: float) -> Table:
     reward = format_reward(done)
     err = f"{sum(t.has_error for t in done) / len(done):.2f}" if done else "—"
     stats = (
-        f" {len(done)}/{len(rollouts)} · {format_time(time.time() - start)} · "
+        f"{len(done)}/{len(rollouts)} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
     )
-    row = Table.grid()
-    row.add_column()
-    row.add_column()
+    row = Table.grid(expand=True, padding=(0, 1))
+    row.add_column(ratio=1)  # bar stretches to fill the width left of the stats
+    row.add_column(justify="right", no_wrap=True)
     row.add_row(
-        ProgressBar(total=len(rollouts) or 1, completed=len(done), width=32),
+        ProgressBar(total=len(rollouts) or 1, completed=len(done)),
         Text(stats),
     )
     return row
