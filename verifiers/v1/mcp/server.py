@@ -186,6 +186,17 @@ class ServerBase(Generic[ConfigT, StateT]):
             data = resp.json()
         return _import_ref(data["cls"]).model_validate_json(data["task"])
 
+    async def _setup_task_from_channel(
+        self, state_url: str | None, secret: str
+    ) -> None:
+        """Fetch this rollout's task over the state channel and run `setup_task` for it — a no-op
+        without a channel or task (a shared, task-agnostic server). The single place task setup
+        happens: `_serve` calls it with the env channel; a forked child calls it with its per-request
+        channel (see `verifiers.v1.mcp.multiplex`)."""
+        task = await self._fetch_task(state_url, secret)
+        if task is not None:
+            await self.setup_task(task)
+
     def _with_state(self, fn: Callable) -> Callable:
         """Wrap a tool/respond callable so each invocation pulls the latest shared state into
         `self.state` before running and pushes back any change after — the read/write channel a
@@ -267,11 +278,8 @@ class ServerBase(Generic[ConfigT, StateT]):
             await self.setup()
             # Per-rollout servers carry the rollout's state channel in their env; fetch this rollout's
             # task over it and run `setup_task`. A shared server has no env channel (its forked
-            # children fetch /task per-request instead — see multiplex), so this is skipped for it.
-            url, secret = self._state_channel()
-            task = await self._fetch_task(url, secret)
-            if task is not None:
-                await self.setup_task(task)
+            # children fetch /task per-request instead — see multiplex), so this is a no-op for it.
+            await self._setup_task_from_channel(*self._state_channel())
 
         asyncio.run(_setup())
         # Relax FastMCP's DNS-rebinding guard: it 421s a non-localhost Host, but our servers are

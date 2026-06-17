@@ -63,34 +63,20 @@ _HOP_BY_HOP = {
 }
 
 
-def _free_port() -> int:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return port
-
-
 class _Child:
     def __init__(self, pid: int, port: int, cwd: str) -> None:
         self.pid, self.port, self.cwd = pid, port, cwd
         self.last = time.monotonic()
+        # set once the child is serving; reap() also sets it, to wake any waiter
+        self.ready = asyncio.Event()
 
 
-async def _setup_task(server, state_url: str, secret: str) -> None:
-    """Fetch this rollout's task from the interception `/task` channel (passed per-request to a shared
-    server) and run the server's `setup_task` for it — so a forked child has the rollout's per-task
-    state. The fetch is `ServerBase._fetch_task` (the same one every launched server uses), here with
-    the per-request coordinates rather than the env channel."""
-    task = await server._fetch_task(state_url, secret)
-    if task is not None:
-        await server.setup_task(task)
-
-
-def _serve_child(app, port: int, cwd: str, server, state_url: str, secret: str) -> None:
+def _serve_child(
+    app, sock: socket.socket, cwd: str, server, state_url: str, secret: str
+) -> None:
     """In the forked child: die with the parent, move to a private CWD, run `setup_task` for this
-    rollout's task, and serve `app` on `port` with a fresh event loop (the inherited parent loop is
-    abandoned). Never returns."""
+    rollout's task (over the per-request state channel), and serve `app` on the inherited (already
+    bound) `sock` with a fresh event loop (the inherited parent loop is abandoned). Never returns."""
     import uvicorn
 
     _die_with_parent()  # SIGKILL this child when the parent multiplexer dies (cleared by fork)
@@ -98,19 +84,17 @@ def _serve_child(app, port: int, cwd: str, server, state_url: str, secret: str) 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(_setup_task(server, state_url, secret))
+        loop.run_until_complete(server._setup_task_from_channel(state_url, secret))
         loop.run_until_complete(
             uvicorn.Server(
                 uvicorn.Config(
                     app,
-                    host="127.0.0.1",
-                    port=port,
                     log_level="critical",
                     # exit promptly on SIGTERM at teardown — don't hang waiting on the long-lived
                     # MCP SSE connection to close (the parent SIGKILLs us / PR_SET_PDEATHSIG fires).
                     timeout_graceful_shutdown=0,
                 )
-            ).serve()
+            ).serve(sockets=[sock])
         )
     finally:
         os._exit(0)
@@ -141,34 +125,67 @@ def serve_forked(app, sock: socket.socket, server) -> None:
     forking = asyncio.Lock()
     client = httpx.AsyncClient(timeout=None)
 
+    def _spawn(key: str, state_url: str) -> _Child:
+        # Bind the child's port HERE and keep it bound across the fork — the child serves on this exact
+        # (inherited) socket, so the port is never released: no TOCTOU window. Fully synchronous (no
+        # await), so it runs entirely under `forking`, which serializes the fork() from a single loop.
+        child_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        child_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        child_sock.bind(("127.0.0.1", 0))  # 0 = an OS-assigned free port
+        port = child_sock.getsockname()[1]
+        # name the private dir by a hash, not `key` — `key` is the rollout's bearer secret, which
+        # shouldn't appear as a filesystem path
+        slug = hashlib.sha256(key.encode()).hexdigest()[:16] if key else "_default"
+        cwd = os.path.join(base, slug)
+        os.makedirs(cwd, exist_ok=True)
+        pid = os.fork()
+        if pid == 0:
+            # child: serves on the inherited socket (setup_task first); never returns
+            _serve_child(app, child_sock, cwd, server, state_url, key)
+        child_sock.close()  # parent: the child owns the socket fd now
+        return _Child(pid, port, cwd)
+
     async def ensure(key: str, state_url: str) -> _Child:
-        async with forking:  # one fork at a time keeps the single-threaded fork clean
-            child = children.get(key)
-            if child is None:
-                port = _free_port()
-                # name the private dir by a hash, not `key` — `key` is the rollout's bearer secret,
-                # which shouldn't appear as a filesystem path
-                slug = (
-                    hashlib.sha256(key.encode()).hexdigest()[:16] if key else "_default"
-                )
-                cwd = os.path.join(base, slug)
-                os.makedirs(cwd, exist_ok=True)
-                pid = os.fork()
-                if pid == 0:
-                    # child: runs setup_task then serves; never returns
-                    _serve_child(app, port, cwd, server, state_url, key)
-                children[key] = child = _Child(pid, port, cwd)
-                await _wait_up(port)
-                # log only the pid (it correlates spawn<->reap) — the key is the rollout's bearer
-                # secret and must not reach a log sink
-                logger.info("fork: spawned child pid=%d", pid)
+        # Fast path: a live child — no lock, no readiness probe.
+        child = children.get(key)
+        if child is not None and child.ready.is_set():
             child.last = time.monotonic()
             return child
+        # The lock is held ONLY for the synchronous fork()+register, never the readiness wait — so a
+        # cold fork serializes other forks (fork-safety) but doesn't stall traffic to other children.
+        async with forking:
+            child = children.get(key)
+            creating = child is None
+            if creating:
+                children[key] = child = _spawn(key, state_url)
+        if not creating:
+            # Another task is bringing this key up — wait for it, don't re-fork.
+            await child.ready.wait()
+            if (
+                children.get(key) is not child
+            ):  # reaped / failed to start meanwhile → retry
+                return await ensure(key, state_url)
+            child.last = time.monotonic()
+            return child
+        # We created it: wait for it to serve OUTSIDE the lock, so other keys fork in parallel.
+        try:
+            await _wait_up(child.port)
+        except BaseException:
+            await reap(
+                key
+            )  # dead on arrival: drop it (wakes any waiter to re-fork), then propagate
+            raise
+        child.ready.set()
+        # log only the pid (it correlates spawn<->reap) — the key is the rollout's bearer secret
+        logger.info("fork: spawned child pid=%d", child.pid)
+        child.last = time.monotonic()
+        return child
 
     async def reap(key: str) -> None:
         child = children.pop(key, None)
         if not child:
             return
+        child.ready.set()  # wake any waiter blocked in `ensure` — it re-checks `children` and re-forks
         with contextlib.suppress(Exception):
             os.kill(child.pid, signal.SIGKILL)
         with contextlib.suppress(Exception):
@@ -238,9 +255,12 @@ def serve_forked(app, sock: socket.socket, server) -> None:
         asyncio.ensure_future(_reaper())
         # timeout_graceful_shutdown=0: exit promptly on SIGTERM (the runtime's teardown) instead of
         # hanging on the long-lived proxied SSE — so `finally` below SIGKILLs the children.
-        await uvicorn.Server(
-            uvicorn.Config(proxy, log_level="critical", timeout_graceful_shutdown=0)
-        ).serve(sockets=[sock])
+        try:
+            await uvicorn.Server(
+                uvicorn.Config(proxy, log_level="critical", timeout_graceful_shutdown=0)
+            ).serve(sockets=[sock])
+        finally:
+            await client.aclose()
 
     try:
         asyncio.run(_serve())
