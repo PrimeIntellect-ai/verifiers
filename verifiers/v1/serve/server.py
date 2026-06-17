@@ -24,6 +24,7 @@ import msgpack
 import zmq
 import zmq.asyncio
 
+from verifiers.utils.process_utils import use_threading_tqdm_lock
 from verifiers.utils.serve_utils import msgpack_encoder
 from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.clients.client import Client
@@ -79,6 +80,10 @@ class EnvServer:
         `address_queue` is given, report the concrete bound address on it (so a
         spawner that passed a `:0` address learns the OS-assigned port) before
         serving."""
+        # This worker loads the taskset (and any HF datasets it pulls in) and is killed at
+        # teardown; pin tqdm to a threading lock first so it never leaks a multiprocessing
+        # semaphore (resource_tracker warning at shutdown).
+        use_threading_tqdm_lock()
         server = cls(**kwargs)
         if address_queue is not None:
             address_queue.put(server.address)

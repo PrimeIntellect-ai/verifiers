@@ -81,3 +81,22 @@ def terminate_processes(
         t.start()
     for t in threads:
         t.join()
+
+
+def use_threading_tqdm_lock() -> None:
+    """Give tqdm a threading lock instead of its lazy multiprocessing one.
+
+    tqdm (pulled in transitively by `datasets`) lazily creates a process-global `mp.RLock` the
+    first time a bar is built. In a spawned env-server worker that gets killed at teardown, that
+    semaphore is never released, so multiprocessing's `resource_tracker` warns about a leaked
+    semaphore at shutdown. A threading lock is enough (a worker renders bars from one process) and
+    allocates no semaphore. Call this before the worker loads anything that uses tqdm; a no-op if
+    tqdm isn't installed."""
+    try:
+        import threading
+
+        import tqdm
+
+        tqdm.tqdm.set_lock(threading.RLock())
+    except Exception:
+        pass
