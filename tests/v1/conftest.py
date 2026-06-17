@@ -185,7 +185,6 @@ def pytest_collection_modifyitems(config, items) -> None:
 def _eval_config(
     taskset: str,
     *,
-    harness_runtime: str,
     output_dir: Path,
     harness: str = "default",
     n: int = 1,
@@ -193,24 +192,22 @@ def _eval_config(
     max_tokens: int = 2048,
     max_turns: int | None = 4,
     rollout_timeout: float = 180,
-    enable_bash: bool = False,
     taskset_overrides: dict | None = None,
+    harness_overrides: dict | None = None,
     pool: dict | None = None,
     model: str | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
-    (`run_v1`) and env-server (`run_v1_server`) fixtures. `model` overrides the default text model
-    (e.g. a VLM for an image task).
+    (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` / `harness_overrides`
+    are merged onto the `{id: ...}` config (placement, runtime, etc.); `model` overrides the default
+    text model (e.g. a VLM for an image task).
 
     `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
     risks truncating the reasoning before the answer (which tanks the reward)."""
-    harness_overrides: dict = {"runtime": {"type": harness_runtime}}
-    if enable_bash:
-        harness_overrides["enable_bash"] = True
     return EvalConfig(
         taskset={"id": taskset, **(taskset_overrides or {})},
-        harness={"id": harness, **harness_overrides},
+        harness={"id": harness, **(harness_overrides or {})},
         num_tasks=num_tasks,
         num_rollouts=n,
         max_turns=max_turns,

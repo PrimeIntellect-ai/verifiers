@@ -23,7 +23,7 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-v1",
         harness=harness,
-        harness_runtime=harness_runtime,
+        harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=2,
     )
@@ -44,7 +44,7 @@ async def test_user(
     (trace,) = await run_v1(
         "echo-user-sim-v1",
         harness="default",
-        harness_runtime=harness_runtime,
+        harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=6,
         taskset_overrides={"user": user_runtime},
@@ -74,7 +74,7 @@ async def test_tool(
     (trace,) = await run(
         "echo-tool-v1",
         harness="default",
-        harness_runtime=harness_runtime,
+        harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=6,
         taskset_overrides={"tools": tool_runtime},
@@ -103,7 +103,7 @@ async def test_tool_state(
     (trace,) = await run_v1(
         "counter-tool-v1",
         harness="default",
-        harness_runtime=harness_runtime,
+        harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=8,
         taskset_overrides={"tools": tool_runtime},
@@ -141,7 +141,8 @@ async def test_shared_tool_isolation(
     traces = await run_v1_server(
         "scratchpad-v1",
         harness="default",
-        harness_runtime=shared_tool_runtime,  # harness on the same runtime as the shared server
+        # harness on the same runtime as the shared server
+        harness_overrides={"runtime": {"type": shared_tool_runtime}},
         output_dir=tmp_path,
         num_tasks=2,  # two distinct words, run concurrently against the one shared server
         n=1,
@@ -171,7 +172,7 @@ async def test_tool_response_image(run_v1, tmp_path):
     (trace,) = await run_v1(
         "tool-response-image-v1",
         harness="default",
-        harness_runtime="subprocess",
+        harness_overrides={"runtime": {"type": "subprocess"}},
         model="qwen/qwen3-vl-8b-instruct",
         output_dir=tmp_path,
         max_turns=4,
@@ -188,8 +189,11 @@ async def test_agentic(run_v1, agentic_harness, harness_runtime, tmp_path):
     (trace,) = await run_v1(
         "echo-agentic-v1",
         harness=agentic_harness,
-        enable_bash=agentic_harness == "default",
-        harness_runtime=harness_runtime,
+        harness_overrides={
+            "runtime": {"type": harness_runtime},
+            # the default harness gates its bash tool behind this flag; the agent CLIs don't take it
+            **({"enable_bash": True} if agentic_harness == "default" else {}),
+        },
         output_dir=tmp_path,
         max_turns=10,
     )
