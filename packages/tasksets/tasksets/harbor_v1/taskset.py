@@ -65,7 +65,7 @@ class Author(StrictBaseModel):
 
 
 class HarborTask(Task):
-    """A Harbor task. The base fields carry instruction.md (`instruction`), the
+    """A Harbor task. The base fields carry instruction.md (`prompt`), the
     resolved container `image`, the `harness_timeout`/`scoring_timeout`/`resources`
     (from task.toml's [harness]/[verifier]/[environment]), and [task].name/description;
     the rest mirror [metadata]."""
@@ -152,7 +152,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
         idx=idx,
         name=task.get("name") or task_dir.name,
         description=task.get("description"),
-        instruction=(task_dir / "instruction.md").read_text().strip(),
+        prompt=(task_dir / "instruction.md").read_text().strip(),
         image=resolve_image(
             task_dir,
             config,

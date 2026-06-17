@@ -148,7 +148,7 @@ class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config{state_param}]):
     def load_tasks(self) -> list[{prefix}Task]:
         raise NotImplementedError(
             "Return this taskset's tasks, e.g. "
-            "[{prefix}Task(idx=i, instruction=...) for i in range(self.config.num_tasks)]."
+            "[{prefix}Task(idx=i, prompt=...) for i in range(self.config.num_tasks)]."
         )
 {methods_block}
     @vf.reward(weight=1.0)

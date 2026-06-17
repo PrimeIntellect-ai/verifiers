@@ -34,7 +34,7 @@ class EchoConfig(vf.TasksetConfig):
 class EchoTaskset(vf.Taskset[EchoTask, EchoConfig]):
     def load_tasks(self) -> list[EchoTask]:
         return [
-            EchoTask(idx=i, instruction=phrase, system_prompt=SYSTEM, answer=phrase)
+            EchoTask(idx=i, prompt=phrase, system_prompt=SYSTEM, answer=phrase)
             for i, phrase in enumerate(self.config.phrases)
         ]
 

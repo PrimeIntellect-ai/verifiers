@@ -185,7 +185,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     """Map a v0 ``RolloutOutput`` into a v1 ``Trace``, preserving the meta a native v1
     trace carries: per-turn prompt messages, the response message (content / reasoning /
     tool calls), ``finish_reason`` and ``usage``, the token ids/logprobs, and the task's
-    system prompt / instruction / answer. ``is_truncated`` is a computed v1 field derived
+    system prompt / prompt / answer. ``is_truncated`` is a computed v1 field derived
     from the final turn's ``finish_reason`` and the stop condition."""
     model = str(out.get("model") or "")
 
@@ -224,7 +224,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
 
 def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTask:
     """Carry the v0 prompt's meta onto the v1 task: the system message becomes
-    ``system_prompt``, the user message(s) become ``instruction``, and the reference
+    ``system_prompt``, the user message(s) become ``prompt``, and the reference
     ``answer`` rides along as a taskset-extra field (``WireTask`` allows extras)."""
     system_prompt: str | None = None
     user_texts: list[str] = []
@@ -239,7 +239,7 @@ def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTask:
     extra = {"answer": answer} if answer else {}
     return WireTask(
         idx=task_idx,
-        instruction="\n\n".join(user_texts),
+        prompt="\n\n".join(user_texts),
         system_prompt=system_prompt,
         **extra,
     )

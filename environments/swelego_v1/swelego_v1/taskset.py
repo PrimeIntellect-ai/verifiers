@@ -180,7 +180,7 @@ class SWELegoTaskset(vf.Taskset[SWELegoTask, vf.TasksetConfig]):
             SWELegoTask(
                 idx=i,
                 name=row.get("instance_id") or f"swelego-{i}",
-                instruction=row["problem_statement"],
+                prompt=row["problem_statement"],
                 image=row["image_name"],
                 workdir=REPO_PATH,
                 resources=vf.TaskResources(cpu=4, memory=4, disk=10),

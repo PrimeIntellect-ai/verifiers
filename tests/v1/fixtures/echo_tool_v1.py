@@ -4,7 +4,7 @@ The v1 tool fixture for the e2e matrix. The taskset declares an `EchoToolset` (`
 with one `@vf.tool` method whose placement is CLI-tunable (`--taskset.tools.colocated`,
 `--taskset.tools.shared`, `--taskset.tools.runtime.type`): it runs colocated in the harness's
 runtime, shared once per eval, or in its own runtime, and the harness must reach it wherever it
-lives. The tool stamps its output with a token the instruction never reveals, so the reward is
+lives. The tool stamps its output with a token the prompt never reveals, so the reward is
 1.0 only if the model actually called the tool — trivial when the infra works, impossible when
 it doesn't. The tool is task-agnostic, so it works in `shared` placement too.
 """
@@ -16,7 +16,7 @@ ECHO_TOKEN = "ok-7f3"  # the tool stamps this; only a real tool call can surface
 
 
 class EchoToolset(vf.Toolset[vf.ToolsetConfig]):
-    TOOL_PREFIX = "echo"  # the model sees `echo_back` (matches the instruction)
+    TOOL_PREFIX = "echo"  # the model sees `echo_back` (matches the prompt)
 
     @vf.tool
     def back(self, message: str) -> str:
@@ -37,7 +37,7 @@ class EchoToolTaskset(vf.Taskset[EchoToolTask, EchoToolConfig]):
         return [
             EchoToolTask(
                 idx=0,
-                instruction=(
+                prompt=(
                     f'Call the `echo_back` tool with the message "{PHRASE}", then reply '
                     "with exactly what it returns inside <answer></answer> tags."
                 ),

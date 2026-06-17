@@ -10,7 +10,9 @@ host `trace.state` -> scoring. Placement is CLI-tunable like any toolset (coloca
 
 import verifiers.v1 as vf
 
-TARGET = 3  # calls the instruction asks for; the reward accepts >= 2 (margin for an under-call)
+TARGET = (
+    3  # calls the prompt asks for; the reward accepts >= 2 (margin for an under-call)
+)
 
 
 class CounterState(vf.State):
@@ -40,7 +42,7 @@ class CounterTaskset(vf.Taskset[CounterTask, CounterConfig, CounterState]):
         return [
             CounterTask(
                 idx=0,
-                instruction=(
+                prompt=(
                     f"Call the `counter_bump` tool {TARGET} times, one call per turn — wait for "
                     "each result before the next. After the last result, reply with "
                     "<answer>done</answer>."

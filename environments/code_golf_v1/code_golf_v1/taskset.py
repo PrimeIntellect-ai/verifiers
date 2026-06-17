@@ -56,7 +56,7 @@ class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
             CodeGolfTask(
                 idx=i,
                 name=name,
-                instruction=f"{SYSTEM}\n\nPrint {description}.",
+                prompt=f"{SYSTEM}\n\nPrint {description}.",
                 expected=expected,
             )
             for i, (name, description, expected) in enumerate(self.SPECS)

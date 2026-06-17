@@ -195,10 +195,10 @@ class Rollout:
                         state_secret=secret,
                     ) as session.user,
                 ):
-                    if self.task.instruction is None and session.user is None:
+                    if self.task.prompt is None and session.user is None:
                         raise ProgramError(
-                            "task has no instruction and no user simulator to open the "
-                            "conversation; set task.instruction or have Taskset.user return "
+                            "task has no prompt and no user simulator to open the "
+                            "conversation; set task.prompt or have Taskset.user return "
                             "a simulator"
                         )
                     # setup done — the harness is now driving

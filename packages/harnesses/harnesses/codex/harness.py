@@ -58,7 +58,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        _, instruction = self.resolve_prompt(trace.task)
+        _, prompt = self.resolve_prompt(trace.task)
         # codex authenticates to the interception server with the session secret (its provider
         # api key) and posts Responses calls to `{endpoint}/responses`.
         env = {**self.config.env, KEY_VAR: secret}
@@ -107,6 +107,6 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "-c",
             f"model_providers.{PROVIDER}.requires_openai_auth=false",
             *tool_config,
-            instruction,
+            prompt,
         ]
         return await runtime.run(argv, env)

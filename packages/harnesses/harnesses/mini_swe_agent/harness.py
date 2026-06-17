@@ -33,14 +33,14 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     ) -> ProgramResult:
         if self.config.disabled_tools:
             raise ValueError("mini-swe-agent does not support disabling tools")
-        _, instruction = self.resolve_prompt(trace.task)
+        _, prompt = self.resolve_prompt(trace.task)
         args = [
             "--model",
             ctx.model,
             "--model-class",
             "litellm",
             "--task",
-            instruction,
+            prompt,
             "--exit-immediately",
             "--yolo",
             "-c",

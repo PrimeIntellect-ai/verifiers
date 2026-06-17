@@ -190,7 +190,7 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
             R2EGymTask(
                 idx=i,
                 name=row.get("commit_hash") or f"r2e-{i}",
-                instruction=row["problem_statement"],
+                prompt=row["problem_statement"],
                 image=(
                     f"{REGISTRY}/{row['docker_image']}"
                     if self.config.use_prime_registry

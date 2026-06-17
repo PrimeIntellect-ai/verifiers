@@ -72,45 +72,45 @@ class Harness(ABC, Generic[ConfigT]):
     """Expose a task's MCP tool servers to the model; set False for harnesses without an MCP client."""
     SUPPORTS_USER_SIM: ClassVar[bool] = False
     """Drive a task's user simulator (multi-turn user injection); opt in per harness."""
-    SUPPORTS_MESSAGE_INSTRUCTION: ClassVar[bool] = False
-    """Accept a Messages-list task.instruction (e.g. an image-bearing prompt); opt in per harness."""
+    SUPPORTS_MESSAGE_PROMPT: ClassVar[bool] = False
+    """Accept a Messages-list task.prompt (e.g. an image-bearing prompt); opt in per harness."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
     def resolve_prompt(self, task: Task) -> tuple[str | None, str | Messages | None]:
-        """Resolve `(system_prompt, user_instruction)` for this harness. If the harness
+        """Resolve `(system_prompt, prompt)` for this harness. If the harness
         appends the system prompt natively, returns it separately; otherwise folds it into
-        the user instruction (warning that it isn't sent as a system message). A `Messages`
-        instruction (e.g. an image-bearing prompt) is only allowed for harnesses that set
-        `SUPPORTS_MESSAGE_INSTRUCTION`. A `None` instruction means the task has no prompt —
+        the user prompt (warning that it isn't sent as a system message). A `Messages`
+        prompt (e.g. an image-bearing prompt) is only allowed for harnesses that set
+        `SUPPORTS_MESSAGE_PROMPT`. A `None` prompt means the task has no prompt —
         the user simulator opens the conversation (see `Taskset.user`); the harness emits no
         opening user message."""
-        instruction = task.instruction
+        prompt = task.prompt
         if (
-            instruction is not None
-            and not isinstance(instruction, str)
-            and not self.SUPPORTS_MESSAGE_INSTRUCTION
+            prompt is not None
+            and not isinstance(prompt, str)
+            and not self.SUPPORTS_MESSAGE_PROMPT
         ):
             raise ValueError(
-                f"Harness {self.config.id!r} does not support a Messages instruction; "
-                "task.instruction must be a string or None."
+                f"Harness {self.config.id!r} does not support a Messages prompt; "
+                "task.prompt must be a string or None."
             )
         system = task.system_prompt
         if system is None or self.APPENDS_SYSTEM_PROMPT:
-            return system if self.APPENDS_SYSTEM_PROMPT else None, instruction
-        if not isinstance(instruction, str):
+            return system if self.APPENDS_SYSTEM_PROMPT else None, prompt
+        if not isinstance(prompt, str):
             raise ValueError(
                 f"Harness {self.config.id!r} cannot fold a system prompt into a "
-                f"{'Messages' if instruction is not None else 'None'} instruction; set "
+                f"{'Messages' if prompt is not None else 'None'} prompt; set "
                 "APPENDS_SYSTEM_PROMPT to emit it as a system message."
             )
         logger.warning(
             "Harness %r does not support a separate system prompt; prepending "
-            "task.system_prompt to the user instruction.",
+            "task.system_prompt to the user prompt.",
             self.config.id,
         )
-        return None, f"{system}\n\n{instruction}"
+        return None, f"{system}\n\n{prompt}"
 
     async def run(
         self,

@@ -27,7 +27,7 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
             GlossaryTask(
                 idx=i,
                 name=entity.title(),
-                instruction=(
+                prompt=(
                     f'Use the `facts_lookup` tool to look up "{entity.title()}", then '
                     "reply with exactly what it returns inside <answer></answer> tags."
                 ),

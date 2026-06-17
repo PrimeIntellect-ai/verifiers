@@ -58,7 +58,7 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        _, instruction = self.resolve_prompt(trace.task)
+        _, prompt = self.resolve_prompt(trace.task)
         env = {
             **self.config.env,
             "KIMI_CODE_HOME": KIMI_HOME,
@@ -104,4 +104,4 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             await runtime.write(f"{KIMI_HOME}/config.toml", permission_rules.encode())
         await runtime.write(f"{KIMI_HOME}/mcp.json", json.dumps(mcp).encode())
         # `--prompt` is Kimi Code's non-interactive print mode.
-        return await runtime.run([BINARY, "--prompt", instruction], env)
+        return await runtime.run([BINARY, "--prompt", prompt], env)

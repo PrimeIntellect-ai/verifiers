@@ -185,7 +185,7 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
             ScaleSWETask(
                 idx=i,
                 name=row["instance_id"],
-                instruction=row["problem_statement"],
+                prompt=row["problem_statement"],
                 image=(
                     f"{REGISTRY}/{row['image_url']}"
                     if self.config.use_prime_registry

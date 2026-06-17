@@ -49,7 +49,7 @@ import verifiers.v1 as vf
 
 
 class ReverseTask(vf.Task):
-    answer: str                     # your own fields, alongside vf.Task's (instruction, system_prompt, ...)
+    answer: str                     # your own fields, alongside vf.Task's (prompt, system_prompt, ...)
 
 
 class ReverseConfig(vf.TasksetConfig):
@@ -59,7 +59,7 @@ class ReverseConfig(vf.TasksetConfig):
 class ReverseTaskset(vf.Taskset[ReverseTask, ReverseConfig]):
     def load_tasks(self) -> list[ReverseTask]:
         return [
-            ReverseTask(idx=i, instruction=f"Reverse: {w}", answer=w[::-1])
+            ReverseTask(idx=i, prompt=f"Reverse: {w}", answer=w[::-1])
             for i, w in enumerate(WORDS[: self.config.num_tasks])
         ]
 
@@ -210,7 +210,7 @@ boilerplate) authored from a config — the same shape as a taskset:
 - A **user simulator** is a `vf.User[ConfigT]` with one `async def respond(message) -> Messages` hook
   (the framework calls it after each assistant turn for the next user message(s); end the trajectory
   by setting a `self.state` flag a taskset `@vf.stop` checks — see above). A taskset supplies one via
-  `user(task) -> vf.User | None`. If a task carries no prompt (`instruction=None`), the simulator also
+  `user(task) -> vf.User | None`. If a task carries no prompt (`prompt=None`), the simulator also
   **opens the conversation**: the framework calls `respond("")` once before the first model turn and
   seeds its reply as the initial user message.
 
@@ -309,7 +309,7 @@ executable the runtime can run — an agent CLI, a binary, a script — **as lon
 model requests in one of the supported dialects** (chat-completions, Responses, ...); that's
 the whole contract. For a self-contained chat loop it's usually a single-file uv script
 (`runtime.run_uv_script`, so the harness needs only `uv` in the runtime); otherwise launch your
-binary with `runtime.run(...)`. `resolve_prompt(trace.task)` gives the `(system, instruction)`
+binary with `runtime.run(...)`. `resolve_prompt(trace.task)` gives the `(system, prompt)`
 to seed it, and `mcp_urls` are the task's tool servers.
 
 ```python
@@ -328,11 +328,11 @@ class MyHarness(vf.Harness[MyHarnessConfig]):
     SUPPORTS_USER_SIM = True
 
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls) -> vf.ProgramResult:
-        system, instruction = self.resolve_prompt(trace.task)
+        system, prompt = self.resolve_prompt(trace.task)
         env = {"OPENAI_BASE_URL": endpoint, "OPENAI_API_KEY": secret,
                "OPENAI_MODEL": ctx.model, "SYSTEM_PROMPT": system or "",
                "MAX_STEPS": str(self.config.max_steps)}
-        return await runtime.run_uv_script(PROGRAM, args=[instruction], env=env)
+        return await runtime.run_uv_script(PROGRAM, args=[prompt], env=env)
 
 
 __all__ = ["MyHarness"]   # vf resolves the harness by finding this Harness subclass

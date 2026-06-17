@@ -29,7 +29,7 @@ class DefaultHarnessConfig(HarnessConfig):
 class DefaultHarness(Harness[DefaultHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_USER_SIM = True
-    SUPPORTS_MESSAGE_INSTRUCTION = True
+    SUPPORTS_MESSAGE_PROMPT = True
 
     async def launch(
         self,
@@ -40,7 +40,7 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        system_prompt, instruction = self.resolve_prompt(trace.task)
+        system_prompt, prompt = self.resolve_prompt(trace.task)
         env = {
             **self.config.env,
             "OPENAI_BASE_URL": endpoint,
@@ -54,16 +54,14 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             env["MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
-        # A Messages instruction (e.g. an image-bearing prompt) seeds the chat loop directly;
+        # A Messages prompt (e.g. an image-bearing prompt) seeds the chat loop directly;
         # a plain string is the single first user message; None means the task has no prompt and
         # the framework's user simulator opens the conversation (no opening user message here).
-        if instruction is None:
+        if prompt is None:
             args = [""]
-        elif isinstance(instruction, str):
-            args = [instruction]
+        elif isinstance(prompt, str):
+            args = [prompt]
         else:
-            env["INITIAL_MESSAGES"] = json.dumps(
-                [message_to_wire(m) for m in instruction]
-            )
+            env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in prompt])
             args = [""]
         return await runtime.run_uv_script(PROGRAM_SOURCE, args=args, env=env)

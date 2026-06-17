@@ -7,7 +7,7 @@ on each follow-up turn re-sorts the cumulative list — tagging the newly added 
 ground truth, power-scaled.
 
 The whole conversation is driven by a `vf.User` simulator (`AlphabetSortUser` in
-`servers/user.py`): the task carries no prompt (`instruction=None`), so the simulator opens the
+`servers/user.py`): the task carries no prompt (`prompt=None`), so the simulator opens the
 conversation with the initial sort prompt — before the model is ever called — and then injects
 each follow-up after the assistant turn. The episode is one rollout the harness only ever sees
 as a single exchange. The simulator runs on the host (not colocated in the agent's runtime), so
@@ -102,7 +102,7 @@ class AlphabetSortTaskset(
             first = turns[0][:]
             rng.shuffle(first)
             shown = rng.randint(c.min_names_per_turn, c.max_names_per_turn)
-            instruction = (
+            prompt = (
                 f"Sort these names in alphabetical order by {label} name: {', '.join(first)}\n\n"
                 "Use exactly this format:\n<alphabetical_sorted>\n"
                 + "\n".join(f"Name{j}" for j in range(1, shown + 1))
@@ -140,9 +140,9 @@ class AlphabetSortTaskset(
                     idx=len(tasks),
                     # No prompt on the task: the simulator opens with the sort prompt, then the
                     # follow-ups — one user turn per `user_turns` entry.
-                    instruction=None,
+                    prompt=None,
                     info={
-                        "user_turns": [instruction, *follow_ups],
+                        "user_turns": [prompt, *follow_ups],
                         "ground_truths": ground_truths,
                         "num_turns": len(turns),
                     },

@@ -43,7 +43,7 @@ class ScratchpadConfig(vf.TasksetConfig):
 class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig, ScratchpadState]):
     def load_tasks(self) -> list[ScratchpadTask]:
         return [
-            ScratchpadTask(idx=i, word=w, instruction=INSTRUCTION.format(word=w))
+            ScratchpadTask(idx=i, word=w, prompt=INSTRUCTION.format(word=w))
             for i, w in enumerate(WORDS)
         ]
 

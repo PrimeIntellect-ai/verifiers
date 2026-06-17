@@ -20,10 +20,10 @@ class _State(vf.State):
 
 def test_bare_trace_round_trip():
     # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
-    tr = vf.Trace(task=vf.Task(idx=3, instruction="hello"))
+    tr = vf.Trace(task=vf.Task(idx=3, prompt="hello"))
     rt = vf.Trace.model_validate(tr.model_dump())
     assert rt.id == tr.id
-    assert rt.task.idx == 3 and rt.task.instruction == "hello"
+    assert rt.task.idx == 3 and rt.task.prompt == "hello"
     assert rt.num_turns == 0 and rt.num_branches == 0
     assert rt.reward == 0.0 and rt.errors == []
 
@@ -32,7 +32,7 @@ def test_custom_task_state_round_trip():
     # A custom Task + State, round-tripped into the same parameterization. Custom task fields are
     # typed (not just `model_extra`); `state` is runtime-only and never crosses the wire.
     tr = vf.Trace[_Task, _State](
-        task=_Task(idx=0, instruction="q", answer="gold"),
+        task=_Task(idx=0, prompt="q", answer="gold"),
         state=_State(score=7),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
@@ -53,7 +53,7 @@ def test_wire_trace_round_trip():
     # Two leaves off one root → 2 branches (a compaction-shaped trace), so the round-trip has to
     # carry node `parent` links for `num_branches` to survive.
     tr = vf.Trace[_Task, vf.State](
-        task=_Task(idx=0, instruction="q", answer="a"),
+        task=_Task(idx=0, prompt="q", answer="a"),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
             MessageNode(parent=0, message=AssistantMessage(content="a1"), sampled=True),

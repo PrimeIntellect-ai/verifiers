@@ -40,7 +40,7 @@ class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
         return [
             EchoAgenticTask(
                 idx=0,
-                instruction=(
+                prompt=(
                     f"Use the bash tool to write exactly the text '{phrase}' to a file named "
                     f"{TARGET} in the current directory, then finish."
                 ),
