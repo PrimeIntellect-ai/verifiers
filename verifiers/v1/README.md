@@ -30,9 +30,6 @@ tighter type contract. `import verifiers.v1 as vf`.
 uv sync   # core + the shipped packages + examples
 ```
 
-The Modal runtime is optional. In this checkout, install it with
-`uv sync --extra modal`; package consumers use `uv add "verifiers[modal]"`.
-
 ## Quickstart
 
 ```bash
