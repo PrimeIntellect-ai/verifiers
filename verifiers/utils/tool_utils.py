@@ -1,11 +1,10 @@
 import inspect
-from copy import copy
+from collections.abc import Callable
 from typing import Any
-from typing import get_type_hints
 
+from docstring_parser import parse_from_object
+from mcp.server.fastmcp.utilities.func_metadata import func_metadata
 from openai import pydantic_function_tool
-from pydantic import Field, create_model
-from pydantic.fields import FieldInfo
 
 from verifiers.types import Tool
 
@@ -27,45 +26,26 @@ def is_valid_tool_content_parts(value: Any) -> bool:
     return True
 
 
-def convert_func_to_tool_def(func: Any) -> Tool:
+def convert_func_to_tool_def(func: Callable[..., Any]) -> Tool:
     """Convert *func* to a provider-agnostic vf.Tool definition."""
-    doc = inspect.getdoc(func) or ""
-    description = doc.split("\n\n", 1)[0]
-    param_descriptions: dict[str, str] = {}
-    in_args = False
-    for line in doc.splitlines():
-        stripped = line.strip()
-        if stripped in {"Args:", "Arguments:"}:
-            in_args = True
-            continue
-        if not in_args:
-            continue
-        if not line.startswith((" ", "\t")):
-            break
-        name, separator, param_description = stripped.partition(":")
-        if separator:
-            param_descriptions[name.split(" ", 1)[0]] = param_description.strip()
+    name = getattr(func, "__name__")
+    doc = parse_from_object(func)
+    model = func_metadata(func, structured_output=False).arg_model
+    model.model_config["title"] = f"{name}_args"
 
-    fields: dict[str, Any] = {}
-    type_hints = get_type_hints(func, include_extras=True)
-    for name, param in inspect.signature(func).parameters.items():
-        annotation = type_hints.get(name, Any)
-        default = ... if param.default is inspect.Parameter.empty else param.default
-        param_description = param_descriptions.get(name)
-        if isinstance(default, FieldInfo) and param_description:
-            default = copy(default)
-            default.description = param_description
-        elif param_description:
-            default = Field(default=default, description=param_description)
-        fields[name] = (annotation, default)
+    fields = {field.alias or name: field for name, field in model.model_fields.items()}
+    descriptions = {param.arg_name: param.description for param in doc.params}
+    for param in inspect.signature(func).parameters.values():
+        field = fields[param.name]
+        field.description = field.description or descriptions.get(param.name)
+        if param.annotation is inspect.Parameter.empty:
+            field.metadata = []
+    model.model_rebuild(force=True)
 
-    model = create_model(f"{func.__name__}_args", **fields)
-    function = pydantic_function_tool(
-        model, name=func.__name__, description=description
-    )["function"]
-    return Tool(
-        name=function["name"],
-        description=function.get("description", ""),
-        parameters=function["parameters"],
-        strict=function["strict"],
+    return Tool.model_validate(
+        pydantic_function_tool(
+            model,
+            name=name,
+            description=doc.short_description or "",
+        )["function"]
     )

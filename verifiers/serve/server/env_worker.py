@@ -11,7 +11,6 @@ import gc
 import logging
 import signal
 import time
-from multiprocessing import current_process
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any, cast
@@ -33,7 +32,7 @@ from verifiers.serve.types import (
 from verifiers.types import ClientConfig
 from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.client_utils import resolve_client_config
-from verifiers.utils.process_utils import monitor_death_pipe
+from verifiers.utils.process_utils import monitor_death_pipe, set_proc_title
 from verifiers.utils.serve_utils import msgpack_encoder
 
 
@@ -70,7 +69,7 @@ class EnvWorker:
         stats_address: str,
         death_pipe: Connection | None = None,
     ):
-        current_process().name = f"Verifiers::{worker_name}"
+        set_proc_title(f"EnvWorker{worker_id}")
         self.death_pipe = death_pipe
         self.env_id = env_id
         self.worker_id = worker_id

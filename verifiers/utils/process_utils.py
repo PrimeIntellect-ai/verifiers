@@ -7,7 +7,16 @@ import threading
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 
+import setproctitle
+
 logger = logging.getLogger(__name__)
+
+VERIFIERS_PROC_PREFIX = "Verifiers"
+
+
+def set_proc_title(name: str) -> None:
+    """Set the OS-visible process title."""
+    setproctitle.setproctitle(f"{VERIFIERS_PROC_PREFIX}::{name}")
 
 
 def monitor_death_pipe(death_pipe: Connection) -> None:

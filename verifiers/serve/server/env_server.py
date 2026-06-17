@@ -9,14 +9,13 @@ import asyncio
 import logging
 import signal
 from abc import ABC, abstractmethod
-from multiprocessing import current_process
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
 import verifiers as vf
 from verifiers.serve.server.env_router import EnvRouter
-from verifiers.utils.process_utils import monitor_death_pipe
+from verifiers.utils.process_utils import monitor_death_pipe, set_proc_title
 
 
 class EnvServer(ABC):
@@ -42,7 +41,7 @@ class EnvServer(ABC):
         stats_log_interval: float = 10.0,
         death_pipe: Connection | None = None,
     ):
-        current_process().name = "Verifiers::EnvServer"
+        set_proc_title("EnvServer")
         self.death_pipe = death_pipe
 
         logger_kwargs: dict[str, Any] = {

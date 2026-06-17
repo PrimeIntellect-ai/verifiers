@@ -29,6 +29,7 @@ classifiers = [
 dependencies = [
     "anthropic>=0.78.0",
     "datasets>=3.0.0, <4.7.0",
+    "docstring-parser>=0.18.0",
     "numpy",
     "math-verify>=0.8.0",
     "mcp>=1.14.1",
@@ -43,6 +44,7 @@ dependencies = [
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
     "aiolimiter>=1.2.1",
+    "setproctitle>=1.3.0",
     "httpx>=0.27.0",
     "aiohttp>=3.9.0",
     "prime-pydantic-config[toml]>=0.3.0.dev86",
