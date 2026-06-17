@@ -27,6 +27,7 @@ from pydantic import (
     computed_field,
     field_validator,
 )
+from renderers import RendererConfig
 
 from verifiers.errors import Error
 
@@ -34,20 +35,11 @@ if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
     from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
     from datasets import Dataset
-    from renderers import RendererConfig
 
     from verifiers.clients import Client
 else:
     RedactedThinkingBlock = Any
     AnthropicThinkingBlock = Any
-    # ``renderers`` is an optional extra (``verifiers[renderers]``). When
-    # absent, fall back to ``Any`` so ``ClientConfig`` still imports and
-    # validates non-renderer fields; the renderer client re-validates the
-    # field through the real discriminated union when it's actually used.
-    try:
-        from renderers import RendererConfig
-    except ImportError:
-        RendererConfig = Any
 
 if sys.version_info < (3, 12):
     from typing_extensions import NotRequired, TypedDict

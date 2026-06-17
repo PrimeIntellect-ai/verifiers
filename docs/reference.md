@@ -384,7 +384,7 @@ Abstract base class for all environments.
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `generate(inputs, client, model, ...)` | `GenerateOutputs` | Run rollouts asynchronously. `client` accepts `Client \| ClientConfig`. |
-| `generate_sync(inputs, client, ...)` | `GenerateOutputs` | Synchronous wrapper |
+| `generate_sync(inputs, client, ...)` | `GenerateOutputs` | Synchronous wrapper; inside an active event loop, install `verifiers[notebook]` |
 | `evaluate(client, model, ...)` | `GenerateOutputs` | Evaluate on eval_dataset |
 | `evaluate_sync(client, model, ...)` | `GenerateOutputs` | Synchronous evaluation |
 
@@ -406,6 +406,9 @@ Abstract base class for all environments.
 | `is_completed(state)` | `bool` | Check all stop conditions |
 | `run_rollout(sem, input, client, model, sampling_args)` | `State` | Run rollout with semaphore |
 | `run_group(group_inputs, client, model, ...)` | `list[State]` | Generate and score one group |
+
+Calling `generate_sync()` from Jupyter or another active event loop requires
+`uv add "verifiers[notebook]"`.
 
 **Configuration methods:**
 
@@ -771,7 +774,7 @@ Abstract base class for all model clients. Wraps a provider-specific SDK client 
 | `AnthropicMessagesClient` | `"anthropic_messages"` | `AsyncAnthropic` | Anthropic Messages API |
 | `NeMoRLChatCompletionsClient` | `"nemorl_chat_completions"` | `AsyncOpenAI` | NeMo-RL Chat Completions variant |
 
-All built-in clients are available as `vf.OpenAIChatCompletionsClient`, `vf.AnthropicMessagesClient`, etc. `RendererClient` requires the optional renderer package; install it with `uv add "verifiers[renderers]"` before importing `vf.RendererClient` or using `client_type="renderer"`.
+All built-in clients are available as `vf.OpenAIChatCompletionsClient`, `vf.AnthropicMessagesClient`, etc.
 
 ### Response
 

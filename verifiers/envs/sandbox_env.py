@@ -1,13 +1,6 @@
 import logging
-import sys
 import time
-from typing import Any, cast
-
-if sys.version_info < (3, 12):
-    from typing_extensions import TypedDict
-else:
-    from typing import TypedDict
-
+from typing import Any, TypedDict, cast
 
 import tenacity as tc
 from prime_sandboxes import CommandTimeoutError

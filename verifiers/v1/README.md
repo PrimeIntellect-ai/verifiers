@@ -27,7 +27,7 @@ tighter type contract. `import verifiers.v1 as vf`.
 ## Install
 
 ```bash
-uv sync   # core + the shipped packages + examples (eval, serve, all runtimes)
+uv sync   # core + the shipped packages + examples
 ```
 
 ## Quickstart
