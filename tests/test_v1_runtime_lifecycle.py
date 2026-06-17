@@ -1092,6 +1092,10 @@ async def test_base_program_submits_system_prompt_before_prompt() -> None:
     ]
     assert state["prompt"][0]["role"] == "system"
     assert state["completion"][-1]["content"] == "ok"
+    request_id = state["trajectory"][0]["extras"]["model_request_id"]
+    assert request_id.startswith("model_")
+    assert state["last_model_request"]["request_id"] == request_id
+    assert state["last_model_request"]["model"] == "fake"
 
 
 @pytest.mark.asyncio
@@ -1123,6 +1127,28 @@ async def test_model_request_reservation_released_when_client_resolution_fails()
         )
 
     assert harness.runtime.visible_model_requests(state) == 0
+    assert state["trajectory"] == []
+
+
+@pytest.mark.asyncio
+async def test_empty_v1_model_response_records_request_context() -> None:
+    harness = make_harness(
+        client=cast(
+            Client,
+            RaisingModelClient(vf.EmptyModelResponseError("empty provider response")),
+        ),
+        model="fake",
+        max_turns=1,
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["error"]["error"] == "EmptyModelResponseError"
+    assert state["last_model_error"]["error"] == "EmptyModelResponseError"
+    assert state["last_model_error"]["message"] == "empty provider response"
+    assert state["last_model_error"]["request_id"].startswith("model_")
+    assert state["last_model_error"]["model"] == "fake"
     assert state["trajectory"] == []
 
 

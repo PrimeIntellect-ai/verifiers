@@ -294,6 +294,17 @@ def state_to_output(
         output.pop("answer")
     if "info" in output and not output["info"]:
         output.pop("info")
+    retry = state.get("retry")
+    if retry is not None:
+        if not is_json_serializable(retry):
+            raise ValueError("state.retry must be JSON-serializable.")
+        output["retry"] = retry
+    for key in ("last_model_request", "last_model_error"):
+        value = state.get(key)
+        if value is not None:
+            if not is_json_serializable(value):
+                raise ValueError(f"state.{key} must be JSON-serializable.")
+            output[key] = value
     # flatten metrics to top-level keys (backwards compatibility)
     state_metrics = state.get("metrics") or {}
     for k, v in state_metrics.items():

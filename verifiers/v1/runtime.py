@@ -20,11 +20,13 @@ from typing import (
     runtime_checkable,
 )
 
+import verifiers as vf
 from verifiers.clients import Client, resolve_client
 from verifiers.types import Messages, Response, ResponseMessage, Tool
 from verifiers.types import ClientConfig, ClientType, SamplingArgs
 from verifiers.utils.async_utils import maybe_call_with_named_args
 from verifiers.utils.client_utils import resolve_client_config
+from verifiers.utils.error_utils import error_data
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from verifiers.utils.tool_utils import convert_func_to_tool_def
@@ -882,17 +884,31 @@ class Runtime:
         if not reserved:
             return self._completed_model_response(state)
         released = False
+        request_id = context.endpoint_request_id or f"model_{uuid.uuid4().hex}"
+        request_meta = {
+            "request_id": request_id,
+            "source": context.source,
+            "model": self.model(state),
+            "trajectory_id": str(state["trajectory_id"]),
+        }
+        if context.endpoint_request_id is not None:
+            request_meta["endpoint_request_id"] = context.endpoint_request_id
+        state["last_model_request"] = request_meta
         try:
             prompt = await self._prepare_prompt(prompt, state)
             client = self.model_client(state)
             request_start = time.time()
-            response = await client.get_response(
-                prompt=prompt,
-                model=self.model(state),
-                tools=tool_defs,
-                sampling_args=self.sampling_args(state),
-                state=state,
-            )
+            try:
+                response = await client.get_response(
+                    prompt=prompt,
+                    model=self.model(state),
+                    tools=tool_defs,
+                    sampling_args=self.sampling_args(state),
+                    state=state,
+                )
+            except vf.Error as error:
+                state["last_model_error"] = {**request_meta, **error_data(error)}
+                raise
             request_end = time.time()
             state.record_model_timing(request_start, request_end)
             record_response_usage(state, response)
@@ -901,6 +917,8 @@ class Runtime:
             is_truncated = response.message.is_truncated or (
                 tokens is not None and bool(tokens.get("is_truncated"))
             )
+            extras = context.extras()
+            extras["model_request_id"] = request_id
             step = {
                 "prompt": serializable(prompt),
                 "completion": serializable(completion),
@@ -910,7 +928,7 @@ class Runtime:
                 "advantage": None,
                 "is_truncated": bool(is_truncated),
                 "trajectory_id": str(state["trajectory_id"]),
-                "extras": context.extras(),
+                "extras": extras,
             }
             if context.trajectory_visibility == "append":
                 state["trajectory"].append(step)

@@ -289,6 +289,47 @@ class TestSavingResults:
         assert result[0].get("foo") == "bar"  # custom field from make_state fixture
         assert result[0]["reward"] == 1.0
 
+    def test_states_to_outputs_includes_retry_and_model_request_metadata(
+        self, make_state
+    ):
+        state = make_state()
+        state["retry"] = {
+            "attempts": 2,
+            "max_retries": 1,
+            "retry_count": 1,
+            "exhausted": False,
+            "elapsed_seconds": 0.25,
+            "events": [
+                {
+                    "attempt": 1,
+                    "error": "EmptyModelResponseError",
+                    "message": "empty response",
+                    "error_chain_str": "EmptyModelResponseError",
+                    "next_sleep_seconds": 0.1,
+                }
+            ],
+        }
+        state["last_model_request"] = {
+            "request_id": "model_123",
+            "model": "test-model",
+            "trajectory_id": "traj",
+        }
+        state["last_model_error"] = {
+            "request_id": "model_123",
+            "model": "test-model",
+            "trajectory_id": "traj",
+            "error": "EmptyModelResponseError",
+            "message": "empty response",
+            "error_chain_repr": "EmptyModelResponseError('empty response')",
+            "error_chain_str": "EmptyModelResponseError",
+        }
+
+        outputs = states_to_outputs([state], state_columns=[])
+
+        assert outputs[0]["retry"] == state["retry"]
+        assert outputs[0]["last_model_request"] == state["last_model_request"]
+        assert outputs[0]["last_model_error"] == state["last_model_error"]
+
     def test_states_to_outputs_requires_example_id(self, make_state):
         state = make_state()
         del state["example_id"]
