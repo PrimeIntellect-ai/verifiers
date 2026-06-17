@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PooledServer:
     server: InterceptionServer
-    base: str  # reachable interception base: `{base}/v1` (model), `/state` + `/task` (servers)
+    base_url: str  # reachable interception base: `{base_url}/v1` (model), `/state` + `/task` (servers)
     load: int = 0
 
 
@@ -79,16 +79,16 @@ class InterceptionPool:
     @asynccontextmanager
     async def acquire(self, session: RolloutSession):
         """Register `session` on a server with spare capacity (bringing one up if needed) and yield
-        its `(endpoint, secret, port, base)` — `endpoint` is the model route (`{base}/v1`), `port` the
-        interception server's host port (a per-rollout tool server's own channel), and `base` its
-        reachable URL (how a `shared` server reaches this rollout's `/state` + `/task`); free the slot
-        on exit."""
+        its `(endpoint, secret, port, base_url)` — `endpoint` is the model route (`{base_url}/v1`),
+        `port` the interception server's host port (a per-rollout tool server's own channel), and
+        `base_url` its reachable URL (how a `shared` server reaches this rollout's `/state` + `/task`);
+        free the slot on exit."""
         async with self._lock:
             entry = await self._entry()
             secret = entry.server.register(session)
             entry.load += 1
         try:
-            yield f"{entry.base}/v1", secret, entry.server.port, entry.base
+            yield f"{entry.base_url}/v1", secret, entry.server.port, entry.base_url
         finally:
             entry.server.unregister(secret)
             entry.load -= 1

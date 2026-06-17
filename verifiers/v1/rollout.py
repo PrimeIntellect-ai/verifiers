@@ -190,7 +190,7 @@ class Rollout:
                     serve_user(
                         self.taskset.user(self.task),
                         self.task,
-                        agent_runtime=runtime,
+                        harness_runtime=runtime,
                         state_port=state_port,
                         state_secret=secret,
                     ) as session.user,

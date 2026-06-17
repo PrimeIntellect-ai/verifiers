@@ -44,7 +44,6 @@ from verifiers.v1.mcp.server import (
     STATE_SECRET_PARAM,
     STATE_URL_PARAM,
     _die_with_parent,
-    _import_ref,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,25 +78,13 @@ class _Child:
 
 
 async def _setup_task(server, state_url: str, secret: str) -> None:
-    """Fetch this rollout's task from the interception server (the `/task` sibling of the state
-    channel, keyed by the same secret) and run the server's `setup_task` for it — so a forked child
-    has the rollout's per-task state. A shared server gets no task via env, so this is how each child
-    learns its rollout's task. No-op without a state channel."""
-    if not state_url:
-        return
-    import httpx
-
-    task_url = (
-        state_url[: -len("/state")] + "/task"
-        if state_url.endswith("/state")
-        else state_url
-    )
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(task_url, headers={"Authorization": f"Bearer {secret}"})
-        resp.raise_for_status()
-        data = resp.json()
-    task = _import_ref(data["cls"]).model_validate_json(data["task"])
-    await server.setup_task(task)
+    """Fetch this rollout's task from the interception `/task` channel (passed per-request to a shared
+    server) and run the server's `setup_task` for it — so a forked child has the rollout's per-task
+    state. The fetch is `ServerBase._fetch_task` (the same one every launched server uses), here with
+    the per-request coordinates rather than the env channel."""
+    task = await server._fetch_task(state_url, secret)
+    if task is not None:
+        await server.setup_task(task)
 
 
 def _serve_child(app, port: int, cwd: str, server, state_url: str, secret: str) -> None:

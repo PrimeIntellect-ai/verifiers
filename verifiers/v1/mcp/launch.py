@@ -185,7 +185,6 @@ async def _read_back_port(runtime: Runtime, path: str) -> int:
 
 async def serve_in_runtime(
     server: ServerBase,
-    task,
     runtime: Runtime,
     *,
     exposed: bool,
@@ -197,14 +196,14 @@ async def serve_in_runtime(
     An `exposed` server (reached from outside its runtime) binds the runtime's fixed `published_port`
     (modal/prime forward only that); otherwise the server binds an OS-assigned free port in its own
     environment and reports it back (`MCP_PORT_FILE`) — so the launcher never probes for a free port.
-    The `config` + this rollout's `task` cross as env JSON (a `shared` server passes `None`). On a
-    host (`subprocess`) runtime it runs with the eval's own interpreter; in a sandbox the working-tree
-    `verifiers` source + the env package are uploaded and installed first (`_install_in_sandbox`)."""
+    Only the `config` crosses as env JSON; the rollout's task is fetched by the server from the
+    interception `/task` channel (`state_url`), so it isn't passed here. On a host (`subprocess`)
+    runtime it runs with the eval's own interpreter; in a sandbox the working-tree `verifiers` source
+    + the env package are uploaded and installed first (`_install_in_sandbox`)."""
     env = {"VF_CONFIG": server.config.model_dump_json()}
-    if task is not None:
-        env["VF_TASK_CLS"] = f"{type(task).__module__}:{type(task).__qualname__}"
-        env["VF_TASK"] = task.model_dump_json()
-    if state_url:  # the shared-state back-channel to this rollout's interception server
+    if (
+        state_url
+    ):  # the shared-state + /task back-channel to this rollout's interception server
         env["VF_STATE_URL"] = state_url
         env["VF_STATE_SECRET"] = state_secret
     if (
@@ -245,9 +244,9 @@ async def serve_in_runtime(
 async def serve(
     server: ServerBase,
     task,
-    agent_runtime: Runtime | None = None,
+    harness_runtime: Runtime | None = None,
     for_host: bool = False,
-    agent_is_local: bool = True,
+    harness_is_local: bool = True,
     *,
     state_port: int | None = None,
     state_secret: str = "",
@@ -255,7 +254,7 @@ async def serve(
     """The single internal launcher for a vf-native server — a `Toolset` OR a `User`. Brings it
     up in its configured placement and yields one reachable URL, tearing down any runtime it
     owns. Placement comes from `server.config`:
-      - `colocated` (with an `agent_runtime`): runs in the harness's own runtime, reusing it;
+      - `colocated` (with an `harness_runtime`): runs in the harness's own runtime, reusing it;
       - otherwise: its OWN `runtime` (host by default), started and stopped here.
     (A remote `url` toolset is short-circuited by the caller — it isn't launched.) Reachability
     depends on who consumes it: `for_host` (a user sim the framework drives) yields a
@@ -282,25 +281,25 @@ async def serve(
             "(each rollout gets a forked child that runs `setup_task`).",
             server.server_name,
         )
-    if (
-        shared
-        and getattr(cfg, "fork", False)
-        and agent_is_local
-        and not runtime_is_local(cfg.runtime)
-    ):
+    if shared and getattr(cfg, "fork", False):
         # The shared server's forked children reach the rollout's /state + /task over the interception
         # server's reachable base. A remote harness makes that a public tunnel (any sandbox can reach
         # it); a LOCAL harness keeps it at localhost, which a remote shared runtime can't reach — the
         # one combination fork can't be wired for. Local shared, or a remote harness, are both fine.
-        raise ValueError(
-            f"forked shared server {server.server_name!r} runs on a remote runtime but the harness is "
-            "local, so the interception server is reachable only at localhost — the remote shared "
-            "server can't reach its /state + /task channel. Run the harness remotely too (so the "
-            "interception tunnel is shared), or use a local tool runtime."
+        if harness_is_local and not runtime_is_local(cfg.runtime):
+            raise ValueError(
+                f"forked shared server {server.server_name!r} runs on a remote runtime but the harness "
+                "is local, so the interception server is reachable only at localhost — the remote "
+                "shared server can't reach its /state + /task channel. Run the harness remotely too "
+                "(so the interception tunnel is shared), or use a local tool runtime."
+            )
+        logger.warning(
+            "shared server %r uses fork-per-rollout isolation, which is EXPERIMENTAL",
+            server.server_name,
         )
     async with contextlib.AsyncExitStack() as stack:
-        if cfg.colocated and agent_runtime is not None:
-            runtime = agent_runtime
+        if cfg.colocated and harness_runtime is not None:
+            runtime = harness_runtime
         else:
             runtime = make_runtime(cfg.runtime)
             await runtime.start()
@@ -310,7 +309,7 @@ async def serve(
         # binds the runtime's fixed published_port. A colocated tool is reached in-sandbox at localhost
         # and binds an OS-assigned free port instead (two colocated servers can't then clash on the
         # published SERVICE_PORT). `serve_in_runtime` returns the actual bound port.
-        exposed = for_host or runtime is not agent_runtime
+        exposed = for_host or runtime is not harness_runtime
         # The shared-state channel: the interception server is a HOST service the server reaches from
         # its own runtime — localhost when local, a tunnel when remote. Shared/eval-level servers get
         # no channel (state is per-rollout; `state_port` is None for them).
@@ -322,30 +321,29 @@ async def serve(
             state_url = f"{state_base.rstrip('/')}/state"
         port = await serve_in_runtime(
             server,
-            task,
             runtime,
             exposed=exposed,
             state_url=state_url,
             state_secret=state_secret,
         )
         # Who consumes the server decides reachability (see `reachable_url`): a user sim is reached
-        # by the host (`for_host`); a tool by the harness — its `agent_runtime` per rollout, or, for
-        # a shared eval-level tool with no single agent, just the harness locality (`agent_is_local`).
-        consumer = HOST if for_host else agent_runtime
+        # by the host (`for_host`); a tool by the harness — its `harness_runtime` per rollout, or, for
+        # a shared eval-level tool with no single harness, just the harness locality (`harness_is_local`).
+        consumer = HOST if for_host else harness_runtime
         base = await stack.enter_async_context(
             reachable_url(
-                runtime, port, consumer=consumer, consumer_is_local=agent_is_local
+                runtime, port, consumer=consumer, consumer_is_local=harness_is_local
             )
         )
         yield f"{base.rstrip('/')}/mcp"
 
 
 @contextlib.asynccontextmanager
-async def serve_shared(toolsets: list[Toolset], agent_is_local: bool = True):
+async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
     """Start the SHARED tool servers (placement `shared`) ONCE for a whole eval, each in its OWN
     `runtime`, and yield `{name: url}` reachable by every rollout's harness. Reachability mirrors a
-    per-rollout tool, but there's no single agent runtime to read locality off — the caller
-    (`Environment.shared_tools`) passes the harness runtime's `agent_is_local`, so a host tool gets
+    per-rollout tool, but there's no single harness runtime to read locality off — the caller
+    (`Environment.shared_tools`) passes the harness runtime's `harness_is_local`, so a host tool gets
     one host bridge (tunnel) when the harness runs remotely, and a remote tool runtime publishes its
     own URL. Torn down when the eval ends. A shared server is task-agnostic, so its `setup` gets no
     task (`serve(toolset, None)`)."""
@@ -360,7 +358,7 @@ async def serve_shared(toolsets: list[Toolset], agent_is_local: bool = True):
                 urls[name] = cfg.url
             else:
                 urls[name] = await stack.enter_async_context(
-                    serve(toolset, None, agent_is_local=agent_is_local)
+                    serve(toolset, None, harness_is_local=harness_is_local)
                 )
             logger.info("shared tool server '%s': %s", name, urls[name])
         yield urls
@@ -399,7 +397,7 @@ async def reap_forked_child(shared_url: str, secret: str) -> None:
 @contextlib.asynccontextmanager
 async def serve_tools(
     toolsets: list[Toolset],
-    agent_runtime: Runtime,
+    harness_runtime: Runtime,
     task,
     shared_urls: dict[str, str] | None = None,
     *,
@@ -439,7 +437,7 @@ async def serve_tools(
                     serve(
                         toolset,
                         task,
-                        agent_runtime,
+                        harness_runtime,
                         state_port=state_port,
                         state_secret=state_secret,
                     )
@@ -517,7 +515,7 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
 async def serve_user(
     user: User | None,
     task,
-    agent_runtime: Runtime | None = None,
+    harness_runtime: Runtime | None = None,
     *,
     state_port: int | None = None,
     state_secret: str = "",
@@ -525,7 +523,7 @@ async def serve_user(
     """Bring a rollout's user server up (via the shared `serve` launcher, `for_host=True` since
     the framework drives the user from the HOST) and yield the async `respond` the interception
     server drives — or `None` when the taskset has no user server. Placement is the user's
-    `config` (colocated in the agent's runtime, or its own); the rollout's `task` is shipped to
+    `config` (colocated in the harness's runtime, or its own); the rollout's `task` is shipped to
     the server for its `setup`. `state_port`/`state_secret` wire it to the shared-state channel — how
     the user sim's `respond` reads/writes `self.state` (and ends the trajectory via a flag a taskset
     `@vf.stop` checks)."""
@@ -535,7 +533,7 @@ async def serve_user(
     async with serve(
         user,
         task,
-        agent_runtime,
+        harness_runtime,
         for_host=True,
         state_port=state_port,
         state_secret=state_secret,
