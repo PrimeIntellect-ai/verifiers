@@ -173,10 +173,15 @@ async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
 
 async def _read_back_port(runtime: Runtime, path: str) -> int:
     """The port the server bound and wrote to `path` in its runtime. The server writes it the moment
-    it binds (before setup/serving), so this resolves quickly; poll because it's a separate process."""
+    it binds (before setup/serving), so this resolves quickly; poll because it's a separate process.
+
+    Read through the un-retrying inner runtime: a missing file just means the server hasn't bound
+    yet, so a per-call retry wrapper would spam `retrying runtime.read` 3x on every poll — this loop
+    is itself the retry."""
+    reader = getattr(runtime, "inner", runtime)
     for _ in range(180):
         with contextlib.suppress(Exception):
-            data = (await runtime.read(path)).decode().strip()
+            data = (await reader.read(path)).decode().strip()
             if data.isdigit():
                 return int(data)
         await asyncio.sleep(1)
