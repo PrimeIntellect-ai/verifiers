@@ -51,8 +51,9 @@ class ToolsetConfig(BaseConfig):
     """For a `shared` server: fork a child process per rollout (copy-on-write memory + a private
     working dir), so per-rollout state that can't live in `self.state` — module globals, a mutated
     in-memory object, relative-path on-disk writes — is isolated per rollout automatically. The
-    expensive `setup` runs once in the parent; each child inherits it warm (see
-    `verifiers.v1.mcp.multiplex`). Requires `shared` + a local runtime. Linux/fork only; not for
+    expensive `setup` runs once in the parent; each child inherits it warm and runs `setup_task` for
+    its rollout's task (see `verifiers.v1.mcp.multiplex`) — so a stateful per-rollout server pays its
+    `setup` once yet stays isolated. Requires `shared` + a local runtime. Linux/fork only; not for
     CUDA/GPU state or background threads in the server."""
     runtime: RuntimeConfig = SubprocessConfig()
     """The server's own runtime, used unless `colocated` (host/subprocess by default — always

@@ -5,10 +5,12 @@ the interception channel (see `server`), but state that DOESN'T live in `self.st
 a mutated in-memory object (an index the tool edits), relative-path on-disk writes — is still shared
 across rollouts. `ToolsetConfig(fork=True)` isolates those too: the expensive `setup` runs ONCE in a
 parent process, then a child is forked per rollout on first contact — the child inherits the warm
-state copy-on-write (in-memory state isolated on write) and runs in a private working directory
-(relative-path writes isolated). The parent is a thin async reverse proxy that pins each rollout to
-its child and streams MCP traffic (so SSE works). So an ordinary stateful server is isolated per
-rollout with no rollout-aware code.
+state copy-on-write (in-memory state isolated on write), runs in a private working directory
+(relative-path writes isolated), and runs `setup_task` for its rollout's task (fetched from the
+interception server's `/task` channel — a shared server gets no task via env). The parent is a thin
+async reverse proxy that pins each rollout to its child and streams MCP traffic (so SSE works). So an
+ordinary stateful per-rollout server (expensive `setup` + per-rollout `setup_task`, e.g.
+`wikispeedia-v1`) is isolated per rollout with no rollout-aware code.
 
 The rollout key is the per-rollout secret the framework tags onto a shared server's URL
 (`STATE_SECRET_PARAM`, see `serve_tools`) — which is only added for a local shared runtime, so fork
@@ -33,7 +35,12 @@ import tempfile
 import time
 from urllib.parse import parse_qs
 
-from verifiers.v1.mcp.server import STATE_SECRET_PARAM, _die_with_parent
+from verifiers.v1.mcp.server import (
+    STATE_SECRET_PARAM,
+    STATE_URL_PARAM,
+    _die_with_parent,
+    _import_ref,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +73,32 @@ class _Child:
         self.last = time.monotonic()
 
 
-def _serve_child(app, port: int, cwd: str) -> None:
-    """In the forked child: die with the parent, move to a private CWD, and serve `app` on `port`
-    with a fresh event loop (the inherited parent loop is abandoned). Never returns."""
+async def _setup_task(server, state_url: str, secret: str) -> None:
+    """Fetch this rollout's task from the interception server (the `/task` sibling of the state
+    channel, keyed by the same secret) and run the server's `setup_task` for it — so a forked child
+    has the rollout's per-task state. A shared server gets no task via env, so this is how each child
+    learns its rollout's task. No-op without a state channel."""
+    if not state_url:
+        return
+    import httpx
+
+    task_url = (
+        state_url[: -len("/state")] + "/task"
+        if state_url.endswith("/state")
+        else state_url
+    )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(task_url, headers={"Authorization": f"Bearer {secret}"})
+        resp.raise_for_status()
+        data = resp.json()
+    task = _import_ref(data["cls"]).model_validate_json(data["task"])
+    await server.setup_task(task)
+
+
+def _serve_child(app, port: int, cwd: str, server, state_url: str, secret: str) -> None:
+    """In the forked child: die with the parent, move to a private CWD, run `setup_task` for this
+    rollout's task, and serve `app` on `port` with a fresh event loop (the inherited parent loop is
+    abandoned). Never returns."""
     import uvicorn
 
     _die_with_parent()  # SIGKILL this child when the parent multiplexer dies (cleared by fork)
@@ -76,6 +106,7 @@ def _serve_child(app, port: int, cwd: str) -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
+        loop.run_until_complete(_setup_task(server, state_url, secret))
         loop.run_until_complete(
             uvicorn.Server(
                 uvicorn.Config(
@@ -105,10 +136,11 @@ async def _wait_up(port: int, timeout: float = 30.0) -> None:
     raise RuntimeError(f"fork child on port {port} did not come up")
 
 
-def serve_forked(app, sock: socket.socket) -> None:
+def serve_forked(app, sock: socket.socket, server) -> None:
     """Serve `app` on the bound `sock` as a fork-per-rollout multiplexer (see module docstring).
     `app` is the warm MCP ASGI app, built once in the parent after `setup`; forked children inherit
-    it copy-on-write. `sock` is the socket the launcher reads the port back from."""
+    it copy-on-write. `server` is the `ServerBase` whose tools the app exposes — each child runs its
+    `setup_task` for the rollout's task. `sock` is the socket the launcher reads the port back from."""
     import httpx
     import uvicorn
 
@@ -117,7 +149,7 @@ def serve_forked(app, sock: socket.socket) -> None:
     forking = asyncio.Lock()
     client = httpx.AsyncClient(timeout=None)
 
-    async def ensure(key: str) -> _Child:
+    async def ensure(key: str, state_url: str) -> _Child:
         async with forking:  # one fork at a time keeps the single-threaded fork clean
             child = children.get(key)
             if child is None:
@@ -126,7 +158,8 @@ def serve_forked(app, sock: socket.socket) -> None:
                 os.makedirs(cwd, exist_ok=True)
                 pid = os.fork()
                 if pid == 0:
-                    _serve_child(app, port, cwd)  # child: never returns
+                    # child: runs setup_task then serves; never returns
+                    _serve_child(app, port, cwd, server, state_url, key)
                 children[key] = child = _Child(pid, port, cwd)
                 await _wait_up(port)
                 logger.info(
@@ -166,10 +199,9 @@ def serve_forked(app, sock: socket.socket) -> None:
                     return
         if scope["type"] != "http":
             return
-        key = (
-            parse_qs(scope.get("query_string", b"").decode()).get(STATE_SECRET_PARAM)
-            or [""]
-        )[0]
+        params = parse_qs(scope.get("query_string", b"").decode())
+        key = (params.get(STATE_SECRET_PARAM) or [""])[0]
+        state_url = (params.get(STATE_URL_PARAM) or [""])[0]
         if scope["path"] == CLOSE_PATH:
             await reap(key)
             await _respond(send, 200, b"closed")
@@ -179,7 +211,7 @@ def serve_forked(app, sock: socket.socket) -> None:
             msg = await receive()
             body += msg.get("body", b"")
             more = msg.get("more_body", False)
-        child = await ensure(key)
+        child = await ensure(key, state_url)
         headers = [
             (k.decode(), v.decode())
             for k, v in scope["headers"]

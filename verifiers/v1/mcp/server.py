@@ -256,10 +256,11 @@ class ServerBase(Generic[ConfigT, StateT]):
         self._register(mcp)
         app = mcp.streamable_http_app()
         if getattr(self.config, "fork", False):
-            # `setup` ran once above (warm); fork a child per rollout that inherits it (see multiplex).
+            # `setup` ran once above (warm); fork a child per rollout that inherits it and runs
+            # `setup_task` for the rollout's task (see multiplex).
             from verifiers.v1.mcp.multiplex import serve_forked
 
-            serve_forked(app, sock)
+            serve_forked(app, sock, self)
             return
         server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
         asyncio.run(server.serve(sockets=[sock]))

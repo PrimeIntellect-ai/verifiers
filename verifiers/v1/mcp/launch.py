@@ -270,11 +270,16 @@ async def serve(
             "is built once for the whole eval and must be task-agnostic — it receives no task. "
             "Drop `shared` to run it per-rollout (with the task), or make its `setup` task-independent."
         )
-    if shared and type(server).setup_task is not ServerBase.setup_task:
+    if (
+        shared
+        and not getattr(cfg, "fork", False)
+        and type(server).setup_task is not ServerBase.setup_task
+    ):
         logger.warning(
             "shared server %r overrides `setup_task`, but `setup_task` is NEVER called for a shared "
             "server (it's built once, task-agnostic) — its per-task logic will not run. Move "
-            "task-agnostic work into `setup`, or drop `shared` to run it per-rollout.",
+            "task-agnostic work into `setup`, drop `shared` to run it per-rollout, or set `fork=True` "
+            "(each rollout gets a forked child that runs `setup_task`).",
             server.server_name,
         )
     if shared and getattr(cfg, "fork", False) and not runtime_is_local(cfg.runtime):
