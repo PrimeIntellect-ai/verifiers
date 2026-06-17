@@ -392,7 +392,9 @@ async def serve_tools(
                 urls[name] = _shared_url_for_rollout(
                     shared_urls[name], toolset, state_port, state_secret
                 )
-                logger.info("tool server '%s' (shared): %s", name, urls[name])
+                # log the untagged base, NOT urls[name] — the per-rollout tag carries the rollout's
+                # bearer secret (`vf_state_secret`), which must not reach a log sink
+                logger.info("tool server '%s' (shared): %s", name, shared_urls[name])
             else:
                 urls[name] = await stack.enter_async_context(
                     serve(
