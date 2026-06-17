@@ -110,24 +110,24 @@ uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
 
 The same drivers on an agentic terminal task — harbor's `hello-world`. The task acts on a
 filesystem, so run it under a containerized runtime: `docker` locally, or a remote `prime` /
-`modal` sandbox (not the default `subprocess`).
+`modal` sandbox (not the default `subprocess`). 
 
 ```bash
-uv run eval harbor-v1 -n 1 --harness.runtime.type docker --harness.id bash            # bash-only agent
-uv run eval harbor-v1 -n 1 --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
-uv run eval harbor-v1 -n 1 --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
-uv run eval harbor-v1 -n 1 --harness.runtime.type docker --harness.id codex           # the codex CLI agent
+uv run eval harbor-v1 -n 1 --taskset.use-harness-image --harness.runtime.type docker --harness.id bash            # bash-only agent
+uv run eval harbor-v1 -n 1 --taskset.use-harness-image --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
+uv run eval harbor-v1 -n 1 --taskset.use-harness-image --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
+uv run eval harbor-v1 -n 1 --taskset.use-harness-image --harness.runtime.type docker --harness.id codex           # the codex CLI agent
 ```
 
 ### Swappable runtime
 
-*Where* code runs, behind one `Runtime` contract — the same contract backs the harness
+Where code runs, behind one `Runtime` contract — the same contract backs the harness
 (`--harness.runtime`), a task's own tool servers (`--taskset.tools.runtime`), and the user
 simulator (`--taskset.user.runtime`) — all structurally MCP servers in a runtime:
 
 ```bash
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process (default)
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container (requires local docker)
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sandbox (requires auth)
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox (requires auth)
 ```
