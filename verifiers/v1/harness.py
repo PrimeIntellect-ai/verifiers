@@ -20,7 +20,12 @@ from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.ids import EnvId, env_name
-from verifiers.v1.runtimes import DockerConfig, ProgramResult, Runtime, RuntimeConfig
+from verifiers.v1.runtimes import (
+    ProgramResult,
+    Runtime,
+    RuntimeConfig,
+    SubprocessConfig,
+)
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
@@ -37,9 +42,11 @@ class HarnessConfig(BaseConfig):
     """The harness id, which selects this harness: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
     `EnvId`). Set via `--harness.id`."""
-    runtime: RuntimeConfig = DockerConfig()
-    """Where the harness runs (subprocess / docker / prime). Lives on the harness — it's
-    the harness's box; tool servers have their own placement (see `TasksetConfig.tools`)."""
+    runtime: RuntimeConfig = SubprocessConfig()
+    """Where the harness runs (subprocess / docker / prime). Subprocess by default — a local
+    process on the host; a taskset that needs a container (its own image, or NEEDS_CONTAINER)
+    selects `--harness.runtime.type docker` (or prime/modal). Lives on the harness — it's the
+    harness's box; tool servers have their own placement (see `TasksetConfig.tools`)."""
     env: dict[str, str] = Field(default_factory=dict)
     """Additional environment variables for the harness program. Harness-owned endpoint,
     authentication, and model variables take precedence."""
