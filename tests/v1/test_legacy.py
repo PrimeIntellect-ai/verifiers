@@ -21,7 +21,7 @@ def _shape(trace) -> dict:
 async def test_v0_single_turn_matches_v1_shape(run_v0, run_v1, tmp_path):
     (v0,) = await run_v0("echo-v0", output_dir=tmp_path / "v0")
     (v1,) = await run_v1(
-        "echo-v1", agent_runtime="subprocess", output_dir=tmp_path / "v1", max_turns=2
+        "echo-v1", harness_runtime="subprocess", output_dir=tmp_path / "v1", max_turns=2
     )
     assert v0.nodes  # the bridge populated the message graph
     assert v0.num_turns == 1
@@ -32,7 +32,7 @@ async def test_v0_single_turn_matches_v1_shape(run_v0, run_v1, tmp_path):
 async def test_v0_multi_turn_matches_v1_shape(run_v0, run_v1, tmp_path):
     (v0,) = await run_v0("echo-multi-v0", output_dir=tmp_path / "v0")
     (v1,) = await run_v1(
-        "echo-v1", agent_runtime="subprocess", output_dir=tmp_path / "v1", max_turns=2
+        "echo-v1", harness_runtime="subprocess", output_dir=tmp_path / "v1", max_turns=2
     )
     assert v0.num_turns >= 2  # genuinely multi-turn
     assert _shape(v0) == _shape(v1)
