@@ -91,7 +91,7 @@ def test_renderer_client_threads_chat_template_kwargs_into_pool():
 
     bases = [
         Qwen3RendererConfig(enable_thinking=True),
-        AutoRendererConfig(preserve_all_thinking=True),
+        AutoRendererConfig(thinking_retention="all"),
         None,
     ]
     for base in bases:
@@ -134,16 +134,16 @@ def test_renderer_client_threads_chat_template_kwargs_into_pool():
                 )
             )
 
-        expected_preserve_all = (
-            base.preserve_all_thinking
+        expected_retention = (
+            base.thinking_retention
             if isinstance(base, AutoRendererConfig)
-            else False
+            else "template"
         )
         create_pool_mock.assert_called_once_with(
             "Qwen/Qwen3-8B",
             Qwen3RendererConfig(
                 enable_thinking=False,
-                preserve_all_thinking=expected_preserve_all,
+                thinking_retention=expected_retention,
             ),
             size=1,
         )

@@ -1033,8 +1033,7 @@ with `MyConfig.model_validate(...)` or use the typed object directly.
 class ClientConfig(BaseModel):
     client_idx: int = 0
     client_type: ClientType = "openai_chat_completions"
-    preserve_all_thinking: bool = False
-    preserve_thinking_between_tool_calls: bool = False
+    renderer_config: RendererConfig | None = None
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list[EndpointClientConfig] = []
@@ -1051,7 +1050,7 @@ class ClientConfig(BaseModel):
 
 `client_type` selects which `Client` implementation to instantiate (see [Client Classes](#client-classes)). Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
 
-`preserve_all_thinking` and `preserve_thinking_between_tool_calls` are forwarded to the underlying renderer when `client_type == "renderer"`. They control whether past-assistant `reasoning_content` is re-emitted on subsequent renders — `preserve_all_thinking` keeps every past-assistant turn's thinking, and `preserve_thinking_between_tool_calls` keeps thinking only inside the in-flight assistant→tool→…→assistant block after the most recent user turn (when that block contains at least one tool response). Both default to `False` (template default applies).
+`renderer_config` is a typed `renderers.RendererConfig` that drives the renderer pool when `client_type == "renderer"` (`None` is treated as `AutoRendererConfig()`). Its shared `thinking_retention` field controls whether past-assistant `reasoning_content` is re-emitted on subsequent renders: `"template"` (default) defers to the chat template, `"tool_cycle"` additionally keeps thinking inside the in-flight assistant→tool→…→assistant block after the most recent user turn (when that block contains at least one tool response), and `"all"` keeps every past-assistant turn's thinking.
 
 When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded with the following precedence:
 - **API key**: `PRIME_API_KEY` env var > `~/.prime/config.json` > `"EMPTY"`

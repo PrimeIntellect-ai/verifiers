@@ -392,8 +392,8 @@ def _resolve_renderer_config(
     inside ``renderers.create_renderer``), we pull resolution forward via
     ``MODEL_RENDERER_MAP`` so kwargs land on the concrete config variant
     and pydantic validates them against the actual renderer's schema —
-    ``AutoRendererConfig`` intentionally carries only ``preserve_*`` and
-    would reject template kwargs like ``enable_thinking``. ``renderer_model``
+    ``AutoRendererConfig`` intentionally carries only ``thinking_retention``
+    and would reject template kwargs like ``enable_thinking``. ``renderer_model``
     must match what the pool will tokenize with (i.e.
     ``ClientConfig.renderer_model_name`` when set, else the request model),
     so resolution agrees with the tokenizer the renderer will hold.
@@ -408,7 +408,7 @@ def _resolve_renderer_config(
 
     # Resolve auto → concrete (mirrors ``renderers._resolve_auto``) so
     # ``enable_thinking`` etc. validate against the right schema instead of
-    # ``AutoRendererConfig``'s minimal one. Carries ``preserve_*`` across.
+    # ``AutoRendererConfig``'s minimal one. Carries ``thinking_retention`` across.
     if base is None or isinstance(base, AutoRendererConfig):
         renderer_name = MODEL_RENDERER_MAP.get(renderer_model, "default")
         # ``config_from_name`` returns ``None`` only for ``"auto"``, which
@@ -417,10 +417,7 @@ def _resolve_renderer_config(
         assert concrete is not None
         if isinstance(base, AutoRendererConfig):
             concrete = concrete.model_copy(
-                update={
-                    "preserve_all_thinking": base.preserve_all_thinking,
-                    "preserve_thinking_between_tool_calls": base.preserve_thinking_between_tool_calls,
-                }
+                update={"thinking_retention": base.thinking_retention}
             )
         base = cast(RendererConfig, concrete)
 
