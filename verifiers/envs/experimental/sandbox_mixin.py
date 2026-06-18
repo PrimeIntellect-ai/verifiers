@@ -248,6 +248,8 @@ class SandboxMixin:
                 self.register_sandbox(sandbox.id)
 
                 async def delete_created_sandbox() -> None:
+                    # This fire-and-forget cleanup runs after create_sandbox was cancelled;
+                    # log delete failures here so they do not become unobserved task exceptions.
                     try:
                         await self.delete_sandbox(sandbox.id)
                     except Exception as exc:
