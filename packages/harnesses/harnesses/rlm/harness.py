@@ -92,7 +92,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         result = await runtime.run(["sh", "-c", guarded], env)
         if result.exit_code != 0:
             raise ProgramError(f"rlm install failed: {result.stderr.strip()[-500:]}")
-        return await runtime.run([RLM_BIN, prompt], env)
+        return await runtime.run_program([RLM_BIN, prompt], env)
 
     @metric
     async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:

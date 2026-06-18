@@ -109,4 +109,4 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             *tool_config,
             prompt,
         ]
-        return await runtime.run(argv, env)
+        return await runtime.run_program(argv, env)
