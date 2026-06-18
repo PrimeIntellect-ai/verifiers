@@ -1390,6 +1390,23 @@ http = [
 ]
 
 [[package]]
+name = "general-agent-v1"
+version = "0.1.0"
+source = { editable = "environments/general_agent_v1" }
+dependencies = [
+    { name = "filelock" },
+    { name = "pydantic" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "filelock" },
+    { name = "pydantic" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "gepa"
 version = "0.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -5804,6 +5821,7 @@ examples = [
     { name = "color-codeword-v1" },
     { name = "compact" },
     { name = "deepwiki-v1" },
+    { name = "general-agent-v1" },
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
     { name = "math-env-v1" },
@@ -5901,6 +5919,7 @@ examples = [
     { name = "color-codeword-v1", editable = "environments/color_codeword_v1" },
     { name = "compact", editable = "environments/compact" },
     { name = "deepwiki-v1", editable = "environments/deepwiki_v1" },
+    { name = "general-agent-v1", editable = "environments/general_agent_v1" },
     { name = "glossary-v1", editable = "environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "environments/gsm8k_v1" },
     { name = "math-env-v1", editable = "environments/math_env_v1" },
