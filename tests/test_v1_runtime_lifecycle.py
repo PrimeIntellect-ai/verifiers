@@ -2845,12 +2845,12 @@ async def test_sandbox_delete_cancellation_leaves_lease_retryable() -> None:
         await lease.delete()
 
     assert lease.deleted is False
-    assert lease.deleting is False
+    assert lease.delete_lock.locked() is False
 
     await lease.delete()
 
     assert lease.deleted is True
-    assert lease.deleting is False
+    assert lease.delete_lock.locked() is False
     assert client.calls == 2
 
 

@@ -252,7 +252,6 @@ class SandboxLease:
         self.owns_client = owns_client
         self.scope_key: str | None = None
         self.deleted = False
-        self.deleting = False
         self.lock = asyncio.Lock()
         self.delete_lock = asyncio.Lock()
 
@@ -339,7 +338,6 @@ class SandboxLease:
         async with self.delete_lock:
             if self.deleted:
                 return
-            self.deleting = True
             try:
                 # DELETE already has client-level timeout/retry; keep persistent outages visible.
                 await self.client.delete(self.id)
@@ -348,8 +346,6 @@ class SandboxLease:
                 raise SandboxDeleteError(
                     f"Failed to delete sandbox {self.id}: {exc}"
                 ) from exc
-            finally:
-                self.deleting = False
             self.deleted = True
             if self.owns_client:
                 await close_sandbox_client(self.client)
