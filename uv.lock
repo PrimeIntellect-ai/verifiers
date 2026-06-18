@@ -5177,6 +5177,17 @@ wheels = [
 ]
 
 [[package]]
+name = "swebench-verified-v1"
+version = "0.1.0"
+source = { editable = "environments/swebench_verified_v1" }
+dependencies = [
+    { name = "tasksets" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "tasksets" }]
+
+[[package]]
 name = "swelego-v1"
 version = "0.1.0"
 source = { editable = "environments/swelego_v1" }
@@ -5829,6 +5840,7 @@ examples = [
     { name = "reverse-text-v1" },
     { name = "scaleswe-v1" },
     { name = "scratchpad-v1" },
+    { name = "swebench-verified-v1" },
     { name = "swelego-v1" },
     { name = "terminal-bench-2-v1" },
     { name = "wiki-search-v1" },
@@ -5927,6 +5939,7 @@ examples = [
     { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
     { name = "scaleswe-v1", editable = "environments/scaleswe_v1" },
     { name = "scratchpad-v1", editable = "environments/scratchpad_v1" },
+    { name = "swebench-verified-v1", editable = "environments/swebench_verified_v1" },
     { name = "swelego-v1", editable = "environments/swelego_v1" },
     { name = "terminal-bench-2-v1", editable = "environments/terminal_bench_2_v1" },
     { name = "wiki-search-v1", editable = "environments/wiki_search_v1" },
