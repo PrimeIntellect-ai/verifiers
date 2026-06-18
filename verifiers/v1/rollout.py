@@ -22,7 +22,7 @@ from enum import StrEnum
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RetryingClient, RolloutContext
 from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.errors import RolloutError, SandboxError, TasksetError, ToolError
+from verifiers.v1.errors import RolloutError, SandboxError, TasksetError, ToolsetError
 from verifiers.v1.interception import (
     InterceptionPool,
     InterceptionServer,
@@ -187,7 +187,7 @@ class Rollout:
                 except RolloutError:
                     raise
                 except Exception as e:
-                    raise ToolError(
+                    raise ToolsetError(
                         f"taskset failed to build tool servers: {type(e).__name__}: {e}"
                     ) from e
                 async with (
@@ -286,6 +286,13 @@ class Rollout:
                 ) from None
             trace.timing.scoring.end = time.time()
         except RolloutError as e:
+            trace.capture_error(e)
+        except Exception as e:
+            # An unexpected (non-RolloutError) failure is still this rollout's alone: record it
+            # (with traceback) on the trace rather than letting it propagate and cancel sibling
+            # rollouts / the eval. `BaseException` (CancelledError, KeyboardInterrupt) still
+            # propagates, so shutdown/cancellation is unaffected.
+            logger.exception("unexpected error in rollout %s", trace.id)
             trace.capture_error(e)
         finally:
             trace.is_completed = True

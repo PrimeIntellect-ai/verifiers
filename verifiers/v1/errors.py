@@ -5,10 +5,10 @@ Only errors the rollout deliberately catches (and records into `trace.error` as 
 built-in traceback — we own the code, so we don't wrap internal invariants in
 custom messages.
 
-Each type names the *boundary* a failure crossed — provider, harness, tool, sandbox, taskset,
-or interception — so a recorded `trace.error.type` says where the rollout broke. The detail
-(status code, stderr, ...) comes from the wrapped inner error; we add a type only when the
-boundary isn't already clear from it.
+Each type names the *boundary* a failure crossed — provider, harness, toolset, user, sandbox,
+taskset, or interception — so a recorded `trace.error.type` says where the rollout broke. The
+detail (status code, stderr, ...) comes from the wrapped inner error; we add a type only when
+the boundary isn't already clear from it.
 """
 
 from openai import OpenAIError
@@ -34,8 +34,13 @@ class HarnessError(RolloutError):
     """The harness failed to install or launch, or its agent process exited unsuccessfully."""
 
 
-class ToolError(RolloutError):
-    """A task's tool / MCP servers could not be built or served for the rollout."""
+class ToolsetError(RolloutError):
+    """A task's `Toolset` (tool MCP server) could not be built or served for the rollout."""
+
+
+class UserError(RolloutError):
+    """A task's `User` simulator could not be served, or its `respond` raised while driving the
+    conversation."""
 
 
 class SandboxError(RolloutError):

@@ -33,8 +33,9 @@ from verifiers.v1.errors import (
     RolloutError,
     SandboxError,
     TasksetError,
-    ToolError,
+    ToolsetError,
     TunnelError,
+    UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.loaders import (
@@ -143,7 +144,8 @@ __all__ = [
     "RolloutError",
     "ProviderError",
     "HarnessError",
-    "ToolError",
+    "ToolsetError",
+    "UserError",
     "SandboxError",
     "TasksetError",
     "InterceptionError",

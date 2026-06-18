@@ -33,7 +33,12 @@ from pydantic import ValidationError
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1 import graph
-from verifiers.v1.errors import OverlongPromptError, RolloutError
+from verifiers.v1.errors import (
+    OverlongPromptError,
+    RolloutError,
+    TasksetError,
+    UserError,
+)
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 
@@ -197,6 +202,17 @@ class InterceptionServer:
         if self.runner is not None:
             await self.runner.cleanup()
 
+    def _fail(
+        self, session: RolloutSession, dialect: Dialect, error: RolloutError
+    ) -> web.Response:
+        """Stash a model-turn-adjacent failure (a `@stop` or user simulator raising) so the rollout
+        re-raises it as the real cause, and report it to the harness as an HTTP error."""
+        session.error = error
+        logger.warning(
+            "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
+        )
+        return web.json_response(dialect.error_body(str(error)), status=502)
+
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
@@ -241,7 +257,16 @@ class InterceptionServer:
             None  # the latest turn's response, returned to the program
         )
         while True:
-            refused = await session.refused()
+            try:
+                refused = await session.refused()
+            except RolloutError as e:
+                return self._fail(session, dialect, e)
+            except Exception as e:
+                return self._fail(
+                    session,
+                    dialect,
+                    TasksetError(f"@stop failed: {type(e).__name__}: {e}"),
+                )
             if refused is not None:
                 # Refuse the first model call to halt the harness; once a simulated
                 # conversation is under way, just end it and return the last turn cleanly.
@@ -301,7 +326,16 @@ class InterceptionServer:
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
                 return web.json_response(completion)
-            user_messages = await session.user(response.message.content or "")
+            try:
+                user_messages = await session.user(response.message.content or "")
+            except RolloutError as e:
+                return self._fail(session, dialect, e)
+            except Exception as e:
+                return self._fail(
+                    session,
+                    dialect,
+                    UserError(f"user simulator failed: {type(e).__name__}: {e}"),
+                )
             # Inject the model turn + the simulator's user turn(s): into the wire request for the
             # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
             # survives) and into the typed prompt for the trace. The simulator ends the trajectory
@@ -325,7 +359,14 @@ class InterceptionServer:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         accumulating the bytes to record the turn on the trace. Single-shot — a streamed turn
         never drives a user simulator (the only client that streams is the eval relay)."""
-        refused = await session.refused()
+        try:
+            refused = await session.refused()
+        except RolloutError as e:
+            return self._fail(session, dialect, e)
+        except Exception as e:
+            return self._fail(
+                session, dialect, TasksetError(f"@stop failed: {type(e).__name__}: {e}")
+            )
         if refused is not None:
             return web.json_response(
                 dialect.error_body(f"rollout stopped: {refused}"), status=400
