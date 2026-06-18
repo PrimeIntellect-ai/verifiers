@@ -68,8 +68,8 @@ class Task(StrictBaseModel):
     turn before the model is ever called."""
     system_prompt: str | None = None
     """Optional system prompt. Harnesses that set `APPENDS_SYSTEM_PROMPT` emit it as a real
-    system message (or their own mechanism); others prepend it to `prompt` (with a
-    warning). See `Harness.resolve_prompt`."""
+    system message (or via their own mechanism); a harness that does not rejects a task that
+    sets it. See `Harness.resolve_prompt`."""
     image: str | None = None
     """Container image this task needs (e.g. its harbor environment). When set, the
     runtime must be a container (docker/prime): the Environment injects it into the
