@@ -13,6 +13,7 @@ import tenacity as tc
 from prime_sandboxes import CommandTimeoutError
 
 import verifiers as vf
+from verifiers.utils.sandbox_delete import delete_sandbox_for_rollout
 from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
 
@@ -205,16 +206,9 @@ class SandboxEnv(vf.StatefulToolEnv):
         if sandbox_id is None:
             return
 
-        async def _delete_sandbox(sandbox_id: str):
-            await self.sandbox_client.delete(sandbox_id)
-            self.active_sandboxes.discard(sandbox_id)
-            self.logger.debug(f"Deleted sandbox {sandbox_id}")
-
-        try:
-            await self.with_retry(_delete_sandbox)(sandbox_id)
-        except Exception as e:
-            # only warn, not raise an error on deletion
-            self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
+        await delete_sandbox_for_rollout(self.sandbox_client, sandbox_id)
+        self.active_sandboxes.discard(sandbox_id)
+        self.logger.debug(f"Deleted sandbox {sandbox_id}")
 
     def get_sandbox_request(self, state: vf.State) -> CreateSandboxRequest:
         """Return sandbox request for this rollout. Override to customize per-state."""

@@ -62,6 +62,12 @@ class SandboxError(InfraError):
     pass
 
 
+class SandboxDeleteError(Error):
+    """Used to surface sandbox deletion failures from rollout cleanup."""
+
+    pass
+
+
 class BrowserSandboxError(SandboxError):
     """Used to catch errors while interacting with browser sandboxes."""
 

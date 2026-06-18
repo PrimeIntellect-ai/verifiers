@@ -21,6 +21,7 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.message_utils import from_raw_message
+from verifiers.utils.sandbox_delete import delete_sandbox_for_rollout
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
 
@@ -425,7 +426,12 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         last_msg = state["trajectory"][-1]["completion"][-1]
         return isinstance(last_msg, AssistantMessage) and not last_msg.tool_calls
 
-    async def _cleanup_openenv_state(self, state: vf.State) -> None:
+    async def _cleanup_openenv_state(
+        self,
+        state: vf.State,
+        *,
+        surface_delete_errors: bool = False,
+    ) -> None:
         client = state.pop("openenv_client", None)
         generic_client_class = GenericEnvClient
         if generic_client_class is not None and isinstance(
@@ -447,15 +453,26 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         server = state.pop("openenv_server", None)
         if server is not None:
             try:
-                await self._cleanup_server(server)
+                await self._cleanup_server(
+                    server,
+                    surface_delete_errors=surface_delete_errors,
+                )
             except Exception:
-                pass
+                # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
+                if surface_delete_errors:
+                    state["openenv_server"] = server
+                    raise
 
     @vf.cleanup
     async def cleanup_openenv(self, state: vf.State) -> None:
-        await self._cleanup_openenv_state(state)
+        await self._cleanup_openenv_state(state, surface_delete_errors=True)
 
-    async def _cleanup_server(self, server: OpenEnvServer) -> None:
+    async def _cleanup_server(
+        self,
+        server: OpenEnvServer,
+        *,
+        surface_delete_errors: bool = False,
+    ) -> None:
         async with AsyncSandboxClient() as sandboxes:
             try:
                 await self._with_retry(sandboxes.unexpose)(
@@ -464,9 +481,22 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             except Exception:
                 pass
             try:
-                await self._with_retry(sandboxes.delete)(server.sandbox_id)
-            except Exception:
-                pass
+                if surface_delete_errors:
+                    await delete_sandbox_for_rollout(sandboxes, server.sandbox_id)
+                else:
+                    # DELETE already has client-level timeout/retry; teardown remains best-effort.
+                    await sandboxes.delete(server.sandbox_id)
+            except Exception as exc:
+                # Catches ordinary delete failures; BaseException control-flow signals propagate.
+                if surface_delete_errors:
+                    raise
+                logger.warning(
+                    "Failed to delete OpenEnv sandbox %s: %s",
+                    server.sandbox_id,
+                    exc,
+                    exc_info=True,
+                )
+                return
         self._active_servers.pop(server.sandbox_id, None)
 
     async def _try_get_logs(
@@ -608,8 +638,10 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                     except Exception:
                         pass
                 try:
+                    # DELETE already has client-level timeout/retry; startup cleanup stays best-effort.
                     await sandboxes.delete(sandbox.id)
                 except Exception:
+                    # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
                     pass
                 raise self._format_sandbox_error(
                     sandbox.id, "startup", e, image=image, logs=logs

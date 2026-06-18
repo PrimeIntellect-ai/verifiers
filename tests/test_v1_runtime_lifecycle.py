@@ -1491,7 +1491,7 @@ async def test_create_sandbox_retries_create_and_bounds_wait(
 
 
 @pytest.mark.asyncio
-async def test_create_sandbox_cleans_up_wait_failure_with_retry(
+async def test_create_sandbox_cleans_up_wait_failure_without_delete_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sandboxes(monkeypatch)
@@ -1529,7 +1529,7 @@ async def test_create_sandbox_cleans_up_wait_failure_with_retry(
             {"image": "python:3.11-slim"},
         )
 
-    assert client.delete_calls == 2
+    assert client.delete_calls == 1
 
 
 @pytest.mark.asyncio
@@ -2748,7 +2748,48 @@ async def test_mcp_lifetime_follows_toolset_scope(
 
 
 @pytest.mark.asyncio
-async def test_shared_sandbox_delete_retries_transient_failures(
+async def test_v1_cleanup_rollout_continues_after_handler_exception() -> None:
+    runtime = Runtime()
+    calls: list[str] = []
+
+    async def failing_cleanup(task: vf.Task, state: vf.State) -> None:
+        _ = task, state
+        calls.append("failing")
+        raise RuntimeError("cleanup failed")
+
+    async def later_cleanup(task: vf.Task, state: vf.State) -> None:
+        _ = task, state
+        calls.append("later")
+
+    runtime.rollout_cleanup = [failing_cleanup, later_cleanup]
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+
+    await runtime.cleanup_rollout(task, state)
+
+    assert calls == ["failing", "later"]
+    assert isinstance(state["error"], vf.Error)
+    assert state["cleanup_errors"][0]["type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_v1_cleanup_rollout_cancelled_error_propagates() -> None:
+    runtime = Runtime()
+
+    async def cancelling_cleanup(task: vf.Task, state: vf.State) -> None:
+        _ = task, state
+        raise asyncio.CancelledError()
+
+    runtime.rollout_cleanup = [cancelling_cleanup]
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime.cleanup_rollout(task, state)
+
+
+@pytest.mark.asyncio
+async def test_shared_sandbox_delete_surfaces_transient_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     disable_sandbox_retry_sleep(monkeypatch)
@@ -2776,7 +2817,10 @@ async def test_shared_sandbox_delete_retries_transient_failures(
         "program",
     )
 
-    await lease.delete()
+    with pytest.raises(vf.SandboxDeleteError, match="Failed to delete sandbox"):
+        await lease.delete()
+    assert lease.deleted is False
+
     await lease.delete()
 
     assert client.delete_calls == 2
@@ -2795,7 +2839,7 @@ async def test_sandbox_delete_failure_leaves_lease_retryable(
         async def delete(self, sandbox_id: str) -> None:
             _ = sandbox_id
             self.calls += 1
-            if self.calls <= sandbox_utils.SANDBOX_RETRY_ATTEMPTS:
+            if self.calls == 1:
                 raise RuntimeError("delete failed")
 
     client = DeleteFailsThenSucceeds()
@@ -2807,7 +2851,7 @@ async def test_sandbox_delete_failure_leaves_lease_retryable(
         owns_client=False,
     )
 
-    with pytest.raises(RuntimeError, match="delete failed"):
+    with pytest.raises(vf.SandboxDeleteError, match="Failed to delete sandbox"):
         await lease.delete()
 
     assert lease.deleted is False
@@ -2815,7 +2859,7 @@ async def test_sandbox_delete_failure_leaves_lease_retryable(
     await lease.delete()
 
     assert lease.deleted is True
-    assert client.calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS + 1
+    assert client.calls == 2
 
 
 @pytest.mark.asyncio
@@ -2831,7 +2875,7 @@ async def test_owned_sandbox_delete_failure_keeps_client_retryable(
         async def delete(self, sandbox_id: str) -> None:
             _ = sandbox_id
             self.calls += 1
-            if self.calls <= sandbox_utils.SANDBOX_RETRY_ATTEMPTS:
+            if self.calls == 1:
                 raise RuntimeError("delete failed")
 
         async def aclose(self) -> None:
@@ -2845,17 +2889,17 @@ async def test_owned_sandbox_delete_failure_keeps_client_retryable(
         "program",
     )
 
-    with pytest.raises(RuntimeError, match="delete failed"):
+    with pytest.raises(vf.SandboxDeleteError, match="Failed to delete sandbox"):
         await lease.delete()
 
     assert lease.deleted is False
-    assert client.calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS
+    assert client.calls == 1
     assert client.closed == 0
 
     await lease.delete()
 
     assert lease.deleted is True
-    assert client.calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS + 1
+    assert client.calls == 2
     assert client.closed == 1
 
 
@@ -3056,7 +3100,7 @@ async def test_release_sandboxes_keeps_failed_delete_retryable(
         async def delete(self, sandbox_id: str) -> None:
             assert sandbox_id == "sbx-retryable-delete"
             self.calls += 1
-            if self.calls <= sandbox_utils.SANDBOX_RETRY_ATTEMPTS:
+            if self.calls == 1:
                 raise RuntimeError("delete failed")
 
     runtime = Runtime()
@@ -3076,6 +3120,7 @@ async def test_release_sandboxes_keeps_failed_delete_retryable(
 
     assert runtime.sandbox_leases[key] is lease
     assert len(state["cleanup_errors"]) == 1
+    assert isinstance(state["error"], vf.SandboxDeleteError)
 
     await runtime.release_sandboxes("rollout", state)
     await runtime.teardown()
@@ -3169,7 +3214,7 @@ async def test_clear_creation_tasks_keeps_failed_delete_retryable(
         async def delete(self, sandbox_id: str) -> None:
             assert sandbox_id == "sbx-unclaimed-retry"
             self.calls += 1
-            if self.calls <= sandbox_utils.SANDBOX_RETRY_ATTEMPTS:
+            if self.calls == 1:
                 raise RuntimeError("delete failed")
 
     runtime = Runtime()
@@ -3200,6 +3245,7 @@ async def test_clear_creation_tasks_keeps_failed_delete_retryable(
     assert key not in runtime.sandbox_creation_tasks
     assert runtime.sandbox_leases[key] is lease
     assert len(state["cleanup_errors"]) == 1
+    assert isinstance(state["error"], vf.SandboxDeleteError)
 
     await runtime.release_sandboxes("rollout", state)
     await runtime.teardown()
@@ -3222,7 +3268,7 @@ async def test_teardown_keeps_failed_delete_retryable(
         async def delete(self, sandbox_id: str) -> None:
             assert sandbox_id == self.sandbox_id
             self.delete_calls += 1
-            if self.delete_calls <= sandbox_utils.SANDBOX_RETRY_ATTEMPTS:
+            if self.delete_calls == 1:
                 raise RuntimeError("delete failed")
 
         async def aclose(self) -> None:
@@ -3251,9 +3297,9 @@ async def test_teardown_keeps_failed_delete_retryable(
 
     await runtime.teardown()
 
-    assert client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS
+    assert client.delete_calls == 1
     assert client.closed is False
-    assert owned_client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS
+    assert owned_client.delete_calls == 1
     assert owned_client.closed is False
     assert runtime.sandbox_leases[key] is lease
     assert owned_key in runtime.sandbox_leases
@@ -3261,9 +3307,9 @@ async def test_teardown_keeps_failed_delete_retryable(
 
     await runtime.teardown()
 
-    assert client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS + 1
+    assert client.delete_calls == 2
     assert client.closed is True
-    assert owned_client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS + 1
+    assert owned_client.delete_calls == 2
     assert owned_client.closed is True
     assert runtime.sandbox_leases == {}
     with pytest.raises(RuntimeError, match="No live v1 runtime registered"):

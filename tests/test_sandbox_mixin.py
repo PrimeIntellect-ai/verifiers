@@ -194,13 +194,24 @@ def test_delete_sandbox_success(mixin):
     assert "sb-existing" not in mixin.active_sandboxes
 
 
-def test_delete_sandbox_failure_logs_warning(mixin):
+def test_delete_sandbox_failure_surfaces_error_and_keeps_tracking(mixin):
     mixin.sandbox_client.delete = AsyncMock(side_effect=Exception("fail"))
 
-    asyncio.run(mixin.delete_sandbox("sb-existing"))
+    with pytest.raises(vf.SandboxDeleteError, match="Failed to delete sandbox"):
+        asyncio.run(mixin.delete_sandbox("sb-existing"))
 
-    mixin.logger.warning.assert_called_once()
-    # No exception raised — it was swallowed.
+    assert "sb-existing" in mixin.active_sandboxes
+    mixin.logger.warning.assert_not_called()
+
+
+def test_delete_sandbox_does_not_use_verifiers_retry(mixin):
+    mixin.sandbox_client.delete = AsyncMock(side_effect=[Exception("fail"), None])
+
+    with pytest.raises(vf.SandboxDeleteError):
+        asyncio.run(mixin.delete_sandbox("sb-existing"))
+
+    assert mixin.sandbox_client.delete.await_count == 1
+    assert "sb-existing" in mixin.active_sandboxes
 
 
 # ── bulk_delete_sandboxes ────────────────────────────────────────────

@@ -21,10 +21,12 @@ from typing import (
 )
 
 from verifiers.clients import Client, resolve_client
+from verifiers.errors import SandboxDeleteError
 from verifiers.types import Messages, Response, ResponseMessage, Tool
 from verifiers.types import ClientConfig, ClientType, SamplingArgs
 from verifiers.utils.async_utils import maybe_call_with_named_args
 from verifiers.utils.client_utils import resolve_client_config
+from verifiers.utils.cleanup_utils import surface_cleanup_error
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from verifiers.utils.tool_utils import convert_func_to_tool_def
@@ -1059,16 +1061,52 @@ class Runtime:
                 *self._rollout_handlers("cleanup", state, stage="rollout"),
             ]
         )
-        await self.run_rollout_handlers(handlers, task=task, state=state)
-        await self.release_runtime_objects("rollout", state)
-        await self.release_sandboxes(scope="rollout", state=state)
-        await self.close_mcp_tools(state)
-        self.release_scoped_tools("rollout", state)
-        await self.release_model_client(state)
+        for handler in handlers:
+            try:
+                await self.run_rollout_handlers([handler], task=task, state=state)
+            except Exception as exc:
+                # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
+                logger.warning(
+                    "Rollout cleanup handler %s failed: %s",
+                    getattr(handler, "__name__", handler),
+                    exc,
+                    exc_info=True,
+                )
+                surface_cleanup_error(
+                    state,
+                    exc,
+                    handler=getattr(handler, "__name__", None),
+                    scope="rollout",
+                )
+        cleanup_steps = [
+            ("release_runtime_objects", self.release_runtime_objects("rollout", state)),
+            ("release_sandboxes", self.release_sandboxes("rollout", state)),
+            ("close_mcp_tools", self.close_mcp_tools(state)),
+            ("release_model_client", self.release_model_client(state)),
+        ]
+        for name, cleanup_step in cleanup_steps:
+            try:
+                await cleanup_step
+            except Exception as exc:
+                # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
+                logger.warning("%s failed: %s", name, exc, exc_info=True)
+                surface_cleanup_error(state, exc, handler=name, scope="rollout")
+        for name, cleanup_step in (
+            (
+                "release_scoped_tools",
+                lambda: self.release_scoped_tools("rollout", state),
+            ),
+            ("release_tool_handles", lambda: self.release_tool_handles(state)),
+        ):
+            try:
+                cleanup_step()
+            except Exception as exc:
+                # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
+                logger.warning("%s failed: %s", name, exc, exc_info=True)
+                surface_cleanup_error(state, exc, handler=name, scope="rollout")
         key = str(state["trajectory_id"])
         self._model_request_locks.pop(key, None)
         self._inflight_visible_model_requests.pop(key, None)
-        self.release_tool_handles(state)
 
     async def cleanup_group(self, tasks: list[Task], states: list[State]) -> None:
         handlers = unique_handlers(
@@ -1077,13 +1115,56 @@ class Runtime:
                 *self._group_handlers("cleanup", states, stage="group"),
             ]
         )
-        await self.run_group_handlers(handlers, tasks=tasks, states=states)
+        for handler in handlers:
+            try:
+                await self.run_group_handlers([handler], tasks=tasks, states=states)
+            except Exception as exc:
+                # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
+                logger.warning(
+                    "Group cleanup handler %s failed: %s",
+                    getattr(handler, "__name__", handler),
+                    exc,
+                    exc_info=True,
+                )
+                for state in states:
+                    surface_cleanup_error(
+                        state,
+                        exc,
+                        handler=getattr(handler, "__name__", None),
+                        scope="group",
+                    )
         for state in states:
-            await self.release_runtime_objects("group", state)
-            await self.release_sandboxes(scope="group", state=state)
-            await self.close_mcp_tools(state, scope="group")
-            self.release_scoped_tools("group", state)
-            await self.release_model_client(state, group=True)
+            cleanup_steps = [
+                (
+                    "release_runtime_objects",
+                    self.release_runtime_objects("group", state),
+                ),
+                ("release_sandboxes", self.release_sandboxes("group", state)),
+                ("close_mcp_tools", self.close_mcp_tools(state, scope="group")),
+                ("release_model_client", self.release_model_client(state, group=True)),
+            ]
+            for name, cleanup_step in cleanup_steps:
+                try:
+                    await cleanup_step
+                except Exception as exc:
+                    # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
+                    logger.warning("%s failed: %s", name, exc, exc_info=True)
+                    surface_cleanup_error(state, exc, handler=name, scope="group")
+            try:
+                self.release_scoped_tools("group", state)
+            except Exception as exc:
+                # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
+                logger.warning(
+                    "release_scoped_tools failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+                surface_cleanup_error(
+                    state,
+                    exc,
+                    handler="release_scoped_tools",
+                    scope="group",
+                )
 
     async def collect_artifacts(self, task: Task, state: State) -> None:
         artifacts = self.runtime_artifacts(task, state)
@@ -1153,6 +1234,7 @@ class Runtime:
                 try:
                     await self.close_sandbox_lease(handle)
                 except Exception as exc:
+                    # Catches ordinary delete failures; BaseException control-flow signals propagate.
                     logger.warning(
                         "Failed to delete sandbox %s during teardown: %s",
                         handle.id,
@@ -1296,6 +1378,7 @@ class Runtime:
             try:
                 await self.close_sandbox_lease(result)
             except Exception as exc:
+                # Catches ordinary delete failures; BaseException control-flow signals propagate.
                 async with self.sandbox_lock:
                     if not result.deleted:
                         self.sandbox_leases[key] = result
@@ -1306,15 +1389,18 @@ class Runtime:
                     exc_info=True,
                 )
                 if state is not None and scope is not None:
-                    cleanup_errors = cast(
-                        list[ConfigData], state.setdefault("cleanup_errors", [])
+                    delete_error = (
+                        exc
+                        if isinstance(exc, SandboxDeleteError)
+                        else SandboxDeleteError(
+                            f"Failed to delete sandbox {result.id}: {exc}"
+                        )
                     )
-                    cleanup_errors.append(
-                        {
-                            "type": type(exc).__name__,
-                            "message": str(exc),
-                            "scope": scope,
-                        }
+                    surface_cleanup_error(
+                        state,
+                        delete_error,
+                        scope=scope,
+                        sandbox_id=result.id,
                     )
 
     async def resolve_sandbox_lease(
@@ -2518,6 +2604,7 @@ class Runtime:
             try:
                 await self.close_sandbox_lease(handle)
             except Exception as exc:
+                # Catches ordinary delete failures; BaseException control-flow signals propagate.
                 deletion_failures += 1
                 logger.warning(
                     "Failed to delete %s sandbox %s for scope key %s: %s",
@@ -2527,15 +2614,18 @@ class Runtime:
                     exc,
                     exc_info=True,
                 )
-                cleanup_errors = cast(
-                    list[ConfigData], state.setdefault("cleanup_errors", [])
+                delete_error = (
+                    exc
+                    if isinstance(exc, SandboxDeleteError)
+                    else SandboxDeleteError(
+                        f"Failed to delete sandbox {handle.id}: {exc}"
+                    )
                 )
-                cleanup_errors.append(
-                    {
-                        "type": type(exc).__name__,
-                        "message": str(exc),
-                        "scope": scope,
-                    }
+                surface_cleanup_error(
+                    state,
+                    delete_error,
+                    scope=scope,
+                    sandbox_id=handle.id,
                 )
             else:
                 async with self.sandbox_lock:

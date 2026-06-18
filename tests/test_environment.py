@@ -91,6 +91,43 @@ class TestEnvironmentBase:
         assert isinstance(env.parser, Parser)
         assert isinstance(env.rubric, Rubric)
 
+    @pytest.mark.asyncio
+    async def test_environment_cleanup_continues_after_exception(self, sample_dataset):
+        class CleanupEnv(SimpleEnvironment):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.cleaned = []
+
+            @vf.cleanup(priority=2)
+            async def failing_cleanup(self, state: vf.State):
+                self.cleaned.append("failing")
+                raise RuntimeError("cleanup failed")
+
+            @vf.cleanup(priority=1)
+            async def later_cleanup(self, state: vf.State):
+                self.cleaned.append("later")
+
+        env = CleanupEnv(dataset=sample_dataset)
+        state = {"trajectory_id": "cleanup-test"}
+        await env.cleanup(state)
+
+        assert env.cleaned == ["failing", "later"]
+        assert isinstance(state["error"], vf.Error)
+        assert state["cleanup_errors"][0]["type"] == "RuntimeError"
+
+    @pytest.mark.asyncio
+    async def test_environment_cleanup_cancelled_error_propagates(self, sample_dataset):
+        import asyncio
+
+        class CleanupEnv(SimpleEnvironment):
+            @vf.cleanup
+            async def cancelling_cleanup(self, state: vf.State):
+                raise asyncio.CancelledError()
+
+        env = CleanupEnv(dataset=sample_dataset)
+        with pytest.raises(asyncio.CancelledError):
+            await env.cleanup({})
+
     def test_environment_capabilities_follow_group_rewards(self, sample_dataset):
         """Test group rollout capabilities derive from legacy rubric shape."""
 
@@ -720,6 +757,28 @@ class TestMaybeRetry:
         result = await maybe_retry(attempt, max_retries=2, initial=0.0, max_wait=0.0)()
         assert calls["n"] == 3  # 1 initial + 2 retries (InfraError is retryable)
         assert result["error"] == serialized  # last result returned after exhaustion
+
+    @pytest.mark.asyncio
+    async def test_sandbox_delete_error_round_trips_without_retry(self):
+        from verifiers.utils.async_utils import maybe_retry
+        from verifiers.utils.error_utils import error_data, error_from_data
+
+        assert vf.SandboxDeleteError.__name__ in vf.__all__
+        error = vf.SandboxDeleteError("delete outage")
+        serialized = error_data(error)
+        rebuilt = error_from_data(serialized)
+        assert isinstance(rebuilt, vf.SandboxDeleteError)
+        assert not isinstance(rebuilt, vf.InfraError)
+
+        calls = {"n": 0}
+
+        async def attempt():
+            calls["n"] += 1
+            return {"error": serialized}
+
+        result = await maybe_retry(attempt, max_retries=2, initial=0.0, max_wait=0.0)()
+        assert calls["n"] == 1
+        assert result["error"] == serialized
 
 
 class TestEmptyModelResponseErrors:

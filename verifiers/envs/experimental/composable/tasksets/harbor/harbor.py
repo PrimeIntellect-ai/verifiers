@@ -11,6 +11,7 @@ except ImportError:
     import tomli as tomllib
 
 import verifiers as vf
+from verifiers.utils.sandbox_delete import delete_sandbox_for_rollout
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
 logger = logging.getLogger(__name__)
@@ -70,10 +71,7 @@ class HarborRubric(vf.Rubric):
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
         if sandbox_client and sandbox_id:
-            try:
-                await sandbox_client.delete(sandbox_id)
-            except Exception:
-                pass
+            await delete_sandbox_for_rollout(sandbox_client, sandbox_id)
 
 
 class HarborTaskSet(SandboxTaskSet):
@@ -324,10 +322,7 @@ class HarborDatasetRubric(vf.Rubric):
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
         if sandbox_client and sandbox_id:
-            try:
-                await sandbox_client.delete(sandbox_id)
-            except Exception:
-                pass
+            await delete_sandbox_for_rollout(sandbox_client, sandbox_id)
 
 
 class HarborDatasetTaskSet(SandboxTaskSet):

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, cast
 import tenacity as tc
 
 from verifiers.decorators import setup as setup_handler
-from verifiers.errors import Error, SandboxError
+from verifiers.errors import Error, SandboxDeleteError, SandboxError
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
 from .program_utils import command_argv, command_env, float_config, int_config
@@ -340,10 +340,14 @@ class SandboxLease:
                 return
             self.deleted = True
             try:
-                await with_sandbox_retry(lambda: self.client.delete(self.id))
-            except BaseException:
+                # DELETE already has client-level timeout/retry; keep persistent outages visible.
+                await self.client.delete(self.id)
+            except Exception as exc:
+                # Catches APIError/APITimeoutError/HTTP/request failures; BaseException signals propagate.
                 self.deleted = False
-                raise
+                raise SandboxDeleteError(
+                    f"Failed to delete sandbox {self.id}: {exc}"
+                ) from exc
             if self.owns_client:
                 await close_sandbox_client(self.client)
 
@@ -451,7 +455,16 @@ async def create_sandbox_lease(
     try:
         await setup_sandbox(lease, sandbox_data)
     except BaseException:
-        await asyncio.shield(lease.delete())
+        try:
+            await asyncio.shield(lease.delete())
+        except Exception as cleanup_exc:
+            # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
+            logger.warning(
+                "Failed to delete sandbox %s after setup failure: %s",
+                lease.id,
+                cleanup_exc,
+                exc_info=True,
+            )
         raise
     return lease
 
@@ -787,8 +800,10 @@ async def delete_sandbox_id(
     reason: str,
 ) -> None:
     try:
-        await with_sandbox_retry(lambda: client.delete(sandbox_id))
+        # DELETE already has client-level timeout/retry; cleanup backstops stay best-effort.
+        await client.delete(sandbox_id)
     except Exception as cleanup_exc:
+        # Catches APIError/APITimeoutError/HTTP/request failures; BaseException signals propagate.
         logger.warning(
             "Failed to delete sandbox %s after %s: %s",
             sandbox_id,
