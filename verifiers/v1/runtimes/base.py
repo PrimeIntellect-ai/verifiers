@@ -294,7 +294,8 @@ class RetryingRuntime(Runtime):
         return await self._retry(self.inner.run, argv, env)
 
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        # The rollout's program exec is NOT retried (see the class docstring) — straight to inner.
+        """The rollout's program exec is NOT retried (see the class docstring) — straight to
+        inner."""
         return await self.inner.run(argv, env)
 
     async def run_background(
