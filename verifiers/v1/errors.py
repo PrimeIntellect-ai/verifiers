@@ -6,6 +6,8 @@ built-in traceback — we own the code, so we don't wrap internal invariants in
 custom messages.
 """
 
+from collections.abc import Collection
+
 from openai import (
     APIConnectionError,
     APIResponseValidationError,
@@ -21,9 +23,39 @@ from verifiers.v1.types import Response
 class RolloutError(Exception):
     """Base for errors recorded into the trace rather than crashing the rollout."""
 
+    _types: dict[str, type["RolloutError"]] = {}
+
+    def __init_subclass__(cls) -> None:
+        super().__init_subclass__()
+        RolloutError._types[cls.__name__] = cls
+
+    @classmethod
+    def matches(cls, error_type: str, categories: Collection[str]) -> bool:
+        """Whether a captured concrete type belongs to any configured error category."""
+        error_cls = cls._types.get(error_type)
+        if error_cls is None:
+            return error_type in categories
+        return any(
+            issubclass(base, cls) and base.__name__ in categories
+            for base in error_cls.__mro__
+        )
+
 
 class ModelError(RolloutError):
     """A model/provider call failed (bad request, auth, ...)."""
+
+
+class ModelRefusalError(ModelError):
+    """The model explicitly refused to answer the request."""
+
+    def __init__(self, refusal: str | None = None) -> None:
+        detail = (refusal or "").strip()
+        message = (
+            f"model refused the request: {detail}"
+            if detail
+            else "model refused the request"
+        )
+        super().__init__(message)
 
 
 class ProviderError(ModelError):

@@ -263,7 +263,8 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         return [trace for unit_traces in results for trace in unit_traces]
     finally:
         if client is not None:
-            await client.close()
+            with contextlib.suppress(Exception):
+                await client.close()
         if proc.is_alive():
             proc.terminate()
         with contextlib.suppress(Exception):

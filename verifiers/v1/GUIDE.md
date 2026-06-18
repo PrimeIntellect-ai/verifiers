@@ -615,9 +615,13 @@ exhausting it aborts the evaluation.
 **Errors.** Expected provider and runtime failures are recorded on the individual `Trace`
 instead of aborting the eval. Provider failures retain actionable types such as
 `ProviderAuthenticationError`, `ProviderRateLimitError`, `ProviderTransportError`,
-`ProviderTimeoutError`, and `ProviderResponseError`; an answer with no content or tool calls is
-`EmptyModelResponseError` and never reaches scoring. A harness implementation exception or
-non-zero agent exit is `HarnessError`; a per-rollout tool server that cannot start is `ToolError`;
+`ProviderTimeoutError`, and `ProviderResponseError`; an explicit refusal is a
+`ModelRefusalError` that the per-call policy does not retry, while an answer with no content or
+tool calls is `EmptyModelResponseError`. Neither reaches scoring. Whole-rollout retry
+include/exclude entries match subclasses, so
+`ModelError` also matches both categories and all provider errors. A harness implementation
+exception or non-zero agent exit is `HarnessError`; a per-rollout tool server that cannot start
+is `ToolError`;
 runtime process and tunnel failures remain `ProgramError` when they are not part of tool-server
 startup. A provider-enforced sandbox lifetime expiring is `SandboxTimeoutError`, while an OOM kill
 is `SandboxOutOfMemoryError`; both derive from `SandboxError` and `ProgramError`. Unlike the

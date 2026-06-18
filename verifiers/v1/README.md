@@ -236,7 +236,7 @@ uv run eval gsm8k-v1 -n 1 --max-total-tokens 8192        # cap prompt+completion
 uv run eval gsm8k-v1 -n 1 --timeout.rollout 600 --timeout.scoring 120  # per-stage wall-clock caps (s)
 
 uv run eval gsm8k-v1 -n 1 --retries.model.max-retries 5 --retries.runtime.max-retries 5  # per-call retries
-uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.include ProgramError  # whole-rollout, by exception type
+uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.include ProgramError  # whole-rollout, by type/category
 ```
 
 Pooled server-backed evals recover automatically when an env worker process dies. The pool
@@ -245,11 +245,13 @@ exponential-jitter backoff. This recovery policy is internal and has no configur
 exhausting it aborts the evaluation.
 
 **Errors.** Expected rollout failures persist on `trace.errors` with their boundary intact:
-provider/auth/schema failures use the `Provider*Error` types, agent implementation or exit
-failures use `HarnessError`, task-tool construction/server failures use `ToolError`, and
-other runtime process/tunnel failures use `ProgramError`. Terminal sandbox failures are
-`SandboxTimeoutError` or `SandboxOutOfMemoryError`, both under `SandboxError`. MCP `isError`
-tool results remain in-band so the model can recover.
+provider/auth/schema failures use the `Provider*Error` types, explicit refusals use
+`ModelRefusalError`, agent implementation or exit failures use `HarnessError`, task-tool
+construction/server failures use `ToolError`, and other runtime process/tunnel failures use
+`ProgramError`. Terminal sandbox failures are `SandboxTimeoutError` or
+`SandboxOutOfMemoryError`, both under `SandboxError`. MCP `isError` tool results remain in-band
+so the model can recover. Whole-rollout retry filters match both concrete types and base
+categories.
 
 ### Integrations
 

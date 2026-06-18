@@ -13,6 +13,7 @@ from typing import Any
 from openai.types.chat import ChatCompletion
 
 from verifiers.v1.dialects.base import Dialect, iter_sse
+from verifiers.v1.errors import ModelRefusalError
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -148,6 +149,8 @@ def response_from_wire(completion: ChatCompletion) -> Response:
     into our typed `Response`). No token ids: training tokens come from the renderer client."""
     choice = completion.choices[0]
     message = choice.message
+    if message.refusal is not None:
+        raise ModelRefusalError(message.refusal)
     tool_calls = [
         ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
         for tc in (message.tool_calls or [])
@@ -168,7 +171,7 @@ def response_from_wire(completion: ChatCompletion) -> Response:
         created=completion.created,
         model=completion.model,
         message=AssistantMessage(
-            content=message.content or message.refusal,
+            content=message.content,
             reasoning_content=reasoning_text(message.model_dump()),
             tool_calls=tool_calls,
         ),
@@ -216,7 +219,7 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                     continue
                 finish_reason = choice.get("finish_reason") or finish_reason
                 delta = choice.get("delta") or {}
-                for key in ("content", "reasoning_content", "reasoning"):
+                for key in ("content", "refusal", "reasoning_content", "reasoning"):
                     if delta.get(key) is not None:
                         message[key] = (message.get(key) or "") + delta[key]
                 for tc in delta.get("tool_calls") or []:

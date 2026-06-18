@@ -31,6 +31,7 @@ from verifiers.v1.errors import (
     HarnessError,
     InvalidModelResponseError,
     ModelError,
+    ModelRefusalError,
     ProgramError,
     ProviderAuthenticationError,
     ProviderError,
@@ -151,6 +152,7 @@ __all__ = [
     # errors
     "RolloutError",
     "ModelError",
+    "ModelRefusalError",
     "ProviderError",
     "ProviderHTTPError",
     "ProviderAuthenticationError",

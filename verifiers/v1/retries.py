@@ -4,9 +4,9 @@
 runtime call (`RetryingClient` / `RetryingRuntime`), rerunning just the failed call so
 the rest of the rollout's progress is kept — the cheap, default-on layer. Whole-rollout
 retries (`run_with_retry`) rerun an entire trajectory when its trace ends with a retryable
-error (matched by exception type name against include/exclude), accumulating each failed
-attempt's error onto the returned trace's `errors`; off by default (parity with v0, but
-superseded by the finer per-call retries).
+error (matched by exception type or base category against include/exclude), accumulating
+each failed attempt's error onto the returned trace's `errors`; off by default (parity with
+v0, but superseded by the finer per-call retries).
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ from tenacity import (
     retry_if_result,
     stop_after_attempt,
 )
+
+from verifiers.v1.errors import RolloutError
 
 if TYPE_CHECKING:
     from verifiers.v1.rollout import Rollout
@@ -40,8 +42,8 @@ class CallRetryConfig(BaseConfig):
 
 class RolloutRetryConfig(BaseConfig):
     """Retry a whole rollout when it ends with a captured error (parity with v0's
-    rollout-level retries). Matching is by the error's exception type name, so
-    `include`/`exclude` name exception classes (e.g. ``ModelError``, ``ProgramError``)."""
+    rollout-level retries). `include`/`exclude` name exception classes and match their
+    subclasses (e.g. ``ModelError`` includes ``ProviderTimeoutError``)."""
 
     max_retries: int = Field(0, ge=0)
     """Whole-rollout retries beyond the first attempt (0 = no retry, the default, N = up to N
@@ -71,10 +73,10 @@ def should_retry(trace: Trace, retry: RolloutRetryConfig) -> bool:
     error = trace.error
     if error is None:
         return False
-    if error.type in retry.exclude:
+    if RolloutError.matches(error.type, retry.exclude):
         return False
     if retry.include:
-        return error.type in retry.include
+        return RolloutError.matches(error.type, retry.include)
     return True
 
 

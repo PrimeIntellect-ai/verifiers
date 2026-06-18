@@ -12,6 +12,7 @@ import json
 from pydantic import BaseModel, ConfigDict
 
 from verifiers.v1.dialects.base import Dialect, iter_sse
+from verifiers.v1.errors import ModelRefusalError
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -102,16 +103,17 @@ def response_from_wire(response: OpenAIResponse) -> Response:
     assistant message)."""
     data = response.model_dump()
     content = ""
+    refusals: list[str] = []
     reasoning: list[str] = []
     calls: list[ToolCall] = []
     for item in data.get("output") or []:
         kind = item.get("type")
         if kind == "message":
-            content += "".join(
-                p.get("text", "")
-                for p in item.get("content") or []
-                if p.get("type") == "output_text"
-            )
+            for part in item.get("content") or []:
+                if part.get("type") == "output_text":
+                    content += part.get("text", "")
+                elif part.get("type") == "refusal":
+                    refusals.append(part.get("refusal", ""))
         elif kind == "reasoning":
             reasoning += [s.get("text", "") for s in item.get("summary") or []]
             reasoning += [c.get("text", "") for c in item.get("content") or []]
@@ -123,6 +125,8 @@ def response_from_wire(response: OpenAIResponse) -> Response:
                     arguments=item.get("arguments", ""),
                 )
             )
+    if refusals:
+        raise ModelRefusalError("\n".join(refusals))
     tool_calls = calls or None
     finish: FinishReason = (
         "length"

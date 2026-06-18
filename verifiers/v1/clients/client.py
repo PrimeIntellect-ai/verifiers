@@ -19,7 +19,7 @@ from tenacity import (
 )
 
 from verifiers.v1.dialects import Dialect
-from verifiers.v1.errors import ModelError, OverlongPromptError
+from verifiers.v1.errors import ModelError, ModelRefusalError, OverlongPromptError
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, Sampling, SamplingConfig
 
@@ -92,7 +92,8 @@ class RetryingClient(Client):
     fire back-to-back into the same brief endpoint outage, and concurrent rollouts hitting a shared
     endpoint stagger their retries instead of re-thundering it. An `OverlongPromptError` is never
     retried — it's a budget limit the interception server turns into a clean truncation, not a
-    transient fault."""
+    transient fault. A model refusal is also final: it is a valid provider response with
+    its own error category, not a transient call failure."""
 
     def __init__(self, inner: Client, max_retries: int) -> None:
         self.inner = inner
@@ -103,7 +104,7 @@ class RetryingClient(Client):
             stop=stop_after_attempt(max_retries + 1),
             wait=wait_exponential_jitter(initial=0.5, max=30),
             retry=retry_if_exception_type(ModelError)
-            & retry_if_not_exception_type(OverlongPromptError),
+            & retry_if_not_exception_type((ModelRefusalError, OverlongPromptError)),
             before_sleep=self._log_retry,
             reraise=True,
         )

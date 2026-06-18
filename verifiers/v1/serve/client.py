@@ -136,9 +136,10 @@ class EnvClient:
 
     async def health(self, timeout: float = 2.0) -> bool:
         try:
-            return (
-                await self._request(HealthRequest(), HealthResponse, timeout=timeout)
-            ).success
+            response = await self._request(
+                HealthRequest(), HealthResponse, timeout=timeout
+            )
+            return response.ready
         except asyncio.TimeoutError:
             return False
 

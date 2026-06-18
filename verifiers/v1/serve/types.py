@@ -32,7 +32,8 @@ class HealthRequest(BaseRequest):
 
 
 class HealthResponse(BaseResponse):
-    pass
+    ready: bool = True
+    """Whether the server currently has capacity ready to receive requests."""
 
 
 class InfoRequest(BaseRequest):

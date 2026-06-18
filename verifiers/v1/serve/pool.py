@@ -10,8 +10,9 @@ A broker binds the client-facing ROUTER (the *same* wire protocol as a lone
 own ipc address — load-balancing requests to the least-busy worker over a `DEALER` per
 worker. The worker's `client_id` (its reply identity) is the broker's DEALER identity;
 the broker holds the real client identity in `pending` and routes the reply back by
-`request_id`. `health` is answered inline once every initial worker has entered its
-serving resources; everything else goes to a ready worker.
+`request_id`. `health` is answered inline as not-ready until every initial worker has
+entered its serving resources; after startup it stays ready while any worker can serve,
+including while an elastic worker is loading. Everything else goes to a ready worker.
 
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
@@ -41,7 +42,12 @@ from verifiers.v1.serve.types import BaseResponse, HealthResponse, WORKER_MAX_RE
 
 logger = logging.getLogger(__name__)
 
-_HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
+_HEALTHY = msgpack.packb(
+    HealthResponse(ready=True).model_dump(mode="json"), use_bin_type=True
+)
+_NOT_READY = msgpack.packb(
+    HealthResponse(ready=False).model_dump(mode="json"), use_bin_type=True
+)
 
 
 def _arm_teardown(death_pipe=None) -> None:
@@ -202,6 +208,7 @@ class EnvServerPool:
         for _ in range(1 if self.elastic else (self.max_workers or 1)):
             self._spawn_worker()
         pending: dict[bytes, dict] = {}  # request_id -> {client_id, worker}
+        started = False
         logger.info(
             "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
             self.address,
@@ -267,10 +274,15 @@ class EnvServerPool:
                         payload,
                     ) = await self.frontend.recv_multipart()
                     if method == b"health":
-                        if not all(w["ready"].is_set() for w in self.workers):
-                            continue
+                        ready = [w for w in self.workers if w["ready"].is_set()]
+                        if not started:
+                            started = len(ready) == len(self.workers)
                         await self.frontend.send_multipart(
-                            [client_id, request_id, _HEALTH]
+                            [
+                                client_id,
+                                request_id,
+                                _HEALTHY if started and ready else _NOT_READY,
+                            ]
                         )
                     else:
                         ready = [w for w in self.workers if w["ready"].is_set()]

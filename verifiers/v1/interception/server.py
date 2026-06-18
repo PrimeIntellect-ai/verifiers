@@ -459,7 +459,7 @@ class InterceptionServer:
                 dialect, route, await request.json()
             )
         except RolloutError as e:
-            session.error = e
+            session.error = session.error or e
             logger.warning(
                 "aux call failed: id=%s %s: %s",
                 session.trace.id,
