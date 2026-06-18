@@ -42,6 +42,9 @@ def narrow_plugin_field(
     neither is set. Shared by `EnvConfig._resolve_plugins` and `ValidateConfig`."""
     raw = data.get(field)
     if isinstance(raw, BaseConfig):
+        if raw.__class__ not in {TasksetConfig, HarnessConfig}:
+            data[field] = raw
+            return
         raw = raw.model_dump()
     raw = dict(raw or {})
     ident = raw.get("id") or default_id
@@ -55,7 +58,10 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     demand; any other is a local package (hyphens → underscores)."""
     module = ensure_installed(plugin_id)
     namespaced = f"{group}.{module}"
-    target = namespaced if importlib.util.find_spec(namespaced) else module
+    try:
+        target = namespaced if importlib.util.find_spec(namespaced) else module
+    except ModuleNotFoundError:
+        target = module
     try:
         return importlib.import_module(target)
     except ModuleNotFoundError as e:

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import verifiers as vf
+import compat_taskset_v1
 from verifiers.types import (
     Response,
     ResponseMessage,
     ResponseTokens,
     Usage,
 )
-from verifiers.v1.compat import V1AsV0Environment
+from verifiers.v1.compat import V1AsV0Environment, build_env_config
 
 
 class FakeV0Client:
@@ -117,6 +118,13 @@ async def test_v1_group_reward_runs_through_v0_run_group() -> None:
         assert all(out["trajectory"] for out in outs)
     finally:
         await env._teardown()
+
+
+def test_module_load_taskset_annotation_does_not_require_taskset_plugin() -> None:
+    config = build_env_config(compat_taskset_v1, "standalone-compat-v1", {})
+
+    assert type(config.taskset).__name__ == "CompatTasksetConfig"
+    assert config.taskset.id == "standalone-compat-v1"
 
 
 def _last_user_text(prompt) -> str:
