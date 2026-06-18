@@ -9,16 +9,25 @@ from verifiers.envs.experimental.composable.tasksets.swe.swe_lego.taskset import
 
 
 @pytest.mark.asyncio
-async def test_swe_taskset_cleanup_delete_failure_surfaces_rollout_error() -> None:
+async def test_swe_taskset_cleanup_delete_failure_records_rollout_error() -> None:
     client = AsyncMock()
     client.delete.side_effect = RuntimeError("delete outage")
     rubric = SWELegoRubric(taskset=object())
-    state = {"sandbox_client": client, "sandbox_id": "sb-swe"}
+    state = {"error": None, "sandbox_client": client, "sandbox_id": "sb-swe"}
 
-    with pytest.raises(vf.SandboxDeleteError, match="Failed to delete sandbox sb-swe"):
-        await rubric.cleanup(state)
+    await rubric.cleanup(state)
 
     client.delete.assert_awaited_once_with("sb-swe")
+    assert isinstance(state["error"], vf.SandboxDeleteError)
+    assert str(state["error"]) == "Failed to delete sandbox sb-swe: delete outage"
+    assert state["cleanup_errors"] == [
+        {
+            "type": "SandboxDeleteError",
+            "message": "Failed to delete sandbox sb-swe: delete outage",
+            "scope": "taskset_cleanup",
+            "sandbox_id": "sb-swe",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -33,7 +42,14 @@ async def test_cleanup_delete_failure_does_not_overwrite_existing_error() -> Non
         "sandbox_id": "sb-swe",
     }
 
-    with pytest.raises(vf.SandboxDeleteError):
-        await rubric.cleanup(state)
+    await rubric.cleanup(state)
 
     assert state["error"] is existing_error
+    assert state["cleanup_errors"] == [
+        {
+            "type": "SandboxDeleteError",
+            "message": "Failed to delete sandbox sb-swe: delete outage",
+            "scope": "taskset_cleanup",
+            "sandbox_id": "sb-swe",
+        }
+    ]

@@ -45,3 +45,18 @@ async def delete_sandbox_for_rollout(
         raise SandboxDeleteError(
             f"Failed to delete sandbox {sandbox_id}: {exc}"
         ) from exc
+
+
+async def cleanup_sandbox_for_rollout(
+    sandbox_client: ThreadedAsyncSandboxClient,
+    sandbox_id: str,
+    state: MutableMapping[str, Any],
+    *,
+    scope: str,
+) -> bool:
+    try:
+        await delete_sandbox_for_rollout(sandbox_client, sandbox_id)
+    except SandboxDeleteError as exc:
+        record_sandbox_delete_error(state, exc, scope=scope, sandbox_id=sandbox_id)
+        return False
+    return True
