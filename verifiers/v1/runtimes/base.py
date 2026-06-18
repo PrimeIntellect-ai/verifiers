@@ -154,6 +154,16 @@ class Runtime(ABC):
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run `argv` (with the interception env vars `env`) to completion."""
 
+    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
+        agentic run) — as opposed to the short idempotent infra ops (write / mv / install /
+        provisioning) that go through `run`. Identical to `run` here; `RetryingRuntime` overrides it
+        to NOT retry, because re-running the program against the rollout's persistent trace would
+        fork a duplicate branch (and re-execute against a runtime already mutated by the first
+        attempt). A transient transport fault mid-program surfaces as a ProgramError for this
+        rollout instead of a silent full restart."""
+        return await self.run(argv, env)
+
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
@@ -193,7 +203,11 @@ class Runtime(ABC):
             ["sh", "-c", f"mv -f {shlex.quote(tmp)} {shlex.quote(path)}"], {}
         )
         command = f'{_ENSURE_UV}; exec uv run {shlex.quote(path)} "$@"'
-        return await self.run(["sh", "-c", command, path, *(args or [])], env or {})
+        # The write/mv above are idempotent infra (retried); the script run is the rollout's
+        # program — `run_program`, so it is not retried (see Runtime.run_program).
+        return await self.run_program(
+            ["sh", "-c", command, path, *(args or [])], env or {}
+        )
 
     # --- filesystem ---
 
@@ -232,8 +246,12 @@ class RetryingRuntime(Runtime):
     exit), not an exception, so retries fire only on infra/transport faults — provisioning,
     exec transport, file I/O across the runtime boundary. `CancelledError` (a
     `BaseException`) and `NotImplementedError` (an unsupported op) are never retried. Sync
-    teardown (`cleanup`) and display (`descriptor`) delegate straight through;
-    `run_uv_script` is inherited, so it runs over the retrying `write`/`run`."""
+    teardown (`cleanup`) and display (`descriptor`) delegate straight through. The rollout's
+    program exec (`run_program`, including the script run inside `run_uv_script`) is deliberately
+    NOT retried: re-running a stateful/agentic program against the rollout's persistent trace would
+    fork a duplicate branch (and re-run against a runtime the first attempt already mutated), so a
+    mid-program transport fault surfaces as a ProgramError for that rollout. `run_uv_script`'s
+    write/mv staging still runs over the retrying `write`/`run`."""
 
     def __init__(self, inner: Runtime, max_retries: int) -> None:
         super().__init__(inner.name)
@@ -274,6 +292,11 @@ class RetryingRuntime(Runtime):
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         return await self._retry(self.inner.run, argv, env)
+
+    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        """The rollout's program exec is NOT retried (see the class docstring) — straight to
+        inner."""
+        return await self.inner.run(argv, env)
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
