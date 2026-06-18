@@ -54,7 +54,7 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
             VERIFY, args=[task.answer, prediction or ""]
         )
         if result.exit_code != 0:
-            raise vf.ProgramError(f"verify.py failed: {result.stderr.strip()[-500:]}")
+            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
         lines = result.stdout.strip().splitlines()
         return float(lines[-1]) if lines else 0.0
 
@@ -66,6 +66,6 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
             VERIFY, args=[task.answer, f"#### {task.answer}"]
         )
         if result.exit_code != 0:
-            raise vf.ProgramError(f"verify.py failed: {result.stderr.strip()[-500:]}")
+            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
         lines = result.stdout.strip().splitlines()
         return bool(lines) and float(lines[-1]) == 1.0

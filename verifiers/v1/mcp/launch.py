@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from verifiers.v1.errors import ProgramError, RolloutError
+from verifiers.v1.errors import RolloutError, ToolsetError, UserError
 from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerBase
 from verifiers.v1.runtimes import (
     HOST,
@@ -123,7 +123,7 @@ def _verifiers_root() -> Path:
 
     root = Path(verifiers.__file__).resolve().parent.parent
     if not (root / "pyproject.toml").exists():
-        raise ProgramError(
+        raise ToolsetError(
             "verifiers is not a source checkout (no pyproject above the package), so it can't be "
             "uploaded to a sandbox; run sandboxed servers from a verifiers source install"
         )
@@ -138,7 +138,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     or pin to keep in sync."""
     source_dir = _source_dir(type(server))
     if source_dir is None:
-        raise ProgramError(
+        raise ToolsetError(
             f"server {server.server_name!r} runs in a {runtime.type} runtime but its module is not "
             "a local package (no pyproject) — sandbox launch needs a local env package to upload"
         )
@@ -156,7 +156,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     )
     result = await runtime.run(["sh", "-c", setup], {})
     if result.exit_code != 0:
-        raise ProgramError(
+        raise ToolsetError(
             f"server {server.server_name!r} install failed in runtime: "
             f"{(result.stderr or result.stdout).strip()[-2000:]}"
         )
@@ -185,7 +185,7 @@ async def _read_back_port(runtime: Runtime, path: str) -> int:
             if data.isdigit():
                 return int(data)
         await asyncio.sleep(1)
-    raise ProgramError(f"server did not report its port at {path} in its runtime")
+    raise ToolsetError(f"server did not report its port at {path} in its runtime")
 
 
 async def serve_in_runtime(
@@ -233,13 +233,13 @@ async def serve_in_runtime(
     else:
         try:
             port = await _read_back_port(runtime, port_file)
-        except ProgramError as e:
-            raise ProgramError(f"{e}: {await log_tail(runtime, log)}") from e
+        except ToolsetError as e:
+            raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
     probe = await runtime.run(
         ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
     )
     if probe.exit_code != 0:
-        raise ProgramError(
+        raise ToolsetError(
             f"tool server {server.server_name!r} not serving in runtime: {await log_tail(runtime, log)}"
         )
     return port
@@ -473,7 +473,7 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
 
     Retries the connect — under high concurrency the colocated user server can be slow to
     accept (or briefly refuse) a connection. A server that stays unreachable raises
-    `ProgramError` (a captured, retryable rollout error), so a transport failure never escapes
+    `UserError` (a captured, retryable rollout error), so a transport failure never escapes
     as a raw `ExceptionGroup`/`ConnectError` that would bypass rollout error handling and crash
     the batch. The connect is entered and exited in this one frame so anyio's cancel scopes stay
     correctly nested."""
@@ -517,14 +517,12 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
                 # the user-sim connection broke mid-rollout/teardown (e.g. the colocated server
                 # was killed under memory pressure): capture it as a retryable rollout error
                 # instead of letting the raw transport ExceptionGroup escape and crash the batch
-                raise ProgramError(
-                    f"user server at {url} connection lost: {e!r}"
-                ) from e
+                raise UserError(f"user server at {url} connection lost: {e!r}") from e
             last_exc = e  # the connect itself failed: back off and retry
             await asyncio.sleep(
                 min(_USER_CONNECT_BACKOFF * 2**attempt, _USER_CONNECT_MAX_BACKOFF)
             )
-    raise ProgramError(
+    raise UserError(
         f"user server at {url} unreachable after {_USER_CONNECT_ATTEMPTS} attempts: {last_exc!r}"
     )
 

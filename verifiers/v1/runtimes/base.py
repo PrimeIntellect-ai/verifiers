@@ -14,17 +14,11 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, TypeVar
 
-from tenacity import (
-    AsyncRetrying,
-    RetryCallState,
-    retry_if_exception_type,
-    retry_if_not_exception_type,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
+from verifiers.v1.retries import retrying
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +155,7 @@ class Runtime(ABC):
         provisioning) that go through `run`. Identical to `run` here; `RetryingRuntime` overrides it
         to NOT retry, because re-running the program against the rollout's persistent trace would
         fork a duplicate branch (and re-execute against a runtime already mutated by the first
-        attempt). A transient transport fault mid-program surfaces as a ProgramError for this
+        attempt). A transient transport fault mid-program surfaces as a SandboxError for this
         rollout instead of a silent full restart."""
         return await self.run(argv, env)
 
@@ -251,7 +245,7 @@ class RetryingRuntime(Runtime):
     program exec (`run_program`, including the script run inside `run_uv_script`) is deliberately
     NOT retried: re-running a stateful/agentic program against the rollout's persistent trace would
     fork a duplicate branch (and re-run against a runtime the first attempt already mutated), so a
-    mid-program transport fault surfaces as a ProgramError for that rollout. `run_uv_script`'s
+    mid-program transport fault surfaces as a SandboxError for that rollout. `run_uv_script`'s
     write/mv staging still runs over the retrying `write`/`run`."""
 
     def __init__(self, inner: Runtime, max_retries: int) -> None:
@@ -259,25 +253,12 @@ class RetryingRuntime(Runtime):
         self.inner = inner
         self.max_retries = max_retries
         # One Retrying, reused across (and concurrent within) calls: the control flow runs
-        # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.
-        self._retrying = AsyncRetrying(
-            stop=stop_after_attempt(max_retries + 1),
-            wait=wait_exponential_jitter(initial=0.5, max=30),
-            retry=retry_if_exception_type(Exception)
-            & retry_if_not_exception_type(NotImplementedError),
-            before_sleep=self._log_retry,
-            reraise=True,
-        )
-
-    def _log_retry(self, state: RetryCallState) -> None:
-        # before_sleep fires after a failed attempt, before the imminent retry — so
-        # attempt_number is the retry index (1 on the first retry); count out of max_retries.
-        logger.warning(
-            "retrying runtime.%s (retry %d/%d) after error: %s",
-            getattr(state.fn, "__name__", "call"),
-            state.attempt_number,
-            self.max_retries,
-            state.outcome.exception(),
+        # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared. A
+        # program's own failure is a `ProgramResult` (non-zero exit), not an exception, so
+        # retries fire only on infra/transport faults; an unsupported op (`NotImplementedError`)
+        # is never retried.
+        self._retrying = retrying(
+            on=Exception, give_up=NotImplementedError, retries=max_retries
         )
 
     async def _retry(self, fn, *args):
@@ -331,6 +312,27 @@ class RetryingRuntime(Runtime):
         await self._retry(self.inner.write, path, data)
 
 
+TunnelT = TypeVar("TunnelT")
+
+
+async def open_tunnel(
+    start: Callable[[], Awaitable[TunnelT]], what: str, *, retries: int = 3
+) -> TunnelT:
+    """Open the host interception-server tunnel via `start`, retrying transient failures and raise
+    `TunnelError` if it still fails. Tunnel creation is network-bound and globally rate-capped
+    (`prime_tunnel` — 512/min shared across runtimes), so a transient failure is common and worth a
+    few retries before failing the rollout. `what` names the tunnel in the error."""
+    from verifiers.v1.errors import TunnelError
+
+    try:
+        async for attempt in retrying(retries=retries, label=what):
+            with attempt:
+                return await start()
+    except Exception as e:
+        raise TunnelError(f"{what} failed after {retries} retries: {e}") from e
+    raise TunnelError(f"{what} failed")  # unreachable: retrying() returns or reraises
+
+
 @contextlib.asynccontextmanager
 async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = None):
     """Yield a URL a program *inside a runtime* uses to reach a HOST service on `port`. A local
@@ -344,17 +346,16 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
         return
     from prime_tunnel import Tunnel
 
-    from verifiers.v1.errors import ProgramError
     from verifiers.v1.runtimes.limiters import TUNNEL_LIMITER
 
-    tunnel = Tunnel(local_port=port, labels=labels or None)
-    try:
+    async def _start() -> tuple[Tunnel, str]:
+        tunnel = Tunnel(local_port=port, labels=labels or None)
         async with (
             TUNNEL_LIMITER
         ):  # shared prime_tunnel rate (512/min, runtime-independent)
-            url = str(await tunnel.start()).rstrip("/")
-    except Exception as e:
-        raise ProgramError(f"host tunnel failed (port {port}): {e}") from e
+            return tunnel, str(await tunnel.start()).rstrip("/")
+
+    tunnel, url = await open_tunnel(_start, f"host tunnel (port {port})")
     try:
         yield url
     finally:

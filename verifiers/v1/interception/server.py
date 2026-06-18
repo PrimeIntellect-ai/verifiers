@@ -33,7 +33,12 @@ from pydantic import ValidationError
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1 import graph
-from verifiers.v1.errors import OverlongPromptError
+from verifiers.v1.errors import (
+    OverlongPromptError,
+    RolloutError,
+    TasksetError,
+    UserError,
+)
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 
@@ -111,6 +116,11 @@ class RolloutSession:
     every request until the first turn lands on the trace — so a retried opening request (e.g. the
     harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`
     twice and advances the simulator's queue past the opening."""
+    error: "RolloutError | None" = None
+    """The latest unresolved model-call failure. The harness only sees it as an HTTP error
+    (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
+    harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
+    Reset before each model turn, so a successful retry clears it."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
@@ -195,6 +205,17 @@ class InterceptionServer:
         if self.runner is not None:
             await self.runner.cleanup()
 
+    def _fail(
+        self, session: RolloutSession, dialect: Dialect, error: RolloutError
+    ) -> web.Response:
+        """Stash a model-turn-adjacent failure (a `@stop` or user simulator raising) so the rollout
+        re-raises it as the real cause, and report it to the harness as an HTTP error."""
+        session.error = error
+        logger.warning(
+            "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
+        )
+        return web.json_response(dialect.error_body(str(error)), status=502)
+
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
@@ -245,7 +266,16 @@ class InterceptionServer:
             None  # the latest turn's response, returned to the program
         )
         while True:
-            refused = await session.refused()
+            try:
+                refused = await session.refused()
+            except RolloutError as e:
+                return self._fail(session, dialect, e)
+            except Exception as e:
+                return self._fail(
+                    session,
+                    dialect,
+                    TasksetError(f"@stop failed: {type(e).__name__}: {e}"),
+                )
             if refused is not None:
                 # Refuse the first model call to halt the harness; once a simulated
                 # conversation is under way, just end it and return the last turn cleanly.
@@ -255,6 +285,7 @@ class InterceptionServer:
                     )
                 return web.json_response(completion)
             turn = graph.prepare_turn(session.trace, prompt)
+            session.error = None
             try:
                 response = await session.ctx.client.get_response(
                     dialect,
@@ -277,6 +308,16 @@ class InterceptionServer:
                         status=400,
                     )
                 return web.json_response(completion)
+            except RolloutError as e:
+                # Stash the real cause; the rollout re-raises it after the harness returns.
+                session.error = e
+                logger.warning(
+                    "model call failed: id=%s %s: %s",
+                    session.trace.id,
+                    type(e).__name__,
+                    e,
+                )
+                return web.json_response(dialect.error_body(str(e)), status=502)
             except Exception as e:  # surface to the program as an API error
                 logger.warning(
                     "model call failed: id=%s %s: %s",
@@ -299,7 +340,16 @@ class InterceptionServer:
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
                 return web.json_response(completion)
-            user_messages = await session.user(response.message.content or "")
+            try:
+                user_messages = await session.user(response.message.content or "")
+            except RolloutError as e:
+                return self._fail(session, dialect, e)
+            except Exception as e:
+                return self._fail(
+                    session,
+                    dialect,
+                    UserError(f"user simulator failed: {type(e).__name__}: {e}"),
+                )
             # Inject the model turn + the simulator's user turn(s): into the wire request for the
             # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
             # survives) and into the typed prompt for the trace. The simulator ends the trajectory
@@ -323,11 +373,19 @@ class InterceptionServer:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
         accumulating the bytes to record the turn on the trace. Single-shot — a streamed turn
         never drives a user simulator (the only client that streams is the eval relay)."""
-        refused = await session.refused()
+        try:
+            refused = await session.refused()
+        except RolloutError as e:
+            return self._fail(session, dialect, e)
+        except Exception as e:
+            return self._fail(
+                session, dialect, TasksetError(f"@stop failed: {type(e).__name__}: {e}")
+            )
         if refused is not None:
             return web.json_response(
                 dialect.error_body(f"rollout stopped: {refused}"), status=400
             )
+        session.error = None
         try:
             turn = graph.prepare_turn(session.trace, prompt)
             reply = await session.ctx.client.relay(
@@ -344,6 +402,15 @@ class InterceptionServer:
             return web.json_response(
                 dialect.error_body("rollout stopped: context_length"), status=400
             )
+        except RolloutError as e:
+            session.error = e
+            logger.warning(
+                "model call failed: id=%s %s: %s",
+                session.trace.id,
+                type(e).__name__,
+                e,
+            )
+            return web.json_response(dialect.error_body(str(e)), status=502)
         except Exception as e:  # surface to the program as an API error
             logger.warning("model call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
@@ -397,6 +464,16 @@ class InterceptionServer:
             result = await session.ctx.client.relay_aux(
                 dialect, route, await request.json()
             )
+        except RolloutError as e:
+            # An aux call isn't a model turn, so don't clobber a pending turn error.
+            session.error = session.error or e
+            logger.warning(
+                "aux call failed: id=%s %s: %s",
+                session.trace.id,
+                type(e).__name__,
+                e,
+            )
+            return web.json_response(dialect.error_body(str(e)), status=502)
         except Exception as e:
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)

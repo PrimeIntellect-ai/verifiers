@@ -27,7 +27,7 @@ from pathlib import Path
 from pydantic import Field
 
 from verifiers.v1.decorators import reward
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset, TasksetConfig
@@ -224,5 +224,5 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         try:
             reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
             return float(reward or 0)
-        except (ProgramError, OSError, ValueError):
+        except (SandboxError, OSError, ValueError):
             return 0.0
