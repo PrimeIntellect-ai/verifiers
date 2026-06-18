@@ -22,7 +22,7 @@ from enum import StrEnum
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RetryingClient, RolloutContext
 from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.errors import SandboxError, RolloutError, ToolError
+from verifiers.v1.errors import RolloutError, SandboxError, TasksetError, ToolError
 from verifiers.v1.interception import (
     InterceptionPool,
     InterceptionServer,
@@ -168,6 +168,12 @@ class Rollout:
                 raise SandboxError(
                     f"setup exceeded setup_timeout of {self.setup_timeout}s"
                 ) from None
+            except RolloutError:
+                raise
+            except Exception as e:
+                raise TasksetError(
+                    f"taskset setup failed: {type(e).__name__}: {e}"
+                ) from e
             async with self._serve_interception(
                 self.interception, runtime, session
             ) as (
@@ -252,6 +258,12 @@ class Rollout:
                 raise SandboxError(
                     f"finalize exceeded finalize_timeout of {self.finalize_timeout}s"
                 ) from None
+            except RolloutError:
+                raise
+            except Exception as e:
+                raise TasksetError(
+                    f"taskset finalize failed: {type(e).__name__}: {e}"
+                ) from e
             now = time.time()
             trace.timing.finalize.end = now
             self.phase = (

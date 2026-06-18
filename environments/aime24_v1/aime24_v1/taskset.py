@@ -64,6 +64,6 @@ class AIME24Taskset(vf.Taskset[AIME24Task, AIME24Config]):
             args=[task.answer, prediction or "", str(self.config.math_verify_timeout)],
         )
         if result.exit_code != 0:
-            raise vf.SandboxError(f"verify.py failed: {result.stderr.strip()[-500:]}")
+            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
         lines = result.stdout.strip().splitlines()
         return float(lines[-1]) if lines else 0.0

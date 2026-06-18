@@ -145,9 +145,15 @@ class Harness(ABC, Generic[ConfigT]):
         No-op for an harness with no `@metric`s."""
         available = {"task": trace.task, "trace": trace, "runtime": runtime}
         fns = discover_decorated(self, "metric")
-        for fn, result in zip(
-            fns, await asyncio.gather(*(invoke(fn, available) for fn in fns))
-        ):
+        try:
+            results = await asyncio.gather(*(invoke(fn, available) for fn in fns))
+        except RolloutError:
+            raise
+        except Exception as e:
+            raise HarnessError(
+                f"harness {self.config.id!r} metric failed: {type(e).__name__}: {e}"
+            ) from e
+        for fn, result in zip(fns, results):
             if isinstance(result, Mapping):
                 trace.record_metrics(result)
             else:

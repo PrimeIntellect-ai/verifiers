@@ -5,8 +5,8 @@ Only errors the rollout deliberately catches (and records into `trace.error` as 
 built-in traceback — we own the code, so we don't wrap internal invariants in
 custom messages.
 
-Each type names the *boundary* a failure crossed — provider, harness, tool, sandbox, or
-interception — so a recorded `trace.error.type` says where the rollout broke. The detail
+Each type names the *boundary* a failure crossed — provider, harness, tool, sandbox, taskset,
+or interception — so a recorded `trace.error.type` says where the rollout broke. The detail
 (status code, stderr, ...) comes from the wrapped inner error; we add a type only when the
 boundary isn't already clear from it.
 """
@@ -40,9 +40,15 @@ class ToolError(RolloutError):
 
 class SandboxError(RolloutError):
     """A runtime/sandbox operation failed — provisioning, a non-zero program exit, exec or file
-    I/O across the sandbox boundary, or a rollout stage exceeding its timeout. The execution
-    boundary, distinct from the model/harness/tool/interception ones; also what a taskset raises
-    (`vf.SandboxError`) when a program it runs in the runtime fails."""
+    I/O across the sandbox boundary, or a rollout stage exceeding its timeout. The framework's
+    execution boundary, distinct from the model/harness/tool/interception ones."""
+
+
+class TasksetError(RolloutError):
+    """Taskset-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`/`@group_reward`
+    (e.g. a verifier script the reward runs exiting non-zero). The framework wraps any non-
+    `RolloutError` escaping a taskset hook as this, so taskset code raises plain Python errors and
+    needn't import an error type — the type names the taskset boundary, the wrapped error the detail."""
 
 
 class InterceptionError(RolloutError):

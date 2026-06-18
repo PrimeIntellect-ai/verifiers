@@ -270,8 +270,9 @@ isolated environment. On a `runtime` you can call:
 | `read(path)` / `write(path, data)` | workspace files (bytes), across the container/sandbox boundary |
 | `expose(port)` | publish a port *inside* the runtime to a host-reachable URL (`None` when local) |
 
-A non-zero `exit_code` is a normal result, not an exception — check it and raise `vf.SandboxError`
-yourself if it should fail the stage. The same code works on subprocess / docker / prime / modal.
+A non-zero `exit_code` is a normal result, not an exception — check it and `raise` (a plain
+Python error) yourself if it should fail the stage; the framework records a failure in your
+taskset code as a `TasksetError`. The same code works on subprocess / docker / prime / modal.
 
 A SWE taskset is the canonical case: `setup` provisions the repo, the agent edits it during the
 rollout, and a `@reward` runs the tests in the *same* runtime:

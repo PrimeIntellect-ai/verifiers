@@ -208,7 +208,7 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
         for cmd in (LINK, CLEAN_PYCACHE, HIDE_TESTS):
             result = await runtime.run(["sh", "-c", cmd], ENV)
             if cmd is HIDE_TESTS and result.exit_code != 0:
-                raise vf.SandboxError(
+                raise RuntimeError(
                     f"r2e setup failed to stage tests ({task.name}): {result.stderr.strip()[-500:]}"
                 )
 
@@ -231,12 +231,12 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
         """Reconstruct + apply the gold source patch (for validation/dummy rollouts)."""
         patch = extract_gold_patch(task.parsed_commit_content)
         if not patch.strip():
-            raise vf.SandboxError(f"empty gold patch for {task.name}")
+            raise RuntimeError(f"empty gold patch for {task.name}")
         await runtime.write("/tmp/gold.patch", patch.encode())
         result = await runtime.run(
             ["sh", "-c", "git apply --whitespace=fix /tmp/gold.patch"], ENV
         )
         if result.exit_code != 0:
-            raise vf.SandboxError(
+            raise RuntimeError(
                 f"gold apply failed ({task.name}): {result.stderr.strip()[-500:]}"
             )

@@ -84,6 +84,13 @@ class _RaisingHarness(vf.Harness):
         raise ValueError("harness internals exploded")
 
 
+class _NoopHarness(vf.Harness):
+    """Completes cleanly without a model call, so the rollout reaches scoring."""
+
+    async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls):
+        return await runtime.run(["sh", "-c", "exit 0"], {})
+
+
 # --- fixture tasksets ---
 
 
@@ -104,6 +111,14 @@ class _NoPromptTaskset(vf.Taskset):
 
     def load_tasks(self):
         return [vf.Task(idx=0, prompt=None)]
+
+
+class _ScoreFailTaskset(_PlainTaskset):
+    """A taskset whose `@reward` raises a plain Python error (e.g. a verifier program failing)."""
+
+    @vf.reward(weight=1.0)
+    async def boom(self, trace):
+        raise RuntimeError("verifier program failed")
 
 
 # --- driver ---
@@ -190,6 +205,15 @@ async def test_sandbox_error_recorded():
         _taskset(_NoPromptTaskset), _harness(_OneCallHarness), client=_UnusedClient()
     )
     _assert_recorded(trace, "SandboxError")
+
+
+async def test_taskset_error_recorded():
+    """A plain Python error from a taskset `@reward` is wrapped by the framework as TasksetError —
+    taskset code raises plain errors, never a vf.* type."""
+    trace = await _run(
+        _taskset(_ScoreFailTaskset), _harness(_NoopHarness), client=_UnusedClient()
+    )
+    _assert_recorded(trace, "TasksetError")
 
 
 async def test_tunnel_error_recorded(monkeypatch):

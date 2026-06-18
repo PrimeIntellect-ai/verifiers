@@ -29,9 +29,10 @@ from verifiers.v1.episode import Episode
 from verifiers.v1.errors import (
     HarnessError,
     InterceptionError,
-    SandboxError,
     ProviderError,
     RolloutError,
+    SandboxError,
+    TasksetError,
     ToolError,
     TunnelError,
 )
@@ -144,6 +145,7 @@ __all__ = [
     "HarnessError",
     "ToolError",
     "SandboxError",
+    "TasksetError",
     "InterceptionError",
     "TunnelError",
     # clients
