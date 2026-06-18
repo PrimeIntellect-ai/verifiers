@@ -205,7 +205,9 @@ class Runtime(ABC):
         command = f'{_ENSURE_UV}; exec uv run {shlex.quote(path)} "$@"'
         # The write/mv above are idempotent infra (retried); the script run is the rollout's
         # program — `run_program`, so it is not retried (see Runtime.run_program).
-        return await self.run_program(["sh", "-c", command, path, *(args or [])], env or {})
+        return await self.run_program(
+            ["sh", "-c", command, path, *(args or [])], env or {}
+        )
 
     # --- filesystem ---
 
