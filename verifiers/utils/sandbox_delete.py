@@ -59,4 +59,7 @@ async def cleanup_sandbox_for_rollout(
     except SandboxDeleteError as exc:
         record_sandbox_delete_error(state, exc, scope=scope, sandbox_id=sandbox_id)
         return False
+    deregister = state.get("_sandbox_deregister")
+    if callable(deregister):
+        deregister(sandbox_id)
     return True

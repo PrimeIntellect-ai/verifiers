@@ -88,6 +88,8 @@ def test_create_sandbox_success(mixin):
     assert result == "sb-1"
     assert state["sandbox_id"] == "sb-1"
     assert "sb-1" in mixin.active_sandboxes
+    state["_sandbox_deregister"]("sb-1")
+    assert "sb-1" not in mixin.active_sandboxes
     mixin.sandbox_client.wait_for_creation.assert_called_once_with(
         "sb-1",
         max_attempts=120,

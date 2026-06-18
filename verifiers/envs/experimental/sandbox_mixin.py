@@ -267,6 +267,7 @@ class SandboxMixin:
 
         self.register_sandbox(sandbox.id)
         state["sandbox_id"] = sandbox.id
+        state["_sandbox_deregister"] = self.deregister_sandbox
         self.logger.debug(f"Created sandbox {sandbox.id}")
 
         try:

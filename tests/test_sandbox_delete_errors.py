@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -12,12 +12,19 @@ from verifiers.envs.experimental.composable.tasksets.swe.swe_lego.taskset import
 async def test_swe_taskset_cleanup_delete_failure_records_rollout_error() -> None:
     client = AsyncMock()
     client.delete.side_effect = RuntimeError("delete outage")
+    deregister = Mock()
     rubric = SWELegoRubric(taskset=object())
-    state = {"error": None, "sandbox_client": client, "sandbox_id": "sb-swe"}
+    state = {
+        "error": None,
+        "_sandbox_deregister": deregister,
+        "sandbox_client": client,
+        "sandbox_id": "sb-swe",
+    }
 
     await rubric.cleanup(state)
 
     client.delete.assert_awaited_once_with("sb-swe")
+    deregister.assert_not_called()
     assert isinstance(state["error"], vf.SandboxDeleteError)
     assert str(state["error"]) == "Failed to delete sandbox sb-swe: delete outage"
     assert state["cleanup_errors"] == [
@@ -28,6 +35,24 @@ async def test_swe_taskset_cleanup_delete_failure_records_rollout_error() -> Non
             "sandbox_id": "sb-swe",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_swe_taskset_cleanup_delete_success_deregisters_sandbox() -> None:
+    client = AsyncMock()
+    deregister = Mock()
+    rubric = SWELegoRubric(taskset=object())
+    state = {
+        "_sandbox_deregister": deregister,
+        "sandbox_client": client,
+        "sandbox_id": "sb-swe",
+    }
+
+    await rubric.cleanup(state)
+
+    client.delete.assert_awaited_once_with("sb-swe")
+    deregister.assert_called_once_with("sb-swe")
+    assert "cleanup_errors" not in state
 
 
 @pytest.mark.asyncio
