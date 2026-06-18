@@ -44,17 +44,24 @@ logger = logging.getLogger(__name__)
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 
 
-def _monitor_parent(conn) -> None:
-    """Self-SIGTERM when the parent (broker) dies: its write end of the pipe closes on
-    exit (even on SIGKILL), so the blocking `recv` returns/raises and we shut down —
-    no orphaned worker holding a sandbox."""
+def _arm_teardown(death_pipe=None) -> None:
+    """Arm a spawned process (serve_env broker/single server, or pool worker) for clean
+    teardown: it inherits no signal handlers, so by default SIGTERM kills it abruptly, skipping
+    asyncio.run()'s serving() cleanup and orphaning host_endpoint tunnels (and sandboxes).
 
-    def watch() -> None:
+    - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (serve_env swallows it);
+    - with `death_pipe`, self-SIGTERM when the parent dies (pipe EOF, even on its SIGKILL) so no
+      child is orphaned (main -> serve_env and broker -> worker are both armed this way)."""
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    if death_pipe is None:
+        return
+
+    def _watch() -> None:
         with contextlib.suppress(Exception):
-            conn.recv()
+            death_pipe.recv()
         os.kill(os.getpid(), signal.SIGTERM)
 
-    threading.Thread(target=watch, daemon=True).start()
+    threading.Thread(target=_watch, daemon=True).start()
 
 
 def _worker_entry(
@@ -67,9 +74,9 @@ def _worker_entry(
     logging so per-rollout logs surface — a spawned worker inherits no handlers."""
     from verifiers.v1.legacy import LegacyEnvServer
 
+    _arm_teardown(death_pipe)
     if log_setup is not None:
         log_setup()
-    _monitor_parent(death_pipe)
     if "config_data" in server_kwargs:
         server_kwargs = {
             "config": EnvConfig.model_validate(server_kwargs["config_data"])
@@ -266,6 +273,7 @@ def serve_env(
     legacy: bool = False,
     address: str = "tcp://127.0.0.1:5000",
     address_queue=None,
+    death_pipe=None,
     log_setup: Callable[[], None] | None = None,
     multiplex: int = 128,
     elastic: bool = True,
@@ -289,13 +297,13 @@ def serve_env(
 
     `log_setup` (a picklable callable) configures logging for this process and every
     spawned worker — without it a spawned server inherits no handlers and its INFO logs
-    (rollout start/done, the pool line) are silently dropped."""
-    # SIGTERM -> KeyboardInterrupt so a killed server runs its teardown (pool: kill the
-    # workers; single: close clients). It can fire inside a C call (e.g. zmq getsockopt),
-    # raising in the loop machinery rather than at an `await`, so it escapes the server's
-    # own run loop; `asyncio.run` still tears the server down via task cancellation, and we
-    # swallow the re-raised KeyboardInterrupt here for a clean exit (no spurious traceback).
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    (rollout start/done, the pool line) are silently dropped.
+
+    `death_pipe` (when spawned by a parent, e.g. the eval main process) makes this server
+    self-terminate if that parent dies abruptly — see `_arm_teardown`."""
+    # Graceful SIGTERM (run asyncio teardown) + self-terminate if the parent dies. The
+    # re-raised KeyboardInterrupt is swallowed below for a clean exit (no spurious traceback).
+    _arm_teardown(death_pipe)
     if log_setup is not None:
         log_setup()
     try:
