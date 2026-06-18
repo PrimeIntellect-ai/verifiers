@@ -113,10 +113,10 @@ filesystem, so run it under a containerized runtime: `docker` locally, or a remo
 `modal` sandbox (not the default `subprocess`). 
 
 ```bash
-uv run eval harbor-v1 -n 1 --taskset.use-harness-image --harness.runtime.type docker --harness.id bash            # bash-only agent
-uv run eval harbor-v1 -n 1 --taskset.use-harness-image --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
-uv run eval harbor-v1 -n 1 --taskset.use-harness-image --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
-uv run eval harbor-v1 -n 1 --taskset.use-harness-image --harness.runtime.type docker --harness.id codex           # the codex CLI agent
+uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id bash            # bash-only agent
+uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
+uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
+uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id codex           # the codex CLI agent
 ```
 
 ### Swappable runtime

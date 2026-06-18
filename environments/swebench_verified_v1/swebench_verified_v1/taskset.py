@@ -22,7 +22,7 @@ REGISTRY_PREFIX = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sand
 
 class SWEBenchVerifiedConfig(HarborConfig):
     dataset: Literal["swebench-verified"] = "swebench-verified"
-    use_harness_image: bool = True
+    ignore_dockerfile: bool = True
     """Keep harbor from rejecting the Dockerfile-only tasks; `load_tasks` sets the real image."""
     use_prime_registry: bool = False
     """Resolve task images against prime's Artifact Registry (`REGISTRY_PREFIX`) instead of the
@@ -35,19 +35,19 @@ class SWEBenchVerifiedTaskset(
     HarborTaskset, vf.Taskset[HarborTask, SWEBenchVerifiedConfig]
 ):
     def load_tasks(self) -> list[HarborTask]:
-        return [
-            task.model_copy(update={"image": self._image(Path(task.task_dir))})
-            for task in super().load_tasks()
-        ]
-
-    def _image(self, task_dir: Path) -> str:
         # TODO: once we have persistent public image caches, build each task's Dockerfile
         # (FROM swebench/sweb.eval.*) dynamically and cache the result — then we won't need to
         # resolve the prebuilt image here at all.
-        base = _from_image(task_dir)
-        if self.config.use_prime_registry:
-            return f"{REGISTRY_PREFIX}/{base.rsplit('/', 1)[-1]}"
-        return base
+        tasks = []
+        for task in super().load_tasks():
+            base = _from_image(Path(task.task_dir))
+            image = (
+                f"{REGISTRY_PREFIX}/{base.rsplit('/', 1)[-1]}"
+                if self.config.use_prime_registry
+                else base
+            )
+            tasks.append(task.model_copy(update={"image": image}))
+        return tasks
 
 
 def _from_image(task_dir: Path) -> str:
@@ -56,6 +56,3 @@ def _from_image(task_dir: Path) -> str:
         if line.strip().upper().startswith("FROM "):
             return line.split(None, 1)[1].strip()
     raise ValueError(f"{task_dir.name}: no FROM in environment/Dockerfile")
-
-
-__all__ = ["SWEBenchVerifiedTaskset"]
