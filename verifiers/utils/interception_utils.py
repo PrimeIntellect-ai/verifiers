@@ -448,10 +448,15 @@ class InterceptionServer:
             result = model_handler(messages, tools)
             if inspect.isawaitable(result):
                 result = await result
-            message = jsonable(result)
+            result = jsonable(result)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
-        return web.json_response({"message": message})
+        # Handlers may return a bare message or a wrapper dict that already
+        # contains ``message`` (plus side-channel fields like ``should_compact``);
+        # pass the wrapper through unchanged, else wrap a bare message.
+        if isinstance(result, dict) and "message" in result:
+            return web.json_response(result)
+        return web.json_response({"message": result})
 
     async def _handle_streaming_response(
         self, http_request: Any, rollout_id: str, intercept: dict

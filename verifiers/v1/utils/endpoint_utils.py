@@ -389,7 +389,16 @@ async def run_intercepted_program(
             if request.done():
                 model_tasks.discard(request)
         completion = await parse_response_message(response)
-        return cast(JsonData, serializable(completion[0]))
+        # Carry the host-computed compaction trigger back to the in-sandbox loop
+        # alongside the message. ``should_compact`` is set by the harness
+        # ``prepare_prompt`` (summarize mode); absent/False otherwise.
+        return cast(
+            JsonData,
+            {
+                "message": serializable(completion[0]),
+                "should_compact": bool(state.get("should_compact")),
+            },
+        )
 
     await endpoint.register_rollout(
         state,

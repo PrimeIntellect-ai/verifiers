@@ -172,7 +172,14 @@ def sandbox_runner_program(
         }
     )
     files[RUNNER_PATH] = runner_source()
-    files[RUNNER_CONFIG_PATH] = json.dumps({"max_turns": max_turns})
+    runner_config: dict[str, object] = {"max_turns": max_turns}
+    # Forward an opaque, harness-owned compaction blob (e.g. summarize mode +
+    # checkpoint/framing prompts) so the in-sandbox base loop can emit a recorded
+    # summary turn. Absent for prune mode -> RUNNER_CONFIG is byte-identical.
+    compaction = state.runtime_state().get("compaction")
+    if isinstance(compaction, dict) and compaction:
+        runner_config["compaction"] = compaction
+    files[RUNNER_CONFIG_PATH] = json.dumps(runner_config)
     command = python_runtime_command(
         RUNNER_PATH,
         *([mode] if fn_ref is None else [mode, fn_ref]),
@@ -546,29 +553,82 @@ async def create_model_message(state, messages):
     # The sandbox sends canonical Messages over the /vf/model bridge; the host
     # resolves the bound client, tokenizes, and records the trajectory step, then
     # returns the assistant message. The sandbox never formats a provider payload.
+    # Returns (message, should_compact): ``should_compact`` is the host-computed
+    # summarize trigger (False when not in summarize mode).
     payload = await vf_post(state, "model", {"messages": messages}, timeout=None)
     if "error" in payload:
         raise RuntimeError(str(payload["error"]))
-    return payload["message"]
+    return payload["message"], bool(payload.get("should_compact"))
+
+
+def _message_text(message):
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
 
 
 async def run_base(task, state):
-    prompt_messages = [*(state.get("system_prompt") or []), *(state.get("prompt") or [])]
+    system_messages = list(state.get("system_prompt") or [])
+    prompt_messages = [*system_messages, *(state.get("prompt") or [])]
     messages = list(prompt_messages)
     config = json.loads(open(RUNNER_CONFIG_PATH).read())
     max_turns = int(config["max_turns"])
+    # Compaction config forwarded by the harness (summarize mode only). Absent ->
+    # prune mode, where the host compacts the prompt copy in prepare_prompt and the
+    # loop does nothing extra.
+    compaction = config.get("compaction") or {}
+    summarize = compaction.get("mode") == "summarize"
+    checkpoint_prompt = compaction.get("checkpoint_prompt") or ""
+    framing = compaction.get("framing") or ""
     # Tools tagged with a sandbox_endpoint dispatch in-sandbox (loopback) instead
     # of the host /vf/tools tunnel.
     tool_endpoints = {
         d["name"]: d.get("sandbox_endpoint") for d in load_tool_defs("vf")
     }
     turn = 0
+    # Index in ``messages`` where the current branch's completion begins. Equals
+    # len(prompt_messages) normally; reset after a summarize rebuild so completion
+    # accounting tracks the last branch (matching completion_from_trajectory).
+    branch_prefix_len = len(prompt_messages)
+    # One-turn cooldown after a rebuild: the trigger uses the PREVIOUS turn's
+    # recorded prompt-token count, and the summary turn's recorded prompt is the
+    # full (large) pre-compaction history. Without this, the first post-rebuild
+    # turn would re-trigger off that large summary prompt and compact again
+    # immediately. Skip exactly one should_compact after compacting.
+    suppress_compaction = False
     while max_turns <= 0 or turn < max_turns:
         if await check_stop(state):
             break
-        message = await create_model_message(state, messages)
+        message, should_compact = await create_model_message(state, messages)
         turn += 1
         messages.append(message)
+        if summarize and should_compact and not suppress_compaction:
+            # Learnable compaction: the policy writes a handoff summary as a real
+            # recorded /vf/model turn (trainable action), then we rebuild the branch
+            # around it. The new prefix starts a fresh training sample downstream;
+            # prime-rl broadcasts the rollout return across samples (cross-sample
+            # credit) so this summary turn is credited with what follows.
+            messages.append({"role": "user", "content": checkpoint_prompt})
+            summary_message, _ = await create_model_message(state, messages)
+            turn += 1
+            messages[:] = [
+                *system_messages,
+                {
+                    "role": "user",
+                    "content": framing + "\n\n" + _message_text(summary_message),
+                },
+            ]
+            branch_prefix_len = len(messages)
+            suppress_compaction = True
+            continue
+        suppress_compaction = False
         tool_calls = list(message.get("tool_calls") or [])
         if not tool_calls:
             user_messages = await call_user(state, messages)
@@ -605,7 +665,7 @@ async def run_base(task, state):
             completed = False
         if completed:
             break
-    state["completion"] = messages[len(prompt_messages):]
+    state["completion"] = messages[branch_prefix_len:]
     set_stop_condition(state, "max_turns_reached")
     return state
 

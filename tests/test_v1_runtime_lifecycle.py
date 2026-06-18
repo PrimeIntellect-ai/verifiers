@@ -1774,7 +1774,7 @@ async def test_sandbox_base_program_max_turns_zero_is_unbounded(
 
     async def create_model_message(state, messages):
         _ = state, messages
-        return {"role": "assistant", "content": "done"}
+        return {"role": "assistant", "content": "done"}, False
 
     async def call_user(state, messages):
         _ = state, messages
@@ -1829,14 +1829,107 @@ async def test_sandbox_base_program_model_call_uses_vf_model_bridge() -> None:
             ],
         },
     ]
-    message = await create_model_message({"runtime": {}}, messages)
+    message, should_compact = await create_model_message({"runtime": {}}, messages)
 
     assert message == {"role": "assistant", "content": "ok"}
+    assert should_compact is False  # bridge omitting should_compact -> no compaction
     assert len(posted) == 1
     path, payload, timeout = posted[0]
     assert path == "model"
     assert payload["messages"] == messages  # image part preserved verbatim
     assert timeout is None
+
+
+@pytest.mark.asyncio
+async def test_sandbox_base_program_create_model_message_reads_should_compact() -> None:
+    namespace: dict[str, object] = {}
+    source = runner_source().rsplit("asyncio.run(main())", 1)[0]
+    exec(source, namespace)
+
+    async def vf_post(state, path, payload, timeout=None):
+        _ = state, path, payload, timeout
+        return {
+            "message": {"role": "assistant", "content": "ok"},
+            "should_compact": True,
+        }
+
+    namespace["vf_post"] = vf_post
+    create_model_message = cast(Any, namespace["create_model_message"])
+
+    message, should_compact = await create_model_message({"runtime": {}}, [])
+    assert message == {"role": "assistant", "content": "ok"}
+    assert should_compact is True
+
+
+@pytest.mark.asyncio
+async def test_sandbox_base_program_summarize_compaction(tmp_path: Path) -> None:
+    namespace: dict[str, object] = {}
+    source = runner_source().rsplit("asyncio.run(main())", 1)[0]
+    exec(source, namespace)
+    config_path = tmp_path / "runner_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "max_turns": 5,
+                "compaction": {
+                    "mode": "summarize",
+                    "checkpoint_prompt": "CHECKPOINT",
+                    "framing": "FRAMING",
+                },
+            }
+        )
+    )
+    namespace["RUNNER_CONFIG_PATH"] = str(config_path)
+    tool_defs_path = tmp_path / "tool_defs.json"
+    tool_defs_path.write_text(json.dumps({"vf": []}))
+    namespace["TOOL_DEFS_BY_PROTOCOL_PATH"] = str(tool_defs_path)
+
+    # (message, should_compact) per model call: the first turn trips the trigger,
+    # the second is the policy summary, the third (post-rebuild) ends the rollout.
+    responses = [
+        ({"role": "assistant", "content": "first"}, True),
+        ({"role": "assistant", "content": "MY SUMMARY"}, False),
+        ({"role": "assistant", "content": "after"}, False),
+    ]
+    seen_messages: list[list[dict[str, Any]]] = []
+
+    async def create_model_message(state, messages):
+        _ = state
+        seen_messages.append([dict(m) for m in messages])
+        return responses.pop(0)
+
+    async def call_user(state, messages):
+        _ = state, messages
+        return []
+
+    async def check_stop(state):
+        _ = state
+        return False
+
+    namespace["create_model_message"] = create_model_message
+    namespace["call_user"] = call_user
+    namespace["check_stop"] = check_stop
+
+    state = {
+        "system_prompt": [{"role": "system", "content": "SYS"}],
+        "prompt": [{"role": "user", "content": "hi"}],
+        "runtime": {},
+    }
+    run_base = cast(Any, namespace["run_base"])
+    result = await run_base({}, state)
+
+    # Three model calls: normal turn, summary turn, post-rebuild turn.
+    assert len(seen_messages) == 3
+    # The summary turn saw the checkpoint prompt appended to the live history.
+    assert seen_messages[1][-1] == {"role": "user", "content": "CHECKPOINT"}
+    # After compaction the branch is rebuilt to [system, framing + summary]; the
+    # original task prompt ("hi") is dropped.
+    rebuilt = seen_messages[2]
+    assert rebuilt[0] == {"role": "system", "content": "SYS"}
+    assert rebuilt[1] == {"role": "user", "content": "FRAMING\n\nMY SUMMARY"}
+    assert all(m.get("content") != "hi" for m in rebuilt)
+    # Completion tracks the post-rebuild branch continuation.
+    assert result["completion"] == [{"role": "assistant", "content": "after"}]
 
 
 def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
