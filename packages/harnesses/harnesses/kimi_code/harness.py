@@ -104,4 +104,4 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             await runtime.write(f"{KIMI_HOME}/config.toml", permission_rules.encode())
         await runtime.write(f"{KIMI_HOME}/mcp.json", json.dumps(mcp).encode())
         # `--prompt` is Kimi Code's non-interactive print mode.
-        return await runtime.run([BINARY, "--prompt", prompt], env)
+        return await runtime.run_program([BINARY, "--prompt", prompt], env)
