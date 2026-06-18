@@ -49,10 +49,10 @@ class SWEBenchVerifiedTaskset(
         tasks = []
         for task in super().load_tasks():
             base = from_image(Path(task.task_dir))
+            # The mirror keeps the source repo path (`swebench/sweb.eval.*`), matching the
+            # composable swebench taskset's `{REGISTRY}/{instance_image_key}`.
             image = (
-                f"{REGISTRY_PREFIX}/{base.rsplit('/', 1)[-1]}"
-                if self.config.use_prime_registry
-                else base
+                f"{REGISTRY_PREFIX}/{base}" if self.config.use_prime_registry else base
             )
             tasks.append(task.model_copy(update={"image": image}))
         return tasks
