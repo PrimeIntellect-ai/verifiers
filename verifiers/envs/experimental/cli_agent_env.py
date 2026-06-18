@@ -766,6 +766,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 self.deregister_sandbox(sandbox_id)
             else:
                 await self.delete_sandbox(sandbox_id)
+                state.pop("sandbox_id", None)
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs

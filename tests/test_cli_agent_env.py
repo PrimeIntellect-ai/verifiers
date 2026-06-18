@@ -138,6 +138,33 @@ class TestCliAgentEnv:
         state = {"agent_completed": True}
         assert await env.agent_completed(state) is True
 
+    @pytest.mark.asyncio
+    async def test_destroy_sandbox_consumes_state_id_after_env_delete(
+        self, sample_dataset
+    ):
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+        )
+        try:
+            env.post_rollout = AsyncMock()  # type: ignore[method-assign]
+            env.delete_sandbox = AsyncMock()  # type: ignore[method-assign]
+            state = {
+                "is_completed": True,
+                "sandbox_client": object(),
+                "sandbox_id": "sb-env-delete",
+            }
+
+            await env.destroy_sandbox(state)
+
+            env.post_rollout.assert_awaited_once_with(state)
+            env.delete_sandbox.assert_awaited_once_with("sb-env-delete")
+            assert "sandbox_id" not in state
+            assert "sandbox_client" in state
+        finally:
+            env.teardown_sandbox_client()
+
     @pytest.mark.parametrize(
         "timeout_seconds,expected_minutes",
         [
