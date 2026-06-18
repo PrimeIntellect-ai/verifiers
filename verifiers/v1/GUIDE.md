@@ -453,6 +453,7 @@ You rarely need this — a custom harness is for a rollout loop the built-ins ca
 | `bash` | the `default` chat loop plus a local `bash` tool, for shell-driving agents |
 | `rlm` | the RLM CLI agent |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
+| `terminus-2` | Harbor's Terminus 2 tmux agent |
 
 ```bash
 uv run eval gsm8k-v1 -n 1                    # default harness

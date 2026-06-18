@@ -11,6 +11,7 @@ from harnesses.mini_swe_agent import (
     MiniSWEAgentHarnessConfig,
 )
 from harnesses.rlm import RLMHarness, RLMHarnessConfig
+from harnesses.terminus_2 import Terminus2Harness, Terminus2HarnessConfig
 
 __all__ = [
     "BashHarness",
@@ -25,4 +26,6 @@ __all__ = [
     "MiniSWEAgentHarnessConfig",
     "RLMHarness",
     "RLMHarnessConfig",
+    "Terminus2Harness",
+    "Terminus2HarnessConfig",
 ]
