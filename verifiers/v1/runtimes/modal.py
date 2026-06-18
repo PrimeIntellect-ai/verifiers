@@ -16,7 +16,7 @@ from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime
 from verifiers.v1.runtimes.limiters import creation_limiter
 
@@ -117,7 +117,7 @@ class ModalRuntime(Runtime):
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
-            raise ProgramError(f"modal sandbox provisioning failed: {e}") from e
+            raise SandboxError(f"modal sandbox provisioning failed: {e}") from e
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox: Modal forwards `port` (named via
@@ -128,7 +128,7 @@ class ModalRuntime(Runtime):
         try:
             tunnels = await self._sandbox.tunnels.aio()
         except Exception as e:
-            raise ProgramError(f"modal tunnels unavailable (port {port}): {e}") from e
+            raise SandboxError(f"modal tunnels unavailable (port {port}): {e}") from e
         tunnel = tunnels.get(port)
         return str(tunnel.url).rstrip("/") if tunnel else None
 
@@ -145,7 +145,7 @@ class ModalRuntime(Runtime):
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise ProgramError(f"modal exec failed: {e}") from e
+            raise SandboxError(f"modal exec failed: {e}") from e
         return ProgramResult(
             exit_code=proc.returncode or 0,
             stdout=stdout or "",
@@ -160,7 +160,7 @@ class ModalRuntime(Runtime):
         inner = f"nohup {shlex.join(argv)} > {shlex.quote(log)} 2>&1 &"
         result = await self.run(["sh", "-c", inner], env)
         if result.exit_code != 0:
-            raise ProgramError(
+            raise SandboxError(
                 f"modal background launch failed: {result.stderr.strip()}"
             )
 
@@ -168,7 +168,7 @@ class ModalRuntime(Runtime):
         try:
             return await self._sandbox.filesystem.read_bytes.aio(path)
         except Exception as e:
-            raise ProgramError(f"read {path!r}: {e}") from e
+            raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
         # Resolve a relative path against the workdir and create its parent first (Modal's
@@ -184,7 +184,7 @@ class ModalRuntime(Runtime):
             )
             await self._sandbox.filesystem.write_bytes.aio(data, target)
         except Exception as e:
-            raise ProgramError(f"write {path!r}: {e}") from e
+            raise SandboxError(f"write {path!r}: {e}") from e
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async API can't run once the loop is gone): terminate

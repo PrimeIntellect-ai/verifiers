@@ -179,6 +179,46 @@ behind a ROUTER/DEALER broker and scales them — `static` (fixed N) or `elastic
 cap as in-flight load rises). The interception pool is shared for a server's lifetime and reused
 across rollouts.
 
+## Error handling
+
+Every rollout failure is **attributed to one boundary, then recorded once** — a bad rollout is
+data, not a crash. The whole model is four mechanisms, each in one place (`errors.py`):
+
+1. **Vocabulary** — a flat `RolloutError` hierarchy, one type per boundary, so a recorded
+   `trace.error.type` says *where* it broke:
+
+   | type | boundary |
+   | --- | --- |
+   | `ProviderError` (`OverlongPromptError`) | a model-provider call (`OverlongPromptError` → clean truncation, not an error) |
+   | `HarnessError` | the harness install/launch or its agent process exit |
+   | `ToolsetError` / `UserError` | a task's `Toolset` / `User` server couldn't be built or served |
+   | `SandboxError` | a runtime/sandbox op (provisioning, exec, file I/O) |
+   | `TasksetError` | taskset-authored code (`setup`/`finalize`/`@reward`/`@metric`/`@group_reward`) |
+   | `InterceptionError` (`TunnelError`) | the host interception server couldn't be reached |
+
+2. **Classification** — one helper, `boundary(error_cls, what)`, wraps each framework→code call:
+   an already-typed `RolloutError` passes through (it crossed a more specific boundary first), a
+   stage timeout or any other escaping error becomes `error_cls`. The rule: **extension code
+   (taskset hooks, harness subclasses) raises plain Python errors and never constructs a `vf.*`
+   type** — the framework classifies. Infra raises its type at the source instead (`runtimes` →
+   `SandboxError`, `clients` → `ProviderError` via `model_error`, the interception tunnel →
+   `TunnelError`).
+
+3. **Surfacing** — a model/tool/user call fails *behind the harness subprocess* and comes back to
+   the program as an HTTP error it may swallow or exit on. The interception server stashes the real
+   error on `RolloutSession.error`; the rollout re-raises it once the harness returns (one `finally`),
+   so the trace records the true cause (`ProviderError`/`TasksetError`/`UserError`) rather than a
+   secondary `HarnessError`.
+
+4. **Capture** — `Rollout.run` (mirrored by `EnvServer._handle`) records the failure — typed
+   `RolloutError` *or* an unexpected `Exception` — onto the trace and never lets it cancel sibling
+   rollouts. `BaseException` (`CancelledError`, `KeyboardInterrupt`) still propagates, so shutdown is
+   unaffected.
+
+Retries (`retries.py`) sit on top: per-call `RetryingClient`/`RetryingRuntime` rerun a single failed
+model/runtime call, and whole-rollout `run_with_retry` reruns a trajectory whose trace ends with a
+retryable error (`--retries.rollout.include` matches by type name). All share one `retrying()` policy.
+
 ## The v0 bridge
 
 A classic v0 `verifiers.load_environment` env runs through the v1 CLIs unchanged via

@@ -217,7 +217,7 @@ class SWELegoTaskset(vf.Taskset[SWELegoTask, vf.TasksetConfig]):
             )
             try:
                 await self._apply_patch(runtime, task.test_patch, "test_patch")
-            except vf.ProgramError:
+            except RuntimeError:
                 # The agent broke the tree badly enough that the canonical tests can't
                 # come back — that's a failed task, not an infra error.
                 return 0.0
@@ -230,7 +230,7 @@ class SWELegoTaskset(vf.Taskset[SWELegoTask, vf.TasksetConfig]):
         """Apply the gold source patch (for validation/dummy rollouts); `setup` already
         applied `test_patch`, so the F2P tests are in place."""
         if not task.gold_patch.strip():
-            raise vf.ProgramError(f"empty gold patch for {task.name}")
+            raise RuntimeError(f"empty gold patch for {task.name}")
         await self._apply_patch(runtime, task.gold_patch, "gold")
 
     async def _apply_patch(self, runtime: vf.Runtime, patch: str, label: str) -> None:
@@ -245,6 +245,6 @@ class SWELegoTaskset(vf.Taskset[SWELegoTask, vf.TasksetConfig]):
             result = await runtime.run(["sh", "-c", cmd], ENV)
             if result.exit_code == 0:
                 return
-        raise vf.ProgramError(
+        raise RuntimeError(
             f"{label} apply failed: exit={result.exit_code} {result.stderr.strip()[-500:]}"
         )

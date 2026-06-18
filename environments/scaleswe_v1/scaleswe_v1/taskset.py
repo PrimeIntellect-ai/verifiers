@@ -209,7 +209,7 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
     async def setup(self, task: ScaleSWETask, runtime: vf.Runtime) -> None:
         result = await runtime.run(["sh", "-c", task.pre_commands], ENV)
         if result.exit_code != 0:
-            raise vf.ProgramError(
+            raise RuntimeError(
                 f"scaleswe setup failed ({task.name}): {result.stderr.strip()[-500:]}"
             )
 
@@ -237,9 +237,9 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
     async def apply_gold_patch(self, task: ScaleSWETask, runtime: vf.Runtime) -> None:
         """Apply the gold source patch (for validation), raising if no strategy takes."""
         if not task.patch.strip():
-            raise vf.ProgramError(f"empty gold patch for {task.name}")
+            raise RuntimeError(f"empty gold patch for {task.name}")
         if not await self._apply_patch(runtime, task.patch):
-            raise vf.ProgramError(f"gold apply failed ({task.name})")
+            raise RuntimeError(f"gold apply failed ({task.name})")
 
     async def _apply_patch(self, runtime: vf.Runtime, patch: str) -> bool:
         # Try strict, then whitespace-tolerant, then a fuzzy `patch`, then a partial
