@@ -8,7 +8,7 @@ e.g. `bash`.
 """
 
 import verifiers.v1 as vf
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
 
 SYSTEM = "You complete the task by running shell commands with the bash tool."
@@ -55,7 +55,7 @@ class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
     ) -> float:
         try:
             content = (await runtime.read(TARGET)).decode(errors="replace")
-        except (ProgramError, OSError, ValueError):
+        except (SandboxError, OSError, ValueError):
             return 0.0  # the model never wrote the file
         return float(lenient_match(task.answer, content))
 

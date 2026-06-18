@@ -270,7 +270,7 @@ isolated environment. On a `runtime` you can call:
 | `read(path)` / `write(path, data)` | workspace files (bytes), across the container/sandbox boundary |
 | `expose(port)` | publish a port *inside* the runtime to a host-reachable URL (`None` when local) |
 
-A non-zero `exit_code` is a normal result, not an exception — check it and raise `vf.ProgramError`
+A non-zero `exit_code` is a normal result, not an exception — check it and raise `vf.SandboxError`
 yourself if it should fail the stage. The same code works on subprocess / docker / prime / modal.
 
 A SWE taskset is the canonical case: `setup` provisions the repo, the agent edits it during the
@@ -589,7 +589,7 @@ uv run eval gsm8k-v1 -n 5 -r 3 \
   --max-turns 8 --max-total-tokens 8192 \                          # per-rollout budgets
   --sampling.temperature 0 --sampling.max-tokens 2048 \            # generation knobs
   --timeout.rollout 600 --timeout.scoring 120 \                    # per-stage wall-clock caps (s)
-  --retries.rollout.max-retries 3 --retries.rollout.include ProgramError  # retry a whole rollout
+  --retries.rollout.max-retries 3 --retries.rollout.include SandboxError  # retry a whole rollout
 ```
 
 **Common flags** (each has a TOML equivalent at the dotted path):

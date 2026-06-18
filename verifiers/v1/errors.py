@@ -5,8 +5,8 @@ Only errors the rollout deliberately catches (and records into `trace.error` as 
 built-in traceback — we own the code, so we don't wrap internal invariants in
 custom messages.
 
-Each type names the *boundary* a failure crossed — provider, harness, tool, program/runtime,
-or interception — so a recorded `trace.error.type` says where the rollout broke. The detail
+Each type names the *boundary* a failure crossed — provider, harness, tool, sandbox, or
+interception — so a recorded `trace.error.type` says where the rollout broke. The detail
 (status code, stderr, ...) comes from the wrapped inner error; we add a type only when the
 boundary isn't already clear from it.
 """
@@ -38,9 +38,11 @@ class ToolError(RolloutError):
     """A task's tool / MCP servers could not be built or served for the rollout."""
 
 
-class ProgramError(RolloutError):
-    """A program failed (non-zero exit or timeout) — e.g. a runtime/sandbox operation or a
-    rollout stage exceeding its timeout."""
+class SandboxError(RolloutError):
+    """A runtime/sandbox operation failed — provisioning, a non-zero program exit, exec or file
+    I/O across the sandbox boundary, or a rollout stage exceeding its timeout. The execution
+    boundary, distinct from the model/harness/tool/interception ones; also what a taskset raises
+    (`vf.SandboxError`) when a program it runs in the runtime fails."""
 
 
 class InterceptionError(RolloutError):
@@ -52,7 +54,7 @@ class TunnelError(InterceptionError):
     """The `prime_tunnel` reverse tunnel that makes the host interception server reachable from
     inside a remote runtime could not be established. Retried with backoff before it surfaces;
     tunnel creation is network-bound and globally rate-capped, so transient failures are expected.
-    (A runtime publishing its *own* ports — `Runtime.expose` — is a `ProgramError`, not this.)"""
+    (A runtime publishing its *own* ports — `Runtime.expose` — is a `SandboxError`, not this.)"""
 
 
 _CONTEXT_LENGTH_PHRASES = (

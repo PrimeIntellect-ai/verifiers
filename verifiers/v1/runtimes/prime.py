@@ -15,7 +15,7 @@ from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime, parse_gpu
 from verifiers.v1.runtimes.limiters import creation_limiter
 
@@ -129,7 +129,7 @@ class PrimeRuntime(Runtime):
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
-            raise ProgramError(f"prime sandbox provisioning failed: {e}") from e
+            raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
@@ -147,7 +147,7 @@ class PrimeRuntime(Runtime):
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise ProgramError(f"prime exec failed: {e}") from e
+            raise SandboxError(f"prime exec failed: {e}") from e
         return ProgramResult(
             exit_code=result.exit_code or 0,
             stdout=result.stdout or "",
@@ -164,7 +164,7 @@ class PrimeRuntime(Runtime):
         try:
             exposed = await self._client.expose(self._sandbox_id, port)
         except Exception as e:  # surface prime's exposure constraints actionably
-            raise ProgramError(
+            raise SandboxError(
                 "prime port exposure failed — `client.expose` currently needs a default-region "
                 "sandbox and port <= 9000; pin `tools.runtime.region` to a supported "
                 f"region, or use a host/docker tools.runtime instead. ({e})"
@@ -180,14 +180,14 @@ class PrimeRuntime(Runtime):
         inner = f"nohup {shlex.join(argv)} > {shlex.quote(log)} 2>&1 &"
         result = await self.run(["sh", "-c", inner], env)
         if result.exit_code != 0:
-            raise ProgramError(
+            raise SandboxError(
                 f"prime background launch failed: {result.stderr.strip()}"
             )
 
     async def read(self, path: str) -> bytes:
         result = await self.run(["sh", "-c", f"base64 {shlex.quote(path)}"], {})
         if result.exit_code != 0:
-            raise ProgramError(f"read {path!r}: {result.stderr.strip()}")
+            raise SandboxError(f"read {path!r}: {result.stderr.strip()}")
         return base64.b64decode(result.stdout)
 
     async def write(self, path: str, data: bytes) -> None:
@@ -210,7 +210,7 @@ class PrimeRuntime(Runtime):
                 self._sandbox_id, target, data, filename=PurePosixPath(target).name
             )
         except Exception as e:
-            raise ProgramError(f"write {path!r}: {e}") from e
+            raise SandboxError(f"write {path!r}: {e}") from e
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete

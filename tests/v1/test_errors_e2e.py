@@ -184,12 +184,12 @@ async def test_tool_error_recorded():
     _assert_recorded(trace, "ToolError")
 
 
-async def test_program_error_recorded():
+async def test_sandbox_error_recorded():
     """No prompt and no user simulator — the rollout has no way to open the conversation."""
     trace = await _run(
         _taskset(_NoPromptTaskset), _harness(_OneCallHarness), client=_UnusedClient()
     )
-    _assert_recorded(trace, "ProgramError")
+    _assert_recorded(trace, "SandboxError")
 
 
 async def test_tunnel_error_recorded(monkeypatch):
@@ -210,7 +210,9 @@ async def test_tunnel_error_recorded(monkeypatch):
 
     monkeypatch.setattr(prime_tunnel, "Tunnel", _FailingTunnel)
     # don't actually sleep between tunnel retries
-    monkeypatch.setattr(retries, "wait_exponential_jitter", lambda **kwargs: wait_none())
+    monkeypatch.setattr(
+        retries, "wait_exponential_jitter", lambda **kwargs: wait_none()
+    )
 
     class _RemoteSubprocess(SubprocessRuntime):
         is_local = (

@@ -22,7 +22,7 @@ from enum import StrEnum
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RetryingClient, RolloutContext
 from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.errors import ProgramError, RolloutError, ToolError
+from verifiers.v1.errors import SandboxError, RolloutError, ToolError
 from verifiers.v1.interception import (
     InterceptionPool,
     InterceptionServer,
@@ -165,7 +165,7 @@ class Rollout:
                     self.taskset.setup(self.task, runtime), self.setup_timeout
                 )
             except TimeoutError:
-                raise ProgramError(
+                raise SandboxError(
                     f"setup exceeded setup_timeout of {self.setup_timeout}s"
                 ) from None
             async with self._serve_interception(
@@ -203,7 +203,7 @@ class Rollout:
                     ) as session.user,
                 ):
                     if self.task.prompt is None and session.user is None:
-                        raise ProgramError(
+                        raise SandboxError(
                             "task has no prompt and no user simulator to open the "
                             "conversation; set task.prompt or have Taskset.user return "
                             "a simulator"
@@ -249,7 +249,7 @@ class Rollout:
                     self.finalize_timeout,
                 )
             except TimeoutError:
-                raise ProgramError(
+                raise SandboxError(
                     f"finalize exceeded finalize_timeout of {self.finalize_timeout}s"
                 ) from None
             now = time.time()
@@ -269,7 +269,7 @@ class Rollout:
                     self.scoring_timeout,
                 )
             except TimeoutError:
-                raise ProgramError(
+                raise SandboxError(
                     f"scoring exceeded scoring_timeout of {self.scoring_timeout}s"
                 ) from None
             trace.timing.scoring.end = time.time()

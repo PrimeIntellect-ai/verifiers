@@ -155,7 +155,7 @@ class Runtime(ABC):
         provisioning) that go through `run`. Identical to `run` here; `RetryingRuntime` overrides it
         to NOT retry, because re-running the program against the rollout's persistent trace would
         fork a duplicate branch (and re-execute against a runtime already mutated by the first
-        attempt). A transient transport fault mid-program surfaces as a ProgramError for this
+        attempt). A transient transport fault mid-program surfaces as a SandboxError for this
         rollout instead of a silent full restart."""
         return await self.run(argv, env)
 
@@ -245,7 +245,7 @@ class RetryingRuntime(Runtime):
     program exec (`run_program`, including the script run inside `run_uv_script`) is deliberately
     NOT retried: re-running a stateful/agentic program against the rollout's persistent trace would
     fork a duplicate branch (and re-run against a runtime the first attempt already mutated), so a
-    mid-program transport fault surfaces as a ProgramError for that rollout. `run_uv_script`'s
+    mid-program transport fault surfaces as a SandboxError for that rollout. `run_uv_script`'s
     write/mv staging still runs over the retrying `write`/`run`."""
 
     def __init__(self, inner: Runtime, max_retries: int) -> None:

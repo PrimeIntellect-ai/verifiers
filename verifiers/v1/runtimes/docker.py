@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import ProgramResult, Runtime, parse_gpu
 
 logger = logging.getLogger(__name__)
@@ -110,7 +110,7 @@ class DockerRuntime(Runtime):
             "infinity",
         )
         if run.exit_code != 0:
-            raise ProgramError(f"docker run failed: {run.stderr.strip()}")
+            raise SandboxError(f"docker run failed: {run.stderr.strip()}")
         self._container_id = run.stdout.strip()[
             :12
         ]  # `docker run -d` prints the container id
@@ -143,7 +143,7 @@ class DockerRuntime(Runtime):
             inner,
         )  # detached → lives in the container until it's removed in stop()
         if run.exit_code != 0:
-            raise ProgramError(f"docker exec -d failed: {run.stderr.strip()}")
+            raise SandboxError(f"docker exec -d failed: {run.stderr.strip()}")
 
     async def read(self, path: str) -> bytes:
         proc = await asyncio.create_subprocess_exec(
@@ -159,7 +159,7 @@ class DockerRuntime(Runtime):
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise ProgramError(
+            raise SandboxError(
                 f"read {path!r}: {stderr.decode(errors='replace').strip()}"
             )
         return stdout
@@ -182,7 +182,7 @@ class DockerRuntime(Runtime):
         )
         _, stderr = await proc.communicate(input=data)
         if proc.returncode != 0:
-            raise ProgramError(
+            raise SandboxError(
                 f"write {path!r}: {stderr.decode(errors='replace').strip()}"
             )
 
