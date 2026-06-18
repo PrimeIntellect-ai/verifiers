@@ -255,6 +255,7 @@ async def serve(
     *,
     state_port: int | None = None,
     state_secret: str = "",
+    state_base: str | None = None,
 ):
     """The single internal launcher for a vf-native server — a `Toolset` OR a `User`. Brings it
     up in its configured placement and yields one reachable URL, tearing down any runtime it
@@ -311,10 +312,18 @@ async def serve(
         # no channel (state is per-rollout; `state_port` is None for them).
         state_url = None
         if state_port is not None:
-            state_base = await stack.enter_async_context(
-                reachable_url(HOST, state_port, consumer=runtime)
-            )
-            state_url = f"{state_base.rstrip('/')}/state"
+            # A colocated server shares the harness's runtime, so the interception URL the harness
+            # already reaches (`state_base` — the pool's tunnel behind a remote runtime) is reachable
+            # from it too; reuse it instead of opening a second host tunnel to the same port (at high
+            # concurrency one per rollout swamps the tunnel service). A server in its own runtime
+            # can't assume that reach, so it bridges to the host port itself.
+            if state_base is not None and runtime is harness_runtime:
+                base = state_base
+            else:
+                base = await stack.enter_async_context(
+                    reachable_url(HOST, state_port, consumer=runtime)
+                )
+            state_url = f"{base.rstrip('/')}/state"
         port = await serve_in_runtime(
             server,
             runtime,
@@ -448,6 +457,7 @@ async def serve_tools(
                         harness_runtime,
                         state_port=state_port,
                         state_secret=state_secret,
+                        state_base=state_base,
                     )
                 )
                 logger.info("tool server '%s': %s", name, urls[name])
@@ -527,6 +537,7 @@ async def serve_user(
     *,
     state_port: int | None = None,
     state_secret: str = "",
+    state_base: str | None = None,
 ) -> AsyncIterator[Respond | None]:
     """Bring a rollout's user server up (via the shared `serve` launcher, `for_host=True` since
     the framework drives the user from the HOST) and yield the async `respond` the interception
@@ -545,6 +556,7 @@ async def serve_user(
         for_host=True,
         state_port=state_port,
         state_secret=state_secret,
+        state_base=state_base,
     ) as url:
         async with connect_user(url) as respond:
             yield respond

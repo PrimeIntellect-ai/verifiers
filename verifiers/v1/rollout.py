@@ -193,6 +193,7 @@ class Rollout:
                         harness_runtime=runtime,
                         state_port=state_port,
                         state_secret=secret,
+                        state_base=state_base,
                     ) as session.user,
                 ):
                     if self.task.prompt is None and session.user is None:
