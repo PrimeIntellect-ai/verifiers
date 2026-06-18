@@ -32,9 +32,13 @@ from general_agent_v1.servers.toolset import GeneralAgentToolset
 
 class GeneralAgentTask(vf.Task):
     dir: str
-    """Absolute path to the task's directory in the local cache."""
+    """Absolute path to the task's directory in the local (host) cache."""
     tier: int = 0
     """Difficulty tier (0 = easiest .. 4 = hardest), from the task's `task.toml`."""
+    files: dict[str, str] = {}
+    """The task's `tools.py` + `db.json` contents, embedded only when the toolset runs in a sandbox
+    (colocated or its own non-host runtime) — where the host-side `dir` isn't reachable. The toolset
+    materializes these per rollout; empty for the default own-host placement (which reads `dir`)."""
 
 
 class GeneralAgentConfig(vf.TasksetConfig):
@@ -60,6 +64,12 @@ class GeneralAgentSolverTaskset(
 ):
     def load_tasks(self) -> list[GeneralAgentTask]:
         tasks_dir = ensure_corpus(self.config.ref)
+        # A tool server in a sandbox (colocated, or its own non-host runtime) can't reach the
+        # host-side corpus, so ship the two files it loads with each task; own-host reads `dir`.
+        embed = (
+            self.config.tools.colocated
+            or self.config.tools.runtime.type != "subprocess"
+        )
         tasks: list[GeneralAgentTask] = []
         for task_dir in sorted(tasks_dir.iterdir()):
             if not task_dir.is_dir() or not (task_dir / "task.toml").exists():
@@ -83,6 +93,14 @@ class GeneralAgentSolverTaskset(
                 self.config.max_pass_rate,
             ):
                 continue
+            files = (
+                {
+                    "tools.py": (task_dir / "tools.py").read_text(),
+                    "db.json": (task_dir / "db.json").read_text(),
+                }
+                if embed
+                else {}
+            )
             tasks.append(
                 GeneralAgentTask(
                     idx=len(tasks),
@@ -90,6 +108,7 @@ class GeneralAgentSolverTaskset(
                     dir=str(task_dir),
                     tier=tier,
                     prompt=(task_dir / "instruction.md").read_text().strip(),
+                    files=files,
                 )
             )
         if not tasks:

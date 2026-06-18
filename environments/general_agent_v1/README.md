@@ -10,6 +10,11 @@ The **4,417-task corpus is not vendored** — `corpus.ensure_corpus()` sparse-ch
 `PrimeIntellect-ai/research-environments` at a pinned commit into `~/.cache/verifiers/general_agent/`
 on first use (needs read access to that repo; override the location with `GENERAL_AGENT_CACHE_DIR`).
 
+The tool server defaults to its own host runtime, where that cache lives. It also runs in a sandbox —
+colocated in the harness's runtime (`--taskset.tools.colocated`) or its own (`--taskset.tools.runtime.type`) —
+which can't reach the host cache, so the two files it loads (`tools.py`, `db.json`) are shipped with each
+task in that case.
+
 Run under any MCP-tool-capable harness (`bash`, `default`):
 
 ```bash
