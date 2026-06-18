@@ -1390,21 +1390,6 @@ http = [
 ]
 
 [[package]]
-name = "general-agent-synth-v1"
-version = "0.1.0"
-source = { editable = "environments/general_agent_synth_v1" }
-dependencies = [
-    { name = "general-agent-v1" },
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "general-agent-v1" },
-    { name = "verifiers" },
-]
-
-[[package]]
 name = "general-agent-v1"
 version = "0.1.0"
 source = { editable = "environments/general_agent_v1" }
@@ -5836,7 +5821,6 @@ examples = [
     { name = "color-codeword-v1" },
     { name = "compact" },
     { name = "deepwiki-v1" },
-    { name = "general-agent-synth-v1" },
     { name = "general-agent-v1" },
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
@@ -5935,7 +5919,6 @@ examples = [
     { name = "color-codeword-v1", editable = "environments/color_codeword_v1" },
     { name = "compact", editable = "environments/compact" },
     { name = "deepwiki-v1", editable = "environments/deepwiki_v1" },
-    { name = "general-agent-synth-v1", editable = "environments/general_agent_synth_v1" },
     { name = "general-agent-v1", editable = "environments/general_agent_v1" },
     { name = "glossary-v1", editable = "environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "environments/gsm8k_v1" },

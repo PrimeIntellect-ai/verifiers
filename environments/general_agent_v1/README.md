@@ -20,5 +20,3 @@ uv run eval general-agent-v1 -n 1 -r 3 --taskset.tasks calendar_scheduling_t0 \
 Filter the corpus with `--taskset.tasks <task|family> ...`, `--taskset.min-tier` / `--taskset.max-tier`,
 or a recorded pass-rate band (`--taskset.min-pass-rate` / `--taskset.max-pass-rate`). Model-free gold
 check: `uv run validate general-agent-v1 --runtime.type subprocess -n 5`.
-
-The synthesizer half is [`general-agent-synth-v1`](../general_agent_synth_v1).
