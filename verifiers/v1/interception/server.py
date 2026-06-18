@@ -49,6 +49,8 @@ logger = logging.getLogger(__name__)
 # context window are the real limits, this is just a host-OOM backstop.
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
+# The server binds loopback; callers reach it via localhost or a host tunnel (see `reachable_url`).
+_HOST = "127.0.0.1"
 
 
 @dataclass(frozen=True)
@@ -182,13 +184,14 @@ class InterceptionServer:
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        site = web.TCPSite(self.runner, "127.0.0.1", 0)
+        site = web.TCPSite(self.runner, _HOST, 0)
         await site.start()
         self.port = site._server.sockets[0].getsockname()[1]  # actual ephemeral port
-        logger.debug("interception up: port=%d", self.port)
+        logger.info("interception up: url=http://%s:%d", _HOST, self.port)
         return self
 
     async def __aexit__(self, *exc) -> None:
+        logger.info("interception down: url=http://%s:%d", _HOST, self.port)
         if self.runner is not None:
             await self.runner.cleanup()
 
@@ -200,6 +203,12 @@ class InterceptionServer:
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         body = await request.json()
+        logger.debug(
+            "intercept %s: id=%s stream=%s",
+            request.path,
+            session.trace.id,
+            dialect.streaming(body),
+        )
         # `body` is forwarded to the model 1:1 (the proxy mutates only model + sampling), so no
         # provider field is lost. `prompt` is the dialect's typed parse, kept only to build the
         # trace (the renderer re-derives its own from the body it's handed). A user simulator
@@ -279,6 +288,11 @@ class InterceptionServer:
             # `Response.raw` is the wire response handed to the program 1:1 — the provider's
             # verbatim bytes (proxy) or the client's serialized completion (renderer).
             completion = response.raw
+            logger.debug(
+                "intercept turn: id=%s tools=%d",
+                session.trace.id,
+                len(response.message.tool_calls or []),
+            )
             turn.commit(response)  # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
             # Hand back to the program when the model wants a tool (the program runs it) or
@@ -364,6 +378,7 @@ class InterceptionServer:
 
         try:
             turn.commit(dialect.parse_stream(bytes(buffer)))
+            logger.debug("intercept stream turn: id=%s", session.trace.id)
         finally:
             with contextlib.suppress(ConnectionResetError):
                 await resp.write_eof()
@@ -377,6 +392,7 @@ class InterceptionServer:
         session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
             return web.json_response(dialect.error_body("unauthorized"), status=401)
+        logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
             result = await session.ctx.client.relay_aux(
                 dialect, route, await request.json()
@@ -399,6 +415,7 @@ class InterceptionServer:
         session = self._session_for(request)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
+        logger.debug("intercept GET /state: id=%s", session.trace.id)
         return web.json_response(session.trace.state.model_dump(mode="json"))
 
     async def handle_task_get(self, request: web.Request) -> web.Response:
@@ -407,6 +424,7 @@ class InterceptionServer:
         session = self._session_for(request)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
+        logger.debug("intercept GET /task: id=%s", session.trace.id)
         task = session.trace.task
         return web.json_response(
             {
@@ -422,6 +440,7 @@ class InterceptionServer:
         session = self._session_for(request)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
+        logger.debug("intercept PUT /state: id=%s", session.trace.id)
         state_cls = type(session.trace.state)
         try:
             new_state = state_cls.model_validate(await request.json())
