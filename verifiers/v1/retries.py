@@ -19,8 +19,11 @@ from pydantic_config import BaseConfig
 from tenacity import (
     AsyncRetrying,
     RetryCallState,
+    retry_if_exception_type,
+    retry_if_not_exception_type,
     retry_if_result,
     stop_after_attempt,
+    wait_exponential_jitter,
 )
 
 if TYPE_CHECKING:
@@ -28,6 +31,39 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
+
+def retrying(
+    *,
+    on: type[BaseException] | tuple[type[BaseException], ...] = Exception,
+    give_up: type[BaseException] | tuple[type[BaseException], ...] = (),
+    retries: int,
+    label: str | None = None,
+) -> AsyncRetrying:
+    """The shared per-call retry policy (tenacity): retry on `on` (minus `give_up`) up to `retries`
+    times with exponential backoff + jitter, logging each retry. Drives the model/runtime call
+    wrappers (`RetryingClient` / `RetryingRuntime`) and `open_tunnel`. `label` names the operation
+    in the log; omitted, it falls back to the retried callable's name (set by the `retrying(fn, ...)`
+    call form; the `async for attempt in retrying(...)` form should pass `label`)."""
+
+    def _log(state: RetryCallState) -> None:
+        exc = state.outcome.exception()
+        logger.warning(
+            "retrying %s (retry %d/%d) after error: %s: %s",  # name too — some errors stringify empty
+            label or getattr(state.fn, "__name__", "call"),
+            state.attempt_number,
+            retries,
+            type(exc).__name__,
+            exc,
+        )
+
+    return AsyncRetrying(
+        stop=stop_after_attempt(retries + 1),
+        wait=wait_exponential_jitter(initial=0.5, max=30),
+        retry=retry_if_exception_type(on) & retry_if_not_exception_type(give_up),
+        before_sleep=_log,
+        reraise=True,
+    )
 
 
 class CallRetryConfig(BaseConfig):

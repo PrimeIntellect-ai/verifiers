@@ -18,14 +18,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import ClassVar, TypeVar
 
-from tenacity import (
-    AsyncRetrying,
-    RetryCallState,
-    retry_if_exception_type,
-    retry_if_not_exception_type,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
+from verifiers.v1.retries import retrying
 
 logger = logging.getLogger(__name__)
 
@@ -260,25 +253,12 @@ class RetryingRuntime(Runtime):
         self.inner = inner
         self.max_retries = max_retries
         # One Retrying, reused across (and concurrent within) calls: the control flow runs
-        # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.
-        self._retrying = AsyncRetrying(
-            stop=stop_after_attempt(max_retries + 1),
-            wait=wait_exponential_jitter(initial=0.5, max=30),
-            retry=retry_if_exception_type(Exception)
-            & retry_if_not_exception_type(NotImplementedError),
-            before_sleep=self._log_retry,
-            reraise=True,
-        )
-
-    def _log_retry(self, state: RetryCallState) -> None:
-        # before_sleep fires after a failed attempt, before the imminent retry — so
-        # attempt_number is the retry index (1 on the first retry); count out of max_retries.
-        logger.warning(
-            "retrying runtime.%s (retry %d/%d) after error: %s",
-            getattr(state.fn, "__name__", "call"),
-            state.attempt_number,
-            self.max_retries,
-            state.outcome.exception(),
+        # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared. A
+        # program's own failure is a `ProgramResult` (non-zero exit), not an exception, so
+        # retries fire only on infra/transport faults; an unsupported op (`NotImplementedError`)
+        # is never retried.
+        self._retrying = retrying(
+            on=Exception, give_up=NotImplementedError, retries=max_retries
         )
 
     async def _retry(self, fn, *args):
@@ -344,27 +324,13 @@ async def open_tunnel(
     few retries before failing the rollout. `what` names the tunnel in the error."""
     from verifiers.v1.errors import TunnelError
 
-    def _log(state: RetryCallState) -> None:
-        logger.warning(
-            "retrying %s (retry %d/%d) after error: %s",
-            what,
-            state.attempt_number,
-            retries,
-            state.outcome.exception(),
-        )
-
     try:
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(retries + 1),
-            wait=wait_exponential_jitter(initial=0.5, max=30),
-            before_sleep=_log,
-            reraise=True,
-        ):
+        async for attempt in retrying(retries=retries, label=what):
             with attempt:
                 return await start()
     except Exception as e:
-        raise TunnelError(f"{what} failed after {retries + 1} attempts: {e}") from e
-    raise TunnelError(f"{what} failed")  # unreachable: AsyncRetrying returns or raises
+        raise TunnelError(f"{what} failed after {retries} retries: {e}") from e
+    raise TunnelError(f"{what} failed")  # unreachable: retrying() returns or reraises
 
 
 @contextlib.asynccontextmanager

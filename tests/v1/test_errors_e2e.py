@@ -10,6 +10,7 @@ endpoint. Each asserts the captured `trace.error` has the right `type` and a pop
 import json
 
 import verifiers.v1 as vf
+from verifiers.v1 import retries
 from verifiers.v1 import rollout as rollout_mod
 from verifiers.v1 import runtimes
 from verifiers.v1.clients import Client, RolloutContext
@@ -209,9 +210,7 @@ async def test_tunnel_error_recorded(monkeypatch):
 
     monkeypatch.setattr(prime_tunnel, "Tunnel", _FailingTunnel)
     # don't actually sleep between tunnel retries
-    monkeypatch.setattr(
-        runtimes.base, "wait_exponential_jitter", lambda **kwargs: wait_none()
-    )
+    monkeypatch.setattr(retries, "wait_exponential_jitter", lambda **kwargs: wait_none())
 
     class _RemoteSubprocess(SubprocessRuntime):
         is_local = (

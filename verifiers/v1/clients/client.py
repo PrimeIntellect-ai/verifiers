@@ -9,18 +9,10 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from tenacity import (
-    AsyncRetrying,
-    RetryCallState,
-    retry_if_exception_type,
-    retry_if_not_exception_type,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
-
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import OverlongPromptError, ProviderError
 from verifiers.v1.graph import PendingTurn
+from verifiers.v1.retries import retrying
 from verifiers.v1.types import Response, Sampling, SamplingConfig
 
 logger = logging.getLogger(__name__)
@@ -99,24 +91,11 @@ class RetryingClient(Client):
         self.max_retries = max_retries
         # One Retrying, reused across (and concurrent within) calls: the control flow runs
         # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.
-        self._retrying = AsyncRetrying(
-            stop=stop_after_attempt(max_retries + 1),
-            wait=wait_exponential_jitter(initial=0.5, max=30),
-            retry=retry_if_exception_type(ProviderError)
-            & retry_if_not_exception_type(OverlongPromptError),
-            before_sleep=self._log_retry,
-            reraise=True,
-        )
-
-    def _log_retry(self, state: RetryCallState) -> None:
-        # before_sleep fires after a failed attempt, before the imminent retry — so
-        # attempt_number is the retry index (1 on the first retry); count out of max_retries.
-        exc = state.outcome.exception()
-        logger.warning(
-            "retrying model call (retry %d/%d) after error: %s",
-            state.attempt_number,
-            self.max_retries,
-            f"{type(exc).__name__}: {exc}",  # name too — some errors stringify empty
+        self._retrying = retrying(
+            on=ProviderError,
+            give_up=OverlongPromptError,
+            retries=max_retries,
+            label="model call",
         )
 
     async def get_response(
