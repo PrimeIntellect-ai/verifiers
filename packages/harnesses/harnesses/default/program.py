@@ -20,14 +20,14 @@ import os
 import sys
 from contextlib import AsyncExitStack
 
-from openai import AsyncOpenAI, omit
+from openai import AsyncOpenAI
 
 client = AsyncOpenAI()
 
 
 async def chat(messages: list[dict], tools: list[dict]):
     completion = await client.chat.completions.create(
-        model=os.environ["OPENAI_MODEL"], messages=messages, tools=tools or omit
+        model=os.environ["OPENAI_MODEL"], messages=messages, tools=tools or None
     )
     return completion.choices[0].message
 
@@ -93,13 +93,10 @@ async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str | list[dic
 
 async def main() -> None:
     config = json.loads(os.environ.get("MCP_CONFIG", "{}"))
-    use_responses = "--responses" in sys.argv[2:]
     async with AsyncExitStack() as stack:
         tools, dispatch = (
             await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
         )
-        if use_responses:
-            tools = [{"type": "function", **tool["function"]} for tool in tools]
         system_prompt = os.environ.get("APPEND_SYSTEM_PROMPT", "")
         messages = (
             [{"role": "system", "content": system_prompt}] if system_prompt else []
@@ -114,48 +111,19 @@ async def main() -> None:
         elif sys.argv[1]:
             messages.append({"role": "user", "content": sys.argv[1]})
         while True:
-            if use_responses:
-                response = await client.responses.create(
-                    model=os.environ["OPENAI_MODEL"],
-                    input=messages,
-                    tools=tools or omit,
-                )
-                messages.extend(
-                    item.model_dump(mode="json", exclude_unset=True)
-                    for item in response.output
-                )
-                calls = [
-                    item for item in response.output if item.type == "function_call"
-                ]
-            else:
-                message = await chat(messages, tools)
-                messages.append(message.model_dump(exclude_none=True))
-                calls = message.tool_calls or []
-            if not calls:
+            message = await chat(messages, tools)
+            messages.append(message.model_dump(exclude_none=True))
+            if not message.tool_calls:
                 break
-            for call in calls:
-                function = call if use_responses else call.function
-                if function.name in dispatch:
-                    content = await call_mcp(
-                        dispatch,
-                        function.name,
-                        json.loads(function.arguments or "{}"),
-                    )
+            for call in message.tool_calls:
+                name = call.function.name
+                args = json.loads(call.function.arguments or "{}")
+                if name in dispatch:
+                    content = await call_mcp(dispatch, name, args)
                 else:
-                    content = f"error: unknown tool {function.name!r}"
-                if use_responses and isinstance(content, list):
-                    for part in content:
-                        part["type"] = f"input_{part['type'].removesuffix('_url')}"
-                        if part["type"] == "input_image":
-                            part["image_url"] = part["image_url"]["url"]
+                    content = f"error: unknown tool {name!r}"
                 messages.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": call.call_id,
-                        "output": content,
-                    }
-                    if use_responses
-                    else {"role": "tool", "tool_call_id": call.id, "content": content}
+                    {"role": "tool", "tool_call_id": call.id, "content": content}
                 )
 
 

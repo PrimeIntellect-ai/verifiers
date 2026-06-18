@@ -11,8 +11,8 @@ import json
 from pathlib import Path
 
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.clients import EvalClient, RolloutContext
-from verifiers.v1.dialects import chat, responses
+from verifiers.v1.clients import RolloutContext
+from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -41,11 +41,6 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
-        client = getattr(ctx.client, "inner", ctx.client)
-        use_responses = isinstance(client, EvalClient) and (
-            ctx.model.startswith("openai/")
-            or client.base_url.startswith("https://api.openai.com")
-        )
         env = {
             **self.config.env,
             "OPENAI_BASE_URL": endpoint,
@@ -67,12 +62,6 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         elif isinstance(prompt, str):
             args = [prompt]
         else:
-            env["INITIAL_MESSAGES"] = json.dumps(
-                responses.messages_to_wire(prompt)
-                if use_responses
-                else [chat.message_to_wire(message) for message in prompt]
-            )
+            env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in prompt])
             args = [""]
-        if use_responses:
-            args.append("--responses")
         return await runtime.run_uv_script(PROGRAM_SOURCE, args=args, env=env)
