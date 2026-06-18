@@ -44,17 +44,32 @@ logger = logging.getLogger(__name__)
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 
 
-def _monitor_parent(conn) -> None:
-    """Self-SIGTERM when the parent (broker) dies: its write end of the pipe closes on
-    exit (even on SIGKILL), so the blocking `recv` returns/raises and we shut down —
-    no orphaned worker holding a sandbox."""
+def _arm_child(death_pipe=None) -> None:
+    """Make a spawned process (env-server broker, single in-process server, or pool worker)
+    tear down cleanly — the one teardown contract every `serve_env`/worker process arms.
 
-    def watch() -> None:
+    A spawned process inherits no signal handlers, so without this a SIGTERM hits Python's
+    default and kills it abruptly, skipping `asyncio.run()`'s unwinding of the serving()
+    context and orphaning the interception server's `host_endpoint` tunnels (and sandboxes):
+
+    - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (tunnels/sandboxes torn
+      down); `serve_env` swallows the re-raised KeyboardInterrupt for a clean exit. It can fire
+      inside a C call (e.g. zmq), raising in the loop machinery rather than at an `await`, but
+      `asyncio.run` still tears the server down via task cancellation.
+    - if `death_pipe` is given, self-SIGTERM when the parent dies: the parent holds the other
+      end, which the OS closes even on the parent's SIGKILL, so the blocking `recv` returns and
+      the child shuts itself down — no orphan holding a tunnel/sandbox when the parent dies
+      abruptly (main -> serve_env, and broker -> worker, are both armed this way)."""
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    if death_pipe is None:
+        return
+
+    def _watch() -> None:
         with contextlib.suppress(Exception):
-            conn.recv()
+            death_pipe.recv()
         os.kill(os.getpid(), signal.SIGTERM)
 
-    threading.Thread(target=watch, daemon=True).start()
+    threading.Thread(target=_watch, daemon=True).start()
 
 
 def _worker_entry(
@@ -67,9 +82,9 @@ def _worker_entry(
     logging so per-rollout logs surface — a spawned worker inherits no handlers."""
     from verifiers.v1.legacy import LegacyEnvServer
 
+    _arm_child(death_pipe)
     if log_setup is not None:
         log_setup()
-    _monitor_parent(death_pipe)
     if "config_data" in server_kwargs:
         server_kwargs = {
             "config": EnvConfig.model_validate(server_kwargs["config_data"])
@@ -266,6 +281,7 @@ def serve_env(
     legacy: bool = False,
     address: str = "tcp://127.0.0.1:5000",
     address_queue=None,
+    death_pipe=None,
     log_setup: Callable[[], None] | None = None,
     multiplex: int = 128,
     elastic: bool = True,
@@ -289,13 +305,13 @@ def serve_env(
 
     `log_setup` (a picklable callable) configures logging for this process and every
     spawned worker — without it a spawned server inherits no handlers and its INFO logs
-    (rollout start/done, the pool line) are silently dropped."""
-    # SIGTERM -> KeyboardInterrupt so a killed server runs its teardown (pool: kill the
-    # workers; single: close clients). It can fire inside a C call (e.g. zmq getsockopt),
-    # raising in the loop machinery rather than at an `await`, so it escapes the server's
-    # own run loop; `asyncio.run` still tears the server down via task cancellation, and we
-    # swallow the re-raised KeyboardInterrupt here for a clean exit (no spurious traceback).
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    (rollout start/done, the pool line) are silently dropped.
+
+    `death_pipe` (when spawned by a parent, e.g. the eval main process) makes this server
+    self-terminate if that parent dies abruptly — see `_arm_child`."""
+    # Graceful SIGTERM (run asyncio teardown) + self-terminate if the parent dies. The
+    # re-raised KeyboardInterrupt is swallowed below for a clean exit (no spurious traceback).
+    _arm_child(death_pipe)
     if log_setup is not None:
         log_setup()
     try:
