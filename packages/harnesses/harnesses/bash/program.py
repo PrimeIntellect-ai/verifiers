@@ -39,9 +39,10 @@ BASH_TOOL = {
     },
 }
 
-# base_url + api_key come from OPENAI_BASE_URL / OPENAI_API_KEY. max_retries=0: the framework
-# already retries model calls at the interception relay, so the SDK's own retries would just nest.
-client = AsyncOpenAI(max_retries=0)
+# base_url + api_key come from OPENAI_BASE_URL / OPENAI_API_KEY. The SDK's default retries (with
+# exponential backoff) stay on: the relay retries the upstream model, and these retry the relay's
+# own transient 502s — backstopping an outage that outlasts the relay's retries.
+client = AsyncOpenAI()
 
 
 def run_bash(command: str) -> str:
