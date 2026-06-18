@@ -166,7 +166,7 @@ def _breakdown(done: list[Trace]) -> Table | None:
     if not any(not t.has_error for t in done):
         return None
     grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="dim", min_width=_LABEL_WIDTH)  # align values with the Overview
+    grid.add_column(style="dim", min_width=_LABEL_WIDTH)
     grid.add_column()
     for label, source in (("rewards", "rewards"), ("metrics", "metrics")):
         # every key seen across traces, first-seen order (a trace records only the functions
