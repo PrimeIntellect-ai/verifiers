@@ -31,6 +31,14 @@ class SWEBenchVerifiedConfig(HarborConfig):
     `scaleswe-v1` / `r2e-gym-v1`."""
 
 
+def from_image(task_dir: Path) -> str:
+    """The image a task's Dockerfile builds on (`FROM swebench/sweb.eval.*`)."""
+    for line in (task_dir / "environment" / "Dockerfile").read_text().splitlines():
+        if line.strip().upper().startswith("FROM "):
+            return line.split(None, 1)[1].strip()
+    raise ValueError(f"{task_dir.name}: no FROM in environment/Dockerfile")
+
+
 class SWEBenchVerifiedTaskset(
     HarborTaskset, vf.Taskset[HarborTask, SWEBenchVerifiedConfig]
 ):
@@ -40,7 +48,7 @@ class SWEBenchVerifiedTaskset(
         # resolve the prebuilt image here at all.
         tasks = []
         for task in super().load_tasks():
-            base = _from_image(Path(task.task_dir))
+            base = from_image(Path(task.task_dir))
             image = (
                 f"{REGISTRY_PREFIX}/{base.rsplit('/', 1)[-1]}"
                 if self.config.use_prime_registry
@@ -48,11 +56,3 @@ class SWEBenchVerifiedTaskset(
             )
             tasks.append(task.model_copy(update={"image": image}))
         return tasks
-
-
-def _from_image(task_dir: Path) -> str:
-    """The image a task's Dockerfile builds on (`FROM swebench/sweb.eval.*`)."""
-    for line in (task_dir / "environment" / "Dockerfile").read_text().splitlines():
-        if line.strip().upper().startswith("FROM "):
-            return line.split(None, 1)[1].strip()
-    raise ValueError(f"{task_dir.name}: no FROM in environment/Dockerfile")
