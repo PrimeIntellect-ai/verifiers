@@ -6,6 +6,7 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 `host_endpoint` tunnel, not the runtime's concern.
 """
 
+import asyncio
 import base64
 import contextlib
 import logging
@@ -22,10 +23,6 @@ from verifiers.v1.runtimes.limiters import creation_limiter
 logger = logging.getLogger(__name__)
 
 
-# Provider hard backstop. Rollout teardown normally deletes the sandbox much sooner.
-_SANDBOX_TIMEOUT_SECONDS = 24 * 60 * 60
-
-
 class PrimeConfig(BaseConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
@@ -40,9 +37,6 @@ class PrimeConfig(BaseConfig):
     labels: list[str] = []
     """Labels attached to the sandbox and its tunnels — e.g. to group every resource a run
     creates. When unset, the eval defaults them to the run's uuid (see `run_eval`)."""
-    timeout: int = _SANDBOX_TIMEOUT_SECONDS
-    """Hard sandbox lifetime in seconds. Defaults to Prime's 24-hour maximum; normal rollout
-    teardown deletes the sandbox sooner."""
     # TaskResources, in Modal's units (also settable per-task via Task.resources, with
     # precedence cli/toml > task > this default). Mapped to prime's API in `start`.
     cpu: float = 1.0
@@ -90,7 +84,7 @@ class PrimeRuntime(Runtime):
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": self.config.timeout // 60,
+            "timeout_minutes": 24 * 60,  # Maximum lifetime of any sandbox.
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
@@ -127,13 +121,19 @@ class PrimeRuntime(Runtime):
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
-            result = await self._client.run_background_job(
+            # Poll directly so the rollout stage owns the execution timeout; the SDK helper
+            # otherwise imposes its own 15-minute limit.
+            job = await self._client.start_background_job(
                 self._sandbox_id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=env,
-                timeout=self.config.timeout,
             )
+            while True:
+                result = await self._client.get_background_job(self._sandbox_id, job)
+                if result.completed:
+                    break
+                await asyncio.sleep(3)
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's

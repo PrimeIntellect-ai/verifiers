@@ -23,9 +23,6 @@ from verifiers.v1.runtimes.limiters import creation_limiter
 logger = logging.getLogger(__name__)
 
 
-# Provider hard backstop. Rollout teardown normally terminates the sandbox much sooner;
-# `sleep infinity` keeps its entrypoint alive until then.
-_SANDBOX_TIMEOUT_SECONDS = 24 * 60 * 60
 # Shared Modal app every rollout's sandbox attaches to (created on first lookup).
 _APP_NAME = "verifiers-v1"
 
@@ -37,9 +34,6 @@ class ModalConfig(BaseConfig):
     network_access: bool = True
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
-    timeout: int = _SANDBOX_TIMEOUT_SECONDS
-    """Hard sandbox lifetime in seconds. Defaults to Modal's 24-hour maximum; normal rollout
-    teardown terminates the sandbox sooner."""
     # TaskResources, in Modal's native units (also settable per-task via Task.resources, with
     # precedence cli/toml > task > this default).
     cpu: float = 1.0
@@ -101,7 +95,7 @@ class ModalRuntime(Runtime):
                     gpu=self.config.gpu,
                     region=self.config.region,
                     block_network=not self.config.network_access,
-                    timeout=self.config.timeout,
+                    timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
                     encrypted_ports=[SERVICE_PORT],
                 )
             self._sandbox_id = self._sandbox.object_id
