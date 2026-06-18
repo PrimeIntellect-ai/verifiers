@@ -8,7 +8,6 @@ from textwrap import dedent
 from typing import Any
 
 import verifiers as vf
-from verifiers.utils.sandbox_delete import delete_sandbox_for_rollout
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
 # swebench's __init__.py calls logging.basicConfig() at import time (via
@@ -337,7 +336,10 @@ class SWEBenchRubric(vf.Rubric):
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
         if sandbox_client and sandbox_id:
-            await delete_sandbox_for_rollout(sandbox_client, sandbox_id)
+            try:
+                await sandbox_client.delete(sandbox_id)
+            except Exception:
+                pass
 
 
 class SWEBenchTaskSet(SandboxTaskSet):

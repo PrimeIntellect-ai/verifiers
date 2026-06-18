@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from datasets import Dataset
 
-import verifiers as vf
 from verifiers.envs.sandbox_env import SandboxEnv
 
 
@@ -60,14 +59,3 @@ def test_bulk_delete_sandboxes_failure(sandbox_env):
         "sandbox2",
         "sandbox3",
     }  # No change
-
-
-def test_destroy_sandbox_delete_failure_surfaces_error(sandbox_env):
-    sandbox_env.sandbox_client.delete = AsyncMock(
-        side_effect=Exception("delete failed")
-    )
-
-    with pytest.raises(vf.SandboxDeleteError, match="Failed to delete sandbox"):
-        asyncio.run(sandbox_env.destroy_sandbox({"sandbox_id": "sandbox1"}))
-
-    assert "sandbox1" in sandbox_env.active_sandboxes

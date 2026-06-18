@@ -91,43 +91,6 @@ class TestEnvironmentBase:
         assert isinstance(env.parser, Parser)
         assert isinstance(env.rubric, Rubric)
 
-    @pytest.mark.asyncio
-    async def test_environment_cleanup_continues_after_exception(self, sample_dataset):
-        class CleanupEnv(SimpleEnvironment):
-            def __init__(self, **kwargs):
-                super().__init__(**kwargs)
-                self.cleaned = []
-
-            @vf.cleanup(priority=2)
-            async def failing_cleanup(self, state: vf.State):
-                self.cleaned.append("failing")
-                raise RuntimeError("cleanup failed")
-
-            @vf.cleanup(priority=1)
-            async def later_cleanup(self, state: vf.State):
-                self.cleaned.append("later")
-
-        env = CleanupEnv(dataset=sample_dataset)
-        state = {"trajectory_id": "cleanup-test"}
-        await env.cleanup(state)
-
-        assert env.cleaned == ["failing", "later"]
-        assert isinstance(state["error"], vf.Error)
-        assert state["cleanup_errors"][0]["type"] == "RuntimeError"
-
-    @pytest.mark.asyncio
-    async def test_environment_cleanup_cancelled_error_propagates(self, sample_dataset):
-        import asyncio
-
-        class CleanupEnv(SimpleEnvironment):
-            @vf.cleanup
-            async def cancelling_cleanup(self, state: vf.State):
-                raise asyncio.CancelledError()
-
-        env = CleanupEnv(dataset=sample_dataset)
-        with pytest.raises(asyncio.CancelledError):
-            await env.cleanup({})
-
     def test_environment_capabilities_follow_group_rewards(self, sample_dataset):
         """Test group rollout capabilities derive from legacy rubric shape."""
 

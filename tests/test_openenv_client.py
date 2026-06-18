@@ -1,7 +1,5 @@
 from typing import Any
 
-import pytest
-
 import verifiers as vf
 from verifiers.envs.integrations import openenv_env
 from verifiers.types import UserMessage
@@ -117,12 +115,7 @@ async def test_openenv_uses_public_async_generic_client(monkeypatch, tmp_path):
         assert base_url == "http://localhost:8000"
         return {"action": {"type": "object", "properties": {}}}
 
-    async def cleanup_server(
-        server: openenv_env.OpenEnvServer,
-        *,
-        surface_delete_errors: bool = False,
-    ) -> None:
-        _ = surface_delete_errors
+    async def cleanup_server(server: openenv_env.OpenEnvServer) -> None:
         env._active_servers.pop(server.sandbox_id, None)
 
     monkeypatch.setattr(
@@ -185,12 +178,7 @@ async def test_openenv_uses_public_async_mcp_client(monkeypatch, tmp_path):
             }
         }
 
-    async def cleanup_server(
-        server: openenv_env.OpenEnvServer,
-        *,
-        surface_delete_errors: bool = False,
-    ) -> None:
-        _ = surface_delete_errors
+    async def cleanup_server(server: openenv_env.OpenEnvServer) -> None:
         env._active_servers.pop(server.sandbox_id, None)
 
     monkeypatch.setattr(
@@ -230,43 +218,3 @@ async def test_openenv_uses_public_async_mcp_client(monkeypatch, tmp_path):
         assert action.arguments == {"message": "hi"}
     finally:
         await env.cleanup_openenv(state)
-
-
-async def test_openenv_cleanup_delete_failure_surfaces_error(monkeypatch, tmp_path):
-    class FailingSandboxClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def unexpose(self, sandbox_id: str, exposure_id: str) -> None:
-            assert (sandbox_id, exposure_id) == ("sandbox", "exposure")
-
-        async def delete(self, sandbox_id: str) -> None:
-            assert sandbox_id == "sandbox"
-            raise RuntimeError("delete outage")
-
-    monkeypatch.setattr(openenv_env, "AsyncSandboxClient", FailingSandboxClient)
-    env = vf.OpenEnvEnv(
-        openenv_project=tmp_path,
-        num_train_examples=1,
-        num_eval_examples=0,
-        prompt_renderer=render_prompt,
-    )
-    server = openenv_env.OpenEnvServer(
-        sandbox_id="sandbox",
-        exposure_id="exposure",
-        base_url="http://localhost:8000",
-        port=8000,
-        contract="gym",
-    )
-    env._active_servers[server.sandbox_id] = server
-    state = vf.State({"openenv_server": server})
-
-    with pytest.raises(vf.SandboxDeleteError, match="Failed to delete sandbox"):
-        await env.cleanup_openenv(state)
-
-    assert state["openenv_server"] is server
-    assert env._active_servers[server.sandbox_id] is server
-    env._active_servers.clear()

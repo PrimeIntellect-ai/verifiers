@@ -71,7 +71,6 @@ from verifiers.utils.async_utils import (
     maybe_semaphore,
     with_sem,
 )
-from verifiers.utils.cleanup_utils import surface_cleanup_error
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.save_utils import (
@@ -620,27 +619,13 @@ class Environment(ABC):
         Finalize rollout state and clean up rollout-local resources.
         """
         for handler in self._cleanup_handlers:
-            try:
-                await maybe_call_with_named_args(
-                    handler,
-                    task=task,
-                    state=state,
-                    env=self,
-                    resources=resources,
-                )
-            except Exception as exc:
-                # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
-                self.logger.warning(
-                    "Cleanup handler %s failed: %s",
-                    getattr(handler, "__name__", handler),
-                    exc,
-                    exc_info=True,
-                )
-                surface_cleanup_error(
-                    state,
-                    exc,
-                    handler=getattr(handler, "__name__", None),
-                )
+            await maybe_call_with_named_args(
+                handler,
+                task=task,
+                state=state,
+                env=self,
+                resources=resources,
+            )
 
     async def _teardown(self):
         """

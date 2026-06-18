@@ -29,7 +29,6 @@ from prime_sandboxes.core import APIClient
 import verifiers as vf
 from verifiers.utils.logging_utils import print_time
 from verifiers.utils.path_utils import write_temp_file
-from verifiers.utils.sandbox_delete import delete_sandbox_for_rollout
 from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
 # Enable httpx debug logging if HTTPX_LOG_LEVEL is set
@@ -246,17 +245,7 @@ class SandboxMixin:
                 except BaseException:
                     return
                 self.register_sandbox(sandbox.id)
-
-                async def delete_created_sandbox() -> None:
-                    try:
-                        await self.delete_sandbox(sandbox.id)
-                    except Exception as exc:
-                        # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
-                        self.logger.warning(
-                            f"Failed to delete sandbox {sandbox.id}: {exc}"
-                        )
-
-                asyncio.create_task(delete_created_sandbox())
+                asyncio.create_task(self.delete_sandbox(sandbox.id))
 
             create_task.add_done_callback(cleanup_created_sandbox)
             raise
@@ -298,10 +287,17 @@ class SandboxMixin:
         pass
 
     async def delete_sandbox(self, sandbox_id: str):
-        """Delete sandbox with tracking."""
-        await delete_sandbox_for_rollout(self.sandbox_client, sandbox_id)
-        self.deregister_sandbox(sandbox_id)
-        self.logger.debug(f"Deleted sandbox {sandbox_id}")
+        """Delete sandbox with retry and tracking."""
+
+        async def _delete(sandbox_id: str):
+            await self.sandbox_client.delete(sandbox_id)
+            self.deregister_sandbox(sandbox_id)
+            self.logger.debug(f"Deleted sandbox {sandbox_id}")
+
+        try:
+            await self.with_retry(_delete)(sandbox_id)
+        except Exception as e:
+            self.logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
 
     async def bulk_delete_sandboxes(self, sandbox_ids: list[str]) -> None:
         """Delete multiple sandboxes by their IDs."""

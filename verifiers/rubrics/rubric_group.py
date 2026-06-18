@@ -9,7 +9,6 @@ from verifiers.types import (
     RewardFunc,
     State,
 )
-from verifiers.utils.cleanup_utils import surface_cleanup_error
 
 
 class RubricGroup(Rubric):
@@ -102,28 +101,9 @@ class RubricGroup(Rubric):
 
     async def cleanup(self, state: State):
         """Run cleanup for all rubrics in the group."""
-        try:
-            await super().cleanup(state)
-        except Exception as exc:
-            # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
-            self.logger.warning("Rubric group cleanup failed: %s", exc, exc_info=True)
-            surface_cleanup_error(state, exc, handler="RubricGroup")
+        await super().cleanup(state)
         for rubric in self.rubrics:
-            try:
-                await rubric.cleanup(state)
-            except Exception as exc:
-                # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
-                self.logger.warning(
-                    "Child rubric cleanup %s failed: %s",
-                    rubric.__class__.__name__,
-                    exc,
-                    exc_info=True,
-                )
-                surface_cleanup_error(
-                    state,
-                    exc,
-                    handler=f"{rubric.__class__.__name__}.cleanup",
-                )
+            await rubric.cleanup(state)
 
     async def teardown(self):
         """Run teardown for all rubrics in the group."""

@@ -15,7 +15,6 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.async_utils import maybe_call_with_named_args
-from verifiers.utils.cleanup_utils import surface_cleanup_error
 
 ScoreObjectProvider = Callable[[State], Mapping[str, object]]
 GroupScoreObjectProvider = Callable[[list[State]], Mapping[str, object]]
@@ -264,21 +263,7 @@ class Rubric:
     async def cleanup(self, state: State):
         """Run all @vf.cleanup-decorated methods on this rubric."""
         for handler in self._cleanup_handlers:
-            try:
-                await self._call_cleanup_handler(handler, state)
-            except Exception as exc:
-                # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
-                self.logger.warning(
-                    "Cleanup handler %s failed: %s",
-                    getattr(handler, "__name__", handler),
-                    exc,
-                    exc_info=True,
-                )
-                surface_cleanup_error(
-                    state,
-                    exc,
-                    handler=getattr(handler, "__name__", None),
-                )
+            await self._call_cleanup_handler(handler, state)
 
     async def _call_cleanup_handler(self, handler: Callable[..., Any], state: State):
         objects = self.cleanup_objects(handler, state)

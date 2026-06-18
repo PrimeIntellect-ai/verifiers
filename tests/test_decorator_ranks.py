@@ -424,43 +424,6 @@ class TestRubricCleanupTeardown:
         asyncio.run(rubric.cleanup({"id": "a"}))
         assert rubric.cleaned == ["a"]
 
-    def test_rubric_cleanup_continues_after_exception(self):
-        import asyncio
-
-        class MyRubric(vf.Rubric):
-            def __init__(self, **kwargs):
-                super().__init__(**kwargs)
-                self.cleaned = []
-
-            @vf.cleanup(priority=2)
-            async def failing_cleanup(self, state: State):
-                self.cleaned.append("failing")
-                raise RuntimeError("cleanup failed")
-
-            @vf.cleanup(priority=1)
-            async def later_cleanup(self, state: State):
-                self.cleaned.append("later")
-
-        rubric = MyRubric()
-        state = {"id": "a"}
-        asyncio.run(rubric.cleanup(state))
-
-        assert rubric.cleaned == ["failing", "later"]
-        assert isinstance(state["error"], vf.Error)
-        assert state["cleanup_errors"][0]["type"] == "RuntimeError"
-
-    def test_rubric_cleanup_cancelled_error_propagates(self):
-        import asyncio
-
-        class MyRubric(vf.Rubric):
-            @vf.cleanup
-            async def cancelling_cleanup(self, state: State):
-                raise asyncio.CancelledError()
-
-        rubric = MyRubric()
-        with pytest.raises(asyncio.CancelledError):
-            asyncio.run(rubric.cleanup({}))
-
     def test_rubric_teardown_handlers(self):
         """Test that @vf.teardown decorated methods on a Rubric subclass are invoked."""
         import asyncio
@@ -505,29 +468,6 @@ class TestRubricCleanupTeardown:
         asyncio.run(group.cleanup({"id": "x"}))
         assert "group" in group.order
         assert "child" in child.order
-
-    def test_rubric_group_continues_after_child_cleanup_exception(self):
-        import asyncio
-
-        events = []
-
-        class FailingRubric(vf.Rubric):
-            @vf.cleanup
-            async def cleanup_fail(self, state: State):
-                events.append("fail")
-                raise RuntimeError("child failed")
-
-        class LaterRubric(vf.Rubric):
-            @vf.cleanup
-            async def cleanup_later(self, state: State):
-                events.append("later")
-
-        group = vf.RubricGroup([FailingRubric(), LaterRubric()])
-        state = {}
-        asyncio.run(group.cleanup(state))
-
-        assert events == ["fail", "later"]
-        assert state["cleanup_errors"][0]["type"] == "RuntimeError"
 
     def test_rubric_group_runs_own_and_child_teardown(self):
         """Test that RubricGroup.teardown runs both its own and child handlers."""

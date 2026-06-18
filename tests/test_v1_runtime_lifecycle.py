@@ -2748,47 +2748,6 @@ async def test_mcp_lifetime_follows_toolset_scope(
 
 
 @pytest.mark.asyncio
-async def test_v1_cleanup_rollout_continues_after_handler_exception() -> None:
-    runtime = Runtime()
-    calls: list[str] = []
-
-    async def failing_cleanup(task: vf.Task, state: vf.State) -> None:
-        _ = task, state
-        calls.append("failing")
-        raise RuntimeError("cleanup failed")
-
-    async def later_cleanup(task: vf.Task, state: vf.State) -> None:
-        _ = task, state
-        calls.append("later")
-
-    runtime.rollout_cleanup = [failing_cleanup, later_cleanup]
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-    state = vf.State.for_task(task)
-
-    await runtime.cleanup_rollout(task, state)
-
-    assert calls == ["failing", "later"]
-    assert isinstance(state["error"], vf.Error)
-    assert state["cleanup_errors"][0]["type"] == "RuntimeError"
-
-
-@pytest.mark.asyncio
-async def test_v1_cleanup_rollout_cancelled_error_propagates() -> None:
-    runtime = Runtime()
-
-    async def cancelling_cleanup(task: vf.Task, state: vf.State) -> None:
-        _ = task, state
-        raise asyncio.CancelledError()
-
-    runtime.rollout_cleanup = [cancelling_cleanup]
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-    state = vf.State.for_task(task)
-
-    with pytest.raises(asyncio.CancelledError):
-        await runtime.cleanup_rollout(task, state)
-
-
-@pytest.mark.asyncio
 async def test_shared_sandbox_delete_surfaces_transient_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
