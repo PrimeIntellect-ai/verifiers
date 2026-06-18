@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -25,12 +26,30 @@ class GeneralAgentToolset(vf.Toolset[GeneralAgentToolsetConfig, GeneralAgentStat
     TOOL_PREFIX = "tools"  # the model sees `tools_<name>` for each of the task's tools
 
     async def setup_task(self, task) -> None:
-        task_dir = Path(task.dir)
+        task_dir = self._task_dir(task)
         task_db = load_task_attr(task_dir, "TaskDB")
         task_tools = load_task_attr(task_dir, "TaskTools")
         if task_db is None or task_tools is None:
             raise ValueError(f"tools.py must define TaskDB and TaskTools: {task_dir}")
         self._tools = task_tools(task_db.load(task_dir / "db.json"))
+
+    @staticmethod
+    def _task_dir(task) -> Path:
+        """Where this rollout's `tools.py` + `db.json` live in *this* runtime. Own-host: the host
+        cache (`task.dir`). Colocated in a sandbox: that host path isn't here (and the corpus repo
+        is private), so materialize the files shipped with the task over `/task` into a temp dir."""
+        task_dir = Path(task.dir)
+        if (task_dir / "tools.py").exists():
+            return task_dir
+        if not task.files:
+            raise RuntimeError(
+                f"task dir {task_dir} not present in this runtime and no files were shipped with "
+                "the task — the corpus is host-side, so the toolset can't load it here"
+            )
+        tmp = Path(tempfile.mkdtemp(prefix=f"ga-{task.name}-"))
+        for name, content in task.files.items():
+            (tmp / name).write_text(content)
+        return tmp
 
     def _register(self, mcp) -> None:
         for name, method in sorted(self._tools.tool_methods.items()):
