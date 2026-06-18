@@ -168,7 +168,7 @@ def response_from_wire(completion: ChatCompletion) -> Response:
         created=completion.created,
         model=completion.model,
         message=AssistantMessage(
-            content=message.content,
+            content=message.content or message.refusal,
             reasoning_content=reasoning_text(message.model_dump()),
             tool_calls=tool_calls,
         ),

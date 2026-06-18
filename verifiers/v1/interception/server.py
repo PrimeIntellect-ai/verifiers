@@ -453,7 +453,7 @@ class InterceptionServer:
         session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
             return web.json_response(dialect.error_body("unauthorized"), status=401)
-        session.error = None
+        # An aux request is not a retry of a failed model turn; preserve that error.
         try:
             result = await session.ctx.client.relay_aux(
                 dialect, route, await request.json()

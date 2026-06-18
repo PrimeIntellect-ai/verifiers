@@ -248,7 +248,18 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             units = [run_group_unit(i) for i in idxs]
         else:
             units = [run_rollout_unit(i) for i in idxs for _ in range(owed[i])]
-        results = await asyncio.gather(*units)
+        evaluation = asyncio.gather(*units)
+        while not evaluation.done():
+            if not proc.is_alive():
+                evaluation.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await evaluation
+                raise RuntimeError(
+                    "env server exited during evaluation "
+                    f"(exit code {proc.exitcode}); see the worker traceback above"
+                )
+            await asyncio.sleep(0.05)
+        results = await evaluation
         return [trace for unit_traces in results for trace in unit_traces]
     finally:
         if client is not None:
