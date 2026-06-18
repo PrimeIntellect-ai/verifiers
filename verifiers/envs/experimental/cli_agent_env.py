@@ -39,6 +39,7 @@ from verifiers.utils.interception_utils import (
 )
 from verifiers.utils.logging_utils import print_time, truncate
 from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.sandbox_delete import record_sandbox_delete_error
 
 logger = logging.getLogger(__name__)
 
@@ -766,8 +767,14 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 # Scoring cleanup owns deletion; keep active tracking as a teardown backstop.
                 return
             else:
-                await self.delete_sandbox(sandbox_id)
-                state.pop("sandbox_id", None)
+                try:
+                    await self.delete_sandbox(sandbox_id)
+                except vf.SandboxDeleteError as exc:
+                    record_sandbox_delete_error(
+                        state, exc, scope="env_cleanup", sandbox_id=sandbox_id
+                    )
+                else:
+                    state.pop("sandbox_id", None)
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs

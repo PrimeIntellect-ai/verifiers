@@ -166,6 +166,45 @@ class TestCliAgentEnv:
             env.teardown_sandbox_client()
 
     @pytest.mark.asyncio
+    async def test_destroy_sandbox_delete_failure_records_error_without_raising(
+        self, sample_dataset
+    ):
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+        )
+        try:
+            env.post_rollout = AsyncMock()  # type: ignore[method-assign]
+            delete_error = vf.SandboxDeleteError("Failed to delete sandbox sb-fail")
+            env.delete_sandbox = AsyncMock(side_effect=delete_error)  # type: ignore[method-assign]
+            env.register_sandbox("sb-fail")
+            state = {
+                "error": None,
+                "is_completed": True,
+                "sandbox_client": object(),
+                "sandbox_id": "sb-fail",
+            }
+
+            await env.destroy_sandbox(state)
+
+            env.post_rollout.assert_awaited_once_with(state)
+            env.delete_sandbox.assert_awaited_once_with("sb-fail")
+            assert state["error"] is delete_error
+            assert state["cleanup_errors"] == [
+                {
+                    "type": "SandboxDeleteError",
+                    "message": "Failed to delete sandbox sb-fail",
+                    "scope": "env_cleanup",
+                    "sandbox_id": "sb-fail",
+                }
+            ]
+            assert state["sandbox_id"] == "sb-fail"
+            assert "sb-fail" in env.active_sandboxes
+        finally:
+            env.teardown_sandbox_client()
+
+    @pytest.mark.asyncio
     async def test_destroy_sandbox_keeps_scoring_sandbox_tracked_for_teardown(
         self, sample_dataset
     ):
