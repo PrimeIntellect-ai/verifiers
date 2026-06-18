@@ -13,7 +13,6 @@ Runs under any MCP-tool-capable v1 harness (e.g. `bash`, `default`). Filter the 
 from __future__ import annotations
 
 import json
-import logging
 import tomllib
 from pathlib import Path
 
@@ -29,8 +28,6 @@ from general_agent_v1.corpus import (
     task_matches,
 )
 from general_agent_v1.servers.toolset import GeneralAgentToolset
-
-logger = logging.getLogger("verifiers.general_agent_v1")
 
 
 class GeneralAgentTask(vf.Task):
@@ -157,10 +154,7 @@ class GeneralAgentSolverTaskset(
             if agent is None or gold is None:
                 return 0.0
             return float(agent.get_hash() == gold.get_hash())
-        except Exception as e:
-            logger.warning(
-                "db_hash failed for %s: %s: %s", task.task_name, type(e).__name__, e
-            )
+        except Exception:
             return 0.0
 
     def _verify(self, task: GeneralAgentTask, trace: vf.Trace) -> float:
@@ -170,10 +164,7 @@ class GeneralAgentSolverTaskset(
             if agent is None or verify_fn is None:
                 return 0.0
             return float(verify_fn(agent))
-        except Exception as e:
-            logger.warning(
-                "verify failed for %s: %s: %s", task.task_name, type(e).__name__, e
-            )
+        except Exception:
             return 0.0
 
 
