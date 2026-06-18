@@ -33,7 +33,7 @@ from pydantic import ValidationError
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1 import graph
-from verifiers.v1.errors import OverlongPromptError
+from verifiers.v1.errors import OverlongPromptError, RolloutError
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 
@@ -109,6 +109,11 @@ class RolloutSession:
     every request until the first turn lands on the trace — so a retried opening request (e.g. the
     harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`
     twice and advances the simulator's queue past the opening."""
+    error: "RolloutError | None" = None
+    """The latest unresolved model-call failure. The harness only sees it as an HTTP error
+    (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
+    harness returns — recording the real `ProviderError`/`ModelError` instead of a secondary
+    `HarnessError`. Reset before each model turn, so a successful retry clears it."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
@@ -246,6 +251,7 @@ class InterceptionServer:
                     )
                 return web.json_response(completion)
             turn = graph.prepare_turn(session.trace, prompt)
+            session.error = None
             try:
                 response = await session.ctx.client.get_response(
                     dialect,
@@ -268,6 +274,16 @@ class InterceptionServer:
                         status=400,
                     )
                 return web.json_response(completion)
+            except RolloutError as e:
+                # Stash the real cause; the rollout re-raises it after the harness returns.
+                session.error = e
+                logger.warning(
+                    "model call failed: id=%s %s: %s",
+                    session.trace.id,
+                    type(e).__name__,
+                    e,
+                )
+                return web.json_response(dialect.error_body(str(e)), status=502)
             except Exception as e:  # surface to the program as an API error
                 logger.warning(
                     "model call failed: id=%s %s: %s",
@@ -314,6 +330,7 @@ class InterceptionServer:
             return web.json_response(
                 dialect.error_body(f"rollout stopped: {refused}"), status=400
             )
+        session.error = None
         try:
             turn = graph.prepare_turn(session.trace, prompt)
             reply = await session.ctx.client.relay(
@@ -330,6 +347,15 @@ class InterceptionServer:
             return web.json_response(
                 dialect.error_body("rollout stopped: context_length"), status=400
             )
+        except RolloutError as e:
+            session.error = e
+            logger.warning(
+                "model call failed: id=%s %s: %s",
+                session.trace.id,
+                type(e).__name__,
+                e,
+            )
+            return web.json_response(dialect.error_body(str(e)), status=502)
         except Exception as e:  # surface to the program as an API error
             logger.warning("model call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
@@ -381,6 +407,16 @@ class InterceptionServer:
             result = await session.ctx.client.relay_aux(
                 dialect, route, await request.json()
             )
+        except RolloutError as e:
+            # An aux call isn't a model turn, so don't clobber a pending turn error.
+            session.error = session.error or e
+            logger.warning(
+                "aux call failed: id=%s %s: %s",
+                session.trace.id,
+                type(e).__name__,
+                e,
+            )
+            return web.json_response(dialect.error_body(str(e)), status=502)
         except Exception as e:
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)

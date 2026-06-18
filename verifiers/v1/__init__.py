@@ -26,7 +26,14 @@ from verifiers.v1.env import (
     pool_serve_kwargs,
 )
 from verifiers.v1.episode import Episode
-from verifiers.v1.errors import ModelError, ProgramError, RolloutError, ToolError
+from verifiers.v1.errors import (
+    HarnessError,
+    ModelError,
+    ProgramError,
+    ProviderError,
+    RolloutError,
+    ToolError,
+)
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.loaders import (
     harness_config_type,
@@ -133,6 +140,8 @@ __all__ = [
     # errors
     "RolloutError",
     "ModelError",
+    "ProviderError",
+    "HarnessError",
     "ToolError",
     "ProgramError",
     # clients

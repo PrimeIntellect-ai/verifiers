@@ -11,7 +11,7 @@ import shlex
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import metric
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -91,7 +91,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         guarded = f"mkdir -p {RLM_DIR} && flock {RLM_DIR}/install.lock sh -c {ensure}"
         result = await runtime.run(["sh", "-c", guarded], env)
         if result.exit_code != 0:
-            raise ProgramError(f"rlm install failed: {result.stderr.strip()[-500:]}")
+            raise HarnessError(f"rlm install failed: {result.stderr.strip()[-500:]}")
         return await runtime.run_program([RLM_BIN, prompt], env)
 
     @metric

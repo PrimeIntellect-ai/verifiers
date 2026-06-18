@@ -521,9 +521,9 @@ Responses, Anthropic Messages). The program can be any executable the runtime ca
 
 It must return a `vf.ProgramResult` (`exit_code`, `stdout`, `stderr`) — usually the return of
 `runtime.run(...)` / `runtime.run_uv_script(...)`. The base `run` wraps `launch`: a clean exit
-becomes `trace.stop("agent_completed")`; a non-zero exit raises `ProgramError` with the tail of
-stderr — **unless** a `@stop` already fired (the program dying because the interception server cut
-a turn is expected, not an error).
+becomes `trace.stop("agent_completed")`; a non-zero exit (or an unexpected exception from `launch`)
+raises `HarnessError` with the tail of stderr — **unless** a `@stop` already fired (the program
+dying because the interception server cut a turn is expected, not an error).
 
 **`resolve_prompt(trace.task)`** returns `(system_prompt, prompt)` already reconciled with your
 capability flags: the system prompt is handed back only if `APPENDS_SYSTEM_PROMPT` (else folded
