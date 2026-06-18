@@ -153,15 +153,18 @@ def Progress(
     return Group(row, breakdown) if breakdown is not None else Group(row)
 
 
-def _breakdown(done: list[Trace]) -> Text | None:
-    """The per-component view under the headline (summed) reward: each named `@reward`
-    contribution then each `@metric`, formatted exactly like the headline reward — the
+def _breakdown(done: list[Trace]) -> Table | None:
+    """The per-component view under the headline (summed) reward: a `rewards` row of each named
+    `@reward` contribution and a `metrics` row of each `@metric`, laid out like the Overview (dim
+    label column). Each component is formatted exactly like the headline reward — the
     error-corrected mean, with the global mean (an errored trace's value counting as 0) in parens
     when some errored (see `format_mean`). `None` when nothing has scored yet, so the bar shows
     alone."""
     if not any(not t.has_error for t in done):
         return None
-    line = Text(style="dim")
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="dim")
+    grid.add_column()
     for label, source in (("rewards", "rewards"), ("metrics", "metrics")):
         # every key seen across traces, first-seen order (a trace records only the functions
         # that ran for it, so keys can vary)
@@ -174,11 +177,8 @@ def _breakdown(done: list[Trace]) -> Text | None:
             f"{name} {format_mean(done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0))}"
             for name in names
         ]
-        if line:  # rewards group already written — space before the metrics group
-            line.append("      ")
-        line.append(f"{label}  ", style="dim cyan")
-        line.append("  ·  ".join(segments))
-    return line or None
+        grid.add_row(label, "  ·  ".join(segments))
+    return grid if grid.row_count else None
 
 
 def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None]:
