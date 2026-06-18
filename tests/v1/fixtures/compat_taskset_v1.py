@@ -20,7 +20,7 @@ class CompatTaskset(vf.Taskset[CompatTask, CompatTasksetConfig]):
             CompatTask(
                 idx=0,
                 system_prompt="Return the requested phrase.",
-                instruction=self.config.phrase,
+                prompt=self.config.phrase,
                 answer=self.config.phrase,
             )
         ]

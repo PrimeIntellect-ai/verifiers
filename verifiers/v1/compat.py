@@ -55,7 +55,7 @@ from verifiers.v1.clients.client import Client as V1Client
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.env import EnvConfig, Environment as V1Environment
-from verifiers.v1.graph import MessageNode
+from verifiers.v1.graph import MessageNode, PendingTurn
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
 from verifiers.v1.trace import Trace
@@ -122,7 +122,10 @@ class V0ClientAsV1Client(V1Client):
         model: str,
         sampling_args: SamplingConfig,
         session_id: str | None = None,
+        turn: PendingTurn | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> V1Response:
+        del turn, headers
         prompt, tools = dialect.parse_request(body)
         v0_prompt = [_v1_message_to_v0(message) for message in prompt]
         v0_tools = [_v1_tool_to_v0(tool) for tool in tools] if tools else None
@@ -193,8 +196,6 @@ class V1AsV0Environment(V0Environment):
         self.task_by_idx = {int(task.idx): task for task in self.tasks}
         self._stack: AsyncExitStack | None = None
         self._context_lock = asyncio.Lock()
-        self._shared_urls: dict[str, str] = {}
-        self._interception_pool = None
         super().__init__(
             dataset=self._dataset,
             eval_dataset=self._dataset,
@@ -312,10 +313,7 @@ class V1AsV0Environment(V0Environment):
             episode.retry = episode.retry.model_copy(
                 update={"max_retries": max(0, int(max_retries))}
             )
-        return await episode.run(
-            shared_urls=self._shared_urls,
-            interception=self._interception_pool,
-        )
+        return await episode.run()
 
     async def _ensure_worker_contexts(self) -> None:
         if self._stack is not None:
@@ -324,20 +322,13 @@ class V1AsV0Environment(V0Environment):
             if self._stack is not None:
                 return
             stack = AsyncExitStack()
-            self._shared_urls = await stack.enter_async_context(
-                self.v1_env.shared_tools(self.tasks)
-            )
-            self._interception_pool = await stack.enter_async_context(
-                self.v1_env.interception_pool()
-            )
+            await stack.enter_async_context(self.v1_env.serving(self.tasks))
             self._stack = stack
 
     async def _teardown(self) -> None:
         if self._stack is not None:
             await self._stack.aclose()
             self._stack = None
-            self._interception_pool = None
-            self._shared_urls = {}
         await super()._teardown()
 
     def set_kwargs(self, **kwargs) -> None:
@@ -766,11 +757,11 @@ def _task_prompt(task: Task) -> V1Messages:
     messages: V1Messages = []
     if task.system_prompt:
         messages.append(V1SystemMessage(content=task.system_prompt))
-    instruction = task.instruction
-    if isinstance(instruction, list):
-        messages.extend(instruction)
-    else:
-        messages.append(V1UserMessage(content=str(instruction)))
+    prompt = task.prompt
+    if isinstance(prompt, list):
+        messages.extend(prompt)
+    elif prompt is not None:
+        messages.append(V1UserMessage(content=str(prompt)))
     return messages
 
 

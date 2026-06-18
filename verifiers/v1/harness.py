@@ -16,6 +16,7 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic import Field
 from pydantic_config import BaseConfig
 
+from verifiers.v1.capabilities import HarnessCapability
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import ProgramError
@@ -75,6 +76,8 @@ class Harness(ABC, Generic[ConfigT]):
     """Drive a task's user simulator (multi-turn user injection); opt in per harness."""
     SUPPORTS_MESSAGE_PROMPT: ClassVar[bool] = False
     """Accept a Messages-list task.prompt (e.g. an image-bearing prompt); opt in per harness."""
+    CAPABILITIES: ClassVar[frozenset[HarnessCapability]] = frozenset()
+    """Additional coarse-grained taskset contracts this harness satisfies."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config

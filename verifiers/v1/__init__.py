@@ -15,6 +15,7 @@ from verifiers.v1.clients import (
     RolloutContext,
     resolve_client,
 )
+from verifiers.v1.capabilities import HarnessCapability
 from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
 from verifiers.v1.env import (
     ElasticPoolConfig,
@@ -92,6 +93,7 @@ from verifiers.v1.types import (
 __all__ = [
     # types
     "EnvId",
+    "HarnessCapability",
     "AssistantMessage",
     "ContentPart",
     "ImageUrlContentPart",

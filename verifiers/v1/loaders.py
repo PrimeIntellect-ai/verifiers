@@ -17,8 +17,9 @@ The taskset/harness class carries its types as generic args — `Taskset[TaskT, 
 
 import importlib
 import importlib.util
+import inspect
 from types import ModuleType
-from typing import Callable, get_args, get_origin
+from typing import Callable, get_args, get_origin, get_type_hints
 
 from pydantic_config import BaseConfig
 
@@ -66,16 +67,13 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
         ) from e
 
 
-def _plugin_class(module: ModuleType, base: type, kind: str) -> type:
+def _plugin_class(module: ModuleType, base: type, kind: str) -> type | None:
     """The single class exported via `module.__all__` that subclasses `base`. A taskset/harness
     module exports exactly one such class — the walk filters its public names down to subclasses
     of the base, and rejects anything other than exactly one with an informative error."""
     names = getattr(module, "__all__", None)
     if names is None:
-        raise AttributeError(
-            f"{kind} module {module.__name__!r} defines no `__all__`; a {kind} must export its "
-            f"{base.__name__} subclass via `__all__` (e.g. `__all__ = ['My{base.__name__}']`)."
-        )
+        return None
     matches = [
         obj
         for name in names
@@ -84,16 +82,36 @@ def _plugin_class(module: ModuleType, base: type, kind: str) -> type:
         and obj is not base
     ]
     if not matches:
-        raise TypeError(
-            f"{kind} module {module.__name__!r} exports no {base.__name__} subclass via "
-            f"`__all__` (found {list(names)}); export exactly one."
-        )
+        return None
     if len(matches) > 1:
         raise TypeError(
             f"{kind} module {module.__name__!r} exports {len(matches)} {base.__name__} "
             f"subclasses via `__all__` ({[c.__name__ for c in matches]}); export exactly one."
         )
     return matches[0]
+
+
+def _require_plugin_class(module: ModuleType, base: type, kind: str) -> type:
+    cls = _plugin_class(module, base, kind)
+    if cls is not None:
+        return cls
+    hook = getattr(module, f"load_{kind}", None)
+    if callable(hook):
+        raise TypeError(
+            f"{kind} module {module.__name__!r} uses legacy load_{kind}(config); "
+            "the class is not available for direct introspection. Export the "
+            f"{base.__name__} subclass via `__all__` to use this helper."
+        )
+    names = getattr(module, "__all__", None)
+    if names is None:
+        raise AttributeError(
+            f"{kind} module {module.__name__!r} defines no `__all__`; a {kind} must export its "
+            f"{base.__name__} subclass via `__all__` (e.g. `__all__ = ['My{base.__name__}']`)."
+        )
+    raise TypeError(
+        f"{kind} module {module.__name__!r} exports no {base.__name__} subclass via "
+        f"`__all__` (found {list(names)}); export exactly one."
+    )
 
 
 def _generic_args(cls: type, base: type) -> list:
@@ -108,6 +126,28 @@ def _generic_args(cls: type, base: type) -> list:
     return args
 
 
+def _config_type(load_fn: Callable, default: type) -> type:
+    """Legacy hook config type, read from its single parameter annotation."""
+    try:
+        param = next(iter(inspect.signature(load_fn).parameters.values()))
+    except StopIteration:
+        return default
+    if param.annotation is inspect.Parameter.empty:
+        return default
+    return get_type_hints(load_fn).get(param.name, param.annotation)
+
+
+def _return_args(load_fn: Callable) -> list:
+    """Generic args from a legacy hook return annotation."""
+    return_type = get_type_hints(load_fn).get(
+        "return", inspect.signature(load_fn).return_annotation
+    )
+    candidates = list(get_args(return_type))
+    for base in getattr(return_type, "__orig_bases__", ()):
+        candidates += get_args(base)
+    return candidates
+
+
 def import_taskset(taskset_id: str) -> ModuleType:
     return _import_plugin(taskset_id, "taskset", "tasksets")
 
@@ -118,46 +158,81 @@ def import_harness(harness_id: str) -> ModuleType:
 
 def taskset_class(taskset_id: str) -> type[Taskset]:
     """The taskset's `Taskset` subclass, exported via its module's `__all__`."""
-    return _plugin_class(import_taskset(taskset_id), Taskset, "taskset")
+    return _require_plugin_class(import_taskset(taskset_id), Taskset, "taskset")
 
 
 def harness_class(harness_id: str) -> type[Harness]:
     """The harness's `Harness` subclass, exported via its module's `__all__`."""
-    return _plugin_class(import_harness(harness_id), Harness, "harness")
+    return _require_plugin_class(import_harness(harness_id), Harness, "harness")
 
 
 def load_taskset(config: TasksetConfig) -> Taskset:
     """Build the taskset for a config by dispatching on its `id` (the taskset id)."""
+    module = import_taskset(config.id)
+    cls = _plugin_class(module, Taskset, "taskset")
+    if cls is not None:
+        return cls(config)
+    load_fn = getattr(module, "load_taskset", None)
+    if callable(load_fn):
+        return load_fn(config)
     return taskset_class(config.id)(config)
 
 
 def load_harness(config: HarnessConfig) -> Harness:
     """Build the harness for a config by dispatching on its `id` (the harness id)."""
+    module = import_harness(config.id)
+    cls = _plugin_class(module, Harness, "harness")
+    if cls is not None:
+        return cls(config)
+    load_fn = getattr(module, "load_harness", None)
+    if callable(load_fn):
+        return load_fn(config)
     return harness_class(config.id)(config)
 
 
 def taskset_config_type(taskset_id: str) -> type[TasksetConfig]:
-    """The taskset's `TasksetConfig` subclass, from its `Taskset[TaskT, ConfigT]` generic."""
-    for arg in _generic_args(taskset_class(taskset_id), Taskset):
-        if isinstance(arg, type) and issubclass(arg, TasksetConfig):
-            return arg
+    """The taskset config subclass, from class generics or a legacy hook annotation."""
+    module = import_taskset(taskset_id)
+    cls = _plugin_class(module, Taskset, "taskset")
+    if cls is not None:
+        for arg in _generic_args(cls, Taskset):
+            if isinstance(arg, type) and issubclass(arg, TasksetConfig):
+                return arg
+        return TasksetConfig
+    load_fn = getattr(module, "load_taskset", None)
+    if callable(load_fn):
+        typ = _config_type(load_fn, TasksetConfig)
+        if isinstance(typ, type) and issubclass(typ, TasksetConfig):
+            return typ
     return TasksetConfig
 
 
 def harness_config_type(harness_id: str) -> type[HarnessConfig]:
-    """The harness's config subclass, from its `Harness[ConfigT]` generic."""
-    for arg in _generic_args(harness_class(harness_id), Harness):
-        if isinstance(arg, type) and issubclass(arg, HarnessConfig):
-            return arg
+    """The harness config subclass, from class generics or a legacy hook annotation."""
+    module = import_harness(harness_id)
+    cls = _plugin_class(module, Harness, "harness")
+    if cls is not None:
+        for arg in _generic_args(cls, Harness):
+            if isinstance(arg, type) and issubclass(arg, HarnessConfig):
+                return arg
+        return HarnessConfig
+    load_fn = getattr(module, "load_harness", None)
+    if callable(load_fn):
+        typ = _config_type(load_fn, HarnessConfig)
+        if isinstance(typ, type) and issubclass(typ, HarnessConfig):
+            return typ
     return HarnessConfig
 
 
 def task_type(taskset_id: str) -> type[Task]:
-    """The taskset's `Task` subclass, read off its `Taskset[TaskT, ConfigT]` generic — no data
-    is loaded, so a caller that imports the taskset can cheaply build a typed `Trace[TaskT]` for
-    the otherwise taskset-specific (loose dict) wire trace. Falls back to the base `Task` when
-    no subclass is given."""
-    for arg in _generic_args(taskset_class(taskset_id), Taskset):
+    """The taskset's `Task` subclass, from class generics or a legacy hook."""
+    module = import_taskset(taskset_id)
+    cls = _plugin_class(module, Taskset, "taskset")
+    candidates = _generic_args(cls, Taskset) if cls is not None else []
+    load_fn = getattr(module, "load_taskset", None)
+    if not candidates and callable(load_fn):
+        candidates = _return_args(load_fn)
+    for arg in candidates:
         if isinstance(arg, type) and issubclass(arg, Task):
             return arg
     return Task

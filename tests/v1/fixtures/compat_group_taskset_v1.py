@@ -18,7 +18,7 @@ class CompatGroupTaskset(vf.Taskset[CompatGroupTask, CompatGroupTasksetConfig]):
         return [
             CompatGroupTask(
                 idx=0,
-                instruction="group-alpha",
+                prompt="group-alpha",
                 answer="group-alpha",
             )
         ]

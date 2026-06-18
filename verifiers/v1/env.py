@@ -243,6 +243,23 @@ class Environment:
                 f"{self.taskset.config.id!r} defines one (Taskset.user). Run it with a harness that "
                 f"supports user simulation (e.g. --harness.id default), or use a taskset without one."
             )
+        missing_capabilities = (
+            self.taskset.REQUIRED_HARNESS_CAPABILITIES - self.harness.CAPABILITIES
+        )
+        if missing_capabilities:
+            missing = ", ".join(
+                str(capability) for capability in sorted(missing_capabilities)
+            )
+            available = (
+                ", ".join(
+                    str(capability) for capability in sorted(self.harness.CAPABILITIES)
+                )
+                or "none"
+            )
+            raise ValueError(
+                f"Taskset {self.taskset.config.id!r} requires harness capabilities "
+                f"{missing}, but harness {self.harness.config.id!r} provides {available}."
+            )
         if self.taskset.NEEDS_CONTAINER and isinstance(
             self.harness.config.runtime, SubprocessConfig
         ):

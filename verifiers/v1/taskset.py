@@ -21,6 +21,7 @@ from typing import ClassVar, Generic, TypeVar
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.capabilities import HarnessCapability
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.types import EnvId
 from verifiers.v1.utils.install import env_name
@@ -58,6 +59,8 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     """Whether this taskset only runs in a container runtime (docker/prime). When True the
     Environment refuses the subprocess runtime — for tasksets whose work only makes sense
     inside a per-task image (e.g. a SWE repo sandbox)."""
+    REQUIRED_HARNESS_CAPABILITIES: ClassVar[frozenset[HarnessCapability]] = frozenset()
+    """Extra harness contracts required by this taskset, checked at Environment construction."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
