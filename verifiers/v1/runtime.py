@@ -98,6 +98,15 @@ logger = logging.getLogger(__name__)
 def _surface_sandbox_delete_error(
     state: State, error: SandboxDeleteError, *, scope: str, sandbox_id: str
 ) -> None:
+    """Make caught v1 sandbox delete failures visible as rollout errors.
+
+    V1 runtime catches lease delete failures so it can keep the failed lease
+    registered for a later retry instead of losing the sandbox handle. Since
+    that prevents the delete exception from propagating out of cleanup, record
+    cleanup metadata and set the top-level rollout error when the rollout did
+    not already fail. That lets Prime-RL count persistent DELETE outages while
+    preserving the original rollout error when one already exists.
+    """
     cleanup_errors = cast(list[ConfigData], state.setdefault("cleanup_errors", []))
     cleanup_errors.append(
         {
