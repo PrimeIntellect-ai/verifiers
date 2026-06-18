@@ -229,18 +229,24 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             )
             prompt, completion, cached, reasoning = _tokens(t)
             cost = t.usage.cost if t.usage else None
+            tokens = ""
+            if prompt or completion:
+                tokens = f"{format_count(prompt)}/{format_count(completion)} tokens"
+                details = []
+                if reasoning is not None:
+                    details.append(f"{format_count(reasoning)} reasoning")
+                if cached is not None:
+                    details.append(f"{format_count(cached)} cached")
+                if details:
+                    tokens += f" ({', '.join(details)})"
             left = [
                 f"task {label}",
                 t.id[:8],
                 runtime,
                 f"{turns} turn{'s' * (turns != 1)}",
                 f"{nbranches} branch{'es' * (nbranches != 1)}",
-                f"{format_count(prompt)}/{format_count(completion)} tokens"
-                if prompt or completion
-                else "",
-                f"{format_count(cached)} cached" if cached is not None else "",
-                f"{format_count(reasoning)} reasoning" if reasoning is not None else "",
-                f"{format_cost_usd(cost)} cost" if cost is not None else "",
+                tokens,
+                f"{format_cost_usd(cost)}" if cost is not None else "",
                 stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
             ]
             # No start time yet (queued, not generating) → blank, not `now - 0` (~56 years).
@@ -260,15 +266,13 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
         str.ljust,
         str.rjust,
         str.rjust,
-        str.rjust,
-        str.rjust,
-        str.rjust,
+        str.ljust,
         str.rjust,
         str.ljust,
     )
-    widths = [max(len(left[i]) for _, _, left, _, _ in rows) for i in range(10)]
+    widths = [max(len(left[i]) for _, _, left, _, _ in rows) for i in range(8)]
     for brace, state, left, result, elapsed in rows:
-        sections = [pad[i](left[i], widths[i]) for i in range(10) if widths[i]]
+        sections = [pad[i](left[i], widths[i]) for i in range(8) if widths[i]]
         grid.add_row(
             f"{brace} {_MARK[state]} " + " · ".join(sections),
             f"{result} ·" if result else "",  # trailing dot only when there's a result
