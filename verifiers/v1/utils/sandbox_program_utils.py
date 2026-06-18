@@ -467,7 +467,8 @@ def is_tool_content_parts(value):
 
 
 def load_tool_defs(protocol):
-    defs = json.loads(open(TOOL_DEFS_BY_PROTOCOL_PATH).read())
+    with open(TOOL_DEFS_BY_PROTOCOL_PATH) as f:
+        defs = json.load(f)
     return defs.get(protocol) or []
 
 
@@ -502,7 +503,8 @@ async def create_model_message(state, messages):
 async def run_base(task, state):
     prompt_messages = [*(state.get("system_prompt") or []), *(state.get("prompt") or [])]
     messages = list(prompt_messages)
-    config = json.loads(open(RUNNER_CONFIG_PATH).read())
+    with open(RUNNER_CONFIG_PATH) as f:
+        config = json.load(f)
     max_turns = int(config["max_turns"])
     turn = 0
     while max_turns <= 0 or turn < max_turns:
@@ -548,8 +550,10 @@ async def run_base(task, state):
 
 async def main():
     mode = sys.argv[1]
-    task = json.loads(open(TASK_PATH).read())
-    state = json.loads(open(STATE_INPUT_PATH).read())
+    with open(TASK_PATH) as f:
+        task = json.load(f)
+    with open(STATE_INPUT_PATH) as f:
+        state = json.load(f)
     original_state = json.loads(json.dumps(state))
     if mode == "base":
         # Base loop talks to the host over /vf/model; no provider SDK client.
