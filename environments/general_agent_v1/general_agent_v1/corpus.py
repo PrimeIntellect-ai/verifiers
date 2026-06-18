@@ -26,16 +26,17 @@ CORPUS_REPO = "git@github.com:PrimeIntellect-ai/research-environments.git"
 CORPUS_REF = "a2b76f6ac3469f7f50171760c0d0dba38360edc4"
 CORPUS_SUBPATH = "environments/general_agent/tasks"
 
-_DEFAULT_CACHE = Path.home() / ".cache" / "verifiers" / "general_agent"
-
 # Matches the `_t<N>` tier suffix on a task name (e.g. `calendar_scheduling_t2`).
 TIER_RE = re.compile(r"_t\d+$")
 
 
 def cache_dir() -> Path:
+    # `Path.home()` is computed lazily (here, not at import) so the env override is honored even
+    # when there's no home directory.
     import os
 
-    return Path(os.environ.get("GENERAL_AGENT_CACHE_DIR", str(_DEFAULT_CACHE)))
+    override = os.environ.get("GENERAL_AGENT_CACHE_DIR")
+    return Path(override) if override else Path.home() / ".cache" / "verifiers" / "general_agent"
 
 
 def ensure_corpus(ref: str = CORPUS_REF) -> Path:
