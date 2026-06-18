@@ -27,7 +27,6 @@ from tenacity import (
 
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.retries import RolloutRetryConfig
 from verifiers.v1.serve.types import (
     BaseRequest,
     BaseResponse,
@@ -39,6 +38,7 @@ from verifiers.v1.serve.types import (
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    WORKER_MAX_RETRIES,
 )
 from verifiers.v1.task import WireTask
 from verifiers.v1.trace import Trace
@@ -50,13 +50,8 @@ ResponseT = TypeVar("ResponseT", bound=BaseResponse)
 
 
 class EnvClient:
-    def __init__(
-        self,
-        address: str = "tcp://127.0.0.1:5000",
-        retry: RolloutRetryConfig | None = None,
-    ) -> None:
+    def __init__(self, address: str = "tcp://127.0.0.1:5000") -> None:
         self.address = address
-        self.retry = retry or RolloutRetryConfig()
         self.ctx = zmq.asyncio.Context()
         self.socket = self.ctx.socket(zmq.DEALER)
         self.socket.setsockopt(zmq.LINGER, 0)
@@ -90,10 +85,7 @@ class EnvClient:
         `timeout` is only used for health polling — rollouts run untimed."""
         self._ensure_receiver()
         max_retries = (
-            self.retry.max_retries
-            if request.method in {"run_rollout", "run_group"}
-            and self.retry.allows("ProgramError")
-            else 0
+            WORKER_MAX_RETRIES if request.method in {"run_rollout", "run_group"} else 0
         )
 
         retrying = AsyncRetrying(

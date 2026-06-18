@@ -607,10 +607,10 @@ uv run eval gsm8k-v1 -n 5 -r 3 \
 | concurrency | `-c`/`--max-concurrent` (128), `--multiplex` (32), `--pool.type` (`elastic`\|`static`) |
 | output | `-o`/`--output-dir`, `--dry-run`, `--no-rich`, `-v`/`--verbose` |
 
-In pooled server-backed evals, the whole-rollout `ProgramError` policy also covers env
-worker death. The pool replaces the dead worker and only requests lost with it are replayed,
-with the same retry budget and exponential-jitter backoff. If that policy is disabled,
-excludes `ProgramError`, or exhausts its retries, the evaluation aborts rather than replaying.
+Pooled server-backed evals recover automatically when an env worker process dies. The pool
+replaces that worker and replays only requests lost with it, up to three times with
+exponential-jitter backoff. This recovery policy is internal and has no configuration;
+exhausting it aborts the evaluation.
 
 **Errors.** Expected provider and runtime failures are recorded on the individual `Trace`
 instead of aborting the eval. Provider failures retain actionable types such as

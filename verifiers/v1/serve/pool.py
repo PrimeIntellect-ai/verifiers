@@ -16,9 +16,9 @@ serving resources; everything else goes to a ready worker.
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
 (own env, own loop) and monitor a death pipe so an orphaned worker self-exits if the
-broker dies. A crashed worker is replaced within the configured whole-rollout retry
-budget; its in-flight requests fail as `ProgramError` so the caller can replay them with
-the same policy and backoff. TODO: downscale idle workers and stats/lag monitors.
+broker dies. A crashed worker is replaced up to three times; its in-flight requests fail
+as `ProgramError` so the caller can replay them with exponential-jitter backoff. TODO:
+downscale idle workers and stats/lag monitors.
 """
 
 import asyncio
@@ -36,9 +36,8 @@ import zmq
 import zmq.asyncio
 
 from verifiers.v1.env import EnvConfig
-from verifiers.v1.retries import RolloutRetryConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import BaseResponse, HealthResponse
+from verifiers.v1.serve.types import BaseResponse, HealthResponse, WORKER_MAX_RETRIES
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +98,7 @@ class EnvServerPool:
     whenever in-flight requests reach 90% of current capacity (`workers * multiplex`), up
     to `max_workers`. Upscale-only for now — workers are never reclaimed. `elastic=False`
     pre-spawns all `max_workers` upfront (the old fixed-pool behavior). Dead v1 workers
-    are replaced up to `max_restarts`; their in-flight requests receive `ProgramError`.
+    are replaced up to three times; their in-flight requests receive `ProgramError`.
     The broker otherwise forwards opaque request frames, so workers can be `EnvServer`
     (v1) or `LegacyEnvServer` (v0) without the broker caring."""
 
@@ -112,7 +111,6 @@ class EnvServerPool:
         log_setup: Callable[[], None] | None = None,
         multiplex: int = 128,
         elastic: bool = True,
-        max_restarts: int = 0,
     ) -> None:
         self.server_kwargs = server_kwargs
         self.max_workers = max_workers
@@ -120,7 +118,6 @@ class EnvServerPool:
         self.elastic = elastic
         self.legacy = legacy
         self.log_setup = log_setup
-        self.max_restarts = max_restarts
         self.session = uuid.uuid4().hex[:12]
         self.workers: list[dict] = []
         self._next_worker_index = 0
@@ -249,17 +246,17 @@ class EnvServerPool:
                     with contextlib.suppress(OSError):
                         os.unlink(self._worker_path(worker["index"]))
                     self.workers.remove(worker)
-                    if worker["restarts"] >= self.max_restarts:
+                    if worker["restarts"] >= WORKER_MAX_RETRIES:
                         raise RuntimeError(
                             f"{message}; restart budget exhausted "
-                            f"({self.max_restarts} retries)"
+                            f"({WORKER_MAX_RETRIES} retries)"
                         )
                     restart = worker["restarts"] + 1
                     logger.warning(
                         "%s; restarting (retry %d/%d)",
                         message,
                         restart,
-                        self.max_restarts,
+                        WORKER_MAX_RETRIES,
                     )
                     self._spawn_worker(restarts=restart)
                 if self.frontend in events:
@@ -380,13 +377,6 @@ def serve_env(
                 server_kwargs = {
                     "config_data": env_config_data(server_kwargs["config"])
                 }
-            retry = RolloutRetryConfig()
-            if not legacy:
-                retry = RolloutRetryConfig.model_validate(
-                    server_kwargs.get("config_data", {})
-                    .get("retries", {})
-                    .get("rollout", {})
-                )
             pool = EnvServerPool(
                 server_kwargs,
                 max_workers,
@@ -395,7 +385,6 @@ def serve_env(
                 log_setup,
                 multiplex,
                 elastic,
-                retry.max_retries if retry.allows("ProgramError") else 0,
             )
             if address_queue is not None:
                 address_queue.put(pool.address)

@@ -9,6 +9,8 @@ from verifiers.v1.task import WireTask
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import SamplingConfig
 
+WORKER_MAX_RETRIES = 3
+
 
 class BaseRequest(BaseModel):
     """Marker base for requests. ``method`` is the RPC route — a class var sent as its
