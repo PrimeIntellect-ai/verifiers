@@ -155,6 +155,7 @@ def response_from_wire(response: OpenAIResponse) -> Response:
             reasoning_tokens=output_details.reasoning_tokens
             if output_details
             else None,
+            cost=getattr(provider_usage, "cost", None),
         )
     return Response(
         id=data.get("id", ""),

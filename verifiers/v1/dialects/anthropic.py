@@ -149,6 +149,7 @@ def response_from_wire(message: AnthropicMessage) -> Response:
         reasoning_tokens=output_details.get("thinking_tokens")
         if output_details
         else None,
+        cost=getattr(provider_usage, "cost", None),
     )
     return Response(
         id=data.get("id", ""),
