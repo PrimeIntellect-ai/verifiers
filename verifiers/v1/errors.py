@@ -6,9 +6,10 @@ Four mechanisms, each in one place:
    boundary a failure crossed — provider, harness, toolset, user, sandbox, taskset, or
    interception — so a recorded `trace.error.type` says where the rollout broke.
 2. Classification (`boundary`): the one helper that runs a framework→code boundary and attributes
-   any escaping error to that boundary's type. Infra that fails raises its type at the source
-   (`runtimes` → `SandboxError`, `clients` → `ProviderError`, tunnels → `TunnelError`); an
-   already-typed `RolloutError` passes through unchanged.
+   any escaping error to that boundary's type. Extension code (taskset hooks, harness subclasses)
+   raises plain Python errors — it never constructs a `vf` error type; `boundary` classifies them.
+   Infra that fails raises its type at the source (`runtimes` → `SandboxError`, `clients` →
+   `ProviderError`, tunnels → `TunnelError`); an already-typed `RolloutError` passes through unchanged.
 3. Surfacing (`interception.RolloutSession.error`): a model/tool/user call fails behind the harness
    subprocess and comes back as HTTP, so the interception server stashes the real error there and
    the rollout re-raises it once the harness returns — not a secondary `HarnessError`.

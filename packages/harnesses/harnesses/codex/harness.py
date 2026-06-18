@@ -11,7 +11,6 @@ import logging
 import shlex
 
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -77,7 +76,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         )
         install = await runtime.run(["sh", "-c", guarded], {})
         if install.exit_code != 0:
-            raise HarnessError(f"codex install failed: {install.stderr.strip()[-500:]}")
+            raise RuntimeError(f"codex install failed: {install.stderr.strip()[-500:]}")
         # Values are Codex feature names such as `shell_tool`; Codex owns validation.
         # https://developers.openai.com/codex/config-reference#features
         tool_config = [
