@@ -53,7 +53,7 @@ class UserError(RolloutError):
 
 
 class SandboxError(RolloutError):
-    """A runtime/sandbox operation failed (provisioning, exec, file I/O, or a stage timeout)."""
+    """A runtime/sandbox operation failed (provisioning, exec, or file I/O)."""
 
 
 class TasksetError(RolloutError):
