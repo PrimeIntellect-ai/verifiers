@@ -613,13 +613,16 @@ instead of aborting the eval. Provider failures retain actionable types such as
 `ProviderTimeoutError`, and `ProviderResponseError`; an answer with no content or tool calls is
 `EmptyModelResponseError` and never reaches scoring. A harness implementation exception or
 non-zero agent exit is `HarnessError`; a per-rollout tool server that cannot start is `ToolError`;
-rollout-runtime process, sandbox, and tunnel failures remain `ProgramError` when they are not part
-of tool-server startup. MCP tool-call errors returned with `isError` stay in-band as tool results
-so the model can recover. The rich dashboard shows the error type, while `--no-rich` prints the
-full `errors` record and traceback. Tool construction for shared-tool discovery and shared
-tool-server startup are eval-level infrastructure, so their typed `ToolError` aborts startup before
-any rollout trace exists. Plain-mode static and elastic workers report that traceback and exit
-promptly if startup dies; they do not wait out the 600-second readiness deadline.
+runtime process and tunnel failures remain `ProgramError` when they are not part of tool-server
+startup. A provider-enforced sandbox lifetime expiring is `SandboxTimeoutError`, while an OOM kill
+is `SandboxOutOfMemoryError`; both derive from `SandboxError` and `ProgramError`. Unlike the
+framework's clean `harness_timeout` budget, these mean the underlying sandbox died and are recorded
+as rollout errors. MCP tool-call errors returned with `isError` stay in-band as tool results so the
+model can recover. The rich dashboard shows the error type, while `--no-rich` prints the full
+`errors` record and traceback. Tool construction for shared-tool discovery and shared tool-server
+startup are eval-level infrastructure, so their typed `ToolError` aborts startup before any rollout
+trace exists. Plain-mode static and elastic workers report that traceback and exit promptly if
+startup dies; they do not wait out the 600-second readiness deadline.
 
 **Sampling.** `reasoning_effort` is a string (not a fixed enum) — the active dialect maps it to the
 provider's shape (`reasoning_effort` for chat-completions, `reasoning.effort` for Responses,

@@ -16,7 +16,12 @@ from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import (
+    ProgramError,
+    SandboxError,
+    SandboxOutOfMemoryError,
+    SandboxTimeoutError,
+)
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime
 from verifiers.v1.runtimes.limiters import creation_limiter
 
@@ -75,6 +80,34 @@ class ModalRuntime(Runtime):
     def published_port(self) -> int | None:
         return SERVICE_PORT
 
+    async def _terminal_error(
+        self, error: Exception | None, action: str
+    ) -> SandboxError | None:
+        from modal.exception import SandboxTimeoutError as ModalSandboxTimeoutError
+
+        detail = f": {error}" if error and str(error) else ""
+        sandbox = self._sandbox
+        if isinstance(error, ModalSandboxTimeoutError):
+            return SandboxTimeoutError(
+                f"modal sandbox {self._sandbox_id or self.name} exceeded its configured "
+                f"lifetime {action}{detail}"
+            )
+        code = None
+        if sandbox is not None:
+            with contextlib.suppress(Exception):
+                code = await sandbox.poll.aio()
+        if code == 124:
+            return SandboxTimeoutError(
+                f"modal sandbox {self._sandbox_id or self.name} exceeded its configured "
+                f"lifetime {action}{detail}"
+            )
+        if code == 137:
+            return SandboxOutOfMemoryError(
+                f"modal sandbox {self._sandbox_id or self.name} ran out of memory "
+                f"({self.config.memory} GB) {action}{detail}"
+            )
+        return None
+
     async def start(self) -> None:
         try:
             import modal
@@ -117,6 +150,8 @@ class ModalRuntime(Runtime):
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
+            if terminal := await self._terminal_error(e, "during provisioning"):
+                raise terminal from e
             raise ProgramError(f"modal sandbox provisioning failed: {e}") from e
 
     async def expose(self, port: int) -> str | None:
@@ -128,6 +163,8 @@ class ModalRuntime(Runtime):
         try:
             tunnels = await self._sandbox.tunnels.aio()
         except Exception as e:
+            if terminal := await self._terminal_error(e, f"while exposing port {port}"):
+                raise terminal from e
             raise ProgramError(f"modal tunnels unavailable (port {port}): {e}") from e
         tunnel = tunnels.get(port)
         return str(tunnel.url).rstrip("/") if tunnel else None
@@ -142,9 +179,22 @@ class ModalRuntime(Runtime):
                 proc.stdout.read.aio(), proc.stderr.read.aio()
             )
             await proc.wait.aio()
+            if proc.returncode in (124, 137):
+                # A child may exit 137 itself. Only classify it as OOM when the
+                # sandbox also reached Modal's terminal 137 state.
+                if terminal := await self._terminal_error(
+                    None, "before the agent program finished"
+                ):
+                    raise terminal
+        except (SandboxTimeoutError, SandboxOutOfMemoryError):
+            raise
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
+            if terminal := await self._terminal_error(
+                e, "before the agent program finished"
+            ):
+                raise terminal from e
             raise ProgramError(f"modal exec failed: {e}") from e
         return ProgramResult(
             exit_code=proc.returncode or 0,
@@ -168,6 +218,8 @@ class ModalRuntime(Runtime):
         try:
             return await self._sandbox.filesystem.read_bytes.aio(path)
         except Exception as e:
+            if terminal := await self._terminal_error(e, f"while reading {path!r}"):
+                raise terminal from e
             raise ProgramError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
@@ -184,6 +236,8 @@ class ModalRuntime(Runtime):
             )
             await self._sandbox.filesystem.write_bytes.aio(data, target)
         except Exception as e:
+            if terminal := await self._terminal_error(e, f"while writing {path!r}"):
+                raise terminal from e
             raise ProgramError(f"write {path!r}: {e}") from e
 
     def cleanup(self) -> None:

@@ -242,8 +242,9 @@ uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.incl
 **Errors.** Expected rollout failures persist on `trace.errors` with their boundary intact:
 provider/auth/schema failures use the `Provider*Error` types, agent implementation or exit
 failures use `HarnessError`, task-tool construction/server failures use `ToolError`, and
-other runtime process/sandbox/tunnel failures use `ProgramError`. MCP `isError` tool results
-remain in-band so the model can recover.
+other runtime process/tunnel failures use `ProgramError`. Terminal sandbox failures are
+`SandboxTimeoutError` or `SandboxOutOfMemoryError`, both under `SandboxError`. MCP `isError`
+tool results remain in-band so the model can recover.
 
 ### Integrations
 

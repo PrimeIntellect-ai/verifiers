@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import ProgramError, SandboxOutOfMemoryError
 from verifiers.v1.runtimes.base import ProgramResult, Runtime, parse_gpu
 
 logger = logging.getLogger(__name__)
@@ -124,9 +124,37 @@ class DockerRuntime(Runtime):
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
-        return await docker(
+        result = await docker(
             "exec", *env_args, "--workdir", self.config.workdir, self._container, *argv
         )
+        if result.exit_code != 0:
+            state = await docker(
+                "inspect", "--format", "{{.State.OOMKilled}}", self._container
+            )
+            oom_killed = state.exit_code == 0 and state.stdout.strip().lower() == "true"
+            if not oom_killed and result.exit_code == 137:
+                events = await docker(
+                    "exec",
+                    self._container,
+                    "sh",
+                    "-c",
+                    "cat /sys/fs/cgroup/memory.events 2>/dev/null || "
+                    "cat /sys/fs/cgroup/memory/memory.oom_control 2>/dev/null || true",
+                )
+                oom_killed = any(
+                    line.split()[:1] == ["oom_kill"] and int(line.split()[1]) > 0
+                    for line in events.stdout.splitlines()
+                )
+            if oom_killed:
+                limit = (
+                    f" (limit: {self.config.memory} GB)"
+                    if self.config.memory is not None
+                    else ""
+                )
+                raise SandboxOutOfMemoryError(
+                    f"docker container {self._container} ran out of memory{limit}"
+                )
+        return result
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str

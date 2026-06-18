@@ -15,7 +15,12 @@ from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import (
+    ProgramError,
+    SandboxError,
+    SandboxOutOfMemoryError,
+    SandboxTimeoutError,
+)
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime, parse_gpu
 from verifiers.v1.runtimes.limiters import creation_limiter
 
@@ -79,8 +84,34 @@ class PrimeRuntime(Runtime):
     def published_port(self) -> int | None:
         return SERVICE_PORT
 
+    def _terminal_error(self, error: Exception, action: str) -> SandboxError | None:
+        from prime_sandboxes import (
+            SandboxOOMError as PrimeSandboxOOMError,
+            SandboxTimeoutError as PrimeSandboxTimeoutError,
+        )
+
+        sandbox = self._sandbox_id or self.name
+        if isinstance(error, PrimeSandboxTimeoutError):
+            timeout = (
+                _MAX_TIMEOUT_SECONDS
+                if self.config.timeout == "auto"
+                else self.config.timeout
+            )
+            return SandboxTimeoutError(
+                f"prime sandbox {sandbox} exceeded its {timeout}s lifetime {action}: {error}"
+            )
+        if isinstance(error, PrimeSandboxOOMError):
+            return SandboxOutOfMemoryError(
+                f"prime sandbox {sandbox} ran out of memory "
+                f"({self.config.memory} GB) {action}: {error}"
+            )
+        return None
+
     async def start(self) -> None:
-        from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
+        from prime_sandboxes import (
+            AsyncSandboxClient,
+            CreateSandboxRequest,
+        )
 
         self._client = AsyncSandboxClient()
         timeout = (
@@ -129,24 +160,29 @@ class PrimeRuntime(Runtime):
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
+            if terminal := self._terminal_error(e, "during provisioning"):
+                raise terminal from e
             raise ProgramError(f"prime sandbox provisioning failed: {e}") from e
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        timeout = (
+            _MAX_TIMEOUT_SECONDS
+            if self.config.timeout == "auto"
+            else self.config.timeout
+        )
         try:
             result = await self._client.run_background_job(
                 self._sandbox_id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=env,
-                timeout=(
-                    _MAX_TIMEOUT_SECONDS
-                    if self.config.timeout == "auto"
-                    else self.config.timeout
-                ),
+                timeout=timeout,
             )
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
+            if terminal := self._terminal_error(e, "before the agent program finished"):
+                raise terminal from e
             raise ProgramError(f"prime exec failed: {e}") from e
         return ProgramResult(
             exit_code=result.exit_code or 0,
@@ -164,6 +200,8 @@ class PrimeRuntime(Runtime):
         try:
             exposed = await self._client.expose(self._sandbox_id, port)
         except Exception as e:  # surface prime's exposure constraints actionably
+            if terminal := self._terminal_error(e, f"while exposing port {port}"):
+                raise terminal from e
             raise ProgramError(
                 "prime port exposure failed — `client.expose` currently needs a default-region "
                 "sandbox and port <= 9000; pin `tools.runtime.region` to a supported "
@@ -210,6 +248,8 @@ class PrimeRuntime(Runtime):
                 self._sandbox_id, target, data, filename=PurePosixPath(target).name
             )
         except Exception as e:
+            if terminal := self._terminal_error(e, f"while writing {path!r}"):
+                raise terminal from e
             raise ProgramError(f"write {path!r}: {e}") from e
 
     def cleanup(self) -> None:

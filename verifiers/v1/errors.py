@@ -85,6 +85,18 @@ class ProgramError(RolloutError):
     """A runtime process, sandbox, tunnel, or command boundary failed."""
 
 
+class SandboxError(ProgramError):
+    """A sandbox reached a terminal lifetime or resource failure state."""
+
+
+class SandboxTimeoutError(SandboxError):
+    """The sandbox lifetime expired while the rollout was still running."""
+
+
+class SandboxOutOfMemoryError(SandboxError):
+    """The sandbox was terminated because it exhausted its memory limit."""
+
+
 _CONTEXT_LENGTH_PHRASES = (
     "this model's maximum context length is",
     "is longer than the model's context length",

@@ -40,6 +40,9 @@ from verifiers.v1.errors import (
     ProviderTimeoutError,
     ProviderTransportError,
     RolloutError,
+    SandboxError,
+    SandboxOutOfMemoryError,
+    SandboxTimeoutError,
     ToolError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
@@ -160,6 +163,9 @@ __all__ = [
     "HarnessError",
     "ToolError",
     "ProgramError",
+    "SandboxError",
+    "SandboxTimeoutError",
+    "SandboxOutOfMemoryError",
     # clients
     "Client",
     "BaseClientConfig",

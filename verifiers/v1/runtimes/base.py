@@ -26,6 +26,8 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from verifiers.v1.errors import SandboxError
+
 logger = logging.getLogger(__name__)
 
 # Ensure `uv` is available to run our PEP 723 scripts (the harness + tool servers): use it
@@ -246,13 +248,14 @@ class RetryingRuntime(Runtime):
     `max_retries` retries). A program's own failure surfaces as a `ProgramResult` (non-zero
     exit), not an exception, so retries fire only on infra/transport faults — provisioning,
     exec transport, file I/O across the runtime boundary. `CancelledError` (a
-    `BaseException`) and `NotImplementedError` (an unsupported op) are never retried. Sync
-    teardown (`cleanup`) and display (`descriptor`) delegate straight through. The rollout's
-    program exec (`run_program`, including the script run inside `run_uv_script`) is deliberately
-    NOT retried: re-running a stateful/agentic program against the rollout's persistent trace would
-    fork a duplicate branch (and re-run against a runtime the first attempt already mutated), so a
-    mid-program transport fault surfaces as a ProgramError for that rollout. `run_uv_script`'s
-    write/mv staging still runs over the retrying `write`/`run`."""
+    `BaseException`), `NotImplementedError` (an unsupported op), and terminal
+    `SandboxError`s are never retried against the same runtime. Sync teardown (`cleanup`) and
+    display (`descriptor`) delegate straight through. The rollout's program exec (`run_program`,
+    including the script run inside `run_uv_script`) is deliberately NOT retried: re-running a
+    stateful/agentic program against the rollout's persistent trace would fork a duplicate branch
+    (and re-run against a runtime the first attempt already mutated), so a mid-program transport
+    fault surfaces as a `ProgramError` for that rollout. `run_uv_script`'s write/mv staging still
+    runs over the retrying `write`/`run`."""
 
     def __init__(self, inner: Runtime, max_retries: int) -> None:
         super().__init__(inner.name)
@@ -264,7 +267,7 @@ class RetryingRuntime(Runtime):
             stop=stop_after_attempt(max_retries + 1),
             wait=wait_exponential_jitter(initial=0.5, max=30),
             retry=retry_if_exception_type(Exception)
-            & retry_if_not_exception_type(NotImplementedError),
+            & retry_if_not_exception_type((NotImplementedError, SandboxError)),
             before_sleep=self._log_retry,
             reraise=True,
         )

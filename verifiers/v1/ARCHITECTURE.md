@@ -41,7 +41,10 @@ Episode (task, n)
 Each stage is bounded by its own `asyncio.wait_for` (`rollout.py`), so a wedge in any one
 phase is a budget event, not a hang — a `harness_timeout` scores what's there; a
 `finalize`/`scoring` timeout errors the rollout. Defaults are no-limit, so production configs
-set `TimeoutConfig` explicitly. Retries wrap the loop at two granularities: per-call
+set `TimeoutConfig` explicitly. This framework budget is distinct from a remote sandbox's
+hard lifetime: if the provider expires that sandbox first, the rollout records
+`SandboxTimeoutError`; an OOM termination records `SandboxOutOfMemoryError`. Retries wrap
+the loop at two granularities: per-call
 (`RetryingClient`, `RetryingRuntime` — rerun just the failed model/runtime call, keeping
 progress) and whole-rollout (`retries.py::run_with_retry` — re-run if the trace ends in a
 retryable error type). Per-rollout budgets (`RolloutLimits`) are checked between turns.

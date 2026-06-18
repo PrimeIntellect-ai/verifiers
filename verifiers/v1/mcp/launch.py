@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from verifiers.v1.errors import ProgramError, RolloutError, ToolError
+from verifiers.v1.errors import ProgramError, RolloutError, SandboxError, ToolError
 from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerBase
 from verifiers.v1.runtimes import (
     HOST,
@@ -180,10 +180,14 @@ async def _read_back_port(runtime: Runtime, path: str) -> int:
     is itself the retry."""
     reader = getattr(runtime, "inner", runtime)
     for _ in range(180):
-        with contextlib.suppress(Exception):
+        try:
             data = (await reader.read(path)).decode().strip()
             if data.isdigit():
                 return int(data)
+        except SandboxError:
+            raise
+        except Exception:
+            pass
         await asyncio.sleep(1)
     raise ProgramError(f"server did not report its port at {path} in its runtime")
 
@@ -233,6 +237,8 @@ async def serve_in_runtime(
     else:
         try:
             port = await _read_back_port(runtime, port_file)
+        except SandboxError:
+            raise
         except ProgramError as e:
             raise ProgramError(f"{e}: {await log_tail(runtime, log)}") from e
     probe = await runtime.run(
@@ -357,7 +363,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     urls[name] = await stack.enter_async_context(
                         serve(toolset, None, harness_is_local=harness_is_local)
                     )
-                except ToolError:
+                except (ToolError, SandboxError):
                     raise
                 except Exception as e:
                     raise ToolError(
@@ -459,7 +465,7 @@ async def serve_tools(
                             state_secret=state_secret,
                         )
                     )
-                except ToolError:
+                except (ToolError, SandboxError):
                     raise
                 except Exception as e:
                     raise ToolError(
