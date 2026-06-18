@@ -21,6 +21,7 @@ from .sandbox_utils import (
     VF_STATE_INPUT_PATH_KEY,
     read_sandbox_artifact,
     run_sandbox_command,
+    scrub_sandbox_private_fields,
 )
 from .sandbox_python_utils import (
     python_package_list,
@@ -45,7 +46,6 @@ TOOL_DEFS_BY_PROTOCOL_PATH = "/tmp/vf_tool_defs_by_protocol.json"
 RUNNER_PATH = "/tmp/vf_program_runner.py"
 PYTHON_PROGRAM_PACKAGES = ("openai", "anthropic", "requests")
 PACKAGE_ROOT = "/tmp/vf_program_package"
-
 
 def python_program_sandbox(sandbox_config: ConfigData) -> ConfigData:
     config = dict(sandbox_config)
@@ -156,7 +156,7 @@ def sandbox_runner_program(
     files = program_option_mapping(
         cast(ProgramMappingInput, program.get("files")), "program.files"
     )
-    files[TASK_PATH] = json.dumps(task)
+    files[TASK_PATH] = json.dumps(scrub_sandbox_private_fields(task))
     files[TOOL_DEFS_PATH] = json.dumps(
         serializable(serialize_tool_defs(tool_defs or [], "openai_chat_completions"))
     )

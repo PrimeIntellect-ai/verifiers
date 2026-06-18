@@ -1327,6 +1327,14 @@ vf.setup_logging(level: str = "INFO")
 
 Configure verifiers logging. Set `VF_LOG_LEVEL` env var to change default.
 
+### Sandbox upload timeout
+
+Set `VF_SANDBOX_UPLOAD_TIMEOUT` (integer seconds) to override the sandbox SDK's
+default timeout for program-staging file uploads (`upload_program_files`,
+`upload_program_dirs`, `upload_state_input`). Useful when sandbox-pool
+contention stalls the upload gateway. Unset, non-integer, or non-positive
+values keep the SDK default.
+
 ```python
 vf.log_level(level: str | int)
 ```

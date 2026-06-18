@@ -3,6 +3,7 @@ import hashlib
 import importlib.resources as resources
 import json
 import logging
+import os
 import shlex
 import tarfile
 import tempfile
@@ -77,6 +78,87 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 
+def sandbox_upload_timeout() -> int | None:
+    """Seconds for program-staging uploads from VF_SANDBOX_UPLOAD_TIMEOUT.
+
+    Unset, non-integer, or non-positive values fall back to the sandbox SDK
+    default by returning None.
+    """
+
+    value = os.getenv("VF_SANDBOX_UPLOAD_TIMEOUT")
+    if value is None:
+        return None
+    try:
+        timeout = int(value)
+    except ValueError:
+        return None
+    return timeout if timeout > 0 else None
+
+
+# Grading-only metadata that the in-sandbox program runner never reads (it uses
+# only the prompt/messages + tool defs). Staging these into the sandbox lets a
+# solver `cat /tmp/vf_task.json` and read the answer key, so they are stripped
+# from the task/state copies written into the sandbox. The host-side scorer is
+# unaffected: it reads `expected` from the env's task object / task dir, not from
+# the sandbox copy.
+SANDBOX_PRIVATE_TASK_FIELDS = frozenset(
+    {
+        "expected",
+        "expected_ref",
+        "expected_result",
+        "expected_diff",
+        "rubric",
+        "rubrics",
+        "verifier",
+        "verifier_ref",
+        "solution",
+        "solutions",
+        "reference_solution",
+        "reference_solutions",
+        "answer_key",
+        "gold_answer",
+    }
+)
+# Conversation/tool subtrees the runner DOES need verbatim — never scrubbed, so a
+# legitimate prompt or tool schema that happens to contain a denied key name is
+# preserved intact.
+SANDBOX_SCRUB_SKIP_SUBTREES = frozenset(
+    {
+        "prompt",
+        "messages",
+        "input",
+        "completion",
+        "tools",
+        "tool_defs",
+        "tool_calls",
+    }
+)
+
+
+def scrub_sandbox_private_fields(value: object) -> object:
+    """Deep-copy ``value`` with grading-only keys removed.
+
+    Strips ``SANDBOX_PRIVATE_TASK_FIELDS`` at every nesting level so the answer
+    key cannot reach the sandbox, while leaving conversation/tool subtrees
+    (``SANDBOX_SCRUB_SKIP_SUBTREES``) untouched so prompt/tool content is never
+    corrupted.
+    """
+
+    if isinstance(value, dict):
+        scrubbed: dict[object, object] = {}
+        for key, item in value.items():
+            if isinstance(key, str) and key in SANDBOX_PRIVATE_TASK_FIELDS:
+                continue
+            if isinstance(key, str) and key in SANDBOX_SCRUB_SKIP_SUBTREES:
+                scrubbed[key] = item
+            else:
+                scrubbed[key] = scrub_sandbox_private_fields(item)
+        return scrubbed
+    if isinstance(value, (list, tuple)):
+        return [scrub_sandbox_private_fields(item) for item in value]
+    return value
+
+
 class SandboxRecord(Protocol):
     id: object
 
@@ -129,6 +211,7 @@ class SandboxClient(Protocol):
         file_bytes: bytes,
         *,
         filename: str | None = None,
+        timeout: int | None = None,
     ) -> object: ...
 
     async def upload_file(
@@ -264,7 +347,11 @@ class SandboxLease:
         return cast(SandboxCommandResult, result)
 
     async def upload_bytes(
-        self, path: str, content: bytes, filename: str | None = None
+        self,
+        path: str,
+        content: bytes,
+        filename: str | None = None,
+        timeout: int | None = None,
     ) -> object:
         return await maybe_call_with_named_args(
             self.client.upload_bytes,
@@ -272,6 +359,7 @@ class SandboxLease:
             file_path=path,
             file_bytes=content,
             filename=filename or path.rsplit("/", 1)[-1] or "file",
+            timeout=timeout,
         )
 
     async def upload_file(
@@ -375,9 +463,13 @@ class SandboxHandle:
         return result
 
     async def upload_bytes(
-        self, path: str, content: bytes, filename: str | None = None
+        self,
+        path: str,
+        content: bytes,
+        filename: str | None = None,
+        timeout: int | None = None,
     ) -> object:
-        return await self.lease.upload_bytes(path, content, filename)
+        return await self.lease.upload_bytes(path, content, filename, timeout=timeout)
 
     async def upload_file(
         self, path: str, local_path: str, timeout: int | None = None
@@ -1018,6 +1110,7 @@ async def upload_program_files(
     files = program_option_mapping(
         cast(ProgramMappingInput, program.get("files")), "program.files"
     )
+    upload_timeout = sandbox_upload_timeout()
     for path, source in files.items():
         content = await resolve_program_value(source, task, state, runtime, program)
         if not isinstance(content, str):
@@ -1029,6 +1122,7 @@ async def upload_program_files(
                 file_path=path,
                 file_bytes=content.encode(),
                 filename=path.rsplit("/", 1)[-1] or "file",
+                timeout=upload_timeout,
             )
         except (APIError, UploadTimeoutError) as exc:
             raise SandboxError(
@@ -1047,6 +1141,7 @@ async def upload_program_dirs(
     dirs = program_option_mapping(
         cast(ProgramMappingInput, program.get("dirs")), "program.dirs"
     )
+    upload_timeout = sandbox_upload_timeout()
     for path, source in dirs.items():
         local_source = await resolve_program_value(
             source, task, state, runtime, program
@@ -1064,6 +1159,7 @@ async def upload_program_dirs(
             sandbox_id=sandbox_id,
             file_path=remote_tar,
             local_file_path=str(archive_path),
+            timeout=upload_timeout,
         )
         result = await maybe_call_with_named_args(
             client.execute_command,
@@ -1149,8 +1245,9 @@ async def upload_state_input(
         client.upload_bytes,
         sandbox_id=sandbox_id,
         file_path=path,
-        file_bytes=json.dumps(state).encode(),
+        file_bytes=json.dumps(scrub_sandbox_private_fields(state)).encode(),
         filename=path.rsplit("/", 1)[-1] or "file",
+        timeout=sandbox_upload_timeout(),
     )
 
 
