@@ -24,27 +24,37 @@ class SWEBenchVerifiedConfig(HarborConfig):
     dataset: Literal["swebench-verified"] = "swebench-verified"
     use_harness_image: bool = True
     """Keep harbor from rejecting the Dockerfile-only tasks; `load_tasks` sets the real image."""
+    use_prime_registry: bool = False
+    """Resolve task images against prime's Artifact Registry (`REGISTRY_PREFIX`) instead of the
+    dataset's public Docker Hub `swebench/sweb.eval.*` image. Only works on runtimes with GCP
+    pull credentials (e.g. prime training); the default public image works anywhere. Mirrors
+    `scaleswe-v1` / `r2e-gym-v1`."""
 
 
 class SWEBenchVerifiedTaskset(
     HarborTaskset, vf.Taskset[HarborTask, SWEBenchVerifiedConfig]
 ):
     def load_tasks(self) -> list[HarborTask]:
-        # TODO: once we have persistent public image caches, build each task's Dockerfile
-        # (FROM swebench/sweb.eval.*) dynamically and cache the result — then we won't need to
-        # rewrite the image to prime's prebuilt mirror here.
         return [
-            task.model_copy(update={"image": _prime_image(Path(task.task_dir))})
+            task.model_copy(update={"image": self._image(Path(task.task_dir))})
             for task in super().load_tasks()
         ]
 
+    def _image(self, task_dir: Path) -> str:
+        # TODO: once we have persistent public image caches, build each task's Dockerfile
+        # (FROM swebench/sweb.eval.*) dynamically and cache the result — then we won't need to
+        # resolve the prebuilt image here at all.
+        base = _from_image(task_dir)
+        if self.config.use_prime_registry:
+            return f"{REGISTRY_PREFIX}/{base.rsplit('/', 1)[-1]}"
+        return base
 
-def _prime_image(task_dir: Path) -> str:
-    """Map a task's Dockerfile `FROM swebench/sweb.eval.*` to prime's prebuilt mirror image."""
+
+def _from_image(task_dir: Path) -> str:
+    """The image a task's Dockerfile builds on (`FROM swebench/sweb.eval.*`)."""
     for line in (task_dir / "environment" / "Dockerfile").read_text().splitlines():
         if line.strip().upper().startswith("FROM "):
-            base = line.split(None, 1)[1].strip().rsplit("/", 1)[-1]
-            return f"{REGISTRY_PREFIX}/{base}"
+            return line.split(None, 1)[1].strip()
     raise ValueError(f"{task_dir.name}: no FROM in environment/Dockerfile")
 
 
