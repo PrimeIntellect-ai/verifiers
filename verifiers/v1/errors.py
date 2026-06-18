@@ -5,10 +5,10 @@ Only errors the rollout deliberately catches (and records into `trace.error` as 
 built-in traceback — we own the code, so we don't wrap internal invariants in
 custom messages.
 
-Each type names the *boundary* a failure crossed — provider, harness, tool, or
-program/runtime — so a recorded `trace.error.type` says where the rollout broke. The
-detail (status code, stderr, ...) comes from the wrapped inner error; we add a type only
-when the boundary isn't already clear from it.
+Each type names the *boundary* a failure crossed — provider, harness, tool, program/runtime,
+or interception — so a recorded `trace.error.type` says where the rollout broke. The detail
+(status code, stderr, ...) comes from the wrapped inner error; we add a type only when the
+boundary isn't already clear from it.
 """
 
 from openai import OpenAIError
@@ -43,11 +43,16 @@ class ProgramError(RolloutError):
     rollout stage exceeding its timeout."""
 
 
-class TunnelError(ProgramError):
-    """A host/runtime tunnel could not be established — a `prime_tunnel` reverse tunnel (host
-    service reached from inside a sandbox) or a sandbox port exposure. Retried with backoff before
-    it surfaces; tunnel creation is network-bound and globally rate-capped, so transient failures
-    are expected."""
+class InterceptionError(RolloutError):
+    """The interception layer — the host server a sandboxed harness/tool reaches for its model
+    calls and `/state` + `/task` channels — could not be reached."""
+
+
+class TunnelError(InterceptionError):
+    """The `prime_tunnel` reverse tunnel that makes the host interception server reachable from
+    inside a remote runtime could not be established. Retried with backoff before it surfaces;
+    tunnel creation is network-bound and globally rate-capped, so transient failures are expected.
+    (A runtime publishing its *own* ports — `Runtime.expose` — is a `ProgramError`, not this.)"""
 
 
 _CONTEXT_LENGTH_PHRASES = (

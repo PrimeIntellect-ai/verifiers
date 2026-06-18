@@ -28,6 +28,7 @@ from verifiers.v1.env import (
 from verifiers.v1.episode import Episode
 from verifiers.v1.errors import (
     HarnessError,
+    InterceptionError,
     ProgramError,
     ProviderError,
     RolloutError,
@@ -143,6 +144,7 @@ __all__ = [
     "HarnessError",
     "ToolError",
     "ProgramError",
+    "InterceptionError",
     "TunnelError",
     # clients
     "Client",

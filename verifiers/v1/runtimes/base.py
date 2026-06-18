@@ -336,17 +336,12 @@ TunnelT = TypeVar("TunnelT")
 
 
 async def open_tunnel(
-    start: Callable[[], Awaitable[TunnelT]],
-    what: str,
-    *,
-    retries: int = 3,
-    hint: str = "",
+    start: Callable[[], Awaitable[TunnelT]], what: str, *, retries: int = 3
 ) -> TunnelT:
-    """Run a tunnel command (`start`), retrying transient failures with backoff + jitter, and raise
+    """Open the host interception-server tunnel via `start`, retrying transient failures and raise
     `TunnelError` if it still fails. Tunnel creation is network-bound and globally rate-capped
     (`prime_tunnel` — 512/min shared across runtimes), so a transient failure is common and worth a
-    few retries before failing the rollout. `what` names the tunnel in the error; `hint` appends
-    actionable guidance."""
+    few retries before failing the rollout. `what` names the tunnel in the error."""
     from verifiers.v1.errors import TunnelError
 
     def _log(state: RetryCallState) -> None:
@@ -368,9 +363,7 @@ async def open_tunnel(
             with attempt:
                 return await start()
     except Exception as e:
-        raise TunnelError(
-            f"{what} failed after {retries + 1} attempts: {e}{hint}"
-        ) from e
+        raise TunnelError(f"{what} failed after {retries + 1} attempts: {e}") from e
     raise TunnelError(f"{what} failed")  # unreachable: AsyncRetrying returns or raises
 
 
