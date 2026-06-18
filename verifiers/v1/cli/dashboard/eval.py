@@ -30,6 +30,9 @@ from verifiers.utils.pricing_utils import format_cost_usd
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
 _CONSOLE = Console()
 _PAGE_SECONDS = 5.0  # rotate to the next page of rollouts this often when they overflow
+# The under-bar breakdown pads its label column to the Overview's widest label, so the two
+# `label  value` grids (above and below the progress bar) line their values up.
+_LABEL_WIDTH = len("timeouts")
 
 _STYLE = {
     "setup": "yellow",
@@ -163,7 +166,7 @@ def _breakdown(done: list[Trace]) -> Table | None:
     if not any(not t.has_error for t in done):
         return None
     grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="dim")
+    grid.add_column(style="dim", min_width=_LABEL_WIDTH)  # align values with the Overview
     grid.add_column()
     for label, source in (("rewards", "rewards"), ("metrics", "metrics")):
         # every key seen across traces, first-seen order (a trace records only the functions
