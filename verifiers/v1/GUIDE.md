@@ -607,32 +607,6 @@ uv run eval gsm8k-v1 -n 5 -r 3 \
 | concurrency | `-c`/`--max-concurrent` (128), `--multiplex` (32), `--pool.type` (`elastic`\|`static`) |
 | output | `-o`/`--output-dir`, `--dry-run`, `--no-rich`, `-v`/`--verbose` |
 
-Pooled server-backed evals recover automatically when an env worker process dies. The pool
-replaces that worker and replays only requests lost with it, up to three times with
-exponential-jitter backoff. This recovery policy is internal and has no configuration;
-exhausting it aborts the evaluation.
-
-**Errors.** Expected provider and runtime failures are recorded on the individual `Trace`
-instead of aborting the eval. Provider failures retain actionable types such as
-`ProviderAuthenticationError`, `ProviderRateLimitError`, `ProviderTransportError`,
-`ProviderTimeoutError`, and `ProviderResponseError`; an explicit refusal is a
-`ModelRefusalError` that the per-call policy does not retry, while an answer with no content or
-tool calls is `EmptyModelResponseError`. Neither reaches scoring. Whole-rollout retry
-include/exclude entries match subclasses, so
-`ModelError` also matches both categories and all provider errors. A harness implementation
-exception or non-zero agent exit is `HarnessError`; a per-rollout tool server that cannot start
-is `ToolError`;
-runtime process and tunnel failures remain `ProgramError` when they are not part of tool-server
-startup. A provider-enforced sandbox lifetime expiring is `SandboxTimeoutError`, while an OOM kill
-is `SandboxOutOfMemoryError`; both derive from `SandboxError` and `ProgramError`. Unlike the
-framework's clean `harness_timeout` budget, these mean the underlying sandbox died and are recorded
-as rollout errors. MCP tool-call errors returned with `isError` stay in-band as tool results so the
-model can recover. The rich dashboard shows the error type, while `--no-rich` prints the full
-`errors` record and traceback. Tool construction for shared-tool discovery and shared tool-server
-startup are eval-level infrastructure, so their typed `ToolError` aborts startup before any rollout
-trace exists. Plain-mode static and elastic workers report that traceback and exit promptly if
-startup dies; they do not wait out the 600-second readiness deadline.
-
 **Sampling.** `reasoning_effort` is a string (not a fixed enum) — the active dialect maps it to the
 provider's shape (`reasoning_effort` for chat-completions, `reasoning.effort` for Responses,
 `output_config.effort` for Anthropic).
