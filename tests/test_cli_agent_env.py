@@ -149,8 +149,10 @@ class TestCliAgentEnv:
         )
         try:
             env.post_rollout = AsyncMock()  # type: ignore[method-assign]
-            env.delete_sandbox = AsyncMock()  # type: ignore[method-assign]
+            env.sandbox_client.delete = AsyncMock()
+            env.register_sandbox("sb-env-delete")
             state = {
+                "error": None,
                 "is_completed": True,
                 "sandbox_client": object(),
                 "sandbox_id": "sb-env-delete",
@@ -159,8 +161,9 @@ class TestCliAgentEnv:
             await env.destroy_sandbox(state)
 
             env.post_rollout.assert_awaited_once_with(state)
-            env.delete_sandbox.assert_awaited_once_with("sb-env-delete")
+            env.sandbox_client.delete.assert_awaited_once_with("sb-env-delete")
             assert "sandbox_id" not in state
+            assert "sb-env-delete" not in env.active_sandboxes
             assert "sandbox_client" in state
         finally:
             env.teardown_sandbox_client()
@@ -176,8 +179,9 @@ class TestCliAgentEnv:
         )
         try:
             env.post_rollout = AsyncMock()  # type: ignore[method-assign]
-            delete_error = vf.SandboxDeleteError("Failed to delete sandbox sb-fail")
-            env.delete_sandbox = AsyncMock(side_effect=delete_error)  # type: ignore[method-assign]
+            env.sandbox_client.delete = AsyncMock(
+                side_effect=RuntimeError("delete outage")
+            )
             env.register_sandbox("sb-fail")
             state = {
                 "error": None,
@@ -189,12 +193,15 @@ class TestCliAgentEnv:
             await env.destroy_sandbox(state)
 
             env.post_rollout.assert_awaited_once_with(state)
-            env.delete_sandbox.assert_awaited_once_with("sb-fail")
-            assert state["error"] is delete_error
+            env.sandbox_client.delete.assert_awaited_once_with("sb-fail")
+            assert isinstance(state["error"], vf.SandboxDeleteError)
+            assert (
+                str(state["error"]) == "Failed to delete sandbox sb-fail: delete outage"
+            )
             assert state["cleanup_errors"] == [
                 {
                     "type": "SandboxDeleteError",
-                    "message": "Failed to delete sandbox sb-fail",
+                    "message": "Failed to delete sandbox sb-fail: delete outage",
                     "scope": "env_cleanup",
                     "sandbox_id": "sb-fail",
                 }
@@ -216,7 +223,7 @@ class TestCliAgentEnv:
         )
         try:
             env.post_rollout = AsyncMock()  # type: ignore[method-assign]
-            env.delete_sandbox = AsyncMock()  # type: ignore[method-assign]
+            env.sandbox_client.delete = AsyncMock()
             env.register_sandbox("sb-scoring")
             state = {
                 "is_completed": True,
@@ -227,7 +234,7 @@ class TestCliAgentEnv:
             await env.destroy_sandbox(state)
 
             env.post_rollout.assert_awaited_once_with(state)
-            env.delete_sandbox.assert_not_awaited()
+            env.sandbox_client.delete.assert_not_awaited()
             assert state["sandbox_id"] == "sb-scoring"
             assert "sb-scoring" in env.active_sandboxes
         finally:
