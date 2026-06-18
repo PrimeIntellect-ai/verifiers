@@ -6,8 +6,8 @@ mutate it) and a gold tool-call chain. The agent is given the task instruction a
 checks the agent's final DB hash-matches it, OR that the task's `verify(db)` accepts it. The 4,417-task
 corpus is pulled into a local cache on first use (see `corpus.ensure_corpus`), not vendored.
 
-Runs under any MCP-tool-capable v1 harness (e.g. `bash`, `default`). Filter the corpus with `--taskset.task`
-(a task or whole family), `--taskset.min-tier` / `--taskset.max-tier`, or a recorded pass-rate band.
+Runs under any MCP-tool-capable v1 harness (e.g. `bash`, `default`). Filter the corpus with `--taskset.tasks`
+(tasks or whole families), `--taskset.min-tier` / `--taskset.max-tier`, or a recorded pass-rate band.
 """
 
 from __future__ import annotations
@@ -31,9 +31,7 @@ from general_agent_v1.servers.toolset import GeneralAgentToolset
 
 
 class GeneralAgentTask(vf.Task):
-    task_name: str
-    """The task's directory name in the corpus (e.g. `calendar_scheduling_t0`)."""
-    task_dir: str
+    dir: str
     """Absolute path to the task's directory in the local cache."""
     tier: int = 0
     """Difficulty tier (0 = easiest .. 4 = hardest), from the task's `task.toml`."""
@@ -42,8 +40,9 @@ class GeneralAgentTask(vf.Task):
 class GeneralAgentConfig(vf.TasksetConfig):
     ref: str = CORPUS_REF
     """Corpus commit (research-environments) to pull `tasks/` from on first use."""
-    task: str | None = None
-    """Restrict to one task (`calendar_scheduling_t0`) or a whole family (`calendar_scheduling`)."""
+    tasks: list[str] = []
+    """Restrict to these tasks (`calendar_scheduling_t0`) or whole families (`calendar_scheduling`);
+    empty = all."""
     min_tier: int | None = None
     max_tier: int | None = None
     """Inclusive tier band (None = unbounded)."""
@@ -66,8 +65,8 @@ class GeneralAgentSolverTaskset(
             if not task_dir.is_dir() or not (task_dir / "task.toml").exists():
                 continue
             name = task_dir.name
-            if self.config.task is not None and not task_matches(
-                name, self.config.task
+            if self.config.tasks and not any(
+                task_matches(name, t) for t in self.config.tasks
             ):
                 continue
             metadata = self._metadata(task_dir)
@@ -88,8 +87,7 @@ class GeneralAgentSolverTaskset(
                 GeneralAgentTask(
                     idx=len(tasks),
                     name=name,
-                    task_name=name,
-                    task_dir=str(task_dir),
+                    dir=str(task_dir),
                     tier=tier,
                     prompt=(task_dir / "instruction.md").read_text().strip(),
                 )
@@ -111,13 +109,12 @@ class GeneralAgentSolverTaskset(
 
     @vf.reward(weight=1.0)
     async def solved(self, task: GeneralAgentTask, trace: vf.Trace) -> float:
-        # name must not be `score` — that's the base Taskset's scoring-dispatch method.
         return max(self._db_hash(task, trace), self._verify(task, trace))
 
     async def validate(self, task: GeneralAgentTask, runtime: vf.Runtime) -> bool:
         """Gold-check (model-free), run by `uv run validate`: the gold chain must change the DB,
         and (if defined) `verify(initial)` is 0 and `verify(gold)` is 1."""
-        ok, _ = gold_check(Path(task.task_dir))
+        ok, _ = gold_check(Path(task.dir))
         return ok
 
     # --- internals ---
@@ -130,12 +127,12 @@ class GeneralAgentSolverTaskset(
         """Reconstruct the agent's final DB from the dict the toolset synced onto `trace.state`."""
         if trace.state.db is None:
             return None
-        task_db = load_task_attr(Path(task.task_dir), "TaskDB")
+        task_db = load_task_attr(Path(task.dir), "TaskDB")
         return task_db.model_validate(trace.state.db) if task_db is not None else None
 
     def _gold_db(self, task: GeneralAgentTask):
         """Replay the gold tool-call chain on a fresh DB → the reference final DB."""
-        task_dir = Path(task.task_dir)
+        task_dir = Path(task.dir)
         gold_path = task_dir / "gold.json"
         if not gold_path.exists():
             return None
@@ -160,7 +157,7 @@ class GeneralAgentSolverTaskset(
     def _verify(self, task: GeneralAgentTask, trace: vf.Trace) -> float:
         try:
             agent = self._agent_db(task, trace)
-            verify_fn = load_task_attr(Path(task.task_dir), "verify")
+            verify_fn = load_task_attr(Path(task.dir), "verify")
             if agent is None or verify_fn is None:
                 return 0.0
             return float(verify_fn(agent))

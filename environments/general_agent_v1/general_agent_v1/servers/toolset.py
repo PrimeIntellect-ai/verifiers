@@ -25,7 +25,7 @@ class GeneralAgentToolset(vf.Toolset[GeneralAgentToolsetConfig, GeneralAgentStat
     TOOL_PREFIX = "tools"  # the model sees `tools_<name>` for each of the task's tools
 
     async def setup_task(self, task) -> None:
-        task_dir = Path(task.task_dir)
+        task_dir = Path(task.dir)
         task_db = load_task_attr(task_dir, "TaskDB")
         task_tools = load_task_attr(task_dir, "TaskTools")
         if task_db is None or task_tools is None:

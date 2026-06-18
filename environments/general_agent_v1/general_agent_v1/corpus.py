@@ -36,7 +36,11 @@ def cache_dir() -> Path:
     import os
 
     override = os.environ.get("GENERAL_AGENT_CACHE_DIR")
-    return Path(override) if override else Path.home() / ".cache" / "verifiers" / "general_agent"
+    return (
+        Path(override)
+        if override
+        else Path.home() / ".cache" / "verifiers" / "general_agent"
+    )
 
 
 def ensure_corpus(ref: str = CORPUS_REF) -> Path:
