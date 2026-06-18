@@ -203,6 +203,11 @@ class Rollout:
                     trace.timing.setup.end = now
                     trace.timing.generation.start = now
                     self.phase = Phase.RUNNING
+                    # A model/tool/user call that failed behind the harness (surfaced to the program
+                    # as an HTTP error it may have swallowed or exited on) is the real cause — prefer
+                    # it over the harness's own exit (see `RolloutSession.error`). But a harness
+                    # *timeout* is a budget limit, not a crash: score whatever the harness produced
+                    # (like max_turns), even if its last call had failed.
                     try:
                         await asyncio.wait_for(
                             self.harness.run(
@@ -211,13 +216,12 @@ class Rollout:
                             self.harness_timeout,
                         )
                     except TimeoutError:
-                        # A timeout is a budget limit, not a crash — score whatever the harness
-                        # produced (like max_turns). `is_truncated` is read from this stop.
                         trace.stop("harness_timeout")
-                    finally:
-                        # A model/tool/user call that failed behind the harness (surfaced to the
-                        # program as an HTTP error it may have swallowed or exited on) is the real
-                        # cause — prefer it over the harness's own exit. See `RolloutSession.error`.
+                    except RolloutError as e:
+                        if session.error is not None:
+                            raise session.error from e
+                        raise
+                    else:
                         if session.error is not None:
                             raise session.error
             now = time.time()
