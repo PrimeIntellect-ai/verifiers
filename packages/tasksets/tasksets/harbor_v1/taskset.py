@@ -88,12 +88,6 @@ class HarborTask(Task):
 def dataset_dir(dataset: str) -> Path:
     """Download a Harbor Hub `dataset` to a directory of task dirs via the `harbor`
     CLI, cached on first use."""
-    uv_bin = shutil.which("uv")
-    if uv_bin is None:
-        raise RuntimeError(
-            "`uv` is required to load Harbor datasets; install it before running this taskset"
-        )
-
     out = CACHE / dataset.replace("/", "_").replace("@", "_")
     if out.is_dir():
         return out
@@ -102,6 +96,11 @@ def dataset_dir(dataset: str) -> Path:
     if harbor_bin is not None:
         command = [harbor_bin]
     else:
+        uv_bin = shutil.which("uv")
+        if uv_bin is None:
+            raise RuntimeError(
+                "Harbor datasets require an installed `harbor` CLI or `uv` for automatic installation"
+            )
         logger.info("harbor: installing %s with uv", HARBOR_PACKAGE)
         command = [uv_bin, "tool", "run"]
         # Harbor requires Python 3.12, while Verifiers also supports Python 3.11.
