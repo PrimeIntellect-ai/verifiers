@@ -98,6 +98,8 @@ class AssistantMessage(StrictBaseModel):
     content: str | None = None
     reasoning_content: str | None = None
     tool_calls: list[ToolCall] | None = None
+    provider_state: list[dict[str, Any]] | None = None
+    """Opaque native items replayed to preserve signed or encrypted reasoning state."""
 
 
 class ToolMessage(StrictBaseModel):
