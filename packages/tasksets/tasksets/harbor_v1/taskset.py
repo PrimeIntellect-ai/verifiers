@@ -14,7 +14,7 @@ A task's declared [environment].docker_image becomes a first-class `Task.image`
 the Environment injects into the runtime (docker/prime both pull it). A task whose
 environment is only a `Dockerfile` has no pullable image — we don't build Dockerfiles
 (a locally-built image isn't pullable by a remote sandbox) — so it's rejected unless
-`use_harness_image`, which runs it on the harness runtime's image instead. A task with
+`ignore_dockerfile`, which runs it on the harness runtime's image instead. A task with
 no environment at all also runs on that image, unless `require_image`.
 """
 
@@ -51,8 +51,8 @@ class HarborConfig(TasksetConfig):
     """For a task with NO declared environment at all (no docker_image, no Dockerfile),
     whether to reject it (True) or run it on the runtime's default image (False). A task
     whose environment is a `Dockerfile` is rejected too (building Dockerfiles isn't
-    supported), unless `use_harness_image`."""
-    use_harness_image: bool = False
+    supported), unless `ignore_dockerfile`."""
+    ignore_dockerfile: bool = False
     """Run a task whose environment is only a `Dockerfile` on the harness runtime's image
     instead of rejecting it. The Dockerfile is NOT built, so the task scores against the
     harness image rather than its declared environment — only correct when that image already
@@ -100,26 +100,26 @@ def resolve_image(
     task_dir: Path,
     config: dict,
     require_image: bool,
-    use_harness_image: bool = False,
+    ignore_dockerfile: bool = False,
 ) -> str | None:
     """The task's declared registry image (usable by docker or prime). A pullable
     `[environment].docker_image` is used directly. A task whose environment is a
     `Dockerfile` is rejected — we don't build Dockerfiles, and running it on the default
     image would silently score against the wrong environment (e.g. SWE-bench's `/testbed`
-    repo would be missing) — unless `use_harness_image`, which returns None to run it on the
+    repo would be missing) — unless `ignore_dockerfile`, which returns None to run it on the
     harness runtime's image. A task with no environment at all runs on that image too, unless
     `require_image`. None means "use the runtime's own image"."""
     declared = config.get("environment", {}).get("docker_image")
     if declared:
         return declared
     if (task_dir / "environment" / "Dockerfile").exists():
-        if use_harness_image:
+        if ignore_dockerfile:
             return None
         raise ValueError(
             f"{task_dir.name}: environment is a Dockerfile, not a pullable "
             "[environment].docker_image — building Dockerfiles isn't supported, so this "
             "task can't run (it would otherwise score against the wrong default image). "
-            "Pass --taskset.use-harness-image to run it on the harness runtime's image instead."
+            "Pass --taskset.ignore-dockerfile to run it on the harness runtime's image instead."
         )
     if require_image:
         raise ValueError(
@@ -157,7 +157,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
             task_dir,
             config,
             harbor_config.require_image,
-            harbor_config.use_harness_image,
+            harbor_config.ignore_dockerfile,
         ),
         timeout=TaskTimeout(
             harness=harness_timeout * harbor_config.timeout_multiplier
