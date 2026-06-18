@@ -10,6 +10,10 @@ endpoint and this dialect parses a copy for the trace. Server-side statefulness
 import json
 
 from openai.types.responses import ResponseUsage
+from openai.types.responses.response_usage import (
+    InputTokensDetails,
+    OutputTokensDetails,
+)
 from pydantic import BaseModel, ConfigDict
 
 from verifiers.v1.dialects.base import Dialect, iter_sse
@@ -37,13 +41,20 @@ ASSISTANT_ITEMS = ("reasoning", "function_call")
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
 
 
+class ProviderUsage(ResponseUsage):
+    """Responses usage with optional detail objects for OpenAI-compatible providers."""
+
+    input_tokens_details: InputTokensDetails | None = None
+    output_tokens_details: OutputTokensDetails | None = None
+
+
 class OpenAIResponse(BaseModel):
     """Permissive parse-only view of a Responses object: `extra='allow'` keeps it a plain dict
     for the trace (read via `model_dump`), so a strict SDK model can't crash the rollout on a
     provider/SDK enum skew (e.g. a value the pinned `openai` rejects)."""
 
     model_config = ConfigDict(extra="allow")
-    usage: ResponseUsage | None = None
+    usage: ProviderUsage | None = None
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -134,12 +145,16 @@ def response_from_wire(response: OpenAIResponse) -> Response:
     usage = None
     if response.usage:
         provider_usage = response.usage
-        cached = provider_usage.input_tokens_details.cached_tokens
+        input_details = provider_usage.input_tokens_details
+        output_details = provider_usage.output_tokens_details
+        cached = input_details.cached_tokens if input_details else None
         usage = Usage(
-            prompt_tokens=provider_usage.input_tokens - cached,
+            prompt_tokens=provider_usage.input_tokens - (cached or 0),
             completion_tokens=provider_usage.output_tokens,
             cached_input_tokens=cached,
-            reasoning_tokens=provider_usage.output_tokens_details.reasoning_tokens,
+            reasoning_tokens=output_details.reasoning_tokens
+            if output_details
+            else None,
         )
     return Response(
         id=data.get("id", ""),

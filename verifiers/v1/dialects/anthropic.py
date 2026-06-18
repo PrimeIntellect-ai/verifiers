@@ -136,7 +136,7 @@ def response_from_wire(message: AnthropicMessage) -> Response:
             )
     finish: FinishReason = STOP_REASONS.get(data.get("stop_reason") or "")
     provider_usage = message.usage
-    output_details = data["usage"].get("output_tokens_details") or {}
+    output_details = data.get("usage", {}).get("output_tokens_details")
     # Anthropic reports three disjoint input buckets. Cache writes are uncached work;
     # cache reads are the reusable subset exposed separately by vf.Usage.
     usage = Usage(
@@ -146,7 +146,9 @@ def response_from_wire(message: AnthropicMessage) -> Response:
         cached_input_tokens=provider_usage.cache_read_input_tokens,
         # This is a re-tokenized raw-thinking estimate inside output_tokens, not the
         # token count of the visible thinking summary.
-        reasoning_tokens=output_details.get("thinking_tokens"),
+        reasoning_tokens=output_details.get("thinking_tokens")
+        if output_details
+        else None,
     )
     return Response(
         id=data.get("id", ""),
