@@ -6,7 +6,7 @@ mutate it) and a gold tool-call chain. The agent is given the task instruction a
 checks the agent's final DB hash-matches it, OR that the task's `verify(db)` accepts it. The 4,417-task
 corpus is pulled into a local cache on first use (see `corpus.ensure_corpus`), not vendored.
 
-Runs under any tool-capable v1 harness (e.g. `bash`, `rlm`). Filter the corpus with `--taskset.task`
+Runs under any MCP-tool-capable v1 harness (e.g. `bash`, `default`). Filter the corpus with `--taskset.task`
 (a task or whole family), `--taskset.min-tier` / `--taskset.max-tier`, or a recorded pass-rate band.
 """
 
@@ -23,6 +23,7 @@ from general_agent_v1.common import GeneralAgentState, GeneralAgentToolsetConfig
 from general_agent_v1.corpus import (
     CORPUS_REF,
     ensure_corpus,
+    gold_check,
     load_task_attr,
     matches_pass_rate,
     task_matches,
@@ -117,20 +118,10 @@ class GeneralAgentSolverTaskset(
         return max(self._db_hash(task, trace), self._verify(task, trace))
 
     async def validate(self, task: GeneralAgentTask, runtime: vf.Runtime) -> bool:
-        """Gold-check (model-free): the gold chain must change the DB, `verify(initial)` must be
-        0, and `verify(gold)` must be 1 — what `uv run validate` runs per task."""
-        task_dir = Path(task.task_dir)
-        gold = self._gold_db(task)
-        if gold is None:
-            return False
-        task_db = load_task_attr(task_dir, "TaskDB")
-        initial = task_db.load(task_dir / "db.json")
-        if initial.get_hash() == gold.get_hash():
-            return False  # gold solution did not change the DB
-        verify_fn = load_task_attr(task_dir, "verify")
-        if verify_fn is None:
-            return True
-        return verify_fn(initial) == 0.0 and verify_fn(gold) == 1.0
+        """Gold-check (model-free), run by `uv run validate`: the gold chain must change the DB,
+        and (if defined) `verify(initial)` is 0 and `verify(gold)` is 1."""
+        ok, _ = gold_check(Path(task.task_dir))
+        return ok
 
     # --- internals ---
 

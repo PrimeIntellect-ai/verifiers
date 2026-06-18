@@ -10,6 +10,7 @@ cache on first start. `load_task_attr()` then dynamically imports a single task'
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -117,6 +118,38 @@ def load_task_attr(task_dir: Path, attr: str) -> Any | None:
         return getattr(module, attr, None)
     finally:
         sys.dont_write_bytecode = prev
+
+
+def gold_check(task_dir: Path) -> tuple[bool, str | None]:
+    """Validate a task dir the way the corpus does — returns `(ok, reason)`. The gold chain must
+    exist and change the DB hash, and (if `verify` is defined) `verify(initial_db) == 0` and
+    `verify(gold_db) == 1`. Shared by the solver's `validate` hook and the synth's reward."""
+    if not (task_dir / "db.json").exists():
+        return False, "no db.json"
+    gold_path = task_dir / "gold.json"
+    if not gold_path.exists():
+        return False, "no gold.json"
+    task_db = load_task_attr(task_dir, "TaskDB")
+    task_tools = load_task_attr(task_dir, "TaskTools")
+    if task_db is None or task_tools is None:
+        return False, "tools.py must define TaskDB and TaskTools"
+    initial = task_tools(task_db.load(task_dir / "db.json"))
+    gold = task_tools(task_db.load(task_dir / "db.json"))
+    try:
+        for tool_name, kwargs in json.loads(gold_path.read_text()):
+            gold.call_tool(tool_name, **kwargs)
+    except Exception as e:
+        return False, f"gold replay failed: {type(e).__name__}: {e}"
+    if initial.db.get_hash() == gold.db.get_hash():
+        return False, "gold solution did not change the DB"
+    verify_fn = load_task_attr(task_dir, "verify")
+    if verify_fn is None:
+        return True, None
+    if verify_fn(initial.db) != 0.0:
+        return False, "verify(initial_db) != 0.0"
+    if verify_fn(gold.db) != 1.0:
+        return False, "verify(gold_db) != 1.0"
+    return True, None
 
 
 # --- filtering helpers (mirror the source corpus) -----------------------------
