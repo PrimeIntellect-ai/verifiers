@@ -41,7 +41,7 @@ class CallRetryConfig(BaseConfig):
 class RolloutRetryConfig(BaseConfig):
     """Retry a whole rollout when it ends with a captured error (parity with v0's
     rollout-level retries). Matching is by the error's exception type name, so
-    `include`/`exclude` name exception classes (e.g. ``ModelError``, ``ProgramError``)."""
+    `include`/`exclude` name exception classes (e.g. ``ProviderError``, ``ProgramError``)."""
 
     max_retries: int = Field(0, ge=0)
     """Whole-rollout retries beyond the first attempt (0 = no retry, the default, N = up to N

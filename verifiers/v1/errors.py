@@ -5,7 +5,7 @@ Only errors the rollout deliberately catches (and records into `trace.error` as 
 built-in traceback — we own the code, so we don't wrap internal invariants in
 custom messages.
 
-Each type names the *boundary* a failure crossed — provider, model, harness, tool, or
+Each type names the *boundary* a failure crossed — provider, harness, tool, or
 program/runtime — so a recorded `trace.error.type` says where the rollout broke. The
 detail (status code, stderr, ...) comes from the wrapped inner error; we add a type only
 when the boundary isn't already clear from it.
@@ -18,17 +18,13 @@ class RolloutError(Exception):
     """Base for errors recorded into the trace rather than crashing the rollout."""
 
 
-class ModelError(RolloutError):
-    """The model could not produce a usable completion — the umbrella for a failed
-    provider call (`ProviderError`) and an overlong prompt (`OverlongPromptError`)."""
+class ProviderError(RolloutError):
+    """A call to the model provider failed: transport, an HTTP error status, a timeout, a
+    malformed response, or a prompt the model can't accept. The wrapped SDK/httpx error
+    carries the status code and detail."""
 
 
-class ProviderError(ModelError):
-    """A call to the model provider failed: transport, an HTTP error status, a timeout, or a
-    malformed response. The wrapped SDK/httpx error carries the status code and detail."""
-
-
-class OverlongPromptError(ModelError):
+class OverlongPromptError(ProviderError):
     """The prompt (plus the requested completion) exceeded the model's context window.
     A budget limit, not a crash: the interception server ends the rollout as a clean,
     truncated trajectory rather than recording it as an error."""
@@ -47,6 +43,13 @@ class ProgramError(RolloutError):
     rollout stage exceeding its timeout."""
 
 
+class TunnelError(ProgramError):
+    """A host/runtime tunnel could not be established — a `prime_tunnel` reverse tunnel (host
+    service reached from inside a sandbox) or a sandbox port exposure. Retried with backoff before
+    it surfaces; tunnel creation is network-bound and globally rate-capped, so transient failures
+    are expected."""
+
+
 _CONTEXT_LENGTH_PHRASES = (
     "this model's maximum context length is",
     "is longer than the model's context length",
@@ -61,12 +64,12 @@ _CONTEXT_LENGTH_PHRASES = (
 )
 
 
-def model_error(e: OpenAIError | str) -> ModelError:
+def model_error(e: OpenAIError | str) -> ProviderError:
     """Map a provider failure to our error type: an overlong prompt (a budget limit the
     interception server turns into a clean truncation) is told apart from any other provider
     call failure (auth, rate limit, transport, a genuine bad request, ...), which becomes a
-    `ProviderError`. Accepts either an SDK error (the renderer) or the provider's raw error
-    body (the httpx proxy)."""
+    plain `ProviderError`. Accepts either an SDK error (the renderer) or the provider's raw
+    error body (the httpx proxy)."""
     # Some SDK errors stringify empty; fall back to the type so the message is never blank.
     text = str(e) or (type(e).__name__ if isinstance(e, BaseException) else "")
     if any(phrase in text.casefold() for phrase in _CONTEXT_LENGTH_PHRASES):

@@ -28,11 +28,11 @@ from verifiers.v1.env import (
 from verifiers.v1.episode import Episode
 from verifiers.v1.errors import (
     HarnessError,
-    ModelError,
     ProgramError,
     ProviderError,
     RolloutError,
     ToolError,
+    TunnelError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.loaders import (
@@ -139,11 +139,11 @@ __all__ = [
     "group_reward",
     # errors
     "RolloutError",
-    "ModelError",
     "ProviderError",
     "HarnessError",
     "ToolError",
     "ProgramError",
+    "TunnelError",
     # clients
     "Client",
     "BaseClientConfig",

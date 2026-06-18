@@ -19,7 +19,7 @@ from tenacity import (
 )
 
 from verifiers.v1.dialects import Dialect
-from verifiers.v1.errors import ModelError, OverlongPromptError
+from verifiers.v1.errors import OverlongPromptError, ProviderError
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, Sampling, SamplingConfig
 
@@ -87,7 +87,7 @@ class Client(ABC):
 
 
 class RetryingClient(Client):
-    """Wraps a client to retry each completion on a transient `ModelError` (tenacity, up to
+    """Wraps a client to retry each completion on a transient `ProviderError` (tenacity, up to
     `max_retries` retries) with exponential backoff + jitter between attempts — so retries don't
     fire back-to-back into the same brief endpoint outage, and concurrent rollouts hitting a shared
     endpoint stagger their retries instead of re-thundering it. An `OverlongPromptError` is never
@@ -102,7 +102,7 @@ class RetryingClient(Client):
         self._retrying = AsyncRetrying(
             stop=stop_after_attempt(max_retries + 1),
             wait=wait_exponential_jitter(initial=0.5, max=30),
-            retry=retry_if_exception_type(ModelError)
+            retry=retry_if_exception_type(ProviderError)
             & retry_if_not_exception_type(OverlongPromptError),
             before_sleep=self._log_retry,
             reraise=True,

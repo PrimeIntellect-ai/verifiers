@@ -14,8 +14,9 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, TypeVar
 
 from tenacity import (
     AsyncRetrying,
@@ -331,6 +332,48 @@ class RetryingRuntime(Runtime):
         await self._retry(self.inner.write, path, data)
 
 
+TunnelT = TypeVar("TunnelT")
+
+
+async def open_tunnel(
+    start: Callable[[], Awaitable[TunnelT]],
+    what: str,
+    *,
+    retries: int = 3,
+    hint: str = "",
+) -> TunnelT:
+    """Run a tunnel command (`start`), retrying transient failures with backoff + jitter, and raise
+    `TunnelError` if it still fails. Tunnel creation is network-bound and globally rate-capped
+    (`prime_tunnel` — 512/min shared across runtimes), so a transient failure is common and worth a
+    few retries before failing the rollout. `what` names the tunnel in the error; `hint` appends
+    actionable guidance."""
+    from verifiers.v1.errors import TunnelError
+
+    def _log(state: RetryCallState) -> None:
+        logger.warning(
+            "retrying %s (retry %d/%d) after error: %s",
+            what,
+            state.attempt_number,
+            retries,
+            state.outcome.exception(),
+        )
+
+    try:
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(retries + 1),
+            wait=wait_exponential_jitter(initial=0.5, max=30),
+            before_sleep=_log,
+            reraise=True,
+        ):
+            with attempt:
+                return await start()
+    except Exception as e:
+        raise TunnelError(
+            f"{what} failed after {retries + 1} attempts: {e}{hint}"
+        ) from e
+    raise TunnelError(f"{what} failed")  # unreachable: AsyncRetrying returns or raises
+
+
 @contextlib.asynccontextmanager
 async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = None):
     """Yield a URL a program *inside a runtime* uses to reach a HOST service on `port`. A local
@@ -344,17 +387,16 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
         return
     from prime_tunnel import Tunnel
 
-    from verifiers.v1.errors import ProgramError
     from verifiers.v1.runtimes.limiters import TUNNEL_LIMITER
 
-    tunnel = Tunnel(local_port=port, labels=labels or None)
-    try:
+    async def _start() -> tuple[Tunnel, str]:
+        tunnel = Tunnel(local_port=port, labels=labels or None)
         async with (
             TUNNEL_LIMITER
         ):  # shared prime_tunnel rate (512/min, runtime-independent)
-            url = str(await tunnel.start()).rstrip("/")
-    except Exception as e:
-        raise ProgramError(f"host tunnel failed (port {port}): {e}") from e
+            return tunnel, str(await tunnel.start()).rstrip("/")
+
+    tunnel, url = await open_tunnel(_start, f"host tunnel (port {port})")
     try:
         yield url
     finally:

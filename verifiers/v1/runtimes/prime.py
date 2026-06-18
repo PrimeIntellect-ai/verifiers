@@ -16,7 +16,13 @@ from typing import ClassVar, Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime, parse_gpu
+from verifiers.v1.runtimes.base import (
+    SERVICE_PORT,
+    ProgramResult,
+    Runtime,
+    open_tunnel,
+    parse_gpu,
+)
 from verifiers.v1.runtimes.limiters import creation_limiter
 
 logger = logging.getLogger(__name__)
@@ -161,14 +167,15 @@ class PrimeRuntime(Runtime):
         # TODO: `client.expose` currently only works in a default-region sandbox (port <= 9000), so
         # a tool/user-sim in its own prime sandbox needs the region pinned. Fix once prime supports
         # port exposure in any region (then drop the e2e `skip_if_unexposable` guard).
-        try:
-            exposed = await self._client.expose(self._sandbox_id, port)
-        except Exception as e:  # surface prime's exposure constraints actionably
-            raise ProgramError(
-                "prime port exposure failed — `client.expose` currently needs a default-region "
-                "sandbox and port <= 9000; pin `tools.runtime.region` to a supported "
-                f"region, or use a host/docker tools.runtime instead. ({e})"
-            ) from e
+        exposed = await open_tunnel(
+            lambda: self._client.expose(self._sandbox_id, port),
+            f"prime port exposure (port {port})",
+            hint=(
+                " — `client.expose` currently needs a default-region sandbox and port <= 9000; "
+                "pin `tools.runtime.region` to a supported region, or use a host/docker "
+                "tools.runtime instead"
+            ),
+        )
         logger.info("prime: exposed sandbox port %d at %s", port, exposed.url)
         return exposed.url.rstrip("/")
 

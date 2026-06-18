@@ -17,7 +17,12 @@ from typing import ClassVar, Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import ProgramError
-from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime
+from verifiers.v1.runtimes.base import (
+    SERVICE_PORT,
+    ProgramResult,
+    Runtime,
+    open_tunnel,
+)
 from verifiers.v1.runtimes.limiters import creation_limiter
 
 logger = logging.getLogger(__name__)
@@ -125,10 +130,9 @@ class ModalRuntime(Runtime):
         # Only the pre-declared SERVICE_PORT is forwarded; any other port has no tunnel.
         if self._sandbox is None:
             return None
-        try:
-            tunnels = await self._sandbox.tunnels.aio()
-        except Exception as e:
-            raise ProgramError(f"modal tunnels unavailable (port {port}): {e}") from e
+        tunnels = await open_tunnel(
+            self._sandbox.tunnels.aio, f"modal tunnels (port {port})"
+        )
         tunnel = tunnels.get(port)
         return str(tunnel.url).rstrip("/") if tunnel else None
 

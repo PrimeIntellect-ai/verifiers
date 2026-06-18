@@ -112,8 +112,8 @@ class RolloutSession:
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
-    harness returns — recording the real `ProviderError`/`ModelError` instead of a secondary
-    `HarnessError`. Reset before each model turn, so a successful retry clears it."""
+    harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
+    Reset before each model turn, so a successful retry clears it."""
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
