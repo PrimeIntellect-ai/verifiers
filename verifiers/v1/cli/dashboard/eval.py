@@ -23,7 +23,12 @@ from verifiers.v1.cli.output import output_path
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.format import format_count, format_reward, format_time
+from verifiers.v1.utils.format import (
+    format_count,
+    format_mean,
+    format_reward,
+    format_time,
+)
 from verifiers.utils.pricing_utils import format_cost_usd
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
@@ -154,33 +159,36 @@ def Progress(
 
 
 def _breakdown(done: list[Trace]) -> Text | None:
-    """The per-component view under the headline (summed) reward: a running mean of each named
-    `@reward` contribution then each `@metric`, over the non-errored completed traces (the same
-    denominator as the headline reward). `None` when nothing has scored yet, so the bar shows
+    """The per-component view under the headline (summed) reward: each named `@reward`
+    contribution then each `@metric`, formatted exactly like the headline reward — the
+    error-corrected mean, with the global mean (an errored trace's value counting as 0) in parens
+    when some errored (see `format_mean`). `None` when nothing has scored yet, so the bar shows
     alone."""
-    clean = [t for t in done if not t.has_error]
-    if not clean:
+    if not any(not t.has_error for t in done):
         return None
     line = Text(style="dim")
     for label, source in (("rewards", "rewards"), ("metrics", "metrics")):
-        means = _means(clean, source)
-        if not means:
+        names = _names(done, source)
+        if not names:
             continue
+        segments = [
+            f"{name} {format_mean(done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0))}"
+            for name in names
+        ]
         if line:  # rewards group already written — space before the metrics group
             line.append("      ")
         line.append(f"{label}  ", style="dim cyan")
-        line.append("  ·  ".join(f"{name} {mean:.2f}" for name, mean in means))
+        line.append("  ·  ".join(segments))
     return line or None
 
 
-def _means(traces: list[Trace], source: str) -> list[tuple[str, float]]:
-    """Mean of each `source` (`rewards` / `metrics`) entry across the `traces` that recorded it,
-    in first-seen order (a trace records only the functions that ran for it, so keys can vary)."""
-    values: dict[str, list[float]] = {}
+def _names(traces: list[Trace], source: str) -> list[str]:
+    """Every `source` (`rewards` / `metrics`) key seen across `traces`, in first-seen order (a
+    trace records only the functions that ran for it, so keys can vary)."""
+    names: list[str] = []
     for trace in traces:
-        for name, value in getattr(trace, source).items():
-            values.setdefault(name, []).append(value)
-    return [(name, sum(vals) / len(vals)) for name, vals in values.items()]
+        names.extend(n for n in getattr(trace, source) if n not in names)
+    return names
 
 
 def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None]:
