@@ -50,9 +50,6 @@ class GeneralAgentToolset(vf.Toolset[GeneralAgentToolsetConfig, GeneralAgentStat
 
         call.__name__ = name
         call.__doc__ = method.__doc__
-        # Keep the params (FastMCP builds the input schema from them) but advertise a `str`
-        # return: results go back as text, so FastMCP doesn't validate them against the tool's
-        # own return type (e.g. `-> list`) which our JSON-string wrapper wouldn't satisfy.
         call.__signature__ = inspect.signature(method).replace(return_annotation=str)
         return call
 
