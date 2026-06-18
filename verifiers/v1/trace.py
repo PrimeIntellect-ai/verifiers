@@ -264,7 +264,6 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         completion) — used for token batching."""
         return sum(branch.total_tokens for branch in self.branches)
 
-    @computed_field
     @property
     def usage(self) -> Usage | None:
         """Provider-reported usage summed once per actual model call in this rollout."""
