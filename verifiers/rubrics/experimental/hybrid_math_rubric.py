@@ -5,6 +5,7 @@ from verifiers.envs.experimental.sandbox_mixin import SandboxMixin
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.math_rubric import MathRubric
 from verifiers.utils.data_utils import extract_boxed_answer
+from verifiers.utils.sandbox_delete import cleanup_sandbox_for_rollout
 
 import verifiers as vf
 
@@ -334,4 +335,10 @@ class RemoteHybridMathRubric(SandboxMixin, HybridMathRubric):
         """Delete the sandbox after scoring is complete."""
         sandbox_id = state.get("sandbox_id")
         if sandbox_id:
-            await self.delete_sandbox(sandbox_id)
+            await cleanup_sandbox_for_rollout(
+                self.sandbox_client,
+                sandbox_id,
+                state,
+                scope="rubric_cleanup",
+                on_deleted=self.deregister_sandbox,
+            )

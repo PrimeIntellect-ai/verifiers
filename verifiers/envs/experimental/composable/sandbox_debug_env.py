@@ -12,6 +12,7 @@ from verifiers.envs.experimental.sandbox_mixin import (
     SandboxSetupError,
 )
 from verifiers.types import Messages, State
+from verifiers.utils.sandbox_delete import cleanup_sandbox_for_rollout
 
 from .task import SandboxTaskSet
 
@@ -315,4 +316,10 @@ class SandboxDebugEnv(SandboxMixin, vf.MultiTurnEnv):
     async def destroy_sandbox(self, state: State) -> None:
         sandbox_id = state.get("sandbox_id")
         if sandbox_id:
-            await self.delete_sandbox(sandbox_id)
+            await cleanup_sandbox_for_rollout(
+                self.sandbox_client,
+                sandbox_id,
+                state,
+                scope="env_cleanup",
+                on_deleted=self.deregister_sandbox,
+            )
