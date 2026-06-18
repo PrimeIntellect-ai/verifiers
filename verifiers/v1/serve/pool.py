@@ -16,9 +16,9 @@ serving resources; everything else goes to a ready worker.
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
 (own env, own loop) and monitor a death pipe so an orphaned worker self-exits if the
-broker dies. TODO: downscale idle workers, per-worker restart-on-death, stats/lag
-monitors (v0 had them; omitted here — rollout errors are returned as data, not crashes,
-so worker death is rare).
+broker dies. A crashed worker is replaced within the configured whole-rollout retry
+budget; its in-flight requests fail as `ProgramError` so the caller can replay them with
+the same policy and backoff. TODO: downscale idle workers and stats/lag monitors.
 """
 
 import asyncio
@@ -36,8 +36,9 @@ import zmq
 import zmq.asyncio
 
 from verifiers.v1.env import EnvConfig
+from verifiers.v1.retries import RolloutRetryConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import HealthResponse
+from verifiers.v1.serve.types import BaseResponse, HealthResponse
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +98,10 @@ class EnvServerPool:
     With `elastic=True` (default) it starts with a single worker and spawns another
     whenever in-flight requests reach 90% of current capacity (`workers * multiplex`), up
     to `max_workers`. Upscale-only for now — workers are never reclaimed. `elastic=False`
-    pre-spawns all `max_workers` upfront (the old fixed-pool behavior). The broker forwards
-    opaque request frames, so workers can be `EnvServer` (v1) or `LegacyEnvServer` (v0)
-    without the broker caring."""
+    pre-spawns all `max_workers` upfront (the old fixed-pool behavior). Dead v1 workers
+    are replaced up to `max_restarts`; their in-flight requests receive `ProgramError`.
+    The broker otherwise forwards opaque request frames, so workers can be `EnvServer`
+    (v1) or `LegacyEnvServer` (v0) without the broker caring."""
 
     def __init__(
         self,
@@ -110,6 +112,7 @@ class EnvServerPool:
         log_setup: Callable[[], None] | None = None,
         multiplex: int = 128,
         elastic: bool = True,
+        max_restarts: int = 0,
     ) -> None:
         self.server_kwargs = server_kwargs
         self.max_workers = max_workers
@@ -117,8 +120,10 @@ class EnvServerPool:
         self.elastic = elastic
         self.legacy = legacy
         self.log_setup = log_setup
+        self.max_restarts = max_restarts
         self.session = uuid.uuid4().hex[:12]
         self.workers: list[dict] = []
+        self._next_worker_index = 0
         self._mpctx = mp.get_context("spawn")
         self._poller: zmq.asyncio.Poller | None = None
 
@@ -134,8 +139,9 @@ class EnvServerPool:
     def _worker_path(self, i: int) -> str:
         return f"/tmp/vf-pool-{self.session}-{i}"
 
-    def _spawn_worker(self) -> None:
-        i = len(self.workers)  # upscale-only, so the next index is the current count
+    def _spawn_worker(self, restarts: int = 0) -> None:
+        i = self._next_worker_index
+        self._next_worker_index += 1
         address = f"ipc://{self._worker_path(i)}"
         parent_conn, child_conn = self._mpctx.Pipe()
         ready = self._mpctx.Event()
@@ -164,6 +170,7 @@ class EnvServerPool:
                 "ready": ready,
                 "active": 0,
                 "index": i,
+                "restarts": restarts,
             }
         )
         if self._poller is not None:
@@ -172,9 +179,9 @@ class EnvServerPool:
     def _maybe_scale_up(self, in_flight: int) -> None:
         """Spawn one more worker when in-flight requests reach 90% of current capacity.
 
-        A new worker starts at `active=0`, so least-busy dispatch funnels the backlog to
-        it as it comes online (a few seconds to load the env) — fine, since we only scale
-        up once already saturated. `max_workers=None` scales without a cap."""
+        A new worker is excluded from dispatch until it finishes loading the env and sets
+        `ready`; then least-busy dispatch can use it. `max_workers=None` scales without a
+        cap."""
         if self.max_workers is not None and len(self.workers) >= self.max_workers:
             return
         if in_flight >= 0.9 * len(self.workers) * self.multiplex:
@@ -210,11 +217,51 @@ class EnvServerPool:
             while True:
                 events = dict(await self._poller.poll(timeout=100))
                 dead = [w for w in self.workers if not w["process"].is_alive()]
-                if dead:
-                    workers = ", ".join(str(w["index"]) for w in dead)
-                    raise RuntimeError(
-                        f"env server worker(s) {workers} exited unexpectedly"
+                for worker in dead:
+                    message = (
+                        f"env server worker {worker['index']} exited unexpectedly "
+                        f"(exit code {worker['process'].exitcode})"
                     )
+                    failure = msgpack.packb(
+                        BaseResponse(
+                            success=False,
+                            error=message,
+                            error_type="ProgramError",
+                        ).model_dump(mode="json"),
+                        use_bin_type=True,
+                    )
+                    for request_id, entry in list(pending.items()):
+                        if entry["worker"] is not worker:
+                            continue
+                        pending.pop(request_id)
+                        with contextlib.suppress(zmq.ZMQError):
+                            await self.frontend.send_multipart(
+                                [entry["client_id"], request_id, failure]
+                            )
+                    with contextlib.suppress(KeyError, zmq.ZMQError):
+                        self._poller.unregister(worker["dealer"])
+                    with contextlib.suppress(Exception):
+                        worker["pipe"].close()
+                    with contextlib.suppress(Exception):
+                        worker["process"].join(timeout=1)
+                    with contextlib.suppress(Exception):
+                        worker["dealer"].close()
+                    with contextlib.suppress(OSError):
+                        os.unlink(self._worker_path(worker["index"]))
+                    self.workers.remove(worker)
+                    if worker["restarts"] >= self.max_restarts:
+                        raise RuntimeError(
+                            f"{message}; restart budget exhausted "
+                            f"({self.max_restarts} retries)"
+                        )
+                    restart = worker["restarts"] + 1
+                    logger.warning(
+                        "%s; restarting (retry %d/%d)",
+                        message,
+                        restart,
+                        self.max_restarts,
+                    )
+                    self._spawn_worker(restarts=restart)
                 if self.frontend in events:
                     (
                         client_id,
@@ -247,6 +294,7 @@ class EnvServerPool:
                         if entry is None:
                             continue
                         entry["worker"]["active"] -= 1
+                        entry["worker"]["restarts"] = 0
                         with contextlib.suppress(zmq.ZMQError):
                             await self.frontend.send_multipart(
                                 [entry["client_id"], request_id, data]
@@ -332,6 +380,13 @@ def serve_env(
                 server_kwargs = {
                     "config_data": env_config_data(server_kwargs["config"])
                 }
+            retry = RolloutRetryConfig()
+            if not legacy:
+                retry = RolloutRetryConfig.model_validate(
+                    server_kwargs.get("config_data", {})
+                    .get("retries", {})
+                    .get("rollout", {})
+                )
             pool = EnvServerPool(
                 server_kwargs,
                 max_workers,
@@ -340,6 +395,7 @@ def serve_env(
                 log_setup,
                 multiplex,
                 elastic,
+                retry.max_retries if retry.allows("ProgramError") else 0,
             )
             if address_queue is not None:
                 address_queue.put(pool.address)

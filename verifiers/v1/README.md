@@ -239,6 +239,12 @@ uv run eval gsm8k-v1 -n 1 --retries.model.max-retries 5 --retries.runtime.max-re
 uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.include ProgramError  # whole-rollout, by exception type
 ```
 
+Pooled server-backed evals also apply the whole-rollout `ProgramError` policy when an env
+worker process dies: the pool replaces that worker and the caller replays only the requests
+lost with it, using the same retry count and exponential-jitter backoff. With rollout
+retries disabled or excluded for `ProgramError`, worker death aborts the evaluation without
+replay.
+
 **Errors.** Expected rollout failures persist on `trace.errors` with their boundary intact:
 provider/auth/schema failures use the `Provider*Error` types, agent implementation or exit
 failures use `HarnessError`, task-tool construction/server failures use `ToolError`, and

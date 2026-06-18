@@ -21,6 +21,8 @@ class BaseRequest(BaseModel):
 class BaseResponse(BaseModel):
     success: bool = True
     error: str | None = None
+    error_type: str | None = None
+    """Typed boundary failures a client should preserve instead of flattening."""
 
 
 class HealthRequest(BaseRequest):

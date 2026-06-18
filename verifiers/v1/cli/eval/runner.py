@@ -164,7 +164,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                         f"{_SERVER_STARTUP_TIMEOUT}s"
                     )
                 await asyncio.sleep(0.05)
-        client = EnvClient(address=address)
+        client = EnvClient(address=address, retry=config.retries.rollout)
         startup = asyncio.create_task(
             client.wait_for_server_startup(timeout=_SERVER_STARTUP_TIMEOUT)
         )

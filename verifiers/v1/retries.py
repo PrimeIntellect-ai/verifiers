@@ -6,7 +6,8 @@ the rest of the rollout's progress is kept — the cheap, default-on layer. Whol
 retries (`run_with_retry`) rerun an entire trajectory when its trace ends with a retryable
 error (matched by exception type name against include/exclude), accumulating each failed
 attempt's error onto the returned trace's `errors`; off by default (parity with v0, but
-superseded by the finer per-call retries).
+superseded by the finer per-call retries). Server-backed evals use that same policy to
+replay a request when its worker process dies before it can return a trace.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from tenacity import (
     RetryCallState,
     retry_if_result,
     stop_after_attempt,
+    wait_exponential_jitter,
 )
 
 if TYPE_CHECKING:
@@ -41,7 +43,8 @@ class CallRetryConfig(BaseConfig):
 class RolloutRetryConfig(BaseConfig):
     """Retry a whole rollout when it ends with a captured error (parity with v0's
     rollout-level retries). Matching is by the error's exception type name, so
-    `include`/`exclude` name exception classes (e.g. ``ModelError``, ``ProgramError``)."""
+    `include`/`exclude` name exception classes (e.g. ``ModelError``, ``ProgramError``).
+    A crashed env-server worker is a ``ProgramError`` at this boundary."""
 
     max_retries: int = Field(0, ge=0)
     """Whole-rollout retries beyond the first attempt (0 = no retry, the default, N = up to N
@@ -51,6 +54,12 @@ class RolloutRetryConfig(BaseConfig):
     """Only retry errors whose type is listed. Empty = retry anything not excluded."""
     exclude: list[str] = []
     """Never retry errors whose type is listed (wins over `include`)."""
+
+    def allows(self, error_type: str) -> bool:
+        """Whether an error type passes this policy's include/exclude filters."""
+        if error_type in self.exclude:
+            return False
+        return not self.include or error_type in self.include
 
 
 class RetryConfig(BaseConfig):
@@ -71,11 +80,7 @@ def should_retry(trace: Trace, retry: RolloutRetryConfig) -> bool:
     error = trace.error
     if error is None:
         return False
-    if error.type in retry.exclude:
-        return False
-    if retry.include:
-        return error.type in retry.include
-    return True
+    return retry.allows(error.type)
 
 
 async def run_with_retry(
@@ -106,6 +111,7 @@ async def run_with_retry(
 
     retrying = AsyncRetrying(
         stop=stop_after_attempt(retry.max_retries + 1),
+        wait=wait_exponential_jitter(initial=0.5, max=30),
         retry=retry_if_result(lambda trace: should_retry(trace, retry)),
         before_sleep=record,
         retry_error_callback=lambda state: state.outcome.result(),

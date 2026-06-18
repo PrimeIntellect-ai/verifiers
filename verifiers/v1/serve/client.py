@@ -18,8 +18,16 @@ from typing import TypeVar
 import msgpack
 import zmq
 import zmq.asyncio
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 
 from verifiers.v1.clients.config import ClientConfig
+from verifiers.v1.errors import ProgramError
+from verifiers.v1.retries import RolloutRetryConfig
 from verifiers.v1.serve.types import (
     BaseRequest,
     BaseResponse,
@@ -42,8 +50,13 @@ ResponseT = TypeVar("ResponseT", bound=BaseResponse)
 
 
 class EnvClient:
-    def __init__(self, address: str = "tcp://127.0.0.1:5000") -> None:
+    def __init__(
+        self,
+        address: str = "tcp://127.0.0.1:5000",
+        retry: RolloutRetryConfig | None = None,
+    ) -> None:
         self.address = address
+        self.retry = retry or RolloutRetryConfig()
         self.ctx = zmq.asyncio.Context()
         self.socket = self.ctx.socket(zmq.DEALER)
         self.socket.setsockopt(zmq.LINGER, 0)
@@ -76,22 +89,58 @@ class EnvClient:
         """Send a typed request and validate the reply into `response_type`. A
         `timeout` is only used for health polling — rollouts run untimed."""
         self._ensure_receiver()
-        request_id = uuid.uuid4().hex
-        future: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._pending[request_id] = future
-        payload = msgpack.packb(request.model_dump(mode="json"), use_bin_type=True)
-        await self.socket.send_multipart(
-            [request_id.encode(), request.method.encode(), payload]
+        max_retries = (
+            self.retry.max_retries
+            if request.method in {"run_rollout", "run_group"}
+            and self.retry.allows("ProgramError")
+            else 0
         )
-        try:
-            raw = await asyncio.wait_for(future, timeout)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            self._pending.pop(request_id, None)
-            raise
-        response = response_type.model_validate(raw)
-        if not response.success:
-            raise RuntimeError(response.error or "env server request failed")
-        return response
+
+        retrying = AsyncRetrying(
+            stop=stop_after_attempt(max_retries + 1),
+            wait=wait_exponential_jitter(initial=0.5, max=30),
+            retry=retry_if_exception_type(ProgramError),
+            reraise=True,
+        )
+        async for attempt in retrying:
+            with attempt:
+                request_id = uuid.uuid4().hex
+                future: asyncio.Future = asyncio.get_running_loop().create_future()
+                self._pending[request_id] = future
+                payload = msgpack.packb(
+                    request.model_dump(mode="json"), use_bin_type=True
+                )
+                await self.socket.send_multipart(
+                    [request_id.encode(), request.method.encode(), payload]
+                )
+                try:
+                    raw = await asyncio.wait_for(future, timeout)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    self._pending.pop(request_id, None)
+                    raise
+                response = response_type.model_validate(raw)
+                if not response.success:
+                    message = response.error or "env server request failed"
+                    if response.error_type == "ProgramError":
+                        raise ProgramError(message)
+                    raise RuntimeError(message)
+                return response
+            outcome = attempt.retry_state.outcome
+            error = outcome.exception() if outcome is not None else None
+            if (
+                isinstance(error, ProgramError)
+                and attempt.retry_state.attempt_number <= max_retries
+            ):
+                logger.warning(
+                    "retrying env-server %s for task %s (retry %d/%d) "
+                    "after worker failure: %s",
+                    request.method,
+                    getattr(request, "task_idx", "?"),
+                    attempt.retry_state.attempt_number,
+                    max_retries,
+                    error,
+                )
+        raise RuntimeError("env server retry loop exited without a response")
 
     async def health(self, timeout: float = 2.0) -> bool:
         try:
