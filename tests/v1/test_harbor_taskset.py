@@ -1,4 +1,3 @@
-import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -42,16 +41,16 @@ def write_task(
         (
             "openthoughts/openthoughts-tblite",
             "broken-python",
-            "openthoughts-tblite-broken-python:latest",
+            "openthoughts-openthoughts-tblite-broken-python:latest",
         ),
-        ("hello-world@1.0", "hello-world", "hello-world:latest"),
+        ("hello-world@1.0", "hello-world", "hello-world-1.0-hello-world:latest"),
     ],
 )
 def test_prime_image_name(dataset: str, task_name: str, expected: str) -> None:
     assert images.prime_image_name(dataset, Path(task_name)) == expected
 
 
-def test_find_prime_images_searches_later_pages() -> None:
+def test_find_prime_images_prefers_completed_row() -> None:
     target = "dataset-task:latest"
     calls = []
 
@@ -59,23 +58,22 @@ def test_find_prime_images_searches_later_pages() -> None:
         config = SimpleNamespace(team_id="team-example")
 
         def request(self, method, endpoint, params=None):
-            assert params is not None
             calls.append((method, endpoint, params))
-            if params["offset"] == 0:
-                return {
-                    "data": [{"imageName": "other", "imageTag": "latest"}],
-                    "total_count": 251,
-                }
             return {
                 "data": [
                     {
                         "imageName": "dataset-task",
                         "imageTag": "latest",
                         "artifactType": "CONTAINER_IMAGE",
+                        "status": "FAILED",
+                    },
+                    {
+                        "imageName": "dataset-task",
+                        "imageTag": "latest",
+                        "artifactType": "CONTAINER_IMAGE",
                         "status": "COMPLETED",
-                    }
-                ],
-                "total_count": 251,
+                    },
+                ]
             }
 
     client = cast(images.APIClient, Client())
@@ -85,28 +83,17 @@ def test_find_prime_images_searches_later_pages() -> None:
             "GET",
             "/images",
             {
-                "limit": 250,
-                "offset": 0,
+                "limit": 10_000,
                 "search": "dataset-task",
                 "teamId": "team-example",
             },
-        ),
-        (
-            "GET",
-            "/images",
-            {
-                "limit": 250,
-                "offset": 1,
-                "search": "dataset-task",
-                "teamId": "team-example",
-            },
-        ),
+        )
     ]
 
 
 def test_ensure_prime_images_reuses_completed_image(tmp_path, monkeypatch) -> None:
     task_dir = write_task(tmp_path, "broken-python")
-    image = "openthoughts-tblite-broken-python:latest"
+    image = "openthoughts-openthoughts-tblite-broken-python:latest"
     display_ref = f"team-example/{image}"
     monkeypatch.setattr(images, "APIClient", object)
     monkeypatch.setattr(
@@ -123,9 +110,7 @@ def test_ensure_prime_images_reuses_completed_image(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(
         images,
         "_create_prime_image",
-        lambda client, image, task_dir: pytest.fail(
-            "completed images must not be rebuilt"
-        ),
+        lambda image, task_dir: pytest.fail("completed images must not be rebuilt"),
     )
 
     resolved = images.ensure_prime_images(
@@ -150,7 +135,7 @@ def test_ensure_prime_images_ignores_declared_images(tmp_path, monkeypatch) -> N
 
 def test_ensure_prime_images_pushes_missing_image(tmp_path, monkeypatch) -> None:
     task_dir = write_task(tmp_path, "broken-python")
-    image = "openthoughts-tblite-broken-python:latest"
+    image = "openthoughts-openthoughts-tblite-broken-python:latest"
     display_ref = f"team-example/{image}"
     image_lists = iter(
         [
@@ -172,7 +157,7 @@ def test_ensure_prime_images_pushes_missing_image(tmp_path, monkeypatch) -> None
     monkeypatch.setattr(
         images,
         "_create_prime_image",
-        lambda client, image, task_dir: pushed.append((image, task_dir)),
+        lambda image, task_dir: pushed.append((image, task_dir)),
     )
     monkeypatch.setattr(images.time, "sleep", lambda seconds: None)
 
@@ -186,7 +171,7 @@ def test_ensure_prime_images_pushes_missing_image(tmp_path, monkeypatch) -> None
 
 def test_ensure_prime_images_rebuilds_failed_image(tmp_path, monkeypatch) -> None:
     task_dir = write_task(tmp_path, "broken-python")
-    image = "openthoughts-tblite-broken-python:latest"
+    image = "openthoughts-openthoughts-tblite-broken-python:latest"
     display_ref = f"team-example/{image}"
     image_lists = iter(
         [
@@ -208,7 +193,7 @@ def test_ensure_prime_images_rebuilds_failed_image(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(
         images,
         "_create_prime_image",
-        lambda client, image, task_dir: pushed.append((image, task_dir)),
+        lambda image, task_dir: pushed.append((image, task_dir)),
     )
     monkeypatch.setattr(images.time, "sleep", lambda seconds: None)
 
@@ -220,66 +205,34 @@ def test_ensure_prime_images_rebuilds_failed_image(tmp_path, monkeypatch) -> Non
     assert resolved == {task_dir: display_ref}
 
 
-def test_create_prime_image_uploads_unchanged_environment_context(
+def test_create_prime_image_delegates_environment_context_to_cli(
     tmp_path, monkeypatch
 ) -> None:
     task_dir = write_task(tmp_path, "broken-python")
     calls = []
-    uploaded = {}
 
-    class Client:
-        config = SimpleNamespace(team_id="team-example")
+    monkeypatch.setattr(
+        images.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
 
-        def request(self, method, endpoint, json=None):
-            calls.append((method, endpoint, json))
-            if endpoint == "/images/build":
-                return {
-                    "build_id": "build-123",
-                    "upload_url": "https://upload.example",
-                }
-            return {}
+    images._create_prime_image("dataset-broken-python:latest", task_dir)
 
-    def put(url, *, content, headers, timeout):
-        with tarfile.open(fileobj=content, mode="r:gz") as archive:
-            dockerfile = next(
-                name for name in archive.getnames() if name.endswith("/Dockerfile")
-            )
-            dockerfile_file = archive.extractfile(dockerfile)
-            assert dockerfile_file is not None
-            uploaded["dockerfile"] = dockerfile_file.read()
-        uploaded["request"] = (url, headers, timeout)
-        return SimpleNamespace(raise_for_status=lambda: None)
-
-    monkeypatch.setattr(images.httpx, "put", put)
-
-    client = cast(images.APIClient, Client())
-    images._create_prime_image(client, "dataset-broken-python:latest", task_dir)
-
-    assert uploaded == {
-        "dockerfile": b"FROM alpine:latest\n",
-        "request": (
-            "https://upload.example",
-            {"Content-Type": "application/octet-stream"},
-            600.0,
-        ),
-    }
+    environment = task_dir / "environment"
     assert calls == [
         (
-            "POST",
-            "/images/build",
-            {
-                "image_name": "dataset-broken-python",
-                "image_tag": "latest",
-                "dockerfile_path": "Dockerfile",
-                "platform": "linux/amd64",
-                "teamId": "team-example",
-            },
-        ),
-        (
-            "POST",
-            "/images/build/build-123/start",
-            {"context_uploaded": True},
-        ),
+            [
+                "prime",
+                "images",
+                "--plain",
+                "push",
+                "dataset-broken-python:latest",
+                "--context",
+                str(environment),
+            ],
+            {"check": True},
+        )
     ]
 
 

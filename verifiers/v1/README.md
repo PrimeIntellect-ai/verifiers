@@ -246,7 +246,7 @@ default. For example, `textarena-v1` (TextArena games) and `harbor-v1` (the agen
 benchmark registry). Harbor is the showcase: it pulls tasks straight from the Harbor registry
 via the `harbor` CLI (`uv tool install harbor`). Declared container images are used directly;
 Dockerfile-only tasks reuse a matching Prime image or create one through the authenticated
-Prime API — e.g. Terminal-Bench 2:
+Prime CLI (`uv tool install prime`) — e.g. Terminal-Bench 2:
 
 ```bash
 uv run eval harbor-v1 --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm
