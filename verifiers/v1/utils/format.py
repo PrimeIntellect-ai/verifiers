@@ -50,9 +50,3 @@ def format_mean(
     if len(clean) < len(traces):  # some errored → show the raw global avg alongside
         mean += f" ({sum(value(t) for t in traces) / len(traces):.{digits}f})"
     return mean
-
-
-def format_reward(traces: list[Trace], digits: int = 2) -> str:
-    """Headline reward over completed `traces` — the error-corrected mean of `trace.reward`
-    (see `format_mean`)."""
-    return format_mean(traces, lambda t: t.reward, digits)

@@ -23,12 +23,7 @@ from verifiers.v1.cli.output import output_path
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.format import (
-    format_count,
-    format_mean,
-    format_reward,
-    format_time,
-)
+from verifiers.v1.utils.format import format_count, format_mean, format_time
 from verifiers.utils.pricing_utils import format_cost_usd
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
@@ -135,11 +130,11 @@ def Overview(config: EvalConfig) -> Table:
 
 def Progress(
     rollouts: list[Rollout], start: float, page: tuple[int, int] | None = None
-) -> Table | Group:
+) -> Group:
     done = [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
-    # Headline reward = mean over non-errored; when any errored, `format_reward` appends the
+    # Headline reward = mean over non-errored; when any errored, `format_mean` appends the
     # global avg (errored count as 0) in parens. `err` is the share that errored.
-    reward = format_reward(done)
+    reward = format_mean(done, lambda t: t.reward)
     err = f"{sum(t.has_error for t in done) / len(done):.2f}" if done else "—"
     stats = (
         f"{len(done)}/{len(rollouts)} · {format_time(time.time() - start)} · "
@@ -155,7 +150,7 @@ def Progress(
         Text(stats),
     )
     breakdown = _breakdown(done)
-    return Group(row, breakdown) if breakdown is not None else row
+    return Group(row, breakdown) if breakdown is not None else Group(row)
 
 
 def _breakdown(done: list[Trace]) -> Text | None:
@@ -168,7 +163,11 @@ def _breakdown(done: list[Trace]) -> Text | None:
         return None
     line = Text(style="dim")
     for label, source in (("rewards", "rewards"), ("metrics", "metrics")):
-        names = _names(done, source)
+        # every key seen across traces, first-seen order (a trace records only the functions
+        # that ran for it, so keys can vary)
+        names: list[str] = []
+        for trace in done:
+            names.extend(n for n in getattr(trace, source) if n not in names)
         if not names:
             continue
         segments = [
@@ -180,15 +179,6 @@ def _breakdown(done: list[Trace]) -> Text | None:
         line.append(f"{label}  ", style="dim cyan")
         line.append("  ·  ".join(segments))
     return line or None
-
-
-def _names(traces: list[Trace], source: str) -> list[str]:
-    """Every `source` (`rewards` / `metrics`) key seen across `traces`, in first-seen order (a
-    trace records only the functions that ran for it, so keys can vary)."""
-    names: list[str] = []
-    for trace in traces:
-        names.extend(n for n in getattr(trace, source) if n not in names)
-    return names
 
 
 def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None]:
