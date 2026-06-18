@@ -27,19 +27,16 @@ from openai import OpenAIError
 
 
 class RolloutError(Exception):
-    """Base for errors recorded into the trace rather than crashing the rollout."""
+    """Base for a failure recorded onto the trace rather than crashing the rollout."""
 
 
 class ProviderError(RolloutError):
-    """A call to the model provider failed: transport, an HTTP error status, a timeout, a
-    malformed response, or a prompt the model can't accept. The wrapped SDK/httpx error
-    carries the status code and detail."""
+    """A model-provider call failed (transport, HTTP status, timeout, or malformed response)."""
 
 
 class OverlongPromptError(ProviderError):
-    """The prompt (plus the requested completion) exceeded the model's context window.
-    A budget limit, not a crash: the interception server ends the rollout as a clean,
-    truncated trajectory rather than recording it as an error."""
+    """The prompt exceeded the model's context window — a budget limit, ended as a clean
+    truncation rather than recorded as an error."""
 
 
 class HarnessError(RolloutError):
@@ -47,37 +44,27 @@ class HarnessError(RolloutError):
 
 
 class ToolsetError(RolloutError):
-    """A task's `Toolset` (tool MCP server) could not be built or served for the rollout."""
+    """A task's `Toolset` could not be built or served."""
 
 
 class UserError(RolloutError):
-    """A task's `User` simulator could not be served, or its `respond` raised while driving the
-    conversation."""
+    """A task's `User` simulator could not be served, or its `respond` raised."""
 
 
 class SandboxError(RolloutError):
-    """A runtime/sandbox operation failed — provisioning, a non-zero program exit, exec or file
-    I/O across the sandbox boundary, or a rollout stage exceeding its timeout. The framework's
-    execution boundary, distinct from the model/harness/tool/interception ones."""
+    """A runtime/sandbox operation failed (provisioning, exec, file I/O, or a stage timeout)."""
 
 
 class TasksetError(RolloutError):
-    """Taskset-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`/`@group_reward`
-    (e.g. a verifier script the reward runs exiting non-zero). The framework wraps any non-
-    `RolloutError` escaping a taskset hook as this, so taskset code raises plain Python errors and
-    needn't import an error type — the type names the taskset boundary, the wrapped error the detail."""
+    """Taskset-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`/`@group_reward`."""
 
 
 class InterceptionError(RolloutError):
-    """The interception layer — the host server a sandboxed harness/tool reaches for its model
-    calls and `/state` + `/task` channels — could not be reached."""
+    """The host interception server (model calls + `/state` + `/task` channels) couldn't be reached."""
 
 
 class TunnelError(InterceptionError):
-    """The `prime_tunnel` reverse tunnel that makes the host interception server reachable from
-    inside a remote runtime could not be established. Retried with backoff before it surfaces;
-    tunnel creation is network-bound and globally rate-capped, so transient failures are expected.
-    (A runtime publishing its *own* ports — `Runtime.expose` — is a `SandboxError`, not this.)"""
+    """The `prime_tunnel` tunnel to the host interception server couldn't be established."""
 
 
 @contextlib.asynccontextmanager
