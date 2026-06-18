@@ -101,8 +101,7 @@ class Harness(ABC, Generic[ConfigT]):
         if task.system_prompt is not None and not self.APPENDS_SYSTEM_PROMPT:
             raise ValueError(
                 f"Harness {self.config.id!r} does not support a system prompt, but the task sets "
-                "`system_prompt`. Refusing to fold it into the user prompt (that would silently "
-                "change its role). Use a harness that emits a system prompt (one with "
+                "`system_prompt`. Use a harness that emits a system prompt (one with "
                 "APPENDS_SYSTEM_PROMPT, e.g. default / bash / rlm), or clear the task's "
                 "system_prompt."
             )
