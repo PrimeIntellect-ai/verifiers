@@ -262,6 +262,7 @@ class InterceptionServer:
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
+        body = await session.ctx.client.prepare_request_body(dialect, body)
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
@@ -288,7 +289,9 @@ class InterceptionServer:
             and session.trace.num_turns == 0
         ):
             if session.opening is None:
-                session.opening = await session.user("")
+                session.opening = await session.ctx.client.prepare_messages(
+                    dialect, await session.user("")
+                )
             body = dialect.extend(body, None, session.opening)
             prompt = [*prompt, *session.opening]
             # If the simulator ended at the open (its taskset's `@stop` now fires), the loop's
@@ -383,6 +386,9 @@ class InterceptionServer:
                 return _completion_response(completion)
             try:
                 user_messages = await session.user(response.message.content or "")
+                user_messages = await session.ctx.client.prepare_messages(
+                    dialect, user_messages
+                )
             except RolloutError as e:
                 return self._fail(session, dialect, e)
             except Exception as e:

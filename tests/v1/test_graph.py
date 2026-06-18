@@ -1,6 +1,8 @@
 import base64
 
 import numpy as np
+import pytest
+from renderers.base import MultiModalData, PlaceholderRange
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
@@ -105,6 +107,111 @@ def test_routed_experts_none_when_absent():
         )
     )
     assert trace.branches[-1].routed_experts is None
+
+
+def test_raw_image_sidecar_attributed_round_trips_and_feeds_next_bridge():
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="x"))
+    user = vf.UserMessage(
+        content=[
+            vf.ImageUrlContentPart(
+                image_url=vf.ImageUrlSource(
+                    url="file:///data/outputs/run_abc/assets/images/img.png"
+                )
+            )
+        ]
+    )
+    mm = MultiModalData(
+        mm_hashes={"image": ["abcd1234abcd1234"]},
+        mm_placeholders={"image": [PlaceholderRange(offset=2, length=4)]},
+        mm_items={
+            "image": [
+                {
+                    "image_grid_thw": [1, 2, 2],
+                    "raw_image_id": "img.png",
+                    "image_layout_fingerprint": "f" * 32,
+                }
+            ]
+        },
+    )
+
+    graph.prepare_turn(trace, [user]).commit(
+        vf.Response(
+            id="a",
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content="a1"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[10, 11, 12],
+                completion_ids=[20],
+                message_spans=[(0, 2)],
+                multi_modal_data=mm,
+            ),
+        )
+    )
+
+    node_mm = trace.nodes[0].multi_modal_data
+    assert node_mm is not None
+    assert node_mm.mm_items["image"][0]["raw_image_id"] == "img.png"
+    assert node_mm.mm_placeholders["image"][0].offset == 2
+
+    restored = type(trace).model_validate(trace.model_dump())
+    restored_mm = restored.nodes[0].multi_modal_data
+    assert restored_mm is not None
+    assert restored_mm.mm_items == node_mm.mm_items
+    assert restored_mm.mm_placeholders["image"][0].length == 4
+
+    turn = graph.prepare_turn(
+        trace,
+        [user, vf.AssistantMessage(content="a1"), vf.UserMessage(content="next")],
+    )
+    prev_mm = turn.previous_multi_modal_data()
+    assert prev_mm is not None
+    assert prev_mm.mm_hashes == mm.mm_hashes
+    assert prev_mm.mm_items == mm.mm_items
+    assert prev_mm.mm_placeholders["image"][0].offset == 2
+    assert trace.branches[-1].multi_modal_data is not None
+
+
+def test_multimodal_sidecar_rejects_processed_image_payloads():
+    with pytest.raises(TypeError, match="processed image payloads"):
+        graph.MessageNode(
+            message=vf.UserMessage(content="image"),
+            multi_modal_data=MultiModalData(
+                mm_hashes={"image": ["abcd1234abcd1234"]},
+                mm_items={
+                    "image": [
+                        {
+                            "image_grid_thw": [1, 1, 1],
+                            "pixel_values": np.zeros((1, 2), dtype=np.float32),
+                        }
+                    ]
+                },
+            ),
+        )
+
+    old_wire_node = {
+        "message": {"role": "user", "content": "image"},
+        "multi_modal_data": {
+            "mm_hashes": {"image": ["abcd1234abcd1234"]},
+            "mm_placeholders": {},
+            "mm_items": {
+                "image": [
+                    {
+                        "image_grid_thw": {
+                            "__nd__": True,
+                            "dtype": "int64",
+                            "shape": [3],
+                            "data": b"\x00" * 24,
+                        }
+                    }
+                ]
+            },
+        },
+    }
+
+    with pytest.raises(TypeError, match="raw image descriptors"):
+        graph.MessageNode.model_validate(old_wire_node)
 
 
 def test_tool_call_hash_matches_v0_content_and_arguments_normalization():

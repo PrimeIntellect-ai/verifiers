@@ -8,14 +8,17 @@ reuses the chat client's wire translation (message/tool shapes are the same), an
 needs a running vLLM engine.
 """
 
+import asyncio
 import json
+import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from openai import AsyncOpenAI, OpenAIError
 from renderers import RenderedTokens
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
+from renderers.base import MultiModalData, is_multimodal
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
@@ -32,6 +35,10 @@ from verifiers.v1.types import (
     TurnTokens,
     Usage,
 )
+from verifiers.v1.utils.multimodal import offload_images_inplace
+
+
+logger = logging.getLogger(__name__)
 
 
 def tool_to_wire(tool: Tool) -> dict:
@@ -167,14 +174,87 @@ def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     return all(role == "tool" for role in roles)
 
 
-def _has_multimodal_content(messages) -> bool:
-    for message in messages:
-        content = getattr(message, "content", None)
-        if not isinstance(content, list):
+_RETRYABLE_MM_ERROR_TYPES = frozenset({"missing_mm_cache_item"})
+
+
+def _json_error_type(value: Any) -> str | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(value, Mapping):
+        return None
+    error_type = value.get("error_type")
+    return error_type if isinstance(error_type, str) else None
+
+
+def _retryable_mm_error_type(exc: Exception) -> str | None:
+    candidates: list[Any] = []
+    body = getattr(exc, "body", None)
+    if body is not None:
+        candidates.append(body)
+    response = getattr(exc, "response", None)
+    if response is not None:
+        try:
+            candidates.append(response.json())
+        except Exception:
+            text = getattr(response, "text", None)
+            if text is not None:
+                candidates.append(text)
+
+    for payload in candidates:
+        if not isinstance(payload, Mapping):
+            error_type = _json_error_type(payload)
+            if error_type in _RETRYABLE_MM_ERROR_TYPES:
+                return error_type
             continue
-        if any(getattr(part, "type", None) == "image_url" for part in content):
+        error = payload.get("error")
+        if isinstance(error, Mapping):
+            error_type = error.get("type")
+            if error_type in _RETRYABLE_MM_ERROR_TYPES:
+                return cast(str, error_type)
+            error_type = _json_error_type(error.get("message"))
+            if error_type in _RETRYABLE_MM_ERROR_TYPES:
+                return error_type
+        error_type = _json_error_type(payload)
+        if error_type in _RETRYABLE_MM_ERROR_TYPES:
+            return error_type
+    return None
+
+
+def _has_descriptor_only_images(mm_data: MultiModalData | None) -> bool:
+    """True when a prompt carries prior image descriptors without raw refs."""
+    if mm_data is None or mm_data.is_empty():
+        return False
+    for item in mm_data.mm_items.get("image") or []:
+        if isinstance(item, Mapping) and not item.get("raw_image_id"):
             return True
     return False
+
+
+async def _generate_with_image_ref_retry(**kwargs: Any) -> dict[str, Any]:
+    """Retry a missing-cache MM request by materializing all image refs once.
+
+    The normal bridge path sends descriptor-only entries for prior images and
+    refs only for newly introduced images. If vLLM says its MM cache no longer
+    has a prior item, retry by asking the renderer to rebuild refs for every
+    image from the file-backed messages. This does not send processor outputs;
+    it only sends raw image refs again.
+    """
+    has_descriptor_only = _has_descriptor_only_images(kwargs.get("multi_modal_data"))
+    try:
+        from renderers.client import generate
+
+        return await generate(materialize_all_image_refs=False, **kwargs)
+    except Exception as exc:
+        if not has_descriptor_only or _retryable_mm_error_type(exc) is None:
+            raise
+        logger.warning(
+            "vLLM MM cache miss; retrying with all image refs materialized: %r",
+            exc,
+        )
+        return await generate(materialize_all_image_refs=True, **kwargs)
 
 
 class TrainClient(Client):
@@ -201,6 +281,28 @@ class TrainClient(Client):
                 self.renderer_model_name or model, self.config, size=self.pool_size
             )
         return self._pool
+
+    async def prepare_request_body(self, dialect: Dialect, body: dict) -> dict:
+        if isinstance(dialect, ChatDialect):
+            stats = await asyncio.to_thread(offload_images_inplace, body)
+            if stats.images_rewritten:
+                logger.info(
+                    "offloaded %d image(s) to run assets (%.1f MiB)",
+                    stats.images_rewritten,
+                    stats.bytes_written / (1024.0 * 1024.0),
+                )
+        return body
+
+    async def prepare_messages(self, dialect: Dialect, messages: list) -> list:
+        if isinstance(dialect, ChatDialect):
+            stats = await asyncio.to_thread(offload_images_inplace, messages)
+            if stats.images_rewritten:
+                logger.info(
+                    "offloaded %d simulator image(s) to run assets (%.1f MiB)",
+                    stats.images_rewritten,
+                    stats.bytes_written / (1024.0 * 1024.0),
+                )
+        return messages
 
     async def get_response(
         self,
@@ -232,7 +334,7 @@ class TrainClient(Client):
         else:
             prompt, tools = dialect.parse_request(body)
         renderer = self._renderer_pool(model)
-        from renderers.client import _maybe_offload, generate
+        from renderers.client import _maybe_offload
 
         wire_tools = [tool_to_wire(t) for t in tools] if tools else None
         wire_messages = (
@@ -244,23 +346,24 @@ class TrainClient(Client):
         sampling_params = sampling_args.model_dump(exclude_none=True)
         bridged_turn: PendingTurn | None = None
 
-        # Only build the (O(context)) previous-turn token ids once the cheap guards pass — a
-        # multimodal prompt or a tail that isn't a clean `[tool*, user?]` extension can't bridge.
-        can_bridge = (
-            turn is not None
-            and not _has_multimodal_content(prompt)
-            and _is_valid_incremental_tail(wire_messages)
-        )
+        # Only build the (O(context)) previous-turn token ids once the cheap guards pass: a
+        # tail that isn't a clean `[tool*, user?]` extension can't bridge.
+        can_bridge = turn is not None and _is_valid_incremental_tail(wire_messages)
         previous_ids = turn.previous_token_ids() if can_bridge else None
         if previous_ids is not None:
             previous_prompt_ids, previous_completion_ids = previous_ids
 
             def bridge():
+                kwargs: dict[str, Any] = {"tools": wire_tools}
+                if is_multimodal(renderer):
+                    kwargs["previous_multi_modal_data"] = (
+                        turn.previous_multi_modal_data()
+                    )
                 return renderer.bridge_to_next_turn(
                     previous_prompt_ids,
                     previous_completion_ids,
                     wire_messages,
-                    tools=wire_tools,
+                    **kwargs,
                 )
 
             bridged = await _maybe_offload(renderer, bridge)
@@ -279,7 +382,7 @@ class TrainClient(Client):
             wire_messages = [message_to_wire(m) for m in prompt]
 
         try:
-            result = await generate(
+            result = await _generate_with_image_ref_retry(
                 client=self.openai,
                 renderer=renderer,
                 messages=wire_messages,
