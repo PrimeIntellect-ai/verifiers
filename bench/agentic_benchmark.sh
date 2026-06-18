@@ -10,7 +10,7 @@
 #   ROLLOUTS="8 16" WORKERS="0 4" TASK=fix-git bench/agentic_benchmark.sh
 #
 # Compares WORKERS modes: 0 = single in-process server, N = an N-worker pool. Needs the
-# `harbor` CLI (`uv tool install harbor`) and the `terminal-bench-2-v1` example taskset
+# `harbor` CLI (fetched on demand with `uv`) and the `terminal-bench-2-v1` example taskset
 # (an editable dep), plus a container runtime (prime default; PRIME_API_KEY in ~/.env).
 set -uo pipefail
 

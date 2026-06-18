@@ -1,7 +1,7 @@
 """terminal-bench-2-v1 — the harbor-v1 taskset pinned to Terminal-Bench 2 (example env).
 
 A thin wrapper over `harbor-v1`: pins `dataset` to "terminal-bench/terminal-bench-2". Needs
-the `harbor` CLI (`uv tool install harbor`) and a container runtime (docker/prime).
+`uv` and a container runtime (docker/prime).
 """
 
 from typing import Literal
