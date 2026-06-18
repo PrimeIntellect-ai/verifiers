@@ -130,7 +130,7 @@ def Overview(config: EvalConfig) -> Table:
 
 def Progress(
     rollouts: list[Rollout], start: float, page: tuple[int, int] | None = None
-) -> Table:
+) -> Table | Group:
     done = [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
     # Headline reward = mean over non-errored; when any errored, `format_reward` appends the
     # global avg (errored count as 0) in parens. `err` is the share that errored.
@@ -149,7 +149,38 @@ def Progress(
         ProgressBar(total=len(rollouts) or 1, completed=len(done)),
         Text(stats),
     )
-    return row
+    breakdown = _breakdown(done)
+    return Group(row, breakdown) if breakdown is not None else row
+
+
+def _breakdown(done: list[Trace]) -> Text | None:
+    """The per-component view under the headline (summed) reward: a running mean of each named
+    `@reward` contribution then each `@metric`, over the non-errored completed traces (the same
+    denominator as the headline reward). `None` when nothing has scored yet, so the bar shows
+    alone."""
+    clean = [t for t in done if not t.has_error]
+    if not clean:
+        return None
+    line = Text(style="dim")
+    for label, source in (("rewards", "rewards"), ("metrics", "metrics")):
+        means = _means(clean, source)
+        if not means:
+            continue
+        if line:  # rewards group already written — space before the metrics group
+            line.append("      ")
+        line.append(f"{label}  ", style="dim cyan")
+        line.append("  ·  ".join(f"{name} {mean:.2f}" for name, mean in means))
+    return line or None
+
+
+def _means(traces: list[Trace], source: str) -> list[tuple[str, float]]:
+    """Mean of each `source` (`rewards` / `metrics`) entry across the `traces` that recorded it,
+    in first-seen order (a trace records only the functions that ran for it, so keys can vary)."""
+    values: dict[str, list[float]] = {}
+    for trace in traces:
+        for name, value in getattr(trace, source).items():
+            values.setdefault(name, []).append(value)
+    return [(name, sum(vals) / len(vals)) for name, vals in values.items()]
 
 
 def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None]:
