@@ -18,7 +18,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.errors import HarnessError, RolloutError
+from verifiers.v1.errors import HarnessError, boundary
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import (
     ProgramResult,
@@ -119,14 +119,8 @@ class Harness(ABC, Generic[ConfigT]):
         """Run the harness in `runtime` (via `launch`) and handle its exit; its model calls
         reach the interception server at `endpoint`, and `mcp_urls` are the task's tool
         servers (name -> URL) to expose to the model."""
-        try:
+        async with boundary(HarnessError, f"harness {self.config.id!r}"):
             result = await self.launch(ctx, trace, runtime, endpoint, secret, mcp_urls)
-        except RolloutError:
-            raise  # an already-typed error (e.g. a runtime/tool failure) keeps its boundary
-        except Exception as e:
-            raise HarnessError(
-                f"harness {self.config.id!r} failed: {type(e).__name__}: {e}"
-            ) from e
         if trace.stop_condition is not None:
             return  # a @stop refused a turn mid-rollout; the harness's exit is expected
         if result.exit_code != 0:
@@ -145,14 +139,8 @@ class Harness(ABC, Generic[ConfigT]):
         No-op for an harness with no `@metric`s."""
         available = {"task": trace.task, "trace": trace, "runtime": runtime}
         fns = discover_decorated(self, "metric")
-        try:
+        async with boundary(HarnessError, f"harness {self.config.id!r} metric"):
             results = await asyncio.gather(*(invoke(fn, available) for fn in fns))
-        except RolloutError:
-            raise
-        except Exception as e:
-            raise HarnessError(
-                f"harness {self.config.id!r} metric failed: {type(e).__name__}: {e}"
-            ) from e
         for fn, result in zip(fns, results):
             if isinstance(result, Mapping):
                 trace.record_metrics(result)

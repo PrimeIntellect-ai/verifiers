@@ -22,7 +22,7 @@ from enum import StrEnum
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RetryingClient, RolloutContext
 from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.errors import RolloutError, SandboxError, TasksetError, ToolsetError
+from verifiers.v1.errors import RolloutError, TasksetError, ToolsetError, boundary
 from verifiers.v1.interception import (
     InterceptionPool,
     InterceptionServer,
@@ -160,20 +160,10 @@ class Rollout:
         try:
             session = RolloutSession(ctx, trace, stops, self.limits)
             await runtime.start()
-            try:
+            async with boundary(TasksetError, "taskset setup"):
                 await asyncio.wait_for(
                     self.taskset.setup(self.task, runtime), self.setup_timeout
                 )
-            except TimeoutError:
-                raise SandboxError(
-                    f"setup exceeded setup_timeout of {self.setup_timeout}s"
-                ) from None
-            except RolloutError:
-                raise
-            except Exception as e:
-                raise TasksetError(
-                    f"taskset setup failed: {type(e).__name__}: {e}"
-                ) from e
             async with self._serve_interception(
                 self.interception, runtime, session
             ) as (
@@ -182,14 +172,8 @@ class Rollout:
                 state_port,
                 state_base,
             ):
-                try:
+                async with boundary(ToolsetError, "building tool servers"):
                     tool_servers = self.taskset.tools(self.task)
-                except RolloutError:
-                    raise
-                except Exception as e:
-                    raise ToolsetError(
-                        f"taskset failed to build tool servers: {type(e).__name__}: {e}"
-                    ) from e
                 async with (
                     serve_tools(
                         tool_servers,
@@ -209,7 +193,7 @@ class Rollout:
                     ) as session.user,
                 ):
                     if self.task.prompt is None and session.user is None:
-                        raise SandboxError(
+                        raise TasksetError(
                             "task has no prompt and no user simulator to open the "
                             "conversation; set task.prompt or have Taskset.user return "
                             "a simulator"
@@ -227,52 +211,34 @@ class Rollout:
                             self.harness_timeout,
                         )
                     except TimeoutError:
-                        # A timeout is a budget limit, not a crash — score whatever the
-                        # harness produced (like max_turns), don't error out. `is_truncated`
-                        # is computed from this stop condition. But a model call that failed
-                        # behind the harness is the real cause — prefer it.
-                        if session.error is not None:
-                            raise session.error
+                        # A timeout is a budget limit, not a crash — score whatever the harness
+                        # produced (like max_turns). `is_truncated` is read from this stop.
                         trace.stop("harness_timeout")
-                    except RolloutError as e:
-                        # The harness exited with a captured error; a model-provider failure
-                        # behind it (surfaced to the program as an HTTP error) is the root cause.
-                        if session.error is not None:
-                            raise session.error from e
-                        raise
-                    else:
-                        # The harness finished, but a model call may have failed and been
-                        # swallowed — record the real cause rather than a clean completion.
+                    finally:
+                        # A model/tool/user call that failed behind the harness (surfaced to the
+                        # program as an HTTP error it may have swallowed or exited on) is the real
+                        # cause — prefer it over the harness's own exit. See `RolloutSession.error`.
                         if session.error is not None:
                             raise session.error
             now = time.time()
             trace.timing.generation.end = now
             trace.timing.finalize.start = now
             self.phase = Phase.FINALIZE  # post-run taskset work, before scoring
-            try:
+            async with boundary(TasksetError, "taskset finalize"):
                 await asyncio.wait_for(
                     self.taskset.finalize(self.task, trace, runtime),
                     self.finalize_timeout,
                 )
-            except TimeoutError:
-                raise SandboxError(
-                    f"finalize exceeded finalize_timeout of {self.finalize_timeout}s"
-                ) from None
-            except RolloutError:
-                raise
-            except Exception as e:
-                raise TasksetError(
-                    f"taskset finalize failed: {type(e).__name__}: {e}"
-                ) from e
             now = time.time()
             trace.timing.finalize.end = now
             self.phase = (
                 Phase.SCORING
             )  # per-rollout scoring; the Episode marks DONE after group scoring
             trace.timing.scoring.start = now
-            try:
+            async with boundary(TasksetError, "scoring"):
                 # Per-rollout scoring: taskset + harness, concurrently, both with the live
-                # runtime. (Cross-rollout `@group_reward`s run later, in the Episode.)
+                # runtime. (Cross-rollout `@group_reward`s run later, in the Episode.) Each
+                # method types its own failures; only a timeout is attributed here.
                 await asyncio.wait_for(
                     asyncio.gather(
                         self.taskset.score(trace, runtime),
@@ -280,10 +246,6 @@ class Rollout:
                     ),
                     self.scoring_timeout,
                 )
-            except TimeoutError:
-                raise SandboxError(
-                    f"scoring exceeded scoring_timeout of {self.scoring_timeout}s"
-                ) from None
             trace.timing.scoring.end = time.time()
         except RolloutError as e:
             trace.capture_error(e)
