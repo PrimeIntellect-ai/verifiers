@@ -573,14 +573,14 @@ class TaskSet:
                 except Exception as e:  # noqa: BLE001
                     return False, e, state
                 finally:
-                    # Shield cleanup from outer cancellation so a Ctrl-C /
-                    # billing-fail-fast doesn't leak live sandboxes, and
-                    # catch BaseException (not Exception) because
-                    # asyncio.CancelledError is a BaseException in 3.9+.
+                    # Shield cleanup from asyncio cancellation, but let
+                    # BaseException control-flow signals propagate.
                     if sb is not None:
                         try:
+                            # DELETE already has client-level timeout/retry; no extra validation retry.
                             await asyncio.shield(client.delete(sb.id))
-                        except BaseException:  # noqa: BLE001
+                        except Exception:  # noqa: BLE001
+                            # Catches ordinary cleanup failures; BaseException control-flow signals propagate.
                             pass
 
         async def validate_one(i: int) -> dict:

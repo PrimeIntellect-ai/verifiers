@@ -94,8 +94,8 @@ graceful-shutdown path.
 
 The current sandbox-delete rollout-error PR should not broaden cleanup behavior
 across the whole library. These cleanup paths were considered but intentionally
-removed from the PR so the first change stays focused on the v1 sandbox lease
-path that Prime-RL observes:
+removed from the PR so this change stays focused on rollout-local sandbox
+deletes without changing library-wide cleanup runner semantics:
 
 - `Rubric.cleanup` handler exception collection and sibling-continuation
   behavior.
@@ -106,5 +106,5 @@ path that Prime-RL observes:
 - `SandboxEnv.destroy_sandbox` rollout-local delete surfacing.
 - `OpenEnvEnv` normal cleanup delete surfacing.
 
-Those broader changes can be revisited in follow-up PRs after the smaller v1
-delete-error path lands and the desired cleanup semantics are agreed on.
+Those broader changes can be revisited in follow-up PRs after the smaller
+delete-error surface lands and the desired cleanup semantics are agreed on.
