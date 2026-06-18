@@ -234,7 +234,9 @@ class PDFParser:
                     return await response.read()
 
         data = await download(url)
-        if not data.lstrip().startswith(PDF_MAGIC) and "arxiv.org" in url:
+        if not data.lstrip().startswith(PDF_MAGIC) and (
+            urlparse(url).hostname or ""
+        ).lower() == "arxiv.org":
             backup = url.replace("://arxiv.org", "://export.arxiv.org")
             try:
                 data = await download(backup)
