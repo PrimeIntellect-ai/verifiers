@@ -76,6 +76,8 @@ def ensure_corpus(ref: str = CORPUS_REF) -> Path:
             check=True,
         )
         subprocess.run(["git", "-C", str(tmp), "checkout", ref], check=True)
+        if tasks.exists():  # a prior run crashed after rename but before the marker
+            _rmtree(tasks)
         (tmp / CORPUS_SUBPATH).rename(tasks)
         _rmtree(tmp)
         marker.write_text(ref)
