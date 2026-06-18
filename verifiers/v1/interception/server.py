@@ -200,6 +200,7 @@ class InterceptionServer:
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         body = await request.json()
+        body = await session.ctx.client.prepare_request_body(dialect, body)
         # `body` is forwarded to the model 1:1 (the proxy mutates only model + sampling), so no
         # provider field is lost. `prompt` is the dialect's typed parse, kept only to build the
         # trace (the renderer re-derives its own from the body it's handed). A user simulator
@@ -220,7 +221,9 @@ class InterceptionServer:
             and session.trace.num_turns == 0
         ):
             if session.opening is None:
-                session.opening = await session.user("")
+                session.opening = await session.ctx.client.prepare_messages(
+                    dialect, await session.user("")
+                )
             body = dialect.extend(body, None, session.opening)
             prompt = [*prompt, *session.opening]
             # If the simulator ended at the open (its taskset's `@stop` now fires), the loop's
@@ -285,7 +288,9 @@ class InterceptionServer:
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
                 return web.json_response(completion)
-            user_messages = await session.user(response.message.content or "")
+            user_messages = await session.ctx.client.prepare_messages(
+                dialect, await session.user(response.message.content or "")
+            )
             # Inject the model turn + the simulator's user turn(s): into the wire request for the
             # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
             # survives) and into the typed prompt for the trace. The simulator ends the trajectory

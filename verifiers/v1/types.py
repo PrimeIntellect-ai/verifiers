@@ -217,8 +217,8 @@ class TurnTokens(StrictBaseModel):
     message_spans: list[tuple[int, int] | None] | None = Field(
         default=None, exclude=True
     )
-    # Transient carrier (excluded): the renderer's multimodal sidecar (image tensors + offsets),
-    # attributed per node by the turn's `commit`, then dropped — never persisted.
+    # Transient carrier (excluded): the renderer's multimodal sidecar (raw-image descriptors,
+    # hashes, and placeholder offsets), attributed per node by the turn's `commit`, then dropped.
     multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the MoE expert-routing data from `generate` (expert ids
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,

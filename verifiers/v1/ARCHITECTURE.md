@@ -70,8 +70,10 @@ end to end: each surviving context window is just another root→leaf path.
 
 `Trace.to_wire()` (`trace.py`) is `model_dump` minus what shouldn't travel: computed views
 (`reward`, `branches`, `num_turns`), per-span `duration`s (recomputed on the far side), and
-`usage`. Multimodal pixel tensors *do* travel — base64-encoded by a field serializer on
-`MessageNode.multi_modal_data` (`graph.py`) so they survive JSON + msgpack to the trainer.
+`usage`. Multimodal training uses raw run-image assets: the train client rewrites base64 image
+parts to `file://` refs before tracing, and `MessageNode.multi_modal_data` carries lightweight
+renderer descriptors (hashes, placeholder ranges, image metadata/refs) rather than image processor
+outputs.
 
 ### Branching: message-level vs renderer-level, and the token invariant
 
@@ -107,9 +109,10 @@ The renderer client avoids the break entirely when it can: instead of re-renderi
 each turn, the train client (`clients/train.py`) calls `renderer.bridge_to_next_turn(...)`, which
 keeps the prior `prompt_ids + completion_ids` **verbatim** and only renders the new tail. Verbatim
 prior ⇒ the stored prefix matches token-for-token ⇒ no fork, one linear branch, invariant intact.
-The token-identity check in `commit` is the backstop for when the bridge can't apply (the renderer
-returns `None`, multimodal, the eval relay): the break still surfaces as honest branches rather than
-silent corruption.
+For multimodal renderers, the train client also passes the reusable prefix's `multi_modal_data` so
+prior image placeholders and descriptors remain aligned. The token-identity check in `commit` is the
+backstop for when the bridge can't apply (the renderer returns `None`, the eval relay): the break
+still surfaces as honest branches rather than silent corruption.
 
 ## Model access — interception, dialects, clients
 
