@@ -28,7 +28,7 @@ from verifiers.v1.utils.format import format_count, format_reward, format_time
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
 _CONSOLE = Console()
-_PAGE_SECONDS = 3.0  # rotate to the next page of rollouts this often when they overflow
+_PAGE_SECONDS = 5.0  # rotate to the next page of rollouts this often when they overflow
 
 _STYLE = {
     "setup": "yellow",
