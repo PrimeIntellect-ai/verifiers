@@ -41,6 +41,27 @@ class SubprocessRuntime(Runtime):
     # the worker's per-rollout runtimes (+ a per-sha lock so first-callers provision once).
     _interpreters: dict[str, str] = {}
     _locks: dict[str, asyncio.Lock] = {}
+    # Process-wide cap on concurrently-running `cpu_bound` subprocesses (shared across all
+    # per-rollout runtimes), created lazily on the eval's loop.
+    _cpu_semaphore: asyncio.Semaphore | None = None
+
+    @classmethod
+    def _cpu_limiter(cls) -> asyncio.Semaphore:
+        """Cap concurrent `cpu_bound` subprocesses at the cores available to this process (override
+        with VF_SUBPROCESS_CPU_SLOTS). At an eval's start the whole in-flight batch finishes
+        generation together and fires its scoring scripts at once; uncapped they oversubscribe the
+        cores N:1, each cold-import (sympy) thrashes, and the per-score wall-clock — which the
+        scoring timeout bounds — balloons. Capping at the core count keeps each on its own core."""
+        if cls._cpu_semaphore is None:
+            override = os.environ.get("VF_SUBPROCESS_CPU_SLOTS")
+            try:
+                cores = len(os.sched_getaffinity(0))
+            except AttributeError:  # not Linux
+                cores = os.cpu_count() or 1
+            cls._cpu_semaphore = asyncio.Semaphore(
+                int(override) if override else max(1, cores)
+            )
+        return cls._cpu_semaphore
 
     def __init__(self, config: SubprocessConfig, name: str | None = None) -> None:
         super().__init__(name)
@@ -56,39 +77,48 @@ class SubprocessRuntime(Runtime):
         self.workdir = Path("/tmp") / self.name
         self.workdir.mkdir()
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
-        full_env.update(env)
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            env=full_env,
-            cwd=self.workdir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,  # own process group, so we can reap the whole tree
-        )
-        try:
-            stdout, stderr = await proc.communicate()
-        finally:
-            # If the await didn't finish, the caller cancelled it (e.g. the rollout's
-            # scoring_timeout / harness_timeout fired): communicate() leaves the process
-            # running, so SIGKILL its whole group (start_new_session => pgid == pid) — otherwise
-            # a hung child (a wedged uv/sympy verify) outlives the rollout and leaks CPU. A
-            # no-op once it has exited on its own.
-            if proc.returncode is None:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        return ProgramResult(
-            exit_code=proc.returncode or 0,
-            stdout=stdout.decode(errors="replace"),
-            stderr=stderr.decode(errors="replace"),
-        )
+    async def run(
+        self, argv: list[str], env: dict[str, str], cpu_bound: bool = False
+    ) -> ProgramResult:
+        # A `cpu_bound` command holds a core slot for its whole run, so a herd of scores at an
+        # eval's start drains through the cores instead of thrashing all at once (see _cpu_limiter).
+        limiter = self._cpu_limiter() if cpu_bound else contextlib.nullcontext()
+        async with limiter:
+            full_env = {
+                k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()
+            }
+            full_env.update(env)
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                env=full_env,
+                cwd=self.workdir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,  # own process group, so we can reap the whole tree
+            )
+            try:
+                stdout, stderr = await proc.communicate()
+            finally:
+                # If the await didn't finish, the caller cancelled it (e.g. the rollout's
+                # scoring_timeout / harness_timeout fired): communicate() leaves the process
+                # running, so SIGKILL its whole group (start_new_session => pgid == pid) —
+                # otherwise a hung child (a wedged uv/sympy verify) outlives the rollout and leaks
+                # CPU. A no-op once it has exited on its own.
+                if proc.returncode is None:
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return ProgramResult(
+                exit_code=proc.returncode or 0,
+                stdout=stdout.decode(errors="replace"),
+                stderr=stderr.decode(errors="replace"),
+            )
 
     async def run_uv_script(
         self,
         script: str | bytes,
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
+        cpu_bound: bool = False,
     ) -> ProgramResult:
         """Run a PEP 723 script via a pre-provisioned interpreter instead of `uv run` per call.
 
@@ -116,7 +146,7 @@ class SubprocessRuntime(Runtime):
                         )
                     self._interpreters[sha] = provision.stdout.strip().splitlines()[-1]
         return await self.run(
-            [self._interpreters[sha], str(path), *(args or [])], env or {}
+            [self._interpreters[sha], str(path), *(args or [])], env or {}, cpu_bound
         )
 
     async def run_background(

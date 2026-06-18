@@ -62,6 +62,7 @@ class AIME24Taskset(vf.Taskset[AIME24Task, AIME24Config]):
         result = await runtime.run_uv_script(
             VERIFY,
             args=[task.answer, prediction or "", str(self.config.math_verify_timeout)],
+            cpu_bound=True,
         )
         if result.exit_code != 0:
             raise vf.ProgramError(f"verify.py failed: {result.stderr.strip()[-500:]}")

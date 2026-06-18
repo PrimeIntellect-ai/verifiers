@@ -131,7 +131,9 @@ class PrimeRuntime(Runtime):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise ProgramError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def run(
+        self, argv: list[str], env: dict[str, str], cpu_bound: bool = False
+    ) -> ProgramResult:
         try:
             result = await self._client.run_background_job(
                 self._sandbox_id,

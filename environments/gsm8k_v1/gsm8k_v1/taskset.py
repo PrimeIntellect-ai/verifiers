@@ -51,7 +51,7 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
             trace.assistant_messages[-1].content if trace.assistant_messages else ""
         )
         result = await runtime.run_uv_script(
-            VERIFY, args=[task.answer, prediction or ""]
+            VERIFY, args=[task.answer, prediction or ""], cpu_bound=True
         )
         if result.exit_code != 0:
             raise vf.ProgramError(f"verify.py failed: {result.stderr.strip()[-500:]}")
@@ -63,7 +63,7 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
         answer as a well-formed `#### N` prediction and require a 1.0 score — catching rows the
         verifier can't parse or grade (the model-free counterpart of the `correct` reward)."""
         result = await runtime.run_uv_script(
-            VERIFY, args=[task.answer, f"#### {task.answer}"]
+            VERIFY, args=[task.answer, f"#### {task.answer}"], cpu_bound=True
         )
         if result.exit_code != 0:
             raise vf.ProgramError(f"verify.py failed: {result.stderr.strip()[-500:]}")

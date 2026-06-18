@@ -265,7 +265,7 @@ isolated environment. On a `runtime` you can call:
 | method | what |
 | --- | --- |
 | `run(argv, env)` | exec a command to completion → `ProgramResult(exit_code, stdout, stderr)` |
-| `run_uv_script(src, args, env)` | run a PEP 723 script (inline deps resolve in-runtime); `args` are shell-`"$@"`-safe |
+| `run_uv_script(src, args, env, cpu_bound=False)` | run a PEP 723 script (inline deps resolve in-runtime); `args` are shell-`"$@"`-safe. Pass `cpu_bound=True` for a CPU-heavy scoring script (e.g. a sympy-based verifier): the subprocess runtime then caps concurrent such runs at the core count, so a batch of scores finishing together won't oversubscribe the cores and blow the scoring timeout |
 | `run_background(argv, env, log)` | start a long-lived process (e.g. a colocated server) |
 | `read(path)` / `write(path, data)` | workspace files (bytes), across the container/sandbox boundary |
 | `expose(port)` | publish a port *inside* the runtime to a host-reachable URL (`None` when local) |

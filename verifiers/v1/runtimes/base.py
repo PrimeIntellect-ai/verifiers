@@ -151,10 +151,18 @@ class Runtime(ABC):
     # --- execution ---
 
     @abstractmethod
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        """Run `argv` (with the interception env vars `env`) to completion."""
+    async def run(
+        self, argv: list[str], env: dict[str, str], cpu_bound: bool = False
+    ) -> ProgramResult:
+        """Run `argv` (with the interception env vars `env`) to completion. `cpu_bound` flags a
+        CPU-heavy command (e.g. a verifier that cold-imports sympy): the subprocess runtime caps
+        how many such run at once (≈ the core count) so a burst of scores at an eval's start
+        doesn't oversubscribe the cores — a no-op on isolated runtimes (their work runs in a
+        sandbox, off the host)."""
 
-    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def run_program(
+        self, argv: list[str], env: dict[str, str], cpu_bound: bool = False
+    ) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
         agentic run) — as opposed to the short idempotent infra ops (write / mv / install /
         provisioning) that go through `run`. Identical to `run` here; `RetryingRuntime` overrides it
@@ -162,7 +170,7 @@ class Runtime(ABC):
         fork a duplicate branch (and re-execute against a runtime already mutated by the first
         attempt). A transient transport fault mid-program surfaces as a ProgramError for this
         rollout instead of a silent full restart."""
-        return await self.run(argv, env)
+        return await self.run(argv, env, cpu_bound)
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
@@ -179,9 +187,12 @@ class Runtime(ABC):
         script: str | bytes,
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
+        cpu_bound: bool = False,
     ) -> ProgramResult:
         """Run a self-contained uv script (PEP 723 inline deps) in this runtime, with
-        `args` as its positional arguments (the script's `sys.argv[1:]`).
+        `args` as its positional arguments (the script's `sys.argv[1:]`). `cpu_bound` flags a
+        CPU-heavy script (e.g. a math verifier) for the subprocess runtime's concurrency cap
+        (see `run`); pass it for scoring scripts so a burst at an eval's start doesn't thrash.
 
         Writes `script`, ensures `uv` is present, and runs `uv run` — so the script's
         dependencies resolve into uv's cache inside the runtime, never the eval process.
@@ -206,7 +217,7 @@ class Runtime(ABC):
         # The write/mv above are idempotent infra (retried); the script run is the rollout's
         # program — `run_program`, so it is not retried (see Runtime.run_program).
         return await self.run_program(
-            ["sh", "-c", command, path, *(args or [])], env or {}
+            ["sh", "-c", command, path, *(args or [])], env or {}, cpu_bound
         )
 
     # --- filesystem ---
@@ -290,13 +301,17 @@ class RetryingRuntime(Runtime):
     def cleanup(self) -> None:
         self.inner.cleanup()
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        return await self._retry(self.inner.run, argv, env)
+    async def run(
+        self, argv: list[str], env: dict[str, str], cpu_bound: bool = False
+    ) -> ProgramResult:
+        return await self._retry(self.inner.run, argv, env, cpu_bound)
 
-    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def run_program(
+        self, argv: list[str], env: dict[str, str], cpu_bound: bool = False
+    ) -> ProgramResult:
         """The rollout's program exec is NOT retried (see the class docstring) — straight to
         inner."""
-        return await self.inner.run(argv, env)
+        return await self.inner.run(argv, env, cpu_bound)
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str

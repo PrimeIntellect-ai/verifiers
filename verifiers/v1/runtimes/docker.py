@@ -120,7 +120,9 @@ class DockerRuntime(Runtime):
             self.config.image,
         )
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def run(
+        self, argv: list[str], env: dict[str, str], cpu_bound: bool = False
+    ) -> ProgramResult:
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
         return await docker(
             "exec", *env_args, "--workdir", self.config.workdir, self._container, *argv

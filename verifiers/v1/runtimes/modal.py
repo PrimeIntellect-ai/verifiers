@@ -132,7 +132,9 @@ class ModalRuntime(Runtime):
         tunnel = tunnels.get(port)
         return str(tunnel.url).rstrip("/") if tunnel else None
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def run(
+        self, argv: list[str], env: dict[str, str], cpu_bound: bool = False
+    ) -> ProgramResult:
         try:
             proc = await self._sandbox.exec.aio(
                 *argv, workdir=self.config.workdir, env=env
