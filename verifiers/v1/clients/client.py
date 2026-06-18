@@ -15,6 +15,7 @@ from tenacity import (
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
+    wait_exponential_jitter,
 )
 
 from verifiers.v1.dialects import Dialect
@@ -87,8 +88,11 @@ class Client(ABC):
 
 class RetryingClient(Client):
     """Wraps a client to retry each completion on a transient `ModelError` (tenacity, up to
-    `max_retries` retries). An `OverlongPromptError` is never retried — it's a budget limit
-    the interception server turns into a clean truncation, not a transient fault."""
+    `max_retries` retries) with exponential backoff + jitter between attempts — so retries don't
+    fire back-to-back into the same brief endpoint outage, and concurrent rollouts hitting a shared
+    endpoint stagger their retries instead of re-thundering it. An `OverlongPromptError` is never
+    retried — it's a budget limit the interception server turns into a clean truncation, not a
+    transient fault."""
 
     def __init__(self, inner: Client, max_retries: int) -> None:
         self.inner = inner
@@ -97,6 +101,7 @@ class RetryingClient(Client):
         # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.
         self._retrying = AsyncRetrying(
             stop=stop_after_attempt(max_retries + 1),
+            wait=wait_exponential_jitter(initial=0.5, max=30),
             retry=retry_if_exception_type(ModelError)
             & retry_if_not_exception_type(OverlongPromptError),
             before_sleep=self._log_retry,

@@ -23,6 +23,7 @@ from tenacity import (
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
+    wait_exponential_jitter,
 )
 
 logger = logging.getLogger(__name__)
@@ -261,6 +262,7 @@ class RetryingRuntime(Runtime):
         # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.
         self._retrying = AsyncRetrying(
             stop=stop_after_attempt(max_retries + 1),
+            wait=wait_exponential_jitter(initial=0.5, max=30),
             retry=retry_if_exception_type(Exception)
             & retry_if_not_exception_type(NotImplementedError),
             before_sleep=self._log_retry,
