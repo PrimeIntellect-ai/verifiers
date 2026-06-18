@@ -126,7 +126,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
     address_queue: mp.Queue = mpctx.Queue()
     # Death pipe: serve_env (and, transitively, its workers/tunnels/sandboxes) self-terminates
     # if this main process dies abruptly. We keep parent_conn; its close — even on our SIGKILL —
-    # signals death to the child's watch (see _arm_child). Mirrors the broker -> worker pipe.
+    # signals death to the child's watch (see _arm_teardown). Mirrors the broker -> worker pipe.
     parent_conn, child_conn = mpctx.Pipe()
     proc = mpctx.Process(
         target=serve_env,

@@ -44,22 +44,14 @@ logger = logging.getLogger(__name__)
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 
 
-def _arm_child(death_pipe=None) -> None:
-    """Make a spawned process (env-server broker, single in-process server, or pool worker)
-    tear down cleanly — the one teardown contract every `serve_env`/worker process arms.
+def _arm_teardown(death_pipe=None) -> None:
+    """Arm a spawned process (serve_env broker/single server, or pool worker) for clean
+    teardown: it inherits no signal handlers, so by default SIGTERM kills it abruptly, skipping
+    asyncio.run()'s serving() cleanup and orphaning host_endpoint tunnels (and sandboxes).
 
-    A spawned process inherits no signal handlers, so without this a SIGTERM hits Python's
-    default and kills it abruptly, skipping `asyncio.run()`'s unwinding of the serving()
-    context and orphaning the interception server's `host_endpoint` tunnels (and sandboxes):
-
-    - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (tunnels/sandboxes torn
-      down); `serve_env` swallows the re-raised KeyboardInterrupt for a clean exit. It can fire
-      inside a C call (e.g. zmq), raising in the loop machinery rather than at an `await`, but
-      `asyncio.run` still tears the server down via task cancellation.
-    - if `death_pipe` is given, self-SIGTERM when the parent dies: the parent holds the other
-      end, which the OS closes even on the parent's SIGKILL, so the blocking `recv` returns and
-      the child shuts itself down — no orphan holding a tunnel/sandbox when the parent dies
-      abruptly (main -> serve_env, and broker -> worker, are both armed this way)."""
+    - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (serve_env swallows it);
+    - with `death_pipe`, self-SIGTERM when the parent dies (pipe EOF, even on its SIGKILL) so no
+      child is orphaned (main -> serve_env and broker -> worker are both armed this way)."""
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     if death_pipe is None:
         return
@@ -82,7 +74,7 @@ def _worker_entry(
     logging so per-rollout logs surface — a spawned worker inherits no handlers."""
     from verifiers.v1.legacy import LegacyEnvServer
 
-    _arm_child(death_pipe)
+    _arm_teardown(death_pipe)
     if log_setup is not None:
         log_setup()
     if "config_data" in server_kwargs:
@@ -308,10 +300,10 @@ def serve_env(
     (rollout start/done, the pool line) are silently dropped.
 
     `death_pipe` (when spawned by a parent, e.g. the eval main process) makes this server
-    self-terminate if that parent dies abruptly — see `_arm_child`."""
+    self-terminate if that parent dies abruptly — see `_arm_teardown`."""
     # Graceful SIGTERM (run asyncio teardown) + self-terminate if the parent dies. The
     # re-raised KeyboardInterrupt is swallowed below for a clean exit (no spurious traceback).
-    _arm_child(death_pipe)
+    _arm_teardown(death_pipe)
     if log_setup is not None:
         log_setup()
     try:
