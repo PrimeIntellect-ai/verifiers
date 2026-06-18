@@ -22,8 +22,8 @@ from verifiers.v1.runtimes.limiters import creation_limiter
 logger = logging.getLogger(__name__)
 
 
-# "auto" timeout requests the max prime allows (24h).
-_MAX_TIMEOUT_SECONDS = 24 * 60 * 60
+# Provider hard backstop. Rollout teardown normally deletes the sandbox much sooner.
+_SANDBOX_TIMEOUT_SECONDS = 24 * 60 * 60
 
 
 class PrimeConfig(BaseConfig):
@@ -40,10 +40,9 @@ class PrimeConfig(BaseConfig):
     labels: list[str] = []
     """Labels attached to the sandbox and its tunnels — e.g. to group every resource a run
     creates. When unset, the eval defaults them to the run's uuid (see `run_eval`)."""
-    timeout: int | Literal["auto"] = 21600
-    """Max sandbox lifetime in seconds (default 6h; or "auto" = the highest prime
-    supports). A hard backstop: the sandbox self-terminates even if local cleanup is
-    skipped."""
+    timeout: int = _SANDBOX_TIMEOUT_SECONDS
+    """Hard sandbox lifetime in seconds. Defaults to Prime's 24-hour maximum; normal rollout
+    teardown deletes the sandbox sooner."""
     # TaskResources, in Modal's units (also settable per-task via Task.resources, with
     # precedence cli/toml > task > this default). Mapped to prime's API in `start`.
     cpu: float = 1.0
@@ -83,11 +82,6 @@ class PrimeRuntime(Runtime):
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
 
         self._client = AsyncSandboxClient()
-        timeout = (
-            _MAX_TIMEOUT_SECONDS
-            if self.config.timeout == "auto"
-            else self.config.timeout
-        )
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
@@ -96,7 +90,7 @@ class PrimeRuntime(Runtime):
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": timeout // 60,
+            "timeout_minutes": self.config.timeout // 60,
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
@@ -138,11 +132,7 @@ class PrimeRuntime(Runtime):
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=env,
-                timeout=(
-                    _MAX_TIMEOUT_SECONDS
-                    if self.config.timeout == "auto"
-                    else self.config.timeout
-                ),
+                timeout=self.config.timeout,
             )
         except (
             Exception

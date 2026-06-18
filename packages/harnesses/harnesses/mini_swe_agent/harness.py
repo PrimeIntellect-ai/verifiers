@@ -22,6 +22,10 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_TASK_TOOLS = False
 
+    async def setup(self, runtime: Runtime) -> None:
+        source = PROGRAM_SOURCE.replace("{version}", self.config.version)
+        await runtime.prepare_uv_script(source, self.config.env)
+
     async def launch(
         self,
         ctx: RolloutContext,

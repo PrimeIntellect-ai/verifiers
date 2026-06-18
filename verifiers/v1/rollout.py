@@ -3,9 +3,9 @@
 A Rollout owns a single trajectory end-to-end, including its runtime's lifecycle. It
 makes and starts the runtime, gets an interception endpoint (a slot on the shared pool if
 one is given, else a per-rollout server exposed via its own runtime), then drives the
-staged lifecycle while the runtime is live — the taskset's `setup`, the harness, the
-taskset's `finalize`, and the per-rollout `@reward`/`@metric` scoring — each under its own
-stage timeout (`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`),
+staged lifecycle while the runtime is live — taskset + harness setup, the harness run,
+taskset `finalize`, and per-rollout `@reward`/`@metric` scoring — each under its own stage
+timeout (`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`),
 then tears the runtime down in a `finally`. Cross-rollout `@group_reward`s run afterwards (in the Episode) over the traces
 alone — they never need a live runtime — so a runtime is never kept up past its own
 rollout. The runtime ref is set the instant it's created, so it's always tearable-down
@@ -161,9 +161,9 @@ class Rollout:
             session = RolloutSession(ctx, trace, stops, self.limits)
             await runtime.start()
             try:
-                await asyncio.wait_for(
-                    self.taskset.setup(self.task, runtime), self.setup_timeout
-                )
+                async with asyncio.timeout(self.setup_timeout):
+                    await self.taskset.setup(self.task, runtime)
+                    await self.harness.setup(runtime)
             except TimeoutError:
                 raise ProgramError(
                     f"setup exceeded setup_timeout of {self.setup_timeout}s"

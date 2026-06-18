@@ -1,0 +1,17 @@
+# GSM8K supplies a 10h per-task harness timeout, while the eval supplies an 8h
+# harness override. The eval override wins, so the harness resolves to 28,800
+# seconds. Prime's independent hard sandbox lifetime is fixed at 24h.
+#
+#   uv run eval @ configs/gsm8k-codex-timeout-precedence.toml
+model = "z-ai/glm-4.7"
+num_tasks = 1
+max_concurrent = 1
+timeout = { rollout = 28800 } # 8h eval-wide harness override
+
+[taskset]
+id = "gsm8k-v1"
+harness_timeout = 36000 # 10h taskset-provided timeout
+
+[harness]
+id = "codex"
+runtime = { type = "prime" }

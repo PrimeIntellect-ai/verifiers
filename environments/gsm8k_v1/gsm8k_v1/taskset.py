@@ -27,6 +27,8 @@ class GSM8KTask(vf.Task):
 
 class GSM8KConfig(vf.TasksetConfig):
     split: Literal["train", "test"] = "test"
+    harness_timeout: float | None = None
+    """Per-task harness timeout in seconds."""
 
 
 class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
@@ -39,6 +41,7 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
                 idx=i,
                 prompt=f"{SYSTEM}\n\n{row['question']}",
                 answer=row["answer"].split("####")[-1].strip(),
+                timeout=vf.TaskTimeout(harness=self.config.harness_timeout),
             )
             for i, row in enumerate(rows)
         ]

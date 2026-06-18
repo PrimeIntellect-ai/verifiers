@@ -1,0 +1,20 @@
+# terminal-bench-2-v1 — GLM-4.7 on Prime with the model's Terminal-Bench settings.
+#
+#   uv run eval @ configs/terminal-bench-2-glm-4.7.toml
+model = "z-ai/glm-4.7"
+max_concurrent = 50
+
+[sampling]
+temperature = 0.7
+top_p = 1.0
+max_tokens = 16384
+reasoning = { enabled = true }
+
+[taskset]
+id = "terminal-bench-2-v1"
+timeout_multiplier = 3
+resource_multiplier = 3
+
+[harness]
+id = "mini-swe-agent"
+runtime = { type = "prime" }

@@ -33,6 +33,9 @@ class BashHarness(Harness[BashHarnessConfig]):
     SUPPORTS_USER_SIM = True
     SUPPORTS_MESSAGE_PROMPT = True
 
+    async def setup(self, runtime: Runtime) -> None:
+        await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
+
     async def launch(
         self,
         ctx: RolloutContext,

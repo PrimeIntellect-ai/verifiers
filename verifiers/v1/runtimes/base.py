@@ -15,6 +15,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import ClassVar
 
 from tenacity import (
@@ -26,13 +27,15 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from verifiers.v1.errors import ProgramError
+
 logger = logging.getLogger(__name__)
 
 # Ensure `uv` is available to run our PEP 723 scripts (the harness + tool servers): use it
 # if present, else bootstrap it — via pip; else via the standalone installer (curl/wget),
 # first installing curl + CA certs from the distro package manager when the image has no
 # downloader at all (bare task images, e.g. Harbor's). It installs to ~/.local/bin, which
-# we prepend to PATH so the next `uv run` finds it; uv then resolves each script's inline
+# we prepend to PATH so the provisioning command finds it; uv resolves each script's inline
 # deps into its own cache, isolated from the eval process. (Needs network + one of
 # uv / pip / curl / wget / apt-get / apk.)
 _INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
@@ -118,6 +121,8 @@ class Runtime(ABC):
         The rollout passes its trace id, so the provisioned resource is greppable back to
         the rollout it serves; falls back to a unique `vf-` name (standalone / tool
         runtimes, where there's no single owning rollout)."""
+        self._uv_interpreters: dict[str, str] = {}
+        self._uv_script_locks: dict[str, asyncio.Lock] = {}
 
     # --- identity / display ---
 
@@ -175,6 +180,37 @@ class Runtime(ABC):
             f"{type(self).__name__} does not support run_background"
         )
 
+    async def prepare_uv_script(
+        self,
+        script: str | bytes,
+        env: dict[str, str] | None = None,
+    ) -> str:
+        """Stage a PEP 723 script and resolve its dependencies, returning its runtime path."""
+        data = script.encode() if isinstance(script, str) else script
+        digest = hashlib.sha256(data).hexdigest()
+        path = f"/tmp/vf-scripts/{digest}.py"
+        if digest in self._uv_interpreters:
+            return path
+        async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
+            if digest in self._uv_interpreters:
+                return path
+            tmp = f"{path}.{uuid.uuid4().hex}.tmp"
+            await self.write(tmp, data)
+            await self.run(
+                ["sh", "-c", f"mv -f {shlex.quote(tmp)} {shlex.quote(path)}"], {}
+            )
+            command = (
+                f"{_ENSURE_UV}; uv sync --script {shlex.quote(path)} -q "
+                f"&& uv python find --script {shlex.quote(path)}"
+            )
+            result = await self.run(["sh", "-c", command], env or {})
+            if result.exit_code != 0:
+                raise ProgramError(
+                    f"failed to prepare uv script: {result.stderr.strip()[-2000:]}"
+                )
+            self._uv_interpreters[digest] = result.stdout.strip().splitlines()[-1]
+        return path
+
     async def run_uv_script(
         self,
         script: str | bytes,
@@ -184,11 +220,11 @@ class Runtime(ABC):
         """Run a self-contained uv script (PEP 723 inline deps) in this runtime, with
         `args` as its positional arguments (the script's `sys.argv[1:]`).
 
-        Writes `script`, ensures `uv` is present, and runs `uv run` — so the script's
-        dependencies resolve into uv's cache inside the runtime, never the eval process.
-        Built on `write`/`run`, so it works the same on every runtime. `args` are
-        forwarded via the shell's `"$@"` (never interpolated), so spaces / quotes /
-        newlines in them are safe; pass structured data as a JSON string if you need to.
+        `prepare_uv_script` stages the script and resolves its dependencies once; this method
+        then runs it directly with the prepared interpreter. Built on `write`/`run`, so it
+        works the same on every runtime. `args` are passed as separate argv entries, so
+        spaces, quotes, and newlines in them are safe; pass structured data as a JSON string
+        if you need to.
 
         The script is written to a stable, content-addressed path (NOT the per-rollout
         workspace): uv keys its per-script environment by the script's full path, so a
@@ -196,18 +232,18 @@ class Runtime(ABC):
         content means identical scripts share one path → uv reuses one env, bounded by the
         number of distinct scripts. Published via a unique temp + atomic `mv`, so
         concurrent rollouts writing the same content never race a half-written read."""
+        path = await self.prepare_uv_script(script, env)
         data = script.encode() if isinstance(script, str) else script
-        path = f"/tmp/vf-scripts/{hashlib.sha256(data).hexdigest()}.py"
-        tmp = f"{path}.{uuid.uuid4().hex}.tmp"
-        await self.write(tmp, data)
-        await self.run(
-            ["sh", "-c", f"mv -f {shlex.quote(tmp)} {shlex.quote(path)}"], {}
+        interpreter = self._uv_interpreters[hashlib.sha256(data).hexdigest()]
+        venv = str(PurePosixPath(interpreter).parent.parent)
+        command = (
+            'export VIRTUAL_ENV="$1" PATH="${1}/bin:$HOME/.local/bin:$PATH" '
+            'UV_INSTALL_DIR="$HOME/.local/bin" UV_RUN_RECURSION_DEPTH=1; '
+            'shift; exec "$@"'
         )
-        command = f'{_ENSURE_UV}; exec uv run {shlex.quote(path)} "$@"'
-        # The write/mv above are idempotent infra (retried); the script run is the rollout's
-        # program — `run_program`, so it is not retried (see Runtime.run_program).
         return await self.run_program(
-            ["sh", "-c", command, path, *(args or [])], env or {}
+            ["sh", "-c", command, "uv-script", venv, interpreter, path, *(args or [])],
+            env or {},
         )
 
     # --- filesystem ---
@@ -251,8 +287,8 @@ class RetryingRuntime(Runtime):
     program exec (`run_program`, including the script run inside `run_uv_script`) is deliberately
     NOT retried: re-running a stateful/agentic program against the rollout's persistent trace would
     fork a duplicate branch (and re-run against a runtime the first attempt already mutated), so a
-    mid-program transport fault surfaces as a ProgramError for that rollout. `run_uv_script`'s
-    write/mv staging still runs over the retrying `write`/`run`."""
+    mid-program transport fault surfaces as a ProgramError for that rollout. UV-script
+    preparation remains retryable and its program execution does not."""
 
     def __init__(self, inner: Runtime, max_retries: int) -> None:
         super().__init__(inner.name)
@@ -299,6 +335,22 @@ class RetryingRuntime(Runtime):
         """The rollout's program exec is NOT retried (see the class docstring) — straight to
         inner."""
         return await self.inner.run(argv, env)
+
+    async def prepare_uv_script(
+        self,
+        script: str | bytes,
+        env: dict[str, str] | None = None,
+    ) -> str:
+        return await self._retry(self.inner.prepare_uv_script, script, env)
+
+    async def run_uv_script(
+        self,
+        script: str | bytes,
+        args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ) -> ProgramResult:
+        await self.prepare_uv_script(script, env)
+        return await self.inner.run_uv_script(script, args, env)
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str

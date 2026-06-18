@@ -1,9 +1,8 @@
 """The harness: a program that runs in a runtime and drives the conversation.
 
-An `Harness` provisions itself into the (already-started) runtime and runs there;
-its model calls hit the interception server, which records the turns. Concrete
-harnesses differ only in how they provision + invoke — `DefaultHarness` stages a small
-script and runs `python3`; `RLMHarness` installs the rlm binary and runs it. The
+A `Harness` provisions itself into the already-started runtime, then runs there;
+its model calls hit the interception server, which records the turns. Provisioning
+runs during rollout setup; only execution counts against the harness timeout. The
 runtime and the interception server are owned by the Rollout.
 """
 
@@ -107,6 +106,9 @@ class Harness(ABC, Generic[ConfigT]):
             )
         return (task.system_prompt if self.APPENDS_SYSTEM_PROMPT else None), prompt
 
+    async def setup(self, runtime: Runtime) -> None:
+        """Provision this harness in `runtime` before its execution timeout starts."""
+
     async def run(
         self,
         ctx: RolloutContext,
@@ -160,4 +162,5 @@ class Harness(ABC, Generic[ConfigT]):
         `endpoint` (bearer token `secret`); `mcp_urls` are the task's tool servers
         (name -> URL) to wire in. Each harness owns the env its program needs — read
         `ctx.model` for the model id (the default/compact harnesses set OPENAI_*; rlm sets
-        RLM_* too). The uv-script harnesses just `runtime.run_uv_script(...)`."""
+        RLM_* too). UV-script harnesses prepare dependencies in `setup`, then call
+        `runtime.run_uv_script(...)` here."""
