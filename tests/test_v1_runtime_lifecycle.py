@@ -2822,6 +2822,39 @@ async def test_sandbox_delete_failure_leaves_lease_retryable(
 
 
 @pytest.mark.asyncio
+async def test_sandbox_delete_cancellation_leaves_lease_retryable() -> None:
+    class DeleteCancelledThenSucceeds:
+        calls = 0
+
+        async def delete(self, sandbox_id: str) -> None:
+            _ = sandbox_id
+            self.calls += 1
+            if self.calls == 1:
+                raise asyncio.CancelledError()
+
+    client = DeleteCancelledThenSucceeds()
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, client),
+        "sbx-1",
+        "rollout",
+        "program",
+        owns_client=False,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await lease.delete()
+
+    assert lease.deleted is False
+    assert lease.deleting is False
+
+    await lease.delete()
+
+    assert lease.deleted is True
+    assert lease.deleting is False
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_owned_sandbox_delete_failure_keeps_client_retryable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

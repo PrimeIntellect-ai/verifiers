@@ -1355,7 +1355,7 @@ class Runtime:
         async with self.sandbox_lock:
             lease = self.sandbox_leases.get(key)
             if lease is not None:
-                if lease.deleted:
+                if lease.deleted or lease.deleting:
                     raise RuntimeError("Sandbox lease is being deleted.")
                 return lease
             task = self.sandbox_creation_tasks.get(key)
@@ -1385,7 +1385,7 @@ class Runtime:
         async with self.sandbox_lock:
             existing = self.sandbox_leases.get(key)
             if existing is not None:
-                if existing.deleted:
+                if existing.deleted or existing.deleting:
                     raise RuntimeError("Sandbox lease is being deleted.")
                 return existing
             if self.sandbox_creation_tasks.get(key) is not task:
