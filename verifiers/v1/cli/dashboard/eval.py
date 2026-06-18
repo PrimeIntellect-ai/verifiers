@@ -23,13 +23,16 @@ from verifiers.v1.cli.output import output_path
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.format import format_count, format_reward, format_time
+from verifiers.v1.utils.format import format_count, format_mean, format_time
 from verifiers.utils.pricing_utils import format_cost_usd
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
 _CONSOLE = Console()
 _PAGE_SECONDS = 5.0  # rotate to the next page of rollouts this often when they overflow
+# The under-bar breakdown pads its label column to the Overview's widest label, so the two
+# `label  value` grids (above and below the progress bar) line their values up.
+_LABEL_WIDTH = len("timeouts")
 
 _STYLE = {
     "setup": "yellow",
@@ -130,11 +133,11 @@ def Overview(config: EvalConfig) -> Table:
 
 def Progress(
     rollouts: list[Rollout], start: float, page: tuple[int, int] | None = None
-) -> Table:
+) -> Group:
     done = [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
-    # Headline reward = mean over non-errored; when any errored, `format_reward` appends the
+    # Headline reward = mean over non-errored; when any errored, `format_mean` appends the
     # global avg (errored count as 0) in parens. `err` is the share that errored.
-    reward = format_reward(done)
+    reward = format_mean(done, lambda t: t.reward)
     err = f"{sum(t.has_error for t in done) / len(done):.2f}" if done else "—"
     stats = (
         f"{len(done)}/{len(rollouts)} · {format_time(time.time() - start)} · "
@@ -149,7 +152,36 @@ def Progress(
         ProgressBar(total=len(rollouts) or 1, completed=len(done)),
         Text(stats),
     )
-    return row
+    breakdown = _breakdown(done)
+    return Group(row, breakdown) if breakdown is not None else Group(row)
+
+
+def _breakdown(done: list[Trace]) -> Table | None:
+    """The per-component view under the headline (summed) reward: a `rewards` row of each named
+    `@reward` contribution and a `metrics` row of each `@metric`, laid out like the Overview (dim
+    label column). Each component is formatted exactly like the headline reward — the
+    error-corrected mean, with the global mean (an errored trace's value counting as 0) in parens
+    when some errored (see `format_mean`). `None` when nothing has scored yet, so the bar shows
+    alone."""
+    if not any(not t.has_error for t in done):
+        return None
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="dim", min_width=_LABEL_WIDTH)
+    grid.add_column()
+    for label, source in (("rewards", "rewards"), ("metrics", "metrics")):
+        # every key seen across traces, first-seen order (a trace records only the functions
+        # that ran for it, so keys can vary)
+        names: list[str] = []
+        for trace in done:
+            names.extend(n for n in getattr(trace, source) if n not in names)
+        if not names:
+            continue
+        segments = [
+            f"{name} {format_mean(done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0))}"
+            for name in names
+        ]
+        grid.add_row(label, "  ·  ".join(segments))
+    return grid if grid.row_count else None
 
 
 def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None]:
