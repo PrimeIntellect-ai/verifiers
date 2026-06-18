@@ -115,13 +115,9 @@ filesystem, so run it under a containerized runtime: `docker` locally, or a remo
 ```bash
 uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id bash            # bash-only agent
 uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
-uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id terminus-2      # Harbor's Terminus 2 agent
 uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
 uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id codex           # the codex CLI agent
 ```
-
-Terminus 2 uses `tmux`; the runtime image must include it or run the harness as a user
-that can install it.
 
 ### Swappable runtime
 

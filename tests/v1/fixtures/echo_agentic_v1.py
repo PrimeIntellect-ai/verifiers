@@ -11,6 +11,7 @@ import verifiers.v1 as vf
 from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes import Runtime
 
+SYSTEM = "You complete the task by running shell commands with the bash tool."
 TARGET = "answer.txt"  # workdir-relative, so it's isolated per rollout on every runtime
 
 
@@ -40,9 +41,10 @@ class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
             EchoAgenticTask(
                 idx=0,
                 prompt=(
-                    f"Use shell commands to write exactly the text '{phrase}' to a file named "
+                    f"Use the bash tool to write exactly the text '{phrase}' to a file named "
                     f"{TARGET} in the current directory, then finish."
                 ),
+                system_prompt=SYSTEM,
                 answer=phrase,
             )
         ]

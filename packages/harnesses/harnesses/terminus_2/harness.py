@@ -21,7 +21,7 @@ class Terminus2HarnessConfig(HarnessConfig):
 
 
 class Terminus2Harness(Harness[Terminus2HarnessConfig]):
-    APPENDS_SYSTEM_PROMPT = False
+    APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_TASK_TOOLS = False
 
     async def launch(
@@ -35,7 +35,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
     ) -> ProgramResult:
         if self.config.disabled_tools:
             raise ValueError("Terminus 2 does not support disabling tools")
-        _, prompt = self.resolve_prompt(trace.task)
+        system_prompt, prompt = self.resolve_prompt(trace.task)
         tmux_dir = f"/tmp/vf-terminus-2-{trace.id}"
         env = {
             **self.config.env,
@@ -46,7 +46,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         try:
             return await runtime.run_uv_script(
                 PROGRAM_SOURCE.replace("{version}", self.config.version),
-                args=[ctx.model, prompt],
+                args=[ctx.model, system_prompt or "", prompt],
                 env=env,
             )
         finally:

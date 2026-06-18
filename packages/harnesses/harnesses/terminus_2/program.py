@@ -45,7 +45,7 @@ class LocalEnvironment:
 
 
 async def main() -> None:
-    model, task = sys.argv[1:]
+    model, system_prompt, task = sys.argv[1:]
     logs_dir = Path(os.environ["TMUX_TMPDIR"])
     logs_dir.mkdir(mode=0o700, exist_ok=True)
     EnvironmentPaths.agent_dir = PurePosixPath(logs_dir)
@@ -57,6 +57,20 @@ async def main() -> None:
         llm_kwargs={"custom_llm_provider": "openai"},
         record_terminal_session=False,
     )
+    if system_prompt:
+        call = agent._llm.call
+
+        async def call_with_system_prompt(*args, message_history, **kwargs):
+            return await call(
+                *args,
+                message_history=[
+                    {"role": "system", "content": system_prompt},
+                    *message_history,
+                ],
+                **kwargs,
+            )
+
+        agent._llm.call = call_with_system_prompt
     environment = LocalEnvironment()
     await agent.setup(environment)
     await agent.run(task, environment, AgentContext())
