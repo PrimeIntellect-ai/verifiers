@@ -21,7 +21,13 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
 # v1 tasksets that need a docker/prime runtime + image-backed sandboxes, so they can't run a
 # smoke eval in plain CI — covered by the dedicated v1 e2e tests.
-NEEDS_CONTAINER = {"r2e_gym_v1", "scaleswe_v1", "swelego_v1", "terminal_bench_2_v1"}
+NEEDS_CONTAINER = {
+    "r2e_gym_v1",
+    "scaleswe_v1",
+    "swelego_v1",
+    "swebench_verified_v1",
+    "terminal_bench_2_v1",
+}
 
 
 def v1_tasksets() -> list[str]:
