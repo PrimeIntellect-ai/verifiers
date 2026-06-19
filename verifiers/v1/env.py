@@ -330,8 +330,6 @@ class Environment:
                 finalize_timeout=finalize_timeout,
                 scoring_timeout=scoring_timeout,
                 limits=self.limits,
-                model_retries=retries.model.max_retries,
-                runtime_retries=retries.runtime.max_retries,
                 shared_urls=self._shared_urls,
                 interception=self._interception,
             )

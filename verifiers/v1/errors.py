@@ -32,7 +32,14 @@ class RolloutError(Exception):
 
 
 class ProviderError(RolloutError):
-    """A model-provider call failed (transport, HTTP status, timeout, or malformed response)."""
+    """A model-provider call failed (transport, HTTP status, timeout, or malformed response).
+    `status_code` is the HTTP status surfaced to the harness so its SDK retries transient faults
+    (5xx/429/timeout) and not deterministic ones (4xx) — relayed from the provider, or chosen for a
+    transport fault."""
+
+    def __init__(self, message: str = "", *, status_code: int = 502) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class OverlongPromptError(ProviderError):
@@ -99,14 +106,33 @@ _CONTEXT_LENGTH_PHRASES = (
 )
 
 
-def model_error(e: OpenAIError | str) -> ProviderError:
-    """Map a provider failure to our error type: an overlong prompt (a budget limit the
-    interception server turns into a clean truncation) is told apart from any other provider
-    call failure (auth, rate limit, transport, a genuine bad request, ...), which becomes a
-    plain `ProviderError`. Accepts either an SDK error (the renderer) or the provider's raw
-    error body (the httpx proxy)."""
+def _provider_status(e: OpenAIError | str) -> int:
+    """The HTTP status to surface for an SDK error: the provider's own for an HTTP status error, a
+    retryable 5xx for a transport/timeout fault, else 502."""
+    from openai import APIConnectionError, APIStatusError, APITimeoutError
+
+    if isinstance(e, APIStatusError):
+        return e.status_code
+    if isinstance(e, APITimeoutError):  # subclass of APIConnectionError — check first
+        return 504
+    if isinstance(e, APIConnectionError):
+        return 503
+    return 502
+
+
+def model_error(
+    e: OpenAIError | str, *, status_code: int | None = None
+) -> ProviderError:
+    """Map a provider failure to our error type: an overlong prompt (a budget limit the interception
+    server turns into a clean truncation) is told apart from any other provider call failure, which
+    becomes a plain `ProviderError`. `status_code` is the HTTP status surfaced to the harness (whose
+    SDK then retries 5xx/429/timeout and not 4xx); derived from an SDK error when not given. Accepts
+    an SDK error (the renderer) or the provider's raw error body (the httpx proxy)."""
     # Some SDK errors stringify empty; fall back to the type so the message is never blank.
     text = str(e) or (type(e).__name__ if isinstance(e, BaseException) else "")
     if any(phrase in text.casefold() for phrase in _CONTEXT_LENGTH_PHRASES):
         return OverlongPromptError(text)
-    return ProviderError(text)
+    return ProviderError(
+        text,
+        status_code=status_code if status_code is not None else _provider_status(e),
+    )

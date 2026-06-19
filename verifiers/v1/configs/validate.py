@@ -11,7 +11,6 @@ resume / dry-run.
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.retries import RetryConfig
 from verifiers.v1.runtimes import DockerConfig, RuntimeConfig
 from verifiers.v1.taskset import TasksetConfig
 
@@ -28,9 +27,6 @@ class ValidateConfig(BaseConfig):
     (subprocess), a gold check often needs the task's declared container; a SWE task overrides
     the image per task. Use `--runtime.type subprocess` for a check that needs no container —
     one that only reads task data or runs a uv-script verifier (e.g. gsm8k)."""
-    retries: RetryConfig = RetryConfig()
-    """Reused only for `retries.runtime` — retry a task on a transient runtime fault (sandbox
-    create/exec), each retry on a fresh runtime. Model/rollout retries don't apply here."""
     setup_timeout: float | None = None
     """Max wall-clock for the taskset's `setup` hook per task (None = no limit)."""
     validate_timeout: float | None = None

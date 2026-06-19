@@ -214,7 +214,10 @@ class InterceptionServer:
         logger.warning(
             "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
         )
-        return web.json_response(dialect.error_body(str(error)), status=502)
+        return web.json_response(
+            dialect.error_body(str(error)),
+            status=getattr(error, "status_code", 502),
+        )
 
     async def handle_request(
         self, request: web.Request, dialect: Dialect
@@ -309,7 +312,8 @@ class InterceptionServer:
                     )
                 return web.json_response(completion)
             except RolloutError as e:
-                # Stash the real cause; the rollout re-raises it after the harness returns.
+                # Stash the real cause; the rollout re-raises it after the harness returns. Relay
+                # the provider's status so the harness SDK retries 5xx/429 and not 4xx.
                 session.error = e
                 logger.warning(
                     "model call failed: id=%s %s: %s",
@@ -317,7 +321,9 @@ class InterceptionServer:
                     type(e).__name__,
                     e,
                 )
-                return web.json_response(dialect.error_body(str(e)), status=502)
+                return web.json_response(
+                    dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
+                )
             except Exception as e:  # surface to the program as an API error
                 logger.warning(
                     "model call failed: id=%s %s: %s",
@@ -410,7 +416,9 @@ class InterceptionServer:
                 type(e).__name__,
                 e,
             )
-            return web.json_response(dialect.error_body(str(e)), status=502)
+            return web.json_response(
+                dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
+            )
         except Exception as e:  # surface to the program as an API error
             logger.warning("model call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
@@ -473,7 +481,9 @@ class InterceptionServer:
                 type(e).__name__,
                 e,
             )
-            return web.json_response(dialect.error_body(str(e)), status=502)
+            return web.json_response(
+                dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
+            )
         except Exception as e:
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)

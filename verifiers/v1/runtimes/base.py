@@ -152,11 +152,10 @@ class Runtime(ABC):
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
         agentic run) — as opposed to the short idempotent infra ops (write / mv / install /
-        provisioning) that go through `run`. Identical to `run` here; `RetryingRuntime` overrides it
-        to NOT retry, because re-running the program against the rollout's persistent trace would
-        fork a duplicate branch (and re-execute against a runtime already mutated by the first
-        attempt). A transient transport fault mid-program surfaces as a SandboxError for this
-        rollout instead of a silent full restart."""
+        provisioning) that go through `run`. A distinct seam from `run` so the rollout's program is
+        never blindly retried: re-running a stateful/agentic program against the rollout's persistent
+        trace would fork a duplicate branch (and re-execute against an already-mutated runtime).
+        Transient infra faults are retried by the runtime SDK (prime/modal) inside `run`, not here."""
         return await self.run(argv, env)
 
     async def run_background(
@@ -233,83 +232,6 @@ class Runtime(ABC):
         `client.expose`), torn down with the sandbox in `stop()`. The reverse of `host_endpoint`
         (which reaches a host port from inside a runtime)."""
         return None
-
-
-class RetryingRuntime(Runtime):
-    """Wraps a runtime to retry each call on a transient error (tenacity, up to
-    `max_retries` retries). A program's own failure surfaces as a `ProgramResult` (non-zero
-    exit), not an exception, so retries fire only on infra/transport faults — provisioning,
-    exec transport, file I/O across the runtime boundary. `CancelledError` (a
-    `BaseException`) and `NotImplementedError` (an unsupported op) are never retried. Sync
-    teardown (`cleanup`) and display (`descriptor`) delegate straight through. The rollout's
-    program exec (`run_program`, including the script run inside `run_uv_script`) is deliberately
-    NOT retried: re-running a stateful/agentic program against the rollout's persistent trace would
-    fork a duplicate branch (and re-run against a runtime the first attempt already mutated), so a
-    mid-program transport fault surfaces as a SandboxError for that rollout. `run_uv_script`'s
-    write/mv staging still runs over the retrying `write`/`run`."""
-
-    def __init__(self, inner: Runtime, max_retries: int) -> None:
-        super().__init__(inner.name)
-        self.inner = inner
-        self.max_retries = max_retries
-        # One Retrying, reused across (and concurrent within) calls: the control flow runs
-        # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared. A
-        # program's own failure is a `ProgramResult` (non-zero exit), not an exception, so
-        # retries fire only on infra/transport faults; an unsupported op (`NotImplementedError`)
-        # is never retried.
-        self._retrying = retrying(
-            on=Exception, give_up=NotImplementedError, retries=max_retries
-        )
-
-    async def _retry(self, fn, *args):
-        return await self._retrying(fn, *args)
-
-    async def start(self) -> None:
-        await self._retry(self.inner.start)
-
-    async def stop(self) -> None:
-        await self._retry(self.inner.stop)
-
-    def cleanup(self) -> None:
-        self.inner.cleanup()
-
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        return await self._retry(self.inner.run, argv, env)
-
-    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        """The rollout's program exec is NOT retried (see the class docstring) — straight to
-        inner."""
-        return await self.inner.run(argv, env)
-
-    async def run_background(
-        self, argv: list[str], env: dict[str, str], log: str
-    ) -> None:
-        await self._retry(self.inner.run_background, argv, env, log)
-
-    @property
-    def type(self) -> str:
-        return self.inner.type
-
-    @property
-    def published_port(self) -> int | None:
-        return self.inner.published_port
-
-    @property
-    def is_local(self) -> bool:
-        return self.inner.is_local
-
-    @property
-    def descriptor(self) -> str | None:
-        return self.inner.descriptor
-
-    async def expose(self, port: int) -> str | None:
-        return await self._retry(self.inner.expose, port)
-
-    async def read(self, path: str) -> bytes:
-        return await self._retry(self.inner.read, path)
-
-    async def write(self, path: str, data: bytes) -> None:
-        await self._retry(self.inner.write, path, data)
 
 
 TunnelT = TypeVar("TunnelT")
