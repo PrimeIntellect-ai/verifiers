@@ -144,9 +144,7 @@ def pytest_collection_modifyitems(config, items) -> None:
     rest of the suite (e.g. config parsing) still runs in a keyless environment."""
     if os.environ.get("PRIME_API_KEY"):
         return
-    skip = pytest.mark.skip(
-        reason="needs PRIME_API_KEY (the e2e tests run a prime-served model)"
-    )
+    skip = pytest.mark.skip(reason="needs PRIME_API_KEY")
     for item in items:
         if "e2e" in item.keywords:
             item.add_marker(skip)
