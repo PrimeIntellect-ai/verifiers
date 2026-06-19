@@ -13,17 +13,17 @@ runtime (`user_runtime` / `tool_runtime`).
 Every matrix value carries a pytest mark, so subsets select with `-m`:
 
     uv run pytest tests/v1 -n auto                                # the whole matrix (needs modal setup)
-    uv run pytest tests/v1 -n auto -m "not modal"                # the CI matrix (modal is local-only)
-    uv run pytest tests/v1 -n auto -m "not prime and not modal"  # host + docker only (no remote sandboxes)
+    uv run pytest tests/v1 -n auto -m "not prime and not modal"  # the CI matrix (host + docker only)
     uv run pytest tests/v1 -n auto -m docker                      # any case touching the docker runtime
     uv run pytest tests/v1 -n auto -m bash                        # only the bash harness
+    uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
 
 Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placements `colocated` / `shared`,
 harnesses `default` / `bash` / `rlm` / `kimi_code` / `codex`. A mark is applied per axis, so it
 selects every case touching that value on ANY axis; for one exact combination use `-k` on the test
 id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`). prime/modal provision real remote
-sandboxes; modal needs local setup, so CI runs `-m "not modal"`.
+sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs `-m "not prime and not modal"`.
 """
 
 import os
@@ -42,8 +42,9 @@ from verifiers.v1.trace import Trace
 
 # The harness runtime. Each value carries its runtime mark so a subset can be selected
 # (`-m docker`, `-m "not prime"`, ...). docker needs the daemon; prime/modal provision real remote
-# sandboxes (modal is local-only — CI excludes it with `-m "not modal"`). The `id`s make a test
-# read like `<harness>-harness-in-<rt>` / `harness-in-<rt>-with-<user|tool>-...`.
+# sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs `-m "not prime and
+# not modal"`. The `id`s make a test read like `<harness>-harness-in-<rt>` /
+# `harness-in-<rt>-with-<user|tool>-...`.
 HARNESS_RUNTIMES = [
     pytest.param(
         "subprocess", marks=pytest.mark.subprocess, id="harness-in-subprocess"
