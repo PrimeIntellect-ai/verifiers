@@ -35,19 +35,19 @@ OnResponseCallback = Callable[[bytes, bytes, bytes], Awaitable[None]]
 
 
 def _default_worker_heartbeat_timeout() -> float:
-    """Worker heartbeat timeout: VF_WORKER_HEARTBEAT_TIMEOUT env var, else 90s.
+    """Worker heartbeat timeout: VF_WORKER_HEARTBEAT_TIMEOUT env var, else 120s.
 
-    90s default: loaded-but-healthy env workers were still being killed mid-
+    120s default: loaded-but-healthy env workers were still being killed mid-
     rollout at 60s under heavy multimodal load (screenshot-dense browser
     rollouts pin the worker event loop long enough to miss a beat).
     """
 
     raw = os.environ.get("VF_WORKER_HEARTBEAT_TIMEOUT", "")
     try:
-        value = float(raw) if raw.strip() else 90.0
+        value = float(raw) if raw.strip() else 120.0
     except ValueError:
-        return 90.0
-    return value if value > 0 else 90.0
+        return 120.0
+    return value if value > 0 else 120.0
 
 
 @dataclass
