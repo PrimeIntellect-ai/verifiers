@@ -237,13 +237,13 @@ class Environment:
         self.taskset = load_taskset(config.taskset)
         self.harness = load_harness(config.harness)
         if (
-            not self.harness.SUPPORTS_TASK_TOOLS
+            not self.harness.SUPPORTS_MCP
             and type(self.taskset).tools is not Taskset.tools
         ):
             raise ValueError(
-                f"Harness {self.harness.config.id!r} does not support task tools, but taskset "
+                f"Harness {self.harness.config.id!r} does not support MCP tools, but taskset "
                 f"{self.taskset.config.id!r} exposes tool servers (MCP). Run it with a harness "
-                f"that supports task tools (e.g. --harness.id default), or use a taskset without tools."
+                f"that supports MCP (e.g. --harness.id default), or use a taskset without tools."
             )
         if (
             not self.harness.SUPPORTS_USER_SIM

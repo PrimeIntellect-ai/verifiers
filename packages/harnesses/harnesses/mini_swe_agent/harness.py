@@ -13,14 +13,13 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 class MiniSWEAgentHarnessConfig(HarnessConfig):
     """The mini-swe-agent CLI harness."""
 
-    id: str = "mini-swe-agent"
     version: str = "2.2.8"
     """mini-swe-agent release to install, pinned for reproducibility."""
 
 
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
-    SUPPORTS_TASK_TOOLS = False
+    SUPPORTS_MCP = False
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)

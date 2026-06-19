@@ -49,7 +49,6 @@ dependencies = [
     "aiohttp>=3.9.0",
     "prime-pydantic-config[toml]>=0.3.0.dev86",
     "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
-    # v1 (verifiers.v1) runtime — also used by the v0 -> vf.Trace bridge (verifiers.v1.legacy)
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
     "renderers>=0.1.8.dev40",
@@ -137,8 +136,6 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
-# Shipped v1 plugins are bundled in the `tasksets` / `harnesses` packages (vendored by
-# default); example plugins are standalone under environments/.
 tasksets = { path = "packages/tasksets", editable = true }
 harnesses = { path = "packages/harnesses", editable = true }
 compact = { path = "environments/compact", editable = true }
@@ -149,6 +146,7 @@ wiki-search-v1 = { path = "environments/wiki_search_v1", editable = true }
 gsm8k-v1 = { path = "environments/gsm8k_v1", editable = true }
 code-golf-v1 = { path = "environments/code_golf_v1", editable = true }
 reverse-text-v1 = { path = "environments/reverse_text_v1", editable = true }
+reverse-text = { path = "environments/reverse_text", editable = true }
 wordle-v1 = { path = "environments/wordle_v1", editable = true }
 terminal-bench-2-v1 = { path = "environments/terminal_bench_2_v1", editable = true }
 math-env-v1 = { path = "environments/math_env_v1", editable = true }
@@ -191,9 +189,6 @@ vf-rl = "verifiers.scripts.rl:main"
 vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"
 vf-vllm = "verifiers.scripts.vllm:main"
-
-[tool.ruff]
-line-length = 88
 
 # hatchling configuration
 [tool.hatch.version]

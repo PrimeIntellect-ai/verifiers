@@ -39,14 +39,13 @@ env \
 class KimiCodeHarnessConfig(HarnessConfig):
     """The Kimi Code CLI harness."""
 
-    id: str = "kimi-code"
     version: str = "0.14.3"
     """Kimi Code release to install, pinned for reproducibility."""
 
 
 class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
-    SUPPORTS_TASK_TOOLS = True
+    SUPPORTS_MCP = True
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info(

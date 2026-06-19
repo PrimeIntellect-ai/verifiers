@@ -23,11 +23,9 @@ class CompactingHarnessConfig(HarnessConfig):
     """A context-rewrite harness: it rebuilds its prompt from carried-over notes each
     compaction instead of appending, so the trajectory branches at every compaction."""
 
-    id: str = "compact"
-
 
 class CompactingHarness(Harness[CompactingHarnessConfig]):
-    SUPPORTS_TASK_TOOLS = True
+    SUPPORTS_MCP = True
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)

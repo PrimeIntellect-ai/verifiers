@@ -2,7 +2,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Literal
 
 os.environ.setdefault(
     "TAU2_DATA_DIR", str(Path.home() / ".cache" / "tau2-bench-v1" / "data")
@@ -47,13 +46,12 @@ def _flip_roles(self: UserState):
 
 
 class Tau2HarnessConfig(vf.HarnessConfig):
-    id: Literal["tau2-bench-v1"] = "tau2-bench-v1"
     # The runner imports this installed module, so it must share the host interpreter.
     runtime: vf.SubprocessConfig = vf.SubprocessConfig()
 
 
 class Tau2Harness(vf.Harness[Tau2HarnessConfig]):
-    SUPPORTS_TASK_TOOLS = False
+    SUPPORTS_MCP = False
 
     async def launch(
         self,

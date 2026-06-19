@@ -39,14 +39,13 @@ chmod +x {bin}
 class CodexHarnessConfig(HarnessConfig):
     """The Codex CLI harness — which codex release to install in the runtime."""
 
-    id: str = "codex"
     version: str = "0.137.0"
     """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
 
 
 class CodexHarness(Harness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
-    SUPPORTS_TASK_TOOLS = False  # TODO
+    SUPPORTS_MCP = False  # TODO
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info("codex: ensuring codex %s is installed", self.config.version)

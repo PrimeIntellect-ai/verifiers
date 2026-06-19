@@ -101,8 +101,10 @@ def reward(
 def reward(
     func: F | None = None, weight: float = 1.0, priority: int = 0
 ) -> F | Callable[[F], F]:
-    """Mark a per-rollout reward (summed into trace.reward). Declare any of
-    `task`/`trace`/`runtime`; they're injected by name."""
+    """Mark a per-rollout reward (weighted, summed into trace.reward). Declare any of
+    `task`/`trace`/`runtime`; they're injected by name. Return a `float` (recorded under
+    the method name) or a `dict[str, float]` (each entry under its own key); every
+    contribution is scaled by `weight` before it's summed into `trace.reward`."""
     decorator = mark("reward", reward_priority=priority, _vf_weight=weight)
     return decorator if func is None else decorator(func)
 
