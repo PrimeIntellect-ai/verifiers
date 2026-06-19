@@ -1,7 +1,7 @@
 # /// script
 # dependencies = ["math-verify"]
 # ///
-"""Score one GSM8K answer inside the rollout's prepared script environment.
+"""Score one GSM8K answer, run inside the rollout's runtime via `uv run`.
 
 uv installs `math-verify` into its own cache here — the dependency never touches
 the eval process. Takes the gold answer (`argv[1]`) and the model's prediction

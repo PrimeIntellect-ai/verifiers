@@ -39,7 +39,7 @@ class TaskTimeout(StrictBaseModel):
     model_config = ConfigDict(frozen=True)
 
     setup: float | None = None
-    """Taskset setup and harness provisioning."""
+    """The taskset's `setup` hook."""
     harness: float | None = None
     """The harness run."""
     finalize: float | None = None

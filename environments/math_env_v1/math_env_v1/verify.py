@@ -2,8 +2,8 @@
 # dependencies = ["math-verify"]
 # ///
 """Score one math answer by math-verify equivalence of the model's boxed answer vs the
-gold, run inside the rollout's prepared script environment. uv installs `math-verify`
-into its own cache here — the dependency never touches the eval process. Takes the gold answer
+gold, run inside the rollout's runtime via `uv run`. uv installs `math-verify` into its
+own cache here — the dependency never touches the eval process. Takes the gold answer
 (argv[1]), the model's prediction (argv[2]), and a timeout in seconds (argv[3]); prints
 1.0 if they're equivalent, else 0.0.
 """

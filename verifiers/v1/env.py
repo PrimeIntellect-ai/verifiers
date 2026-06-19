@@ -38,11 +38,11 @@ from verifiers.v1.mcp import serve_shared
 
 class TimeoutConfig(BaseConfig):
     """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no
-    limit). Each bounds one stage of `Rollout.run`: taskset + harness setup, the harness run,
-    the taskset's `finalize` hook, then scoring."""
+    limit). Each bounds one stage of `Rollout.run`: the taskset's `setup` hook, the harness
+    run, the taskset's `finalize` hook, then scoring."""
 
     setup: float | None = None
-    """Max wall-clock for taskset setup and harness provisioning."""
+    """Max wall-clock for the taskset's `setup` hook (per-task runtime prep)."""
     rollout: float | None = None
     """Max wall-clock for the rollout (the harness run)."""
     finalize: float | None = None
