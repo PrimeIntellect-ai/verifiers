@@ -126,11 +126,6 @@ CLI flags (and TOML keys), and the instance reaches the taskset as `self.config`
 ```python
 class GSM8KConfig(vf.TasksetConfig):
     split: Literal["train", "test"] = "test"   # --taskset.split test
-
-class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
-    def load_tasks(self):
-        rows = load_dataset("gsm8k", split=self.config.split)   # read knobs off self.config
-        ...
 ```
 
 Nested configs nest the flag path: a `tools: vf.ToolsetConfig` field is set with
@@ -143,6 +138,13 @@ able to change. The base `TasksetConfig` carries `id` (the taskset's id, set via
 `def load_tasks(self) -> list[TaskT]` builds the task list. It runs **once at load** (not per
 rollout), so do dataset loading / filtering / slicing here off `self.config`. Return your typed
 `Task` subclass instances.
+
+```python
+class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
+    def load_tasks(self):
+        rows = load_dataset("gsm8k", split=self.config.split)   # read knobs off self.config
+        ...
+```
 
 ## Scoring — rewards, metrics, group rewards
 
