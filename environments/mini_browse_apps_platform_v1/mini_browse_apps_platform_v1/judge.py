@@ -108,21 +108,50 @@ def score_from_judge_payload(payload: dict[str, Any]) -> float:
 
 
 def parse_json_object(content: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        start = content.find("{")
-        end = content.rfind("}")
-        if start < 0 or end <= start:
-            return {"score": 0.0, "explanation": content[:500], "verdict": "no"}
-        parsed = json.loads(content[start : end + 1])
-    if not isinstance(parsed, dict):
-        return {
-            "score": 0.0,
-            "explanation": "judge returned non-object",
-            "verdict": "no",
-        }
-    return parsed
+    # Judge models sometimes return JSON wrapped in a code fence or left unterminated (the
+    # reasoning model stops after the last array without closing the root object). Try the raw
+    # text, then the brace span, then a bracket-balanced repair of that span.
+    fenced = content.strip()
+    if fenced.startswith("```"):
+        fenced = fenced.split("```", 2)[1].removeprefix("json").strip()
+    start = fenced.find("{")
+    span = fenced[start:] if start >= 0 else ""
+    for candidate in (content, fenced, span, _balance_json(span)):
+        if not candidate.strip():
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {"score": 0.0, "explanation": content[:500], "verdict": "no"}
+
+
+def _balance_json(text: str) -> str:
+    """Close an unterminated JSON object/array: append the missing `}`/`]` for any brackets left
+    open outside of strings, after dropping a dangling trailing comma."""
+    stack: list[str] = []
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack:
+            stack.pop()
+    trimmed = text.rstrip()
+    if trimmed.endswith(","):
+        trimmed = trimmed[:-1]
+    return trimmed + "".join(reversed(stack))
 
 
 def prime_team_id() -> str | None:
