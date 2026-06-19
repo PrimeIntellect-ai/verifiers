@@ -384,7 +384,7 @@ async def _run(args: argparse.Namespace) -> int:
         os.environ["MINI_BROWSE_BROWSER_API_URL"] = browser_api_url
     http_proxy = str(task_payload.get("http_proxy") or "").strip()
     if http_proxy:
-        os.environ["PERPLEXITY_TAILSCALE_HTTP_PROXY"] = http_proxy
+        os.environ["MINI_BROWSE_HTTP_PROXY"] = http_proxy
     source = str(task_payload.get("source") or "verifiers-mini-browse")
     task_preamble = str(
         task_payload.get("task_preamble")

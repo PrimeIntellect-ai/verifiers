@@ -1,6 +1,6 @@
 """Browser-app harness: stages a privately-distributed browser agent into the sandbox.
 
-The browser agent is proprietary and is NOT vendored in this repo. It is fetched at run time
+The browser agent is private and is NOT vendored in this repo. It is fetched at run time
 from a private, auth-gated GitHub repo (pinned to a commit), cached locally, then tarred and
 staged into the sandbox, where `program.py` (a uv script) imports and runs it. For local
 development, point `agent.path` at a checkout instead of fetching.
@@ -49,12 +49,12 @@ CoordinateMode = Literal["relative_1000", "absolute", "auto"]
 
 
 class AgentConfig(BaseConfig):
-    """The proprietary browser agent — fetched at run time from a private repo, not vendored."""
+    """The private browser agent — fetched at run time from a private repo, not vendored."""
 
-    repo: str = "PrimeIntellect-ai/plex-mini-browse"
+    repo: str = "PrimeIntellect-ai/mini-browse"
     """Private GitHub repo (owner/name) the agent is fetched from."""
-    ref: str = ""
-    """Pinned commit sha to fetch (required unless `path` is set)."""
+    ref: str = "157b449"
+    """Pinned commit sha to fetch (`path` skips the fetch for local development)."""
     package: str = "mini_browse"
     """Importable package dir within the repo (and on the sandbox PYTHONPATH) to stage."""
     token_env: str = "MINI_BROWSE_GITHUB_TOKEN"
@@ -66,7 +66,7 @@ class AgentConfig(BaseConfig):
 
 
 class MiniBrowseHarnessConfig(HarnessConfig):
-    """Reusable browser harness; fetches its proprietary agent from a private repo."""
+    """Reusable browser harness; fetches its agent from a private GitHub repo."""
 
     id: str = "mini-browse-apps-platform-v1"
     runtime: RuntimeConfig = DockerConfig(image="python:3.12-slim-bookworm")

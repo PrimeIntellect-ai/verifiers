@@ -7,17 +7,17 @@ LLM judge scores the submission against a deterministic answer key.
 
 The model must be **multimodal** (the agent's only input is screenshots).
 
-## Proprietary agent (fetched at run time)
+## Private agent (fetched at run time)
 
-The browser agent is **proprietary and not vendored in this repo**. The harness fetches it at run
+The browser agent is **private and not vendored in this repo**. The harness fetches it at run
 time from a **private GitHub repo** (pinned to a commit), caches it under
 `~/.cache/verifiers/browse-agent/<sha>/`, then stages it into the sandbox. Configure via
 `--harness.*`:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `agent.repo` | `PrimeIntellect-ai/plex-mini-browse` | Private `owner/name` to fetch the agent from. |
-| `agent.ref` | _(unset)_ | **Pinned commit sha to fetch (required unless `agent.path` is set).** |
+| `agent.repo` | `PrimeIntellect-ai/mini-browse` | Private `owner/name` to fetch the agent from. |
+| `agent.ref` | `157b449` | Pinned commit sha to fetch (`agent.path` skips the fetch). |
 | `agent.token_env` | `MINI_BROWSE_GITHUB_TOKEN` | Env var holding a GitHub token with read access to `agent.repo`. |
 | `agent.path` | _(unset)_ | Local dir containing the agent package — skips the fetch (development). |
 
