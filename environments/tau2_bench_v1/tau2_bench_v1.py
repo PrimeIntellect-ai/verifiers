@@ -132,17 +132,19 @@ class Tau2Taskset(vf.Taskset[Tau2Task, Tau2TasksetConfig]):
 
     @vf.reward
     async def tau2_reward(self, trace: vf.Trace) -> float:
-        if trace.is_truncated:
+        if "tau2" not in trace.info:
             return 0.0
         simulation = SimulationRun.model_validate(trace.info["tau2"]["simulation"])
         reward = simulation.reward_info
-        assert reward is not None
+        if reward is None:
+            return 0.0
         trace.info["tau2"]["evaluation"] = reward.model_dump(mode="json")
         return float(reward.reward)
 
 
 class Tau2HarnessConfig(vf.HarnessConfig):
     id: Literal["tau2-bench-v1"] = "tau2-bench-v1"
+    # The runner imports this installed module, so it must share the host interpreter.
     runtime: vf.SubprocessConfig = vf.SubprocessConfig()
 
 
