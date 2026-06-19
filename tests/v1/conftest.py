@@ -144,6 +144,17 @@ def pytest_collection_modifyitems(config, items) -> None:
             item.add_marker(skip)
 
 
+def _label_prime_runtimes(config: dict) -> None:
+    """Tag every prime runtime config (nested anywhere — harness / tool / user) with a `vf-ci`
+    label, so e2e sandboxes are findable for optional bulk cleanup (they otherwise auto-clean on
+    teardown). `labels` is a field on `PrimeConfig`."""
+    if isinstance(config, dict):
+        if config.get("type") == "prime":
+            config.setdefault("labels", ["vf-ci"])
+        for value in config.values():
+            _label_prime_runtimes(value)
+
+
 def _eval_config(
     taskset: str,
     *,
@@ -167,9 +178,13 @@ def _eval_config(
     `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
     risks truncating the reasoning before the answer (which tanks the reward)."""
+    taskset_cfg = {"id": taskset, **(taskset_overrides or {})}
+    harness_cfg = {"id": harness, **(harness_overrides or {})}
+    _label_prime_runtimes(taskset_cfg)
+    _label_prime_runtimes(harness_cfg)
     return EvalConfig(
-        taskset={"id": taskset, **(taskset_overrides or {})},
-        harness={"id": harness, **(harness_overrides or {})},
+        taskset=taskset_cfg,
+        harness=harness_cfg,
         num_tasks=num_tasks,
         num_rollouts=n,
         max_turns=max_turns,
