@@ -250,7 +250,6 @@ addopts = [
     "--quiet",
 ]
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "e2e: marks end-to-end eval-run tests (need a model API key; skipped without one)",
     "prime: marks tests that run on the prime runtime (provision a real sandbox + tunnel)",
     "integration: marks tests as integration tests",

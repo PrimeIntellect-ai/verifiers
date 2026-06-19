@@ -7,8 +7,8 @@ without one the `e2e`-marked tests skip (config parsing still runs).
 
 `run_v1` / `run_v0` mirror the eval CLI's two paths (`run_eval` for a v1 taskset,
 `run_legacy_eval` for a v0 env). The `runtime` fixture fans a test out across the built-in
-runtimes (modal excluded for now); docker/prime are marked so they deselect cleanly
-(`-m "not slow"`).
+runtimes (modal excluded for now). docker runs by default; prime provisions real sandboxes, so
+it's marked `prime_sandbox` and skipped by CI's `-m "not prime_sandbox"`.
 """
 
 import os
@@ -25,13 +25,13 @@ from verifiers.v1.trace import Trace
 # tests/v1/fixtures, added to the path via `pythonpath` in pyproject so the v1 loader and the
 # v0 legacy bridge both resolve them by id (no install).
 
-# The harness runtime, modal excluded. docker needs the daemon; prime provisions real
-# sandboxes + tunnels (network + PRIME credentials), so both are marked to deselect easily. The
+# The harness runtime, modal excluded. docker needs the daemon; prime provisions real sandboxes +
+# tunnels (network + PRIME credentials), so it's marked `prime_sandbox` to deselect from CI. The
 # `id`s make a test read like `<harness>-harness-in-<rt>` / `in-<rt>-with-<user|tool>-...`.
 HARNESS_RUNTIMES = [
     pytest.param("subprocess", id="in-subprocess"),
-    pytest.param("docker", marks=pytest.mark.slow, id="in-docker"),
-    pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime], id="in-prime"),
+    pytest.param("docker", id="in-docker"),
+    pytest.param("prime", marks=pytest.mark.prime_sandbox, id="in-prime"),
 ]
 
 
@@ -45,12 +45,8 @@ def harness_runtime(request) -> str:
 USER_RUNTIMES = [
     pytest.param("colocated", id="with-user-colocated"),
     pytest.param("subprocess", id="with-user-in-subprocess"),
-    pytest.param("docker", marks=pytest.mark.slow, id="with-user-in-docker"),
-    pytest.param(
-        "prime",
-        marks=[pytest.mark.slow, pytest.mark.prime],
-        id="with-user-in-prime",
-    ),
+    pytest.param("docker", id="with-user-in-docker"),
+    pytest.param("prime", marks=pytest.mark.prime_sandbox, id="with-user-in-prime"),
 ]
 
 
@@ -70,12 +66,8 @@ TOOL_RUNTIMES = [
     pytest.param("colocated", id="with-tool-colocated"),
     pytest.param("shared", id="with-tool-shared"),
     pytest.param("subprocess", id="with-tool-in-subprocess"),
-    pytest.param("docker", marks=pytest.mark.slow, id="with-tool-in-docker"),
-    pytest.param(
-        "prime",
-        marks=[pytest.mark.slow, pytest.mark.prime],
-        id="with-tool-in-prime",
-    ),
+    pytest.param("docker", id="with-tool-in-docker"),
+    pytest.param("prime", marks=pytest.mark.prime_sandbox, id="with-tool-in-prime"),
 ]
 
 
@@ -109,17 +101,17 @@ def skip_if_unexposable():
 
 
 # Harnesses, composed with the runtime fixtures. Built-ins are bundled in the `harnesses` package;
-# `default` and `bash` install nothing and run fast, while the agent CLIs (`rlm` / `kimi-code` /
-# `codex`) install their dependencies at rollout, so they're marked slow. `compact` (an example
-# harness) and `terminus-2` (drives the host tmux) are excluded. `test_agentic` skips `default` —
-# it's a chat loop with no shell, so it can't do the file-write task.
+# the agent CLIs (`rlm` / `kimi-code` / `codex`) install their dependencies at rollout. `compact`
+# (an example harness) and `terminus-2` (drives the host tmux) are excluded. `test_agentic` skips
+# `default` (a chat loop with no shell); `test_single_turn` skips `codex` (a coding agent,
+# unreliable on a no-op echo).
 @pytest.fixture(
     params=[
         pytest.param("default", id="default-harness"),
         pytest.param("bash", id="bash-harness"),
-        pytest.param("rlm", marks=pytest.mark.slow, id="rlm-harness"),
-        pytest.param("kimi-code", marks=pytest.mark.slow, id="kimi-code-harness"),
-        pytest.param("codex", marks=pytest.mark.slow, id="codex-harness"),
+        pytest.param("rlm", id="rlm-harness"),
+        pytest.param("kimi-code", id="kimi-code-harness"),
+        pytest.param("codex", id="codex-harness"),
     ]
 )
 def harness(request) -> str:
