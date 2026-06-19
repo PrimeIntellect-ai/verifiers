@@ -164,12 +164,9 @@ async def correct(self, task, trace) -> float: ...
 
 @vf.metric()                           # recorded, not summed — a float or a dict to merge
 async def enthusiasm(self, trace) -> float:
-    return float(trace.assistant_messages[-1].content.count("!"))
 
 @vf.group_reward(weight=0.1)           # compares a task's N rollouts — here, a length penalty
 async def brevity(self, traces: list[vf.Trace]) -> list[float]:
-    longest = max(t.completion_len for t in traces) or 1
-    return [-t.completion_len / longest for t in traces]   # longest gets -1, shorter ones less
 ```
 
 The decorators and what each can receive:
@@ -192,31 +189,57 @@ Good to know:
 
 ### Reading the trace
 
-A reward reads the finished trajectory off `trace`. The most useful read-only members:
+A reward reads the finished trajectory off `trace`. The most useful read-only members, by area:
+
+**Task & messages**
 
 | member | type | what |
 | --- | --- | --- |
 | `trace.task` | `TaskT` | the typed task (your subclass) |
 | `trace.assistant_messages` | `list[AssistantMessage]` | the model's responses in order (excludes prompt-supplied messages) |
-| `trace.messages` | `Messages` | the full conversation (main branch) |
-| `trace.tool_messages` | `list[ToolMessage]` | tool results |
-| `trace.reward` / `trace.rewards` | `float` / `dict` | summed reward / per-function contributions |
+| `trace.tool_messages` | `list[ToolMessage]` | tool results (main branch) |
+| `trace.branches[-1].messages` | `Messages` | the full conversation of the main (last) branch |
+
+**Scoring** (rewards/metrics come from your decorator returns; `info`/`state` you set yourself)
+
+| member | type | what |
+| --- | --- | --- |
+| `trace.reward` / `trace.rewards` | `float` / `dict[str, float]` | summed reward / per-key contributions |
 | `trace.metrics` | `dict[str, float]` | recorded metrics |
 | `trace.info` | `dict` | free-form persisted artifact bag (see below) |
 | `trace.state` | `StateT` | transient per-rollout state (see [State](#per-rollout-state)) |
+
+**Status & lifecycle**
+
+| member | type | what |
+| --- | --- | --- |
+| `trace.is_completed` / `trace.stop_condition` | `bool` / `str \| None` | whether / why the rollout ended |
+| `trace.is_truncated` | `bool` | ended by hitting a turn/token/length cap |
+| `trace.has_response` | `bool` | the last turn produced non-empty content |
+| `trace.has_error` / `trace.error` / `trace.errors` | `bool` / `Error \| None` / `list[Error]` | error state (most recent / all attempts) |
+
+**Counts, tokens & timing**
+
+| member | type | what |
+| --- | --- | --- |
 | `trace.num_turns` | `int` | sampled model turns |
-| `trace.num_branches` / `trace.branches` | `int` / `list` | branch count / the branches (compaction, retokenization) |
-| `trace.is_truncated` | `bool` | hit a turn/token/length cap |
-| `trace.stop_condition` / `trace.is_completed` | `str \| None` / `bool` | why/whether the rollout ended |
-| `trace.has_error` / `trace.error` / `trace.errors` | `bool` / … | error state |
-| `trace.prompt_len` / `completion_len` / `total_tokens` | `int` | token counts |
+| `trace.num_branches` / `trace.branches` | `int` / `list[Branch]` | branch count / the branches (>1 under compaction or subagents) |
+| `trace.prompt_len` / `trace.completion_len` / `trace.total_tokens` | `int` | token counts (summed over branches) |
+| `trace.usage` | `Usage \| None` | provider-reported token usage |
 | `trace.timing` | `Timing` | per-stage durations |
+| `trace.id` | `str` | unique rollout id |
+
+The raw message graph is `trace.nodes` (each message stored once); `branches` is the friendly view
+over it, so you rarely touch `nodes` directly.
 
 ### In-runtime scoring
 
-To score with a dependency the eval process shouldn't have (e.g. `math-verify`), run it as a uv
-script *in the rollout's runtime* — the dep resolves inside the runtime and never touches the eval
-process:
+Declare `runtime` on a `@reward`/`@metric` when scoring needs the rollout's runtime — either
+because it requires **heavy computation that shouldn't run on the host** (e.g. a verifier with its
+own dependencies like `math-verify`), or because it needs **information that only lives in the
+agent's runtime** (files the agent wrote, command output, container state). The `runtime` object
+gives you read/write/exec in there; a common pattern is a uv script whose PEP 723 deps resolve
+inside the runtime and never touch the eval process:
 
 ```python
 VERIFY = (Path(__file__).parent / "verify.py").read_text()   # PEP 723 header declares its deps
