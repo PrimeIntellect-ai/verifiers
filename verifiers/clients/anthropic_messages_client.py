@@ -390,14 +390,14 @@ class AnthropicMessagesClient(
                 has_text = True
             elif block_type == "tool_use":
                 has_tool_call = True
-            elif block_type in {"thinking", "redacted_thinking"}:
+            elif block_type == "thinking" and getattr(content_block, "thinking", None):
+                has_reasoning = True
+            elif block_type == "redacted_thinking" and getattr(
+                content_block, "data", None
+            ):
                 has_reasoning = True
 
-        if not (has_text or has_tool_call):
-            if has_reasoning:
-                raise EmptyModelResponseError(
-                    "Model returned reasoning but no content and did not call any tools"
-                )
+        if not (has_text or has_tool_call or has_reasoning):
             raise EmptyModelResponseError(
                 "Model returned no content and did not call any tools"
             )

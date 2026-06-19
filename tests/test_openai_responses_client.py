@@ -8,7 +8,6 @@ from verifiers.clients.openai_responses_client import (
     OPENAI_RESPONSES_OUTPUT_FIELD,
     OpenAIResponsesClient,
 )
-from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -132,24 +131,6 @@ async def test_get_native_response_normalizes_sampling_args_and_tools():
             "strict": True,
         }
     ]
-
-
-@pytest.mark.asyncio
-async def test_raise_from_native_response_rejects_reasoning_only_response():
-    native_response = SimpleNamespace(
-        output=[
-            {
-                "type": "reasoning",
-                "id": "rs_1",
-                "summary": [{"type": "summary_text", "text": "thinking"}],
-                "status": "completed",
-            }
-        ]
-    )
-    client = OpenAIResponsesClient(object())
-
-    with pytest.raises(EmptyModelResponseError, match="reasoning but no content"):
-        await client.raise_from_native_response(native_response)
 
 
 @pytest.mark.asyncio

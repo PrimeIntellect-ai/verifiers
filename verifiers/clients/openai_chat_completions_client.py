@@ -100,6 +100,12 @@ def get_usage_field(usage: Any, key: str) -> Any:
     return getattr(usage, key, None)
 
 
+def _get_reasoning_tokens(usage: Any) -> int:
+    completion_details = get_usage_field(usage, "completion_tokens_details")
+    reasoning_tokens = get_usage_field(completion_details, "reasoning_tokens")
+    return reasoning_tokens if isinstance(reasoning_tokens, int) else 0
+
+
 def content_to_text(content: Any) -> str:
     """Get all text content from OAI message content."""
     if isinstance(content, str):
@@ -142,8 +148,19 @@ def parse_reasoning_content(message: Any) -> str | None:
 
     for field in DEFAULT_REASONING_FIELDS:
         value = message_dict.get(field)
-        if isinstance(value, str):
+        if isinstance(value, str) and value:
             return value
+    details = message_dict.get("reasoning_details")
+    if isinstance(details, list) and any(
+        isinstance(detail, Mapping)
+        and any(
+            detail.get(field)
+            for field in ("text", "summary", "data", "signature", "encrypted_content")
+        )
+        for detail in details
+    ):
+        # Keep structured provider reasoning as a replayable marker without flattening it.
+        return ""
     return None
 
 
@@ -345,12 +362,11 @@ class OpenAIChatCompletionsClient(
             or parse_refusal_content(message)
         )
         has_tool_calls = bool(getattr(message, "tool_calls", None))
-        has_reasoning = bool(parse_reasoning_content(message))
-        if not (has_content or has_tool_calls):
-            if has_reasoning:
-                raise EmptyModelResponseError(
-                    "Model returned reasoning but no content and did not call any tools"
-                )
+        has_reasoning = (
+            parse_reasoning_content(message) is not None
+            or _get_reasoning_tokens(getattr(response, "usage", None)) > 0
+        )
+        if not (has_content or has_tool_calls or has_reasoning):
             raise EmptyModelResponseError(
                 "Model returned no content and did not call any tools"
             )
@@ -442,6 +458,7 @@ class OpenAIChatCompletionsClient(
                 prompt_tokens = get_usage_field(usage, "input_tokens")
                 completion_tokens = get_usage_field(usage, "output_tokens")
             total_tokens = get_usage_field(usage, "total_tokens")
+            reasoning_tokens = _get_reasoning_tokens(usage)
             if not isinstance(prompt_tokens, int) or not isinstance(
                 completion_tokens, int
             ):
@@ -450,7 +467,7 @@ class OpenAIChatCompletionsClient(
                 total_tokens = prompt_tokens + completion_tokens
             return Usage(
                 prompt_tokens=prompt_tokens,
-                reasoning_tokens=0,
+                reasoning_tokens=reasoning_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
             )
@@ -528,17 +545,29 @@ class OpenAIChatCompletionsClient(
         if not isinstance(model, str):
             model = ""
 
+        message = response.choices[0].message
+        content = parse_content(response)
+        reasoning_content = parse_reasoning_content(message)
+        tool_calls = parse_tool_calls(response)
+        if (
+            content is None
+            and reasoning_content is None
+            and not tool_calls
+            and _get_reasoning_tokens(getattr(response, "usage", None)) > 0
+        ):
+            content = ""
+
         return Response(
             id=response_id,
             created=created,
             model=model,
             usage=parse_usage(response),
             message=ResponseMessage(
-                content=parse_content(response),
-                reasoning_content=parse_reasoning_content(response.choices[0].message),
+                content=content,
+                reasoning_content=reasoning_content,
                 finish_reason=parse_finish_reason(response),
                 is_truncated=parse_is_truncated(response),
                 tokens=parse_tokens(response),
-                tool_calls=parse_tool_calls(response) or None,
+                tool_calls=tool_calls or None,
             ),
         )

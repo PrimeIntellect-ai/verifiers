@@ -3,7 +3,6 @@ from types import SimpleNamespace
 import pytest
 
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
-from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
     ImageUrlContentPart,
@@ -57,25 +56,6 @@ async def test_openai_to_native_prompt_with_typed_multimodal_content_parts():
             "input_audio": {"data": "ZHVtbXk=", "format": "wav"},
         },
     ]
-
-
-@pytest.mark.asyncio
-async def test_openai_chat_rejects_reasoning_only_native_response():
-    client = OpenAIChatCompletionsClient(object())
-    native_response = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=_OpenAIMessage(
-                    content=None,
-                    reasoning_content="hidden chain",
-                    tool_calls=None,
-                )
-            )
-        ]
-    )
-
-    with pytest.raises(EmptyModelResponseError, match="reasoning but no content"):
-        await client.raise_from_native_response(native_response)
 
 
 @pytest.mark.asyncio
@@ -280,24 +260,6 @@ async def test_anthropic_from_native_response_always_parses_reasoning():
     response = await client.from_native_response(native_response)
     assert response.message.reasoning_content == "hidden chain"
     assert response.message.content == "final answer"
-
-
-@pytest.mark.asyncio
-async def test_anthropic_rejects_reasoning_only_native_response():
-    pytest.importorskip("anthropic")
-    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
-
-    client = AnthropicMessagesClient(object())
-    native_response = SimpleNamespace(
-        id="msg_think",
-        model="claude-haiku-4-5",
-        stop_reason="end_turn",
-        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
-        content=[SimpleNamespace(type="thinking", thinking="hidden chain")],
-    )
-
-    with pytest.raises(EmptyModelResponseError, match="reasoning but no content"):
-        await client.raise_from_native_response(native_response)
 
 
 @pytest.mark.asyncio

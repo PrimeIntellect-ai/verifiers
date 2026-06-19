@@ -53,6 +53,12 @@ def _model_dump(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _get_reasoning_tokens(usage: Any) -> int:
+    output_details = get_usage_field(usage, "output_tokens_details")
+    reasoning_tokens = get_usage_field(output_details, "reasoning_tokens")
+    return reasoning_tokens if isinstance(reasoning_tokens, int) else 0
+
+
 class OpenAIResponsesClient(
     Client[
         AsyncOpenAI,
@@ -171,7 +177,7 @@ class OpenAIResponsesClient(
                     return raw_items
 
                 items: list[dict[str, Any]] = []
-                if content_to_text(message.content):
+                if content_to_text(message.content) or message.content == "":
                     items.append(
                         {
                             "type": "message",
@@ -267,9 +273,14 @@ class OpenAIResponsesClient(
             message = _get_field(error, "message", "Model response failed")
             raise InvalidModelResponseError(str(message))
 
+        has_usage_reasoning = (
+            _get_reasoning_tokens(getattr(response, "usage", None)) > 0
+        )
         output = getattr(response, "output", None)
-        if output is None:
+        if output is None and not has_usage_reasoning:
             raise EmptyModelResponseError("Model returned no output")
+        if output is None:
+            output = []
         if not isinstance(output, Iterable):
             raise InvalidModelResponseError("Model returned invalid output")
 
@@ -293,11 +304,8 @@ class OpenAIResponsesClient(
                     ):
                         has_text = True
 
-        if not (has_text or has_tool_call):
-            if has_reasoning:
-                raise EmptyModelResponseError(
-                    "Model returned reasoning but no content and did not call any tools"
-                )
+        has_reasoning = has_reasoning or has_usage_reasoning
+        if not (has_text or has_tool_call or has_reasoning):
             raise EmptyModelResponseError(
                 "Model returned no content and did not call any tools"
             )
@@ -374,20 +382,13 @@ class OpenAIResponsesClient(
             prompt_tokens = get_usage_field(usage, "input_tokens")
             completion_tokens = get_usage_field(usage, "output_tokens")
             total_tokens = get_usage_field(usage, "total_tokens")
-            output_details = get_usage_field(usage, "output_tokens_details")
-            reasoning_tokens = (
-                get_usage_field(output_details, "reasoning_tokens")
-                if output_details is not None
-                else 0
-            )
+            reasoning_tokens = _get_reasoning_tokens(usage)
             if not isinstance(prompt_tokens, int) or not isinstance(
                 completion_tokens, int
             ):
                 return None
             if not isinstance(total_tokens, int):
                 total_tokens = prompt_tokens + completion_tokens
-            if not isinstance(reasoning_tokens, int):
-                reasoning_tokens = 0
             return Usage(
                 prompt_tokens=prompt_tokens,
                 reasoning_tokens=reasoning_tokens,
@@ -421,14 +422,27 @@ class OpenAIResponsesClient(
         if not isinstance(model, str):
             model = ""
 
+        output_items = raw_output_items(response)
+        content = parse_content(response)
+        reasoning_content = parse_reasoning_content(response)
+        tool_calls = parse_tool_calls(response)
+        if (
+            not output_items
+            and content is None
+            and reasoning_content is None
+            and not tool_calls
+            and _get_reasoning_tokens(getattr(response, "usage", None)) > 0
+        ):
+            content = ""
+
         message_data: dict[str, Any] = {
-            "content": parse_content(response),
-            "reasoning_content": parse_reasoning_content(response),
+            "content": content,
+            "reasoning_content": reasoning_content,
             "finish_reason": parse_finish_reason(response),
             "is_truncated": parse_is_truncated(response),
             "tokens": None,
-            "tool_calls": parse_tool_calls(response) or None,
-            OPENAI_RESPONSES_OUTPUT_FIELD: raw_output_items(response),
+            "tool_calls": tool_calls or None,
+            OPENAI_RESPONSES_OUTPUT_FIELD: output_items,
         }
 
         return Response(
