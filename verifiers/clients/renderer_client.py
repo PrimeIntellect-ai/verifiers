@@ -9,8 +9,12 @@ concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
 import json
+import os
 import threading
+import time
+import uuid
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, ClassVar, cast
 
 from openai import AsyncOpenAI
@@ -90,6 +94,9 @@ def reset_bridge_metrics() -> None:
 # big tokenizers can bump this per-client.
 _DEFAULT_POOL_SIZE = 1
 
+_RESPONSE_DUMP_DIR_ENV = "VF_RENDERER_RESPONSE_DUMP_DIR"
+_RESPONSE_DUMP_ALL_ENV = "VF_RENDERER_RESPONSE_DUMP_ALL"
+
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -98,6 +105,26 @@ def _get_value(obj: Any, key: str, default: Any = None) -> Any:
     if isinstance(obj, Mapping):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _json_safe(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return _json_safe(value.model_dump(mode="json"))
+    if isinstance(value, Mapping):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    try:
+        json.dumps(value)
+    except TypeError:
+        return repr(value)
+    return value
+
+
+def _truthy_env(value: str | None) -> bool:
+    return value is not None and value.lower() in {"1", "true", "yes", "on"}
 
 
 def _normalize_for_comparison(value: Any, _key: str | None = None) -> Any:
@@ -470,6 +497,78 @@ class RendererClient(
     async def close(self) -> None:
         await self.client.close()
 
+    def _maybe_dump_native_response(
+        self,
+        *,
+        response: dict[str, Any] | None,
+        prompt: list[RendererMessage],
+        model: str,
+        sampling_args: SamplingArgs,
+        sampling_params: dict[str, Any],
+        tools: list[ToolSpec] | None,
+        kwargs: dict[str, Any],
+        prompt_ids: list[int] | None,
+    ) -> None:
+        dump_dir = os.environ.get(_RESPONSE_DUMP_DIR_ENV)
+        if not dump_dir:
+            return
+
+        has_content = bool(response and response.get("content"))
+        has_tool_calls = bool(response and response.get("tool_calls"))
+        empty_like = not (has_content or has_tool_calls)
+        if not (empty_like or _truthy_env(os.environ.get(_RESPONSE_DUMP_ALL_ENV))):
+            return
+
+        state = kwargs.get("state")
+        state_hint = _json_safe(state) if state is not None else None
+        request_id = _get_value(response, "request_id") or _get_value(response, "id")
+        rollout_id = _get_value(state, "rollout_id") or _get_value(state, "trajectory_id")
+        example_id = _get_value(state, "example_id")
+        filename_parts = [
+            time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+            "empty" if empty_like else "response",
+            str(example_id) if example_id is not None else "no-example",
+            str(rollout_id or request_id or uuid.uuid4())[:48],
+        ]
+        filename = "-".join(filename_parts).replace("/", "_") + ".json"
+
+        payload = {
+            "dump_schema": "verifiers.renderer_native_response.v1",
+            "dump_reason": "empty_response_like" if empty_like else "all_responses_enabled",
+            "time": time.time(),
+            "model": model,
+            "sampling_args": _json_safe(sampling_args),
+            "sampling_params": _json_safe(sampling_params),
+            "prompt": _json_safe(prompt),
+            "prompt_ids": {
+                "length": len(prompt_ids) if prompt_ids is not None else None,
+                "head": prompt_ids[:256] if prompt_ids is not None else None,
+                "tail": prompt_ids[-256:] if prompt_ids is not None else None,
+            },
+            "tools": _json_safe(tools),
+            "state": state_hint,
+            "response": _json_safe(response),
+            "response_summary": {
+                "has_content": has_content,
+                "has_tool_calls": has_tool_calls,
+                "has_reasoning_content": bool(
+                    response and response.get("reasoning_content")
+                ),
+                "finish_reason": _get_value(response, "finish_reason"),
+                "request_id": request_id,
+            },
+        }
+
+        try:
+            path = Path(dump_dir)
+            path.mkdir(parents=True, exist_ok=True)
+            (path / filename).write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            self.logger.warning("Failed to dump renderer native response: %r", exc)
+
     # ── Renderer management ─────────────────────────────────────────
 
     def _get_renderer_or_pool(
@@ -613,7 +712,7 @@ class RendererClient(
         # 4xx → vf.OverlongPromptError) for engines whose ``/v1/models``
         # doesn't expose ``max_model_len``.
         try:
-            return await generate(
+            response = await generate(
                 client=self.client,
                 renderer=renderer,
                 messages=prompt,
@@ -628,6 +727,17 @@ class RendererClient(
                 priority=args.get("priority") or sampling_params.pop("priority", None),
                 extra_headers=extra_headers or None,
             )
+            self._maybe_dump_native_response(
+                response=response,
+                prompt=prompt,
+                model=model,
+                sampling_args=sampling_args,
+                sampling_params=sampling_params,
+                tools=tools,
+                kwargs=kwargs,
+                prompt_ids=prompt_ids,
+            )
+            return response
         except RendererOverlongPromptError as exc:
             raise OverlongPromptError(str(exc)) from exc
 
