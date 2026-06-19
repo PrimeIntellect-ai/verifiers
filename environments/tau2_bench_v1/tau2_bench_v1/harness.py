@@ -1,10 +1,6 @@
-import fcntl
 import json
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Literal
 
@@ -18,30 +14,16 @@ from tau2.data_model.message import (
     Message,
 )
 from tau2.data_model.simulation import SimulationRun, TerminationReason
-from tau2.data_model.tasks import Description as TauDescription
 from tau2.data_model.tasks import Task as TauTask
-from tau2.orchestrator.orchestrator import DEFAULT_FIRST_AGENT_MESSAGE
-from tau2.run import load_tasks, run_task
+from tau2.run import run_task
 from tau2.user.base import UserState
 from tau2.utils import llm_utils
-from tau2.utils.utils import DATA_DIR
 from verifiers.utils.client_utils import load_prime_config
 
-TAU2_REPOSITORY = "https://github.com/sierra-research/tau2-bench.git"
-TAU2_REVISION = "337326e62d8e0ca74c353b004a9c5d748e0ba914"
-# Tau2's workflow variant uses the Telecom tasks with its procedural support policy.
-Tau2Domain = Literal["airline", "retail", "telecom", "telecom-workflow"]
+from tau2_bench_v1.taskset import Tau2Task
+
 _RESULT_PREFIX = "__TAU2_RESULT__="
 _RUN_CONFIG = "TAU2_RUN_CONFIG"
-
-
-class Tau2TasksetConfig(vf.TasksetConfig):
-    domain: Tau2Domain = "telecom"
-
-
-class Tau2Task(vf.Task, TauTask):
-    domain: Tau2Domain
-    tau_description: TauDescription | None = None
 
 
 _tau_to_litellm_messages = llm_utils.to_litellm_messages
@@ -62,84 +44,6 @@ def _flip_roles(self: UserState):
         if isinstance(flipped_message, AssistantMessage):
             flipped_message.raw_data = message.raw_data
     return flipped
-
-
-class Tau2Taskset(vf.Taskset[Tau2Task, Tau2TasksetConfig]):
-    def load_tasks(self) -> list[Tau2Task]:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        marker = DATA_DIR / ".tau2_revision"
-        with (DATA_DIR / ".tau2_bootstrap.lock").open("a+") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            if not (
-                (DATA_DIR / "tau2" / "domains").exists()
-                and marker.exists()
-                and marker.read_text() == TAU2_REVISION
-            ):
-                with tempfile.TemporaryDirectory(prefix="tau2_bench_v1_") as temp_dir:
-                    subprocess.run(
-                        ["git", "init", temp_dir],
-                        check=True,
-                        capture_output=True,
-                    )
-                    subprocess.run(
-                        [
-                            "git",
-                            "-C",
-                            temp_dir,
-                            "fetch",
-                            "--depth",
-                            "1",
-                            TAU2_REPOSITORY,
-                            TAU2_REVISION,
-                        ],
-                        check=True,
-                        capture_output=True,
-                    )
-                    subprocess.run(
-                        [
-                            "git",
-                            "-C",
-                            temp_dir,
-                            "checkout",
-                            "FETCH_HEAD",
-                            "--",
-                            "data",
-                        ],
-                        check=True,
-                        capture_output=True,
-                    )
-                    shutil.copytree(
-                        Path(temp_dir) / "data", DATA_DIR, dirs_exist_ok=True
-                    )
-                    marker.write_text(TAU2_REVISION)
-
-        tasks = load_tasks(
-            task_set_name=self.config.domain,
-            task_split_name="base",
-        )
-        return [
-            Tau2Task(
-                **task.model_dump(exclude={"description"}),
-                idx=index,
-                name=task.id,
-                description=str(task.description) if task.description else None,
-                prompt=DEFAULT_FIRST_AGENT_MESSAGE.content or "",
-                domain=self.config.domain,
-                tau_description=task.description,
-            )
-            for index, task in enumerate(tasks)
-        ]
-
-    @vf.reward
-    async def tau2_reward(self, trace: vf.Trace) -> float:
-        if "tau2" not in trace.info:
-            return 0.0
-        simulation = SimulationRun.model_validate(trace.info["tau2"]["simulation"])
-        reward = simulation.reward_info
-        if reward is None:
-            return 0.0
-        trace.info["tau2"]["evaluation"] = reward.model_dump(mode="json")
-        return float(reward.reward)
 
 
 class Tau2HarnessConfig(vf.HarnessConfig):
@@ -229,7 +133,7 @@ class Tau2Harness(vf.Harness[Tau2HarnessConfig]):
         return result
 
 
-__all__ = ["Tau2Harness", "Tau2Taskset"]
+__all__ = ["Tau2Harness", "Tau2HarnessConfig"]
 
 
 if __name__ == "__main__":
