@@ -156,18 +156,17 @@ class PrimeRuntime(Runtime):
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox via the SDK's native port exposure → a public
-        # HTTPS URL reachable from anywhere (incl. another sandbox). The exposure is removed when
-        # the sandbox is deleted in stop(), so a tool in its own prime sandbox needs no host tunnel.
-        # TODO: `client.expose` currently only works in a default-region sandbox (port <= 9000), so
-        # a tool/user-sim in its own prime sandbox needs the region pinned. Fix once prime supports
-        # port exposure in any region (then drop the e2e `skip_if_unexposable` guard).
+        # HTTPS URL. Removed when the sandbox is deleted in stop(), so a tool in its own prime
+        # sandbox needs no host tunnel. Port exposure is region-gated: many regions (incl. the
+        # backend default, which lands in us-central) 400 it; `us` supports it. TODO: re-enable the
+        # prime cases in the e2e `skip_if_unexposable` guard once prime exposes ports in any region.
         try:
             exposed = await self._client.expose(self._sandbox_id, port)
         except Exception as e:  # surface prime's exposure constraints actionably
             raise SandboxError(
-                "prime port exposure failed — `client.expose` currently needs a default-region "
-                "sandbox and port <= 9000; pin `tools.runtime.region` to a supported "
-                f"region, or use a host/docker tools.runtime instead. ({e})"
+                "prime port exposure failed — port exposure isn't supported in this sandbox's "
+                "region; pin `tools.runtime.region` to a region that supports it (e.g. `us`), or "
+                f"use a colocated / docker / modal tools.runtime instead. ({e})"
             ) from e
         logger.info("prime: exposed sandbox port %d at %s", port, exposed.url)
         return exposed.url.rstrip("/")
