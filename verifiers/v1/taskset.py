@@ -107,8 +107,9 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Score one rollout: run all `@metric` then `@reward` over its trace,
         concurrently within each phase. Each metric is recorded in `trace.metrics`
-        (a number, or a mapping merged in); each reward (weighted) in `trace.rewards`,
-        which `trace.reward` sums. Signals declare what they need — `task`, `trace`,
+        (a number, or a mapping merged in); each reward (weighted — likewise a number or a
+        mapping merged in) in `trace.rewards`, which `trace.reward` sums. Signals declare
+        what they need — `task`, `trace`,
         `runtime` — so a reward is either a pure function of the trace or runs
         read/write/exec in that (still-live) runtime, e.g. a verifier script."""
         available = {"task": trace.task, "trace": trace, "runtime": runtime}
@@ -127,7 +128,12 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
                 rewards,
                 await asyncio.gather(*(invoke(fn, available) for fn in rewards)),
             ):
-                trace.record_reward(fn.__name__, result, getattr(fn, "_vf_weight", 1.0))
+                weight = getattr(fn, "_vf_weight", 1.0)
+                if isinstance(result, Mapping):
+                    for name, value in result.items():
+                        trace.record_reward(name, value, weight)
+                else:
+                    trace.record_reward(fn.__name__, result, weight)
 
     async def score_group(self, traces: list[Trace]) -> None:
         """Score a group of rollouts of one task: run every `@group_reward` over all
