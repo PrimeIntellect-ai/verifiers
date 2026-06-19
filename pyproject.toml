@@ -85,7 +85,6 @@ examples = [
     "wordle-v1", "terminal-bench-2-v1", "alphabet-sort-v1",
     "r2e-gym-v1", "scaleswe-v1", "swelego-v1", "scratchpad-v1",
     "general-agent-v1", "swebench-verified-v1", "tau2-bench-v1",
-    "reverse-text",  # v0 env for the `eval --id reverse-text` legacy-bridge example
 ]
 
 [project.optional-dependencies]
@@ -137,8 +136,6 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
-# Shipped v1 plugins are bundled in the `tasksets` / `harnesses` packages (vendored by
-# default); example plugins are standalone under environments/.
 tasksets = { path = "packages/tasksets", editable = true }
 harnesses = { path = "packages/harnesses", editable = true }
 compact = { path = "environments/compact", editable = true }
@@ -192,9 +189,6 @@ vf-rl = "verifiers.scripts.rl:main"
 vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"
 vf-vllm = "verifiers.scripts.vllm:main"
-
-[tool.ruff]
-line-length = 88
 
 # hatchling configuration
 [tool.hatch.version]
