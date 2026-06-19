@@ -19,6 +19,28 @@ sampling parameters.
 
 ## Local Repro
 
+### Minimal No-Server Repro
+
+For colleagues who only need to see the parser/client boundary, this script does
+not call vLLM, create sandboxes, or read saved rollouts:
+
+```bash
+cd /root/git/research-prod/prime-rl/deps/verifiers
+uv run python scripts/minimal_empty_model_response_repro.py
+```
+
+It builds two Nemotron-3 completion token streams:
+
+1. reasoning followed by `</think>` and a `bash` tool call, which is valid;
+2. the same prefix truncated exactly at `</think>`, which raises the exact
+   `EmptyModelResponseError`.
+
+This is the minimum demonstration that the error is caused by
+renderer/verifiers classification of a length-truncated reasoning-only native
+response.
+
+### Saved Rollout Repro
+
 The repro uses the saved eval rollout row that originally failed:
 
 ```text
