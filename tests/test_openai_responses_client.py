@@ -8,7 +8,6 @@ from verifiers.clients.openai_responses_client import (
     OPENAI_RESPONSES_OUTPUT_FIELD,
     OpenAIResponsesClient,
 )
-from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -132,24 +131,6 @@ async def test_get_native_response_normalizes_sampling_args_and_tools():
             "strict": True,
         }
     ]
-
-
-@pytest.mark.asyncio
-async def test_raise_from_native_response_rejects_reasoning_only_response():
-    native_response = SimpleNamespace(
-        output=[
-            {
-                "type": "reasoning",
-                "id": "rs_1",
-                "summary": [{"type": "summary_text", "text": "thinking"}],
-                "status": "completed",
-            }
-        ]
-    )
-    client = OpenAIResponsesClient(object())
-
-    with pytest.raises(EmptyModelResponseError, match="reasoning but no content"):
-        await client.raise_from_native_response(native_response)
 
 
 @pytest.mark.asyncio
@@ -284,6 +265,36 @@ async def test_from_native_response_uses_none_content_for_tool_call_only_respons
     assert response.message.tool_calls == [
         ToolCall(id="call_1", name="lookup", arguments='{"q":"x"}')
     ]
+
+
+@pytest.mark.asyncio
+async def test_usage_only_reasoning_response_is_replayable():
+    native_response = SimpleNamespace(
+        id="resp_reasoning",
+        created_at=123.0,
+        model="o3",
+        status="incomplete",
+        incomplete_details={"reason": "max_output_tokens"},
+        usage={
+            "input_tokens": 5,
+            "output_tokens": 8,
+            "total_tokens": 13,
+            "output_tokens_details": {"reasoning_tokens": 8},
+        },
+        output=None,
+    )
+    client = OpenAIResponsesClient(object())
+
+    await client.raise_from_native_response(native_response)
+    response = await client.from_native_response(native_response)
+    completion_messages = await parse_response_message(response)
+    prompt, _ = await client.to_native_prompt(completion_messages)
+
+    assert response.usage is not None
+    assert response.usage.reasoning_tokens == 8
+    assert response.message.is_truncated is True
+    assert response.message.content == ""
+    assert prompt == [{"type": "message", "role": "assistant", "content": ""}]
 
 
 @pytest.mark.asyncio
