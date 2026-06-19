@@ -492,8 +492,9 @@ The `*_v1` tasksets under `environments/` are the reference library — each sho
 
 # Authoring a harness
 
-You rarely need this — a custom harness is for a rollout loop the built-ins can't express
-(context compaction, subagents, a bespoke agent CLI). Built-ins, selected with `--harness.id`:
+If you need to customize the rollout logic beyond what the built-in harnesses provide — a loop they
+can't express (context compaction, subagents, a bespoke agent CLI) — author a custom harness.
+Otherwise pick a built-in, selected with `--harness.id`:
 
 | id | what it is |
 | --- | --- |
@@ -501,6 +502,8 @@ You rarely need this — a custom harness is for a rollout loop the built-ins ca
 | `bash` | the `default` chat loop plus a local `bash` tool, for shell-driving agents |
 | `rlm` | the RLM CLI agent |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
+| `mini-swe-agent` | the mini-swe-agent CLI (a minimal SWE agent) |
+| `kimi-code` | the Kimi Code CLI agent |
 
 ```bash
 uv run eval gsm8k-v1 -n 1                    # default harness
