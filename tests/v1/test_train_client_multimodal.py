@@ -1,3 +1,5 @@
+import sys
+import types
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -35,6 +37,35 @@ def test_offload_images_inplace_has_builtin_data_url_fallback(tmp_path):
     assert stats.images_rewritten == 1
     assert stats.bytes_written == 5
     assert parsed.scheme == "file"
+    assert Path(parsed.path).read_bytes() == b"hello"
+
+
+def test_offload_images_inplace_uses_renderer_run_image_dir(monkeypatch, tmp_path):
+    module = types.ModuleType("renderers.mm_store")
+    module.run_id_from_env = lambda: "run-123"
+    module.image_asset_dir = lambda run_id: (
+        tmp_path / f"run_{run_id}" / "assets" / "images"
+    )
+    monkeypatch.setitem(sys.modules, "renderers.mm_store", module)
+
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": DATA_URL}}],
+            }
+        ]
+    }
+
+    stats = multimodal.offload_images_inplace(body)
+
+    url = body["messages"][0]["content"][0]["image_url"]["url"]
+    parsed = urlparse(url)
+    assert stats.images_rewritten == 1
+    assert stats.bytes_written == 5
+    assert Path(parsed.path).is_relative_to(
+        tmp_path / "run_run-123" / "assets" / "images"
+    )
     assert Path(parsed.path).read_bytes() == b"hello"
 
 

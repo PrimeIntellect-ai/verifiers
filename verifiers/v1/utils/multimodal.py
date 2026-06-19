@@ -50,6 +50,12 @@ def _default_image_dir() -> Path:
     configured = os.environ.get("VERIFIERS_IMAGE_ASSET_DIR")
     if configured:
         return Path(configured)
+    try:
+        from renderers.mm_store import image_asset_dir, run_id_from_env
+
+        return image_asset_dir(run_id_from_env())
+    except (ImportError, RuntimeError, ValueError):
+        pass
     return Path(tempfile.gettempdir()) / "verifiers" / "run-assets" / "images"
 
 
