@@ -250,11 +250,22 @@ addopts = [
     "--quiet",
 ]
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "e2e: marks end-to-end eval-run tests (need a model API key; skipped without one)",
-    "prime: marks tests that run on the prime runtime (provision a real sandbox + tunnel)",
     "integration: marks tests as integration tests",
-    "prime_sandbox: marks tests that provision real Prime sandbox or tunnel resources",
+    "slow: marks slow-running tests (deselect with -m 'not slow')",
+    # v1 e2e matrix axes — select subsets with `-m` (see tests/v1/conftest.py). A mark is applied
+    # per axis, so it matches every case touching that value on any axis.
+    "subprocess: v1 e2e cases touching the subprocess (host) runtime",
+    "docker: v1 e2e cases touching the docker runtime",
+    "prime: v1 e2e cases touching the prime runtime (real sandbox + tunnel; local-only, excluded in CI)",
+    "modal: v1 e2e cases touching the modal runtime (local-only setup; excluded in CI)",
+    "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
+    "shared: v1 e2e cases with a shared (one-per-eval) tool server",
+    "default: v1 e2e cases on the default harness",
+    "bash: v1 e2e cases on the bash harness",
+    "rlm: v1 e2e cases on the rlm harness",
+    "kimi_code: v1 e2e cases on the kimi-code harness",
+    "codex: v1 e2e cases on the codex harness",
     "unit: marks tests as unit tests",
     "asyncio: marks tests as async tests",
     "parsers: marks tests for parser components",

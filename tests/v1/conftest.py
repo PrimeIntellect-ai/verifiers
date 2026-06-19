@@ -6,9 +6,24 @@ not unit tests of individual components. They need a model API key (`PRIME_API_K
 without one the `e2e`-marked tests skip (config parsing still runs).
 
 `run_v1` / `run_v0` mirror the eval CLI's two paths (`run_eval` for a v1 taskset,
-`run_legacy_eval` for a v0 env). The `runtime` fixture fans a test out across the built-in
-runtimes (modal excluded for now); docker/prime are marked so they deselect cleanly
-(`-m "not slow"`).
+`run_legacy_eval` for a v0 env). The tests fan out over a matrix of where a rollout places
+things: the harness (`harness`) x the harness runtime (`harness_runtime`) x the user/tool server
+runtime (`user_runtime` / `tool_runtime`).
+
+Every matrix value carries a pytest mark, so subsets select with `-m`:
+
+    uv run pytest tests/v1 -n auto                                # the whole matrix (needs modal setup)
+    uv run pytest tests/v1 -n auto -m "not prime and not modal"  # the CI matrix (host + docker only)
+    uv run pytest tests/v1 -n auto -m docker                      # any case touching the docker runtime
+    uv run pytest tests/v1 -n auto -m bash                        # only the bash harness
+    uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
+    uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
+
+Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placements `colocated` / `shared`,
+harnesses `default` / `bash` / `rlm` / `kimi_code` / `codex`. A mark is applied per axis, so it
+selects every case touching that value on ANY axis; for one exact combination use `-k` on the test
+id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`). prime/modal provision real remote
+sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs `-m "not prime and not modal"`.
 """
 
 import os
@@ -25,13 +40,18 @@ from verifiers.v1.trace import Trace
 # tests/v1/fixtures, added to the path via `pythonpath` in pyproject so the v1 loader and the
 # v0 legacy bridge both resolve them by id (no install).
 
-# The harness runtime, modal excluded. docker needs the daemon; prime provisions real
-# sandboxes + tunnels (network + PRIME credentials), so both are marked to deselect easily. The
-# `id`s make a test read like `<harness>-harness-in-<rt>` / `in-<rt>-with-<user|tool>-...`.
+# The harness runtime. Each value carries its runtime mark so a subset can be selected
+# (`-m docker`, `-m "not prime"`, ...). docker needs the daemon; prime/modal provision real remote
+# sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs `-m "not prime and
+# not modal"`. The `id`s make a test read like `<harness>-harness-in-<rt>` /
+# `harness-in-<rt>-with-<user|tool>-...`.
 HARNESS_RUNTIMES = [
-    pytest.param("subprocess", id="in-subprocess"),
-    pytest.param("docker", marks=pytest.mark.slow, id="in-docker"),
-    pytest.param("prime", marks=[pytest.mark.slow, pytest.mark.prime], id="in-prime"),
+    pytest.param(
+        "subprocess", marks=pytest.mark.subprocess, id="harness-in-subprocess"
+    ),
+    pytest.param("docker", marks=pytest.mark.docker, id="harness-in-docker"),
+    pytest.param("prime", marks=pytest.mark.prime, id="harness-in-prime"),
+    pytest.param("modal", marks=pytest.mark.modal, id="harness-in-modal"),
 ]
 
 
@@ -41,16 +61,15 @@ def harness_runtime(request) -> str:
 
 
 # The user simulator's runtime: inside the harness's runtime (`colocated`) or its own runtime; this
-# fans the user test across both (reusing the runtime markers for the own-runtime cases).
+# fans the user test across both, each carrying its placement/runtime mark.
 USER_RUNTIMES = [
-    pytest.param("colocated", id="with-user-colocated"),
-    pytest.param("subprocess", id="with-user-in-subprocess"),
-    pytest.param("docker", marks=pytest.mark.slow, id="with-user-in-docker"),
+    pytest.param("colocated", marks=pytest.mark.colocated, id="with-user-colocated"),
     pytest.param(
-        "prime",
-        marks=[pytest.mark.slow, pytest.mark.prime],
-        id="with-user-in-prime",
+        "subprocess", marks=pytest.mark.subprocess, id="with-user-in-subprocess"
     ),
+    pytest.param("docker", marks=pytest.mark.docker, id="with-user-in-docker"),
+    pytest.param("prime", marks=pytest.mark.prime, id="with-user-in-prime"),
+    pytest.param("modal", marks=pytest.mark.modal, id="with-user-in-modal"),
 ]
 
 
@@ -64,18 +83,17 @@ def user_runtime(request) -> dict:
 
 
 # The tool server's runtime: inside the harness's runtime (`colocated`), shared once per eval, or its
-# own runtime per rollout; this fans the tool test across all of them (runtime markers for the
-# own-runtime cases — colocated/shared use the host subprocess runtime).
+# own runtime per rollout; this fans the tool test across all of them, each carrying its
+# placement/runtime mark (colocated/shared use the host subprocess runtime).
 TOOL_RUNTIMES = [
-    pytest.param("colocated", id="with-tool-colocated"),
-    pytest.param("shared", id="with-tool-shared"),
-    pytest.param("subprocess", id="with-tool-in-subprocess"),
-    pytest.param("docker", marks=pytest.mark.slow, id="with-tool-in-docker"),
+    pytest.param("colocated", marks=pytest.mark.colocated, id="with-tool-colocated"),
+    pytest.param("shared", marks=pytest.mark.shared, id="with-tool-shared"),
     pytest.param(
-        "prime",
-        marks=[pytest.mark.slow, pytest.mark.prime],
-        id="with-tool-in-prime",
+        "subprocess", marks=pytest.mark.subprocess, id="with-tool-in-subprocess"
     ),
+    pytest.param("docker", marks=pytest.mark.docker, id="with-tool-in-docker"),
+    pytest.param("prime", marks=pytest.mark.prime, id="with-tool-in-prime"),
+    pytest.param("modal", marks=pytest.mark.modal, id="with-tool-in-modal"),
 ]
 
 
@@ -90,53 +108,21 @@ def tool_runtime(request) -> dict:
     return {"runtime": {"type": request.param}}
 
 
-@pytest.fixture
-def skip_if_unexposable():
-    """Skip when a trace failed because the server's runtime couldn't publish its port to the
-    host — a prime sandbox whose region doesn't support port exposure (a known infra limit, not
-    a code bug). subprocess/docker share the host network, so they never hit this.
-
-    TODO: re-enable the prime cases once prime supports port exposure in all regions (or the
-    runtime publishes the port via an in-sandbox tunnel)."""
-
-    def _skip(trace) -> None:
-        if any("port exposure" in str(e) for e in trace.errors):
-            pytest.skip(
-                "runtime can't publish a port to the host (pin a prime region that supports port exposure)"
-            )
-
-    return _skip
-
-
-# Built-in harnesses (bundled in the `harnesses` package), composed with `harness_runtime` for the
-# plain-task harness x runtime matrix. compact is an example harness, not built-in, so it's
-# excluded. Agent CLI harnesses install their dependencies at rollout, so they're marked slow.
+# Harnesses, composed with the runtime fixtures, each carrying its harness mark (`-m bash`, ...).
+# Built-ins are bundled in the `harnesses` package; the agent CLIs (`rlm` / `kimi-code` / `codex`)
+# install their dependencies at rollout. `compact` (an example harness) and `terminus-2` (drives
+# the host tmux) are excluded. `test_agentic` skips `default` (a chat loop with no shell);
+# `test_single_turn` skips `codex` (a coding agent, unreliable on a no-op echo).
 @pytest.fixture(
     params=[
-        pytest.param("default", id="default-harness"),
-        pytest.param("rlm", marks=pytest.mark.slow, id="rlm-harness"),
-        pytest.param("kimi-code", marks=pytest.mark.slow, id="kimi-code-harness"),
+        pytest.param("default", marks=pytest.mark.default, id="default"),
+        pytest.param("bash", marks=pytest.mark.bash, id="bash"),
+        pytest.param("rlm", marks=pytest.mark.rlm, id="rlm"),
+        pytest.param("kimi-code", marks=pytest.mark.kimi_code, id="kimi-code"),
+        pytest.param("codex", marks=pytest.mark.codex, id="codex"),
     ]
 )
 def harness(request) -> str:
-    return request.param
-
-
-# `bash` (and `codex`) live here, not in `harness`: a bash/CLI agent on a no-op chat task
-# (`test_single_turn`'s echo) may run a shell command or complete its loop without replying, which
-# is flaky; on a task with a concrete action (writing a file) it's reliable. `bash` is the built-in
-# chat loop + a bash tool, so it installs nothing and runs fast (not marked slow).
-@pytest.fixture(
-    params=[
-        pytest.param("bash", id="bash-harness"),
-        pytest.param(
-            "mini-swe-agent", marks=pytest.mark.slow, id="mini-swe-agent-harness"
-        ),
-        pytest.param("terminus-2", marks=pytest.mark.slow, id="terminus-2-harness"),
-        pytest.param("codex", marks=pytest.mark.slow, id="codex-harness"),
-    ]
-)
-def agentic_harness(request) -> str:
     return request.param
 
 
@@ -156,14 +142,25 @@ def pytest_configure(config) -> None:
 def pytest_collection_modifyitems(config, items) -> None:
     """Skip the live-model tests (marked `e2e`) when no model endpoint is configured, so the
     rest of the suite (e.g. config parsing) still runs in a keyless environment."""
-    if os.environ.get("PRIME_API_KEY") or os.environ.get("OPENAI_API_KEY"):
+    if os.environ.get("PRIME_API_KEY"):
         return
-    skip = pytest.mark.skip(
-        reason="needs a model API key (PRIME_API_KEY / OPENAI_API_KEY)"
-    )
+    skip = pytest.mark.skip(reason="needs PRIME_API_KEY")
     for item in items:
         if "e2e" in item.keywords:
             item.add_marker(skip)
+
+
+def _configure_prime_runtimes(config: dict) -> None:
+    """Configure every prime runtime config (nested — harness / tool / user): tag a `vf-ci` label
+    for optional cleanup, and pin a region that supports port exposure."""
+    if isinstance(config, dict):
+        if config.get("type") == "prime":
+            config.setdefault("labels", ["vf-ci"])
+            # `us` is required for prime's port exposure, which a tool/user server hosted in a
+            # sandbox needs to be reachable from outside it.
+            config.setdefault("region", "us")
+        for value in config.values():
+            _configure_prime_runtimes(value)
 
 
 def _eval_config(
@@ -189,9 +186,13 @@ def _eval_config(
     `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
     risks truncating the reasoning before the answer (which tanks the reward)."""
+    taskset_cfg = {"id": taskset, **(taskset_overrides or {})}
+    harness_cfg = {"id": harness, **(harness_overrides or {})}
+    _configure_prime_runtimes(taskset_cfg)
+    _configure_prime_runtimes(harness_cfg)
     return EvalConfig(
-        taskset={"id": taskset, **(taskset_overrides or {})},
-        harness={"id": harness, **(harness_overrides or {})},
+        taskset=taskset_cfg,
+        harness=harness_cfg,
         num_tasks=num_tasks,
         num_rollouts=n,
         max_turns=max_turns,
@@ -220,7 +221,7 @@ def run_v1():
 @pytest.fixture
 def run_v1_server():
     """Run a v1 taskset through the env-server worker pool (`run_eval_server`) — the path a
-    non-`--rich` CLI run and prime-rl training both take. Spawns the broker + a worker, so it's
+    `--server` CLI run and prime-rl training both take. Spawns the broker + a worker, so it's
     the only fixture that exercises serving resources (shared tool servers, interception pool)
     being stood up by the *server* rather than the in-process runner. Pinned to a single static
     worker for determinism."""

@@ -10,11 +10,11 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 
-class _Task(vf.Task):
+class MyTask(vf.Task):
     answer: str = ""  # a taskset-specific field WireTask must absorb
 
 
-class _State(vf.State):
+class MyState(vf.State):
     score: int = 0
 
 
@@ -31,9 +31,9 @@ def test_bare_trace_round_trip():
 def test_custom_task_state_round_trip():
     # A custom Task + State, round-tripped into the same parameterization. Custom task fields are
     # typed (not just `model_extra`); `state` is runtime-only and never crosses the wire.
-    tr = vf.Trace[_Task, _State](
-        task=_Task(idx=0, prompt="q", answer="gold"),
-        state=_State(score=7),
+    tr = vf.Trace[MyTask, MyState](
+        task=MyTask(idx=0, prompt="q", answer="gold"),
+        state=MyState(score=7),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
             MessageNode(parent=0, message=AssistantMessage(content="a"), sampled=True),
@@ -43,8 +43,10 @@ def test_custom_task_state_round_trip():
     wire = tr.model_dump()
     assert "state" not in wire  # transient state is excluded from the dump
 
-    rt = vf.Trace[_Task, _State].model_validate(wire)
-    assert isinstance(rt.task, _Task) and rt.task.answer == "gold"  # typed custom field
+    rt = vf.Trace[MyTask, MyState].model_validate(wire)
+    assert (
+        isinstance(rt.task, MyTask) and rt.task.answer == "gold"
+    )  # typed custom field
     assert rt.num_turns == 1 and rt.num_branches == 1
     assert rt.reward == 0.5  # property recomputed from `rewards`
 
@@ -52,8 +54,8 @@ def test_custom_task_state_round_trip():
 def test_wire_trace_round_trip():
     # Two leaves off one root → 2 branches (a compaction-shaped trace), so the round-trip has to
     # carry node `parent` links for `num_branches` to survive.
-    tr = vf.Trace[_Task, vf.State](
-        task=_Task(idx=0, prompt="q", answer="a"),
+    tr = vf.Trace[MyTask, vf.State](
+        task=MyTask(idx=0, prompt="q", answer="a"),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
             MessageNode(parent=0, message=AssistantMessage(content="a1"), sampled=True),
