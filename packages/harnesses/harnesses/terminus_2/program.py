@@ -3,10 +3,10 @@
 # dependencies = ["harbor=={version}"]
 # ///
 
+import argparse
 import asyncio
 import os
 import subprocess
-import sys
 from pathlib import Path, PurePosixPath
 
 from harbor.agents.terminus_2 import Terminus2
@@ -44,8 +44,19 @@ class LocalEnvironment:
         )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base-url", required=True)
+    parser.add_argument("--api-key", required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--system-prompt", default="")
+    parser.add_argument("--task", required=True)
+    return parser.parse_args()
+
+
 async def main() -> None:
-    model, system_prompt, task = sys.argv[1:]
+    args = parse_args()
+    model, system_prompt, task = args.model, args.system_prompt, args.task
     logs_dir = Path(os.environ["TMUX_TMPDIR"])
     logs_dir.mkdir(mode=0o700, exist_ok=True)
     EnvironmentPaths.agent_dir = PurePosixPath(logs_dir)
@@ -53,8 +64,8 @@ async def main() -> None:
     agent = Terminus2(
         logs_dir=logs_dir,
         model_name=model,
-        api_base=os.environ["OPENAI_BASE_URL"],
-        llm_kwargs={"custom_llm_provider": "openai"},
+        api_base=args.base_url,
+        llm_kwargs={"custom_llm_provider": "openai", "api_key": args.api_key},
         record_terminal_session=False,
     )
     if system_prompt:
