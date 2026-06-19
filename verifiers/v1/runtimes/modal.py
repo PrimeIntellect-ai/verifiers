@@ -30,12 +30,6 @@ _MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 _APP_NAME = "verifiers-v1"
 
 
-def abs_path(path: str, workdir: str) -> str:
-    """Resolve a remote `path` to absolute: absolute passes through, relative resolves
-    against `workdir`. Modal's filesystem API only accepts absolute remote paths."""
-    return path if path.startswith("/") else f"{workdir.rstrip('/')}/{path}"
-
-
 class ModalConfig(BaseConfig):
     type: Literal["modal"] = "modal"
     image: str = "python:3.11-slim"
@@ -171,8 +165,11 @@ class ModalRuntime(Runtime):
             )
 
     def abs_path(self, path: str) -> str:
-        """Resolve `path` against this runtime's workdir (see `abs_path`)."""
-        return abs_path(path, self.config.workdir)
+        """`path` resolved against the runtime's workdir; Modal's filesystem API only
+        accepts absolute remote paths (an absolute path passes through)."""
+        if path.startswith("/"):
+            return path
+        return f"{self.config.workdir.rstrip('/')}/{path}"
 
     async def read(self, path: str) -> bytes:
         try:
