@@ -66,17 +66,12 @@ def _flip_roles(self: UserState):
 
 class Tau2Taskset(vf.Taskset[Tau2Task, Tau2TasksetConfig]):
     def load_tasks(self) -> list[Tau2Task]:
-        data_domain = (
-            "telecom"
-            if self.config.domain == "telecom-workflow"
-            else self.config.domain
-        )
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         marker = DATA_DIR / ".tau2_revision"
         with (DATA_DIR / ".tau2_bootstrap.lock").open("a+") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             if not (
-                (DATA_DIR / "tau2" / "domains" / data_domain).exists()
+                (DATA_DIR / "tau2" / "domains").exists()
                 and marker.exists()
                 and marker.read_text() == TAU2_REVISION
             ):
