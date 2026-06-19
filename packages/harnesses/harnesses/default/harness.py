@@ -1,10 +1,9 @@
 """The built-in default harness: runs a small chat-loop program as a uv script.
 
 A growing-message-list chat loop with the taskset's MCP tools (host-side, resolved to URLs by
-the Environment) — and no tools of its own. The program is a uv script (deps: openai, mcp),
-launched via `runtime.run_uv_script` — so it works on any runtime with `uv` (the harness
-bootstraps it), with no runtime-specific setup. For a shell-driving agent, use a dedicated
-agentic harness (e.g. `mini-swe-agent`).
+the Environment) — and no tools of its own. Its uv script (deps: openai, mcp) is prepared
+during setup, then launched as the harness program. For a shell-driving agent, use a
+dedicated agentic harness (e.g. `mini-swe-agent`).
 """
 
 import json
@@ -30,6 +29,9 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_USER_SIM = True
     SUPPORTS_MESSAGE_PROMPT = True
+
+    async def setup(self, runtime: Runtime) -> None:
+        await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
 
     async def launch(
         self,
@@ -69,4 +71,5 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             args.append(f"--prompt={prompt}")
         elif prompt is not None:
             env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in prompt])
-        return await runtime.run_uv_script(PROGRAM_SOURCE, args=args, env=env)
+        program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
+        return await runtime.run_program([*program, *args], env)

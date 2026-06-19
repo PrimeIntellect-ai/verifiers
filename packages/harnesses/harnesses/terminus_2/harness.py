@@ -24,6 +24,10 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_TASK_TOOLS = False
 
+    async def setup(self, runtime: Runtime) -> None:
+        source = PROGRAM_SOURCE.replace("{version}", self.config.version)
+        await runtime.prepare_uv_script(source, self.config.env)
+
     async def launch(
         self,
         ctx: RolloutContext,
@@ -53,11 +57,9 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             f"--task={prompt}",
         ]
         try:
-            return await runtime.run_uv_script(
-                PROGRAM_SOURCE.replace("{version}", self.config.version),
-                args=args,
-                env=env,
-            )
+            source = PROGRAM_SOURCE.replace("{version}", self.config.version)
+            program = await runtime.prepare_uv_script(source, self.config.env)
+            return await runtime.run_program([*program, *args], env)
         finally:
             # Harbor normally destroys its whole sandbox; this adapter borrows the
             # Verifiers runtime, so clean up Terminus's detached tmux server ourselves.

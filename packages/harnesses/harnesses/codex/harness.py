@@ -48,6 +48,22 @@ class CodexHarness(Harness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_TASK_TOOLS = False  # TODO
 
+    async def setup(self, runtime: Runtime) -> None:
+        logger.info("codex: ensuring codex %s is installed", self.config.version)
+        script = (
+            INSTALL.replace("{version}", self.config.version)
+            .replace("{dir}", CODEX_DIR)
+            .replace("{bin}", CODEX_BIN)
+        )
+        ensure = shlex.quote(f"[ -x {CODEX_BIN} ] || ({script})")
+        # Shared local runtimes may provision concurrently; only the first downloads.
+        guarded = (
+            f"mkdir -p {CODEX_DIR} && flock {CODEX_DIR}/install.lock sh -c {ensure}"
+        )
+        install = await runtime.run(["sh", "-c", guarded], {})
+        if install.exit_code != 0:
+            raise RuntimeError(f"codex install failed: {install.stderr.strip()[-500:]}")
+
     async def launch(
         self,
         ctx: RolloutContext,
@@ -61,22 +77,6 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         # codex authenticates to the interception server with the session secret (its provider
         # api key) and posts Responses calls to `{endpoint}/responses`.
         env = {**self.config.env, KEY_VAR: secret}
-        logger.info("codex: ensuring codex %s is installed", self.config.version)
-        # Serialize concurrent rollouts that share one runtime (e.g. subprocess on the host),
-        # which otherwise race to download into the same dir: the first installs, the rest wait
-        # on the lock and find the binary already present.
-        script = (
-            INSTALL.replace("{version}", self.config.version)
-            .replace("{dir}", CODEX_DIR)
-            .replace("{bin}", CODEX_BIN)
-        )
-        ensure = shlex.quote(f"[ -x {CODEX_BIN} ] || ({script})")
-        guarded = (
-            f"mkdir -p {CODEX_DIR} && flock {CODEX_DIR}/install.lock sh -c {ensure}"
-        )
-        install = await runtime.run(["sh", "-c", guarded], {})
-        if install.exit_code != 0:
-            raise RuntimeError(f"codex install failed: {install.stderr.strip()[-500:]}")
         # Values are Codex feature names such as `shell_tool`; Codex owns validation.
         # https://developers.openai.com/codex/config-reference#features
         tool_config = [

@@ -4,8 +4,8 @@ It carries `notes` across compactions and sends a fresh `[system, user]` each on
 task on the first turn, then only the carried-over notes — so the prompt is rewritten
 rather than appended, and every compaction is its own branch (the deliberate stress test
 for branch detection). Within a compaction it can use MCP tools (gather, then summarize
-into notes). The program is a uv script (deps: openai, mcp), launched via
-`runtime.run_uv_script`, so the harness only needs `uv` in the runtime.
+into notes). Its uv script (deps: openai, mcp) is prepared during setup, then launched as
+the harness program.
 """
 
 import json
@@ -29,6 +29,9 @@ class CompactingHarnessConfig(HarnessConfig):
 class CompactingHarness(Harness[CompactingHarnessConfig]):
     SUPPORTS_TASK_TOOLS = True
 
+    async def setup(self, runtime: Runtime) -> None:
+        await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
+
     async def launch(
         self,
         ctx: RolloutContext,
@@ -49,6 +52,5 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
             env["MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
-        return await runtime.run_uv_script(
-            PROGRAM_SOURCE, args=[trace.task.prompt], env=env
-        )
+        program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
+        return await runtime.run_program([*program, trace.task.prompt], env)
