@@ -29,7 +29,10 @@ for line in open(os.path.join(work, "e2e.txt")):
 
 
 def stage(timing: dict, name: str) -> float:
-    return round(timing.get(name, {}).get("duration", 0.0), 3)
+    s = timing.get(name, {})
+    if "start" not in s or "end" not in s:
+        return 0.0
+    return round(s["end"] - s["start"], 3)
 
 
 def total(timing: dict) -> float:
@@ -43,7 +46,7 @@ for d in sorted(p for p in glob.glob(f"{work}/*") if os.path.isdir(p)):
     runtime, _, rollouts = base.rpartition("-r")
     rollouts = int(rollouts)
     rows = [json.loads(line) for line in open(f"{d}/results.jsonl")]
-    rewards = [r["reward"] for r in rows if r.get("reward") is not None]
+    rewards = [sum(r["rewards"].values()) for r in rows if r.get("rewards")]
     cfg = {}
     if os.path.exists(f"{d}/config.toml"):
         with open(f"{d}/config.toml", "rb") as f:

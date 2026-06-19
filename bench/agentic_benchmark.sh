@@ -35,7 +35,7 @@ for rt in $RUNTIMES; do
     echo "== $label (task=$TASK max_concurrent=$MAX_CONCURRENT max_turns=$MAX_TURNS) =="
     start=$(date +%s)
     uv run eval "$TASKSET" --taskset.tasks "[\"$TASK\"]" \
-      --harness.id default --harness.enable_bash true --harness.runtime.type "$rt" \
+      --harness.id bash --harness.runtime.type "$rt" \
       --num_tasks 1 --num_rollouts "$r" \
       --max_concurrent "$MAX_CONCURRENT" --max_turns "$MAX_TURNS" \
       --retries.rollout.max_retries 0 \
