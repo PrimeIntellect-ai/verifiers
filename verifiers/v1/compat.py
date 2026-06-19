@@ -16,6 +16,7 @@ import logging
 import time
 from collections.abc import Mapping
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from typing import Any, Callable, get_type_hints
 
 import numpy as np
@@ -342,27 +343,28 @@ class V1AsV0Environment(V0Environment):
 
     def _apply_v1_kwarg(self, key: str, value: Any) -> None:
         if key in {"max_output_tokens", "max_total_completion_tokens"}:
-            self.v1_env.config.max_output_tokens = (
-                int(value) if value is not None else None
-            )
-            self.v1_env.limits.max_output_tokens = self.v1_env.config.max_output_tokens
+            max_output_tokens = _v0_limit_to_v1(value)
+            self.v1_env.config.max_output_tokens = max_output_tokens
+            self._replace_v1_limit(max_output_tokens=max_output_tokens)
         elif key in {"max_total_tokens", "max_seq_len"}:
-            self.v1_env.config.max_total_tokens = (
-                int(value) if value is not None else None
-            )
-            self.v1_env.limits.max_total_tokens = self.v1_env.config.max_total_tokens
+            max_total_tokens = _v0_limit_to_v1(value)
+            self.v1_env.config.max_total_tokens = max_total_tokens
+            self._replace_v1_limit(max_total_tokens=max_total_tokens)
         elif key == "max_input_tokens":
-            self.v1_env.config.max_input_tokens = (
-                int(value) if value is not None else None
-            )
-            self.v1_env.limits.max_input_tokens = self.v1_env.config.max_input_tokens
+            max_input_tokens = _v0_limit_to_v1(value)
+            self.v1_env.config.max_input_tokens = max_input_tokens
+            self._replace_v1_limit(max_input_tokens=max_input_tokens)
         elif key == "max_turns":
-            self.v1_env.config.max_turns = int(value) if value is not None else None
-            self.v1_env.limits.max_turns = self.v1_env.config.max_turns
+            max_turns = _v0_limit_to_v1(value)
+            self.v1_env.config.max_turns = max_turns
+            self._replace_v1_limit(max_turns=max_turns)
         elif key == "timeout_seconds":
             timeout = float(value) if value is not None else None
             self.v1_env.config.timeout.rollout = timeout
             self.v1_env.harness_timeout = timeout
+
+    def _replace_v1_limit(self, **updates: int | None) -> None:
+        self.v1_env.limits = replace(self.v1_env.limits, **updates)
 
     def _dataset(self) -> Dataset:
         return Dataset.from_list([task_to_rollout_row(task) for task in self.tasks])
@@ -592,6 +594,14 @@ def _first_param_annotation(load_fn: Callable[..., Any], default: type) -> type:
     if param.annotation is inspect.Parameter.empty:
         return default
     return get_type_hints(load_fn).get(param.name, param.annotation)
+
+
+def _v0_limit_to_v1(value: Any) -> int | None:
+    """Map v0 sentinels (-1/0 = disabled) to v1's None = disabled limit shape."""
+    if value is None:
+        return None
+    limit = int(value)
+    return limit if limit > 0 else None
 
 
 def _sampling_to_v0(sampling: SamplingConfig) -> dict[str, Any]:

@@ -120,6 +120,39 @@ async def test_v1_group_reward_runs_through_v0_run_group() -> None:
         await env._teardown()
 
 
+async def test_v1_as_v0_set_kwargs_accepts_prime_rl_limit_sentinels() -> None:
+    env = vf.load_environment(
+        "compat-taskset-v1",
+        phrase="alpha",
+        harness={"id": "compat-harness-v1"},
+    )
+    try:
+        assert isinstance(env, V1AsV0Environment)
+        original_limits = env.v1_env.limits
+
+        env.set_kwargs(
+            max_total_completion_tokens=-1,
+            max_seq_len=4096,
+            max_input_tokens=2048,
+            max_turns=0,
+            timeout_seconds=123,
+        )
+
+        assert env.v1_env.limits is not original_limits
+        assert env.v1_env.config.max_output_tokens is None
+        assert env.v1_env.limits.max_output_tokens is None
+        assert env.v1_env.config.max_total_tokens == 4096
+        assert env.v1_env.limits.max_total_tokens == 4096
+        assert env.v1_env.config.max_input_tokens == 2048
+        assert env.v1_env.limits.max_input_tokens == 2048
+        assert env.v1_env.config.max_turns is None
+        assert env.v1_env.limits.max_turns is None
+        assert env.v1_env.config.timeout.rollout == 123
+        assert env.v1_env.harness_timeout == 123
+    finally:
+        await env._teardown()
+
+
 def test_module_load_taskset_annotation_does_not_require_taskset_plugin() -> None:
     config = build_env_config(compat_taskset_v1, "standalone-compat-v1", {})
 
