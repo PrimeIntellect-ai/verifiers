@@ -23,8 +23,8 @@ This folder contains installable example environments that showcase common usage
 - **sentence_repeater**: Multi-turn Q/A over a paragraph; rewards compare assistant messages to expected answers.
 - **wordle**: Game-style interaction via `TextArenaEnv`; multiple rewards (correctness, partial credit, few-turn bonus) and XML formatting.
 - **wordle_v1**: Wordle on the reusable v1 `TextArenaTaskset`, with Wordle-specific prompt, feedback, and rewards kept in the environment package.
-- **openenv_echo_v1**: Minimal OpenEnv MCP environment on the reusable v1 adapter.
-- **openenv_textarena_v1**: Minimal OpenEnv gym environment wrapping TextArena Wordle.
+- **openenv_echo**: OpenEnv MCP integration example using upstream `echo_env`.
+- **openenv_textarena**: OpenEnv gym integration example using upstream `textarena_env` (default `Wordle-v0`).
 
 ### Tool use
 - **ToolEnv (native function-calling)**
@@ -92,12 +92,11 @@ This folder contains installable example environments that showcase common usage
 - **ToolEnv with real tools**: `wiki_search`, `math_python`
 - **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
 - **GymEnv integration**: `gem_wordle`
-- **OpenEnv integration (gym + MCP)**: `openenv_textarena_v1`, `openenv_echo_v1`
+- **OpenEnv integration (gym + MCP)**: `openenv_textarena`, `openenv_echo`
 - **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
 - **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
 - **Taskset/Harness v1**: use this pattern for new environments that need reusable tasksets, reusable harnesses, framework programs, endpoint interception, or sandboxed Python/command programs. Examples include `dspy_rlm`, `openai_agents_env`, `langchain_deep_agents_wikispeedia`, `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, `opencode_harbor`, `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, `tau2-bench-v1`, and `wordle-v1`.
   - `opencode_harbor` uses the packaged `HarborTaskset` + `OpenCode` boundary from `tasksets` and `harnesses`.
-  - `openenv_echo_v1` and `openenv_textarena_v1` use the packaged `OpenEnvTaskset` and pin prebuilt OpenEnv images.
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
 - **Procedural datasets**: `reasoning_gym_env`
 - **Multimodal**: `mmmu`

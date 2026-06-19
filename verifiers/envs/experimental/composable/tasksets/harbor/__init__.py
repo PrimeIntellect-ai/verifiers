@@ -4,7 +4,6 @@ from .harbor import (
     HarborRubric,
     HarborTaskSet,
 )
-from .cli_gym import CLIGymTaskSet, make_cli_gym_taskset
 from .terminal_lego import TerminalLegoTaskSet, make_terminal_lego_taskset
 
 __all__ = [
@@ -12,8 +11,6 @@ __all__ = [
     "HarborDatasetTaskSet",
     "HarborRubric",
     "HarborDatasetRubric",
-    "CLIGymTaskSet",
-    "make_cli_gym_taskset",
     "TerminalLegoTaskSet",
     "make_terminal_lego_taskset",
 ]
