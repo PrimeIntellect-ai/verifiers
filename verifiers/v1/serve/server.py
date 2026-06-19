@@ -87,7 +87,13 @@ class EnvServer:
         server = cls(**kwargs)
         if address_queue is not None:
             address_queue.put(server.address)
-        asyncio.run(server.run())
+        try:
+            asyncio.run(server.run())
+        except KeyboardInterrupt:
+            # SIGTERM arrives as KeyboardInterrupt (see serve.pool._arm_teardown) so the event
+            # loop runs its cleanup finallys; swallow it for a clean spawned-worker exit instead
+            # of a spurious multiprocessing traceback, matching serve_env's own handling.
+            pass
 
     def _client(self, client_config: ClientConfig, model: str) -> Client:
         """Resolve (and cache) a `Client` for this config+model. Cached because a
