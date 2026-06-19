@@ -30,8 +30,6 @@ STATE_RETRIES = 4
 """Retries for a state/task channel request. Behind a remote runtime the channel is reached over a
 host tunnel that can return a transient 5xx or reset the connection while it settles (e.g. just
 after the sandbox/tunnel comes up), so a single blip must not fail the tool call."""
-STATE_BACKOFF = 0.5
-"""Base seconds for the channel-request backoff (exponential + jitter)."""
 
 
 async def _channel_request(
@@ -41,28 +39,33 @@ async def _channel_request(
     exponential backoff + jitter on transient failures (connection resets / 5xx from the host
     tunnel). A 4xx is a real error (e.g. an invalid state PUT) and is not retried. Returns the
     parsed JSON body."""
-    import asyncio
-    import random
-
     import httpx
+    from tenacity import (
+        AsyncRetrying,
+        retry_if_exception,
+        stop_after_attempt,
+        wait_exponential_jitter,
+    )
 
-    headers = {"Authorization": f"Bearer {secret}"}
-    for attempt in range(STATE_RETRIES + 1):
-        try:
-            async with httpx.AsyncClient(timeout=STATE_TIMEOUT) as client:
-                resp = await client.request(method, url, json=json, headers=headers)
-                resp.raise_for_status()
-                return resp.json()
-        except (httpx.TransportError, httpx.HTTPStatusError) as e:
-            transient = (
-                isinstance(e, httpx.TransportError) or e.response.status_code >= 500
+    def transient(e: BaseException) -> bool:
+        return isinstance(e, httpx.TransportError) or (
+            isinstance(e, httpx.HTTPStatusError) and e.response.status_code >= 500
+        )
+
+    async def request() -> dict:
+        async with httpx.AsyncClient(timeout=STATE_TIMEOUT) as client:
+            resp = await client.request(
+                method, url, json=json, headers={"Authorization": f"Bearer {secret}"}
             )
-            if not transient or attempt == STATE_RETRIES:
-                raise
-            await asyncio.sleep(
-                STATE_BACKOFF * 2**attempt + random.uniform(0, STATE_BACKOFF)
-            )
-    raise AssertionError("unreachable")  # the loop returns or raises
+            resp.raise_for_status()
+            return resp.json()
+
+    return await AsyncRetrying(
+        stop=stop_after_attempt(STATE_RETRIES + 1),
+        wait=wait_exponential_jitter(initial=0.5, max=30),
+        retry=retry_if_exception(transient),
+        reraise=True,
+    )(request)
 
 
 # A `shared` server is one process for the whole eval, so it can't take a per-rollout state channel
