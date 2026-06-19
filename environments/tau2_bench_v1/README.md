@@ -19,7 +19,9 @@ troubleshooting policy instead of its manual troubleshooting policy.
 - **Rubric overview**: Official Tau2 evaluation of database state, environment assertions, actions, and required communication.
 
 ### Quickstart
-Set `PRIME_API_KEY` for inference and `PRIME_TEAM_ID` for team billing.
+Set `PRIME_API_KEY` for inference and `PRIME_TEAM_ID` for team billing. Without
+Prime credentials, the user simulator uses `OPENAI_API_KEY` and the optional
+`OPENAI_BASE_URL` (default: `https://api.openai.com/v1`) instead.
 
 ```bash
 uv run eval tau2-bench-v1 \
@@ -40,8 +42,9 @@ Each rollout runs Tau's native `run_task` backend in its isolated Verifiers runt
 Tau owns the complete simulation: initialization, assistant and user turns, tools,
 synchronization, limits, termination, and scoring. The evaluated Tau agent uses LiteLLM
 to reach Verifiers' interception endpoint: GPT models use the Responses API, while other
-models retain their native dialect. Tau's user simulator continues to call Prime
-directly, and a small compatibility patch preserves raw reasoning items between turns.
+models retain their native dialect. Tau's user simulator calls Prime when configured,
+otherwise OpenAI, and a small compatibility patch preserves raw reasoning items between
+turns.
 
 ### Taskset Config
 | Field | Type | Default | Description |

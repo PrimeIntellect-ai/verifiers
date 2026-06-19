@@ -171,13 +171,21 @@ class Tau2Harness(vf.Harness[Tau2HarnessConfig]):
             llm = f"openai/responses/{model}"
             llm_args["include"] = ["reasoning.encrypted_content"]
         prime = load_prime_config()
+        user_llm = "openai/openai/gpt-4.1"
+        user_api_key = os.getenv("PRIME_API_KEY") or prime.get("api_key")
+        user_api_base = prime.get("inference_url", "https://api.pinference.ai/api/v1")
+        team_id = os.getenv("PRIME_TEAM_ID") or prime.get("team_id")
+        if not user_api_key:
+            user_llm = "openai/gpt-4.1"
+            user_api_key = os.getenv("OPENAI_API_KEY")
+            user_api_base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+            team_id = None
         user_args: dict[str, object] = {
             "temperature": 0,
-            "api_base": prime.get("inference_url", "https://api.pinference.ai/api/v1"),
-            "api_key": os.getenv("PRIME_API_KEY") or prime.get("api_key"),
+            "api_base": user_api_base,
+            "api_key": user_api_key,
             "timeout": 86400,
         }
-        team_id = os.getenv("PRIME_TEAM_ID") or prime.get("team_id")
         if team_id:
             user_args["extra_headers"] = {"X-Prime-Team-ID": team_id}
         run_config = {
@@ -193,6 +201,7 @@ class Tau2Harness(vf.Harness[Tau2HarnessConfig]):
             },
             "agent_llm": llm,
             "agent_llm_args": llm_args,
+            "user_llm": user_llm,
             "user_llm_args": user_args,
         }
         result = await runtime.run_program(
@@ -235,7 +244,7 @@ if __name__ == "__main__":
         user="user_simulator",
         llm_agent=config["agent_llm"],
         llm_args_agent=config["agent_llm_args"],
-        llm_user="openai/openai/gpt-4.1",
+        llm_user=config["user_llm"],
         llm_args_user=config["user_llm_args"],
         max_steps=500,  # Let long scenarios finish while still bounding loops.
     )
