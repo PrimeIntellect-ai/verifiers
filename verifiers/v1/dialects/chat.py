@@ -33,8 +33,7 @@ FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 
 # Providers name the model's reasoning differently; read them in the v0 client's precedence.
 # `reasoning` (vLLM / Together / OpenRouter), `reasoning_content` (DeepSeek / Qwen / SGLang /
-# Fireworks / Kimi), `reasoning_details` (OpenRouter / MiniMax — usually structured, kept here
-# for the rare provider that returns it as a plain string).
+# Fireworks / Kimi), `reasoning_details` (OpenRouter / MiniMax).
 REASONING_FIELDS = ("reasoning", "reasoning_content", "reasoning_details")
 
 
@@ -44,6 +43,16 @@ def reasoning_text(data: Mapping[str, Any]) -> str | None:
         value = data.get(field)
         if isinstance(value, str) and value:
             return value
+    details = data.get("reasoning_details")
+    if isinstance(details, list):
+        parts = []
+        for detail in details:
+            if not isinstance(detail, Mapping):
+                continue
+            value = detail.get("text") or detail.get("summary")
+            if isinstance(value, str) and value:
+                parts.append(value)
+        return "\n".join(parts) or None
     return None
 
 
@@ -68,6 +77,7 @@ def parse_message(raw: dict) -> Message:
             name=raw.get("name"),
         )
     if role == "assistant":
+        details = raw.get("reasoning_details")
         calls = [
             ToolCall(
                 id=c["id"],
@@ -80,6 +90,7 @@ def parse_message(raw: dict) -> Message:
             content=_content_text(content) or None,
             reasoning_content=reasoning_text(raw),
             tool_calls=calls,
+            provider_state=details if isinstance(details, list) and details else None,
         )
     return UserMessage(content=content_to_parts(content))
 
@@ -117,9 +128,9 @@ def message_to_wire(message: Message) -> dict:
     """A vf message -> the OpenAI chat wire dict."""
     if message.role == "assistant":
         wire: dict = {"role": "assistant", "content": message.content}
-        # Reasoning models (DeepSeek V4, Kimi K2 Thinking, ...) require the prior turns'
-        # `reasoning_content` sent back as a message-level field; carry it when present.
-        if message.reasoning_content is not None:
+        if message.provider_state:
+            wire["reasoning_details"] = message.provider_state
+        elif message.reasoning_content is not None:
             wire["reasoning_content"] = message.reasoning_content
         if message.tool_calls:
             wire["tool_calls"] = [
@@ -148,6 +159,8 @@ def response_from_wire(completion: ChatCompletion) -> Response:
     into our typed `Response`). No token ids: training tokens come from the renderer client."""
     choice = completion.choices[0]
     message = choice.message
+    data = message.model_dump()
+    details = data.get("reasoning_details")
     tool_calls = [
         ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
         for tc in (message.tool_calls or [])
@@ -180,8 +193,9 @@ def response_from_wire(completion: ChatCompletion) -> Response:
         model=completion.model,
         message=AssistantMessage(
             content=message.content,
-            reasoning_content=reasoning_text(message.model_dump()),
+            reasoning_content=reasoning_text(data),
             tool_calls=tool_calls,
+            provider_state=details if isinstance(details, list) and details else None,
         ),
         finish_reason=finish,
         usage=usage,
@@ -218,6 +232,7 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
         chunks = iter_sse(raw)
         message: dict = {"role": "assistant", "content": None}
         tool_calls: dict[int, dict] = {}
+        reasoning_details: list[dict] = []
         finish_reason = None
         usage = None
         for chunk in chunks:
@@ -230,6 +245,16 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                 for key in ("content", "reasoning_content", "reasoning"):
                     if delta.get(key) is not None:
                         message[key] = (message.get(key) or "") + delta[key]
+                for detail in delta.get("reasoning_details") or []:
+                    previous = reasoning_details[-1] if reasoning_details else {}
+                    if detail.get("type") == previous.get("type") == "reasoning.text":
+                        previous["text"] = (previous.get("text") or "") + (
+                            detail.get("text") or ""
+                        )
+                        for field in ("signature", "format"):
+                            previous[field] = previous.get(field) or detail.get(field)
+                    else:
+                        reasoning_details.append(detail)
                 for tc in delta.get("tool_calls") or []:
                     slot = tool_calls.setdefault(
                         tc.get("index", 0),
@@ -242,6 +267,8 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                     slot["function"]["arguments"] += fn.get("arguments") or ""
         if tool_calls:
             message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+        if reasoning_details:
+            message["reasoning_details"] = reasoning_details
         head = chunks[0] if chunks else {}
         return response_from_wire(
             ChatCompletion.model_validate(
