@@ -1,7 +1,7 @@
 """Smoke-eval every v1 example taskset in `environments/` through the `eval` CLI.
 
 The v0 counterpart (`tests/test_envs.py`) covers v0 envs (`vf.load_environment` + `vf-eval`);
-here we run each `_v1` taskset with the default harness for one short, capped rollout and
+here we run each `_v1` taskset with its required harness for one short, capped rollout and
 require it to succeed — so a broken example taskset fails CI. `compact` is excluded (it's a
 harness, not a taskset); SWE/container tasksets need a docker/prime runtime and are covered by
 the dedicated v1 e2e tests instead.
@@ -34,9 +34,11 @@ def v1_tasksets() -> list[str]:
 
 @pytest.mark.parametrize("taskset", v1_tasksets())
 def test_eval(taskset: str):
-    """Run one capped rollout of `taskset` with the default harness and require success."""
+    """Run one capped rollout of `taskset` with its required harness."""
     if taskset in NEEDS_CONTAINER:
         pytest.skip(f"{taskset} needs a docker/prime runtime (covered by v1 e2e tests)")
+    harness = "tau2-bench-v1" if taskset == "tau2_bench_v1" else "default"
+    max_turns = "500" if taskset == "tau2_bench_v1" else "4"
     if os.getenv("PRIME_API_KEY"):
         model = [
             "-m", "openai/gpt-4.1-mini",
@@ -54,10 +56,10 @@ def test_eval(taskset: str):
 
     cmd = [
         "uv", "run", "--no-sync", "eval",
-        "--taskset.id", taskset, "--harness.id", "default",
+        "--taskset.id", taskset, "--harness.id", harness,
         *model,
         # -r 2: a taskset with @group_reward(s) needs >=2 rollouts to compare.
-        "-n", "1", "-r", "2", "--max-turns", "4",
+        "-n", "1", "-r", "2", "--max-turns", max_turns,
         "--sampling.max-tokens", "512", "--rich", "false",
     ]  # fmt: skip
     try:

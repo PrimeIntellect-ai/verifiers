@@ -240,5 +240,6 @@ if __name__ == "__main__":
         llm_args_agent=config["agent_llm_args"],
         llm_user="openai/openai/gpt-4.1",
         llm_args_user=config["user_llm_args"],
+        max_steps=500,  # Let long scenarios finish while still bounding loops.
     )
     print(f"{_RESULT_PREFIX}{simulation.model_dump_json()}")

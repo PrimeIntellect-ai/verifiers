@@ -54,7 +54,10 @@ directly, and a small compatibility patch preserves raw reasoning items between 
 | `runtime` | `SubprocessConfig` | `subprocess` | Isolated process in which Tau runs each simulation. |
 
 Rollout turn, token, and wall-clock limits are supplied through the standard
-Verifiers eval config. Tau also retains its native step and tool-error limits.
+Verifiers eval config. Tau simulations allow up to 500 orchestrator steps, instead
+of Tau's default 100, so long scenarios can finish while non-terminating conversations
+remain bounded. This step limit counts all agent, user, and tool transitions rather
+than only model turns. Tau's native tool-error limit is unchanged.
 
 ### Metrics
 | Metric | Meaning |
