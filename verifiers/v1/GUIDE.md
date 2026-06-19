@@ -204,7 +204,7 @@ A reward reads the finished trajectory off `trace`. The most useful members, by 
 
 | member | type | what |
 | --- | --- | --- |
-| `trace.info` | `dict` | free-form persisted artifact bag (see below) |
+| `trace.info` | `dict` | free-form persisted artifact bag (see [Persisted info](#persisted-info)) |
 | `trace.state` | `StateT` | transient per-rollout state (see [State](#per-rollout-state)) |
 
 **Status & lifecycle**
@@ -316,16 +316,32 @@ class SWETaskset(vf.Taskset[SWETask, SWEConfig]):
         return 1.0 if result.exit_code == 0 else 0.0
 ```
 
-`trace.info` is a free-form, **JSON-serializable, persisted** dict for anything that isn't a
-reward or metric — runtime artifacts (the diff above, captured logs, command output) you want in
-`results.jsonl` for inspection. Use `metrics` for numbers that aggregate, `trace.info` for
-everything else (a non-serializable value fails the dump).
+## Persisted info
+
+`trace.info` is a free-form, **JSON-serializable** dict for per-rollout artifacts that are neither a
+reward nor a metric — the diff above, captured logs, command output, file paths. Write to it from
+`finalize` or a `@reward`/`@metric` by assigning into the dict; it is persisted with the trace
+(dumped to `results.jsonl` and sent over the wire), so every value must be JSON-serializable — a
+non-serializable value fails the trace dump rather than being silently dropped.
+
+```python
+trace.info["build_log"] = result.stdout
+```
+
+It pairs with [`trace.state`](#per-rollout-state) — the two per-rollout stores are opposites:
+
+| | `trace.info` | `trace.state` |
+| --- | --- | --- |
+| lifetime | **persisted** (dumped + sent over the wire) | **transient** (never dumped or sent) |
+| for | artifacts to inspect after the run | live state the rollout reads and acts on |
+| shape | free-form `dict[str, Any]`, JSON-serializable | typed `vf.State` subclass |
+| written by | `finalize` / `@reward` / `@metric` | tools / user sim (`self.state`) + scoring |
 
 ## Per-rollout state
 
 `trace.state` is the complementary **transient** store: a typed, mutable `vf.State` shared across
 the rollout's tool servers, user simulator, and scoring — the one place per-rollout *runtime* state
-lives (counters, game progress, your own end-of-trajectory flag). Unlike `info` it is **never**
+lives (counters, game progress, your own end-of-trajectory flag). Unlike [`info`](#persisted-info) it is **never**
 persisted to disk or sent over the wire. Subclass `vf.State` to declare typed fields (each needs a
 default) and parameterize the taskset and any stateful server on it:
 
@@ -362,10 +378,10 @@ Who touches it how:
 
 ## Tools
 
-A tool server is a **vf-native class** (not raw MCP, no FastMCP boilerplate) authored from a
-config — the same shape as a taskset. Define `@vf.tool` methods on a `vf.Toolset[ConfigT]` (or
-`vf.Toolset[ConfigT, StateT]` for one that shares state); the model sees `<TOOL_PREFIX>_<method>`
-and the docstring is the description:
+A tool server is a **vf-native class** authored from a config — the same shape
+as a taskset. Define `@vf.tool` methods on a `vf.Toolset[ConfigT]` (or
+`vf.Toolset[ConfigT, StateT]` for one that shares state); the model sees
+`<TOOL_PREFIX>_<method>` and the docstring is the description:
 
 ```python
 class GlossaryToolset(vf.Toolset[GlossaryToolsetConfig]):
