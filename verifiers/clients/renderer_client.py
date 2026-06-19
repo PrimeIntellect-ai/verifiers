@@ -39,7 +39,11 @@ from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
-from verifiers.errors import EmptyModelResponseError, OverlongPromptError
+from verifiers.errors import (
+    EmptyModelResponseError,
+    OverlongPromptError,
+    TruncatedReasoningError,
+)
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -643,6 +647,10 @@ class RendererClient(
         has_reasoning = bool(response.get("reasoning_content"))
         if not (has_content or has_tool_calls):
             if has_reasoning:
+                if response.get("finish_reason") == "length":
+                    raise TruncatedReasoningError(
+                        "Model hit length limit after reasoning but before content or tool calls"
+                    )
                 raise EmptyModelResponseError(
                     "Model returned reasoning but no content and did not call any tools"
                 )
