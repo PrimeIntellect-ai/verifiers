@@ -562,10 +562,14 @@ class MyHarness(vf.Harness[MyHarnessConfig]):
 __all__ = ["MyHarness"]
 ```
 
-**The contract.** A harness never builds the trace itself: it just points *a program* at
-`endpoint` (authorized with `secret`), and the interception server records every model call —
-**as long as the program makes its requests in one of the supported dialects** (chat-completions,
-Responses, Anthropic Messages). The program can be any executable the runtime can run.
+### The contract
+
+A harness never builds the trace itself: it just points *a program* at `endpoint` (authorized with
+`secret`), and the interception server records every model call — **as long as the program makes its
+requests in one of the supported dialects** (chat-completions, Responses, Anthropic Messages). The
+program can be any executable the runtime can run.
+
+### The `launch` hook
 
 `launch` receives:
 
@@ -582,28 +586,28 @@ becomes `trace.stop("agent_completed")`; a non-zero exit (or an unexpected excep
 raises `HarnessError` with the tail of stderr — **unless** a `@stop` already fired (the program
 dying because the interception server cut a turn is expected, not an error).
 
-**`resolve_prompt(trace.task)`** returns `(system_prompt, prompt)` already reconciled with your
+### `resolve_prompt`
+
+`resolve_prompt(trace.task)` returns `(system_prompt, prompt)` already reconciled with your
 capability flags: the system prompt is handed back only if `APPENDS_SYSTEM_PROMPT` (else folded
 into `prompt`); `prompt` is a `str`, a `Messages` list (if `SUPPORTS_MESSAGE_PROMPT`), or `None`
 (no prompt → let the user simulator / interception server open the conversation, so send no opening
 user message).
 
-**Two program styles.** A self-contained chat loop is usually a single-file uv script
-(`runtime.run_uv_script`, so the harness needs only `uv` in the runtime — its inline deps resolve
-there, never on the host; identical scripts share one content-addressed uv env). An agent
-CLI / binary is installed and launched with `runtime.run(...)`. Either way, pass `endpoint` /
-`secret` / `ctx.model` to the program as **CLI args** (as above) rather than `OPENAI_*` env vars — an
-inherited or stray env var can silently redirect the program's model calls; `self.config.env` just
-supplies any extra environment.
+### Program styles
 
-**Harness metrics.** A harness can define its own `@vf.metric` methods (injected `task` / `trace` /
-`runtime`), run over the finished trace alongside the taskset's — handy to surface what the program
-left behind in the runtime (e.g. read a `meta.json` the binary wrote). A harness can't define
-rewards.
+A self-contained chat loop is usually a single-file uv script (`runtime.run_uv_script`, so the
+harness needs only `uv` in the runtime — its inline deps resolve there, never on the host; identical
+scripts share one content-addressed uv env). An agent CLI / binary is installed and launched with
+`runtime.run(...)`. Either way, pass `endpoint` / `secret` / `ctx.model` to the program as **CLI
+args** (as above) rather than `OPENAI_*` env vars — an inherited or stray env var can silently
+redirect the program's model calls; `self.config.env` just supplies any extra environment.
 
-Copy `environments/compact` (a context-rewrite loop) as a starting point. A harness is resolved by
-its `id` the same way a taskset is — built-ins live under `packages/harnesses/harnesses/<id>/`; a
-custom one is a local package or a Hub id.
+### Harness metrics
+
+A harness can define its own `@vf.metric` methods (injected `task` / `trace` / `runtime`), run over
+the finished trace alongside the taskset's — handy to surface what the program left behind in the
+runtime (e.g. read a `meta.json` the binary wrote). A harness can't define rewards.
 
 ---
 
