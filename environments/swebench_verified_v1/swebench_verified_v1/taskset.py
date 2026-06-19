@@ -54,5 +54,9 @@ class SWEBenchVerifiedTaskset(
             image = (
                 f"{REGISTRY_PREFIX}/{base}" if self.config.use_prime_registry else base
             )
-            tasks.append(task.model_copy(update={"image": image}))
+            # SWE-bench instance images check out the repo at /testbed (the image's WORKDIR);
+            # without pinning it the runtime's default workdir drops the agent in an empty dir.
+            tasks.append(
+                task.model_copy(update={"image": image, "workdir": "/testbed"})
+            )
         return tasks
