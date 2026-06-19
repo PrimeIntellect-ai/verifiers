@@ -449,8 +449,7 @@ the default is the cheapest correct thing; the rest trade setup cost for isolati
 
 | mode | config | runs | pros | cons |
 | --- | --- | --- | --- | --- |
-| **own host** *(default)* | *(nothing)* | own `subprocess` runtime on the host, one per rollout | cheapest launch; full per-rollout isolation | pays `setup` every rollout |
-| **own sandbox** | `runtime = {type = "docker"\|"prime"}` | own sandbox per rollout, over a tunnel | isolates untrusted tool code / deps / network | sandbox spin-up + env install + `setup`, every rollout |
+| **own runtime** *(default)* | *(nothing; `runtime = {type = "docker"\|"prime"}` for a sandbox)* | own runtime per rollout — `subprocess` on the host (default), or a `docker`/`prime` sandbox over a tunnel | full per-rollout isolation; a sandbox also isolates untrusted code / deps / network | pays `setup` every rollout (a sandbox adds spin-up + env install) |
 | **colocated** | `colocated = true` | inside the harness's runtime, one per rollout (no tunnel) | no extra runtime/tunnel; can touch the harness's filesystem | couples to the harness; `setup` per rollout |
 | **shared** | `shared = true` | one instance for the whole eval | `setup` once; writable per-rollout if state lives in `self.state` | state outside `self.state` corrupts across rollouts; `setup_task` skipped |
 | **shared + fork** | `shared = true, fork = true` | warm parent + forked child per rollout (copy-on-write) | `setup` once **and** isolates arbitrary in-process/on-disk state; runs `setup_task` per child | a process per concurrent rollout; Linux only |
