@@ -1,0 +1,2 @@
+# The browser agent is proprietary and fetched at run time from a private repo — never commit it.
+vendor/
