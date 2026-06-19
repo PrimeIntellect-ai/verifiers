@@ -206,7 +206,7 @@ def run_v1():
 @pytest.fixture
 def run_v1_server():
     """Run a v1 taskset through the env-server worker pool (`run_eval_server`) — the path a
-    non-`--rich` CLI run and prime-rl training both take. Spawns the broker + a worker, so it's
+    `--server` CLI run and prime-rl training both take. Spawns the broker + a worker, so it's
     the only fixture that exercises serving resources (shared tool servers, interception pool)
     being stood up by the *server* rather than the in-process runner. Pinned to a single static
     worker for determinism."""

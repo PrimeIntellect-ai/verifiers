@@ -76,9 +76,10 @@ def main(argv: list[str] | None = None) -> None:
             return
     if config.is_legacy and config.resume is not None:
         raise SystemExit("--resume is not supported for legacy (v0) evals")
-    # The --rich dashboard reads live v1 Rollout state, so it needs the in-process path; a
-    # plain (non-rich) v1 run goes through the env server using `pool` (the path prime-rl
-    # trains through). Legacy always runs in-process via the bridge.
+    # Execution path: in-process by default; `--server` opts into the env-server worker pool
+    # (the path prime-rl trains through). The `--rich` dashboard reads live in-process Rollout
+    # state, so it's in-process only (`server + rich` is rejected at config validation). Legacy
+    # always runs in-process via the bridge.
     rich = config.rich and not config.is_legacy
     # Always tee the run's logs to a file under the output dir (in-process and server mode).
     log_file = str(output_path(config) / "eval.log")
@@ -97,13 +98,13 @@ def main(argv: list[str] | None = None) -> None:
         from verifiers.v1.legacy import run_legacy_eval
 
         traces = asyncio.run(run_legacy_eval(config))
-    elif rich:  # in-process for the live dashboard
-        env = vf.Environment(config)
-        traces = asyncio.run(run_eval(env, config))
-    else:  # drive rollouts through the env server's worker pool
+    elif config.server:  # opt-in: drive rollouts through the env-server worker pool
         from verifiers.v1.cli.eval.runner import run_eval_server
 
         traces = asyncio.run(run_eval_server(config))
+    else:  # in-process (default), with or without the live dashboard
+        env = vf.Environment(config)
+        traces = asyncio.run(run_eval(env, config))
     if not rich:  # --rich is the whole output; otherwise dump each trace as JSON
         for trace in traces:
             print(trace.model_dump_json(indent=2, exclude_none=True))

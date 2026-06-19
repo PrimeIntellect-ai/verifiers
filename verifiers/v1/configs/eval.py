@@ -3,7 +3,7 @@
 from pathlib import Path
 from uuid import uuid4
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 
 from verifiers.v1.clients import ClientConfig, EvalClientConfig
 from verifiers.v1.env import EnvServerConfig
@@ -14,8 +14,9 @@ class EvalConfig(EnvServerConfig):
     """The eval run plus its environment: inherits the env's fields (`taskset`, `harness`,
     `max_turns`, token limits, timeouts) and the worker `pool` so they're top-level flags
     (`--taskset.id`, `--harness.id`, `--harness.runtime.*`, `--pool.*`, …) with no `--env.`
-    prefix, and adds the run knobs (model, sampling, counts, …). A non-`--rich` run drives
-    rollouts through the env server using `pool`; `--rich` runs them in-process."""
+    prefix, and adds the run knobs (model, sampling, counts, …). Rollouts run in-process by
+    default; `--server` drives them through the env-server worker pool (sized by `pool`) — the
+    path prime-rl trains through. `--rich` adds a live dashboard (in-process only)."""
 
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id — the leaf of the output dir, so runs never overwrite.
@@ -49,7 +50,10 @@ class EvalConfig(EnvServerConfig):
     dry_run: bool = False
     """Resolve + validate the config and dump it, then exit."""
     rich: bool = True
-    """Show a live dashboard instead of per-rollout logs."""
+    """Show a live dashboard instead of per-rollout logs (in-process only)."""
+    server: bool = False
+    """Drive rollouts through the env-server worker pool (sized by `--pool.*`) instead of
+    in-process — the path prime-rl trains through. Incompatible with `--rich`."""
     output_dir: Path | None = Field(
         None, validation_alias=AliasChoices("output_dir", "o")
     )
@@ -59,3 +63,12 @@ class EvalConfig(EnvServerConfig):
     """Set by `--resume <dir>`: re-run only the rollouts a previous run left missing or
     errored, appending to that run's own results. The run's saved config is loaded verbatim,
     so `--resume` takes no other arguments. Excluded from the saved config."""
+
+    @model_validator(mode="after")
+    def _rich_xor_server(self):
+        if self.server and self.rich:
+            raise ValueError(
+                "`--rich` (the live dashboard) runs in-process and can't be combined with "
+                "`--server`; pass `--no-rich` with `--server`."
+            )
+        return self
