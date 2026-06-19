@@ -131,7 +131,17 @@ async def main() -> None:
                 break
             for call in message.tool_calls:
                 name = call.function.name
-                tool_args = json.loads(call.function.arguments or "{}")
+                try:
+                    tool_args = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError as e:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
+                        }
+                    )
+                    continue
                 if name in dispatch:
                     content = await call_mcp(dispatch, name, tool_args)
                 else:
