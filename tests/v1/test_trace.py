@@ -44,7 +44,9 @@ def test_custom_task_state_round_trip():
     assert "state" not in wire  # transient state is excluded from the dump
 
     rt = vf.Trace[MyTask, MyState].model_validate(wire)
-    assert isinstance(rt.task, MyTask) and rt.task.answer == "gold"  # typed custom field
+    assert (
+        isinstance(rt.task, MyTask) and rt.task.answer == "gold"
+    )  # typed custom field
     assert rt.num_turns == 1 and rt.num_branches == 1
     assert rt.reward == 0.5  # property recomputed from `rewards`
 

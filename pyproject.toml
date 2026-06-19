@@ -252,6 +252,7 @@ addopts = [
 markers = [
     "e2e: marks end-to-end eval-run tests (need a model API key; skipped without one)",
     "integration: marks tests as integration tests",
+    "slow: marks slow-running tests (deselect with -m 'not slow')",
     # v1 e2e matrix axes — select subsets with `-m` (see tests/v1/conftest.py). A mark is applied
     # per axis, so it matches every case touching that value on any axis.
     "subprocess: v1 e2e cases touching the subprocess (host) runtime",
