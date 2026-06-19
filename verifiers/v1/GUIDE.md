@@ -394,6 +394,10 @@ class GlossaryToolset(vf.Toolset[GlossaryToolsetConfig]):
     def lookup(self, name: str) -> str:  # typed params the model fills; docstring → description
         """Look up a glossary term."""
         return self.facts.get(name.lower(), "unknown")
+
+
+if __name__ == "__main__":
+    GlossaryToolset.run()                # self-launching module under servers/ (see below)
 ```
 
 Two setup hooks, plus the shared state:
@@ -418,9 +422,13 @@ class HagglerUser(vf.User[vf.UserConfig, HagglerState]):
         if done:
             self.state.deal_closed = True       # end via a @vf.stop the taskset declares
         return [{"role": "user", "content": reply}]
+
+
+if __name__ == "__main__":
+    HagglerUser.run()                           # self-launching module under servers/ (see below)
 ```
 
-The framework calls `respond` after each assistant turn and injects the reply as the next user
+The framework calls `respond` after each agent turn and injects the reply as the next user
 message; it's consumed by the framework, never shown to the model. A taskset supplies one via
 `user(task) -> vf.User | None`. If a task carries **no prompt** (`prompt=None`), the simulator also
 **opens the conversation**: the framework calls `respond("")` once before the first model turn and
