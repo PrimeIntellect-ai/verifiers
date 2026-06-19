@@ -131,8 +131,6 @@ async def main() -> None:
                 break
             for call in message.tool_calls:
                 name = call.function.name
-                # A model can emit malformed/truncated JSON args; feed the parse error back as
-                # the tool result so it can retry, instead of crashing the whole rollout.
                 try:
                     tool_args = json.loads(call.function.arguments or "{}")
                 except json.JSONDecodeError as e:
