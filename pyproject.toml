@@ -86,6 +86,7 @@ examples = [
     "wordle-v1", "terminal-bench-2-v1", "alphabet-sort-v1",
     "r2e-gym-v1", "scaleswe-v1", "swelego-v1", "scratchpad-v1",
     "general-agent-v1", "swebench-verified-v1",
+    "mini-browse-apps-platform-v1",
 ]
 
 [project.optional-dependencies]
@@ -161,6 +162,7 @@ alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
 general-agent-v1 = { path = "environments/general_agent_v1", editable = true }
 swebench-verified-v1 = { path = "environments/swebench_verified_v1", editable = true }
+mini-browse-apps-platform-v1 = { path = "environments/mini_browse_apps_platform_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)

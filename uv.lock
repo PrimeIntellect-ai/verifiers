@@ -2401,6 +2401,17 @@ wheels = [
 ]
 
 [[package]]
+name = "mini-browse-apps-platform-v1"
+version = "0.1.0"
+source = { editable = "environments/mini_browse_apps_platform_v1" }
+dependencies = [
+    { name = "openai" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "openai" }]
+
+[[package]]
 name = "mistral-common"
 version = "1.11.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5836,6 +5847,7 @@ examples = [
     { name = "glossary-v1" },
     { name = "gsm8k-v1" },
     { name = "math-env-v1" },
+    { name = "mini-browse-apps-platform-v1" },
     { name = "r2e-gym-v1" },
     { name = "reverse-text-v1" },
     { name = "scaleswe-v1" },
@@ -5935,6 +5947,7 @@ examples = [
     { name = "glossary-v1", editable = "environments/glossary_v1" },
     { name = "gsm8k-v1", editable = "environments/gsm8k_v1" },
     { name = "math-env-v1", editable = "environments/math_env_v1" },
+    { name = "mini-browse-apps-platform-v1", editable = "environments/mini_browse_apps_platform_v1" },
     { name = "r2e-gym-v1", editable = "environments/r2e_gym_v1" },
     { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
     { name = "scaleswe-v1", editable = "environments/scaleswe_v1" },
