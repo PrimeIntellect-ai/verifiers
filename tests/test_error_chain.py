@@ -1,7 +1,12 @@
 """Tests for verifiers.utils.error_utils.ErrorChain."""
 
 import verifiers as vf
-from verifiers.utils.error_utils import ErrorChain, get_vf_error_chain
+from verifiers.utils.error_utils import (
+    ErrorChain,
+    error_data,
+    error_from_data,
+    get_vf_error_chain,
+)
 
 
 class TestErrorChain:
@@ -147,3 +152,11 @@ class TestErrorChain:
         # error1 and error2 have same type, should be counted together
         assert counter[ErrorChain(ValueError("any"))] == 2
         assert counter[ErrorChain(TypeError("any"))] == 1
+
+    def test_truncated_reasoning_error_round_trips(self):
+        error = vf.TruncatedReasoningError("truncated reasoning")
+
+        rebuilt = error_from_data(error_data(error))
+
+        assert isinstance(rebuilt, vf.TruncatedReasoningError)
+        assert isinstance(rebuilt, vf.EmptyModelResponseError)
