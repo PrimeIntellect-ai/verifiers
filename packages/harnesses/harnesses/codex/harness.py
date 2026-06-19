@@ -59,7 +59,9 @@ class CodexHarness(Harness[CodexHarnessConfig]):
     ) -> ProgramResult:
         _, prompt = self.resolve_prompt(trace.task)
         # codex authenticates to the interception server with the session secret (its provider
-        # api key) and posts Responses calls to `{endpoint}/responses`.
+        # api key) and posts Responses calls to `{endpoint}/responses`. The endpoint is passed via
+        # `-c` config (below), not env, and the key under a codex-specific name — so OPENAI_* stays
+        # clear and a stray OpenAI client in the agent's sandbox can't reach interception.
         env = {**self.config.env, KEY_VAR: secret}
         logger.info("codex: ensuring codex %s is installed", self.config.version)
         # Serialize concurrent rollouts that share one runtime (e.g. subprocess on the host),

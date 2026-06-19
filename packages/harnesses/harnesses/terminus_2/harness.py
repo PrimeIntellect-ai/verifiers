@@ -37,16 +37,24 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             raise ValueError("Terminus 2 does not support disabling tools")
         system_prompt, prompt = self.resolve_prompt(trace.task)
         tmux_dir = f"/tmp/vf-terminus-2-{trace.id}"
+        # Connection info goes as argv, never env: the interception endpoint must not be inherited
+        # by the agent's terminal commands, or a stray OpenAI client they spawn would be routed
+        # and recorded as a model turn. (`=`-joined so a secret starting with `-` isn't a flag.)
         env = {
             **self.config.env,
-            "OPENAI_BASE_URL": endpoint,
-            "OPENAI_API_KEY": secret,
             "TMUX_TMPDIR": tmux_dir,
         }
+        args = [
+            f"--base-url={endpoint}",
+            f"--api-key={secret}",
+            f"--model={ctx.model}",
+            f"--system-prompt={system_prompt or ''}",
+            f"--task={prompt}",
+        ]
         try:
             return await runtime.run_uv_script(
                 PROGRAM_SOURCE.replace("{version}", self.config.version),
-                args=[ctx.model, system_prompt or "", prompt],
+                args=args,
                 env=env,
             )
         finally:
