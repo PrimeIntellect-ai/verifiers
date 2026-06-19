@@ -5,13 +5,12 @@ why, see the [README](README.md); this guide is the longer-form how-to. `import 
 
 ## Mental model
 
-A v1 environment is three decoupled pieces, each selected by `id` and configured by typed
-config. You'll work with them in very different proportions:
+A v1 environment is three decoupled pieces, each packagable and configured through typed
+config. You'll likely work with them in different proportions:
 
 - **Taskset** — the data and the scoring: it produces typed `Task`s and owns every `@reward` /
   `@metric`, plus any tools and a user simulator (*what* the model is asked and *how* it's
-  graded). **This is what you author** — for almost every environment it's the only piece you
-  write.
+  graded). For many environments, this is the only piece you write.
 - **Harness** — the program that drives the rollout turn to turn, a chat loop or an agent CLI
   (*how* the model is called). **Usually you just pick a built-in** (`default` / `rlm` /
   `codex`); you only write your own if you need a custom rollout loop. With some exceptions, any
@@ -42,10 +41,9 @@ flag names are the dotted config path (`--harness.runtime.type docker`). See the
 
 # Authoring a taskset
 
-A taskset is a package selected by `id`. Scaffold one with `uv run init my-task-v1` (add
+A taskset is a package exporting a `vf.Taskset`. Scaffold one with `uv run init my-task-v1` (add
 `--add-tool` / `--add-user` / `--add-harness` for more pieces, `--v0` for a legacy environment),
-or copy the closest `environments/<name>_v1` and edit. The scaffold runs out of the box; replace
-`load_tasks` and the `@reward`. The whole minimal shape:
+or copy the closest `environments/<name>_v1` and edit. The minimal shape is:
 
 ```python
 import verifiers.v1 as vf
@@ -112,7 +110,7 @@ from verifiers.v1 import TaskTimeout, TaskResources
 MyTask(
     idx=0, prompt=...,
     timeout=TaskTimeout(setup=300, harness=1200, scoring=120),   # seconds; per stage, None = no limit
-    resources=TaskResources(cpu=4, memory=8, gpu="A100:2", disk=20),  # Modal units; None = runtime default
+    resources=TaskResources(cpu=4, memory=8, gpu="A100:2", disk=20),  # None = runtime default
 )
 ```
 

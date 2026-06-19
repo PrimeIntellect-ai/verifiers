@@ -86,6 +86,7 @@ examples = [
     "wordle-v1", "terminal-bench-2-v1", "alphabet-sort-v1",
     "r2e-gym-v1", "scaleswe-v1", "swelego-v1", "scratchpad-v1",
     "general-agent-v1", "swebench-verified-v1", "tau2-bench-v1",
+    "reverse-text",  # v0 env for the `eval --id reverse-text` legacy-bridge example
 ]
 
 [project.optional-dependencies]
@@ -149,6 +150,7 @@ wiki-search-v1 = { path = "environments/wiki_search_v1", editable = true }
 gsm8k-v1 = { path = "environments/gsm8k_v1", editable = true }
 code-golf-v1 = { path = "environments/code_golf_v1", editable = true }
 reverse-text-v1 = { path = "environments/reverse_text_v1", editable = true }
+reverse-text = { path = "environments/reverse_text", editable = true }
 wordle-v1 = { path = "environments/wordle_v1", editable = true }
 terminal-bench-2-v1 = { path = "environments/terminal_bench_2_v1", editable = true }
 math-env-v1 = { path = "environments/math_env_v1", editable = true }

@@ -39,7 +39,6 @@ chmod +x {bin}
 class CodexHarnessConfig(HarnessConfig):
     """The Codex CLI harness — which codex release to install in the runtime."""
 
-    id: str = "codex"
     version: str = "0.137.0"
     """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
 

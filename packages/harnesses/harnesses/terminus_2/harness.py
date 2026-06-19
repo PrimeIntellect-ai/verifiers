@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 class Terminus2HarnessConfig(HarnessConfig):
     """The Harbor Terminus 2 harness."""
 
-    id: str = "terminus-2"
     version: str = "0.14.0"
     """Harbor release to install, pinned for reproducibility."""
 

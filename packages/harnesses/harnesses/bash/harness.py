@@ -25,8 +25,6 @@ class BashHarnessConfig(HarnessConfig):
     """The built-in bash harness. A uv script (deps: openai, mcp), so it runs in any runtime that
     has `uv` (the harness bootstraps it) with no other setup."""
 
-    id: str = "bash"
-
 
 class BashHarness(Harness[BashHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True

@@ -259,6 +259,6 @@ bridge — its rollouts mapped to v1 `Trace`s. Set `--id` (instead of a `taskset
 
 ```bash
 uv run eval --id reverse-text -n 2     # eval a v0 env
-uv run eval --id reverse-text --args.num_train_examples 50 \
+uv run eval --id reverse-text --args.dataset_split train \
   --extra-env-kwargs.max-total-completion-tokens 256   # construction + post-load kwargs
 ```

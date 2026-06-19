@@ -33,9 +33,10 @@ logger = logging.getLogger(__name__)
 
 
 class HarnessConfig(BaseConfig):
-    """A harness's config — subclass per harness (each pins `id` to the harness id). Mirrors
-    `TasksetConfig`: the base type names the field, the concrete subclass is resolved by id
-    (no closed union)."""
+    """A harness's config — subclass per harness to add run knobs. Mirrors `TasksetConfig`: the
+    base type names the field, the concrete subclass is resolved by id (no closed union) — the
+    id is supplied by the caller (`--harness.id` / toml / a taskset's bundled harness), never
+    pinned on the subclass."""
 
     id: EnvId = "default"
     """The harness id, which selects this harness: a local package, or an

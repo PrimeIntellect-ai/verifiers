@@ -27,8 +27,6 @@ RLM_BIN = f"{RLM_DIR}/bin/rlm"
 class RLMHarnessConfig(HarnessConfig):
     """The rlm CLI harness — how to install rlm and how it should run."""
 
-    id: str = "rlm"
-
     version: str = "main"
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0

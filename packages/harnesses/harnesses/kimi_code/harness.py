@@ -39,7 +39,6 @@ env \
 class KimiCodeHarnessConfig(HarnessConfig):
     """The Kimi Code CLI harness."""
 
-    id: str = "kimi-code"
     version: str = "0.14.3"
     """Kimi Code release to install, pinned for reproducibility."""
 
