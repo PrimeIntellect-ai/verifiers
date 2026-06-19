@@ -156,19 +156,11 @@ def _balance_json(text: str) -> str:
 
 def prime_team_id() -> str | None:
     for name in ("PRIME_TEAM_ID", "PI_TEAM_ID", "X_PRIME_TEAM_ID"):
-        value = os.environ.get(name)
-        if value:
+        if value := os.environ.get(name):
             return value
-    config_path = Path.home() / ".prime" / "config.json"
-    try:
-        if config_path.exists():
-            config = json.loads(config_path.read_text())
-            if isinstance(config, dict):
-                value = config.get("team_id")
-                if value:
-                    return str(value)
-    except (json.JSONDecodeError, OSError):
-        return None
+    config = Path.home() / ".prime" / "config.json"
+    if config.exists():
+        return json.loads(config.read_text()).get("team_id")
     return None
 
 
