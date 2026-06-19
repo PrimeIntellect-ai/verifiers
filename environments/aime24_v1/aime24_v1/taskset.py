@@ -59,9 +59,12 @@ class AIME24Taskset(vf.Taskset[AIME24Task, AIME24Config]):
         prediction = (
             trace.assistant_messages[-1].content if trace.assistant_messages else ""
         )
+        # warm=True: on a persistent runtime, reuse a warm worker that imports math_verify once
+        # instead of execing a fresh interpreter per rollout (no-op on an ephemeral runtime).
         result = await runtime.run_uv_script(
             VERIFY,
             args=[task.answer, prediction or "", str(self.config.math_verify_timeout)],
+            warm=True,
         )
         if result.exit_code != 0:
             raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
