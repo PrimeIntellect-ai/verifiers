@@ -30,6 +30,12 @@ _MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 _APP_NAME = "verifiers-v1"
 
 
+def abs_path(path: str, workdir: str) -> str:
+    """Resolve a remote `path` to absolute: absolute passes through, relative resolves
+    against `workdir`. Modal's filesystem API only accepts absolute remote paths."""
+    return path if path.startswith("/") else f"{workdir.rstrip('/')}/{path}"
+
+
 class ModalConfig(BaseConfig):
     type: Literal["modal"] = "modal"
     image: str = "python:3.11-slim"
@@ -164,20 +170,19 @@ class ModalRuntime(Runtime):
                 f"modal background launch failed: {result.stderr.strip()}"
             )
 
-    def _abs(self, path: str) -> str:
-        # Modal's filesystem API only accepts absolute remote paths; resolve a relative one
-        # against the workdir (the cwd `run`/`run_background` use) so callers can pass either.
-        return path if path.startswith("/") else f"{self.config.workdir.rstrip('/')}/{path}"
+    def abs_path(self, path: str) -> str:
+        """Resolve `path` against this runtime's workdir (see `abs_path`)."""
+        return abs_path(path, self.config.workdir)
 
     async def read(self, path: str) -> bytes:
         try:
-            return await self._sandbox.filesystem.read_bytes.aio(self._abs(path))
+            return await self._sandbox.filesystem.read_bytes.aio(self.abs_path(path))
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
         # Create the parent first (Modal's write does not mkdir).
-        target = self._abs(path)
+        target = self.abs_path(path)
         try:
             await self._sandbox.filesystem.make_directory.aio(
                 str(PurePosixPath(target).parent)
