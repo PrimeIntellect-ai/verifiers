@@ -307,6 +307,19 @@ class Environment:
             if self.harness_timeout is not None
             else task.timeout.harness
         )
+        if (
+            harness_timeout is not None
+            and harness_timeout > 24 * 60 * 60
+            and not runtime_is_local(runtime_config)
+        ):
+            logger.warning(
+                "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
+                "maximum lifetime of 24 hours; capping it at 24 hours",
+                task.idx,
+                harness_timeout / (60 * 60),
+                runtime_config.type,
+            )
+            harness_timeout = 24 * 60 * 60
         finalize_timeout = (
             self.finalize_timeout
             if self.finalize_timeout is not None
