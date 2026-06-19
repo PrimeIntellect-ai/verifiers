@@ -51,12 +51,10 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
-        # rlm reaches the interception server via OPENAI_BASE_URL/API_KEY (its
-        # provider precedence falls back to OPENAI_*), and reads RLM_* for itself.
         env = {
             **self.config.env,
-            "OPENAI_BASE_URL": endpoint,
-            "OPENAI_API_KEY": secret,
+            "RLM_BASE_URL": endpoint,
+            "RLM_API_KEY": secret,
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "RLM_HOME": RLM_HOME,

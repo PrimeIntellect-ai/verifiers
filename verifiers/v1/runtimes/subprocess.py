@@ -22,8 +22,9 @@ from verifiers.v1.runtimes.base import _ENSURE_UV, ProgramResult, Runtime
 # A local subprocess inherits the host environment EXCEPT any var whose name
 # contains "API_KEY" — so it can never reach a real provider with the host's API
 # key, while still inheriting harmless config (PATH, HOME, UV_CACHE_DIR, HF_HOME,
-# ...). The harness injects its own interception endpoint over OPENAI_* on top
-# (see `run`). A container/sandbox is isolated and inherits nothing, so this
+# ...). Harnesses hand their interception endpoint + per-rollout secret to their own
+# client via argv/CLI (not OPENAI_*), so nothing they spawn inherits the endpoint.
+# A container/sandbox is isolated and inherits nothing, so this
 # allow-by-default model is subprocess-only. NOTE: this strip applies to EVERY
 # program run here, including a task's tool/user server — so a tool server that
 # genuinely needs an API key won't get one on subprocess placement; give it its
