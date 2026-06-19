@@ -26,6 +26,44 @@ ConfigT = TypeVar("ConfigT", bound=BaseConfig)
 
 STATE_TIMEOUT = 30.0
 """Seconds for a state-channel GET/PUT (localhost, or a tunnel to the host)."""
+STATE_RETRIES = 4
+"""Retries for a state/task channel request. Behind a remote runtime the channel is reached over a
+host tunnel that can return a transient 5xx or reset the connection while it settles (e.g. just
+after the sandbox/tunnel comes up), so a single blip must not fail the tool call."""
+STATE_BACKOFF = 0.5
+"""Base seconds for the channel-request backoff (exponential + jitter)."""
+
+
+async def _channel_request(
+    method: str, url: str, secret: str, *, json: dict | None = None
+) -> dict:
+    """One bearer-authed call to the interception `/state` or `/task` channel, retried with
+    exponential backoff + jitter on transient failures (connection resets / 5xx from the host
+    tunnel). A 4xx is a real error (e.g. an invalid state PUT) and is not retried. Returns the
+    parsed JSON body."""
+    import asyncio
+    import random
+
+    import httpx
+
+    headers = {"Authorization": f"Bearer {secret}"}
+    for attempt in range(STATE_RETRIES + 1):
+        try:
+            async with httpx.AsyncClient(timeout=STATE_TIMEOUT) as client:
+                resp = await client.request(method, url, json=json, headers=headers)
+                resp.raise_for_status()
+                return resp.json()
+        except (httpx.TransportError, httpx.HTTPStatusError) as e:
+            transient = (
+                isinstance(e, httpx.TransportError) or e.response.status_code >= 500
+            )
+            if not transient or attempt == STATE_RETRIES:
+                raise
+            await asyncio.sleep(
+                STATE_BACKOFF * 2**attempt + random.uniform(0, STATE_BACKOFF)
+            )
+    raise AssertionError("unreachable")  # the loop returns or raises
+
 
 # A `shared` server is one process for the whole eval, so it can't take a per-rollout state channel
 # from its environment like a per-rollout server does. Instead the framework tags each rollout's URL
@@ -138,12 +176,7 @@ class ServerBase(Generic[ConfigT, StateT]):
         cls = self._state_cls
         if not url:
             return cls()
-        import httpx
-
-        async with httpx.AsyncClient(timeout=STATE_TIMEOUT) as client:
-            resp = await client.get(url, headers={"Authorization": f"Bearer {secret}"})
-            resp.raise_for_status()
-            return cls.model_validate(resp.json())
+        return cls.model_validate(await _channel_request("GET", url, secret))
 
     async def _push_state(self, before: dict) -> None:
         """Push the in-flight call's `self.state` back to the shared channel if it changed. No-op
@@ -157,13 +190,7 @@ class ServerBase(Generic[ConfigT, StateT]):
         )
         if after == before:
             return
-        import httpx
-
-        async with httpx.AsyncClient(timeout=STATE_TIMEOUT) as client:
-            resp = await client.put(
-                url, json=after, headers={"Authorization": f"Bearer {secret}"}
-            )
-            resp.raise_for_status()
+        await _channel_request("PUT", url, secret, json=after)
 
     async def _fetch_task(self, state_url: str | None, secret: str):
         """Fetch this rollout's task from the interception server's `/task` channel (the sibling of
@@ -176,14 +203,7 @@ class ServerBase(Generic[ConfigT, StateT]):
             if state_url.endswith("/state")
             else state_url
         )
-        import httpx
-
-        async with httpx.AsyncClient(timeout=STATE_TIMEOUT) as client:
-            resp = await client.get(
-                task_url, headers={"Authorization": f"Bearer {secret}"}
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        data = await _channel_request("GET", task_url, secret)
         return _import_ref(data["cls"]).model_validate_json(data["task"])
 
     async def _setup_task_from_channel(
