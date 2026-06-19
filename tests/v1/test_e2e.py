@@ -198,11 +198,6 @@ async def test_tool_response_image(run_v1, tmp_path):
 @pytest.mark.e2e
 async def test_agentic(run_v1, agentic_harness, harness_runtime, tmp_path):
     """Agentic: write a phrase to a file with the agent's shell, checked in the runtime."""
-    if agentic_harness == "terminus-2" and harness_runtime == "subprocess":
-        pytest.skip(
-            "Terminus 2 drives tmux and is refused on the host (subprocess) runtime — it can kill "
-            "the host's tmux server (see Terminus2Harness.setup). TODO: isolate tmux for host runs."
-        )
     (trace,) = await run_v1(
         "echo-agentic-v1",
         harness=agentic_harness,

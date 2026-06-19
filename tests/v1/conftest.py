@@ -132,7 +132,6 @@ def harness(request) -> str:
         pytest.param(
             "mini-swe-agent", marks=pytest.mark.slow, id="mini-swe-agent-harness"
         ),
-        pytest.param("terminus-2", marks=pytest.mark.slow, id="terminus-2-harness"),
         pytest.param("codex", marks=pytest.mark.slow, id="codex-harness"),
     ]
 )
