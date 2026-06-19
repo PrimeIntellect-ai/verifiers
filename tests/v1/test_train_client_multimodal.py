@@ -1,3 +1,6 @@
+from pathlib import Path
+from urllib.parse import urlparse
+
 import pytest
 from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 
@@ -13,6 +16,26 @@ from verifiers.v1.utils import multimodal
 
 
 DATA_URL = "data:image/png;base64,aGVsbG8="
+
+
+def test_offload_images_inplace_has_builtin_data_url_fallback(tmp_path):
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": DATA_URL}}],
+            }
+        ]
+    }
+
+    stats = multimodal.offload_images_inplace(body, image_dir=tmp_path)
+
+    url = body["messages"][0]["content"][0]["image_url"]["url"]
+    parsed = urlparse(url)
+    assert stats.images_rewritten == 1
+    assert stats.bytes_written == 5
+    assert parsed.scheme == "file"
+    assert Path(parsed.path).read_bytes() == b"hello"
 
 
 def test_offload_images_inplace_rewrites_wire_and_typed_messages(monkeypatch):

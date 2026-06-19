@@ -7,9 +7,23 @@ which refs must be sent to inference.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+_IMAGE_EXTENSIONS = {
+    "jpeg": "jpg",
+    "jpg": "jpg",
+    "png": "png",
+    "gif": "gif",
+    "webp": "webp",
+}
 
 
 @dataclass
@@ -25,13 +39,44 @@ class ImageOffloadStats:
 def _offload_image_url(url: object, image_dir: Path | None) -> tuple[str, int] | None:
     try:
         from renderers.mm_store import offload_image_to_run_assets
-    except ImportError as exc:  # pragma: no cover - dependency-version guard
-        raise RuntimeError(
-            "Multimodal training requires a renderers version with raw image "
-            "asset offload support."
-        ) from exc
+    except ImportError:
+        return _offload_data_image_url(url, image_dir=image_dir)
 
-    return offload_image_to_run_assets(url, image_dir=image_dir)
+    result = offload_image_to_run_assets(url, image_dir=image_dir)
+    return result or _offload_data_image_url(url, image_dir=image_dir)
+
+
+def _default_image_dir() -> Path:
+    configured = os.environ.get("VERIFIERS_IMAGE_ASSET_DIR")
+    if configured:
+        return Path(configured)
+    return Path(tempfile.gettempdir()) / "verifiers" / "run-assets" / "images"
+
+
+def _offload_data_image_url(
+    url: object, *, image_dir: Path | None
+) -> tuple[str, int] | None:
+    if not isinstance(url, str) or not url.startswith("data:image/"):
+        return None
+
+    header, sep, payload = url.partition(",")
+    if not sep or ";base64" not in header.lower():
+        raise RuntimeError("image_url data URI must be base64 encoded")
+
+    try:
+        image_bytes = base64.b64decode(payload, validate=False)
+    except (binascii.Error, ValueError) as exc:
+        raise RuntimeError("image_url data URI contains invalid base64") from exc
+
+    image_subtype = header.removeprefix("data:image/").split(";", 1)[0].lower()
+    extension = _IMAGE_EXTENSIONS.get(image_subtype, "img")
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    target_dir = image_dir or _default_image_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / f"{digest}.{extension}"
+    if not path.exists():
+        path.write_bytes(image_bytes)
+    return path.resolve().as_uri(), len(image_bytes)
 
 
 def _image_source_url(source: Any) -> object:
