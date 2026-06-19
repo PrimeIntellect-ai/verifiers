@@ -21,15 +21,12 @@ time from a **private GitHub repo** (pinned to a commit), caches it under
 | `agent_token_env` | `MINI_BROWSE_GITHUB_TOKEN` | Env var holding a GitHub token with read access to `agent_repo`. |
 | `agent_path` | _(unset)_ | Local dir containing `<agent_package>/` — skips the fetch (development). |
 
-So set `export MINI_BROWSE_GITHUB_TOKEN=<token>` and `--harness.agent-ref <sha>`, or point
-`--harness.agent-path` at a local checkout.
-
 ## Tasks (pulled dynamically)
 
 Tasks are **pulled from the Prime hub and cached locally** — nothing is bundled in this package.
 `load_tasks` pulls the dataset from `prime/mini-browse-apps-platform-v1` (private; via `prime env
 pull`) into `~/.cache/verifiers/mini-browse-apps/<version>/`. Override with `--taskset.dataset_path
-<file>` or repoint `--taskset.hub_env_id` / `--taskset.hub_version`.
+<file>`, or repoint `--taskset.hub_env_id` / `--taskset.hub_version`.
 
 ## Run
 
@@ -48,7 +45,19 @@ uv run eval mini-browse-apps-platform-v1 \
 
 ## Reward & metrics
 
-`answer_key` (weight 1.0) judges the submitted result against the gold answer key (`judge_model`,
-default `google/gemini-3.1-pro-preview` via pinference); reward 1.0 == judge verdict "yes". Metrics:
-`result_present`, `submitted_result_present`, `agent_error`, `transcript_image_count`,
+`answer_key` (weight 1.0) judges the submitted result against the gold answer key. The judge uses a
+structured-output (`json_schema`) model — default `openai/gpt-4.1-mini` on Prime inference
+(auto-resolved); override with `--taskset.judge.model` / `--taskset.judge.client.*`. Reward 1.0 ==
+all expected fields correct (`verdict: "yes"`); partial credit is `correct_fields / total_fields`.
+Metrics: `result_present`, `submitted_result_present`, `agent_error`, `transcript_image_count`,
 `message_count`.
+
+## Config (`--taskset.*`)
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `dataset_path` | `null` | Local dataset override (skips the hub pull). |
+| `hub_env_id` | `prime/mini-browse-apps-platform-v1` | Hub env the dataset is pulled from. |
+| `hub_version` | `latest` | Hub env version to pull. |
+| `judge.model` | `openai/gpt-4.1-mini` | Structured-output judge model. |
+| `judge.client` | Prime inference | OpenAI-compatible endpoint for the judge (auto-resolved). |
