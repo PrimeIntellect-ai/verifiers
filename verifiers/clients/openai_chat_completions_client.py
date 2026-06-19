@@ -1,5 +1,10 @@
 import functools
+import json
+import os
+import time
+import uuid
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any, TypeAlias, cast
 
 from openai import (
@@ -151,6 +156,38 @@ OpenAIChatMessage: TypeAlias = ChatCompletionMessageParam
 OpenAIChatMessages: TypeAlias = list[OpenAIChatMessage]
 OpenAIChatResponse: TypeAlias = ChatCompletion
 OpenAITool: TypeAlias = ChatCompletionToolParam
+
+_RESPONSE_DUMP_DIR_ENV = "VF_RENDERER_RESPONSE_DUMP_DIR"
+_RESPONSE_DUMP_ALL_ENV = "VF_RENDERER_RESPONSE_DUMP_ALL"
+
+
+def _json_safe(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        try:
+            return _json_safe(value.model_dump(mode="json"))
+        except TypeError:
+            return _json_safe(value.model_dump())
+    if isinstance(value, Mapping):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    try:
+        json.dumps(value)
+    except TypeError:
+        return repr(value)
+    return value
+
+
+def _get_value(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, Mapping):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _truthy_env(value: str | None) -> bool:
+    return value is not None and value.lower() in {"1", "true", "yes", "on"}
 
 
 class OpenAIChatCompletionsClient(
@@ -323,12 +360,108 @@ class OpenAIChatCompletionsClient(
         if tools:
             body["tools"] = tools
 
-        return await post_chat_completion_with_routed_experts_sidecar(
+        response = await post_chat_completion_with_routed_experts_sidecar(
             self.client,
             "/chat/completions",
             body=body,
             extra_headers=extra_headers,
         )
+        self._maybe_dump_native_response(
+            response=response,
+            prompt=prompt,
+            model=model,
+            sampling_args=sampling_args,
+            body=body,
+            tools=tools,
+            kwargs=kwargs,
+        )
+        return response
+
+    def _maybe_dump_native_response(
+        self,
+        *,
+        response: OpenAIChatResponse | None,
+        prompt: OpenAIChatMessages,
+        model: str,
+        sampling_args: SamplingArgs,
+        body: dict[str, Any],
+        tools: list[OpenAITool] | None,
+        kwargs: dict[str, Any],
+    ) -> None:
+        dump_dir = os.environ.get(_RESPONSE_DUMP_DIR_ENV)
+        if not dump_dir:
+            local_debug_root = Path("/root/outputs/nemotron-nano-swe")
+            if local_debug_root.exists():
+                dump_dir = str(local_debug_root / "raw-dumps" / "live")
+        if not dump_dir:
+            return
+
+        choice = response.choices[0] if response and response.choices else None
+        message = getattr(choice, "message", None)
+        content = getattr(message, "content", None)
+        reasoning = parse_reasoning_content(message) if message is not None else None
+        has_content = bool(
+            content_to_text(content) or parse_refusal_content(message)
+        )
+        has_tool_calls = bool(getattr(message, "tool_calls", None))
+        has_reasoning = bool(reasoning)
+        empty_like = not (has_content or has_tool_calls)
+        if not (empty_like or _truthy_env(os.environ.get(_RESPONSE_DUMP_ALL_ENV))):
+            return
+
+        state = kwargs.get("state")
+        request_id = _get_value(response, "id")
+        rollout_id = _get_value(state, "rollout_id") or _get_value(
+            state, "trajectory_id"
+        )
+        example_id = _get_value(state, "example_id")
+        filename_parts = [
+            time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+            "empty" if empty_like else "response",
+            str(example_id) if example_id is not None else "no-example",
+            str(rollout_id or request_id or uuid.uuid4())[:48],
+        ]
+        filename = "-".join(filename_parts).replace("/", "_") + ".json"
+
+        completion_ids = _get_value(choice, "token_ids") if choice is not None else None
+        prompt_ids = _get_value(response, "prompt_token_ids")
+        payload = {
+            "dump_schema": "verifiers.openai_chat_native_response.v1",
+            "dump_reason": "empty_response_like"
+            if empty_like
+            else "all_responses_enabled",
+            "time": time.time(),
+            "model": model,
+            "sampling_args": _json_safe(sampling_args),
+            "request_body": _json_safe(body),
+            "prompt": _json_safe(prompt),
+            "tools": _json_safe(tools),
+            "state": _json_safe(state) if state is not None else None,
+            "response": _json_safe(response),
+            "response_summary": {
+                "has_content": has_content,
+                "has_tool_calls": has_tool_calls,
+                "has_reasoning_content": has_reasoning,
+                "finish_reason": _get_value(choice, "finish_reason"),
+                "request_id": request_id,
+                "content_length": len(content_to_text(content)),
+                "reasoning_length": len(reasoning or ""),
+                "prompt_tokens": len(prompt_ids) if isinstance(prompt_ids, list) else None,
+                "completion_tokens": len(completion_ids)
+                if isinstance(completion_ids, list)
+                else None,
+            },
+        }
+
+        try:
+            path = Path(dump_dir)
+            path.mkdir(parents=True, exist_ok=True)
+            (path / filename).write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            self.logger.warning("Failed to dump OpenAI chat native response: %r", exc)
 
     async def raise_from_native_response(self, response: OpenAIChatResponse) -> None:
         if response is None:

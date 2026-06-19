@@ -111,6 +111,47 @@ def _get_value(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
+def _tool_call_name(tool_call: Any) -> Any:
+    name = _get_value(tool_call, "name")
+    if name:
+        return name
+    function = _get_value(tool_call, "function")
+    if isinstance(function, Mapping):
+        return function.get("name")
+    return _get_value(function, "name")
+
+
+def _tool_call_status(tool_call: Any) -> Any:
+    status = _get_value(tool_call, "status")
+    return getattr(status, "value", status)
+
+
+def _has_usable_tool_call(tool_calls: Any) -> bool:
+    if not tool_calls:
+        return False
+    if isinstance(tool_calls, Mapping):
+        candidates = [tool_calls]
+    else:
+        candidates = tool_calls
+    return any(bool(_tool_call_name(tc)) for tc in candidates)
+
+
+def _summarize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
+    if not tool_calls:
+        return []
+    candidates = [tool_calls] if isinstance(tool_calls, Mapping) else tool_calls
+    return [
+        {
+            "type": type(tc).__name__,
+            "name": _tool_call_name(tc),
+            "status": _tool_call_status(tc),
+            "id": _get_value(tc, "id"),
+            "raw": _get_value(tc, "raw"),
+        }
+        for tc in candidates
+    ]
+
+
 def _json_safe(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return _json_safe(value.model_dump(mode="json"))
@@ -515,11 +556,19 @@ class RendererClient(
     ) -> None:
         dump_dir = os.environ.get(_RESPONSE_DUMP_DIR_ENV)
         if not dump_dir:
+            # Debug fallback for the active local SWE run. This makes the raw
+            # dump path independent of SLURM/srun environment propagation.
+            local_debug_root = Path("/root/outputs/nemotron-nano-swe")
+            if local_debug_root.exists():
+                dump_dir = str(local_debug_root / "raw-dumps" / "live")
+        if not dump_dir:
             return
 
+        raw_tool_calls = response.get("tool_calls") if response else None
         has_content = bool(response and response.get("content"))
-        has_tool_calls = bool(response and response.get("tool_calls"))
-        empty_like = not (has_content or has_tool_calls)
+        has_raw_tool_calls = bool(raw_tool_calls)
+        has_usable_tool_calls = _has_usable_tool_call(raw_tool_calls)
+        empty_like = not (has_content or has_usable_tool_calls)
         if not (empty_like or _truthy_env(os.environ.get(_RESPONSE_DUMP_ALL_ENV))):
             return
 
@@ -554,7 +603,9 @@ class RendererClient(
             "response": _json_safe(response),
             "response_summary": {
                 "has_content": has_content,
-                "has_tool_calls": has_tool_calls,
+                "has_raw_tool_calls": has_raw_tool_calls,
+                "has_usable_tool_calls": has_usable_tool_calls,
+                "raw_tool_calls": _json_safe(_summarize_tool_calls(raw_tool_calls)),
                 "has_reasoning_content": bool(
                     response and response.get("reasoning_content")
                 ),
