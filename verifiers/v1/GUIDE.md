@@ -193,9 +193,6 @@ Notes that bite if missed:
 - **`priority`** orders execution within a kind (higher first, then by name). It mostly matters for
   `@stop` — the highest-priority stop that fires sets the stop reason.
 
-You normally never override `score` / `score_group` — those are the dispatch machinery that finds
-and runs your decorators.
-
 ### Reading the trace
 
 A reward reads the finished trajectory off `trace`. The most useful read-only members:
