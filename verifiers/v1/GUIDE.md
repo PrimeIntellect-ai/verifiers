@@ -189,7 +189,7 @@ Good to know:
 
 ### Reading the trace
 
-A reward reads the finished trajectory off `trace`. The most useful read-only members, by area:
+A reward reads the finished trajectory off `trace`. The most useful members, by area:
 
 **Task & messages**
 
@@ -200,12 +200,10 @@ A reward reads the finished trajectory off `trace`. The most useful read-only me
 | `trace.tool_messages` | `list[ToolMessage]` | tool results (main branch) |
 | `trace.branches[-1].messages` | `Messages` | the full conversation of the main (last) branch |
 
-**Scoring** (rewards/metrics come from your decorator returns; `info`/`state` you set yourself)
+**Carried state** (set during the rollout / `finalize`, read back here)
 
 | member | type | what |
 | --- | --- | --- |
-| `trace.reward` / `trace.rewards` | `float` / `dict[str, float]` | summed reward / per-key contributions |
-| `trace.metrics` | `dict[str, float]` | recorded metrics |
 | `trace.info` | `dict` | free-form persisted artifact bag (see below) |
 | `trace.state` | `StateT` | transient per-rollout state (see [State](#per-rollout-state)) |
 
@@ -229,8 +227,9 @@ A reward reads the finished trajectory off `trace`. The most useful read-only me
 | `trace.timing` | `Timing` | per-stage durations |
 | `trace.id` | `str` | unique rollout id |
 
-The raw message graph is `trace.nodes` (each message stored once); `branches` is the friendly view
-over it, so you rarely touch `nodes` directly.
+`trace.reward` / `trace.rewards` / `trace.metrics` are scoring *outputs*, filled in during the
+scoring pass — don't read them from inside a `@reward`/`@metric`; a `@group_reward` reads metrics
+off each finished trace instead.
 
 ### In-runtime scoring
 
@@ -239,13 +238,13 @@ because it requires **heavy computation that shouldn't run on the host** (e.g. a
 own dependencies like `math-verify`), or because it needs **information that only lives in the
 agent's runtime** (files the agent wrote, command output, container state). The `runtime` object
 gives you read/write/exec in there; a common pattern is a uv script whose PEP 723 deps resolve
-inside the runtime and never touch the eval process:
+inside the runtime and never touch the host:
 
 ```python
 VERIFY = (Path(__file__).parent / "verify.py").read_text()   # PEP 723 header declares its deps
 
 @vf.reward()
-async def verified(self, task, trace, runtime) -> float:
+async def verify(self, task, trace, runtime) -> float:
     r = await runtime.run_uv_script(VERIFY, args=[task.answer, trace.assistant_messages[-1].content])
     return float(r.stdout.strip() == "1.0")
 ```
@@ -268,8 +267,7 @@ trace (above) or from per-rollout state set by a tool / user sim (see [State](#p
 
 ## Lifecycle hooks
 
-A rollout runs **`setup → harness → finalize → scoring`**, each independently timeout-bounded
-(`--timeout.{setup,rollout,finalize,scoring}`, or per-task `TaskTimeout`). A taskset can hook any
+A rollout runs **`setup → harness → finalize → scoring`**. A taskset can hook any
 stage; all are `async`:
 
 | hook | signature | when | gets runtime? |
@@ -560,7 +558,7 @@ user message).
 
 **Two program styles.** A self-contained chat loop is usually a single-file uv script
 (`runtime.run_uv_script`, so the harness needs only `uv` in the runtime — its inline deps resolve
-there, never in the eval process; identical scripts share one content-addressed uv env). An agent
+there, never on the host; identical scripts share one content-addressed uv env). An agent
 CLI / binary is installed and launched with `runtime.run(...)`. Either way, harness-owned env vars
 (`OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`, …) are spread *after* `self.config.env`, so
 they take precedence over any collision.
