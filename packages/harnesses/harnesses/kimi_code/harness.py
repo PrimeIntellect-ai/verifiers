@@ -48,6 +48,21 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_TASK_TOOLS = True
 
+    async def setup(self, runtime: Runtime) -> None:
+        logger.info(
+            "kimi-code: ensuring Kimi Code %s is installed", self.config.version
+        )
+        script = INSTALL.replace("{version}", self.config.version)
+        guarded = (
+            "mkdir -p /tmp/vf-kimi-code && "
+            f"flock /tmp/vf-kimi-code/install.lock sh -c {shlex.quote(script)}"
+        )
+        install = await runtime.run(["sh", "-c", guarded], {})
+        if install.exit_code != 0:
+            raise RuntimeError(
+                f"Kimi Code install failed: {install.stderr.strip()[-500:]}"
+            )
+
     async def launch(
         self,
         ctx: RolloutContext,
@@ -69,20 +84,6 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             "KIMI_DISABLE_TELEMETRY": "1",
             "KIMI_CODE_NO_AUTO_UPDATE": "1",
         }
-
-        logger.info(
-            "kimi-code: ensuring Kimi Code %s is installed", self.config.version
-        )
-        script = INSTALL.replace("{version}", self.config.version)
-        guarded = (
-            "mkdir -p /tmp/vf-kimi-code && "
-            f"flock /tmp/vf-kimi-code/install.lock sh -c {shlex.quote(script)}"
-        )
-        install = await runtime.run(["sh", "-c", guarded], {})
-        if install.exit_code != 0:
-            raise RuntimeError(
-                f"Kimi Code install failed: {install.stderr.strip()[-500:]}"
-            )
 
         mcp = {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
         # Values are Kimi permission patterns such as `Bash` or `Bash(rm -rf*)`.

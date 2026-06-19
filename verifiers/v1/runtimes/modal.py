@@ -23,9 +23,6 @@ from verifiers.v1.runtimes.limiters import creation_limiter
 logger = logging.getLogger(__name__)
 
 
-# Modal's max sandbox lifetime (24h in seconds); "auto" timeout requests it. Sandboxes are
-# created with a `sleep infinity` entrypoint so they stay alive for `exec` until terminated.
-_MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 # Shared Modal app every rollout's sandbox attaches to (created on first lookup).
 _APP_NAME = "verifiers-v1"
 
@@ -37,9 +34,6 @@ class ModalConfig(BaseConfig):
     network_access: bool = True
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
-    timeout: int | Literal["auto"] = 21600
-    """Max sandbox lifetime in seconds (default 6h; or "auto" = the highest Modal supports,
-    24h). A hard backstop: the sandbox self-terminates even if local cleanup is skipped."""
     # TaskResources, in Modal's native units (also settable per-task via Task.resources, with
     # precedence cli/toml > task > this default).
     cpu: float = 1.0
@@ -83,11 +77,6 @@ class ModalRuntime(Runtime):
                 "ModalRuntime requires the Modal SDK; install `verifiers[modal]`."
             ) from e
 
-        timeout = (
-            _MAX_TIMEOUT_SECONDS
-            if self.config.timeout == "auto"
-            else self.config.timeout
-        )
         try:
             app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
             async with (
@@ -106,7 +95,7 @@ class ModalRuntime(Runtime):
                     gpu=self.config.gpu,
                     region=self.config.region,
                     block_network=not self.config.network_access,
-                    timeout=timeout,
+                    timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
                     encrypted_ports=[SERVICE_PORT],
                 )
             self._sandbox_id = self._sandbox.object_id

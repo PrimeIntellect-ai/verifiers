@@ -2,8 +2,8 @@
 
 The same growing-message-list chat loop as the `default` harness, but its program also offers a
 `bash` tool that runs shell commands in the runtime — for agentic tasks that drive a terminal
-(e.g. harbor / terminal-bench). MCP tools from the taskset are wired in too. A uv script (deps:
-openai, mcp), launched via `runtime.run_uv_script`, so it works on any runtime with `uv`.
+(e.g. harbor / terminal-bench). MCP tools from the taskset are wired in too. Its uv script
+(deps: openai, mcp) is prepared during setup, then launched as the harness program.
 """
 
 import json
@@ -32,6 +32,9 @@ class BashHarness(Harness[BashHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_USER_SIM = True
     SUPPORTS_MESSAGE_PROMPT = True
+
+    async def setup(self, runtime: Runtime) -> None:
+        await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
 
     async def launch(
         self,
@@ -71,4 +74,5 @@ class BashHarness(Harness[BashHarnessConfig]):
             args.append(f"--prompt={prompt}")
         elif prompt is not None:
             env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in prompt])
-        return await runtime.run_uv_script(PROGRAM_SOURCE, args=args, env=env)
+        program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
+        return await runtime.run_program([*program, *args], env)

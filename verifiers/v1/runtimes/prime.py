@@ -6,6 +6,7 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 `host_endpoint` tunnel, not the runtime's concern.
 """
 
+import asyncio
 import base64
 import contextlib
 import logging
@@ -22,10 +23,6 @@ from verifiers.v1.runtimes.limiters import creation_limiter
 logger = logging.getLogger(__name__)
 
 
-# "auto" timeout requests the max prime allows (24h).
-_MAX_TIMEOUT_SECONDS = 24 * 60 * 60
-
-
 class PrimeConfig(BaseConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
@@ -40,10 +37,6 @@ class PrimeConfig(BaseConfig):
     labels: list[str] = []
     """Labels attached to the sandbox and its tunnels — e.g. to group every resource a run
     creates. When unset, the eval defaults them to the run's uuid (see `run_eval`)."""
-    timeout: int | Literal["auto"] = 21600
-    """Max sandbox lifetime in seconds (default 6h; or "auto" = the highest prime
-    supports). A hard backstop: the sandbox self-terminates even if local cleanup is
-    skipped."""
     # TaskResources, in Modal's units (also settable per-task via Task.resources, with
     # precedence cli/toml > task > this default). Mapped to prime's API in `start`.
     cpu: float = 1.0
@@ -83,11 +76,6 @@ class PrimeRuntime(Runtime):
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
 
         self._client = AsyncSandboxClient()
-        timeout = (
-            _MAX_TIMEOUT_SECONDS
-            if self.config.timeout == "auto"
-            else self.config.timeout
-        )
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
@@ -96,7 +84,7 @@ class PrimeRuntime(Runtime):
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": timeout // 60,
+            "timeout_minutes": 24 * 60,  # Maximum lifetime of any sandbox.
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
@@ -133,17 +121,19 @@ class PrimeRuntime(Runtime):
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
-            result = await self._client.run_background_job(
+            # Poll directly so the rollout stage owns the execution timeout; the SDK helper
+            # otherwise imposes its own 15-minute limit.
+            job = await self._client.start_background_job(
                 self._sandbox_id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=env,
-                timeout=(
-                    _MAX_TIMEOUT_SECONDS
-                    if self.config.timeout == "auto"
-                    else self.config.timeout
-                ),
             )
+            while True:
+                result = await self._client.get_background_job(self._sandbox_id, job)
+                if result.completed:
+                    break
+                await asyncio.sleep(3)
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's

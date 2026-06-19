@@ -16,6 +16,7 @@ import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import ClassVar, TypeVar
 
 from verifiers.v1.retries import retrying
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 # if present, else bootstrap it — via pip; else via the standalone installer (curl/wget),
 # first installing curl + CA certs from the distro package manager when the image has no
 # downloader at all (bare task images, e.g. Harbor's). It installs to ~/.local/bin, which
-# we prepend to PATH so the next `uv run` finds it; uv then resolves each script's inline
+# we prepend to PATH so the provisioning command finds it; uv resolves each script's inline
 # deps into its own cache, isolated from the eval process. (Needs network + one of
 # uv / pip / curl / wget / apt-get / apk.)
 _INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
@@ -112,6 +113,8 @@ class Runtime(ABC):
         The rollout passes its trace id, so the provisioned resource is greppable back to
         the rollout it serves; falls back to a unique `vf-` name (standalone / tool
         runtimes, where there's no single owning rollout)."""
+        self._uv_interpreters: dict[str, str] = {}
+        self._uv_script_locks: dict[str, asyncio.Lock] = {}
 
     # --- identity / display ---
 
@@ -152,10 +155,9 @@ class Runtime(ABC):
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
         agentic run) — as opposed to the short idempotent infra ops (write / mv / install /
-        provisioning) that go through `run`. A distinct seam from `run` so the rollout's program is
-        never blindly retried: re-running a stateful/agentic program against the rollout's persistent
-        trace would fork a duplicate branch (and re-execute against an already-mutated runtime).
-        Transient infra faults are retried by the runtime SDK (prime/modal) inside `run`, not here."""
+        provisioning) that go through `run`. No framework layer may replay this argv: doing so
+        against the rollout's persistent trace would fork a duplicate branch. Provider SDKs may
+        still retry individual safe transport operations underneath `run`."""
         return await self.run(argv, env)
 
     async def run_background(
@@ -168,6 +170,54 @@ class Runtime(ABC):
             f"{type(self).__name__} does not support run_background"
         )
 
+    async def prepare_uv_script(
+        self,
+        script: str | bytes,
+        env: dict[str, str] | None = None,
+    ) -> list[str]:
+        """Stage a PEP 723 script and resolve its dependencies, returning its executable argv."""
+        data = script.encode() if isinstance(script, str) else script
+        digest = hashlib.sha256(data).hexdigest()
+        path = f"/tmp/vf-scripts/{digest}.py"
+        if digest not in self._uv_interpreters:
+            async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
+                if digest not in self._uv_interpreters:
+                    tmp = f"{path}.{uuid.uuid4().hex}.tmp"
+                    await self.write(tmp, data)
+                    await self.run(
+                        ["sh", "-c", f"mv -f {shlex.quote(tmp)} {shlex.quote(path)}"],
+                        {},
+                    )
+                    command = (
+                        f"{_ENSURE_UV}; uv sync --script {shlex.quote(path)} -q "
+                        f"&& uv python find --script {shlex.quote(path)}"
+                    )
+                    result = await self.run(["sh", "-c", command], env or {})
+                    if result.exit_code != 0:
+                        raise RuntimeError(
+                            "failed to prepare uv script: "
+                            f"{result.stderr.strip()[-2000:]}"
+                        )
+                    self._uv_interpreters[digest] = result.stdout.strip().splitlines()[
+                        -1
+                    ]
+        interpreter = self._uv_interpreters[digest]
+        venv = str(PurePosixPath(interpreter).parent.parent)
+        command = (
+            'export VIRTUAL_ENV="$1" PATH="${1}/bin:$HOME/.local/bin:$PATH" '
+            'UV_INSTALL_DIR="$HOME/.local/bin" UV_RUN_RECURSION_DEPTH=1; '
+            'shift; exec "$@"'
+        )
+        return [
+            "sh",
+            "-c",
+            command,
+            "uv-script",
+            venv,
+            interpreter,
+            path,
+        ]
+
     async def run_uv_script(
         self,
         script: str | bytes,
@@ -177,31 +227,22 @@ class Runtime(ABC):
         """Run a self-contained uv script (PEP 723 inline deps) in this runtime, with
         `args` as its positional arguments (the script's `sys.argv[1:]`).
 
-        Writes `script`, ensures `uv` is present, and runs `uv run` — so the script's
-        dependencies resolve into uv's cache inside the runtime, never the eval process.
-        Built on `write`/`run`, so it works the same on every runtime. `args` are
-        forwarded via the shell's `"$@"` (never interpolated), so spaces / quotes /
-        newlines in them are safe; pass structured data as a JSON string if you need to.
+        `prepare_uv_script` stages the script and resolves its dependencies once; this method
+        then runs it directly with the prepared interpreter. Built on `write`/`run`, so it
+        works the same on every runtime. `args` are passed as separate argv entries, so
+        spaces, quotes, and newlines in them are safe; pass structured data as a JSON string
+        if you need to.
 
         The script is written to a stable, content-addressed path (NOT the per-rollout
         workspace): uv keys its per-script environment by the script's full path, so a
         unique path per call would mint a fresh env every rollout. A path derived from the
         content means identical scripts share one path → uv reuses one env, bounded by the
         number of distinct scripts. Published via a unique temp + atomic `mv`, so
-        concurrent rollouts writing the same content never race a half-written read."""
-        data = script.encode() if isinstance(script, str) else script
-        path = f"/tmp/vf-scripts/{hashlib.sha256(data).hexdigest()}.py"
-        tmp = f"{path}.{uuid.uuid4().hex}.tmp"
-        await self.write(tmp, data)
-        await self.run(
-            ["sh", "-c", f"mv -f {shlex.quote(tmp)} {shlex.quote(path)}"], {}
-        )
-        command = f'{_ENSURE_UV}; exec uv run {shlex.quote(path)} "$@"'
-        # The write/mv above are idempotent infra (retried); the script run is the rollout's
-        # program — `run_program`, so it is not retried (see Runtime.run_program).
-        return await self.run_program(
-            ["sh", "-c", command, path, *(args or [])], env or {}
-        )
+        concurrent rollouts writing the same content never race a half-written read. This is
+        the general-purpose script path; stateful harness programs use the prepared argv with
+        `run_program` instead."""
+        argv = await self.prepare_uv_script(script, env)
+        return await self.run([*argv, *(args or [])], env or {})
 
     # --- filesystem ---
 

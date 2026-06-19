@@ -3,9 +3,9 @@
 A Rollout owns a single trajectory end-to-end, including its runtime's lifecycle. It
 makes and starts the runtime, gets an interception endpoint (a slot on the shared pool if
 one is given, else a per-rollout server exposed via its own runtime), then drives the
-staged lifecycle while the runtime is live — the taskset's `setup`, the harness, the
-taskset's `finalize`, and the per-rollout `@reward`/`@metric` scoring — each under its own
-stage timeout (`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`),
+staged lifecycle while the runtime is live — taskset + harness setup, the harness run,
+taskset `finalize`, and per-rollout `@reward`/`@metric` scoring — each under its own stage
+timeout (`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`),
 then tears the runtime down in a `finally`. Cross-rollout `@group_reward`s run afterwards (in the Episode) over the traces
 alone — they never need a live runtime — so a runtime is never kept up past its own
 rollout. The runtime ref is set the instant it's created, so it's always tearable-down
@@ -21,7 +21,13 @@ from enum import StrEnum
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.errors import RolloutError, TasksetError, ToolsetError, boundary
+from verifiers.v1.errors import (
+    HarnessError,
+    RolloutError,
+    TasksetError,
+    ToolsetError,
+    boundary,
+)
 from verifiers.v1.interception import (
     InterceptionPool,
     InterceptionServer,
@@ -150,10 +156,21 @@ class Rollout:
         try:
             session = RolloutSession(ctx, trace, stops, self.limits)
             await runtime.start()
-            async with boundary(TasksetError, "taskset setup"):
-                await asyncio.wait_for(
-                    self.taskset.setup(self.task, runtime), self.setup_timeout
-                )
+            setup_deadline = (
+                None
+                if self.setup_timeout is None
+                else asyncio.get_running_loop().time() + self.setup_timeout
+            )
+            async with (
+                boundary(TasksetError, "taskset setup"),
+                asyncio.timeout_at(setup_deadline),
+            ):
+                await self.taskset.setup(self.task, runtime)
+            async with (
+                boundary(HarnessError, "harness setup"),
+                asyncio.timeout_at(setup_deadline),
+            ):
+                await self.harness.setup(runtime)
             async with self._serve_interception(
                 self.interception, runtime, session
             ) as (

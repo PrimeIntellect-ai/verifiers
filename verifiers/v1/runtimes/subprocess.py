@@ -7,9 +7,7 @@ and trivially cleaned up. Relative `read`/`write` paths resolve against it.
 
 import asyncio
 import contextlib
-import hashlib
 import os
-import shlex
 import shutil
 import signal
 from pathlib import Path
@@ -17,7 +15,7 @@ from typing import Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.runtimes.base import _ENSURE_UV, ProgramResult, Runtime
+from verifiers.v1.runtimes.base import ProgramResult, Runtime
 
 # A local subprocess inherits the host environment EXCEPT any var whose name
 # contains "API_KEY" — so it can never reach a real provider with the host's API
@@ -38,13 +36,14 @@ class SubprocessConfig(BaseConfig):
 class SubprocessRuntime(Runtime):
     """Runs the program as a local subprocess in a unique /tmp workspace."""
 
-    # script-sha -> the interpreter for that script's deps, resolved once and shared across
-    # the worker's per-rollout runtimes (+ a per-sha lock so first-callers provision once).
+    # Share prepared script environments across the worker's per-rollout runtimes.
     _interpreters: dict[str, str] = {}
     _locks: dict[str, asyncio.Lock] = {}
 
     def __init__(self, config: SubprocessConfig, name: str | None = None) -> None:
         super().__init__(name)
+        self._uv_interpreters = self._interpreters
+        self._uv_script_locks = self._locks
         self.config = config
         self.workdir: Path | None = None
         self._background: list[asyncio.subprocess.Process] = []
@@ -83,41 +82,6 @@ class SubprocessRuntime(Runtime):
             exit_code=proc.returncode or 0,
             stdout=stdout.decode(errors="replace"),
             stderr=stderr.decode(errors="replace"),
-        )
-
-    async def run_uv_script(
-        self,
-        script: str | bytes,
-        args: list[str] | None = None,
-        env: dict[str, str] | None = None,
-    ) -> ProgramResult:
-        """Run a PEP 723 script via a pre-provisioned interpreter instead of `uv run` per call.
-
-        uv keeps a persistent env per script under its cache; we resolve that env's interpreter
-        ONCE and exec it directly, keeping uv's per-invocation resolve, cache-lock, ephemeral-env
-        materialization and `command -v uv` probe out of the per-rollout hot path (the subprocess
-        runtime launches two uv-scripts per rollout — the harness program and, for math, verify).
-        docker/prime keep the base `uv run` — their deps live in the sandbox, not on the host."""
-        data = script.encode() if isinstance(script, str) else script
-        sha = hashlib.sha256(data).hexdigest()
-        path = Path("/tmp/vf-scripts") / f"{sha}.py"
-        if sha not in self._interpreters:
-            async with self._locks.setdefault(sha, asyncio.Lock()):
-                if sha not in self._interpreters:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(data)
-                    # `uv sync` locks its own cache, so concurrent workers building the same
-                    # script are safe; `uv python find` prints the resolved env's interpreter.
-                    s = shlex.quote(str(path))
-                    cmd = f"{_ENSURE_UV}; uv sync --script {s} -q && uv python find --script {s}"
-                    provision = await self.run(["sh", "-c", cmd], {})
-                    if provision.exit_code != 0:
-                        raise RuntimeError(
-                            f"failed to provision env for {path}: {provision.stderr}"
-                        )
-                    self._interpreters[sha] = provision.stdout.strip().splitlines()[-1]
-        return await self.run(
-            [self._interpreters[sha], str(path), *(args or [])], env or {}
         )
 
     async def run_background(

@@ -22,6 +22,10 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_TASK_TOOLS = False
 
+    async def setup(self, runtime: Runtime) -> None:
+        source = PROGRAM_SOURCE.replace("{version}", self.config.version)
+        await runtime.prepare_uv_script(source, self.config.env)
+
     async def launch(
         self,
         ctx: RolloutContext,
@@ -34,6 +38,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         if self.config.disabled_tools:
             raise ValueError("mini-swe-agent does not support disabling tools")
         _, prompt = self.resolve_prompt(trace.task)
+        source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         args = [
             "--model",
             ctx.model,
@@ -66,6 +71,5 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "MSWEA_CONFIGURED": "true",
             "MSWEA_SILENT_STARTUP": "true",
         }
-        return await runtime.run_uv_script(
-            PROGRAM_SOURCE.replace("{version}", self.config.version), args=args, env=env
-        )
+        program = await runtime.prepare_uv_script(source, self.config.env)
+        return await runtime.run_program([*program, *args], env)
