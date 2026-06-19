@@ -9,7 +9,18 @@ from verifiers.v1.clients.config import (
     resolve_client,
 )
 from verifiers.v1.clients.eval import EvalClient
-from verifiers.v1.clients.train import TrainClient
+
+try:
+    from verifiers.v1.clients.train import TrainClient
+except ImportError:
+
+    class TrainClient:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            raise ImportError(
+                "install renderers or run inside prime-rl to use TrainClient"
+            )
+
 
 __all__ = [
     "Client",

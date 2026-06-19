@@ -10,8 +10,9 @@ from collections.abc import Iterable
 from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field
-from renderers.base import MultiModalData
 from typing_extensions import TypedDict
+
+from verifiers.v1._renderer_types import MultiModalData
 
 
 class StrictBaseModel(BaseModel):

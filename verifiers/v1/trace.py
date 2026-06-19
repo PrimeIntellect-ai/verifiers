@@ -17,8 +17,8 @@ from typing import Any, Generic, TypeVar
 
 import numpy as np
 from pydantic import Field, PrivateAttr
-from renderers.base import MultiModalData
 
+from verifiers.v1._renderer_types import MultiModalData
 from verifiers.v1 import graph
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.state import State, StateT

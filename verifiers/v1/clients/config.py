@@ -15,12 +15,11 @@ from urllib.parse import urlparse
 from openai import AsyncOpenAI
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
-from renderers import RendererConfig
 
 from verifiers.utils.client_utils import load_prime_config
+from verifiers.v1._renderer_types import RendererConfig
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.eval import EvalClient
-from verifiers.v1.clients.train import TrainClient
 
 DEFAULT_PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
 PRIME_INFERENCE_HOST = "pinference.ai"
@@ -100,6 +99,8 @@ def resolve_client(config: BaseClientConfig) -> Client:
     api_key = api_key or "EMPTY"
     if isinstance(config, TrainClientConfig):
         # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
+        from verifiers.v1.clients.train import TrainClient
+
         openai = AsyncOpenAI(
             base_url=config.base_url,
             api_key=api_key,
