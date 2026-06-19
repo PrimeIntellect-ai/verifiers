@@ -47,7 +47,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             "command -v git >/dev/null 2>&1 || "
             "{ apt-get update -qq && apt-get install -y -qq git; } && "
             f"rm -rf /tmp/rlm && git clone https://{RLM_REPO} /tmp/rlm && "
-            f"git -C /tmp/rlm checkout {self.config.version} && "
+            f"git -C /tmp/rlm checkout {shlex.quote(self.config.version)} && "
             f"UV_INSTALL_DIR={RLM_DIR}/bin UV_TOOL_BIN_DIR={RLM_DIR}/bin "
             f"RLM_CHECKOUT_PATH=/tmp/rlm bash /tmp/rlm/install.sh"
         )

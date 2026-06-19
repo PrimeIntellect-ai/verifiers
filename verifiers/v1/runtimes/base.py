@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar, TypeVar
 
-from verifiers.v1.errors import SandboxError
 from verifiers.v1.retries import retrying
 
 logger = logging.getLogger(__name__)
@@ -156,10 +155,9 @@ class Runtime(ABC):
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
         agentic run) — as opposed to the short idempotent infra ops (write / mv / install /
-        provisioning) that go through `run`. A distinct seam from `run` so the rollout's program is
-        never blindly retried: re-running a stateful/agentic program against the rollout's persistent
-        trace would fork a duplicate branch (and re-execute against an already-mutated runtime).
-        Transient infra faults are retried by the runtime SDK (prime/modal) inside `run`, not here."""
+        provisioning) that go through `run`. No framework layer may replay this argv: doing so
+        against the rollout's persistent trace would fork a duplicate branch. Provider SDKs may
+        still retry individual safe transport operations underneath `run`."""
         return await self.run(argv, env)
 
     async def run_background(
@@ -196,7 +194,7 @@ class Runtime(ABC):
                     )
                     result = await self.run(["sh", "-c", command], env or {})
                     if result.exit_code != 0:
-                        raise SandboxError(
+                        raise RuntimeError(
                             "failed to prepare uv script: "
                             f"{result.stderr.strip()[-2000:]}"
                         )
@@ -240,7 +238,9 @@ class Runtime(ABC):
         unique path per call would mint a fresh env every rollout. A path derived from the
         content means identical scripts share one path → uv reuses one env, bounded by the
         number of distinct scripts. Published via a unique temp + atomic `mv`, so
-        concurrent rollouts writing the same content never race a half-written read."""
+        concurrent rollouts writing the same content never race a half-written read. This is
+        the general-purpose script path; stateful harness programs use the prepared argv with
+        `run_program` instead."""
         argv = await self.prepare_uv_script(script, env)
         return await self.run([*argv, *(args or [])], env or {})
 
