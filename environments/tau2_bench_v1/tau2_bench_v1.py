@@ -137,6 +137,8 @@ class Tau2Taskset(vf.Taskset[Tau2Task, Tau2TasksetConfig]):
 
     @vf.reward
     async def tau2_reward(self, trace: vf.Trace) -> float:
+        if trace.is_truncated:
+            return 0.0
         simulation = SimulationRun.model_validate(trace.info["tau2"]["simulation"])
         reward = simulation.reward_info
         assert reward is not None

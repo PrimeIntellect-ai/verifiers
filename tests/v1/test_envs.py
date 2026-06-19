@@ -38,7 +38,6 @@ def test_eval(taskset: str):
     if taskset in NEEDS_CONTAINER:
         pytest.skip(f"{taskset} needs a docker/prime runtime (covered by v1 e2e tests)")
     harness = "tau2-bench-v1" if taskset == "tau2_bench_v1" else "default"
-    max_turns = "500" if taskset == "tau2_bench_v1" else "4"
     if os.getenv("PRIME_API_KEY"):
         model = [
             "-m", "openai/gpt-4.1-mini",
@@ -59,7 +58,7 @@ def test_eval(taskset: str):
         "--taskset.id", taskset, "--harness.id", harness,
         *model,
         # -r 2: a taskset with @group_reward(s) needs >=2 rollouts to compare.
-        "-n", "1", "-r", "2", "--max-turns", max_turns,
+        "-n", "1", "-r", "2", "--max-turns", "4",
         "--sampling.max-tokens", "512", "--rich", "false",
     ]  # fmt: skip
     try:
