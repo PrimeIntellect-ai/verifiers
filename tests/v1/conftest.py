@@ -142,10 +142,10 @@ def pytest_configure(config) -> None:
 def pytest_collection_modifyitems(config, items) -> None:
     """Skip the live-model tests (marked `e2e`) when no model endpoint is configured, so the
     rest of the suite (e.g. config parsing) still runs in a keyless environment."""
-    if os.environ.get("PRIME_API_KEY") or os.environ.get("OPENAI_API_KEY"):
+    if os.environ.get("PRIME_API_KEY"):
         return
     skip = pytest.mark.skip(
-        reason="needs a model API key (PRIME_API_KEY / OPENAI_API_KEY)"
+        reason="needs PRIME_API_KEY (the e2e tests run a prime-served model)"
     )
     for item in items:
         if "e2e" in item.keywords:
