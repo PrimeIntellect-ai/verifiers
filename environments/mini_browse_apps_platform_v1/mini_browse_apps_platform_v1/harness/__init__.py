@@ -71,7 +71,6 @@ class MiniBrowseHarnessConfig(HarnessConfig):
     id: str = "mini-browse-apps-platform-v1"
     runtime: RuntimeConfig = DockerConfig(image="python:3.12-slim-bookworm")
     agent: AgentConfig = Field(default_factory=AgentConfig)
-    max_steps: int = 75
     coordinate_mode: CoordinateMode = "relative_1000"
     keep_last_images: int = 3
     image_compaction_at_tokens: int = 45_000
@@ -155,8 +154,6 @@ class MiniBrowseHarness(Harness[MiniBrowseHarnessConfig]):
             METRICS_PATH,
             "--progress",
             PROGRESS_PATH,
-            "--max-steps",
-            str(self.config.max_steps),
             "--workspace-root",
             WORKSPACE_ROOT,
         ]
