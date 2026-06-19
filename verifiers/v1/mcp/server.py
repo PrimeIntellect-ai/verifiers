@@ -216,6 +216,8 @@ class ServerBase(Generic[ConfigT, StateT]):
         without a channel or task (a shared, task-agnostic server). The single place task setup
         happens: `_serve` calls it with the env channel; a forked child calls it with its per-request
         channel (see `verifiers.v1.mcp.multiplex`)."""
+        if type(self).setup_task is ServerBase.setup_task:
+            return
         task = await self._fetch_task(state_url, secret)
         if task is not None:
             await self.setup_task(task)

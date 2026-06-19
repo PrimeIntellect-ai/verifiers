@@ -16,11 +16,18 @@ from verifiers.v1.mcp.launch import (
     serve_user,
 )
 from verifiers.v1.mcp.server import ServerBase
-from verifiers.v1.mcp.toolset import Toolset, ToolsetConfig
+from verifiers.v1.mcp.toolset import (
+    JSONRPCToolset,
+    JSONRPCToolsetConfig,
+    Toolset,
+    ToolsetConfig,
+)
 from verifiers.v1.mcp.user import User, UserConfig
 
 __all__ = [
     "ServerBase",
+    "JSONRPCToolset",
+    "JSONRPCToolsetConfig",
     "Toolset",
     "ToolsetConfig",
     "User",

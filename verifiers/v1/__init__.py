@@ -61,6 +61,8 @@ from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.mcp import (
+    JSONRPCToolset,
+    JSONRPCToolsetConfig,
     Toolset,
     ToolsetConfig,
     User,
@@ -188,6 +190,8 @@ __all__ = [
     "taskset_config_type",
     "harness_config_type",
     # mcp
+    "JSONRPCToolset",
+    "JSONRPCToolsetConfig",
     "Toolset",
     "ToolsetConfig",
     # user simulator

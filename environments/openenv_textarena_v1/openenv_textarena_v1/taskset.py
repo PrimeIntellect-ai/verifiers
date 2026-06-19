@@ -1,4 +1,4 @@
-"""OpenEnv TextArena: the reusable OpenEnv adapter pinned to Wordle."""
+"""OpenEnv TextArena: the reusable OpenEnv adapter pinned to the official image."""
 
 from typing import Literal
 
@@ -12,7 +12,10 @@ from tasksets.openenv_v1 import (
 
 
 class OpenEnvTextArenaConfig(OpenEnvConfig):
-    project: Literal["proj"] = "proj"
+    image: Literal[
+        "ghcr.io/meta-pytorch/openenv-textarena-env@sha256:c4ba5acf578e77a721c4bb009933ee54e1c8893d290c94362d95be7527f2f079"
+    ] = "ghcr.io/meta-pytorch/openenv-textarena-env@sha256:c4ba5acf578e77a721c4bb009933ee54e1c8893d290c94362d95be7527f2f079"
+    contract: Literal["gym"] = "gym"
     system_prompt: str = (
         "Play the game carefully. Return one valid move in the exact format requested."
     )

@@ -3,7 +3,7 @@ name = "openenv-textarena-v1"
 version = "0.1.0"
 description = "openenv-textarena-v1 — OpenEnv TextArena through the reusable v1 adapter."
 requires-python = ">=3.11"
-dependencies = ["verifiers", "tasksets"]
+dependencies = ["tasksets"]
 
 [build-system]
 requires = ["hatchling"]

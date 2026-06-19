@@ -6,9 +6,13 @@ placement (where the server runs); the class carries the `@vf.tool` methods the 
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+import inspect
+from pathlib import Path
+from typing import Annotated, Any, TYPE_CHECKING
 
-from pydantic import model_validator
+import httpx
+from pydantic import WithJsonSchema, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated
@@ -79,6 +83,14 @@ class ToolsetConfig(BaseConfig):
         return self
 
 
+class JSONRPCToolsetConfig(ToolsetConfig):
+    """A JSON-RPC endpoint exposing ``tools/list`` and ``tools/call``."""
+
+    endpoint: str
+    uds: str | None = None
+    """Optional Unix socket used to reach the endpoint."""
+
+
 class Toolset(ServerBase[ConfigT, StateT]):
     """A tool server authored as a class: write `@vf.tool` methods (the model calls them as
     `<prefix>_<method>`; the docstring is the tool description), reading config off `self.config` and
@@ -103,3 +115,92 @@ class Toolset(ServerBase[ConfigT, StateT]):
                 name=getattr(fn, "tool_name", None) or fn.__name__,
                 description=(fn.__doc__ or "").strip() or None,
             )
+
+
+class JSONRPCToolset(Toolset[JSONRPCToolsetConfig]):
+    """Expose a simple JSON-RPC tool endpoint as a standard MCP server."""
+
+    TOOL_PREFIX = "jsonrpc"
+
+    async def setup(self) -> None:
+        if self.config.uds:
+            async with asyncio.timeout(60):
+                while not Path(self.config.uds).exists():
+                    await asyncio.sleep(0.1)
+        transport = (
+            httpx.AsyncHTTPTransport(uds=self.config.uds, retries=10)
+            if self.config.uds
+            else None
+        )
+        async with httpx.AsyncClient(transport=transport, timeout=30) as client:
+            response = await client.post(
+                self.config.endpoint,
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            )
+        response.raise_for_status()
+        payload = response.json()
+        if error := payload.get("error"):
+            raise RuntimeError(error.get("message", str(error)))
+        self.tools = payload["result"]["tools"]
+
+    def _register(self, mcp: FastMCP) -> None:
+        for tool in self.tools:
+
+            async def call(_name=tool["name"], **arguments):
+                transport = (
+                    httpx.AsyncHTTPTransport(uds=self.config.uds)
+                    if self.config.uds
+                    else None
+                )
+                async with httpx.AsyncClient(transport=transport, timeout=30) as client:
+                    response = await client.post(
+                        self.config.endpoint,
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "tools/call",
+                            "params": {
+                                "name": _name,
+                                "arguments": {
+                                    key: value
+                                    for key, value in arguments.items()
+                                    if value is not None
+                                },
+                            },
+                        },
+                    )
+                response.raise_for_status()
+                payload = response.json()
+                if error := payload.get("error"):
+                    raise RuntimeError(error.get("message", str(error)))
+                return payload.get("result")
+
+            schema = (
+                tool.get("inputSchema")
+                or tool.get("input_schema")
+                or {"type": "object", "properties": {}}
+            )
+            required = set(schema.get("required", []))
+            call.__name__ = tool["name"]
+            call.__doc__ = tool.get("description", "")
+            call.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+                [
+                    inspect.Parameter(
+                        name,
+                        inspect.Parameter.KEYWORD_ONLY,
+                        default=inspect.Parameter.empty
+                        if name in required
+                        else spec.get("default"),
+                        annotation=Annotated[Any, WithJsonSchema(spec)],
+                    )
+                    for name, spec in schema.get("properties", {}).items()
+                ],
+                return_annotation=Any,
+            )
+            mcp.add_tool(
+                call, name=tool["name"], description=tool.get("description") or None
+            )
+
+
+if __name__ == "__main__":
+    JSONRPCToolset.run()

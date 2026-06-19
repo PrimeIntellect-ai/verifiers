@@ -889,6 +889,43 @@ Supported third-party environment integrations include:
 
 These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv). The bundled OpenEnv project under `proj/` owns its server dependencies and must be built with `uv run vf-build <env-id>` before evaluation or training.
 
+### OpenEnv v1
+
+For v1, use `tasksets.openenv_v1.OpenEnvTaskset` with a prebuilt OpenEnv
+image. A concrete environment only pins the image and contract:
+
+```python
+from typing import Literal
+
+import verifiers.v1 as vf
+from tasksets.openenv_v1 import (
+    OpenEnvConfig,
+    OpenEnvState,
+    OpenEnvTask,
+    OpenEnvTaskset,
+)
+
+
+class MyOpenEnvConfig(OpenEnvConfig):
+    image: Literal["registry.example/my-openenv:latest"] = (
+        "registry.example/my-openenv:latest"
+    )
+    contract: Literal["mcp"] = "mcp"  # or "gym"
+
+
+class MyOpenEnvTaskset(
+    OpenEnvTaskset, vf.Taskset[OpenEnvTask, MyOpenEnvConfig, OpenEnvState]
+):
+    pass
+```
+
+The standard OpenEnv image layout runs `server.app:app` from `/app/env`. MCP
+environments are mapped from OpenEnv's JSON-RPC tool endpoint to a normal v1
+Toolset; gym environments are driven as a v1 user simulator. Both connect over
+a per-container Unix socket, so concurrent Docker rollouts do not share a host
+port. See `openenv-echo-v1` and `openenv-textarena-v1` for complete minimal
+packages.
+
 Newer and more experimental environment classes include:
 
 - **`GymEnv`** — universal runner for Gym-compatible environments (OpenAI Gym / Gymnasium API)

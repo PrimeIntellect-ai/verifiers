@@ -1,9 +1,0 @@
-[project]
-name = "openenv-textarena-server"
-version = "0.1.0"
-requires-python = ">=3.11"
-dependencies = [
-    "openenv-core==0.3.0",
-    "textarena==0.7.4",
-    "nltk>=3.9.2",
-]

@@ -411,6 +411,11 @@ the default is the cheapest correct thing; the rest trade setup cost for isolati
 | **shared + fork** | `shared = true, fork = true` | warm parent + forked child per rollout (copy-on-write) | `setup` once **and** isolates arbitrary in-process/on-disk state; runs `setup_task` per child | a process per concurrent rollout; Linux only |
 | **remote** *(tools only)* | `url = "https://…"` | connects to an already-running MCP endpoint | zero hosting; use a public/third-party server | no isolation, state, or lifecycle control |
 
+For a JSON-RPC endpoint that exposes `tools/list` and `tools/call` but is not a
+streamable-HTTP MCP server, return a colocated
+`vf.JSONRPCToolset(vf.JSONRPCToolsetConfig(endpoint=...))`. This is the small
+protocol mapping used by `openenv-echo-v1`.
+
 `shared` (and `fork`) work on any runtime — the framework makes the rollout's `/state` channel
 reachable from the shared server (localhost, or a host tunnel when remote). Keep big shared data
 off the Python heap (numpy / mmap / an on-disk index) so fork's copy-on-write actually saves

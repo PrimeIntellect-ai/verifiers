@@ -6,7 +6,7 @@ This file mirrors the "Environments" documentation page.
 
 ---
 
-This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template. For reusable taskset/harness environments, see [BYO Harness](byo-harness.md).
+This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template.
 
 ## Table of Contents
 
@@ -34,7 +34,6 @@ This guide walks through building environments in Verifiers, from simple single-
   - [Cleanup and Teardown](#cleanup-and-teardown)
   - [Signaling Early Termination](#signaling-early-termination)
 - [Developing Environments](#developing-environments)
-  - [v1 Env Shape](#v1-env-shape)
   - [pyproject.toml](#pyprojecttoml)
   - [Managing Dependencies](#managing-dependencies)
   - [Installation](#installation)
@@ -688,7 +687,6 @@ The `prime env init` command initializes a new environment project:
 
 ```bash
 prime env init my-env       # v0 stub
-prime env init my-env --v1  # v1 Taskset/Harness template
 ```
 
 This creates the following structure:
@@ -699,128 +697,6 @@ environments/my_env/
 ├── pyproject.toml     # package metadata and dependencies
 └── README.md          # documentation template
 ```
-
-### v1 Env Shape
-
-The v1 template teaches the standard object layout: one taskset class, one
-typed `load_taskset(config: MyTasksetConfig)` child factory, and a tiny
-`load_environment(config: vf.EnvConfig)` root loader that delegates through
-`vf.load_taskset(config=config.taskset)` and
-`vf.load_harness(config=config.harness)`. The child factory annotation defines
-the taskset config type for TOML, CLI, eval, GEPA, RL, and Hosted Training.
-
-After `prime env init my-env --v1`, edit the generated taskset class:
-
-1. Add task settings to `TasksetConfig`.
-2. Return task records from `load_tasks(split=...)`.
-3. Return task-owned tools from `load_toolsets` when needed.
-4. Add lifecycle, metric, reward, and advantage methods with `@vf.*`.
-
-Add a harness config, harness class, and `load_harness(config:
-MyHarnessConfig)` when the environment owns reusable rollout behavior.
-Otherwise the generated root loader uses the base harness.
-
-`EnvConfig` is the lightweight envelope for the two child configs. Put
-environment knobs on `TasksetConfig` or `HarnessConfig`.
-
-The taskset-only shape is:
-
-```python
-import verifiers as vf
-
-
-class MyTasksetConfig(vf.TasksetConfig):
-    system_prompt: vf.SystemPrompt = "Answer exactly."
-
-
-class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        """Return serializable task records as a list, generator, or Dataset."""
-        if split == "eval":
-            return []
-        return [
-            {
-                "prompt": [{"role": "user", "content": "Reverse abc."}],
-                "answer": "cba",
-                "max_turns": 1,
-            }
-        ]
-
-    @vf.reward(weight=1.0)
-    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
-        messages = vf.get_messages(state.get("completion") or [], role="assistant")
-        if not messages:
-            return 0.0
-        response = str(messages[-1].content or "").strip()
-        return float(response == task["answer"])
-
-
-def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    return MyTaskset(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
-```
-
-With a reusable harness, keep the same explicit object boundary:
-
-```python
-class MyHarnessConfig(vf.HarnessConfig):
-    max_turns: int = 20
-
-
-class MyHarness(vf.Harness[MyHarnessConfig]):
-    """Reusable execution behavior for this environment."""
-
-
-def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    return MyTaskset(config=config)
-
-
-def load_harness(config: MyHarnessConfig) -> MyHarness:
-    return MyHarness(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
-```
-
-Keep v1 dependencies behind the owning taskset or harness. Do not pass
-already-instantiated resource objects through environment loaders. Bindings are
-allowed wherever the owning taskset, toolset, user, program, or harness wires
-callables. `objects` entries should be loader specs: prefer serializable import
-paths in config, and use factory callables directly only for Python-only
-construction when the dependency cannot be serialized. Required Taskset and
-Toolset factory parameters must be supplied through bindings.
-
-Judge-style rewards should read endpoint details from the rollout state:
-
-```python
-@vf.reward(weight=1.0)
-async def judge_reward(task, state) -> float:
-    endpoint = state.get_endpoint_config(api="chat")
-    client = state.get_client(api="chat")
-    model = str(task.get("judge_model") or endpoint.model)
-    ...
-```
-
-Expose at most `judge_model: str | None = None` on the taskset config. Do not
-add judge endpoint URL/API-key fields or read `os.environ` inside reward/update
-handlers.
-
-For reusable tasksets and harnesses, [BYO Harness](byo-harness.md) is the
-canonical v1 implementation guide. It covers ownership, configs, task controls,
-system prompts, users, toolsets, programs, sandboxes, artifacts, nested
-harnesses, package adapters, and TOML/CLI overrides.
 
 ### pyproject.toml
 
@@ -1016,9 +892,45 @@ Supported third-party environment integrations include:
 - **`ReasoningGymEnv`** — wraps [reasoning-gym](https://github.com/open-thought/reasoning-gym) procedural datasets
 - **`BrowserEnv`** — unified browser automation via [Browserbase](https://browserbase.com) with DOM and CUA modes
 - **`OpenEnvEnv`** — wraps OpenEnv gym and MCP contracts using Prime Sandboxes with prebuilt images referenced from `.build.json`
-- **`NeMoGymTaskset` / `NeMoGymHarness`** — packaged v1 taskset/harness adapters for NeMo Gym JSONL rows and rollout collection
 
-These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv, `uv add 'verifiers[nemogym]'` for NeMo Gym). The bundled OpenEnv project under `proj/` owns its server dependencies and must be built with `uv run vf-build <env-id>` before evaluation or training.
+These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv). The bundled OpenEnv project under `proj/` owns its server dependencies and must be built with `uv run vf-build <env-id>` before evaluation or training.
+
+### OpenEnv v1
+
+For v1, use `tasksets.openenv_v1.OpenEnvTaskset` with a prebuilt OpenEnv
+image. A concrete environment only pins the image and contract:
+
+```python
+from typing import Literal
+
+import verifiers.v1 as vf
+from tasksets.openenv_v1 import (
+    OpenEnvConfig,
+    OpenEnvState,
+    OpenEnvTask,
+    OpenEnvTaskset,
+)
+
+
+class MyOpenEnvConfig(OpenEnvConfig):
+    image: Literal["registry.example/my-openenv:latest"] = (
+        "registry.example/my-openenv:latest"
+    )
+    contract: Literal["mcp"] = "mcp"  # or "gym"
+
+
+class MyOpenEnvTaskset(
+    OpenEnvTaskset, vf.Taskset[OpenEnvTask, MyOpenEnvConfig, OpenEnvState]
+):
+    pass
+```
+
+The standard OpenEnv image layout runs `server.app:app` from `/app/env`. MCP
+environments are mapped from OpenEnv's JSON-RPC tool endpoint to a normal v1
+Toolset; gym environments are driven as a v1 user simulator. Both connect over
+a per-container Unix socket, so concurrent Docker rollouts do not share a host
+port. See `openenv-echo-v1` and `openenv-textarena-v1` for complete minimal
+packages.
 
 Newer and more experimental environment classes include:
 

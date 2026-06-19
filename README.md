@@ -116,15 +116,12 @@ For OpenEnv integration, start with a v1 environment:
 ```bash
 prime env init my-openenv --v1
 ```
-Subclass the reusable `tasksets.openenv_v1.OpenEnvTaskset`, put the OpenEnv project
-inside the package at `my_openenv/proj/`, and build its image with:
-```bash
-uv run vf-build my-openenv
-```
+Subclass the reusable `tasksets.openenv_v1.OpenEnvTaskset` and pin the prebuilt
+OpenEnv image and contract in its config.
 The adapter supports both OpenEnv gym and MCP contracts. See
 `openenv-textarena-v1` and `openenv-echo-v1` for minimal examples.
 OpenEnv's `/mcp` route does not implement standard MCP initialization, so the
-MCP contract uses a small colocated `Toolset` bridge; gym uses a colocated `User`.
+MCP contract maps it through `vf.JSONRPCToolset`; gym uses a colocated `User`.
 
 Environment modules should expose a `load_environment` function which returns an
 environment object. For simple legacy environments, this can still be a direct
