@@ -522,7 +522,7 @@ load instead of mis-running:
 
 | flag | default | gates |
 | --- | --- | --- |
-| `SUPPORTS_TASK_TOOLS` | `True` | exposes the task's MCP tools to the model (set `False` for a harness with no MCP client) |
+| `SUPPORTS_MCP` | `True` | exposes the task's MCP tools to the model (set `False` for a harness with no MCP client) |
 | `SUPPORTS_USER_SIM` | `False` | drives a task's user simulator (multi-turn user injection) |
 | `SUPPORTS_MESSAGE_PROMPT` | `False` | accepts a `Messages`-list `task.prompt` (e.g. image-bearing) |
 | `APPENDS_SYSTEM_PROMPT` | `False` | emits `task.system_prompt` as a real system message (else it's folded into the user prompt with a warning) |
@@ -545,7 +545,7 @@ class MyHarnessConfig(vf.HarnessConfig):
 
 
 class MyHarness(vf.Harness[MyHarnessConfig]):
-    SUPPORTS_TASK_TOOLS = True
+    SUPPORTS_MCP = True
     SUPPORTS_USER_SIM = True
 
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls) -> vf.ProgramResult:

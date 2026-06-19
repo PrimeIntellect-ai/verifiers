@@ -37,7 +37,7 @@ class RLMHarnessConfig(HarnessConfig):
 
 class RLMHarness(Harness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
-    SUPPORTS_TASK_TOOLS = False
+    SUPPORTS_MCP = False
 
     async def setup(self, runtime: Runtime) -> None:
         # install.sh fetches curl/uv itself; add git only when the image lacks it.

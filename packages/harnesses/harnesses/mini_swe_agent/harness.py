@@ -19,7 +19,7 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
 
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
-    SUPPORTS_TASK_TOOLS = False
+    SUPPORTS_MCP = False
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)

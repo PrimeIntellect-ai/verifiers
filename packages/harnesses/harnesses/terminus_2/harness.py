@@ -21,7 +21,7 @@ class Terminus2HarnessConfig(HarnessConfig):
 
 class Terminus2Harness(Harness[Terminus2HarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
-    SUPPORTS_TASK_TOOLS = False
+    SUPPORTS_MCP = False
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)

@@ -69,7 +69,7 @@ class Harness(ABC, Generic[ConfigT]):
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
     """Emit task.system_prompt as a system message. If False, a task that sets a system_prompt
     is rejected."""
-    SUPPORTS_TASK_TOOLS: ClassVar[bool] = True
+    SUPPORTS_MCP: ClassVar[bool] = True
     """Expose a task's MCP tool servers to the model; set False for harnesses without an MCP client."""
     SUPPORTS_USER_SIM: ClassVar[bool] = False
     """Drive a task's user simulator (multi-turn user injection); opt in per harness."""

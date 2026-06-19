@@ -25,7 +25,7 @@ class CompactingHarnessConfig(HarnessConfig):
 
 
 class CompactingHarness(Harness[CompactingHarnessConfig]):
-    SUPPORTS_TASK_TOOLS = True
+    SUPPORTS_MCP = True
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)

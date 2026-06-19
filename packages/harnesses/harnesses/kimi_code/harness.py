@@ -45,7 +45,7 @@ class KimiCodeHarnessConfig(HarnessConfig):
 
 class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
-    SUPPORTS_TASK_TOOLS = True
+    SUPPORTS_MCP = True
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info(

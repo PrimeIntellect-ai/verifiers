@@ -51,7 +51,7 @@ class Tau2HarnessConfig(vf.HarnessConfig):
 
 
 class Tau2Harness(vf.Harness[Tau2HarnessConfig]):
-    SUPPORTS_TASK_TOOLS = False
+    SUPPORTS_MCP = False
 
     async def launch(
         self,
