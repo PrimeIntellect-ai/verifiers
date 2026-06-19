@@ -61,8 +61,6 @@ async def main() -> None:
     logs_dir.mkdir(mode=0o700, exist_ok=True)
     EnvironmentPaths.agent_dir = PurePosixPath(logs_dir)
 
-    # api_base/api_key go to LiteLLM explicitly (not OPENAI_* env), so the agent's terminal
-    # commands don't inherit the interception endpoint and get recorded as model turns.
     agent = Terminus2(
         logs_dir=logs_dir,
         model_name=model,

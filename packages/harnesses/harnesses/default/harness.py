@@ -41,10 +41,6 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
-        # Connection info (base URL, per-rollout secret, model) and the system prompt go as argv,
-        # never env: the interception endpoint must not be inherited by anything the program
-        # spawns, or a stray OpenAI client in tool code would be routed and recorded as a model
-        # turn. (`=`-joined so a secret starting with `-` isn't read as a flag.)
         env = {**self.config.env}
         args = [
             f"--base-url={endpoint}",
@@ -59,7 +55,11 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             args.append(
                 "--mcp-config="
                 + json.dumps(
-                    {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
+                    {
+                        "mcpServers": {
+                            name: {"url": url} for name, url in mcp_urls.items()
+                        }
+                    }
                 )
             )
         # A Messages prompt (e.g. an image-bearing prompt) seeds the chat loop directly via env

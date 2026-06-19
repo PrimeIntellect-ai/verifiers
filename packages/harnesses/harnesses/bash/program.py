@@ -39,6 +39,7 @@ BASH_TOOL = {
     },
 }
 
+
 def run_bash(command: str) -> str:
     try:
         result = subprocess.run(
@@ -158,11 +159,13 @@ async def main() -> None:
                 break
             for call in message.tool_calls:
                 name = call.function.name
-                args = json.loads(call.function.arguments or "{}")
+                tool_args = json.loads(call.function.arguments or "{}")
                 if name in dispatch:
-                    content = await call_mcp(dispatch, name, args)
+                    content = await call_mcp(dispatch, name, tool_args)
                 elif name == "bash":
-                    content = await asyncio.to_thread(run_bash, args.get("command", ""))
+                    content = await asyncio.to_thread(
+                        run_bash, tool_args.get("command", "")
+                    )
                 else:
                     content = f"error: unknown tool {name!r}"
                 messages.append(

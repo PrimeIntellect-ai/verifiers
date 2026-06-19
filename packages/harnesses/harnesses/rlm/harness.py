@@ -51,10 +51,6 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
-        # rlm reaches the interception server via its explicit provider (RLM_BASE_URL/RLM_API_KEY),
-        # which takes precedence over its OPENAI_* fallback. Using the RLM_* names keeps the
-        # endpoint out of OPENAI_*, so the ipython tool's subprocesses don't inherit it (a stray
-        # OpenAI client there would otherwise be routed and recorded as a model turn).
         env = {
             **self.config.env,
             "RLM_BASE_URL": endpoint,

@@ -37,9 +37,6 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             raise ValueError("Terminus 2 does not support disabling tools")
         system_prompt, prompt = self.resolve_prompt(trace.task)
         tmux_dir = f"/tmp/vf-terminus-2-{trace.id}"
-        # Connection info goes as argv, never env: the interception endpoint must not be inherited
-        # by the agent's terminal commands, or a stray OpenAI client they spawn would be routed
-        # and recorded as a model turn. (`=`-joined so a secret starting with `-` isn't a flag.)
         env = {
             **self.config.env,
             "TMUX_TMPDIR": tmux_dir,

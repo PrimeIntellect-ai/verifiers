@@ -58,9 +58,6 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         _, prompt = self.resolve_prompt(trace.task)
-        # Connection info uses Kimi's own KIMI_MODEL_* names (not OPENAI_*): the endpoint is still
-        # in the agent-inheritable env, but under a name no generic OpenAI client reads — so a
-        # stray openai.OpenAI() in a bash command can't reach interception and be recorded.
         env = {
             **self.config.env,
             "KIMI_CODE_HOME": KIMI_HOME,

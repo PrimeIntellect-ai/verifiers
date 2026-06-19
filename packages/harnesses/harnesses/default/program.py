@@ -131,9 +131,9 @@ async def main() -> None:
                 break
             for call in message.tool_calls:
                 name = call.function.name
-                args = json.loads(call.function.arguments or "{}")
+                tool_args = json.loads(call.function.arguments or "{}")
                 if name in dispatch:
-                    content = await call_mcp(dispatch, name, args)
+                    content = await call_mcp(dispatch, name, tool_args)
                 else:
                     content = f"error: unknown tool {name!r}"
                 messages.append(

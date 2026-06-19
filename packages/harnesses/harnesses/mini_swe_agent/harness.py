@@ -56,8 +56,6 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "model.model_kwargs.custom_llm_provider=openai",
             "-c",
             "model.model_kwargs.parallel_tool_calls=true",
-            # base_url/api_key go to LiteLLM via config, not OPENAI_* env, so the agent's bash
-            # commands don't inherit the interception endpoint and get recorded as model turns.
             "-c",
             f"model.model_kwargs.api_base={endpoint}",
             "-c",
