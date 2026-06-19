@@ -29,6 +29,12 @@ NEEDS_CONTAINER = {
     "terminal_bench_2_v1",
 }
 
+# v1 tasksets that can't run a plain-CI smoke eval for non-container reasons — e.g. the eval
+# clones a corpus repo that CI has no credentials to read.
+SKIP_SMOKE_EVAL = {
+    "general_agent_v1",  # clones a corpus repo unreadable from CI
+}
+
 
 def v1_tasksets() -> list[str]:
     if not ENVIRONMENTS.is_dir():
@@ -43,6 +49,8 @@ def test_eval(taskset: str):
     """Run one capped rollout of `taskset`; a taskset that bundles a harness uses it by default."""
     if taskset in NEEDS_CONTAINER:
         pytest.skip(f"{taskset} needs a docker/prime runtime (covered by v1 e2e tests)")
+    if taskset in SKIP_SMOKE_EVAL:
+        pytest.skip(f"{taskset} can't run a CI smoke eval (clones a corpus repo unreadable here)")
     if os.getenv("PRIME_API_KEY"):
         model = [
             "-m", "openai/gpt-4.1-mini",
