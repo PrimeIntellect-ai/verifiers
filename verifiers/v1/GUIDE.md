@@ -378,17 +378,17 @@ Who touches it how:
 
 ## Tools
 
-A tool server is a **vf-native class** authored from a config — the same shape
-as a taskset. Define `@vf.tool` methods on a `vf.Toolset[ConfigT]` (or
-`vf.Toolset[ConfigT, StateT]` for one that shares state); the model sees
-`<TOOL_PREFIX>_<method>` and the docstring is the description:
+A tool server is a **vf-native class** that wraps an **MCP server** — authored from a config, the
+same shape as a taskset. Define `@vf.tool` methods on a `vf.Toolset[ConfigT]` (or
+`vf.Toolset[ConfigT, StateT]` for one that shares state); the framework serves them as MCP tools the
+harness connects to, so the model sees `<TOOL_PREFIX>_<method>` and the docstring is the description:
 
 ```python
 class GlossaryToolset(vf.Toolset[GlossaryToolsetConfig]):
     TOOL_PREFIX = "glossary"            # model sees glossary_lookup (empty → class name snake-cased)
 
     async def setup(self) -> None:
-        self.facts = _load_facts()       # task-agnostic, runs once per server process
+        self.facts = load_facts()       # task-agnostic, runs once per server process
 
     @vf.tool
     def lookup(self, name: str) -> str:  # typed params the model fills; docstring → description
