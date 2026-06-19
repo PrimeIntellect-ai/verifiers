@@ -139,7 +139,7 @@ guaranteed cleanup of its resources, even on exit/interrupt.
 A taskset may expose task-specific tools beyond the tools shipping natively with
 the harness as MCP servers. Its placement (separate runtime or colocated with
 harness) is configurable on `taskset.tools` and reachability is handled resolved
-automatically. Tools only run under a harness with `SUPPORTS_TASK_TOOLS` (the `default`
+automatically. Tools only run under a harness with `SUPPORTS_MCP` (the `default`
 harness has it; `rlm` doesn't) — an incompatible pairing is refused at load. The tool examples
 each show one placement:
 
@@ -259,6 +259,6 @@ bridge — its rollouts mapped to v1 `Trace`s. Set `--id` (instead of a `taskset
 
 ```bash
 uv run eval --id reverse-text -n 2     # eval a v0 env
-uv run eval --id reverse-text --args.num_train_examples 50 \
+uv run eval --id reverse-text --args.dataset_split train \
   --extra-env-kwargs.max-total-completion-tokens 256   # construction + post-load kwargs
 ```

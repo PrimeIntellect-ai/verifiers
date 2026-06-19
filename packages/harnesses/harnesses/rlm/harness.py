@@ -27,8 +27,6 @@ RLM_BIN = f"{RLM_DIR}/bin/rlm"
 class RLMHarnessConfig(HarnessConfig):
     """The rlm CLI harness — how to install rlm and how it should run."""
 
-    id: str = "rlm"
-
     version: str = "main"
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0
@@ -39,7 +37,7 @@ class RLMHarnessConfig(HarnessConfig):
 
 class RLMHarness(Harness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
-    SUPPORTS_TASK_TOOLS = False
+    SUPPORTS_MCP = False
 
     async def setup(self, runtime: Runtime) -> None:
         # install.sh fetches curl/uv itself; add git only when the image lacks it.

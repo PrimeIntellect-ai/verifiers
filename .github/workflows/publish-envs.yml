@@ -21,8 +21,9 @@ jobs:
       - name: Set matrix
         id: set-matrix
         run: |
-          # Get all environment directories
-          ENV_IDS=$(ls -d environments/*/ 2>/dev/null | xargs -n1 basename | jq -R . | jq -sc .)
+          # Auto-publish only the classic (v0) envs for now; v1 envs (the *_v1 packages
+          # and the `compact` harness example) aren't hub-published yet.
+          ENV_IDS=$(ls -d environments/*/ 2>/dev/null | xargs -n1 basename | { grep -vE '_v1$|^compact$' || true; } | jq -R . | jq -sc .)
 
           if [ "$ENV_IDS" = "[]" ] || [ "$ENV_IDS" = "null" ]; then
             echo "has_envs=false" >> $GITHUB_OUTPUT

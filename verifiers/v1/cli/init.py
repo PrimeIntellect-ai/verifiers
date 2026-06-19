@@ -178,13 +178,13 @@ if __name__ == "__main__":
 """
 
 
-def _harness_py(dash: str, prefix: str) -> str:
+def _harness_py(prefix: str) -> str:
     return f'''\
 import verifiers.v1 as vf
 
 
 class {prefix}HarnessConfig(vf.HarnessConfig):
-    id: str = "{dash}"
+    """Run knobs for this harness. Add fields here (e.g. a CLI version to install)."""
 
 
 class {prefix}Harness(vf.Harness[{prefix}HarnessConfig]):
@@ -280,7 +280,7 @@ def scaffold(config: InitConfig) -> Path:
         config.force,
     )
     if config.add_harness:
-        _write(pkg_dir / "harness.py", _harness_py(dash, prefix), config.force)
+        _write(pkg_dir / "harness.py", _harness_py(prefix), config.force)
     if config.add_tool or config.add_user:
         _write(pkg_dir / "servers" / "__init__.py", "", config.force)
     if config.add_tool:
