@@ -478,11 +478,14 @@ The `*_v1` tasksets under `environments/` are the reference library — each sho
 | `alphabet-sort-v1` | multi-turn, stateful, driven by a `vf.User` simulator |
 | `glossary-v1` | the simplest tool server (own host runtime) |
 | `wikispeedia-v1` | a stateful tool server (global `setup` + per-task `setup_task`) |
+| `general-agent-v1` | per-task tools loaded dynamically (each task ships its own `tools.py`) + gold tool-call-chain scoring |
 | `wiki-search-v1` | a shared, read-only tool server (built once) + an LLM judge |
 | `scratchpad-v1` | a shared, **writable** tool server — per-rollout state isolated via `self.state` |
 | `deepwiki-v1` | an existing remote tool server, by URL |
+| `tau2-bench-v1` | **both** tools and a user simulator at once, with a bundled harness (the tau2 benchmark) |
 | `color-codeword-v1` | a multimodal (image) task |
 | `scaleswe-v1`, `swelego-v1`, `r2e-gym-v1` | containerized SWE tasks (rlm harness, prime runtime) |
+| `swebench-verified-v1` | SWE-bench Verified via `harbor-v1` on prime's prebuilt images (no Dockerfile build) |
 | `wordle-v1`, `terminal-bench-2-v1` | thin configs over the shipped `textarena-v1` / `harbor-v1` integrations |
 
 ---
