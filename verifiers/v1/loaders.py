@@ -126,6 +126,21 @@ def harness_class(harness_id: str) -> type[Harness]:
     return _plugin_class(import_harness(harness_id), Harness, "harness")
 
 
+def default_harness_id(taskset_id: str) -> str:
+    """The harness id to use when none is given. A taskset that bundles its own harness — its
+    module also exports a `Harness` subclass via `__all__`, so the taskset id doubles as the
+    harness id — runs with that harness by default; otherwise the shared `default` harness. An
+    explicit `--harness.id` / toml id always takes precedence (this only supplies the fallback)."""
+    if not taskset_id:
+        return "default"
+    try:
+        module = import_taskset(taskset_id)
+        _plugin_class(module, Harness, "harness")
+    except (ModuleNotFoundError, TypeError, AttributeError):
+        return "default"
+    return taskset_id
+
+
 def load_taskset(config: TasksetConfig) -> Taskset:
     """Build the taskset for a config by dispatching on its `id` (the taskset id)."""
     return taskset_class(config.id)(config)
