@@ -141,9 +141,16 @@ rollout), so do dataset loading / filtering / slicing here off `self.config`. Re
 
 ```python
 class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
-    def load_tasks(self):
-        rows = load_dataset("gsm8k", split=self.config.split)   # read knobs off self.config
-        ...
+    def load_tasks(self) -> list[GSM8KTask]:
+        rows = load_dataset("openai/gsm8k", "main", split=self.config.split)   # read knobs off self.config
+        return [
+            GSM8KTask(
+                idx=i,
+                prompt=row["question"],
+                answer=row["answer"].split("####")[-1].strip(),
+            )
+            for i, row in enumerate(rows)
+        ]
 ```
 
 ## Scoring — rewards, metrics, group rewards
