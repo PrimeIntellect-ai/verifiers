@@ -66,8 +66,7 @@ class Harness(ABC, Generic[ConfigT]):
     (e.g. `RLMHarness(Harness[RLMHarnessConfig])`)."""
 
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
-    """Emit task.system_prompt as a system message. If False, a task that sets a system_prompt
-    is rejected."""
+    """Emit task.system_prompt as a system message (else fold into the user message)."""
     SUPPORTS_TASK_TOOLS: ClassVar[bool] = True
     """Expose a task's MCP tool servers to the model; set False for harnesses without an MCP client."""
     SUPPORTS_USER_SIM: ClassVar[bool] = False
@@ -79,14 +78,13 @@ class Harness(ABC, Generic[ConfigT]):
         self.config = config
 
     def resolve_prompt(self, task: Task) -> tuple[str | None, str | Messages | None]:
-        """Resolve `(system_prompt, prompt)` for this harness. A harness that sets
-        `APPENDS_SYSTEM_PROMPT` returns the task's system prompt separately (emitted as a real
-        system message, or via the agent's own append mechanism); a harness that does not is given
-        the prompt with no system prompt, and a task that sets one is rejected — a system prompt is
-        never folded into the user message (that would silently change its role). A `Messages`
+        """Resolve `(system_prompt, prompt)` for this harness. If the harness
+        appends the system prompt natively, returns it separately; otherwise folds it into
+        the user prompt (warning that it isn't sent as a system message). A `Messages`
         prompt (e.g. an image-bearing prompt) is only allowed for harnesses that set
-        `SUPPORTS_MESSAGE_PROMPT`. A `None` prompt means the task has no prompt — the user simulator
-        opens the conversation (see `Taskset.user`); the harness emits no opening user message."""
+        `SUPPORTS_MESSAGE_PROMPT`. A `None` prompt means the task has no prompt —
+        the user simulator opens the conversation (see `Taskset.user`); the harness emits no
+        opening user message."""
         prompt = task.prompt
         if (
             prompt is not None
@@ -97,14 +95,21 @@ class Harness(ABC, Generic[ConfigT]):
                 f"Harness {self.config.id!r} does not support a Messages prompt; "
                 "task.prompt must be a string or None."
             )
-        if task.system_prompt is not None and not self.APPENDS_SYSTEM_PROMPT:
+        system = task.system_prompt
+        if system is None or self.APPENDS_SYSTEM_PROMPT:
+            return system if self.APPENDS_SYSTEM_PROMPT else None, prompt
+        if not isinstance(prompt, str):
             raise ValueError(
-                f"Harness {self.config.id!r} does not support a system prompt, but the task sets "
-                "`system_prompt`. Use a harness that emits a system prompt (one with "
-                "APPENDS_SYSTEM_PROMPT, e.g. default / bash / rlm), or clear the task's "
-                "system_prompt."
+                f"Harness {self.config.id!r} cannot fold a system prompt into a "
+                f"{'Messages' if prompt is not None else 'None'} prompt; set "
+                "APPENDS_SYSTEM_PROMPT to emit it as a system message."
             )
-        return (task.system_prompt if self.APPENDS_SYSTEM_PROMPT else None), prompt
+        logger.warning(
+            "Harness %r does not support a separate system prompt; prepending "
+            "task.system_prompt to the user prompt.",
+            self.config.id,
+        )
+        return None, f"{system}\n\n{prompt}"
 
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""
