@@ -21,7 +21,6 @@ from typing import (
 )
 
 from verifiers.clients import Client, resolve_client
-from verifiers.errors import SandboxDeleteError
 from verifiers.types import Messages, Response, ResponseMessage, Tool
 from verifiers.types import ClientConfig, ClientType, SamplingArgs
 from verifiers.utils.async_utils import maybe_call_with_named_args
@@ -93,31 +92,6 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _surface_sandbox_delete_error(
-    state: State, error: SandboxDeleteError, *, scope: str, sandbox_id: str
-) -> None:
-    """Record a v1 sandbox delete failure on rollout state.
-
-    V1 lease cleanup removes a lease only after confirmed sandbox deletion; a
-    failed delete stays registered so later cleanup or teardown can retry it.
-    Mirror that local cleanup outcome into the rollout state so callers still
-    observe a non-retryable SandboxDeleteError. Existing rollout errors keep
-    precedence, with delete failures added as cleanup metadata.
-    """
-    cleanup_errors = cast(list[ConfigData], state.setdefault("cleanup_errors", []))
-    cleanup_errors.append(
-        {
-            "type": type(error).__name__,
-            "message": str(error),
-            "scope": scope,
-            "sandbox_id": sandbox_id,
-        }
-    )
-    if state.get("error") is None:
-        state._set_error(error)
-
 
 if TYPE_CHECKING:
     from .harness import Harness
@@ -1179,7 +1153,6 @@ class Runtime:
                 try:
                     await self.close_sandbox_lease(handle)
                 except Exception as exc:
-                    # Catches ordinary delete failures; BaseException control-flow signals propagate.
                     logger.warning(
                         "Failed to delete sandbox %s during teardown: %s",
                         handle.id,
@@ -1323,7 +1296,6 @@ class Runtime:
             try:
                 await self.close_sandbox_lease(result)
             except Exception as exc:
-                # Catches ordinary delete failures; BaseException control-flow signals propagate.
                 async with self.sandbox_lock:
                     if not result.deleted:
                         self.sandbox_leases[key] = result
@@ -1334,18 +1306,15 @@ class Runtime:
                     exc_info=True,
                 )
                 if state is not None and scope is not None:
-                    delete_error = (
-                        exc
-                        if isinstance(exc, SandboxDeleteError)
-                        else SandboxDeleteError(
-                            f"Failed to delete sandbox {result.id}: {exc}"
-                        )
+                    cleanup_errors = cast(
+                        list[ConfigData], state.setdefault("cleanup_errors", [])
                     )
-                    _surface_sandbox_delete_error(
-                        state,
-                        delete_error,
-                        scope=scope,
-                        sandbox_id=result.id,
+                    cleanup_errors.append(
+                        {
+                            "type": type(exc).__name__,
+                            "message": str(exc),
+                            "scope": scope,
+                        }
                     )
 
     async def resolve_sandbox_lease(
@@ -1354,7 +1323,7 @@ class Runtime:
         async with self.sandbox_lock:
             lease = self.sandbox_leases.get(key)
             if lease is not None:
-                if lease.deleted or lease.delete_lock.locked():
+                if lease.deleted:
                     raise RuntimeError("Sandbox lease is being deleted.")
                 return lease
             task = self.sandbox_creation_tasks.get(key)
@@ -1384,7 +1353,7 @@ class Runtime:
         async with self.sandbox_lock:
             existing = self.sandbox_leases.get(key)
             if existing is not None:
-                if existing.deleted or existing.delete_lock.locked():
+                if existing.deleted:
                     raise RuntimeError("Sandbox lease is being deleted.")
                 return existing
             if self.sandbox_creation_tasks.get(key) is not task:
@@ -2549,7 +2518,6 @@ class Runtime:
             try:
                 await self.close_sandbox_lease(handle)
             except Exception as exc:
-                # Catches ordinary delete failures; BaseException control-flow signals propagate.
                 deletion_failures += 1
                 logger.warning(
                     "Failed to delete %s sandbox %s for scope key %s: %s",
@@ -2559,18 +2527,15 @@ class Runtime:
                     exc,
                     exc_info=True,
                 )
-                delete_error = (
-                    exc
-                    if isinstance(exc, SandboxDeleteError)
-                    else SandboxDeleteError(
-                        f"Failed to delete sandbox {handle.id}: {exc}"
-                    )
+                cleanup_errors = cast(
+                    list[ConfigData], state.setdefault("cleanup_errors", [])
                 )
-                _surface_sandbox_delete_error(
-                    state,
-                    delete_error,
-                    scope=scope,
-                    sandbox_id=handle.id,
+                cleanup_errors.append(
+                    {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                        "scope": scope,
+                    }
                 )
             else:
                 async with self.sandbox_lock:
