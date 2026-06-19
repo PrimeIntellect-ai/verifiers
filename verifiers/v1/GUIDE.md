@@ -602,7 +602,7 @@ uv run eval gsm8k-v1 -n 5 -r 3 \
 | budgets | `--max-turns`, `--max-input-tokens`, `--max-output-tokens`, `--max-total-tokens` (all None) |
 | sampling | `--sampling.temperature`, `--sampling.top-p`, `--sampling.max-tokens`, `--sampling.reasoning-effort` (provider keys pass through) |
 | timeouts | `--timeout.setup`, `--timeout.rollout`, `--timeout.finalize`, `--timeout.scoring` (None = no limit) |
-| retries | `--retries.model.max-retries` (3), `--retries.runtime.max-retries` (3), `--retries.rollout.max-retries` (0), `--retries.rollout.include`/`.exclude` (by exception name) |
+| retries | `--retries.rollout.max-retries` (0), `--retries.rollout.include`/`.exclude` (by exception name); per-call model/runtime retries are owned by the harness/runtime SDKs |
 | client | `--client.type` (`eval`\|`train`), `--client.base-url`, `--client.api-key-var` |
 | runtime | `--harness.runtime.type` (`subprocess`), `--harness.env`, `--harness.disabled-tools` |
 | concurrency | `-c`/`--max-concurrent` (128), `--multiplex` (32), `--pool.type` (`elastic`\|`static`) |
@@ -639,7 +639,6 @@ uv run validate gsm8k-v1 -n 20 --runtime.type subprocess
 | `<taskset-id>` / `--taskset.id` | — | taskset to validate |
 | `--runtime.type` | `docker` | runtime for `setup` + `validate` (a gold check often needs the task's container) |
 | `--setup-timeout` / `--validate-timeout` | None | per-hook wall-clock caps |
-| `--retries.runtime.max-retries` | 3 | the only retry that applies (fresh runtime per try) |
 | `-n`/`--num-tasks`, `-s`/`--shuffle`, `-c`/`--max-concurrent` (128) | | task selection + concurrency |
 | `-v`/`--verbose`, `--no-rich` | | logging / disable the dashboard |
 

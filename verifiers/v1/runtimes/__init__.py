@@ -14,7 +14,6 @@ from pydantic import Field
 from verifiers.v1.runtimes.base import (
     HOST,
     ProgramResult,
-    RetryingRuntime,
     Runtime,
     host_endpoint,
     reachable_url,
@@ -57,7 +56,6 @@ def runtime_is_local(config: RuntimeConfig) -> bool:
 
 __all__ = [
     "ProgramResult",
-    "RetryingRuntime",
     "Runtime",
     "RuntimeConfig",
     "make_runtime",

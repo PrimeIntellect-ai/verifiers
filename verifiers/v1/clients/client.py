@@ -10,9 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
 from verifiers.v1.dialects import Dialect
-from verifiers.v1.errors import OverlongPromptError, ProviderError
 from verifiers.v1.graph import PendingTurn
-from verifiers.v1.retries import retrying
 from verifiers.v1.types import Response, Sampling, SamplingConfig
 
 logger = logging.getLogger(__name__)
@@ -76,75 +74,6 @@ class Client(ABC):
 
     async def close(self) -> None:
         """Release any underlying resources. Default no-op."""
-
-
-class RetryingClient(Client):
-    """Wraps a client to retry each completion on a transient `ProviderError` (tenacity, up to
-    `max_retries` retries) with exponential backoff + jitter between attempts — so retries don't
-    fire back-to-back into the same brief endpoint outage, and concurrent rollouts hitting a shared
-    endpoint stagger their retries instead of re-thundering it. An `OverlongPromptError` is never
-    retried — it's a budget limit the interception server turns into a clean truncation, not a
-    transient fault."""
-
-    def __init__(self, inner: Client, max_retries: int) -> None:
-        self.inner = inner
-        self.max_retries = max_retries
-        # One Retrying, reused across (and concurrent within) calls: the control flow runs
-        # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.
-        self._retrying = retrying(
-            on=ProviderError,
-            give_up=OverlongPromptError,
-            retries=max_retries,
-            label="model call",
-        )
-
-    async def get_response(
-        self,
-        dialect: Dialect,
-        body: dict,
-        model: str,
-        sampling_args: SamplingConfig,
-        session_id: str | None = None,
-        turn: PendingTurn | None = None,
-        headers: Mapping[str, str] | None = None,
-    ) -> Response:
-        return await self._retrying(
-            self.inner.get_response,
-            dialect,
-            body,
-            model,
-            sampling_args,
-            session_id=session_id,
-            turn=turn,
-            headers=headers,
-        )
-
-    async def relay(
-        self,
-        dialect: Dialect,
-        body: dict,
-        model: str,
-        sampling_args: SamplingConfig,
-        session_id: str | None = None,
-        headers: Mapping[str, str] | None = None,
-    ) -> RelayReply:
-        # Safe to retry: relay raises (and is retried) before any response byte is handed back;
-        # once a `RelayReply` is returned, streaming is already underway.
-        return await self._retrying(
-            self.inner.relay,
-            dialect,
-            body,
-            model,
-            sampling_args,
-            headers=headers,
-            session_id=session_id,
-        )
-
-    async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
-        return await self._retrying(self.inner.relay_aux, dialect, route, body)
-
-    async def close(self) -> None:
-        await self.inner.close()
 
 
 @dataclass(frozen=True)
