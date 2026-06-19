@@ -115,6 +115,7 @@ def vf_error_types() -> tuple[type[vf.Error], ...]:
         vf.SandboxError,
         vf.TunnelError,
         vf.InfraError,
+        vf.TruncatedReasoningError,
         vf.EmptyModelResponseError,
         vf.InvalidModelResponseError,
         vf.ModelError,

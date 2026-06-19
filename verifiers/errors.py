@@ -20,6 +20,12 @@ class EmptyModelResponseError(InvalidModelResponseError):
     pass
 
 
+class TruncatedReasoningError(EmptyModelResponseError):
+    """Model hit a length limit before returning content or tool calls."""
+
+    pass
+
+
 class OverlongPromptError(Error):
     """Used to catch overlong prompt errors (e.g. prompt + requested number of tokens exceeds model context length)"""
 
