@@ -25,16 +25,17 @@ Prime credentials, the user simulator uses `OPENAI_API_KEY` and the optional
 
 ```bash
 uv run eval tau2-bench-v1 \
-  --harness.id tau2-bench-v1 \
   -m openai/gpt-4.1-mini \
   -n 1 -r 1
 ```
+
+The taskset bundles its harness, so `tau2-bench-v1` runs on the Tau2 harness
+automatically; pass `--harness.id default` to override it.
 
 Select a domain:
 
 ```bash
 uv run eval tau2-bench-v1 \
-  --harness.id tau2-bench-v1 \
   --taskset.domain retail
 ```
 

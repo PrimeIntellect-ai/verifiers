@@ -34,10 +34,9 @@ def v1_tasksets() -> list[str]:
 
 @pytest.mark.parametrize("taskset", v1_tasksets())
 def test_eval(taskset: str):
-    """Run one capped rollout of `taskset` with its required harness."""
+    """Run one capped rollout of `taskset`; a taskset that bundles a harness uses it by default."""
     if taskset in NEEDS_CONTAINER:
         pytest.skip(f"{taskset} needs a docker/prime runtime (covered by v1 e2e tests)")
-    harness = "tau2-bench-v1" if taskset == "tau2_bench_v1" else "default"
     if os.getenv("PRIME_API_KEY"):
         model = [
             "-m", "openai/gpt-4.1-mini",
@@ -55,7 +54,7 @@ def test_eval(taskset: str):
 
     cmd = [
         "uv", "run", "--no-sync", "eval",
-        "--taskset.id", taskset, "--harness.id", harness,
+        "--taskset.id", taskset,
         *model,
         # -r 2: a taskset with @group_reward(s) needs >=2 rollouts to compare.
         "-n", "1", "-r", "2", "--max-turns", "4",

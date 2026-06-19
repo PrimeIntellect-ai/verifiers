@@ -151,13 +151,24 @@ class EnvConfig(BaseConfig):
         """Resolve the generic `taskset` / `harness` to its specific config type by `id`, so
         env-specific fields validate against the real plugin config (no untyped args dict)."""
         from verifiers.v1.loaders import (
+            default_harness_id,
             harness_config_type,
             narrow_plugin_field,
             taskset_config_type,
         )
 
         narrow_plugin_field(data, "taskset", taskset_config_type)
-        narrow_plugin_field(data, "harness", harness_config_type, "default")
+        taskset = data.get("taskset")
+        taskset_id = (
+            taskset.get("id")
+            if isinstance(taskset, dict)
+            else getattr(taskset, "id", None)
+        )
+        # A taskset that bundles its own harness runs with it by default; an explicit
+        # `--harness.id` / toml id (already on the field) takes precedence.
+        narrow_plugin_field(
+            data, "harness", harness_config_type, default_harness_id(taskset_id or "")
+        )
         return data
 
 
