@@ -32,8 +32,6 @@ DEFAULT_SANDBOX_IMAGE = (
     "team-cmlr3u2er002zhr01tj8f48ts/"
     "mini-browse-apps:destination-autocomplete-tight-20260528-0027"
 )
-DEFAULT_HUB_ENV_ID = "prime/mini-browse-apps-platform-v1"
-DEFAULT_DATASET_FILENAME = "google_flights_10.jsonl.gz"
 DATASET_CACHE_DIR = Path.home() / ".cache" / "verifiers" / "mini-browse-apps"
 
 APP_PORT = 5173
@@ -68,10 +66,10 @@ class MiniBrowseAppsConfig(vf.TasksetConfig):
     id: str = "mini-browse-apps-platform-v1"
     dataset_path: str | None = None
     """Explicit local dataset (JSONL/JSONL.GZ); when set, skips the hub pull."""
-    hub_env_id: str = DEFAULT_HUB_ENV_ID
+    hub_env_id: str = "prime/mini-browse-apps-platform-v1"
     """Prime hub environment the dataset is pulled from when no `dataset_path` is given."""
     hub_version: str = "latest"
-    dataset_filename: str = DEFAULT_DATASET_FILENAME
+    dataset_filename: str = "google_flights_10.jsonl.gz"
     judge: JudgeConfig = Field(default_factory=JudgeConfig)
 
 

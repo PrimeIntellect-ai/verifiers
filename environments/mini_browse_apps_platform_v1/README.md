@@ -16,10 +16,10 @@ time from a **private GitHub repo** (pinned to a commit), caches it under
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `agent_repo` | `PrimeIntellect-ai/plex-mini-browse` | Private `owner/name` to fetch the agent from. |
-| `agent_ref` | _(unset)_ | **Pinned commit sha to fetch (required unless `agent_path` is set).** |
-| `agent_token_env` | `MINI_BROWSE_GITHUB_TOKEN` | Env var holding a GitHub token with read access to `agent_repo`. |
-| `agent_path` | _(unset)_ | Local dir containing `<agent_package>/` — skips the fetch (development). |
+| `agent.repo` | `PrimeIntellect-ai/plex-mini-browse` | Private `owner/name` to fetch the agent from. |
+| `agent.ref` | _(unset)_ | **Pinned commit sha to fetch (required unless `agent.path` is set).** |
+| `agent.token_env` | `MINI_BROWSE_GITHUB_TOKEN` | Env var holding a GitHub token with read access to `agent.repo`. |
+| `agent.path` | _(unset)_ | Local dir containing the agent package — skips the fetch (development). |
 
 ## Tasks (pulled dynamically)
 
@@ -38,7 +38,7 @@ export MINI_BROWSE_GITHUB_TOKEN=<token>
 uv run eval mini-browse-apps-platform-v1 \
   --harness.id mini-browse-apps-platform-v1 \
   --harness.runtime.type prime \
-  --harness.agent-ref <agent-commit-sha> \
+  --harness.agent.ref <agent-commit-sha> \
   -m <multimodal-model> \
   -n 1 -r 1 -c 1
 ```

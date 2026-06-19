@@ -396,7 +396,13 @@ async def _run(args: argparse.Namespace) -> int:
     )
     if conversation is not None and not isinstance(conversation, list):
         raise ValueError("Mini Browse conversation payload must be a list")
-    model = os.environ.get("OPENAI_MODEL", "intercepted/model")
+    from openai import AsyncOpenAI
+
+    model_client = _read_json(Path(args.model_client))
+    model = model_client["model"]
+    client = AsyncOpenAI(
+        base_url=model_client["base_url"], api_key=model_client["api_key"]
+    )
     coordinate_mode = os.environ.get("MINI_BROWSE_COORDINATE_MODE", "relative_1000")
 
     payload: dict[str, Any]
@@ -415,6 +421,7 @@ async def _run(args: argparse.Namespace) -> int:
             url=start_url,
             output_schema=output_schema,
             model=model,
+            client=client,
             max_steps=int(args.max_steps),
             workspace_root=workspace_root,
             include_builtin_tools=_env_bool("MINI_BROWSE_INCLUDE_BUILTIN_TOOLS"),
@@ -542,6 +549,7 @@ async def _run(args: argparse.Namespace) -> int:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Mini Browse harness.")
     parser.add_argument("--task", required=True)
+    parser.add_argument("--model-client", required=True)
     parser.add_argument("--result", required=True)
     parser.add_argument("--transcript", required=True)
     parser.add_argument("--metrics", required=True)
