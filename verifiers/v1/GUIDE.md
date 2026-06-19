@@ -80,6 +80,11 @@ these off the generic bases to type `self.config`, `trace.task`, and `trace.stat
 The taskset module must export its `Taskset` subclass via `__all__` — the loader walks the
 exported names and finds the single `Taskset` subclass.
 
+**Capability flag.** A taskset has one class var, `NEEDS_CONTAINER` (default `False`); set it `True`
+to declare the taskset only runs in a container runtime (`docker` / `prime`), so the framework
+refuses the subprocess runtime up front — the taskset-wide counterpart to a task's per-row `image`
+(see [Runtimes](#runtimes)).
+
 ## The task
 
 `vf.Task` is a frozen pydantic model. Subclass it to add typed, task-specific fields (the
