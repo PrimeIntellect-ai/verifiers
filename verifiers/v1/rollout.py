@@ -32,6 +32,7 @@ from verifiers.v1.runtimes import (
     HOST,
     Runtime,
     RuntimeConfig,
+    RuntimePool,
     make_runtime,
     reachable_url,
 )
@@ -70,6 +71,7 @@ class Rollout:
         limits: RolloutLimits | None = None,
         shared_urls: dict[str, str] | None = None,
         interception: InterceptionPool | None = None,
+        runtime_pool: RuntimePool | None = None,
     ) -> None:
         self.task = task
         self.taskset = taskset
@@ -87,6 +89,10 @@ class Rollout:
         `Environment.serving` context — so a rollout always has them and no runner has to thread
         them in."""
         self.interception = interception
+        self.runtime_pool = runtime_pool
+        """Eval-level pool of persistent runtimes (injected by `Environment.episode` when the
+        harness runtime is `persistent`); when set, the rollout acquires/releases a reused
+        runtime instead of provisioning + tearing down its own. None = ephemeral per rollout."""
         self.phase = Phase.SETUP
         """Lifecycle phase for display (see `Phase`); advanced through the rollout, and
         set to DONE by the Episode once group scoring has run."""
@@ -134,22 +140,31 @@ class Rollout:
         trace: Trace = Trace(task=self.task, state=state_cls(type(self.taskset))())
         self.trace = trace  # expose for the --rich dashboard
         trace.timing.setup.start = time.time()
-        self.runtime = make_runtime(
-            self.runtime_config, name=trace.id
-        )  # ref set first → always tearable-down; named after the rollout for traceability
-        runtime = self.runtime
+        pool = self.runtime_pool
+        runtime: Runtime | None = None
+        if pool is None:
+            # ref set first → always tearable-down; named after the rollout for traceability.
+            # A pooled runtime is acquired below (in the try, so a provisioning failure is
+            # captured on the trace like a non-pooled `start()` failure).
+            runtime = make_runtime(self.runtime_config, name=trace.id)
+            self.runtime = runtime
         ctx = self.ctx
         stops = discover_decorated(self.taskset, "stop")
         logger.info(
-            "rollout start: id=%s task=%s harness=%s runtime=%s",
+            "rollout start: id=%s task=%s harness=%s runtime=%s%s",
             trace.id,
             self.task.idx,
             self.harness.config.name,
             self.runtime_config.type,
+            " (pooled)" if pool is not None else "",
         )
         try:
             session = RolloutSession(ctx, trace, stops, self.limits)
-            await runtime.start()
+            if pool is not None:
+                runtime = await pool.acquire(self.runtime_config)
+                self.runtime = runtime
+            else:
+                await runtime.start()
             async with boundary(TasksetError, "taskset setup"):
                 await asyncio.wait_for(
                     self.taskset.setup(self.task, runtime), self.setup_timeout
@@ -260,14 +275,19 @@ class Rollout:
                 trace.timing.generation.end = now  # error mid-run: close generation
             if trace.timing.finalize.start and not trace.timing.finalize.end:
                 trace.timing.finalize.end = now  # error mid-finalize: close finalize
-            # Tear down here — group rewards (later) need only the trace, not a live
-            # runtime. `runtime` is always set: make_runtime() ran before the `try`.
-            try:
-                await runtime.stop()
-            except Exception:
-                logger.warning(
-                    "runtime teardown failed (rollout %s)", trace.id, exc_info=True
-                )
+            # Release/tear down here — group rewards (later) need only the trace, not a live
+            # runtime. A pooled runtime goes back to the pool (reused, torn down at eval/train
+            # end); an ephemeral one is stopped. `runtime` is None only if pool.acquire() failed.
+            if runtime is not None:
+                try:
+                    if pool is not None:
+                        await pool.release(runtime)
+                    else:
+                        await runtime.stop()
+                except Exception:
+                    logger.warning(
+                        "runtime teardown failed (rollout %s)", trace.id, exc_info=True
+                    )
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

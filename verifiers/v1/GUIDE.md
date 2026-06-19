@@ -224,6 +224,25 @@ async def verified(self, task, trace, runtime) -> float:
     return float(r.stdout.strip() == "1.0")
 ```
 
+By default each `run_uv_script` execs a fresh interpreter, so a heavy import (`math-verify` pulls
+in sympy, ~0.2s) is paid every rollout. Pass `warm=True` to instead route to a long-lived worker
+that imports once and answers many calls — provided the script exposes `main(argv) -> str` (its
+result is the call's stdout) and stays `uv run`-able cold via a
+`if __name__ == "__main__": print(main(sys.argv[1:]))` footer:
+
+```python
+r = await runtime.run_uv_script(VERIFY, args=[...], warm=True)
+```
+
+The worker lives as long as the runtime, so warm only pays off on a **persistent** runtime
+(`--harness.runtime.persistent true`): runtimes are then taken from an eval/train-level pool and
+reused across rollouts (workspace `reset` between uses, torn down only at the end), so the import
+is paid once per pooled runtime instead of per rollout — ~12x faster gsm8k scoring at 1000
+rollouts / 128 concurrency, more as the run gets longer (`bench/persistent_runtime.py`). On an
+ephemeral runtime `warm=True` is a no-op (runs cold). Currently warm-capable on the subprocess
+runtime; persistence itself works on every runtime (and on remote runtimes also skips the
+per-rollout sandbox+tunnel provisioning).
+
 ## Stop conditions
 
 A rollout ends when the harness finishes, a framework budget trips (`--max-turns`, token caps), or
@@ -265,7 +284,7 @@ isolated environment. On a `runtime` you can call:
 | method | what |
 | --- | --- |
 | `run(argv, env)` | exec a command to completion → `ProgramResult(exit_code, stdout, stderr)` |
-| `run_uv_script(src, args, env)` | run a PEP 723 script (inline deps resolve in-runtime); `args` are shell-`"$@"`-safe |
+| `run_uv_script(src, args, env, warm=False)` | run a PEP 723 script (inline deps resolve in-runtime); `args` are shell-`"$@"`-safe. `warm=True` reuses a long-lived worker (import once) on a persistent runtime — see [In-runtime scoring](#in-runtime-scoring) |
 | `run_background(argv, env, log)` | start a long-lived process (e.g. a colocated server) |
 | `read(path)` / `write(path, data)` | workspace files (bytes), across the container/sandbox boundary |
 | `expose(port)` | publish a port *inside* the runtime to a host-reachable URL (`None` when local) |

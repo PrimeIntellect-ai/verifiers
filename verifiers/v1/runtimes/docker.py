@@ -12,15 +12,18 @@ import subprocess
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic_config import BaseConfig
-
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.base import ProgramResult, Runtime, parse_gpu
+from verifiers.v1.runtimes.base import (
+    BaseRuntimeConfig,
+    ProgramResult,
+    Runtime,
+    parse_gpu,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class DockerConfig(BaseConfig):
+class DockerConfig(BaseRuntimeConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
     workdir: str = "/app"
@@ -185,6 +188,14 @@ class DockerRuntime(Runtime):
             raise SandboxError(
                 f"write {path!r}: {stderr.decode(errors='replace').strip()}"
             )
+
+    async def reset(self) -> None:
+        """Empty the workdir so a persistent container can be reused by the next rollout (the
+        container itself survives). Best-effort: a clear failure shouldn't fail the rollout."""
+        wd = shlex.quote(self.config.workdir)
+        await self.run(
+            ["sh", "-c", f"find {wd} -mindepth 1 -delete 2>/dev/null || true"], {}
+        )
 
     def cleanup(self) -> None:
         if self._container is None or self._stopped:

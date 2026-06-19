@@ -18,9 +18,25 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import ClassVar, TypeVar
 
+from pydantic_config import BaseConfig
+
 from verifiers.v1.retries import retrying
 
 logger = logging.getLogger(__name__)
+
+
+class BaseRuntimeConfig(BaseConfig):
+    """Fields shared by every runtime config. Concrete configs (subprocess / docker / prime /
+    modal) subclass this and pin their `type`."""
+
+    persistent: bool = False
+    """Reuse this runtime across rollouts instead of provisioning a fresh one each time. A
+    persistent runtime is taken from an eval-level pool, has its per-rollout workspace `reset`
+    between uses, and is torn down only at the end of the eval / training run — so expensive
+    provisioning (container / sandbox create) and warm in-runtime workers (see
+    `run_uv_script(..., warm=True)`) are paid once, not per rollout. Suits tasksets whose
+    per-rollout state is workspace-local (e.g. gsm8k / math)."""
+
 
 # Ensure `uv` is available to run our PEP 723 scripts (the harness + tool servers): use it
 # if present, else bootstrap it — via pip; else via the standalone installer (curl/wget),
@@ -143,6 +159,12 @@ class Runtime(ABC):
         source of truth for teardown: usable from the atexit backstop where async machinery
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
 
+    async def reset(self) -> None:
+        """Clear per-rollout state so a persistent runtime can be reused by the next rollout
+        without cross-contamination — clears the per-rollout workspace, while the provisioned
+        resource (container / sandbox) and any warm workers survive. Called by the runtime pool
+        on acquire; default no-op (an ephemeral runtime is never reset)."""
+
     # --- execution ---
 
     @abstractmethod
@@ -173,9 +195,19 @@ class Runtime(ABC):
         script: str | bytes,
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
+        warm: bool = False,
     ) -> ProgramResult:
         """Run a self-contained uv script (PEP 723 inline deps) in this runtime, with
         `args` as its positional arguments (the script's `sys.argv[1:]`).
+
+        `warm=True` asks the runtime to keep a long-lived worker for this script — importing
+        its (heavy) deps once and answering many `args -> stdout` calls — instead of execing a
+        fresh interpreter per call. A warm-able script must expose `main(argv) -> str` (the
+        worker calls it; the result is the call's stdout) while staying `uv run`-able cold via a
+        `if __name__ == "__main__": print(main(sys.argv[1:]))` footer. Honored only when the
+        runtime can warm AND is `persistent` (else the worker would die with the rollout that
+        spawned it); otherwise this transparently runs cold. The base runtime has no warm
+        backing, so it always runs cold.
 
         Writes `script`, ensures `uv` is present, and runs `uv run` — so the script's
         dependencies resolve into uv's cache inside the runtime, never the eval process.

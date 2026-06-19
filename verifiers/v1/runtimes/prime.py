@@ -13,10 +13,14 @@ import shlex
 from pathlib import PurePosixPath
 from typing import ClassVar, Literal
 
-from pydantic_config import BaseConfig
-
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime, parse_gpu
+from verifiers.v1.runtimes.base import (
+    SERVICE_PORT,
+    BaseRuntimeConfig,
+    ProgramResult,
+    Runtime,
+    parse_gpu,
+)
 from verifiers.v1.runtimes.limiters import creation_limiter
 
 logger = logging.getLogger(__name__)
@@ -26,7 +30,7 @@ logger = logging.getLogger(__name__)
 _MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 
 
-class PrimeConfig(BaseConfig):
+class PrimeConfig(BaseRuntimeConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
     workdir: str = "/app"
@@ -210,6 +214,14 @@ class PrimeRuntime(Runtime):
             )
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
+
+    async def reset(self) -> None:
+        """Empty the workdir so a persistent sandbox can be reused by the next rollout (the
+        sandbox itself survives). Best-effort: a clear failure shouldn't fail the rollout."""
+        wd = shlex.quote(self.config.workdir)
+        await self.run(
+            ["sh", "-c", f"find {wd} -mindepth 1 -delete 2>/dev/null || true"], {}
+        )
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete

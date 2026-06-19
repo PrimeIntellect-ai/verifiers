@@ -28,6 +28,7 @@ from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     RuntimeConfig,
+    RuntimePool,
     SubprocessConfig,
     runtime_is_local,
 )
@@ -274,9 +275,11 @@ class Environment:
         self._warned_resources: set[tuple[str, str]] = set()
         self._shared_urls: dict[str, str] = {}
         self._interception: InterceptionPool | None = None
+        self._runtime_pool: RuntimePool | None = None
         """Eval-level serving resources, live only inside `serving()`: shared tool servers
-        ({name: url}) and the interception pool. `episode()` injects them into every rollout
-        so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
+        ({name: url}), the interception pool, and (when the harness runtime is `persistent`) the
+        runtime pool. `episode()` injects them into every rollout so neither runner has to thread
+        them through `Episode.run`/`Rollout.run`."""
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
         """Resolve the runtime config for a task off the harness's runtime (see
@@ -332,6 +335,7 @@ class Environment:
                 limits=self.limits,
                 shared_urls=self._shared_urls,
                 interception=self._interception,
+                runtime_pool=self._runtime_pool,
             )
             for _ in range(n)
         ]
@@ -340,21 +344,36 @@ class Environment:
     @contextlib.asynccontextmanager
     async def serving(self, tasks: list[Task]):
         """Hold the env-level serving resources for the duration of an eval: the shared tool
-        servers (built once, see `shared_tools`) and the interception pool. Stash them so
-        every `episode()` built inside this context injects them into its rollouts — that's
-        what keeps both eval runners (in-process and env-server) on one serving path. Build
-        episodes inside this context; the resources are torn down on exit."""
+        servers (built once, see `shared_tools`), the interception pool, and — when the harness
+        runtime is `persistent` — the runtime pool (reused across rollouts, torn down here at
+        eval/train end). Stash them so every `episode()` built inside this context injects them
+        into its rollouts — that's what keeps both eval runners (in-process and env-server) on one
+        serving path. Build episodes inside this context; the resources are torn down on exit."""
         async with (
             self.shared_tools(tasks) as shared_urls,
             self.interception_pool() as interception,
+            self.runtime_pool() as runtime_pool,
         ):
             self._shared_urls = shared_urls
             self._interception = interception
+            self._runtime_pool = runtime_pool
             try:
                 yield
             finally:
                 self._shared_urls = {}
                 self._interception = None
+                self._runtime_pool = None
+
+    @contextlib.asynccontextmanager
+    async def runtime_pool(self):
+        """Yield the persistent runtime pool when the harness runtime opts into `persistent`,
+        else `None` (rollouts provision their own ephemeral runtime). Held for the whole serving
+        context, so a persistent runtime is reused across rollouts and torn down only here."""
+        if not self.harness.config.runtime.persistent:
+            yield None
+            return
+        async with RuntimePool() as pool:
+            yield pool
 
     def interception_pool(self) -> InterceptionPool:
         """The shared interception pool for this env's rollouts — one server (+ tunnel

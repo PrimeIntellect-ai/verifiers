@@ -50,8 +50,10 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
         prediction = (
             trace.assistant_messages[-1].content if trace.assistant_messages else ""
         )
+        # warm=True: on a persistent runtime, reuse a warm worker that imports math_verify once
+        # instead of execing a fresh interpreter per rollout (no-op on an ephemeral runtime).
         result = await runtime.run_uv_script(
-            VERIFY, args=[task.answer, prediction or ""]
+            VERIFY, args=[task.answer, prediction or ""], warm=True
         )
         if result.exit_code != 0:
             raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
