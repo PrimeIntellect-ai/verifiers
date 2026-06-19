@@ -65,7 +65,7 @@ class EvalConfig(EnvServerConfig):
     so `--resume` takes no other arguments. Excluded from the saved config."""
 
     @model_validator(mode="after")
-    def _rich_xor_server(self):
+    def reject_rich_with_server(self):
         if self.server and self.rich:
             raise ValueError(
                 "`--rich` (the live dashboard) runs in-process and can't be combined with "
