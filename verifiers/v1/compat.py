@@ -189,7 +189,7 @@ class V0ClientAsV1Client(V1Client):
         message = response.message
         completion = [message]
         raw_tokens = message.tokens
-        tokens = raw_tokens.model_dump() if raw_tokens is not None else None
+        tokens = _v0_response_tokens_to_state(raw_tokens)
         state["trajectory"].append(
             {
                 "prompt": prompt,
@@ -713,6 +713,21 @@ def _v0_response_to_v1(response: V0Response, model: str) -> V1Response:
     )
     v1.raw = _v0_response_to_chat_completion(response, model)
     return v1
+
+
+def _v0_response_tokens_to_state(
+    tokens: V0ResponseTokens | None,
+) -> dict[str, Any] | None:
+    if tokens is None:
+        return None
+    data = tokens.model_dump()
+    # Keep renderer dataclass sidecars live in the in-process v0 trajectory state.
+    # The v0 renderer client uses this state to bridge later turns and expects
+    # MultiModalData / RenderedTokens objects, while model_dump() flattens them to
+    # plain dicts.
+    data["multi_modal_data"] = tokens.multi_modal_data
+    data["prompt_attribution"] = tokens.prompt_attribution
+    return data
 
 
 def _v0_tokens_to_v1(tokens: V0ResponseTokens | None) -> TurnTokens | None:

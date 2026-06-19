@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import verifiers as vf
 import compat_taskset_v1
+from renderers.base import MultiModalData, PlaceholderRange
 from verifiers.types import (
     Response,
     ResponseMessage,
@@ -227,6 +228,68 @@ async def test_v0_client_as_v1_offloads_chat_images_before_v0_client(
     prompt = v0_client.calls[0]["prompt"]
     image_source = prompt[0].content[1].image_url
     assert image_source.url == "file:///tmp/vf-offloaded-image.png"
+
+
+async def test_v0_client_as_v1_keeps_multimodal_sidecar_live_in_state() -> None:
+    class MultimodalV0Client:
+        def __init__(self) -> None:
+            self.multi_modal_data = MultiModalData(
+                mm_hashes={"image": ["a" * 16]},
+                mm_placeholders={"image": [PlaceholderRange(offset=1, length=2)]},
+                mm_items={"image": [{"raw_image_id": "image.png"}]},
+            )
+
+        async def get_response(
+            self,
+            prompt,
+            model: str,
+            sampling_args: dict,
+            tools=None,
+            **kwargs,
+        ) -> Response:
+            del prompt, sampling_args, tools, kwargs
+            return Response(
+                id="mm",
+                created=0,
+                model=model,
+                usage=Usage(
+                    prompt_tokens=2,
+                    reasoning_tokens=0,
+                    completion_tokens=1,
+                    total_tokens=3,
+                ),
+                message=ResponseMessage(
+                    content="ok",
+                    reasoning_content=None,
+                    finish_reason="stop",
+                    is_truncated=False,
+                    tool_calls=None,
+                    tokens=ResponseTokens(
+                        prompt_ids=[10, 11],
+                        prompt_mask=[0, 0],
+                        completion_ids=[20],
+                        completion_mask=[1],
+                        completion_logprobs=[-0.1],
+                        multi_modal_data=self.multi_modal_data,
+                    ),
+                ),
+            )
+
+    v0_client = MultimodalV0Client()
+    client = V0ClientAsV1Client(v0_client)
+
+    await client.get_response(
+        ChatDialect(),
+        {"messages": [{"role": "user", "content": "look"}]},
+        model="fake/model",
+        sampling_args=SamplingConfig(max_tokens=8),
+    )
+
+    step = client._states["default"]["trajectory"][0]
+    assert step["tokens"]["multi_modal_data"] is v0_client.multi_modal_data
+    assert step["tokens"]["multi_modal_data"].mm_items["image"] == [
+        {"raw_image_id": "image.png"}
+    ]
 
 
 def test_module_load_taskset_annotation_does_not_require_taskset_plugin() -> None:
