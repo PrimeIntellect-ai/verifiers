@@ -1,10 +1,9 @@
 """The built-in default harness: runs a small chat-loop program as a uv script.
 
 A growing-message-list chat loop with the taskset's MCP tools (host-side, resolved to URLs by
-the Environment) — and no tools of its own. The program is a uv script (deps: openai, mcp),
-launched via `runtime.run_uv_script` — so it works on any runtime with `uv` (the harness
-bootstraps it), with no runtime-specific setup. For a shell-driving agent, use a dedicated
-agentic harness (e.g. `mini-swe-agent`).
+the Environment) — and no tools of its own. Its uv script (deps: openai, mcp) is prepared
+during setup, then launched as the harness program. For a shell-driving agent, use a
+dedicated agentic harness (e.g. `mini-swe-agent`).
 """
 
 import json
@@ -44,27 +43,33 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
-        env = {
-            **self.config.env,
-            "OPENAI_BASE_URL": endpoint,
-            "OPENAI_API_KEY": secret,
-            "OPENAI_MODEL": ctx.model,
-            "APPEND_SYSTEM_PROMPT": system_prompt or "",
-        }
+        env = {**self.config.env}
+        args = [
+            f"--base-url={endpoint}",
+            f"--api-key={secret}",
+            f"--model={ctx.model}",
+        ]
+        if system_prompt:
+            args.append(f"--system-prompt={system_prompt}")
         if mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard
             # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).
-            env["MCP_CONFIG"] = json.dumps(
-                {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
+            args.append(
+                "--mcp-config="
+                + json.dumps(
+                    {
+                        "mcpServers": {
+                            name: {"url": url} for name, url in mcp_urls.items()
+                        }
+                    }
+                )
             )
-        # A Messages prompt (e.g. an image-bearing prompt) seeds the chat loop directly;
-        # a plain string is the single first user message; None means the task has no prompt and
-        # the framework's user simulator opens the conversation (no opening user message here).
-        if prompt is None:
-            args = [""]
-        elif isinstance(prompt, str):
-            args = [prompt]
-        else:
+        # A Messages prompt (e.g. an image-bearing prompt) seeds the chat loop directly via env
+        # (it can be large multimodal content that overflows argv); a plain string is the single
+        # first user message; None means the task has no prompt and the user simulator opens it.
+        if isinstance(prompt, str):
+            args.append(f"--prompt={prompt}")
+        elif prompt is not None:
             env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in prompt])
-            args = [""]
-        return await runtime.run_uv_script(PROGRAM_SOURCE, args=args, env=env)
+        program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
+        return await runtime.run_program([*program, *args], env)

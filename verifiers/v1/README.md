@@ -45,8 +45,7 @@ wall-clock timeouts — are all framework-enforced and apply to any environment:
 ```bash
 uv run eval gsm8k-v1 -n 5 -r 3 \
   --max-turns 8 --max-total-tokens 8192 \
-  --retries.model.max-retries 3 --retries.runtime.max-retries 3 \
-  --retries.rollout.max-retries 3 --retries.rollout.include ProgramError \
+  --retries.rollout.max-retries 3 --retries.rollout.include SandboxError \
   --timeout.setup 120 --timeout.rollout 600 --timeout.finalize 120 --timeout.scoring 120
 ```
 
@@ -235,8 +234,7 @@ uv run eval gsm8k-v1 -n 1 --max-total-tokens 8192        # cap prompt+completion
 
 uv run eval gsm8k-v1 -n 1 --timeout.rollout 600 --timeout.scoring 120  # per-stage wall-clock caps (s)
 
-uv run eval gsm8k-v1 -n 1 --retries.model.max-retries 5 --retries.runtime.max-retries 5  # per-call retries
-uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.include ProgramError  # whole-rollout, by exception type
+uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.include SandboxError  # whole-rollout, by exception type (per-call model/runtime retries are owned by the SDKs)
 ```
 
 ### Integrations

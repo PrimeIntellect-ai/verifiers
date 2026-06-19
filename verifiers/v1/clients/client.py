@@ -9,17 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from tenacity import (
-    AsyncRetrying,
-    RetryCallState,
-    retry_if_exception_type,
-    retry_if_not_exception_type,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
-
 from verifiers.v1.dialects import Dialect
-from verifiers.v1.errors import ModelError, OverlongPromptError
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, Sampling, SamplingConfig
 
@@ -84,88 +74,6 @@ class Client(ABC):
 
     async def close(self) -> None:
         """Release any underlying resources. Default no-op."""
-
-
-class RetryingClient(Client):
-    """Wraps a client to retry each completion on a transient `ModelError` (tenacity, up to
-    `max_retries` retries) with exponential backoff + jitter between attempts — so retries don't
-    fire back-to-back into the same brief endpoint outage, and concurrent rollouts hitting a shared
-    endpoint stagger their retries instead of re-thundering it. An `OverlongPromptError` is never
-    retried — it's a budget limit the interception server turns into a clean truncation, not a
-    transient fault."""
-
-    def __init__(self, inner: Client, max_retries: int) -> None:
-        self.inner = inner
-        self.max_retries = max_retries
-        # One Retrying, reused across (and concurrent within) calls: the control flow runs
-        # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.
-        self._retrying = AsyncRetrying(
-            stop=stop_after_attempt(max_retries + 1),
-            wait=wait_exponential_jitter(initial=0.5, max=30),
-            retry=retry_if_exception_type(ModelError)
-            & retry_if_not_exception_type(OverlongPromptError),
-            before_sleep=self._log_retry,
-            reraise=True,
-        )
-
-    def _log_retry(self, state: RetryCallState) -> None:
-        # before_sleep fires after a failed attempt, before the imminent retry — so
-        # attempt_number is the retry index (1 on the first retry); count out of max_retries.
-        exc = state.outcome.exception()
-        logger.warning(
-            "retrying model call (retry %d/%d) after error: %s",
-            state.attempt_number,
-            self.max_retries,
-            f"{type(exc).__name__}: {exc}",  # name too — some errors stringify empty
-        )
-
-    async def get_response(
-        self,
-        dialect: Dialect,
-        body: dict,
-        model: str,
-        sampling_args: SamplingConfig,
-        session_id: str | None = None,
-        turn: PendingTurn | None = None,
-        headers: Mapping[str, str] | None = None,
-    ) -> Response:
-        return await self._retrying(
-            self.inner.get_response,
-            dialect,
-            body,
-            model,
-            sampling_args,
-            session_id=session_id,
-            turn=turn,
-            headers=headers,
-        )
-
-    async def relay(
-        self,
-        dialect: Dialect,
-        body: dict,
-        model: str,
-        sampling_args: SamplingConfig,
-        session_id: str | None = None,
-        headers: Mapping[str, str] | None = None,
-    ) -> RelayReply:
-        # Safe to retry: relay raises (and is retried) before any response byte is handed back;
-        # once a `RelayReply` is returned, streaming is already underway.
-        return await self._retrying(
-            self.inner.relay,
-            dialect,
-            body,
-            model,
-            sampling_args,
-            headers=headers,
-            session_id=session_id,
-        )
-
-    async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
-        return await self._retrying(self.inner.relay_aux, dialect, route, body)
-
-    async def close(self) -> None:
-        await self.inner.close()
 
 
 @dataclass(frozen=True)

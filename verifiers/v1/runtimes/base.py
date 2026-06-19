@@ -14,20 +14,13 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import ClassVar
+from typing import ClassVar, TypeVar
 
-from tenacity import (
-    AsyncRetrying,
-    RetryCallState,
-    retry_if_exception_type,
-    retry_if_not_exception_type,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
-
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import SandboxError
+from verifiers.v1.retries import retrying
 
 logger = logging.getLogger(__name__)
 
@@ -163,11 +156,10 @@ class Runtime(ABC):
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
         agentic run) — as opposed to the short idempotent infra ops (write / mv / install /
-        provisioning) that go through `run`. Identical to `run` here; `RetryingRuntime` overrides it
-        to NOT retry, because re-running the program against the rollout's persistent trace would
-        fork a duplicate branch (and re-execute against a runtime already mutated by the first
-        attempt). A transient transport fault mid-program surfaces as a ProgramError for this
-        rollout instead of a silent full restart."""
+        provisioning) that go through `run`. A distinct seam from `run` so the rollout's program is
+        never blindly retried: re-running a stateful/agentic program against the rollout's persistent
+        trace would fork a duplicate branch (and re-execute against an already-mutated runtime).
+        Transient infra faults are retried by the runtime SDK (prime/modal) inside `run`, not here."""
         return await self.run(argv, env)
 
     async def run_background(
@@ -184,32 +176,49 @@ class Runtime(ABC):
         self,
         script: str | bytes,
         env: dict[str, str] | None = None,
-    ) -> str:
-        """Stage a PEP 723 script and resolve its dependencies, returning its runtime path."""
+    ) -> list[str]:
+        """Stage a PEP 723 script and resolve its dependencies, returning its executable argv."""
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         path = f"/tmp/vf-scripts/{digest}.py"
-        if digest in self._uv_interpreters:
-            return path
-        async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
-            if digest in self._uv_interpreters:
-                return path
-            tmp = f"{path}.{uuid.uuid4().hex}.tmp"
-            await self.write(tmp, data)
-            await self.run(
-                ["sh", "-c", f"mv -f {shlex.quote(tmp)} {shlex.quote(path)}"], {}
-            )
-            command = (
-                f"{_ENSURE_UV}; uv sync --script {shlex.quote(path)} -q "
-                f"&& uv python find --script {shlex.quote(path)}"
-            )
-            result = await self.run(["sh", "-c", command], env or {})
-            if result.exit_code != 0:
-                raise ProgramError(
-                    f"failed to prepare uv script: {result.stderr.strip()[-2000:]}"
-                )
-            self._uv_interpreters[digest] = result.stdout.strip().splitlines()[-1]
-        return path
+        if digest not in self._uv_interpreters:
+            async with self._uv_script_locks.setdefault(digest, asyncio.Lock()):
+                if digest not in self._uv_interpreters:
+                    tmp = f"{path}.{uuid.uuid4().hex}.tmp"
+                    await self.write(tmp, data)
+                    await self.run(
+                        ["sh", "-c", f"mv -f {shlex.quote(tmp)} {shlex.quote(path)}"],
+                        {},
+                    )
+                    command = (
+                        f"{_ENSURE_UV}; uv sync --script {shlex.quote(path)} -q "
+                        f"&& uv python find --script {shlex.quote(path)}"
+                    )
+                    result = await self.run(["sh", "-c", command], env or {})
+                    if result.exit_code != 0:
+                        raise SandboxError(
+                            "failed to prepare uv script: "
+                            f"{result.stderr.strip()[-2000:]}"
+                        )
+                    self._uv_interpreters[digest] = result.stdout.strip().splitlines()[
+                        -1
+                    ]
+        interpreter = self._uv_interpreters[digest]
+        venv = str(PurePosixPath(interpreter).parent.parent)
+        command = (
+            'export VIRTUAL_ENV="$1" PATH="${1}/bin:$HOME/.local/bin:$PATH" '
+            'UV_INSTALL_DIR="$HOME/.local/bin" UV_RUN_RECURSION_DEPTH=1; '
+            'shift; exec "$@"'
+        )
+        return [
+            "sh",
+            "-c",
+            command,
+            "uv-script",
+            venv,
+            interpreter,
+            path,
+        ]
 
     async def run_uv_script(
         self,
@@ -232,19 +241,8 @@ class Runtime(ABC):
         content means identical scripts share one path → uv reuses one env, bounded by the
         number of distinct scripts. Published via a unique temp + atomic `mv`, so
         concurrent rollouts writing the same content never race a half-written read."""
-        path = await self.prepare_uv_script(script, env)
-        data = script.encode() if isinstance(script, str) else script
-        interpreter = self._uv_interpreters[hashlib.sha256(data).hexdigest()]
-        venv = str(PurePosixPath(interpreter).parent.parent)
-        command = (
-            'export VIRTUAL_ENV="$1" PATH="${1}/bin:$HOME/.local/bin:$PATH" '
-            'UV_INSTALL_DIR="$HOME/.local/bin" UV_RUN_RECURSION_DEPTH=1; '
-            'shift; exec "$@"'
-        )
-        return await self.run_program(
-            ["sh", "-c", command, "uv-script", venv, interpreter, path, *(args or [])],
-            env or {},
-        )
+        argv = await self.prepare_uv_script(script, env)
+        return await self.run([*argv, *(args or [])], env or {})
 
     # --- filesystem ---
 
@@ -277,110 +275,25 @@ class Runtime(ABC):
         return None
 
 
-class RetryingRuntime(Runtime):
-    """Wraps a runtime to retry each call on a transient error (tenacity, up to
-    `max_retries` retries). A program's own failure surfaces as a `ProgramResult` (non-zero
-    exit), not an exception, so retries fire only on infra/transport faults — provisioning,
-    exec transport, file I/O across the runtime boundary. `CancelledError` (a
-    `BaseException`) and `NotImplementedError` (an unsupported op) are never retried. Sync
-    teardown (`cleanup`) and display (`descriptor`) delegate straight through. The rollout's
-    program exec (`run_program`, including the script run inside `run_uv_script`) is deliberately
-    NOT retried: re-running a stateful/agentic program against the rollout's persistent trace would
-    fork a duplicate branch (and re-run against a runtime the first attempt already mutated), so a
-    mid-program transport fault surfaces as a ProgramError for that rollout. UV-script
-    preparation remains retryable and its program execution does not."""
+TunnelT = TypeVar("TunnelT")
 
-    def __init__(self, inner: Runtime, max_retries: int) -> None:
-        super().__init__(inner.name)
-        self.inner = inner
-        self.max_retries = max_retries
-        # One Retrying, reused across (and concurrent within) calls: the control flow runs
-        # off a per-call RetryCallState, so only its bookkeeping `.statistics` is shared.
-        self._retrying = AsyncRetrying(
-            stop=stop_after_attempt(max_retries + 1),
-            wait=wait_exponential_jitter(initial=0.5, max=30),
-            retry=retry_if_exception_type(Exception)
-            & retry_if_not_exception_type(NotImplementedError),
-            before_sleep=self._log_retry,
-            reraise=True,
-        )
 
-    def _log_retry(self, state: RetryCallState) -> None:
-        # before_sleep fires after a failed attempt, before the imminent retry — so
-        # attempt_number is the retry index (1 on the first retry); count out of max_retries.
-        logger.warning(
-            "retrying runtime.%s (retry %d/%d) after error: %s",
-            getattr(state.fn, "__name__", "call"),
-            state.attempt_number,
-            self.max_retries,
-            state.outcome.exception(),
-        )
+async def open_tunnel(
+    start: Callable[[], Awaitable[TunnelT]], what: str, *, retries: int = 3
+) -> TunnelT:
+    """Open the host interception-server tunnel via `start`, retrying transient failures and raise
+    `TunnelError` if it still fails. Tunnel creation is network-bound and globally rate-capped
+    (`prime_tunnel` — 512/min shared across runtimes), so a transient failure is common and worth a
+    few retries before failing the rollout. `what` names the tunnel in the error."""
+    from verifiers.v1.errors import TunnelError
 
-    async def _retry(self, fn, *args):
-        return await self._retrying(fn, *args)
-
-    async def start(self) -> None:
-        await self._retry(self.inner.start)
-
-    async def stop(self) -> None:
-        await self._retry(self.inner.stop)
-
-    def cleanup(self) -> None:
-        self.inner.cleanup()
-
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        return await self._retry(self.inner.run, argv, env)
-
-    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        """The rollout's program exec is NOT retried (see the class docstring) — straight to
-        inner."""
-        return await self.inner.run(argv, env)
-
-    async def prepare_uv_script(
-        self,
-        script: str | bytes,
-        env: dict[str, str] | None = None,
-    ) -> str:
-        return await self._retry(self.inner.prepare_uv_script, script, env)
-
-    async def run_uv_script(
-        self,
-        script: str | bytes,
-        args: list[str] | None = None,
-        env: dict[str, str] | None = None,
-    ) -> ProgramResult:
-        await self.prepare_uv_script(script, env)
-        return await self.inner.run_uv_script(script, args, env)
-
-    async def run_background(
-        self, argv: list[str], env: dict[str, str], log: str
-    ) -> None:
-        await self._retry(self.inner.run_background, argv, env, log)
-
-    @property
-    def type(self) -> str:
-        return self.inner.type
-
-    @property
-    def published_port(self) -> int | None:
-        return self.inner.published_port
-
-    @property
-    def is_local(self) -> bool:
-        return self.inner.is_local
-
-    @property
-    def descriptor(self) -> str | None:
-        return self.inner.descriptor
-
-    async def expose(self, port: int) -> str | None:
-        return await self._retry(self.inner.expose, port)
-
-    async def read(self, path: str) -> bytes:
-        return await self._retry(self.inner.read, path)
-
-    async def write(self, path: str, data: bytes) -> None:
-        await self._retry(self.inner.write, path, data)
+    try:
+        async for attempt in retrying(retries=retries, label=what):
+            with attempt:
+                return await start()
+    except Exception as e:
+        raise TunnelError(f"{what} failed after {retries} retries: {e}") from e
+    raise TunnelError(f"{what} failed")  # unreachable: retrying() returns or reraises
 
 
 @contextlib.asynccontextmanager
@@ -396,17 +309,16 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
         return
     from prime_tunnel import Tunnel
 
-    from verifiers.v1.errors import ProgramError
     from verifiers.v1.runtimes.limiters import TUNNEL_LIMITER
 
-    tunnel = Tunnel(local_port=port, labels=labels or None)
-    try:
+    async def _start() -> tuple[Tunnel, str]:
+        tunnel = Tunnel(local_port=port, labels=labels or None)
         async with (
             TUNNEL_LIMITER
         ):  # shared prime_tunnel rate (512/min, runtime-independent)
-            url = str(await tunnel.start()).rstrip("/")
-    except Exception as e:
-        raise ProgramError(f"host tunnel failed (port {port}): {e}") from e
+            return tunnel, str(await tunnel.start()).rstrip("/")
+
+    tunnel, url = await open_tunnel(_start, f"host tunnel (port {port})")
     try:
         yield url
     finally:

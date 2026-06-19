@@ -92,10 +92,9 @@ class MessageNode(StrictBaseModel):
     trainer. `Branch.multi_modal_data` concatenates them along the path into the training
     `mm_kwargs`. Rides the wire as raw bytes (msgpack `bin`) since pydantic can't JSON the numpy;
     kept off disk by the dump-site `exclude` in prime-rl (the tensors bloat the rollout jsonl)."""
-    usage: Usage | None = Field(default=None, exclude=True)
-    """Provider-reported token usage for this message's response (assistant nodes). Transient
-    (excluded from wire/disk); lets the live dashboard show token counts even when the endpoint
-    returns no token ids (so `token_ids` is empty)."""
+    usage: Usage | None = None
+    """Provider-reported token usage for this message's response (assistant nodes). Preserved
+    on the wire and on disk, including cache-read tokens when the provider reports them."""
     routed_experts: np.ndarray | None = None
     """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
     top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
@@ -191,6 +190,9 @@ def message_hash(message: Message) -> str:
     if isinstance(message, AssistantMessage):
         if message.reasoning_content is not None:
             parts += ["reasoning_content", message.reasoning_content]
+        if message.provider_state:
+            # Signed/encrypted continuation state distinguishes otherwise equal turns.
+            parts.append(json.dumps(message.provider_state, sort_keys=True))
         for tc in message.tool_calls or []:
             parts += [tc.id, tc.name, _canonical_tool_arguments(tc.arguments)]
     elif isinstance(message, ToolMessage):

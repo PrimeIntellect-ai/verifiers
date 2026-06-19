@@ -17,7 +17,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import HarnessError, boundary
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import (
     ProgramResult,
@@ -121,13 +121,15 @@ class Harness(ABC, Generic[ConfigT]):
         """Run the harness in `runtime` (via `launch`) and handle its exit; its model calls
         reach the interception server at `endpoint`, and `mcp_urls` are the task's tool
         servers (name -> URL) to expose to the model."""
-        result = await self.launch(ctx, trace, runtime, endpoint, secret, mcp_urls)
+        async with boundary(HarnessError, f"harness {self.config.id!r}"):
+            result = await self.launch(ctx, trace, runtime, endpoint, secret, mcp_urls)
         if trace.stop_condition is not None:
             return  # a @stop refused a turn mid-rollout; the harness's exit is expected
         if result.exit_code != 0:
             # The real cause is at the END of a traceback, so keep the tail.
-            raise ProgramError(
-                f"harness exited {result.exit_code}: {result.stderr.strip()[-2000:]}"
+            detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
+            raise HarnessError(
+                f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
             )
         trace.stop("agent_completed")
 
@@ -139,9 +141,9 @@ class Harness(ABC, Generic[ConfigT]):
         No-op for an harness with no `@metric`s."""
         available = {"task": trace.task, "trace": trace, "runtime": runtime}
         fns = discover_decorated(self, "metric")
-        for fn, result in zip(
-            fns, await asyncio.gather(*(invoke(fn, available) for fn in fns))
-        ):
+        async with boundary(HarnessError, f"harness {self.config.id!r} metric"):
+            results = await asyncio.gather(*(invoke(fn, available) for fn in fns))
+        for fn, result in zip(fns, results):
             if isinstance(result, Mapping):
                 trace.record_metrics(result)
             else:
@@ -162,5 +164,5 @@ class Harness(ABC, Generic[ConfigT]):
         `endpoint` (bearer token `secret`); `mcp_urls` are the task's tool servers
         (name -> URL) to wire in. Each harness owns the env its program needs — read
         `ctx.model` for the model id (the default/compact harnesses set OPENAI_*; rlm sets
-        RLM_* too). UV-script harnesses prepare dependencies in `setup`, then call
-        `runtime.run_uv_script(...)` here."""
+        RLM_* too). UV-script harnesses prepare dependencies in `setup`, then launch the
+        returned argv through `runtime.run_program(...)` here."""

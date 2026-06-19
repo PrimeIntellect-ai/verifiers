@@ -41,10 +41,10 @@ Episode (task, n)
 Each stage is bounded by its own `asyncio.wait_for` (`rollout.py`), so a wedge in any one
 phase is a budget event, not a hang — a `harness_timeout` scores what's there; a
 `finalize`/`scoring` timeout errors the rollout. Defaults are no-limit, so production configs
-set `TimeoutConfig` explicitly. Retries wrap the loop at two granularities: per-call
-(`RetryingClient`, `RetryingRuntime` — rerun just the failed model/runtime call, keeping
-progress) and whole-rollout (`retries.py::run_with_retry` — re-run if the trace ends in a
-retryable error type). Per-rollout budgets (`RolloutLimits`) are checked between turns.
+set `TimeoutConfig` explicitly. Per-call retries are owned by the SDKs (the harness's model SDK,
+the prime/modal runtime SDKs); the framework keeps only whole-rollout retries
+(`retries.py::run_with_retry` — re-run if the trace ends in a retryable error type). Per-rollout
+budgets (`RolloutLimits`) are checked between turns.
 
 ## The trace is a message graph
 
@@ -178,6 +178,49 @@ A single `EnvServer` is one process; the `EnvServerPool` (`serve/`) fronts N wor
 behind a ROUTER/DEALER broker and scales them — `static` (fixed N) or `elastic` (spawn up to a
 cap as in-flight load rises). The interception pool is shared for a server's lifetime and reused
 across rollouts.
+
+## Error handling
+
+Every rollout failure is **attributed to one boundary, then recorded once** — a bad rollout is
+data, not a crash. The whole model is four mechanisms, each in one place (`errors.py`):
+
+1. **Vocabulary** — a flat `RolloutError` hierarchy, one type per boundary, so a recorded
+   `trace.error.type` says *where* it broke:
+
+   | type | boundary |
+   | --- | --- |
+   | `ProviderError` (`OverlongPromptError`) | a model-provider call (`OverlongPromptError` → clean truncation, not an error) |
+   | `HarnessError` | the harness install/launch or its agent process exit |
+   | `ToolsetError` / `UserError` | a task's `Toolset` / `User` server couldn't be built or served |
+   | `SandboxError` | a runtime/sandbox op (provisioning, exec, file I/O) |
+   | `TasksetError` | taskset-authored code (`setup`/`finalize`/`@reward`/`@metric`/`@group_reward`) |
+   | `InterceptionError` (`TunnelError`) | the host interception server couldn't be reached |
+
+2. **Classification** — one helper, `boundary(error_cls, what)`, wraps each framework→code call:
+   an already-typed `RolloutError` passes through (it crossed a more specific boundary first), a
+   stage timeout or any other escaping error becomes `error_cls`. The rule: **extension code
+   (taskset hooks, harness subclasses) raises plain Python errors and never constructs a `vf.*`
+   type** — the framework classifies. Infra raises its type at the source instead (`runtimes` →
+   `SandboxError`, `clients` → `ProviderError` via `model_error`, the interception tunnel →
+   `TunnelError`).
+
+3. **Surfacing** — a model/tool/user call fails *behind the harness subprocess* and comes back to
+   the program as an HTTP error it may swallow or exit on. The interception server stashes the real
+   error on `RolloutSession.error`; the rollout re-raises it once the harness returns (one `finally`),
+   so the trace records the true cause (`ProviderError`/`TasksetError`/`UserError`) rather than a
+   secondary `HarnessError`.
+
+4. **Capture** — `Rollout.run` (mirrored by `EnvServer._handle`) records the failure — typed
+   `RolloutError` *or* an unexpected `Exception` — onto the trace and never lets it cancel sibling
+   rollouts. `BaseException` (`CancelledError`, `KeyboardInterrupt`) still propagates, so shutdown is
+   unaffected.
+
+Retries: per-call faults are retried by the SDKs themselves — the harness's model SDK (the
+interception server is a faithful proxy: it relays the provider's status code so the SDK retries
+5xx/429/timeout and not 4xx) and the prime/modal runtime SDKs. The framework adds targeted retries
+only where no SDK retries underneath (e.g. `open_tunnel`, via the shared `retrying()` policy). On top
+sits whole-rollout `run_with_retry` (`retries.py`), which reruns a trajectory whose trace ends with a
+retryable error (`--retries.rollout.include` matches by type name); off by default.
 
 ## The v0 bridge
 

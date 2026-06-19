@@ -10,24 +10,24 @@ map) it connects to those servers over streamable HTTP, exposes their tools to t
 without a tool call (immediately, when no tools are offered).
 
 It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the
-SDKs — the harness bootstraps `uv` in the runtime. Model calls go to the interception
-server (OPENAI_BASE_URL/API_KEY).
+SDKs — the harness bootstraps `uv` in the runtime. The interception endpoint, per-rollout
+secret, and model arrive as argv (not env), so nothing the program spawns inherits them.
 """
 
+import argparse
 import asyncio
 import json
 import os
-import sys
 from contextlib import AsyncExitStack
 
 from openai import AsyncOpenAI
 
-client = AsyncOpenAI()
 
-
-async def chat(messages: list[dict], tools: list[dict]):
+async def chat(
+    client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
+):
     completion = await client.chat.completions.create(
-        model=os.environ["OPENAI_MODEL"], messages=messages, tools=tools or None
+        model=model, messages=messages, tools=tools or None
     )
     return completion.choices[0].message
 
@@ -91,35 +91,59 @@ async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str | list[dic
     return mcp_content_to_chat_content(result.content)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base-url", required=True)
+    parser.add_argument("--api-key", required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--system-prompt", default="")
+    parser.add_argument("--prompt", default="")
+    parser.add_argument("--mcp-config", default="")
+    return parser.parse_args()
+
+
 async def main() -> None:
-    config = json.loads(os.environ.get("MCP_CONFIG", "{}"))
+    args = parse_args()
+    client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
+    config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
         tools, dispatch = (
             await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
         )
-        system_prompt = os.environ.get("APPEND_SYSTEM_PROMPT", "")
         messages = (
-            [{"role": "system", "content": system_prompt}] if system_prompt else []
+            [{"role": "system", "content": args.system_prompt}]
+            if args.system_prompt
+            else []
         )
-        # A Messages prompt (e.g. an image-bearing prompt) arrives pre-built as OpenAI
-        # wire dicts; otherwise the single argv string is the first user message. An empty argv
-        # means the task has no prompt — the framework's user simulator seeds the opening turn,
-        # so send no user message and let the interception server inject it.
+        # A Messages prompt (e.g. an image-bearing prompt) arrives pre-built as OpenAI wire dicts
+        # via INITIAL_MESSAGES (kept in env: it can be large multimodal content that overflows
+        # argv, and it's prompt content, not a credential); otherwise --prompt is the opening
+        # message. Both empty means the task has no prompt — the user simulator seeds the opening.
         initial = json.loads(os.environ.get("INITIAL_MESSAGES", "[]"))
         if initial:
             messages.extend(initial)
-        elif sys.argv[1]:
-            messages.append({"role": "user", "content": sys.argv[1]})
+        elif args.prompt:
+            messages.append({"role": "user", "content": args.prompt})
         while True:
-            message = await chat(messages, tools)
+            message = await chat(client, args.model, messages, tools)
             messages.append(message.model_dump(exclude_none=True))
             if not message.tool_calls:
                 break
             for call in message.tool_calls:
                 name = call.function.name
-                args = json.loads(call.function.arguments or "{}")
+                try:
+                    tool_args = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError as e:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
+                        }
+                    )
+                    continue
                 if name in dispatch:
-                    content = await call_mcp(dispatch, name, args)
+                    content = await call_mcp(dispatch, name, tool_args)
                 else:
                     content = f"error: unknown tool {name!r}"
                 messages.append(

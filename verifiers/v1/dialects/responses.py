@@ -8,7 +8,22 @@ endpoint and this dialect parses a copy for the trace. Server-side statefulness
 """
 
 import json
+from typing import Any, cast
 
+from openai.types.responses import (
+    EasyInputMessageParam,
+    ResponseFunctionToolCallParam,
+    ResponseInputImageParam,
+    ResponseInputMessageContentListParam,
+    ResponseInputParam,
+    ResponseInputTextParam,
+    ResponseUsage,
+)
+from openai.types.responses.response_input_param import FunctionCallOutput
+from openai.types.responses.response_usage import (
+    InputTokensDetails,
+    OutputTokensDetails,
+)
 from pydantic import BaseModel, ConfigDict
 
 from verifiers.v1.dialects.base import Dialect, iter_sse
@@ -31,9 +46,15 @@ from verifiers.v1.types import (
 )
 
 FINAL_EVENTS = ("response.completed", "response.incomplete", "response.failed")
-ASSISTANT_ITEMS = ("reasoning", "function_call")
 # Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
+
+
+class ProviderUsage(ResponseUsage):
+    """Responses usage with optional detail objects for OpenAI-compatible providers."""
+
+    input_tokens_details: InputTokensDetails | None = None
+    output_tokens_details: OutputTokensDetails | None = None
 
 
 class OpenAIResponse(BaseModel):
@@ -42,6 +63,7 @@ class OpenAIResponse(BaseModel):
     provider/SDK enum skew (e.g. a value the pinned `openai` rejects)."""
 
     model_config = ConfigDict(extra="allow")
+    usage: ProviderUsage | None = None
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -59,6 +81,57 @@ def parse_content(content) -> str | list[ContentPart]:
                 )
             )
     return parts
+
+
+def messages_to_wire(messages: Messages) -> ResponseInputParam:
+    items: ResponseInputParam = []
+    for message in messages:
+        if isinstance(message, AssistantMessage):
+            if message.provider_state:
+                items.extend(cast(ResponseInputParam, message.provider_state))
+                continue
+            if message.content:
+                items.append(
+                    EasyInputMessageParam(
+                        role="assistant",
+                        content=message.content,
+                    )
+                )
+            items.extend(
+                ResponseFunctionToolCallParam(
+                    type="function_call",
+                    call_id=call.id,
+                    name=call.name,
+                    arguments=call.arguments,
+                )
+                for call in message.tool_calls or []
+            )
+            continue
+        content: str | ResponseInputMessageContentListParam = (
+            message.content
+            if isinstance(message.content, str)
+            else [
+                ResponseInputTextParam(type="input_text", text=part.text)
+                if isinstance(part, TextContentPart)
+                else ResponseInputImageParam(
+                    type="input_image",
+                    image_url=part.image_url.url,
+                    detail="auto",
+                )
+                for part in message.content
+            ]
+        )
+        if isinstance(message, ToolMessage):
+            items.append(
+                FunctionCallOutput(
+                    type="function_call_output",
+                    call_id=message.tool_call_id,
+                    output=cast(Any, content),
+                )
+            )
+        else:
+            items.append(EasyInputMessageParam(role=message.role, content=content))
+    return items
 
 
 def fold_assistant(items: list[dict]) -> AssistantMessage:
@@ -94,6 +167,7 @@ def fold_assistant(items: list[dict]) -> AssistantMessage:
         content=content or None,
         reasoning_content="\n".join(r for r in reasoning if r) or None,
         tool_calls=calls or None,
+        provider_state=items,
     )
 
 
@@ -129,14 +203,21 @@ def response_from_wire(response: OpenAIResponse) -> Response:
         if data.get("status") == "incomplete"
         else ("tool_calls" if tool_calls else "stop")
     )
-    usage = (
-        Usage(
-            prompt_tokens=data["usage"].get("input_tokens", 0),
-            completion_tokens=data["usage"].get("output_tokens", 0),
+    usage = None
+    if response.usage:
+        provider_usage = response.usage
+        input_details = provider_usage.input_tokens_details
+        output_details = provider_usage.output_tokens_details
+        cached = input_details.cached_tokens if input_details else None
+        usage = Usage(
+            prompt_tokens=provider_usage.input_tokens - (cached or 0),
+            completion_tokens=provider_usage.output_tokens,
+            cached_input_tokens=cached,
+            reasoning_tokens=output_details.reasoning_tokens
+            if output_details
+            else None,
+            cost=getattr(provider_usage, "cost", None),
         )
-        if data.get("usage")
-        else None
-    )
     return Response(
         id=data.get("id", ""),
         created=data.get("created_at", 0),
@@ -145,6 +226,7 @@ def response_from_wire(response: OpenAIResponse) -> Response:
             content=content or None,
             reasoning_content="\n".join(r for r in reasoning if r) or None,
             tool_calls=tool_calls,
+            provider_state=data.get("output"),
         ),
         finish_reason=finish,
         usage=usage,
@@ -168,8 +250,11 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         )
         run: list[dict] = []  # the current run of assistant-side items
         for item in items:
+            role = item.get("role")
             assistant = (
-                item.get("type") in ASSISTANT_ITEMS or item.get("role") == "assistant"
+                role == "assistant"
+                or role is None
+                and not (item.get("type") or "").endswith(("_output", "_response"))
             )
             if run and not assistant:
                 prompt.append(fold_assistant(run))
@@ -224,21 +309,48 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         # Forward verbatim except the eval's model + sampling, mapped to the Responses shape
         # (`max_tokens` -> `max_output_tokens`); sampling is authoritative.
         s = sampling.model_dump(exclude_none=True)
+        name = model.rsplit("/", 1)[-1]
+        reasoning_model = (
+            name.startswith(("gpt-5", "o1", "o3", "o4"))
+            and "-chat" not in name
+            and ("/" not in model or model.startswith("openai/"))
+        )
         overrides: dict = {"model": model}
+        if reasoning_model:
+            include = list(body.get("include") or [])
+            if "reasoning.encrypted_content" not in include:
+                include.append("reasoning.encrypted_content")
+            overrides["include"] = include
         if "temperature" in s:
             overrides["temperature"] = s["temperature"]
         if "top_p" in s:
             overrides["top_p"] = s["top_p"]
         if "max_tokens" in s:
             overrides["max_output_tokens"] = s["max_tokens"]
+        reasoning = dict(body.get("reasoning") or {})
+        if reasoning_model:
+            reasoning = {"summary": "auto", **reasoning}
         if "reasoning_effort" in s:
-            overrides["reasoning"] = {
-                **dict(body.get("reasoning") or {}),
-                "effort": s["reasoning_effort"],
-            }
+            reasoning["effort"] = s["reasoning_effort"]
+        if reasoning:
+            overrides["reasoning"] = reasoning
         steered = {
             k: v
             for k, v in body.items()
             if k not in _SAMPLING_KEYS and k not in overrides
         }
         return {**steered, **overrides}
+
+    def extend(
+        self, body: dict, completion: dict | None, user_messages: Messages
+    ) -> dict:
+        """Append raw model output and the user simulator's reply for the next turn."""
+        raw = body.get("input")
+        items: ResponseInputParam = (
+            [EasyInputMessageParam(role="user", content=raw)]
+            if isinstance(raw, str)
+            else cast(ResponseInputParam, list(raw or []))
+        )
+        items.extend(cast(ResponseInputParam, (completion or {}).get("output") or []))
+        items.extend(messages_to_wire(user_messages))
+        return {**body, "input": items}

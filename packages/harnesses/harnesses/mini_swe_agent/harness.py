@@ -38,6 +38,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         if self.config.disabled_tools:
             raise ValueError("mini-swe-agent does not support disabling tools")
         _, prompt = self.resolve_prompt(trace.task)
+        source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         args = [
             "--model",
             ctx.model,
@@ -60,14 +61,15 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "model.model_kwargs.custom_llm_provider=openai",
             "-c",
             "model.model_kwargs.parallel_tool_calls=true",
+            "-c",
+            f"model.model_kwargs.api_base={endpoint}",
+            "-c",
+            f"model.model_kwargs.api_key={secret}",
         ]
         env = {
             **self.config.env,
-            "OPENAI_BASE_URL": endpoint,
-            "OPENAI_API_KEY": secret,
             "MSWEA_CONFIGURED": "true",
             "MSWEA_SILENT_STARTUP": "true",
         }
-        return await runtime.run_uv_script(
-            PROGRAM_SOURCE.replace("{version}", self.config.version), args=args, env=env
-        )
+        program = await runtime.prepare_uv_script(source, self.config.env)
+        return await runtime.run_program([*program, *args], env)

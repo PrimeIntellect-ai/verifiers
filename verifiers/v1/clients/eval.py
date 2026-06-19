@@ -129,16 +129,20 @@ class EvalClient(Client):
         request = self.http.build_request("POST", url, json=body, headers=headers)
         try:
             response = await self.http.send(request, stream=stream)
+        except httpx.TimeoutException as e:
+            raise model_error(str(e), status_code=504) from e
         except httpx.HTTPError as e:
-            raise model_error(str(e)) from e
+            raise model_error(str(e), status_code=503) from e
         if not stream:
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
-                # include the status — an empty/HTML body (e.g. a 404 from a base_url missing
-                # `/v1`) would otherwise make an information-free ModelError
+                # relay the provider's status (and body) so the harness SDK retries 5xx/429 and not
+                # 4xx; an empty/HTML body (e.g. a 404 from a base_url missing `/v1`) would otherwise
+                # make an information-free ProviderError
                 raise model_error(
-                    f"upstream {e.response.status_code}: {e.response.text}"
+                    f"upstream {e.response.status_code}: {e.response.text}",
+                    status_code=e.response.status_code,
                 ) from e
             return response
         if response.status_code < 400:
@@ -147,7 +151,9 @@ class EvalClient(Client):
             text = (await response.aread()).decode("utf-8", errors="replace")
         finally:
             await response.aclose()
-        raise model_error(f"upstream {response.status_code}: {text}")
+        raise model_error(
+            f"upstream {response.status_code}: {text}", status_code=response.status_code
+        )
 
     async def relay(
         self,

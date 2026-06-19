@@ -23,12 +23,16 @@ from verifiers.v1.cli.output import output_path
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.format import format_count, format_reward, format_time
+from verifiers.v1.utils.format import format_count, format_mean, format_time
+from verifiers.utils.pricing_utils import format_cost_usd
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
 _CONSOLE = Console()
 _PAGE_SECONDS = 5.0  # rotate to the next page of rollouts this often when they overflow
+# The under-bar breakdown pads its label column to the Overview's widest label, so the two
+# `label  value` grids (above and below the progress bar) line their values up.
+_LABEL_WIDTH = len("timeouts")
 
 _STYLE = {
     "setup": "yellow",
@@ -129,11 +133,11 @@ def Overview(config: EvalConfig) -> Table:
 
 def Progress(
     rollouts: list[Rollout], start: float, page: tuple[int, int] | None = None
-) -> Table:
+) -> Group:
     done = [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
-    # Headline reward = mean over non-errored; when any errored, `format_reward` appends the
+    # Headline reward = mean over non-errored; when any errored, `format_mean` appends the
     # global avg (errored count as 0) in parens. `err` is the share that errored.
-    reward = format_reward(done)
+    reward = format_mean(done, lambda t: t.reward)
     err = f"{sum(t.has_error for t in done) / len(done):.2f}" if done else "—"
     stats = (
         f"{len(done)}/{len(rollouts)} · {format_time(time.time() - start)} · "
@@ -148,10 +152,39 @@ def Progress(
         ProgressBar(total=len(rollouts) or 1, completed=len(done)),
         Text(stats),
     )
-    return row
+    breakdown = _breakdown(done)
+    return Group(row, breakdown) if breakdown is not None else Group(row)
 
 
-def _tokens(trace: Trace) -> str:
+def _breakdown(done: list[Trace]) -> Table | None:
+    """The per-component view under the headline (summed) reward: a `rewards` row of each named
+    `@reward` contribution and a `metrics` row of each `@metric`, laid out like the Overview (dim
+    label column). Each component is formatted exactly like the headline reward — the
+    error-corrected mean, with the global mean (an errored trace's value counting as 0) in parens
+    when some errored (see `format_mean`). `None` when nothing has scored yet, so the bar shows
+    alone."""
+    if not any(not t.has_error for t in done):
+        return None
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="dim", min_width=_LABEL_WIDTH)
+    grid.add_column()
+    for label, source in (("rewards", "rewards"), ("metrics", "metrics")):
+        # every key seen across traces, first-seen order (a trace records only the functions
+        # that ran for it, so keys can vary)
+        names: list[str] = []
+        for trace in done:
+            names.extend(n for n in getattr(trace, source) if n not in names)
+        if not names:
+            continue
+        segments = [
+            f"{name} {format_mean(done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0))}"
+            for name in names
+        ]
+        grid.add_row(label, "  ·  ".join(segments))
+    return grid if grid.row_count else None
+
+
+def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None]:
     """Input/output tokens for the main branch: output is every assistant (completion) token
     generated across the branch's turns; input is the last turn's prompt — the full final
     context the model saw. (Output can exceed the final context — reasoning tokens count toward
@@ -159,15 +192,16 @@ def _tokens(trace: Trace) -> str:
 
     Prefers the token-id counts; falls back to provider-reported usage when the endpoint returns
     no token ids (e.g. plain OpenAI completions), so the counts aren't shown as 0/0."""
+    usage = trace.usage
+    cached = usage.cached_input_tokens if usage else None
+    reasoning = usage.reasoning_tokens if usage else None
     branches = trace.branches
     if not branches or not branches[0].nodes:
-        return ""
+        return 0, 0, cached, reasoning
     b = branches[0]
     prompt = b.prompt_len or b.num_prompt_tokens
     completion = b.completion_len or b.num_completion_tokens
-    if not prompt and not completion:
-        return ""
-    return f"{format_count(prompt)}/{format_count(completion)} tokens"
+    return prompt, completion, cached, reasoning
 
 
 def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
@@ -225,13 +259,26 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                 or t.timing.generation.end
                 or now
             )
+            prompt, completion, cached, reasoning = _tokens(t)
+            cost = t.usage.cost if t.usage else None
+            tokens = ""
+            if prompt or completion:
+                tokens = f"{format_count(prompt)}/{format_count(completion)} tokens"
+                details = []
+                if reasoning is not None:
+                    details.append(f"{format_count(reasoning)} reasoning")
+                if cached is not None:
+                    details.append(f"{format_count(cached)} cached")
+                if details:
+                    tokens += f" ({', '.join(details)})"
             left = [
                 f"task {label}",
                 t.id[:8],
                 runtime,
                 f"{turns} turn{'s' * (turns != 1)}",
                 f"{nbranches} branch{'es' * (nbranches != 1)}",
-                _tokens(t),
+                tokens,
+                f"{format_cost_usd(cost)}" if cost is not None else "",
                 stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
             ]
             # No start time yet (queued, not generating) → blank, not `now - 0` (~56 years).
@@ -245,10 +292,19 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
         return grid
     # Pad each left section to its max width across rows (drop all-empty ones) so they align,
     # then join with " · ". Text sections left-justified, numeric right.
-    pad = (str.ljust, str.ljust, str.ljust, str.rjust, str.rjust, str.rjust, str.ljust)
-    widths = [max(len(left[i]) for _, _, left, _, _ in rows) for i in range(7)]
+    pad = (
+        str.ljust,
+        str.ljust,
+        str.ljust,
+        str.rjust,
+        str.rjust,
+        str.ljust,
+        str.rjust,
+        str.ljust,
+    )
+    widths = [max(len(left[i]) for _, _, left, _, _ in rows) for i in range(8)]
     for brace, state, left, result, elapsed in rows:
-        sections = [pad[i](left[i], widths[i]) for i in range(7) if widths[i]]
+        sections = [pad[i](left[i], widths[i]) for i in range(8) if widths[i]]
         grid.add_row(
             f"{brace} {_MARK[state]} " + " · ".join(sections),
             f"{result} ·" if result else "",  # trailing dot only when there's a result

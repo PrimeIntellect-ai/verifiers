@@ -10,7 +10,6 @@ import logging
 import shlex
 
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.errors import ProgramError
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -60,7 +59,7 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         )
         install = await runtime.run(["sh", "-c", guarded], {})
         if install.exit_code != 0:
-            raise ProgramError(
+            raise RuntimeError(
                 f"Kimi Code install failed: {install.stderr.strip()[-500:]}"
             )
 

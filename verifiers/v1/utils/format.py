@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -33,17 +34,19 @@ def format_count(n: int) -> str:
     return f"{n / 1e6:.1f}M"
 
 
-def format_reward(traces: list[Trace], digits: int = 2) -> str:
-    """Headline reward over completed `traces`: the mean over the non-errored ones
-    (error-corrected). When some errored, also append the global mean — over *all*
-    completed, errored counting as 0 — in parens, so both the error-corrected and the
-    raw reward are visible. "—" when nothing has completed (or all errored)."""
+def format_mean(
+    traces: list[Trace], value: Callable[[Trace], float], digits: int = 2
+) -> str:
+    """Mean of `value` over completed `traces`: the mean over the non-errored ones
+    (error-corrected). When some errored, also append the global mean — over *all* completed,
+    an errored trace's value counting as 0 — in parens, so both the error-corrected and the raw
+    mean are visible. "—" when nothing has completed (or all errored)."""
     if not traces:
         return "—"
     clean = [t for t in traces if not t.has_error]
     if not clean:
         return "—"
-    reward = f"{sum(t.reward for t in clean) / len(clean):.{digits}f}"
+    mean = f"{sum(value(t) for t in clean) / len(clean):.{digits}f}"
     if len(clean) < len(traces):  # some errored → show the raw global avg alongside
-        reward += f" ({sum(t.reward for t in traces) / len(traces):.{digits}f})"
-    return reward
+        mean += f" ({sum(value(t) for t in traces) / len(traces):.{digits}f})"
+    return mean

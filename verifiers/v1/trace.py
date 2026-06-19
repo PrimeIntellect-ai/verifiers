@@ -28,6 +28,7 @@ from verifiers.v1.types import (
     Messages,
     StrictBaseModel,
     ToolMessage,
+    Usage,
 )
 
 logger = logging.getLogger(__name__)
@@ -164,19 +165,25 @@ class Branch(StrictBaseModel):
         return self.total_tokens - last_completion
 
     @property
+    def usage(self) -> Usage | None:
+        """Provider-reported usage summed over model calls in this branch."""
+        return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)
+
+    @property
     def num_prompt_tokens(self) -> int:
         """Final-turn input tokens from provider-reported usage — a fallback for display when
         the endpoint returns no token ids (so `prompt_len` is 0); 0 if no usage was reported."""
         last = next(
             (n.usage for n in reversed(self.nodes) if n.usage is not None), None
         )
-        return last.prompt_tokens if last else 0
+        return last.input_tokens if last else 0
 
     @property
     def num_completion_tokens(self) -> int:
         """All completion tokens across the branch from provider-reported usage — a fallback for
         display when the endpoint returns no token ids; 0 if no usage was reported."""
-        return sum(n.usage.completion_tokens for n in self.nodes if n.usage is not None)
+        usage = self.usage
+        return usage.completion_tokens if usage else 0
 
 
 class Trace(StrictBaseModel, Generic[TaskT, StateT]):
@@ -256,6 +263,11 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         """Total sequence length summed over branches (each branch's final-turn prompt +
         completion) — used for token batching."""
         return sum(branch.total_tokens for branch in self.branches)
+
+    @property
+    def usage(self) -> Usage | None:
+        """Provider-reported usage summed once per actual model call in this rollout."""
+        return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)
 
     @property
     def has_response(self) -> bool:

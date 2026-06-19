@@ -270,8 +270,9 @@ isolated environment. On a `runtime` you can call:
 | `read(path)` / `write(path, data)` | workspace files (bytes), across the container/sandbox boundary |
 | `expose(port)` | publish a port *inside* the runtime to a host-reachable URL (`None` when local) |
 
-A non-zero `exit_code` is a normal result, not an exception — check it and raise `vf.ProgramError`
-yourself if it should fail the stage. The same code works on subprocess / docker / prime / modal.
+A non-zero `exit_code` is a normal result, not an exception — check it and `raise` (a plain
+Python error) yourself if it should fail the stage; the framework records a failure in your
+taskset code as a `TasksetError`. The same code works on subprocess / docker / prime / modal.
 
 A SWE taskset is the canonical case: `setup` provisions the repo, the agent edits it during the
 rollout, and a `@reward` runs the tests in the *same* runtime:
@@ -521,9 +522,9 @@ Responses, Anthropic Messages). The program can be any executable the runtime ca
 
 It must return a `vf.ProgramResult` (`exit_code`, `stdout`, `stderr`) — usually the return of
 `runtime.run(...)` / `runtime.run_uv_script(...)`. The base `run` wraps `launch`: a clean exit
-becomes `trace.stop("agent_completed")`; a non-zero exit raises `ProgramError` with the tail of
-stderr — **unless** a `@stop` already fired (the program dying because the interception server cut
-a turn is expected, not an error).
+becomes `trace.stop("agent_completed")`; a non-zero exit (or an unexpected exception from `launch`)
+raises `HarnessError` with the tail of stderr — **unless** a `@stop` already fired (the program
+dying because the interception server cut a turn is expected, not an error).
 
 **`resolve_prompt(trace.task)`** returns `(system_prompt, prompt)` already reconciled with your
 capability flags: the system prompt is handed back only if `APPENDS_SYSTEM_PROMPT` (else folded
@@ -589,7 +590,7 @@ uv run eval gsm8k-v1 -n 5 -r 3 \
   --max-turns 8 --max-total-tokens 8192 \                          # per-rollout budgets
   --sampling.temperature 0 --sampling.max-tokens 2048 \            # generation knobs
   --timeout.rollout 600 --timeout.scoring 120 \                    # per-stage wall-clock caps (s)
-  --retries.rollout.max-retries 3 --retries.rollout.include ProgramError  # retry a whole rollout
+  --retries.rollout.max-retries 3 --retries.rollout.include SandboxError  # retry a whole rollout
 ```
 
 **Common flags** (each has a TOML equivalent at the dotted path):
@@ -601,7 +602,7 @@ uv run eval gsm8k-v1 -n 5 -r 3 \
 | budgets | `--max-turns`, `--max-input-tokens`, `--max-output-tokens`, `--max-total-tokens` (all None) |
 | sampling | `--sampling.temperature`, `--sampling.top-p`, `--sampling.max-tokens`, `--sampling.reasoning-effort` (provider keys pass through) |
 | timeouts | `--timeout.setup`, `--timeout.rollout`, `--timeout.finalize`, `--timeout.scoring` (None = no limit) |
-| retries | `--retries.model.max-retries` (3), `--retries.runtime.max-retries` (3), `--retries.rollout.max-retries` (0), `--retries.rollout.include`/`.exclude` (by exception name) |
+| retries | `--retries.rollout.max-retries` (0), `--retries.rollout.include`/`.exclude` (by exception name); per-call model/runtime retries are owned by the harness/runtime SDKs |
 | client | `--client.type` (`eval`\|`train`), `--client.base-url`, `--client.api-key-var` |
 | runtime | `--harness.runtime.type` (`subprocess`), `--harness.env`, `--harness.disabled-tools` |
 | concurrency | `-c`/`--max-concurrent` (128), `--multiplex` (32), `--pool.type` (`elastic`\|`static`) |
@@ -638,7 +639,6 @@ uv run validate gsm8k-v1 -n 20 --runtime.type subprocess
 | `<taskset-id>` / `--taskset.id` | — | taskset to validate |
 | `--runtime.type` | `docker` | runtime for `setup` + `validate` (a gold check often needs the task's container) |
 | `--setup-timeout` / `--validate-timeout` | None | per-hook wall-clock caps |
-| `--retries.runtime.max-retries` | 3 | the only retry that applies (fresh runtime per try) |
 | `-n`/`--num-tasks`, `-s`/`--shuffle`, `-c`/`--max-concurrent` (128) | | task selection + concurrency |
 | `-v`/`--verbose`, `--no-rich` | | logging / disable the dashboard |
 

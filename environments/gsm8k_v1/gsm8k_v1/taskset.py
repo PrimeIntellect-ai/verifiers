@@ -27,8 +27,6 @@ class GSM8KTask(vf.Task):
 
 class GSM8KConfig(vf.TasksetConfig):
     split: Literal["train", "test"] = "test"
-    harness_timeout: float | None = None
-    """Per-task harness timeout in seconds."""
 
 
 class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
@@ -41,7 +39,6 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
                 idx=i,
                 prompt=f"{SYSTEM}\n\n{row['question']}",
                 answer=row["answer"].split("####")[-1].strip(),
-                timeout=vf.TaskTimeout(harness=self.config.harness_timeout),
             )
             for i, row in enumerate(rows)
         ]
@@ -57,7 +54,7 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
             VERIFY, args=[task.answer, prediction or ""]
         )
         if result.exit_code != 0:
-            raise vf.ProgramError(f"verify.py failed: {result.stderr.strip()[-500:]}")
+            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
         lines = result.stdout.strip().splitlines()
         return float(lines[-1]) if lines else 0.0
 
@@ -69,6 +66,6 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
             VERIFY, args=[task.answer, f"#### {task.answer}"]
         )
         if result.exit_code != 0:
-            raise vf.ProgramError(f"verify.py failed: {result.stderr.strip()[-500:]}")
+            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
         lines = result.stdout.strip().splitlines()
         return bool(lines) and float(lines[-1]) == 1.0

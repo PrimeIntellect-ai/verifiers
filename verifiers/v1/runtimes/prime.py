@@ -16,7 +16,7 @@ from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime, parse_gpu
 from verifiers.v1.runtimes.limiters import creation_limiter
 
@@ -117,7 +117,7 @@ class PrimeRuntime(Runtime):
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
-            raise ProgramError(f"prime sandbox provisioning failed: {e}") from e
+            raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:
@@ -137,7 +137,7 @@ class PrimeRuntime(Runtime):
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise ProgramError(f"prime exec failed: {e}") from e
+            raise SandboxError(f"prime exec failed: {e}") from e
         return ProgramResult(
             exit_code=result.exit_code or 0,
             stdout=result.stdout or "",
@@ -146,18 +146,17 @@ class PrimeRuntime(Runtime):
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox via the SDK's native port exposure → a public
-        # HTTPS URL reachable from anywhere (incl. another sandbox). The exposure is removed when
-        # the sandbox is deleted in stop(), so a tool in its own prime sandbox needs no host tunnel.
-        # TODO: `client.expose` currently only works in a default-region sandbox (port <= 9000), so
-        # a tool/user-sim in its own prime sandbox needs the region pinned. Fix once prime supports
-        # port exposure in any region (then drop the e2e `skip_if_unexposable` guard).
+        # HTTPS URL. Removed when the sandbox is deleted in stop(), so a tool in its own prime
+        # sandbox needs no host tunnel. Port exposure is region-gated: many regions (incl. the
+        # backend default, which lands in us-central) 400 it; `us` supports it. TODO: re-enable the
+        # prime cases in the e2e `skip_if_unexposable` guard once prime exposes ports in any region.
         try:
             exposed = await self._client.expose(self._sandbox_id, port)
         except Exception as e:  # surface prime's exposure constraints actionably
-            raise ProgramError(
-                "prime port exposure failed — `client.expose` currently needs a default-region "
-                "sandbox and port <= 9000; pin `tools.runtime.region` to a supported "
-                f"region, or use a host/docker tools.runtime instead. ({e})"
+            raise SandboxError(
+                "prime port exposure failed — port exposure isn't supported in this sandbox's "
+                "region; pin `tools.runtime.region` to a region that supports it (e.g. `us`), or "
+                f"use a colocated / docker / modal tools.runtime instead. ({e})"
             ) from e
         logger.info("prime: exposed sandbox port %d at %s", port, exposed.url)
         return exposed.url.rstrip("/")
@@ -170,14 +169,14 @@ class PrimeRuntime(Runtime):
         inner = f"nohup {shlex.join(argv)} > {shlex.quote(log)} 2>&1 &"
         result = await self.run(["sh", "-c", inner], env)
         if result.exit_code != 0:
-            raise ProgramError(
+            raise SandboxError(
                 f"prime background launch failed: {result.stderr.strip()}"
             )
 
     async def read(self, path: str) -> bytes:
         result = await self.run(["sh", "-c", f"base64 {shlex.quote(path)}"], {})
         if result.exit_code != 0:
-            raise ProgramError(f"read {path!r}: {result.stderr.strip()}")
+            raise SandboxError(f"read {path!r}: {result.stderr.strip()}")
         return base64.b64decode(result.stdout)
 
     async def write(self, path: str, data: bytes) -> None:
@@ -200,7 +199,7 @@ class PrimeRuntime(Runtime):
                 self._sandbox_id, target, data, filename=PurePosixPath(target).name
             )
         except Exception as e:
-            raise ProgramError(f"write {path!r}: {e}") from e
+            raise SandboxError(f"write {path!r}: {e}") from e
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete

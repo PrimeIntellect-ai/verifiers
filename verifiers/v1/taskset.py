@@ -22,6 +22,7 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated, invoke
+from verifiers.v1.errors import TasksetError, boundary
 from verifiers.v1.types import EnvId
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import Runtime
@@ -111,19 +112,22 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         `runtime` — so a reward is either a pure function of the trace or runs
         read/write/exec in that (still-live) runtime, e.g. a verifier script."""
         available = {"task": trace.task, "trace": trace, "runtime": runtime}
-        metrics = discover_decorated(self, "metric")
-        for fn, result in zip(
-            metrics, await asyncio.gather(*(invoke(fn, available) for fn in metrics))
-        ):
-            if isinstance(result, Mapping):
-                trace.record_metrics(result)
-            else:
-                trace.record_metric(fn.__name__, result)
-        rewards = discover_decorated(self, "reward")
-        for fn, result in zip(
-            rewards, await asyncio.gather(*(invoke(fn, available) for fn in rewards))
-        ):
-            trace.record_reward(fn.__name__, result, getattr(fn, "_vf_weight", 1.0))
+        async with boundary(TasksetError, f"taskset {type(self).__name__} scoring"):
+            metrics = discover_decorated(self, "metric")
+            for fn, result in zip(
+                metrics,
+                await asyncio.gather(*(invoke(fn, available) for fn in metrics)),
+            ):
+                if isinstance(result, Mapping):
+                    trace.record_metrics(result)
+                else:
+                    trace.record_metric(fn.__name__, result)
+            rewards = discover_decorated(self, "reward")
+            for fn, result in zip(
+                rewards,
+                await asyncio.gather(*(invoke(fn, available) for fn in rewards)),
+            ):
+                trace.record_reward(fn.__name__, result, getattr(fn, "_vf_weight", 1.0))
 
     async def score_group(self, traces: list[Trace]) -> None:
         """Score a group of rollouts of one task: run every `@group_reward` over all
@@ -136,9 +140,13 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         if not rewards:
             return
         available = {"task": traces[0].task, "traces": traces}
-        for fn, scores in zip(
-            rewards, await asyncio.gather(*(invoke(fn, available) for fn in rewards))
+        async with boundary(
+            TasksetError, f"taskset {type(self).__name__} group scoring"
         ):
-            weight = getattr(fn, "_vf_weight", 1.0)
-            for trace, score in zip(traces, scores):
-                trace.record_reward(fn.__name__, score, weight)
+            for fn, scores in zip(
+                rewards,
+                await asyncio.gather(*(invoke(fn, available) for fn in rewards)),
+            ):
+                weight = getattr(fn, "_vf_weight", 1.0)
+                for trace, score in zip(traces, scores):
+                    trace.record_reward(fn.__name__, score, weight)

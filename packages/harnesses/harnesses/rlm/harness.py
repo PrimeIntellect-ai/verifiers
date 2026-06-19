@@ -11,7 +11,6 @@ import shlex
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import metric
-from verifiers.v1.errors import ProgramError
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -58,7 +57,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         env = {**self.config.env, "RLM_HOME": RLM_HOME}
         result = await runtime.run(["sh", "-c", guarded], env)
         if result.exit_code != 0:
-            raise ProgramError(f"rlm install failed: {result.stderr.strip()[-500:]}")
+            raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
 
     async def launch(
         self,
@@ -70,12 +69,10 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
-        # rlm reaches the interception server via OPENAI_BASE_URL/API_KEY (its
-        # provider precedence falls back to OPENAI_*), and reads RLM_* for itself.
         env = {
             **self.config.env,
-            "OPENAI_BASE_URL": endpoint,
-            "OPENAI_API_KEY": secret,
+            "RLM_BASE_URL": endpoint,
+            "RLM_API_KEY": secret,
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "RLM_HOME": RLM_HOME,

@@ -16,13 +16,18 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from enum import StrEnum
 
 from verifiers.v1.harness import Harness
-from verifiers.v1.clients import RetryingClient, RolloutContext
+from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.errors import ProgramError, RolloutError
+from verifiers.v1.errors import (
+    HarnessError,
+    RolloutError,
+    TasksetError,
+    ToolsetError,
+    boundary,
+)
 from verifiers.v1.interception import (
     InterceptionPool,
     InterceptionServer,
@@ -31,7 +36,6 @@ from verifiers.v1.interception import (
 )
 from verifiers.v1.runtimes import (
     HOST,
-    RetryingRuntime,
     Runtime,
     RuntimeConfig,
     make_runtime,
@@ -70,8 +74,6 @@ class Rollout:
         finalize_timeout: float | None = None,
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
-        model_retries: int = 0,
-        runtime_retries: int = 0,
         shared_urls: dict[str, str] | None = None,
         interception: InterceptionPool | None = None,
     ) -> None:
@@ -85,8 +87,6 @@ class Rollout:
         self.finalize_timeout = finalize_timeout
         self.scoring_timeout = scoring_timeout
         self.limits = limits or RolloutLimits()
-        self.model_retries = model_retries
-        self.runtime_retries = runtime_retries
         self.shared_urls = shared_urls or {}
         """Eval-level shared tool servers ({name: url}) to reuse instead of starting per rollout;
         the eval-level interception pool. Both injected by `Environment.episode` from the active
@@ -143,12 +143,8 @@ class Rollout:
         self.runtime = make_runtime(
             self.runtime_config, name=trace.id
         )  # ref set first → always tearable-down; named after the rollout for traceability
-        if self.runtime_retries > 0:
-            self.runtime = RetryingRuntime(self.runtime, self.runtime_retries)
         runtime = self.runtime
         ctx = self.ctx
-        if self.model_retries > 0:
-            ctx = replace(ctx, client=RetryingClient(ctx.client, self.model_retries))
         stops = discover_decorated(self.taskset, "stop")
         logger.info(
             "rollout start: id=%s task=%s harness=%s runtime=%s",
@@ -160,14 +156,21 @@ class Rollout:
         try:
             session = RolloutSession(ctx, trace, stops, self.limits)
             await runtime.start()
-            try:
-                async with asyncio.timeout(self.setup_timeout):
-                    await self.taskset.setup(self.task, runtime)
-                    await self.harness.setup(runtime)
-            except TimeoutError:
-                raise ProgramError(
-                    f"setup exceeded setup_timeout of {self.setup_timeout}s"
-                ) from None
+            setup_deadline = (
+                None
+                if self.setup_timeout is None
+                else asyncio.get_running_loop().time() + self.setup_timeout
+            )
+            async with (
+                boundary(TasksetError, "taskset setup"),
+                asyncio.timeout_at(setup_deadline),
+            ):
+                await self.taskset.setup(self.task, runtime)
+            async with (
+                boundary(HarnessError, "harness setup"),
+                asyncio.timeout_at(setup_deadline),
+            ):
+                await self.harness.setup(runtime)
             async with self._serve_interception(
                 self.interception, runtime, session
             ) as (
@@ -176,7 +179,8 @@ class Rollout:
                 state_port,
                 state_base,
             ):
-                tool_servers = self.taskset.tools(self.task)
+                async with boundary(ToolsetError, "building tool servers"):
+                    tool_servers = self.taskset.tools(self.task)
                 async with (
                     serve_tools(
                         tool_servers,
@@ -193,10 +197,11 @@ class Rollout:
                         harness_runtime=runtime,
                         state_port=state_port,
                         state_secret=secret,
+                        state_base=state_base,
                     ) as session.user,
                 ):
                     if self.task.prompt is None and session.user is None:
-                        raise ProgramError(
+                        raise TasksetError(
                             "task has no prompt and no user simulator to open the "
                             "conversation; set task.prompt or have Taskset.user return "
                             "a simulator"
@@ -206,6 +211,11 @@ class Rollout:
                     trace.timing.setup.end = now
                     trace.timing.generation.start = now
                     self.phase = Phase.RUNNING
+                    # A model/tool/user call that failed behind the harness (surfaced to the program
+                    # as an HTTP error it may have swallowed or exited on) is the real cause — prefer
+                    # it over the harness's own exit (see `RolloutSession.error`). But a harness
+                    # *timeout* is a budget limit, not a crash: score whatever the harness produced
+                    # (like max_turns), even if its last call had failed.
                     try:
                         await asyncio.wait_for(
                             self.harness.run(
@@ -214,32 +224,33 @@ class Rollout:
                             self.harness_timeout,
                         )
                     except TimeoutError:
-                        # A timeout is a budget limit, not a crash — score whatever the
-                        # harness produced (like max_turns), don't error out. `is_truncated`
-                        # is computed from this stop condition.
                         trace.stop("harness_timeout")
+                    except RolloutError as e:
+                        if session.error is not None:
+                            raise session.error from e
+                        raise
+                    else:
+                        if session.error is not None:
+                            raise session.error
             now = time.time()
             trace.timing.generation.end = now
             trace.timing.finalize.start = now
             self.phase = Phase.FINALIZE  # post-run taskset work, before scoring
-            try:
+            async with boundary(TasksetError, "taskset finalize"):
                 await asyncio.wait_for(
                     self.taskset.finalize(self.task, trace, runtime),
                     self.finalize_timeout,
                 )
-            except TimeoutError:
-                raise ProgramError(
-                    f"finalize exceeded finalize_timeout of {self.finalize_timeout}s"
-                ) from None
             now = time.time()
             trace.timing.finalize.end = now
             self.phase = (
                 Phase.SCORING
             )  # per-rollout scoring; the Episode marks DONE after group scoring
             trace.timing.scoring.start = now
-            try:
+            async with boundary(TasksetError, "scoring"):
                 # Per-rollout scoring: taskset + harness, concurrently, both with the live
-                # runtime. (Cross-rollout `@group_reward`s run later, in the Episode.)
+                # runtime. (Cross-rollout `@group_reward`s run later, in the Episode.) Each
+                # method types its own failures; only a timeout is attributed here.
                 await asyncio.wait_for(
                     asyncio.gather(
                         self.taskset.score(trace, runtime),
@@ -247,12 +258,15 @@ class Rollout:
                     ),
                     self.scoring_timeout,
                 )
-            except TimeoutError:
-                raise ProgramError(
-                    f"scoring exceeded scoring_timeout of {self.scoring_timeout}s"
-                ) from None
             trace.timing.scoring.end = time.time()
         except RolloutError as e:
+            trace.capture_error(e)
+        except Exception as e:
+            # An unexpected (non-RolloutError) failure is still this rollout's alone: record it
+            # (with traceback) on the trace rather than letting it propagate and cancel sibling
+            # rollouts / the eval. `BaseException` (CancelledError, KeyboardInterrupt) still
+            # propagates, so shutdown/cancellation is unaffected.
+            logger.exception("unexpected error in rollout %s", trace.id)
             trace.capture_error(e)
         finally:
             trace.is_completed = True

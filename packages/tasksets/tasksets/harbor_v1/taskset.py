@@ -2,8 +2,9 @@
 
 `dataset` is a Harbor Hub registry id (e.g. "name", "name@version",
 "org/name@ref"), downloaded + cached on first use via the `harbor` CLI
-(`uv tool install harbor`). Each task dir ships task.toml + instruction.md
-(+ tests/, solution/, environment/). Defaults to the registry `hello-world` task.
+(fetched on demand with `uv` when needed). Each task dir ships task.toml +
+instruction.md (+ tests/, solution/, environment/). Defaults to the registry
+`hello-world` task.
 
 The harness runs in a container and edits /app; then the task's verifier
 (tests/test.sh) runs in the SAME container and the reward it writes to
@@ -19,7 +20,10 @@ no environment at all also runs on that image, unless `require_image`.
 """
 
 import io
+import logging
+import shutil
 import subprocess
+import sys
 import tarfile
 import tomllib
 from pathlib import Path
@@ -27,7 +31,7 @@ from pathlib import Path
 from pydantic import Field
 
 from verifiers.v1.decorators import reward
-from verifiers.v1.errors import ProgramError
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset, TasksetConfig
@@ -35,6 +39,8 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"
+HARBOR_PACKAGE = "harbor==0.14.0"
+logger = logging.getLogger("verifiers.v1.tasksets.harbor")
 
 
 class HarborConfig(TasksetConfig):
@@ -83,16 +89,27 @@ def dataset_dir(dataset: str) -> Path:
     """Download a Harbor Hub `dataset` to a directory of task dirs via the `harbor`
     CLI, cached on first use."""
     out = CACHE / dataset.replace("/", "_").replace("@", "_")
-    if not out.is_dir():
-        try:
-            subprocess.run(
-                ["harbor", "download", dataset, "--export", "-o", str(out)], check=True
-            )
-        except FileNotFoundError as e:
+    if out.is_dir():
+        return out
+
+    harbor_bin = shutil.which("harbor")
+    if harbor_bin is not None:
+        command = [harbor_bin]
+    else:
+        uv_bin = shutil.which("uv")
+        if uv_bin is None:
             raise RuntimeError(
-                f"the `harbor` CLI is needed to download {dataset!r}; "
-                "install it with `uv tool install harbor`"
-            ) from e
+                "Harbor datasets require an installed `harbor` CLI or `uv` for automatic installation"
+            )
+        logger.info("harbor: installing %s with uv", HARBOR_PACKAGE)
+        command = [uv_bin, "tool", "run"]
+        # Harbor requires Python 3.12, while Verifiers also supports Python 3.11.
+        if sys.version_info[:2] == (3, 11):
+            command.extend(["--python", "3.12"])
+        command.extend(["--from", HARBOR_PACKAGE, "harbor"])
+    subprocess.run(
+        [*command, "download", dataset, "--export", "-o", str(out)], check=True
+    )
     return out
 
 
@@ -224,5 +241,5 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         try:
             reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
             return float(reward or 0)
-        except (ProgramError, OSError, ValueError):
+        except (SandboxError, OSError, ValueError):
             return 0.0
