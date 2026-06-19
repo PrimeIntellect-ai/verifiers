@@ -529,9 +529,8 @@ load instead of mis-running:
 
 ## Writing one
 
-Define a `HarnessConfig` (its `id` plus any knobs, which surface as `--harness.*`), subclass
-`vf.Harness[ConfigT]`, declare the capability flags, and implement `launch`. Export the class via
-`__all__`.
+Define a `HarnessConfig` (any knobs surface as `--harness.*`), subclass `vf.Harness[ConfigT]`,
+declare the capability flags, and implement `launch`. Export the class via `__all__`.
 
 ```python
 import verifiers.v1 as vf
@@ -540,8 +539,7 @@ PROGRAM = (Path(__file__).parent / "program.py").read_text()  # a uv script, dep
 
 
 class MyHarnessConfig(vf.HarnessConfig):
-    id: str = "my-harness"
-    max_steps: int = 50              # a harness-specific knob; surfaces as --harness.max-steps
+    """Run knobs for this harness (surface as --harness.*)."""
 
 
 class MyHarness(vf.Harness[MyHarnessConfig]):
@@ -550,12 +548,15 @@ class MyHarness(vf.Harness[MyHarnessConfig]):
 
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls) -> vf.ProgramResult:
         system, prompt = self.resolve_prompt(trace.task)
-        env = {"OPENAI_BASE_URL": endpoint, "OPENAI_API_KEY": secret,
-               "OPENAI_MODEL": ctx.model, "SYSTEM_PROMPT": system or "",
-               "MAX_STEPS": str(self.config.max_steps)}
+        # configure the program with CLI args, not OPENAI_* env vars (less footgun-prone)
+        args = [f"--base-url={endpoint}", f"--api-key={secret}", f"--model={ctx.model}"]
+        if system:
+            args.append(f"--system-prompt={system}")
         if mcp_urls:                 # standard mcpServers map the program connects to
-            env["MCP_CONFIG"] = json.dumps({"mcpServers": {n: {"url": u} for n, u in mcp_urls.items()}})
-        return await runtime.run_uv_script(PROGRAM, args=[prompt], env=env)
+            args.append("--mcp-config=" + json.dumps({"mcpServers": {n: {"url": u} for n, u in mcp_urls.items()}}))
+        if prompt is not None:
+            args.append(f"--prompt={prompt}")
+        return await runtime.run_uv_script(PROGRAM, args=args, env=self.config.env)
 
 
 __all__ = ["MyHarness"]
@@ -590,9 +591,10 @@ user message).
 **Two program styles.** A self-contained chat loop is usually a single-file uv script
 (`runtime.run_uv_script`, so the harness needs only `uv` in the runtime — its inline deps resolve
 there, never on the host; identical scripts share one content-addressed uv env). An agent
-CLI / binary is installed and launched with `runtime.run(...)`. Either way, harness-owned env vars
-(`OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`, …) are spread *after* `self.config.env`, so
-they take precedence over any collision.
+CLI / binary is installed and launched with `runtime.run(...)`. Either way, pass `endpoint` /
+`secret` / `ctx.model` to the program as **CLI args** (as above) rather than `OPENAI_*` env vars — an
+inherited or stray env var can silently redirect the program's model calls; `self.config.env` just
+supplies any extra environment.
 
 **Harness metrics.** A harness can define its own `@vf.metric` methods (injected `task` / `trace` /
 `runtime`), run over the finished trace alongside the taskset's — handy to surface what the program
