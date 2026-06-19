@@ -37,6 +37,7 @@ STOP_REASONS = {
     "tool_use": "tool_calls",
     "stop_sequence": "stop",
 }
+THINKING = ("thinking", "redacted_thinking")
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -72,6 +73,7 @@ def parse_messages(body: dict) -> Messages:
                 if isinstance(content, str)
                 else content or []
             )
+            state = [block for block in blocks if block["type"] in THINKING]
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
             reasoning = "".join(
                 b.get("thinking", "") for b in blocks if b.get("type") == "thinking"
@@ -90,6 +92,7 @@ def parse_messages(body: dict) -> Messages:
                     content=text or None,
                     reasoning_content=reasoning or None,
                     tool_calls=calls or None,
+                    provider_state=state or None,
                 )
             )
             continue
@@ -117,10 +120,12 @@ def response_from_wire(message: AnthropicMessage) -> Response:
     """An Anthropic `Message` -> a vf `Response` (its content blocks folded into one assistant
     message: text -> content, thinking -> reasoning, tool_use -> tool calls)."""
     data = message.model_dump()
+    blocks = data.get("content") or []
+    state = [block for block in blocks if block["type"] in THINKING]
     content = ""
     reasoning = ""
     calls: list[ToolCall] = []
-    for block in data.get("content") or []:
+    for block in blocks:
         kind = block.get("type")
         if kind == "text":
             content += block.get("text", "")
@@ -159,6 +164,7 @@ def response_from_wire(message: AnthropicMessage) -> Response:
             content=content or None,
             reasoning_content=reasoning or None,
             tool_calls=calls or None,
+            provider_state=state or None,
         ),
         finish_reason=finish,
         usage=usage,
