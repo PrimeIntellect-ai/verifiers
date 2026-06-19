@@ -196,11 +196,13 @@ async def test_tool_response_image(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_agentic(run_v1, agentic_harness, harness_runtime, tmp_path):
+async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     """Agentic: write a phrase to a file with the agent's shell, checked in the runtime."""
+    if harness == "default":
+        pytest.skip("default is a chat loop with no shell — it can't do the file-write task")
     (trace,) = await run_v1(
         "echo-agentic-v1",
-        harness=agentic_harness,
+        harness=harness,
         harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=10,

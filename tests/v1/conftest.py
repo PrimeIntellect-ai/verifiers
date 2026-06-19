@@ -108,34 +108,21 @@ def skip_if_unexposable():
     return _skip
 
 
-# Built-in harnesses (bundled in the `harnesses` package), composed with `harness_runtime` for the
-# plain-task harness x runtime matrix. compact is an example harness, not built-in, so it's
-# excluded. Agent CLI harnesses install their dependencies at rollout, so they're marked slow.
+# Harnesses, composed with the runtime fixtures. Built-ins are bundled in the `harnesses` package;
+# `default` and `bash` install nothing and run fast, while the agent CLIs (`rlm` / `kimi-code` /
+# `codex`) install their dependencies at rollout, so they're marked slow. `compact` (an example
+# harness) and `terminus-2` (drives the host tmux) are excluded. `test_agentic` skips `default` —
+# it's a chat loop with no shell, so it can't do the file-write task.
 @pytest.fixture(
     params=[
         pytest.param("default", id="default-harness"),
+        pytest.param("bash", id="bash-harness"),
         pytest.param("rlm", marks=pytest.mark.slow, id="rlm-harness"),
         pytest.param("kimi-code", marks=pytest.mark.slow, id="kimi-code-harness"),
-    ]
-)
-def harness(request) -> str:
-    return request.param
-
-
-# `bash` (and `codex`) live here, not in `harness`: a bash/CLI agent on a no-op chat task
-# (`test_single_turn`'s echo) may run a shell command or complete its loop without replying, which
-# is flaky; on a task with a concrete action (writing a file) it's reliable. `bash` is the built-in
-# chat loop + a bash tool, so it installs nothing and runs fast (not marked slow).
-@pytest.fixture(
-    params=[
-        pytest.param("bash", id="bash-harness"),
-        pytest.param(
-            "mini-swe-agent", marks=pytest.mark.slow, id="mini-swe-agent-harness"
-        ),
         pytest.param("codex", marks=pytest.mark.slow, id="codex-harness"),
     ]
 )
-def agentic_harness(request) -> str:
+def harness(request) -> str:
     return request.param
 
 
