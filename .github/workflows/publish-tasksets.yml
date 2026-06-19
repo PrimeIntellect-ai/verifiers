@@ -172,7 +172,7 @@ jobs:
           )
 
           if [ "$FILE_VERSION" != "$VERSION" ]; then
-            echo "Version mismatch: tag requests '$VERSION' but packages/tasksets/tasksets/__init__.py defines '$FILE_VERSION'" >&2
+            echo "Version mismatch: tag requests '$VERSION' but packages/tasksets/pyproject.toml defines '$FILE_VERSION'" >&2
             exit 1
           fi
 
