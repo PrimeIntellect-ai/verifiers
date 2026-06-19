@@ -9,8 +9,16 @@ from verifiers.types import (
     ResponseTokens,
     Usage,
 )
-from verifiers.v1.compat import V0ClientAsV1Client, V1AsV0Environment, build_env_config
+from verifiers.v1.compat import (
+    V0ClientAsV1Client,
+    V1AsV0Environment,
+    build_env_config,
+    trace_to_rollout_output,
+    trace_to_v0_state,
+)
 from verifiers.v1.dialects import ChatDialect
+from verifiers.v1.task import Task
+from verifiers.v1.trace import Trace
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.multimodal import ImageOffloadStats
 
@@ -290,6 +298,66 @@ async def test_v0_client_as_v1_keeps_multimodal_sidecar_live_in_state() -> None:
     assert step["tokens"]["multi_modal_data"].mm_items["image"] == [
         {"raw_image_id": "image.png"}
     ]
+
+
+def test_v1_as_v0_display_transcript_sets_platform_visible_messages() -> None:
+    trace = Trace(
+        task=Task(idx=7, prompt="fallback prompt"),
+        info={
+            "kept": "visible",
+            "_v0_display_messages": [
+                {"role": "system", "content": "system prompt"},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,abc123"},
+                        },
+                        {"type": "text", "text": "look at the page"},
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "click",
+                                "arguments": {"x": 10, "y": 20},
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": "clicked",
+                },
+            ],
+        },
+    )
+
+    state = trace_to_v0_state(trace)
+
+    assert [message.role for message in state["prompt"]] == ["system", "user"]
+    assert [message.role for message in state["completion"]] == [
+        "assistant",
+        "tool",
+    ]
+    assert state["info"]["kept"] == "visible"
+    assert "_v0_display_messages" not in state["info"]
+    assert state["prompt"][1].content[0].image_url.url.startswith("data:image/png")
+    assert state["completion"][0].tool_calls[0].name == "click"
+    assert state["completion"][1].content == "clicked"
+
+    out = trace_to_rollout_output(trace)
+    assert out["prompt"][1]["content"][0]["image_url"]["url"].startswith(
+        "data:image/png"
+    )
+    assert out["completion"][1]["role"] == "tool"
 
 
 def test_module_load_taskset_annotation_does_not_require_taskset_plugin() -> None:

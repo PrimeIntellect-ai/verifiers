@@ -50,6 +50,7 @@ from verifiers.types import (
     UserMessage as V0UserMessage,
 )
 from verifiers.utils.client_utils import resolve_client_config
+from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.save_utils import make_serializable, state_to_output
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.clients.client import Client as V1Client
@@ -88,6 +89,8 @@ _V1_ENV_FIELDS = {
     "multiplex",
 }
 _FINISH_REASONS = {"stop", "length", "tool_calls", None}
+_V0_DISPLAY_MESSAGES_INFO_KEY = "_v0_display_messages"
+_PRIVATE_V0_INFO_PREFIX = "_v0_"
 
 
 class V1AsV0Rubric(Rubric):
@@ -486,11 +489,14 @@ def trace_to_rollout_output(
 
 
 def trace_to_v0_state(trace: Trace) -> State:
-    prompt = [_v1_message_to_v0(message) for message in _task_prompt(trace.task)]
-    completion = [_v1_message_to_v0(message) for message in trace.assistant_messages]
+    fallback_prompt = [
+        _v1_message_to_v0(message) for message in _task_prompt(trace.task)
+    ]
+    prompt, completion = _top_level_prompt_completion(trace, fallback_prompt)
+    trace_info = _public_trace_info(trace.info)
     info = _json_safe(
         {
-            **dict(trace.info),
+            **trace_info,
             "v1": {
                 "trace_id": trace.id,
                 "task_idx": trace.task.idx,
@@ -529,6 +535,54 @@ def trace_to_v0_state(trace: Trace) -> State:
     state["trajectory"] = trace_to_trajectory(trace)
     state["token_usage"] = _token_usage(trace)
     return state
+
+
+def _public_trace_info(info: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in info.items()
+        if not key.startswith(_PRIVATE_V0_INFO_PREFIX)
+    }
+
+
+def _top_level_prompt_completion(
+    trace: Trace, fallback_prompt: V0Messages
+) -> tuple[V0Messages, V0Messages]:
+    display_messages = trace.info.get(_V0_DISPLAY_MESSAGES_INFO_KEY)
+    if display_messages is None:
+        completion = [
+            _v1_message_to_v0(message) for message in trace.assistant_messages
+        ]
+        return fallback_prompt, completion
+
+    try:
+        messages = normalize_messages(
+            display_messages,
+            field_name=_V0_DISPLAY_MESSAGES_INFO_KEY,
+        )
+    except Exception:
+        logger.exception(
+            "failed to normalize v0 display transcript; using trace summary"
+        )
+        completion = [
+            _v1_message_to_v0(message) for message in trace.assistant_messages
+        ]
+        return fallback_prompt, completion
+
+    if not messages:
+        return fallback_prompt, []
+
+    split = next(
+        (
+            index
+            for index, message in enumerate(messages)
+            if getattr(message, "role", None) not in {"system", "user"}
+        ),
+        len(messages),
+    )
+    if split == 0:
+        return fallback_prompt, messages
+    return messages[:split], messages[split:]
 
 
 def trace_to_trajectory(trace: Trace) -> list[dict[str, Any]]:
