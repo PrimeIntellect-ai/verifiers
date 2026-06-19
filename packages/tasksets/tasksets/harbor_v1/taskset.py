@@ -40,7 +40,7 @@ from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_PACKAGE = "harbor==0.14.0"
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("verifiers.v1.tasksets.harbor")
 
 
 class HarborConfig(TasksetConfig):
