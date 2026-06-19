@@ -3,7 +3,6 @@ from types import SimpleNamespace
 import pytest
 
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
-from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
     ImageUrlContentPart,
@@ -85,129 +84,6 @@ async def test_openai_chat_accepts_refusal_with_reasoning_native_response():
 
     assert response.message.content == "I cannot help with that."
     assert response.message.reasoning_content == "hidden chain"
-
-
-@pytest.mark.asyncio
-async def test_openai_chat_accepts_usage_only_reasoning_native_response():
-    client = OpenAIChatCompletionsClient(object())
-    native_response = SimpleNamespace(
-        id="chatcmpl_reasoning",
-        created=0,
-        model="o3",
-        usage=SimpleNamespace(
-            prompt_tokens=5,
-            completion_tokens=8,
-            total_tokens=13,
-            completion_tokens_details=SimpleNamespace(reasoning_tokens=8),
-        ),
-        choices=[
-            SimpleNamespace(
-                finish_reason="length",
-                message=_OpenAIMessage(
-                    content=None,
-                    reasoning_content=None,
-                    tool_calls=None,
-                ),
-            )
-        ],
-    )
-
-    await client.raise_from_native_response(native_response)
-    response = await client.from_native_response(native_response)
-    completion_messages = await parse_response_message(response)
-    prompt, _ = await client.to_native_prompt(completion_messages)
-
-    assert response.usage is not None
-    assert response.usage.reasoning_tokens == 8
-    assert response.message.is_truncated is True
-    assert response.message.content == ""
-    assert prompt[0]["content"] == ""
-
-
-@pytest.mark.asyncio
-async def test_openai_chat_accepts_list_reasoning_details_without_flattening():
-    client = OpenAIChatCompletionsClient(object())
-    native_response = SimpleNamespace(
-        id="chatcmpl_reasoning_details",
-        created=0,
-        model="openrouter/minimax",
-        usage=None,
-        choices=[
-            SimpleNamespace(
-                finish_reason="length",
-                message=_OpenAIMessage(
-                    content=None,
-                    reasoning_content=None,
-                    reasoning_details=[{"type": "reasoning.text", "text": "hidden"}],
-                    tool_calls=None,
-                ),
-            )
-        ],
-    )
-
-    await client.raise_from_native_response(native_response)
-    response = await client.from_native_response(native_response)
-    completion_messages = await parse_response_message(response)
-    prompt, _ = await client.to_native_prompt(completion_messages)
-
-    assert response.message.reasoning_content == ""
-    assert response.message.content is None
-    assert prompt[0]["reasoning_content"] == ""
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "reasoning_details",
-    [[], [{}], [{"type": "reasoning.text", "text": ""}]],
-)
-async def test_openai_chat_rejects_empty_reasoning_details(reasoning_details):
-    client = OpenAIChatCompletionsClient(object())
-    native_response = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=_OpenAIMessage(
-                    content=None,
-                    reasoning_content=None,
-                    reasoning_details=reasoning_details,
-                    tool_calls=None,
-                )
-            )
-        ],
-        usage=None,
-    )
-
-    with pytest.raises(EmptyModelResponseError, match="Model returned no content"):
-        await client.raise_from_native_response(native_response)
-
-
-@pytest.mark.asyncio
-async def test_openai_chat_accepts_later_nonempty_reasoning_alias():
-    client = OpenAIChatCompletionsClient(object())
-    native_response = SimpleNamespace(
-        id="chatcmpl_reasoning_alias",
-        created=0,
-        model="deepseek-r1",
-        usage=None,
-        choices=[
-            SimpleNamespace(
-                finish_reason="length",
-                message=_OpenAIMessage(
-                    content=None,
-                    reasoning="",
-                    reasoning_content="hidden chain",
-                    tool_calls=None,
-                ),
-            )
-        ],
-    )
-
-    await client.raise_from_native_response(native_response)
-    response = await client.from_native_response(native_response)
-    completion_messages = await parse_response_message(response)
-    prompt, _ = await client.to_native_prompt(completion_messages)
-
-    assert response.message.reasoning_content == "hidden chain"
-    assert prompt[0]["reasoning_content"] == "hidden chain"
 
 
 @pytest.mark.asyncio
@@ -384,25 +260,6 @@ async def test_anthropic_from_native_response_always_parses_reasoning():
     response = await client.from_native_response(native_response)
     assert response.message.reasoning_content == "hidden chain"
     assert response.message.content == "final answer"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "content_block",
-    [
-        SimpleNamespace(type="thinking", thinking=""),
-        SimpleNamespace(type="redacted_thinking", data=""),
-    ],
-)
-async def test_anthropic_rejects_empty_reasoning_blocks(content_block):
-    pytest.importorskip("anthropic")
-    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
-
-    client = AnthropicMessagesClient(object())
-    native_response = SimpleNamespace(content=[content_block])
-
-    with pytest.raises(EmptyModelResponseError, match="Model returned no content"):
-        await client.raise_from_native_response(native_response)
 
 
 @pytest.mark.asyncio

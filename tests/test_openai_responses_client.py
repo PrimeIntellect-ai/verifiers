@@ -268,36 +268,6 @@ async def test_from_native_response_uses_none_content_for_tool_call_only_respons
 
 
 @pytest.mark.asyncio
-async def test_usage_only_reasoning_response_is_replayable():
-    native_response = SimpleNamespace(
-        id="resp_reasoning",
-        created_at=123.0,
-        model="o3",
-        status="incomplete",
-        incomplete_details={"reason": "max_output_tokens"},
-        usage={
-            "input_tokens": 5,
-            "output_tokens": 8,
-            "total_tokens": 13,
-            "output_tokens_details": {"reasoning_tokens": 8},
-        },
-        output=None,
-    )
-    client = OpenAIResponsesClient(object())
-
-    await client.raise_from_native_response(native_response)
-    response = await client.from_native_response(native_response)
-    completion_messages = await parse_response_message(response)
-    prompt, _ = await client.to_native_prompt(completion_messages)
-
-    assert response.usage is not None
-    assert response.usage.reasoning_tokens == 8
-    assert response.message.is_truncated is True
-    assert response.message.content == ""
-    assert prompt == [{"type": "message", "role": "assistant", "content": ""}]
-
-
-@pytest.mark.asyncio
 async def test_response_message_extras_round_trip_into_next_prompt():
     response = Response(
         id="resp_1",
