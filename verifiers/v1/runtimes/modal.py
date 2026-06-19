@@ -164,20 +164,22 @@ class ModalRuntime(Runtime):
                 f"modal background launch failed: {result.stderr.strip()}"
             )
 
+    def _abs(self, path: str) -> str:
+        # Modal's filesystem API only accepts absolute remote paths; resolve a relative
+        # one against the workdir (the cwd run/run_background use).
+        if path.startswith("/"):
+            return path
+        return f"{self.config.workdir.rstrip('/')}/{path}"
+
     async def read(self, path: str) -> bytes:
         try:
-            return await self._sandbox.filesystem.read_bytes.aio(path)
+            return await self._sandbox.filesystem.read_bytes.aio(self._abs(path))
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
-        # Resolve a relative path against the workdir and create its parent first (Modal's
-        # write does not mkdir).
-        target = (
-            path
-            if path.startswith("/")
-            else f"{self.config.workdir.rstrip('/')}/{path}"
-        )
+        # Create the parent first (Modal's write does not mkdir).
+        target = self._abs(path)
         try:
             await self._sandbox.filesystem.make_directory.aio(
                 str(PurePosixPath(target).parent)
