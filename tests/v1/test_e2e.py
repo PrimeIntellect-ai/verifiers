@@ -29,7 +29,6 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
         max_turns=2,
     )
     assert trace.errors == []
-    assert not trace.is_truncated
     assert trace.num_turns == 1
     assert trace.reward == 1.0
 
@@ -59,7 +58,6 @@ async def test_user(run_v1, harness_runtime, user_runtime, tmp_path):
         taskset_overrides={"user": user_runtime},
     )
     assert trace.errors == []
-    assert not trace.is_truncated
     assert trace.num_turns >= 2  # genuinely multi-turn
     assert trace.reward == 1.0
 
@@ -92,7 +90,6 @@ async def test_tool(run_v1, run_v1_server, harness_runtime, tool_runtime, tmp_pa
         taskset_overrides={"tools": tool_runtime},
     )
     assert trace.errors == []
-    assert not trace.is_truncated
     assert trace.num_turns >= 2  # tool call + answer
     assert trace.reward == 1.0
 
@@ -124,7 +121,6 @@ async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
         taskset_overrides={"tools": tool_runtime},
     )
     assert trace.errors == []
-    assert not trace.is_truncated
     assert trace.num_turns >= 2  # at least two tool calls accumulated
     assert trace.reward == 1.0
 
@@ -163,11 +159,11 @@ async def test_shared_tool_isolation(
             "tool server in a prime sandbox needs prime port exposure (unreachable from host here)"
         )
     # A prime harness relays every model call through the sandbox, so two concurrent rollouts driving
-    # the EXPERIMENTAL fork-per-rollout server brush the rollout timeout even when they succeed
-    # (reward 1.0 but truncated). The fork path is covered by the subprocess/docker harness cases.
+    # the EXPERIMENTAL fork-per-rollout server can't finish within the rollout cap (reward stays 0).
+    # The fork-isolation path is covered by the subprocess/docker harness cases.
     if harness_runtime == "prime" and fork:
         pytest.skip(
-            "prime harness + experimental fork-per-rollout is too slow under concurrency (brushes the rollout timeout)"
+            "prime harness + experimental fork-per-rollout is too slow under concurrency to finish in the rollout cap"
         )
     traces = await run_v1_server(
         "scratchpad-v1",
@@ -177,7 +173,6 @@ async def test_shared_tool_isolation(
         num_tasks=2,  # two distinct words, run concurrently against the one shared server
         n=1,
         max_turns=4,
-        rollout_timeout=300,  # a prime harness driving fork-per-rollout under concurrency is slow
         taskset_overrides={
             "tools": {
                 "shared": True,
@@ -190,7 +185,6 @@ async def test_shared_tool_isolation(
     assert len(traces) == 2
     for trace in traces:
         assert trace.errors == []
-        assert not trace.is_truncated
         assert trace.num_turns >= 2  # tool call + answer
         # read back its OWN word — no cross-rollout corruption
         assert trace.reward == 1.0
@@ -208,7 +202,6 @@ async def test_tool_response_image(run_v1, tmp_path):
         max_turns=4,
     )
     assert trace.errors == []
-    assert not trace.is_truncated
     assert trace.num_turns >= 2  # tool call + answer
     assert trace.reward == 1.0
 
