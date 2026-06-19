@@ -82,24 +82,6 @@ def tool_runtime(request) -> dict:
     return {"runtime": {"type": request.param}}
 
 
-@pytest.fixture
-def skip_if_unexposable():
-    """Skip when a trace failed because the server's runtime couldn't publish its port to the
-    host — a prime sandbox whose region doesn't support port exposure (a known infra limit, not
-    a code bug). subprocess/docker share the host network, so they never hit this.
-
-    TODO: re-enable the prime cases once prime supports port exposure in all regions (or the
-    runtime publishes the port via an in-sandbox tunnel)."""
-
-    def _skip(trace) -> None:
-        if any("port exposure" in str(e) for e in trace.errors):
-            pytest.skip(
-                "runtime can't publish a port to the host (pin a prime region that supports port exposure)"
-            )
-
-    return _skip
-
-
 # Harnesses, composed with the runtime fixtures. Built-ins are bundled in the `harnesses` package;
 # the agent CLIs (`rlm` / `kimi-code` / `codex`) install their dependencies at rollout. `compact`
 # (an example harness) and `terminus-2` (drives the host tmux) are excluded. `test_agentic` skips
@@ -144,15 +126,17 @@ def pytest_collection_modifyitems(config, items) -> None:
             item.add_marker(skip)
 
 
-def _label_prime_runtimes(config: dict) -> None:
-    """Tag every prime runtime config (nested anywhere — harness / tool / user) with a `vf-ci`
-    label, so e2e sandboxes are findable for optional bulk cleanup (they otherwise auto-clean on
-    teardown). `labels` is a field on `PrimeConfig`."""
+def _configure_prime_runtimes(config: dict) -> None:
+    """Configure every prime runtime config (nested — harness / tool / user): tag a `vf-ci` label
+    for optional cleanup, and pin a region that supports port exposure."""
     if isinstance(config, dict):
         if config.get("type") == "prime":
             config.setdefault("labels", ["vf-ci"])
+            # `us` is required for prime's port exposure, which a tool/user server hosted in a
+            # sandbox needs to be reachable from outside it.
+            config.setdefault("region", "us")
         for value in config.values():
-            _label_prime_runtimes(value)
+            _configure_prime_runtimes(value)
 
 
 def _eval_config(
@@ -180,8 +164,8 @@ def _eval_config(
     risks truncating the reasoning before the answer (which tanks the reward)."""
     taskset_cfg = {"id": taskset, **(taskset_overrides or {})}
     harness_cfg = {"id": harness, **(harness_overrides or {})}
-    _label_prime_runtimes(taskset_cfg)
-    _label_prime_runtimes(harness_cfg)
+    _configure_prime_runtimes(taskset_cfg)
+    _configure_prime_runtimes(harness_cfg)
     return EvalConfig(
         taskset=taskset_cfg,
         harness=harness_cfg,
