@@ -52,7 +52,6 @@ dependencies = [
     # v1 (verifiers.v1) runtime — also used by the v0 -> vf.Trace bridge (verifiers.v1.legacy)
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers",
     "typing_extensions; python_version < '3.12'",
 ]
 
@@ -72,6 +71,7 @@ dev = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "nltk",
+    "renderers",
     "textarena",
 ]
 # v1 plugins vendored under packages/ and environments/, resolved by id via
@@ -91,6 +91,9 @@ examples = [
 [project.optional-dependencies]
 rg = [
     "reasoning-gym",
+]
+renderers = [
+    "renderers",
 ]
 ta = [
     "nltk",
