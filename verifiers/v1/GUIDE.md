@@ -162,11 +162,14 @@ you name** — declare any subset of `task` / `trace` / `runtime` and you get ex
 @vf.reward(weight=1.0)                 # summed (weighted) into trace.reward — a float or a dict to merge
 async def correct(self, task, trace) -> float: ...
 
-@vf.metric()                           # recorded, not summed — return a float or a dict to merge
-async def format_ok(self, trace) -> float: ...
+@vf.metric()                           # recorded, not summed — a float or a dict to merge
+async def enthusiasm(self, trace) -> float:
+    return float(trace.assistant_messages[-1].content.count("!"))
 
-@vf.group_reward(weight=1.0)           # scores a task's N rollouts together
-async def best_of_n(self, traces: list[vf.Trace]) -> list[float]: ...
+@vf.group_reward(weight=0.1)           # compares a task's N rollouts — here, a length penalty
+async def brevity(self, traces: list[vf.Trace]) -> list[float]:
+    longest = max(t.completion_len for t in traces) or 1
+    return [-t.completion_len / longest for t in traces]   # longest gets -1, shorter ones less
 ```
 
 The decorators and what each can receive:
@@ -178,18 +181,12 @@ The decorators and what each can receive:
 | `@vf.group_reward` | `task`, `traces` | `weight=1.0`, `priority=0` | `list[float]`, one per trace |
 | `@vf.stop` | `trace` | `priority=0` | `bool` |
 
-Notes that bite if missed:
+Good to know:
 
 - **`@group_reward` gets no `runtime` and no single `trace`** — only `task` and `traces` (it runs
   after the per-rollout runtimes are gone). To compare a runtime-derived signal across a task's
   rollouts, record it per-rollout as a `@metric`/`@reward` first, then read it off each trace in
   the group reward. Group rewards need `-r/--num-rollouts ≥ 2`.
-- **Returning a dict** (`@reward` or `@metric`) lets one method report a whole family of values —
-  each key is recorded under its own name (rewards into `trace.rewards`, metrics into
-  `trace.metrics`); a scalar is recorded under the method name. A reward's `weight` scales every
-  entry it returns.
-- **`weight`** scales a reward's contribution (`trace.reward = Σ value·weight`); each contribution is
-  keyed by the method name (or, for a dict return, its keys), so two sharing a name clobber.
 - **`priority`** orders execution within a kind (higher first, then by name). It mostly matters for
   `@stop` — the highest-priority stop that fires sets the stop reason.
 
