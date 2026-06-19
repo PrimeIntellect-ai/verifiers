@@ -166,8 +166,11 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
 async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
     """The tail of a program's `log` file in `runtime`, empty if it can't be read — for
     enriching an error with what the program (e.g. a tool server) wrote before it died."""
+    # Best-effort, so read through the un-retrying inner runtime (like `_read_back_port`): a
+    # failed read here just yields an empty tail, not a `retrying runtime.read` retry storm.
+    reader = getattr(runtime, "inner", runtime)
     with contextlib.suppress(Exception):
-        return (await runtime.read(log)).decode(errors="replace").strip()[-limit:]
+        return (await reader.read(log)).decode(errors="replace").strip()[-limit:]
     return ""
 
 
