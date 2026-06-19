@@ -2,14 +2,14 @@ name: Test
 
 on:
   pull_request:
-    branches: [main, master]
+    branches: [main, master, feat/nano-as-v1]
     paths:
       - "**.py"
       - "pyproject.toml"
       - "packages/**"
       - ".github/workflows/test.yml"
   push:
-    branches: [main, master]
+    branches: [main, master, feat/nano-as-v1]
     paths:
       - "**.py"
       - "pyproject.toml"
@@ -65,7 +65,7 @@ jobs:
 
       - name: Run v1 tests
         run: |
-          uv run pytest tests/v1 -vv -n auto -m "not prime_sandbox" --cov=verifiers --cov-append --cov-report=xml --cov-report=term
+          uv run pytest tests/v1 -vv -n auto --cov=verifiers --cov-append --cov-report=xml --cov-report=term
   test-envs:
     name: Environments
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
