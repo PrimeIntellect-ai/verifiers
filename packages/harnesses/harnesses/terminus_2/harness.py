@@ -24,6 +24,16 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
     SUPPORTS_MCP = False
 
     async def setup(self, runtime: Runtime) -> None:
+        # TODO: Terminus drives tmux; on the host (subprocess) runtime its tmux server — and the
+        # `tmux kill-server` cleanup in `launch` — share the host's tmux, so a host run can kill
+        # the user's own tmux session. Until tmux is isolated (a dedicated `tmux -L` socket + a
+        # created, private TMUX_TMPDIR), refuse the host runtime; run Terminus 2 in a container.
+        if runtime.type == "subprocess":
+            raise RuntimeError(
+                "Terminus 2 drives tmux and is unsafe on the subprocess (host) runtime — its tmux "
+                "cleanup can kill the host's tmux server. Run it in a container runtime "
+                "(--harness.runtime.type docker|prime|modal)."
+            )
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         await runtime.prepare_uv_script(source, self.config.env)
 
