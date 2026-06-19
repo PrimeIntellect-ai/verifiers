@@ -16,11 +16,10 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from enum import StrEnum
 
 from verifiers.v1.harness import Harness
-from verifiers.v1.clients import RetryingClient, RolloutContext
+from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.errors import RolloutError, TasksetError, ToolsetError, boundary
 from verifiers.v1.interception import (
@@ -31,7 +30,6 @@ from verifiers.v1.interception import (
 )
 from verifiers.v1.runtimes import (
     HOST,
-    RetryingRuntime,
     Runtime,
     RuntimeConfig,
     make_runtime,
@@ -70,8 +68,6 @@ class Rollout:
         finalize_timeout: float | None = None,
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
-        model_retries: int = 0,
-        runtime_retries: int = 0,
         shared_urls: dict[str, str] | None = None,
         interception: InterceptionPool | None = None,
     ) -> None:
@@ -85,8 +81,6 @@ class Rollout:
         self.finalize_timeout = finalize_timeout
         self.scoring_timeout = scoring_timeout
         self.limits = limits or RolloutLimits()
-        self.model_retries = model_retries
-        self.runtime_retries = runtime_retries
         self.shared_urls = shared_urls or {}
         """Eval-level shared tool servers ({name: url}) to reuse instead of starting per rollout;
         the eval-level interception pool. Both injected by `Environment.episode` from the active
@@ -143,12 +137,8 @@ class Rollout:
         self.runtime = make_runtime(
             self.runtime_config, name=trace.id
         )  # ref set first → always tearable-down; named after the rollout for traceability
-        if self.runtime_retries > 0:
-            self.runtime = RetryingRuntime(self.runtime, self.runtime_retries)
         runtime = self.runtime
         ctx = self.ctx
-        if self.model_retries > 0:
-            ctx = replace(ctx, client=RetryingClient(ctx.client, self.model_retries))
         stops = discover_decorated(self.taskset, "stop")
         logger.info(
             "rollout start: id=%s task=%s harness=%s runtime=%s",

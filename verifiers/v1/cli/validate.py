@@ -30,7 +30,7 @@ from verifiers.v1.cli.resolve import (
 )
 from verifiers.v1.configs.validate import ValidateConfig
 from verifiers.v1.env import resolve_runtime_config
-from verifiers.v1.runtimes import RetryingRuntime, make_runtime
+from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.taskset import Taskset
 
 logger = logging.getLogger(__name__)
@@ -76,8 +76,6 @@ async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> dict
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task), name=f"validate-{task.idx}"
     )
-    if config.retries.runtime.max_retries > 0:
-        runtime = RetryingRuntime(runtime, config.retries.runtime.max_retries)
     setup_timeout = (
         config.setup_timeout if config.setup_timeout is not None else task.timeout.setup
     )
