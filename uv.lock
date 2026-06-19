@@ -5888,7 +5888,7 @@ requires-dist = [
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
-    { name = "renderers", specifier = ">=0.1.8.dev40" },
+    { name = "renderers" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
