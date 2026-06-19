@@ -8,7 +8,10 @@ from verifiers.types import (
     ResponseTokens,
     Usage,
 )
-from verifiers.v1.compat import V1AsV0Environment, build_env_config
+from verifiers.v1.compat import V0ClientAsV1Client, V1AsV0Environment, build_env_config
+from verifiers.v1.dialects import ChatDialect
+from verifiers.v1.types import SamplingConfig
+from verifiers.v1.utils.multimodal import ImageOffloadStats
 
 
 class FakeV0Client:
@@ -151,6 +154,79 @@ async def test_v1_as_v0_set_kwargs_accepts_prime_rl_limit_sentinels() -> None:
         assert env.v1_env.harness_timeout == 123
     finally:
         await env._teardown()
+
+
+async def test_v0_client_as_v1_offloads_chat_images_before_v0_client(
+    monkeypatch,
+) -> None:
+    def fake_offload_images_inplace(value, *, image_dir=None):
+        del image_dir
+        stats = ImageOffloadStats()
+
+        def visit(item):
+            if isinstance(item, dict):
+                if item.get("type") == "image_url":
+                    source = item.get("image_url") or {}
+                    url = source.get("url")
+                    if isinstance(url, str) and url.startswith("data:image"):
+                        source["url"] = "file:///tmp/vf-offloaded-image.png"
+                        stats.images_rewritten += 1
+                        stats.bytes_written += 100
+                for child in item.values():
+                    visit(child)
+                return
+            if isinstance(item, list | tuple):
+                for child in item:
+                    visit(child)
+                return
+            if getattr(item, "type", None) == "image_url":
+                source = getattr(item, "image_url", None)
+                url = getattr(source, "url", None)
+                if isinstance(url, str) and url.startswith("data:image"):
+                    source.url = "file:///tmp/vf-offloaded-image.png"
+                    stats.images_rewritten += 1
+                    stats.bytes_written += 100
+                return
+            content = getattr(item, "content", None)
+            if isinstance(content, list | tuple):
+                visit(content)
+
+        visit(value)
+        return stats
+
+    monkeypatch.setattr(
+        "verifiers.v1.compat.offload_images_inplace",
+        fake_offload_images_inplace,
+    )
+    v0_client = FakeV0Client()
+    client = V0ClientAsV1Client(v0_client)
+    dialect = ChatDialect()
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc123"},
+                    },
+                ],
+            }
+        ]
+    }
+
+    prepared = await client.prepare_request_body(dialect, body)
+    await client.get_response(
+        dialect,
+        prepared,
+        model="fake/model",
+        sampling_args=SamplingConfig(max_tokens=8),
+    )
+
+    prompt = v0_client.calls[0]["prompt"]
+    image_source = prompt[0].content[1].image_url
+    assert image_source.url == "file:///tmp/vf-offloaded-image.png"
 
 
 def test_module_load_taskset_annotation_does_not_require_taskset_plugin() -> None:

@@ -54,7 +54,7 @@ from verifiers.utils.save_utils import make_serializable, state_to_output
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.clients.client import Client as V1Client
 from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.dialects import Dialect
+from verifiers.v1.dialects import ChatDialect, Dialect
 from verifiers.v1.env import EnvConfig, Environment as V1Environment
 from verifiers.v1.graph import MessageNode, PendingTurn
 from verifiers.v1.task import Task
@@ -74,6 +74,7 @@ from verifiers.v1.types import (
     Usage as V1Usage,
     UserMessage as V1UserMessage,
 )
+from verifiers.v1.utils.multimodal import offload_images_inplace
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,14 @@ class V0ClientAsV1Client(V1Client):
         self.client = client
         self._states: dict[str, dict[str, Any]] = {}
 
+    async def prepare_request_body(self, dialect: Dialect, body: dict) -> dict:
+        await self._offload_chat_images(dialect, body, label="image(s)")
+        return body
+
+    async def prepare_messages(self, dialect: Dialect, messages: list) -> list:
+        await self._offload_chat_images(dialect, messages, label="simulator image(s)")
+        return messages
+
     async def get_response(
         self,
         dialect: Dialect,
@@ -146,6 +155,20 @@ class V0ClientAsV1Client(V1Client):
         close = getattr(self.client, "close", None)
         if callable(close):
             await close()
+
+    async def _offload_chat_images(
+        self, dialect: Dialect, value: Any, *, label: str
+    ) -> None:
+        if not isinstance(dialect, ChatDialect):
+            return
+        stats = await asyncio.to_thread(offload_images_inplace, value)
+        if stats.images_rewritten:
+            logger.info(
+                "offloaded %d %s to run assets (%.1f MiB)",
+                stats.images_rewritten,
+                label,
+                stats.bytes_written / (1024.0 * 1024.0),
+            )
 
     def _state(self, session_id: str | None) -> dict[str, Any]:
         key = session_id or "default"
