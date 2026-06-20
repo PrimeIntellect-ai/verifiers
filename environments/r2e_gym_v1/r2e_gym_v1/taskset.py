@@ -3,15 +3,18 @@
 Each row ships a per-task Docker image with the repo checked out at ``/testbed`` and a
 hidden ``/r2e_tests`` directory plus a ``run_tests.sh`` harness. ``setup`` symlinks the
 repo venv onto ``PATH``, clears pycache, and stashes ``/r2e_tests`` out of the agent's
-reach (tarred to ``/opt`` and removed) so the running agent can't read the ground-truth
-tests. The ``solved`` reward restores the tests into ``/testbed/r2e_tests``, runs
+reach (archived to the evaluator host and removed from the sandbox) so the running agent
+can't read the ground-truth tests. The ``solved`` reward restores the tests, runs
 ``run_tests.sh``, parses the pytest summary, and scores 1.0 iff the per-test pass/fail
 map exactly matches the row's ``expected_output_json``. A v1 port of the v0 ComposableEnv
 ``R2EGymTaskSet``.
 """
 
 import json
+import os
 import re
+import weakref
+from pathlib import Path
 
 import verifiers.v1 as vf
 
@@ -24,9 +27,8 @@ REGISTRY = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
 
 REPO_PATH = "/testbed"
 ALT_PATH = "/root"
-# Tests are staged here during the agent rollout (outside the /testbed workdir) and
-# restored to /testbed/r2e_tests at scoring time.
-STAGED_TESTS = "/opt/r2e_tests"
+REMOTE_TESTS_ARCHIVE = "/tmp/r2e_tests.tar.gz"
+HOST_TESTS_ARCHIVE = "/tmp/r2e_tests_{runtime}.tar.gz"
 
 # The testbed venv (project + pytest installed) plus quiet, non-interactive tooling —
 # exported for every command the taskset runs in the sandbox.
@@ -60,10 +62,13 @@ CLEAN_PYCACHE = (
     "2>/dev/null || timeout 30 find . -name '*.pyc' -delete 2>/dev/null || true"
 )
 
-# Stash the ground-truth tests away from the agent, then move them into place for scoring.
-HIDE_TESTS = f"rm -rf {STAGED_TESTS} && mv /r2e_tests {STAGED_TESTS}"
+ARCHIVE_TESTS = f"tar -C / -czf {REMOTE_TESTS_ARCHIVE} r2e_tests"
+REMOVE_TESTS = f"rm -rf /r2e_tests && rm -f {REMOTE_TESTS_ARCHIVE}"
+MOVE_TESTS = f"rm -rf {REPO_PATH}/r2e_tests && mv /r2e_tests {REPO_PATH}/r2e_tests"
 RESTORE_TESTS = (
-    f"rm -rf {REPO_PATH}/r2e_tests && mv {STAGED_TESTS} {REPO_PATH}/r2e_tests"
+    f"rm -rf {REPO_PATH}/r2e_tests && "
+    f"tar -C {REPO_PATH} -xzf {REMOTE_TESTS_ARCHIVE} && "
+    f"rm -f {REMOTE_TESTS_ARCHIVE}"
 )
 
 
@@ -176,6 +181,9 @@ class R2EGymConfig(vf.TasksetConfig):
     use_prime_registry: bool = False
     """Resolve task images against Prime's private Artifact Registry (`REGISTRY`) instead of the
     dataset's public Docker Hub `docker_image`. Only works on runtimes with GCP pull credentials."""
+    hide_tests_from_agent: bool = True
+    """Keep tests on the evaluator host during agent rollouts. Disable only for no-agent
+    validation, where an in-sandbox move avoids the archive transfer."""
 
 
 class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
@@ -204,18 +212,50 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
         ]
 
     async def setup(self, task: R2EGymTask, runtime: vf.Runtime) -> None:
-        for cmd in (LINK, CLEAN_PYCACHE, HIDE_TESTS):
-            result = await runtime.run(["sh", "-c", cmd], ENV)
-            if cmd is HIDE_TESTS and result.exit_code != 0:
+        for cmd in (LINK, CLEAN_PYCACHE):
+            await runtime.run(["sh", "-c", cmd], ENV)
+
+        if not self.config.hide_tests_from_agent:
+            result = await runtime.run(["sh", "-c", MOVE_TESTS], ENV)
+            if result.exit_code != 0:
                 raise RuntimeError(
-                    f"r2e setup failed to stage tests ({task.name}): {result.stderr.strip()[-500:]}"
+                    f"r2e setup failed to move tests ({task.name}): {result.stderr.strip()[-500:]}"
                 )
+            return
+
+        result = await runtime.run(["sh", "-c", ARCHIVE_TESTS], ENV)
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"r2e setup failed to archive tests ({task.name}): {result.stderr.strip()[-500:]}"
+            )
+
+        archive = await runtime.read(REMOTE_TESTS_ARCHIVE)
+        host_archive = Path(HOST_TESTS_ARCHIVE.format(runtime=runtime.name))
+        fd = os.open(host_archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        weakref.finalize(runtime, host_archive.unlink, missing_ok=True)
+        with os.fdopen(fd, "wb") as file:
+            file.write(archive)
+
+        result = await runtime.run(["sh", "-c", REMOVE_TESTS], ENV)
+        if result.exit_code != 0:
+            host_archive.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"r2e setup failed to hide tests ({task.name}): {result.stderr.strip()[-500:]}"
+            )
 
     @vf.reward(weight=1.0)
     async def solved(self, task: R2EGymTask, runtime: vf.Runtime) -> float:
-        restore = await runtime.run(["sh", "-c", RESTORE_TESTS], ENV)
-        if restore.exit_code != 0:
-            return 0.0
+        if self.config.hide_tests_from_agent:
+            host_archive = Path(HOST_TESTS_ARCHIVE.format(runtime=runtime.name))
+            if not host_archive.exists():
+                return 0.0
+            try:
+                await runtime.write(REMOTE_TESTS_ARCHIVE, host_archive.read_bytes())
+                restore = await runtime.run(["sh", "-c", RESTORE_TESTS], ENV)
+            finally:
+                host_archive.unlink(missing_ok=True)
+            if restore.exit_code != 0:
+                return 0.0
         result = await runtime.run(["sh", "-c", "/bin/bash run_tests.sh 2>&1"], ENV)
         return calculate_reward(result.stdout or "", task.expected_output_json)
 
