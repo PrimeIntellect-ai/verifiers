@@ -21,6 +21,7 @@ handled out-of-band (run by the harness).
 
 import asyncio
 import contextlib
+import json
 import logging
 import secrets
 from collections.abc import Awaitable, Callable
@@ -29,6 +30,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 from pydantic import ValidationError
+from pydantic_core import from_json
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
@@ -226,7 +228,11 @@ class InterceptionServer:
         if session is None:
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
-        body = await request.json()
+        raw = await request.read()
+        try:
+            body = from_json(raw)
+        except ValueError:
+            body = json.loads(raw)
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
@@ -503,7 +509,9 @@ class InterceptionServer:
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         logger.debug("intercept GET /state: id=%s", session.trace.id)
-        return web.json_response(session.trace.state.model_dump(mode="json"))
+        return web.Response(
+            text=session.trace.state.model_dump_json(), content_type="application/json"
+        )
 
     async def handle_task_get(self, request: web.Request) -> web.Response:
         """Hand a forked shared server the rollout's task (class ref + JSON) so its child can run
