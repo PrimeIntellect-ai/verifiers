@@ -14,7 +14,7 @@ the eval's model + sampling in this format's shape) and `extend` (chat-only user
 
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel
@@ -39,6 +39,19 @@ def iter_sse(raw: bytes) -> list[dict]:
             continue
         events.append(json.loads(data))
     return events
+
+
+def iter_sse_reverse(raw: bytes) -> Iterator[dict]:
+    """Yield JSON SSE payloads from the end without decoding earlier events."""
+    for block in reversed(raw.decode("utf-8", errors="replace").split("\n\n")):
+        data = "\n".join(
+            line.removeprefix("data:").strip()
+            for line in block.splitlines()
+            if line.startswith("data:")
+        )
+        if not data or data == "[DONE]":
+            continue
+        yield json.loads(data)
 
 
 class Dialect(ABC, Generic[ReqT, RespT]):
