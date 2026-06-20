@@ -129,11 +129,13 @@ class PrimeRuntime(Runtime):
                 working_dir=self.config.workdir,
                 env=env,
             )
+            delay = 0.1
             while True:
                 result = await self._client.get_background_job(self._sandbox_id, job)
                 if result.completed:
                     break
-                await asyncio.sleep(3)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 3)
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
