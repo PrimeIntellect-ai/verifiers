@@ -54,9 +54,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         ensure = shlex.quote(f"[ -x {RLM_BIN} ] || ({install})")
         guarded = f"mkdir -p {RLM_DIR} && flock {RLM_DIR}/install.lock sh -c {ensure}"
         env = {**self.config.env, "RLM_HOME": RLM_HOME}
-        result = await runtime.install_cached(
-            "rlm", RLM_DIR, ["sh", "-c", guarded], env
-        )
+        result = await self.install(runtime, RLM_DIR, ["sh", "-c", guarded], env)
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
 

@@ -27,7 +27,6 @@ from verifiers.v1.interception import InterceptionPool, RolloutLimits
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
-    Runtime,
     RuntimeConfig,
     SubprocessConfig,
     runtime_is_local,
@@ -369,9 +368,6 @@ class Environment:
         every `episode()` built inside this context injects them into its rollouts — that's
         what keeps both eval runners (in-process and env-server) on one serving path. Build
         episodes inside this context; the resources are torn down on exit."""
-        # Reuse CLI-install archives within this eval, then release the retained bytes.
-        Runtime._install_artifacts.clear()
-        Runtime._install_locks.clear()
         async with (
             self.shared_tools(tasks) as shared_urls,
             self.interception_pool() as interception,
@@ -383,8 +379,6 @@ class Environment:
             finally:
                 self._shared_urls = {}
                 self._interception = None
-                Runtime._install_artifacts.clear()
-                Runtime._install_locks.clear()
 
     def interception_pool(self) -> InterceptionPool:
         """The shared interception pool for this env's rollouts — one server (+ tunnel

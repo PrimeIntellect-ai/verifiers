@@ -101,8 +101,6 @@ def cleanup_at_exit() -> None:
 
 
 class Runtime(ABC):
-    _install_artifacts: ClassVar[dict[str, bytes]] = {}
-    _install_locks: ClassVar[dict[str, asyncio.Lock]] = {}
     is_local: ClassVar[bool] = True
     """Whether this runtime shares the host network — a program inside it reaches a host service
     at localhost (no tunnel) and a service inside it is reachable at localhost. True for
@@ -161,92 +159,6 @@ class Runtime(ABC):
         against the rollout's persistent trace would fork a duplicate branch. Provider SDKs may
         still retry individual safe transport operations underneath `run`."""
         return await self.run(argv, env)
-
-    async def install_cached(
-        self,
-        key: str,
-        path: str,
-        argv: list[str],
-        env: dict[str, str] | None = None,
-    ) -> ProgramResult:
-        """Install an arbitrary CLI directory once and reuse it across matching sandboxes.
-
-        `key` identifies the tool; `argv` and `env` capture its exact install recipe. After the
-        first successful install, `path` is archived on the host and restored into later runtimes
-        with the same backend config and OS/architecture. This is directory-based rather than
-        Python-specific, so static binaries, Node tools, and Python CLIs use the same path.
-
-        Subprocess runtimes already share host paths, so their guarded installer runs directly.
-        """
-        install_env = env or {}
-        if self.type == "subprocess":
-            return await self.run(argv, install_env)
-
-        platform = await self.run(["sh", "-c", "uname -s; uname -m"], {})
-        if platform.exit_code != 0:
-            return await self.run(argv, install_env)
-        identity = "\0".join(
-            (
-                "vf-install-v1",
-                key,
-                path,
-                getattr(self, "config").model_dump_json(),
-                platform.stdout.strip(),
-                shlex.join(argv),
-                repr(sorted(install_env.items())),
-            )
-        )
-        digest = hashlib.sha256(identity.encode()).hexdigest()
-        archive = f"/tmp/vf-install-cache/{digest}.tar.gz"
-        target = PurePosixPath(path)
-        parent = shlex.quote(str(target.parent))
-        name = shlex.quote(target.name)
-
-        async with self._install_locks.setdefault(digest, asyncio.Lock()):
-            artifact = self._install_artifacts.get(digest)
-            if artifact is None:
-                result = await self.run(argv, install_env)
-                if result.exit_code != 0:
-                    return result
-                packed = await self.run(
-                    [
-                        "sh",
-                        "-c",
-                        f"mkdir -p /tmp/vf-install-cache && "
-                        f"tar -czf {shlex.quote(archive)} -C {parent} {name}",
-                    ],
-                    {},
-                )
-                if packed.exit_code != 0:
-                    logger.warning("failed to cache install %r: %s", key, packed.stderr)
-                    return result
-                try:
-                    self._install_artifacts[digest] = await self.read(archive)
-                except Exception as e:
-                    logger.warning("failed to read cached install %r: %s", key, e)
-                return result
-
-        try:
-            await self.write(archive, artifact)
-            restored = await self.run(
-                [
-                    "sh",
-                    "-c",
-                    f"rm -rf {shlex.quote(path)} && mkdir -p {parent} && "
-                    f"tar -xzf {shlex.quote(archive)} -C {parent}",
-                ],
-                {},
-            )
-            if restored.exit_code == 0:
-                return ProgramResult(0, "", "")
-            logger.warning(
-                "failed to restore cached install %r: %s", key, restored.stderr
-            )
-        except Exception as e:
-            logger.warning("failed to restore cached install %r: %s", key, e)
-        self._install_artifacts.pop(digest, None)
-        await self.run(["rm", "-rf", path], {})
-        return await self.run(argv, install_env)
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str

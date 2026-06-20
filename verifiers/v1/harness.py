@@ -8,8 +8,10 @@ runtime and the interception server are owned by the Rollout.
 
 import asyncio
 import logging
+import shlex
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from pathlib import PurePosixPath
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic import Field
@@ -77,6 +79,8 @@ class Harness(ABC, Generic[ConfigT]):
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
+        self._install_artifacts: dict[str, bytes] = {}
+        self._install_locks: dict[str, asyncio.Lock] = {}
 
     def resolve_prompt(self, task: Task) -> tuple[str | None, str | Messages | None]:
         """Resolve `(system_prompt, prompt)` for this harness. If the harness
@@ -114,6 +118,70 @@ class Harness(ABC, Generic[ConfigT]):
 
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""
+
+    async def install(
+        self,
+        runtime: Runtime,
+        path: str,
+        argv: list[str],
+        env: dict[str, str] | None = None,
+    ) -> ProgramResult:
+        """Install a CLI directory once, then copy it into every sandbox in this run.
+
+        The shared harness owns the archive, just as the MCP launcher owns its cached source
+        tarballs. The install recipe and runtime config identify it automatically. Subprocess
+        rollouts already share the host filesystem, so their guarded installer runs directly.
+        """
+        install_env = env or {}
+        if runtime.type == "subprocess":
+            return await runtime.run(argv, install_env)
+
+        identity = repr(
+            (
+                path,
+                getattr(runtime, "config").model_dump_json(),
+                argv,
+                sorted(install_env.items()),
+            )
+        )
+        target = PurePosixPath(path)
+        archive = f"{str(target).rstrip('/')}.tar.gz"
+        parent = shlex.quote(str(target.parent))
+
+        artifact = self._install_artifacts.get(identity)
+        if artifact is None:
+            async with self._install_locks.setdefault(identity, asyncio.Lock()):
+                artifact = self._install_artifacts.get(identity)
+                if artifact is None:
+                    result = await runtime.run(argv, install_env)
+                    if result.exit_code != 0:
+                        return result
+                    packed = await runtime.run(
+                        [
+                            "tar",
+                            "-czf",
+                            archive,
+                            "-C",
+                            str(target.parent),
+                            target.name,
+                        ],
+                        {},
+                    )
+                    if packed.exit_code != 0:
+                        return packed
+                    self._install_artifacts[identity] = await runtime.read(archive)
+                    return result
+
+        await runtime.write(archive, artifact)
+        return await runtime.run(
+            [
+                "sh",
+                "-c",
+                f"rm -rf {shlex.quote(path)} && mkdir -p {parent} && "
+                f"tar -xzf {shlex.quote(archive)} -C {parent}",
+            ],
+            {},
+        )
 
     async def run(
         self,
@@ -171,5 +239,5 @@ class Harness(ABC, Generic[ConfigT]):
         (name -> URL) to wire in. Each harness owns the env its program needs — read
         `ctx.model` for the model id (the default/compact harnesses set OPENAI_*; rlm sets
         RLM_* too). UV-script harnesses prepare dependencies in `setup`; arbitrary CLI harnesses
-        can prepare an install directory with `runtime.install_cached(...)`. Both launch the
-        resulting argv through `runtime.run_program(...)` here."""
+        can prepare an install directory with `self.install(...)`. Both launch the resulting argv
+        through `runtime.run_program(...)` here."""
