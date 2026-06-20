@@ -20,6 +20,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.state import State, StateT, state_cls
 
 if TYPE_CHECKING:
+    from httpx import AsyncClient
     from mcp.server.fastmcp import FastMCP
 
 ConfigT = TypeVar("ConfigT", bound=BaseConfig)
@@ -33,7 +34,12 @@ after the sandbox/tunnel comes up), so a single blip must not fail the tool call
 
 
 async def _channel_request(
-    method: str, url: str, secret: str, *, json: dict | None = None
+    method: str,
+    url: str,
+    secret: str,
+    *,
+    json: dict | None = None,
+    client: AsyncClient | None = None,
 ) -> dict:
     """One bearer-authed call to the interception `/state` or `/task` channel, retried with
     exponential backoff + jitter on transient failures (connection resets / 5xx from the host
@@ -53,8 +59,13 @@ async def _channel_request(
         )
 
     async def request() -> dict:
-        async with httpx.AsyncClient(timeout=STATE_TIMEOUT) as client:
-            resp = await client.request(
+        manager = (
+            contextlib.nullcontext(client)
+            if client is not None
+            else httpx.AsyncClient(timeout=STATE_TIMEOUT)
+        )
+        async with manager as request_client:
+            resp = await request_client.request(
                 method, url, json=json, headers={"Authorization": f"Bearer {secret}"}
             )
             resp.raise_for_status()
@@ -150,6 +161,7 @@ class ServerBase(Generic[ConfigT, StateT]):
         self._inert_state: StateT = self._state_cls()  # type: ignore[assignment]
         """A fresh state used outside a tool/respond call (setup, or a manual debug run) — there's
         no channel to sync, so writes to it don't escape the process (matches the no-channel case)."""
+        self._state_client: AsyncClient | None = None
 
     @property
     def state(self) -> StateT:
@@ -179,7 +191,9 @@ class ServerBase(Generic[ConfigT, StateT]):
         cls = self._state_cls
         if not url:
             return cls()
-        return cls.model_validate(await _channel_request("GET", url, secret))
+        return cls.model_validate(
+            await _channel_request("GET", url, secret, client=self._state_client)
+        )
 
     async def _push_state(self, before: dict) -> None:
         """Push the in-flight call's `self.state` back to the shared channel if it changed. No-op
@@ -193,7 +207,9 @@ class ServerBase(Generic[ConfigT, StateT]):
         )
         if after == before:
             return
-        await _channel_request("PUT", url, secret, json=after)
+        await _channel_request(
+            "PUT", url, secret, json=after, client=self._state_client
+        )
 
     async def _fetch_task(self, state_url: str | None, secret: str):
         """Fetch this rollout's task from the interception server's `/task` channel (the sibling of
@@ -313,6 +329,23 @@ class ServerBase(Generic[ConfigT, StateT]):
         mcp = FastMCP(self.server_name, transport_security=security)
         self._register(mcp)
         app = mcp.streamable_http_app()
+        mcp_lifespan = app.router.lifespan_context
+
+        @contextlib.asynccontextmanager
+        async def serving_lifespan(starlette):
+            import httpx
+
+            try:
+                async with (
+                    httpx.AsyncClient(timeout=STATE_TIMEOUT) as client,
+                    mcp_lifespan(starlette),
+                ):
+                    self._state_client = client
+                    yield
+            finally:
+                self._state_client = None
+
+        app.router.lifespan_context = serving_lifespan
         if getattr(self.config, "fork", False):
             # `setup` ran once above (warm); fork a child per rollout that inherits it and runs
             # `setup_task` for the rollout's task (see multiplex).

@@ -14,6 +14,7 @@ add your own flag and a `@vf.stop` that checks it (e.g. `user_finished`) — see
 
 from typing import get_args
 
+from pydantic import ConfigDict
 from typing_extensions import TypeVar
 
 from verifiers.v1.types import StrictBaseModel
@@ -25,6 +26,8 @@ class State(StrictBaseModel):
     (fields need defaults so the framework can build the initial state). Strict (unknown fields are
     rejected) and transient: never persisted to disk or sent over the wire (use the free-form
     `Trace.info` for artifacts that must persist)."""
+
+    model_config = ConfigDict(ser_json_inf_nan="constants")
 
 
 StateT = TypeVar("StateT", bound=State, default=State)
