@@ -377,19 +377,24 @@ class LegacyEnvServer(EnvServer):
         )
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
-        out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
+        out = await self._run_v0(
+            req.task_idx,
+            req.actor.client,
+            req.actor.model,
+            req.actor.sampling,
+        )
         return RunRolloutResponse(
             trace=rollout_output_to_trace(out, req.task_idx).model_dump()
         )
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
-        client = self._v0_client(req.client, req.model)
+        client = self._v0_client(req.actor.client, req.actor.model)
         # run_group scores the rollouts together so group/preference reward funcs apply.
         outs = await self.env.run_group(
             group_inputs=[dict(self.dataset[req.task_idx]) for _ in range(req.n)],
             client=client,
-            model=req.model,
-            sampling_args=req.sampling.model_dump(exclude_none=True),
+            model=req.actor.model,
+            sampling_args=req.actor.sampling.model_dump(exclude_none=True),
             state_columns=["trajectory"],
         )
         traces = [

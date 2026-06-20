@@ -12,10 +12,14 @@ from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
-    RolloutContext,
+    EvalClient,
+    EvalClientConfig,
+    ModelRuntime,
+    TrainClient,
+    TrainClientConfig,
     resolve_client,
 )
-from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
+from verifiers.v1.decorators import advantage, group_reward, metric, reward, stop, tool
 from verifiers.v1.env import (
     ElasticPoolConfig,
     EnvConfig,
@@ -141,6 +145,7 @@ __all__ = [
     "metric",
     "reward",
     "group_reward",
+    "advantage",
     # errors
     "RolloutError",
     "ProviderError",
@@ -155,14 +160,18 @@ __all__ = [
     "Client",
     "BaseClientConfig",
     "ClientConfig",
+    "EvalClientConfig",
+    "TrainClientConfig",
     "resolve_client",
+    "EvalClient",
+    "TrainClient",
     # taskset / harness / runtime / environment
     "Taskset",
     "TasksetConfig",
     "BaseConfig",
     "Harness",
     "HarnessConfig",
-    "RolloutContext",
+    "ModelRuntime",
     "Runtime",
     "RuntimeConfig",
     "ProgramResult",

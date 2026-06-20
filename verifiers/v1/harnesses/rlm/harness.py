@@ -8,9 +8,9 @@ import json
 import logging
 import shlex
 
-from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelRuntime
 from verifiers.v1.decorators import metric
+from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -59,7 +59,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
 
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelRuntime,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,

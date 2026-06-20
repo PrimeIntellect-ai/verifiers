@@ -32,7 +32,7 @@ from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelRuntime
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1 import graph
 from verifiers.v1.errors import (
@@ -128,7 +128,7 @@ class RolloutSession:
     checked before each turn, and (optionally) a user simulator the rollout sets before the
     harness runs."""
 
-    ctx: RolloutContext
+    ctx: ModelRuntime
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)

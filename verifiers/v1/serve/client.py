@@ -19,7 +19,6 @@ import msgpack
 import zmq
 import zmq.asyncio
 
-from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.serve.types import (
     BaseRequest,
     BaseResponse,
@@ -27,14 +26,17 @@ from verifiers.v1.serve.types import (
     HealthResponse,
     InfoRequest,
     InfoResponse,
+    ModelRuntimeConfig,
+    RunAdvantagesRequest,
+    RunAdvantagesResponse,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    TraceAdvantages,
 )
 from verifiers.v1.task import WireTask
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -119,13 +121,11 @@ class EnvClient:
         return await self._request(InfoRequest(), InfoResponse)
 
     async def run_rollout(
-        self, task_idx: int, client: ClientConfig, model: str, sampling: SamplingConfig
+        self, task_idx: int, actor: ModelRuntimeConfig
     ) -> Trace[WireTask]:
         """Run one rollout for `task_idx`; return a typed `Trace[WireTask]`."""
         response = await self._request(
-            RunRolloutRequest(
-                task_idx=task_idx, client=client, model=model, sampling=sampling
-            ),
+            RunRolloutRequest(task_idx=task_idx, actor=actor),
             RunRolloutResponse,
         )
         return response.trace
@@ -134,18 +134,27 @@ class EnvClient:
         self,
         task_idx: int,
         n: int,
-        client: ClientConfig,
-        model: str,
-        sampling: SamplingConfig,
+        actor: ModelRuntimeConfig,
     ) -> list[Trace[WireTask]]:
         """Run `n` rollouts for `task_idx` as a scored group; return typed `Trace[WireTask]`s."""
         response = await self._request(
-            RunGroupRequest(
-                task_idx=task_idx, n=n, client=client, model=model, sampling=sampling
-            ),
+            RunGroupRequest(task_idx=task_idx, n=n, actor=actor),
             RunGroupResponse,
         )
         return response.traces
+
+    async def run_advantages(
+        self,
+        refs: list[str],
+        traces: list[Trace[WireTask]],
+        models: dict[str, ModelRuntimeConfig],
+    ) -> list[TraceAdvantages]:
+        """Run env-owned advantage functions over traces inside the env server."""
+        response = await self._request(
+            RunAdvantagesRequest(refs=refs, traces=traces, models=models),
+            RunAdvantagesResponse,
+        )
+        return response.advantages or []
 
     async def close(self) -> None:
         if self._receiver is not None:

@@ -6,13 +6,14 @@ import logging
 import random
 import time
 
-from verifiers.v1.clients import RolloutContext, resolve_client
+from verifiers.v1.clients import ModelRuntime, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import Environment
+from verifiers.v1.serve import ModelRuntimeConfig
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     if config.shuffle:
         random.Random(_SHUFFLE_SEED).shuffle(tasks)
     tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
-    ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
+    ctx = ModelRuntime(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.
     semaphore = (
@@ -191,15 +192,18 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             asyncio.Semaphore(request_concurrency) if request_concurrency else None
         )
         write_lock = asyncio.Lock()
+        actor = ModelRuntimeConfig(
+            client=config.client,
+            model=config.model,
+            sampling=config.sampling,
+        )
 
         async def run_group_unit(idx: int) -> list[Trace]:
             async with semaphore or contextlib.nullcontext():
                 traces = await client.run_group(
                     task_idx=idx,
                     n=config.num_rollouts,
-                    client=config.client,
-                    model=config.model,
-                    sampling=config.sampling,
+                    actor=actor,
                 )
             for trace in traces:
                 await append_trace(out, trace, write_lock)
@@ -209,9 +213,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             async with semaphore or contextlib.nullcontext():
                 trace = await client.run_rollout(
                     task_idx=idx,
-                    client=config.client,
-                    model=config.model,
-                    sampling=config.sampling,
+                    actor=actor,
                 )
             await append_trace(out, trace, write_lock)
             return [trace]
