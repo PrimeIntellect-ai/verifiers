@@ -15,6 +15,7 @@ simulator re-seeds to the same episode, so no per-game word-list or state-key kn
 needed and any single-player TextArena game fits.
 """
 
+import copy
 import json
 import random
 from typing import Literal
@@ -140,10 +141,11 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig, TextArenaState
         # is seed-invariant (Wordle, Hangman) build it once.
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
+        template = ta.make(env_id=self.config.game)
 
         def observation(seed: int) -> str:
             random.seed(seed)
-            env = ta.make(env_id=self.config.game)
+            env = copy.deepcopy(template)
             env.reset(num_players=1)
             return str(env.get_observation()[1])
 
