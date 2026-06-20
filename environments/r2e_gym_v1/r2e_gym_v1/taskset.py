@@ -70,6 +70,46 @@ RESTORE_TESTS = (
     f"tar -C {REPO_PATH} -xzf {REMOTE_TESTS_ARCHIVE} && "
     f"rm -f {REMOTE_TESTS_ARCHIVE}"
 )
+SNAPSHOT_PROCESSES = r"""
+for path in /proc/[0-9]*; do
+    pid=${path##*/}
+    IFS= read -r stat < "$path/stat" || continue
+    stat=${stat##*) }
+    set -- $stat
+    [ "$#" -ge 20 ] && printf '%s:%s ' "$pid" "${20}"
+done
+"""
+
+# Scoring runs before runtime teardown, so reap detached agent processes before tests return.
+KILL_AGENT_PROCESSES = r"""
+self=$$
+ancestors=" 1 "
+baseline=" $R2E_BASELINE_PROCESSES "
+pid=$self
+while [ "$pid" -gt 1 ] 2>/dev/null; do
+    ancestors="$ancestors$pid "
+    pid=$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$pid/status" 2>/dev/null)
+    [ -n "$pid" ] || break
+done
+for path in /proc/[0-9]*; do
+    pid=${path##*/}
+    case "$ancestors" in
+        *" $pid "*) continue ;;
+    esac
+    identity=
+    if IFS= read -r stat < "$path/stat"; then
+        stat=${stat##*) }
+        set -- $stat
+        [ "$#" -lt 20 ] || identity="$pid:${20}"
+    fi
+    if [ -n "$identity" ]; then
+        case "$baseline" in
+            *" $identity "*) continue ;;
+        esac
+    fi
+    kill -KILL "$pid" 2>/dev/null || true
+done
+"""
 
 
 def parse_log_pytest(log: str | None) -> dict[str, str]:
@@ -193,6 +233,10 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
     def _host_archives(self) -> weakref.WeakKeyDictionary[vf.Runtime, Path]:
         return weakref.WeakKeyDictionary()
 
+    @cached_property
+    def _baseline_processes(self) -> weakref.WeakKeyDictionary[vf.Runtime, str]:
+        return weakref.WeakKeyDictionary()
+
     def load_tasks(self) -> list[R2EGymTask]:
         from datasets import load_dataset
 
@@ -250,18 +294,40 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
                 f"r2e setup failed to hide tests ({task.name}): {result.stderr.strip()[-500:]}"
             )
 
+        baseline = await runtime.run(["sh", "-c", SNAPSHOT_PROCESSES], ENV)
+        if baseline.exit_code != 0:
+            host_archive.unlink(missing_ok=True)
+            self._host_archives.pop(runtime, None)
+            raise RuntimeError(
+                f"r2e setup failed to snapshot processes ({task.name}): "
+                f"{baseline.stderr.strip()[-500:]}"
+            )
+        self._baseline_processes[runtime] = baseline.stdout
+
     @vf.reward(weight=1.0)
     async def solved(self, task: R2EGymTask, runtime: vf.Runtime) -> float:
         if self.config.hide_tests_from_agent:
             host_archive = self._host_archives.get(runtime)
-            if host_archive is None or not host_archive.exists():
+            baseline_processes = self._baseline_processes.get(runtime)
+            if (
+                host_archive is None
+                or not host_archive.exists()
+                or baseline_processes is None
+            ):
                 return 0.0
             try:
+                cleanup = await runtime.run(
+                    ["sh", "-c", KILL_AGENT_PROCESSES],
+                    ENV | {"R2E_BASELINE_PROCESSES": baseline_processes},
+                )
+                if cleanup.exit_code != 0:
+                    return 0.0
                 await runtime.write(REMOTE_TESTS_ARCHIVE, host_archive.read_bytes())
                 restore = await runtime.run(["sh", "-c", RESTORE_TESTS], ENV)
             finally:
                 host_archive.unlink(missing_ok=True)
                 self._host_archives.pop(runtime, None)
+                self._baseline_processes.pop(runtime, None)
             if restore.exit_code != 0:
                 return 0.0
         result = await runtime.run(["sh", "-c", "/bin/bash run_tests.sh 2>&1"], ENV)
