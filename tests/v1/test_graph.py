@@ -82,6 +82,10 @@ def test_routed_experts_attributed_and_aligned_across_turns():
     restored = type(trace).model_validate(trace.model_dump())
     re2 = restored.branches[-1].routed_experts
     assert re2 is not None and re2.shape == re.shape and bool((re2 == re).all())
+    assert all(
+        node.routed_experts is None or node.routed_experts.flags.owndata
+        for node in trace.nodes
+    )
 
 
 def test_routed_experts_none_when_absent():
