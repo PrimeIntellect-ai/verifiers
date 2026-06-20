@@ -17,7 +17,7 @@ the exact `prompt_ids + completion_ids` the model saw.
 
 from __future__ import annotations
 
-import base64
+import binascii
 import hashlib
 import json
 from dataclasses import dataclass
@@ -357,8 +357,7 @@ def _attribute_routed_experts(
     branch then reports no routing rather than misaligning."""
     if payload is None:
         return
-    data = payload["data"]
-    raw = base64.b64decode(data if isinstance(data, (str, bytes)) else bytes(data))
+    raw = binascii.a2b_base64(payload["data"])
     arr = np.frombuffer(raw, dtype=np.uint8).reshape(payload["shape"])
     off = path_len - int(payload.get("start", 0) or 0)
     # The engine omits routing for the turn's final position (no forward pass follows the last
@@ -370,7 +369,8 @@ def _attribute_routed_experts(
     for nid in new_node_ids:
         n = len(trace.nodes[nid].token_ids)
         if n and 0 <= off and off + n <= arr.shape[0]:
-            trace.nodes[nid].routed_experts = np.ascontiguousarray(arr[off : off + n])
+            # Own only this node's rows; a view would retain the turn's full-context array.
+            trace.nodes[nid].routed_experts = arr[off : off + n].copy()
         off += n
 
 
