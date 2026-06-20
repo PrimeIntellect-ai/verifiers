@@ -59,14 +59,6 @@ def color_data_url(color: str, size: int = 100) -> str:
     return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
 
-def image_content(colors: list[str], text: str) -> list[dict]:
-    """An OpenAI content list — one image part per color, then the text. Used by the user
-    simulator's later turns (the interception server re-types it, preserving the images)."""
-    return [
-        {"type": "image_url", "image_url": {"url": color_data_url(c)}} for c in colors
-    ] + [{"type": "text", "text": text}]
-
-
 def turn_text(turn: int, count: int, max_turns: int, total: int) -> str:
     """The user text shown alongside a turn's squares (mirrors the v0 wording)."""
     if turn == 0:
@@ -116,6 +108,7 @@ class ColorCodewordTaskset(
         c = self.config
         rng = random.Random(SEED)
         colors = list(COLOR_MAP)
+        color_urls = {color: color_data_url(color) for color in colors}
         length = c.images_per_turn * MAX_TURNS
         tasks: list[ColorCodewordTask] = []
         for idx in range(c.num_examples):
@@ -128,9 +121,7 @@ class ColorCodewordTaskset(
             turn0 = colors_per_turn[0]
             text = turn_text(0, len(turn0), MAX_TURNS, len(turn0))
             parts = [
-                vf.ImageUrlContentPart(
-                    image_url=vf.ImageUrlSource(url=color_data_url(col))
-                )
+                vf.ImageUrlContentPart(image_url=vf.ImageUrlSource(url=color_urls[col]))
                 for col in turn0
             ] + [vf.TextContentPart(text=text)]
             tasks.append(
