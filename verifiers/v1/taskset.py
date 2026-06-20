@@ -71,7 +71,8 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         """Load a Hugging Face split, streaming only the rows needed by a limited run."""
         from datasets import load_dataset
 
-        rows = load_dataset(*args, streaming=self._task_limit is not None, **kwargs)
+        kwargs["streaming"] = self._task_limit is not None
+        rows = load_dataset(*args, **kwargs)
         return rows if self._task_limit is None else rows.take(self._task_limit)
 
     def tools(self, task: TaskT) -> list[Toolset]:
