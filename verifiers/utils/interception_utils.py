@@ -27,6 +27,7 @@ from openai.types.chat.chat_completion_chunk import (
     Choice as ChunkChoice,
 )
 
+from verifiers.clients.openai_responses_client import OPENAI_RESPONSES_OUTPUT_FIELD
 from verifiers.errors import InfraError
 from verifiers.types import Response, Tool
 from verifiers.utils.logging_utils import print_time, truncate
@@ -921,9 +922,27 @@ def serialize_anthropic_message_response(response: Response) -> dict[str, Any]:
 
 
 def serialize_openai_responses_response(response: Response) -> dict[str, Any]:
-    output: list[dict[str, Any]] = []
     message = response.message
-    if message.content:
+    raw_output = getattr(message, OPENAI_RESPONSES_OUTPUT_FIELD, None)
+    if raw_output is not None:
+        output = cast(list[dict[str, Any]], jsonable(raw_output))
+    if raw_output is None:
+        output: list[dict[str, Any]] = []
+    if raw_output is None and (
+        message.reasoning_content is not None or message.thinking_blocks
+    ):
+        summary = []
+        if message.reasoning_content:
+            summary.append({"type": "summary_text", "text": message.reasoning_content})
+        output.append(
+            {
+                "id": f"rs_{response.id}",
+                "type": "reasoning",
+                "summary": summary,
+                "status": "completed",
+            }
+        )
+    if raw_output is None and message.content:
         output.append(
             {
                 "id": f"msg_{response.id}",
@@ -939,17 +958,18 @@ def serialize_openai_responses_response(response: Response) -> dict[str, Any]:
                 ],
             }
         )
-    for tool_call in message.tool_calls or []:
-        output.append(
-            {
-                "id": tool_call.id,
-                "type": "function_call",
-                "call_id": tool_call.id,
-                "name": tool_call.name,
-                "arguments": tool_call.arguments,
-                "status": "completed",
-            }
-        )
+    if raw_output is None:
+        for tool_call in message.tool_calls or []:
+            output.append(
+                {
+                    "id": tool_call.id,
+                    "type": "function_call",
+                    "call_id": tool_call.id,
+                    "name": tool_call.name,
+                    "arguments": tool_call.arguments,
+                    "status": "completed",
+                }
+            )
     usage = None
     if response.usage is not None:
         usage = {
