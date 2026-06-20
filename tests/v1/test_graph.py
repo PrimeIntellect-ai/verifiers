@@ -9,6 +9,20 @@ from verifiers.v1 import graph
 from verifiers.v1.types import TurnTokens
 
 
+def _qwen_item(grid, *, raw_image_id=None):
+    item = {
+        "kind": "prime_raw_mm_item",
+        "version": 1,
+        "modality": "image",
+        "family": "qwen_vl",
+        "layout_fingerprint": "f" * 32,
+        "payload": {"image_grid_thw": grid},
+    }
+    if raw_image_id is not None:
+        item["raw_image_id"] = raw_image_id
+    return item
+
+
 def _response(message: vf.AssistantMessage) -> vf.Response:
     return vf.Response(
         id="",
@@ -123,15 +137,7 @@ def test_raw_image_sidecar_attributed_round_trips_and_feeds_next_bridge():
     mm = MultiModalData(
         mm_hashes={"image": ["abcd1234abcd1234"]},
         mm_placeholders={"image": [PlaceholderRange(offset=2, length=4)]},
-        mm_items={
-            "image": [
-                {
-                    "image_grid_thw": [1, 2, 2],
-                    "raw_image_id": "img.png",
-                    "image_layout_fingerprint": "f" * 32,
-                }
-            ]
-        },
+        mm_items={"image": [_qwen_item([1, 2, 2], raw_image_id="img.png")]},
     )
 
     graph.prepare_turn(trace, [user]).commit(
@@ -182,7 +188,7 @@ def test_multimodal_sidecar_rejects_processed_image_payloads():
                 mm_items={
                     "image": [
                         {
-                            "image_grid_thw": [1, 1, 1],
+                            **_qwen_item([1, 1, 1]),
                             "pixel_values": np.zeros((1, 2), dtype=np.float32),
                         }
                     ]
@@ -198,12 +204,15 @@ def test_multimodal_sidecar_rejects_processed_image_payloads():
             "mm_items": {
                 "image": [
                     {
-                        "image_grid_thw": {
-                            "__nd__": True,
-                            "dtype": "int64",
-                            "shape": [3],
-                            "data": b"\x00" * 24,
-                        }
+                        **_qwen_item([1, 1, 1]),
+                        "payload": {
+                            "image_grid_thw": {
+                                "__nd__": True,
+                                "dtype": "int64",
+                                "shape": [3],
+                                "data": b"\x00" * 24,
+                            }
+                        },
                     }
                 ]
             },

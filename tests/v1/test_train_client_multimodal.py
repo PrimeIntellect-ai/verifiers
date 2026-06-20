@@ -15,6 +15,20 @@ from verifiers.v1.utils import multimodal
 DATA_URL = "data:image/png;base64,aGVsbG8="
 
 
+def _qwen_item(grid, *, raw_image_id=None):
+    item = {
+        "kind": "prime_raw_mm_item",
+        "version": 1,
+        "modality": "image",
+        "family": "qwen_vl",
+        "layout_fingerprint": "f" * 32,
+        "payload": {"image_grid_thw": grid},
+    }
+    if raw_image_id is not None:
+        item["raw_image_id"] = raw_image_id
+    return item
+
+
 def test_offload_images_inplace_rewrites_wire_and_typed_messages(monkeypatch):
     def fake_offload(url, image_dir):
         assert image_dir is None
@@ -88,7 +102,7 @@ async def test_train_client_bridges_multimodal_prompt_with_previous_sidecar(
     previous_mm = MultiModalData(
         mm_hashes={"image": ["a" * 16]},
         mm_placeholders={"image": [PlaceholderRange(offset=1, length=2)]},
-        mm_items={"image": [{"image_grid_thw": [1, 1, 2]}]},
+        mm_items={"image": [_qwen_item([1, 1, 2])]},
     )
     trace = vf.Trace(task=vf.Task(idx=0, prompt="x"))
     graph.prepare_turn(trace, [image_msg]).commit(
@@ -197,7 +211,7 @@ async def test_generate_retries_missing_mm_cache_by_materializing_image_refs(
     mm = MultiModalData(
         mm_hashes={"image": ["a" * 16]},
         mm_placeholders={"image": [PlaceholderRange(offset=0, length=1)]},
-        mm_items={"image": [{"image_grid_thw": [1, 1, 1]}]},
+        mm_items={"image": [_qwen_item([1, 1, 1])]},
     )
 
     result = await _generate_with_image_ref_retry(
@@ -231,7 +245,7 @@ async def test_generate_does_not_retry_missing_cache_for_raw_image_refs(
     mm = MultiModalData(
         mm_hashes={"image": ["a" * 16]},
         mm_placeholders={"image": [PlaceholderRange(offset=0, length=1)]},
-        mm_items={"image": [{"image_grid_thw": [1, 1, 1], "raw_image_id": "a.png"}]},
+        mm_items={"image": [_qwen_item([1, 1, 1], raw_image_id="a.png")]},
     )
 
     with pytest.raises(MissingCache):

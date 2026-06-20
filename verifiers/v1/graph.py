@@ -72,13 +72,26 @@ def _contains_array_payload(value: Any) -> bool:
     return False
 
 
+_PROCESSED_MM_KEYS = {"pixel_values", "image_embeds", "image_features"}
+
+
+def _contains_processed_payload_key(value: Any) -> bool:
+    if isinstance(value, dict):
+        return bool(_PROCESSED_MM_KEYS.intersection(value)) or any(
+            _contains_processed_payload_key(v) for v in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_processed_payload_key(v) for v in value)
+    return False
+
+
 def _validate_raw_mm_item(item: Any) -> dict[str, Any]:
     if not isinstance(item, dict):
         raise TypeError(
             "v1 multimodal sidecars must be raw image descriptor dicts, "
             f"got {type(item).__name__}"
         )
-    if "pixel_values" in item:
+    if _contains_processed_payload_key(item):
         raise TypeError("v1 does not carry processed image payloads")
     if _contains_array_payload(item):
         raise TypeError(
