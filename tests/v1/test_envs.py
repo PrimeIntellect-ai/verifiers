@@ -50,7 +50,9 @@ def test_eval(taskset: str):
     if taskset in NEEDS_CONTAINER:
         pytest.skip(f"{taskset} needs a docker/prime runtime (covered by v1 e2e tests)")
     if taskset in SKIP_SMOKE_EVAL:
-        pytest.skip(f"{taskset} can't run a CI smoke eval (clones a corpus repo unreadable here)")
+        pytest.skip(
+            f"{taskset} can't run a CI smoke eval (clones a corpus repo unreadable here)"
+        )
     if os.getenv("PRIME_API_KEY"):
         model = [
             "-m", "openai/gpt-4.1-mini",
