@@ -67,15 +67,21 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     def load_tasks(self) -> list[TaskT]:
         raise NotImplementedError
 
-    def load_dataset(self, *args, split: str, **kwargs):
-        """Load a Hugging Face split, streaming only the rows needed by a limited run."""
+    def load_dataset(self, *args, **kwargs):
+        """Load Hugging Face data, streaming only the rows needed by a limited run."""
         from datasets import load_dataset
 
         kwargs["streaming"] = (
             kwargs.get("streaming", False) or self._task_limit is not None
         )
-        rows = load_dataset(*args, split=split, **kwargs)
-        return rows if self._task_limit is None else rows.take(self._task_limit)
+        rows = load_dataset(*args, **kwargs)
+        if self._task_limit is None:
+            return rows
+        if isinstance(rows, dict):
+            return type(rows)(
+                {name: split.take(self._task_limit) for name, split in rows.items()}
+            )
+        return rows.take(self._task_limit)
 
     def tools(self, task: TaskT) -> list[Toolset]:
         """Tool servers exposing this task's tools to the model — `vf.Toolset`s (classes with
