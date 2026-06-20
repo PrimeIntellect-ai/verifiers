@@ -175,11 +175,15 @@ class EvalClient(Client):
 
         async def chunks():
             buffer = bytearray()
+            search_from = 0
             async for chunk in resp.aiter_bytes():
                 buffer += chunk
-                while match := _SSE_EVENT_END.search(buffer):
+                while match := _SSE_EVENT_END.search(buffer, search_from):
                     yield bytes(buffer[: match.end()])
                     del buffer[: match.end()]
+                    search_from = 0
+                # A delimiter is at most four bytes and can straddle chunks.
+                search_from = max(0, len(buffer) - 3)
             if buffer:
                 yield bytes(buffer)
 
