@@ -19,7 +19,7 @@ from typing import Callable
 import verifiers.v1 as vf
 
 from general_agent_v1.common import GeneralAgentState, GeneralAgentToolsetConfig
-from general_agent_v1.corpus import load_task_attr
+from general_agent_v1.corpus import load_task_attrs
 
 
 class GeneralAgentToolset(vf.Toolset[GeneralAgentToolsetConfig, GeneralAgentState]):
@@ -27,8 +27,7 @@ class GeneralAgentToolset(vf.Toolset[GeneralAgentToolsetConfig, GeneralAgentStat
 
     async def setup_task(self, task) -> None:
         task_dir = self._task_dir(task)
-        task_db = load_task_attr(task_dir, "TaskDB")
-        task_tools = load_task_attr(task_dir, "TaskTools")
+        task_db, task_tools = load_task_attrs(task_dir, "TaskDB", "TaskTools")
         if task_db is None or task_tools is None:
             raise ValueError(f"tools.py must define TaskDB and TaskTools: {task_dir}")
         self._tools = task_tools(task_db.load(task_dir / "db.json"))
