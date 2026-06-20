@@ -56,14 +56,18 @@ def _parse_tsv_lines(path: Path) -> list[str]:
         return [s for line in f if (s := line.strip()) and not s.startswith("#")]
 
 
-def _load_articles(graph_dir: Path, articles_dir: Path) -> dict[str, str]:
+def _load_articles(
+    graph_dir: Path, articles_dir: Path, include_text: bool = True
+) -> dict[str, str]:
     articles: dict[str, str] = {}
     for name in _parse_tsv_lines(graph_dir / "articles.tsv"):
         text_path = articles_dir / f"{name}.txt"
         if text_path.exists():
-            articles[name] = text_path.read_text(
-                encoding="utf-8", errors="replace"
-            ).strip()
+            articles[name] = (
+                text_path.read_text(encoding="utf-8", errors="replace").strip()
+                if include_text
+                else ""
+            )
     return articles
 
 
@@ -76,18 +80,14 @@ def _load_links(graph_dir: Path, valid: set[str]) -> dict[str, list[str]]:
     return adj
 
 
-def _load_distance_matrix(
-    graph_dir: Path, names: list[str]
-) -> dict[str, dict[str, int]]:
+def _load_distance_matrix(graph_dir: Path, names: list[str]) -> dict[str, str]:
     """Each row is single-digit distances ('_' = unreachable), one char per target."""
-    distances: dict[str, dict[str, int]] = {}
-    for i, row in enumerate(
-        _parse_tsv_lines(graph_dir / "shortest-path-distance-matrix.txt")
-    ):
-        distances[names[i]] = {
-            names[j]: int(ch) for j, ch in enumerate(row) if ch != "_"
-        }
-    return distances
+    return {
+        names[i]: row
+        for i, row in enumerate(
+            _parse_tsv_lines(graph_dir / "shortest-path-distance-matrix.txt")
+        )
+    }
 
 
 class WikiGraph:
@@ -97,12 +97,15 @@ class WikiGraph:
         self.articles = articles
         self.links = links
         self.distances = distances
+        self._distance_index = {name: i for i, name in enumerate(distances)}
         self._name_lookup = {name.lower(): name for name in articles}
 
     @classmethod
-    def load(cls, cache_dir: Path | None = None) -> WikiGraph:
+    def load(
+        cls, cache_dir: Path | None = None, include_text: bool = True
+    ) -> WikiGraph:
         graph_dir, articles_dir = _ensure_data(cache_dir or DEFAULT_CACHE_DIR)
-        articles = _load_articles(graph_dir, articles_dir)
+        articles = _load_articles(graph_dir, articles_dir, include_text)
         valid = set(articles)
         links = _load_links(graph_dir, valid)
         order = [n for n in _parse_tsv_lines(graph_dir / "articles.tsv") if n in valid]
@@ -113,7 +116,12 @@ class WikiGraph:
         return sorted(self.links.get(article, []))
 
     def shortest_path_length(self, source: str, target: str) -> int | None:
-        return self.distances.get(source, {}).get(target)
+        row = self.distances.get(source)
+        index = self._distance_index.get(target)
+        if row is None or index is None:
+            return None
+        distance = row[index]
+        return None if distance == "_" else int(distance)
 
     def normalize_name(self, name: str) -> str | None:
         """Match a user-provided name to a canonical article name."""

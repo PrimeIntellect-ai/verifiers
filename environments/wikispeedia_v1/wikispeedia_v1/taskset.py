@@ -23,15 +23,6 @@ SYSTEM = (
     "destination."
 )
 
-_wiki: WikiGraph | None = None
-
-
-def graph() -> WikiGraph:
-    global _wiki
-    if _wiki is None:
-        _wiki = WikiGraph.load()
-    return _wiki
-
 
 def sample_pairs(wiki: WikiGraph, n: int, lo: int, hi: int, seed: int):
     """Sample `n` unique `(source, target, dist)` tuples within the distance band."""
@@ -70,7 +61,7 @@ class WikispeediaConfig(vf.TasksetConfig):
 
 class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
     def load_tasks(self) -> list[WikiTask]:
-        wiki = graph()
+        wiki = WikiGraph.load(include_text=not self.config.tools.links_only)
         pairs = sample_pairs(
             wiki,
             self.config.num_tasks,
