@@ -46,6 +46,9 @@ ENV = {
     "CI": "1",
 }
 
+# Hidden-test control commands must not resolve tools from agent-writable project paths.
+SYSTEM_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
+
 # Symlink the repo venv + its executables onto the alt PATH so plain `python`/`pytest`
 # resolve to the project environment regardless of the agent's cwd.
 LINK = r"""
@@ -317,20 +320,24 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
                 return 0.0
             try:
                 cleanup = await runtime.run(
-                    ["sh", "-c", KILL_AGENT_PROCESSES],
-                    ENV | {"R2E_BASELINE_PROCESSES": baseline_processes},
+                    ["/bin/sh", "-c", KILL_AGENT_PROCESSES],
+                    SYSTEM_ENV | {"R2E_BASELINE_PROCESSES": baseline_processes},
                 )
                 if cleanup.exit_code != 0:
                     return 0.0
                 await runtime.write(REMOTE_TESTS_ARCHIVE, host_archive.read_bytes())
-                restore = await runtime.run(["sh", "-c", RESTORE_TESTS], ENV)
+                restore = await runtime.run(
+                    ["/bin/sh", "-c", RESTORE_TESTS], SYSTEM_ENV
+                )
             finally:
                 host_archive.unlink(missing_ok=True)
                 self._host_archives.pop(runtime, None)
                 self._baseline_processes.pop(runtime, None)
             if restore.exit_code != 0:
                 return 0.0
-        result = await runtime.run(["sh", "-c", "/bin/bash run_tests.sh 2>&1"], ENV)
+        result = await runtime.run(
+            ["/bin/sh", "-c", "/bin/bash run_tests.sh 2>&1"], ENV
+        )
         return calculate_reward(result.stdout or "", task.expected_output_json)
 
     async def validate(self, task: R2EGymTask, runtime: vf.Runtime) -> bool:
