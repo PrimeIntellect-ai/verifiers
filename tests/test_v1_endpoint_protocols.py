@@ -205,6 +205,35 @@ def test_openai_responses_serialization_includes_function_calls():
     assert payload["output"][0]["call_id"] == "call_1"
 
 
+@pytest.mark.asyncio
+async def test_openai_responses_serialization_preserves_reasoning_only_response():
+    response = Response(
+        id="resp_1",
+        created=123,
+        model="m",
+        usage=None,
+        message=ResponseMessage(
+            content=None,
+            reasoning_content="hidden",
+            finish_reason="stop",
+            is_truncated=False,
+        ),
+    )
+
+    payload = serialize_intercept_response(response, protocol="openai_responses")
+
+    assert payload["output"] == [
+        {
+            "id": "rs_resp_1",
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": "hidden"}],
+            "status": "completed",
+        }
+    ]
+    native_response = type("NativeResponse", (), payload)()
+    await OpenAIResponsesClient(object()).raise_from_native_response(native_response)
+
+
 def test_openai_completions_serialization_returns_text_completion_shape():
     response = Response(
         id="cmpl_1",

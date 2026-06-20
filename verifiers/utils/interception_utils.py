@@ -923,6 +923,18 @@ def serialize_anthropic_message_response(response: Response) -> dict[str, Any]:
 def serialize_openai_responses_response(response: Response) -> dict[str, Any]:
     output: list[dict[str, Any]] = []
     message = response.message
+    if message.reasoning_content is not None or message.thinking_blocks:
+        summary = []
+        if message.reasoning_content:
+            summary.append({"type": "summary_text", "text": message.reasoning_content})
+        output.append(
+            {
+                "id": f"rs_{response.id}",
+                "type": "reasoning",
+                "summary": summary,
+                "status": "completed",
+            }
+        )
     if message.content:
         output.append(
             {
