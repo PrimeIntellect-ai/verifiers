@@ -211,10 +211,11 @@ def serve_forked(app, sock: socket.socket, server) -> None:
             await reap(key)
             await _respond(send, 200, b"closed")
             return
-        body, more = b"", True
+        body: list[bytes] = []
+        more = True
         while more:  # read the request body, then forward to the rollout's child
             msg = await receive()
-            body += msg.get("body", b"")
+            body.append(msg.get("body", b""))
             more = msg.get("more_body", False)
         # Bring the child up and stream its response back. Any failure here (child never came up,
         # `ensure` timed out, upstream errored mid-stream) must not leave the ASGI caller hanging:
@@ -232,7 +233,7 @@ def serve_forked(app, sock: socket.socket, server) -> None:
                 f"?{qs}" if qs else ""
             )
             req = client.build_request(
-                scope["method"], url, headers=headers, content=body
+                scope["method"], url, headers=headers, content=b"".join(body)
             )
             resp = await client.send(req, stream=True)
             try:
