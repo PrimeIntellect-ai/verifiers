@@ -2,14 +2,14 @@ name: Test
 
 on:
   pull_request:
-    branches: [main, master, feat/nano-as-v1]
+    branches: [main, master]
     paths:
       - "**.py"
       - "pyproject.toml"
       - "packages/**"
       - ".github/workflows/test.yml"
   push:
-    branches: [main, master, feat/nano-as-v1]
+    branches: [main, master]
     paths:
       - "**.py"
       - "pyproject.toml"
