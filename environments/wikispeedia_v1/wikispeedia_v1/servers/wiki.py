@@ -50,9 +50,11 @@ class WikiToolset(vf.Toolset[WikiToolsetConfig]):
         for name in rows(gdir / "articles.tsv"):
             text = adir / f"{name}.txt"
             if text.exists():
-                self.articles[name] = text.read_text(
-                    encoding="utf-8", errors="replace"
-                ).strip()
+                self.articles[name] = (
+                    text.read_text(encoding="utf-8", errors="replace").strip()
+                    if not self.config.links_only
+                    else ""
+                )
         self.links = {name: [] for name in self.articles}
         for line in rows(gdir / "links.tsv"):
             src, _, dst = line.partition("\t")
