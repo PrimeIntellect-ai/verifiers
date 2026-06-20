@@ -26,7 +26,7 @@ REPO_PATH = "/testbed"
 ALT_PATH = "/root"
 # Tests are staged here during the agent rollout (outside the /testbed workdir) and
 # restored to /testbed/r2e_tests at scoring time.
-STAGED_TESTS = "/opt/r2e_tests.tar.gz"
+STAGED_TESTS = "/opt/r2e_tests"
 
 # The testbed venv (project + pytest installed) plus quiet, non-interactive tooling —
 # exported for every command the taskset runs in the sandbox.
@@ -60,11 +60,10 @@ CLEAN_PYCACHE = (
     "2>/dev/null || timeout 30 find . -name '*.pyc' -delete 2>/dev/null || true"
 )
 
-# Stash the ground-truth tests away from the agent (tar to /opt, then remove the dir).
-HIDE_TESTS = f"tar -C / -czf {STAGED_TESTS} r2e_tests && rm -rf /r2e_tests"
-# Restore them into the workdir for scoring (run_tests.sh expects /testbed/r2e_tests).
+# Stash the ground-truth tests away from the agent, then move them into place for scoring.
+HIDE_TESTS = f"rm -rf {STAGED_TESTS} && mv /r2e_tests {STAGED_TESTS}"
 RESTORE_TESTS = (
-    f"rm -rf {REPO_PATH}/r2e_tests && tar -C {REPO_PATH} -xzf {STAGED_TESTS}"
+    f"rm -rf {REPO_PATH}/r2e_tests && mv {STAGED_TESTS} {REPO_PATH}/r2e_tests"
 )
 
 
