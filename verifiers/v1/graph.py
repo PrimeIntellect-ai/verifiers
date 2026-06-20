@@ -33,6 +33,7 @@ from verifiers.v1.types import (
     Message,
     Response,
     StrictBaseModel,
+    TextContentPart,
     ToolMessage,
     Usage,
 )
@@ -163,16 +164,6 @@ class MessageNode(StrictBaseModel):
         raise TypeError(f"cannot build routed_experts from {type(value).__name__}")
 
 
-def _content_str(content) -> str:
-    """A message body as a stable string for hashing — plain text as-is, a content-part list as
-    canonical JSON (so two messages carrying the same text/images hash equal), None as ""."""
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    return json.dumps([p.model_dump() for p in content], sort_keys=True)
-
-
 def _canonical_tool_arguments(arguments: str) -> str:
     try:
         return json.dumps(json.loads(arguments), sort_keys=True, separators=(",", ":"))
@@ -186,18 +177,42 @@ def message_hash(message: Message) -> str:
     tool call id. Two messages hash equal iff they're the same conversational message, so a
     re-stated prefix message dedups to one node. The dedup key for sharing a prefix across
     turns/branches; salt-free so it is identical across processes and after deserialization."""
-    parts: list[str] = [type(message).__name__, _content_str(message.content)]
+    digest = hashlib.blake2b(digest_size=16)
+
+    def add(value: str) -> None:
+        data = value.encode()
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+
+    add(type(message).__name__)
+    if isinstance(message.content, list):
+        add("content_parts")
+        for part in message.content:
+            add(part.type)
+            if isinstance(part, TextContentPart):
+                add(part.text)
+            else:
+                add(part.image_url.url)
+    else:
+        add("content_text")
+        add(message.content or "")
     if isinstance(message, AssistantMessage):
         if message.reasoning_content is not None:
-            parts += ["reasoning_content", message.reasoning_content]
+            add("reasoning_content")
+            add(message.reasoning_content)
         if message.provider_state:
             # Signed/encrypted continuation state distinguishes otherwise equal turns.
-            parts.append(json.dumps(message.provider_state, sort_keys=True))
+            add("provider_state")
+            add(json.dumps(message.provider_state, sort_keys=True))
         for tc in message.tool_calls or []:
-            parts += [tc.id, tc.name, _canonical_tool_arguments(tc.arguments)]
+            add("tool_call")
+            add(tc.id)
+            add(tc.name)
+            add(_canonical_tool_arguments(tc.arguments))
     elif isinstance(message, ToolMessage):
-        parts.append(message.tool_call_id)
-    return hashlib.blake2b("\x00".join(parts).encode(), digest_size=16).hexdigest()
+        add("tool_call_id")
+        add(message.tool_call_id)
+    return digest.hexdigest()
 
 
 def _head_index(trace: Trace) -> dict[tuple[int | None, str], int]:
@@ -387,7 +402,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
-    prompt_ids = list(tokens.prompt_ids) if tokens else []
+    prompt_ids = tokens.prompt_ids if tokens else []
     spans = tokens.message_spans if tokens else None
     idx = _head_index(trace)
 
@@ -431,7 +446,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
         end = span[1] if span else start
         node_tokens = prompt_ids[start:end]
         trace.nodes.append(
-            MessageNode(
+            # Every value is already typed framework data; avoid revalidating and copying
+            # potentially huge token slices a second time.
+            MessageNode.model_construct(
                 parent=parent,
                 message=msg,
                 token_ids=node_tokens,
@@ -444,11 +461,11 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
         cursor = end
 
     # Assistant node: trailing scaffold (the generation prompt) + the sampled completion.
-    comp_ids = list(tokens.completion_ids) if tokens else []
+    comp_ids = tokens.completion_ids if tokens else []
     gen_start = path_len if cursor is None else cursor
     gen_prompt = prompt_ids[gen_start:]
     trace.nodes.append(
-        MessageNode(
+        MessageNode.model_construct(
             parent=parent,
             message=response.message,
             sampled=True,
