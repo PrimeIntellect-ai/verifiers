@@ -2,7 +2,7 @@
 
 The 4,417-task corpus is large (~320 MB) and lives only in the `research-environments` repo, so it
 is NOT vendored here — `ensure_corpus()` sparse-checks-out `tasks/` at a pinned commit into a local
-cache on first start. `load_task_attr()` then dynamically imports a single task's `tools.py` (its
+cache on first start. `load_task_attrs()` then dynamically imports a single task's `tools.py` (its
 `TaskDB` / `TaskTools` / `verify`), installing a `sys.modules` shim so the raw task files'
 `from general_agent.tools import ...` resolves to this package's base classes unmodified.
 """
@@ -110,8 +110,8 @@ def _install_shim() -> None:
     _shim_installed = True
 
 
-def load_task_attr(task_dir: Path, attr: str) -> Any | None:
-    """Import a task's `tools.py` and return one of `TaskDB` / `TaskTools` / `verify`."""
+def load_task_attrs(task_dir: Path, *attrs: str) -> tuple[Any | None, ...]:
+    """Import a task's `tools.py` once and return the requested attributes."""
     _install_shim()
     path = task_dir / "tools.py"
     prev = sys.dont_write_bytecode
@@ -119,10 +119,10 @@ def load_task_attr(task_dir: Path, attr: str) -> Any | None:
     try:
         spec = importlib.util.spec_from_file_location(f"ga_task_{task_dir.name}", path)
         if spec is None or spec.loader is None:
-            return None
+            return (None,) * len(attrs)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return getattr(module, attr, None)
+        return tuple(getattr(module, attr, None) for attr in attrs)
     finally:
         sys.dont_write_bytecode = prev
 
@@ -136,8 +136,9 @@ def gold_check(task_dir: Path) -> tuple[bool, str | None]:
     gold_path = task_dir / "gold.json"
     if not gold_path.exists():
         return False, "no gold.json"
-    task_db = load_task_attr(task_dir, "TaskDB")
-    task_tools = load_task_attr(task_dir, "TaskTools")
+    task_db, task_tools, verify_fn = load_task_attrs(
+        task_dir, "TaskDB", "TaskTools", "verify"
+    )
     if task_db is None or task_tools is None:
         return False, "tools.py must define TaskDB and TaskTools"
     initial = task_tools(task_db.load(task_dir / "db.json"))
@@ -149,7 +150,6 @@ def gold_check(task_dir: Path) -> tuple[bool, str | None]:
         return False, f"gold replay failed: {type(e).__name__}: {e}"
     if initial.db.get_hash() == gold.db.get_hash():
         return False, "gold solution did not change the DB"
-    verify_fn = load_task_attr(task_dir, "verify")
     if verify_fn is None:
         return True, None
     if verify_fn(initial.db) != 0.0:

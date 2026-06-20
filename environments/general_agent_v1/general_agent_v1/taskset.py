@@ -23,7 +23,7 @@ from general_agent_v1.corpus import (
     CORPUS_REF,
     ensure_corpus,
     gold_check,
-    load_task_attr,
+    load_task_attrs,
     matches_pass_rate,
     task_matches,
 )
@@ -119,16 +119,43 @@ class GeneralAgentSolverTaskset(
         return [GeneralAgentToolset(self.config.tools)]
 
     @vf.metric
-    async def db_hash(self, task: GeneralAgentTask, trace: vf.Trace) -> float:
-        return self._db_hash(task, trace)
+    async def checks(self, task: GeneralAgentTask, trace: vf.Trace) -> dict[str, float]:
+        """Compute both checks from one reconstructed agent DB."""
+        task_dir = Path(task.dir)
+        try:
+            task_db, task_tools, verify_fn = load_task_attrs(
+                task_dir, "TaskDB", "TaskTools", "verify"
+            )
+            agent = (
+                task_db.model_validate(trace.state.db)
+                if trace.state.db is not None and task_db is not None
+                else None
+            )
+        except Exception:
+            return {"db_hash": 0.0, "verify": 0.0}
 
-    @vf.metric
-    async def verify(self, task: GeneralAgentTask, trace: vf.Trace) -> float:
-        return self._verify(task, trace)
+        db_hash = 0.0
+        try:
+            gold_path = task_dir / "gold.json"
+            if agent is not None and task_db is not None and task_tools is not None:
+                tools = task_tools(task_db.load(task_dir / "db.json"))
+                for tool_name, kwargs in json.loads(gold_path.read_text()):
+                    tools.call_tool(tool_name, **kwargs)
+                db_hash = float(agent.get_hash() == tools.db.get_hash())
+        except Exception:
+            pass
+
+        verified = 0.0
+        try:
+            if agent is not None and verify_fn is not None:
+                verified = float(verify_fn(agent))
+        except Exception:
+            pass
+        return {"db_hash": db_hash, "verify": verified}
 
     @vf.reward(weight=1.0)
-    async def solved(self, task: GeneralAgentTask, trace: vf.Trace) -> float:
-        return max(self._db_hash(task, trace), self._verify(task, trace))
+    async def solved(self, trace: vf.Trace) -> float:
+        return max(trace.metrics["db_hash"], trace.metrics["verify"])
 
     async def validate(self, task: GeneralAgentTask, runtime: vf.Runtime) -> bool:
         """Gold-check (model-free), run by `uv run validate`: the gold chain must change the DB,
@@ -141,47 +168,6 @@ class GeneralAgentSolverTaskset(
     def _metadata(self, task_dir: Path) -> dict:
         with open(task_dir / "task.toml", "rb") as f:
             return tomllib.load(f).get("metadata", {})
-
-    def _agent_db(self, task: GeneralAgentTask, trace: vf.Trace):
-        """Reconstruct the agent's final DB from the dict the toolset synced onto `trace.state`."""
-        if trace.state.db is None:
-            return None
-        task_db = load_task_attr(Path(task.dir), "TaskDB")
-        return task_db.model_validate(trace.state.db) if task_db is not None else None
-
-    def _gold_db(self, task: GeneralAgentTask):
-        """Replay the gold tool-call chain on a fresh DB → the reference final DB."""
-        task_dir = Path(task.dir)
-        gold_path = task_dir / "gold.json"
-        if not gold_path.exists():
-            return None
-        task_db = load_task_attr(task_dir, "TaskDB")
-        task_tools = load_task_attr(task_dir, "TaskTools")
-        if task_db is None or task_tools is None:
-            return None
-        tools = task_tools(task_db.load(task_dir / "db.json"))
-        for tool_name, kwargs in json.loads(gold_path.read_text()):
-            tools.call_tool(tool_name, **kwargs)
-        return tools.db
-
-    def _db_hash(self, task: GeneralAgentTask, trace: vf.Trace) -> float:
-        try:
-            agent, gold = self._agent_db(task, trace), self._gold_db(task)
-            if agent is None or gold is None:
-                return 0.0
-            return float(agent.get_hash() == gold.get_hash())
-        except Exception:
-            return 0.0
-
-    def _verify(self, task: GeneralAgentTask, trace: vf.Trace) -> float:
-        try:
-            agent = self._agent_db(task, trace)
-            verify_fn = load_task_attr(Path(task.dir), "verify")
-            if agent is None or verify_fn is None:
-                return 0.0
-            return float(verify_fn(agent))
-        except Exception:
-            return 0.0
 
 
 __all__ = ["GeneralAgentSolverTaskset"]
