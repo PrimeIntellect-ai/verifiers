@@ -26,7 +26,7 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel, ConfigDict
 
-from verifiers.v1.dialects.base import Dialect, iter_sse
+from verifiers.v1.dialects.base import Dialect, iter_sse_reverse
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -298,7 +298,7 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
     def parse_stream(self, raw: bytes) -> Response:
         """The terminal event (`response.completed` / `.incomplete` / `.failed`) carries the
         full response object — parse that."""
-        for event in reversed(iter_sse(raw)):
+        for event in iter_sse_reverse(raw):
             if event.get("type") in FINAL_EVENTS:
                 return response_from_wire(
                     OpenAIResponse.model_validate(event["response"])
