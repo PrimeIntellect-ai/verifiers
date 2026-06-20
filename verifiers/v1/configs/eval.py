@@ -29,6 +29,7 @@ class EvalConfig(EnvServerConfig):
     sampling: SamplingConfig = SamplingConfig()
     num_tasks: int | None = Field(
         None,
+        ge=0,
         validation_alias=AliasChoices("batch_size", "num_examples", "num_tasks", "n"),
     )
     """How many tasks to evaluate (None = all)."""

@@ -59,12 +59,20 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     """Whether this taskset only runs in a container runtime (docker/prime). When True the
     Environment refuses the subprocess runtime — for tasksets whose work only makes sense
     inside a per-task image (e.g. a SWE repo sandbox)."""
+    _task_limit: int | None = None
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
     def load_tasks(self) -> list[TaskT]:
         raise NotImplementedError
+
+    def load_dataset(self, *args, **kwargs):
+        """Load a Hugging Face split, streaming only the rows needed by a limited run."""
+        from datasets import load_dataset
+
+        rows = load_dataset(*args, streaming=self._task_limit is not None, **kwargs)
+        return rows if self._task_limit is None else rows.take(self._task_limit)
 
     def tools(self, task: TaskT) -> list[Toolset]:
         """Tool servers exposing this task's tools to the model — `vf.Toolset`s (classes with

@@ -173,9 +173,7 @@ class SWELegoTaskset(vf.Taskset[SWELegoTask, vf.TasksetConfig]):
     NEEDS_CONTAINER = True
 
     def load_tasks(self) -> list[SWELegoTask]:
-        from datasets import load_dataset
-
-        rows = load_dataset(DATASET, split=SPLIT)
+        rows = self.load_dataset(DATASET, split=SPLIT)
         return [
             SWELegoTask(
                 idx=i,

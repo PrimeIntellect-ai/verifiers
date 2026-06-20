@@ -218,6 +218,7 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         ]
         if not task_dirs:
             raise ValueError(f"no harbor tasks found in {root}")
+        task_dirs = task_dirs[: self._task_limit]
         return [
             parse_task(task_dir, idx, self.config)
             for idx, task_dir in enumerate(task_dirs)

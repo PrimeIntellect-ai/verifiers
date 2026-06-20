@@ -108,6 +108,8 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     """Run each task's `validate` hook with bounded concurrency, showing progress live. Returns
     the result rows in memory — nothing is persisted."""
     taskset = vf.load_taskset(config.taskset)
+    # Exact shuffling needs the full taskset; num_tasks is still applied below.
+    taskset._task_limit = None if config.shuffle else config.num_tasks
     tasks = taskset.load_tasks()
     if config.shuffle:
         random.Random(0).shuffle(tasks)

@@ -49,13 +49,17 @@ class EnvServer:
     """Serve one v1 environment over ZMQ. The only process that loads the env."""
 
     def __init__(
-        self, config: EnvConfig, address: str = "tcp://127.0.0.1:5000"
+        self,
+        config: EnvConfig,
+        address: str = "tcp://127.0.0.1:5000",
+        task_limit: int | None = None,
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
         # Load tasks once; the index range is fixed for the server's lifetime.
-        self.tasks = self.env.taskset.load_tasks()
+        self.env.taskset._task_limit = task_limit
+        self.tasks = self.env.taskset.load_tasks()[:task_limit]
         self.requires_group_scoring = bool(
             discover_decorated(self.env.taskset, "group_reward")
         )
