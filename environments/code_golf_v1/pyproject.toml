@@ -3,7 +3,7 @@ name = "code-golf-v1"
 version = "0.1.0"
 description = "code-golf-v1 — write a short, fast program (showcases group rewards)."
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["verifiers"]
 
 [build-system]
 requires = ["hatchling"]
