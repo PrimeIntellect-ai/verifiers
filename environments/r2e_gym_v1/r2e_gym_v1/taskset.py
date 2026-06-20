@@ -11,9 +11,10 @@ map exactly matches the row's ``expected_output_json``. A v1 port of the v0 Comp
 """
 
 import json
-import os
 import re
+import tempfile
 import weakref
+from functools import cached_property
 from pathlib import Path
 
 import verifiers.v1 as vf
@@ -28,7 +29,6 @@ REGISTRY = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
 REPO_PATH = "/testbed"
 ALT_PATH = "/root"
 REMOTE_TESTS_ARCHIVE = "/tmp/r2e_tests.tar.gz"
-HOST_TESTS_ARCHIVE = "/tmp/r2e_tests_{runtime}.tar.gz"
 
 # The testbed venv (project + pytest installed) plus quiet, non-interactive tooling —
 # exported for every command the taskset runs in the sandbox.
@@ -189,6 +189,10 @@ class R2EGymConfig(vf.TasksetConfig):
 class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
     NEEDS_CONTAINER = True
 
+    @cached_property
+    def _host_archives(self) -> weakref.WeakKeyDictionary[vf.Runtime, Path]:
+        return weakref.WeakKeyDictionary()
+
     def load_tasks(self) -> list[R2EGymTask]:
         from datasets import load_dataset
 
@@ -230,15 +234,18 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
             )
 
         archive = await runtime.read(REMOTE_TESTS_ARCHIVE)
-        host_archive = Path(HOST_TESTS_ARCHIVE.format(runtime=runtime.name))
-        fd = os.open(host_archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        weakref.finalize(runtime, host_archive.unlink, missing_ok=True)
-        with os.fdopen(fd, "wb") as file:
+        with tempfile.NamedTemporaryFile(
+            prefix=f"r2e_tests_{runtime.name}_", suffix=".tar.gz", delete=False
+        ) as file:
             file.write(archive)
+            host_archive = Path(file.name)
+        self._host_archives[runtime] = host_archive
+        weakref.finalize(runtime, host_archive.unlink, missing_ok=True)
 
         result = await runtime.run(["sh", "-c", REMOVE_TESTS], ENV)
         if result.exit_code != 0:
             host_archive.unlink(missing_ok=True)
+            self._host_archives.pop(runtime, None)
             raise RuntimeError(
                 f"r2e setup failed to hide tests ({task.name}): {result.stderr.strip()[-500:]}"
             )
@@ -246,14 +253,15 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
     @vf.reward(weight=1.0)
     async def solved(self, task: R2EGymTask, runtime: vf.Runtime) -> float:
         if self.config.hide_tests_from_agent:
-            host_archive = Path(HOST_TESTS_ARCHIVE.format(runtime=runtime.name))
-            if not host_archive.exists():
+            host_archive = self._host_archives.get(runtime)
+            if host_archive is None or not host_archive.exists():
                 return 0.0
             try:
                 await runtime.write(REMOTE_TESTS_ARCHIVE, host_archive.read_bytes())
                 restore = await runtime.run(["sh", "-c", RESTORE_TESTS], ENV)
             finally:
                 host_archive.unlink(missing_ok=True)
+                self._host_archives.pop(runtime, None)
             if restore.exit_code != 0:
                 return 0.0
         result = await runtime.run(["sh", "-c", "/bin/bash run_tests.sh 2>&1"], ENV)
