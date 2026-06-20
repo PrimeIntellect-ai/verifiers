@@ -129,7 +129,7 @@ class Harness(ABC, Generic[ConfigT]):
         """Install a CLI directory once, then copy it into every sandbox in this run.
 
         The shared harness owns the archive, just as the MCP launcher owns its cached source
-        tarballs. The install recipe and runtime config identify it automatically. Subprocess
+        tarballs. The install recipe and runtime backend identify it automatically. Subprocess
         rollouts already share the host filesystem, so their guarded installer runs directly.
         """
         install_env = env or {}
@@ -139,7 +139,7 @@ class Harness(ABC, Generic[ConfigT]):
         identity = repr(
             (
                 path,
-                getattr(runtime, "config").model_dump_json(),
+                runtime.type,
                 argv,
                 sorted(install_env.items()),
             )
@@ -153,6 +153,7 @@ class Harness(ABC, Generic[ConfigT]):
             async with self._install_locks.setdefault(identity, asyncio.Lock()):
                 artifact = self._install_artifacts.get(identity)
                 if artifact is None:
+                    logger.info("installing harness CLI at %s", path)
                     result = await runtime.run(argv, install_env)
                     if result.exit_code != 0:
                         return result
@@ -172,6 +173,7 @@ class Harness(ABC, Generic[ConfigT]):
                     self._install_artifacts[identity] = await runtime.read(archive)
                     return result
 
+        logger.info("restoring harness CLI at %s", path)
         await runtime.write(archive, artifact)
         return await runtime.run(
             [

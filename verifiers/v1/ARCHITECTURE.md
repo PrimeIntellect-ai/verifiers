@@ -160,7 +160,8 @@ interpreter once and caches it, keeping `uv` off the per-rollout hot path.)
 An arbitrary CLI harness can use `Harness.install` to run its normal installer once. The shared
 harness retains the resulting directory as an archive and copies it into compatible fresh
 sandboxes for the rest of the run. Its cache identity comes from the complete install recipe and
-runtime config; it does not assume the CLI is a Python package.
+runtime backend; it does not assume the CLI is a Python package or couple the artifact to one task
+image.
 
 Tools and the user simulator are structurally the same thing — an MCP server launched in a
 runtime and reached over the resolved URL. Placement (colocated in the harness's runtime, its

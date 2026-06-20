@@ -601,7 +601,7 @@ harness needs only `uv` in the runtime — its inline deps resolve there, never 
 scripts share one content-addressed uv env). An agent CLI / binary can use
 `self.install(runtime, path, argv, env)` during `setup`: the shared harness runs the arbitrary
 install command once, retains an archive of `path`, and copies it into later sandboxes. The cache
-is language-agnostic and derives its identity from the install recipe and runtime config. Launch
+is language-agnostic and derives its identity from the install recipe and runtime backend. Launch
 the resulting executable with `runtime.run_program(...)`.
 
 Either way, pass `endpoint` / `secret` / `ctx.model` to the program as **CLI args** (as above) rather
