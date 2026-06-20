@@ -59,7 +59,9 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         guarded = (
             f"mkdir -p {CODEX_DIR} && flock {CODEX_DIR}/install.lock sh -c {ensure}"
         )
-        install = await runtime.run(["sh", "-c", guarded], {})
+        install = await runtime.install_cached(
+            "codex", CODEX_DIR, ["sh", "-c", guarded]
+        )
         if install.exit_code != 0:
             raise RuntimeError(f"codex install failed: {install.stderr.strip()[-500:]}")
 

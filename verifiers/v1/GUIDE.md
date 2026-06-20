@@ -291,6 +291,7 @@ isolated environment. On a `runtime` you can call:
 | method | what |
 | --- | --- |
 | `run(argv, env)` | exec a command to completion → `ProgramResult(exit_code, stdout, stderr)` |
+| `install_cached(key, path, argv, env)` | install any CLI directory once and restore it into matching fresh sandboxes |
 | `run_uv_script(src, args, env)` | run a PEP 723 script (inline deps resolve in-runtime); `args` are shell-`"$@"`-safe |
 | `run_background(argv, env, log)` | start a long-lived process (e.g. a colocated server) |
 | `read(path)` / `write(path, data)` | workspace files (bytes), across the container/sandbox boundary |
@@ -598,10 +599,16 @@ user message).
 
 A self-contained chat loop is usually a single-file uv script (`runtime.run_uv_script`, so the
 harness needs only `uv` in the runtime — its inline deps resolve there, never on the host; identical
-scripts share one content-addressed uv env). An agent CLI / binary is installed and launched with
-`runtime.run(...)`. Either way, pass `endpoint` / `secret` / `ctx.model` to the program as **CLI
-args** (as above) rather than `OPENAI_*` env vars — an inherited or stray env var can silently
-redirect the program's model calls; `self.config.env` just supplies any extra environment.
+scripts share one content-addressed uv env). An agent CLI / binary can use
+`runtime.install_cached(key, path, argv, env)` during `setup`: the first matching sandbox runs the
+arbitrary install command and archives `path`, while later sandboxes restore that directory. The
+cache is language-agnostic, scoped to the environment's serving lifetime, and keyed by the install
+recipe, runtime config, OS, and architecture. Launch the resulting executable with
+`runtime.run_program(...)`.
+
+Either way, pass `endpoint` / `secret` / `ctx.model` to the program as **CLI args** (as above) rather
+than `OPENAI_*` env vars — an inherited or stray env var can silently redirect the program's model
+calls; `self.config.env` just supplies any extra environment.
 
 ### Harness metrics
 

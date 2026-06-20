@@ -47,13 +47,16 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             f"rm -rf /tmp/rlm && git clone https://{RLM_REPO} /tmp/rlm && "
             f"git -C /tmp/rlm checkout {shlex.quote(self.config.version)} && "
             f"UV_INSTALL_DIR={RLM_DIR}/bin UV_TOOL_BIN_DIR={RLM_DIR}/bin "
+            f"UV_TOOL_DIR={RLM_DIR}/tools "
             f"RLM_CHECKOUT_PATH=/tmp/rlm bash /tmp/rlm/install.sh"
         )
         logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
         ensure = shlex.quote(f"[ -x {RLM_BIN} ] || ({install})")
         guarded = f"mkdir -p {RLM_DIR} && flock {RLM_DIR}/install.lock sh -c {ensure}"
         env = {**self.config.env, "RLM_HOME": RLM_HOME}
-        result = await runtime.run(["sh", "-c", guarded], env)
+        result = await runtime.install_cached(
+            "rlm", RLM_DIR, ["sh", "-c", guarded], env
+        )
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
 

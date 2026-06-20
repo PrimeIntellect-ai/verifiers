@@ -56,7 +56,9 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
             "mkdir -p /tmp/vf-kimi-code && "
             f"flock /tmp/vf-kimi-code/install.lock sh -c {shlex.quote(script)}"
         )
-        install = await runtime.run(["sh", "-c", guarded], {})
+        install = await runtime.install_cached(
+            "kimi-code", "/tmp/vf-kimi-code", ["sh", "-c", guarded]
+        )
         if install.exit_code != 0:
             raise RuntimeError(
                 f"Kimi Code install failed: {install.stderr.strip()[-500:]}"

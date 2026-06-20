@@ -170,5 +170,6 @@ class Harness(ABC, Generic[ConfigT]):
         `endpoint` (bearer token `secret`); `mcp_urls` are the task's tool servers
         (name -> URL) to wire in. Each harness owns the env its program needs — read
         `ctx.model` for the model id (the default/compact harnesses set OPENAI_*; rlm sets
-        RLM_* too). UV-script harnesses prepare dependencies in `setup`, then launch the
-        returned argv through `runtime.run_program(...)` here."""
+        RLM_* too). UV-script harnesses prepare dependencies in `setup`; arbitrary CLI harnesses
+        can prepare an install directory with `runtime.install_cached(...)`. Both launch the
+        resulting argv through `runtime.run_program(...)` here."""

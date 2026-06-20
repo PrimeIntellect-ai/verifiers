@@ -7,11 +7,11 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 """
 
 import asyncio
-import base64
 import contextlib
 import logging
 import shlex
-from pathlib import PurePosixPath
+import tempfile
+from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
@@ -174,10 +174,17 @@ class PrimeRuntime(Runtime):
             )
 
     async def read(self, path: str) -> bytes:
-        result = await self.run(["sh", "-c", f"base64 {shlex.quote(path)}"], {})
-        if result.exit_code != 0:
-            raise SandboxError(f"read {path!r}: {result.stderr.strip()}")
-        return base64.b64decode(result.stdout)
+        target = (
+            path
+            if path.startswith("/")
+            else f"{self.config.workdir.rstrip('/')}/{path}"
+        )
+        try:
+            with tempfile.NamedTemporaryFile() as local:
+                await self._client.download_file(self._sandbox_id, target, local.name)
+                return await asyncio.to_thread(Path(local.name).read_bytes)
+        except Exception as e:
+            raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
         # Upload via the gateway (multipart) — never inline the bytes on the command line

@@ -144,11 +144,11 @@ thousands of servers or tunnels.
 
 A `Runtime` (`runtimes/base.py`) is the single contract for *where* code runs:
 `start`/`stop`/`cleanup`, `run(argv, env)` and `run_background(...)`, `run_uv_script(...)`,
-`read`/`write`, and `expose(port)` (the URL by which the host reaches a port inside the
-runtime — localhost for subprocess, a tunnel for prime/modal). The same contract backs the
-harness, a task's tool servers, and the user simulator, so any of them runs in any backend:
-`subprocess` (local, `/tmp/<name>` workspace, own process group), `docker` (local container),
-`prime` (remote sandbox), `modal` (remote function).
+`install_cached(...)`, `read`/`write`, and `expose(port)` (the URL by which the host reaches a port
+inside the runtime — localhost for subprocess, a tunnel for prime/modal). The same contract backs
+the harness, a task's tool servers, and the user simulator, so any of them runs in any backend:
+`subprocess` (local, `/tmp/<name>` workspace, own process group), `docker` (local container), `prime`
+(remote sandbox), `modal` (remote function).
 
 Resources are named after the rollout id (greppable) and their teardown is guaranteed: a live
 runtime registers in a `WeakSet`, and an `atexit` hook reaps anything a signal-interrupted
@@ -156,6 +156,11 @@ runtime registers in a `WeakSet`, and an `atexit` hook reaps anything a signal-i
 tools and in-runtime scoring are built from, so a dependency (a tool server, a `math-verify`
 scorer) never touches the eval process. (The subprocess runtime resolves each script's
 interpreter once and caches it, keeping `uv` off the per-rollout hot path.)
+
+An arbitrary CLI harness can use `install_cached` to run its normal installer once, archive the
+resulting directory, and restore it into compatible fresh sandboxes for the rest of the serving
+lifetime. Its cache identity includes the complete install recipe, runtime config, OS, and
+architecture; it does not assume the CLI is a Python package.
 
 Tools and the user simulator are structurally the same thing — an MCP server launched in a
 runtime and reached over the resolved URL. Placement (colocated in the harness's runtime, its
