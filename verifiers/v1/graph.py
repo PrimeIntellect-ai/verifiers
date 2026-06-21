@@ -274,7 +274,8 @@ class PendingTurn:
         for nid in self.prefix_node_ids[:-1]:
             prompt_ids.extend(self.trace.nodes[nid].token_ids)
         prompt_ids.extend(last.token_ids[:first_sampled])
-        completion_ids = list(last.token_ids[first_sampled:])
+        # Slicing already returns an independent list; avoid a second completion-sized copy.
+        completion_ids = last.token_ids[first_sampled:]
         if not prompt_ids or not completion_ids:
             return None
         return prompt_ids, completion_ids
