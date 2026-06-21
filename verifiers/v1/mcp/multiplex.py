@@ -177,8 +177,6 @@ def serve_forked(app, sock: socket.socket, server) -> None:
         return child
 
     async def reap(key: str) -> None:
-        if key not in children:
-            return
         # Keep fork() out of the cleanup thread's lifetime; ready children bypass this lock.
         async with forking:
             child = children.pop(key, None)
