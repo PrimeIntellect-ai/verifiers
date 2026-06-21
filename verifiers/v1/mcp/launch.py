@@ -171,10 +171,15 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
 
 
 async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
-    """The tail of a program's `log` file in `runtime`, empty if it can't be read — for
+    """The last `limit` bytes of a program's `log` in `runtime`, empty if it can't be read — for
     enriching an error with what the program (e.g. a tool server) wrote before it died."""
+    if limit <= 0:
+        return ""
     with contextlib.suppress(Exception):
-        return (await runtime.read(log)).decode(errors="replace").strip()[-limit:]
+        # Tail in place so a large remote log never crosses into host memory in full.
+        result = await runtime.run(["tail", "-c", str(limit), log], {})
+        if result.exit_code == 0:
+            return result.stdout
     return ""
 
 
