@@ -23,7 +23,7 @@ from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
-from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
+from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.graph import PendingTurn
@@ -228,14 +228,19 @@ class TrainClient(Client):
                 f"{type(dialect).__name__}. Use the proxy client for this dialect, or add "
                 f"renderer support for it."
             )
-        prompt, tools = dialect.parse_request(body)
+        # Intercepted turns already own the typed prompt, so only their tools need parsing here.
         if turn is not None:
             prompt = turn.prompt
+            tools = parse_tools(body.get("tools"))
+        else:
+            prompt, tools = dialect.parse_request(body)
         renderer = self._renderer_pool(model)
         from renderers.client import _maybe_offload, generate
 
-        wire_messages = [message_to_wire(m) for m in prompt]
         wire_tools = [tool_to_wire(t) for t in tools] if tools else None
+        wire_messages = (
+            [message_to_wire(m) for m in turn.tail] if turn is not None else []
+        )
         prompt_ids: list[int] | None = None
         multi_modal_data = None
         prompt_attribution: RenderedTokens | None = None
@@ -247,7 +252,7 @@ class TrainClient(Client):
         can_bridge = (
             turn is not None
             and not _has_multimodal_content(prompt)
-            and _is_valid_incremental_tail(wire_messages[turn.tail_start :])
+            and _is_valid_incremental_tail(wire_messages)
         )
         previous_ids = turn.previous_token_ids() if can_bridge else None
         if previous_ids is not None:
@@ -257,7 +262,7 @@ class TrainClient(Client):
                 return renderer.bridge_to_next_turn(
                     previous_prompt_ids,
                     previous_completion_ids,
-                    wire_messages[turn.tail_start :],
+                    wire_messages,
                     tools=wire_tools,
                 )
 
@@ -271,6 +276,10 @@ class TrainClient(Client):
                     len(previous_prompt_ids) + len(previous_completion_ids) - 1,
                     0,
                 )
+
+        # Bridged prompt ids bypass rendering; only fallback needs the full wire prompt.
+        if prompt_ids is None:
+            wire_messages = [message_to_wire(m) for m in prompt]
 
         try:
             result = await generate(
