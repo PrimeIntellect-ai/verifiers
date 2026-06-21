@@ -184,24 +184,26 @@ def _breakdown(done: list[Trace]) -> Table | None:
     return grid if grid.row_count else None
 
 
-def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None]:
+def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
     """Input/output tokens for the main branch: output is every assistant (completion) token
     generated across the branch's turns; input is the last turn's prompt — the full final
     context the model saw. (Output can exceed the final context — reasoning tokens count toward
     completions but aren't re-fed — so it's not derived by subtraction.)
 
     Prefers the token-id counts; falls back to provider-reported usage when the endpoint returns
-    no token ids (e.g. plain OpenAI completions), so the counts aren't shown as 0/0."""
+    no token ids (e.g. plain OpenAI completions), so the counts aren't shown as 0/0. Returns
+    the branch count from the same derived view so each dashboard tick materializes it once."""
     usage = trace.usage
     cached = usage.cached_input_tokens if usage else None
     reasoning = usage.reasoning_tokens if usage else None
     branches = trace.branches
+    nbranches = len(branches)
     if not branches or not branches[0].nodes:
-        return 0, 0, cached, reasoning
+        return 0, 0, cached, reasoning, nbranches
     b = branches[0]
     prompt = b.prompt_len or b.num_prompt_tokens
     completion = b.completion_len or b.num_completion_tokens
-    return prompt, completion, cached, reasoning
+    return prompt, completion, cached, reasoning, nbranches
 
 
 def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
@@ -251,7 +253,6 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             )
             runtime = f"{runtime_type}({descriptor})" if descriptor else runtime_type
             turns = t.num_turns
-            nbranches = len(t.branches)
             start = t.timing.generation.start
             end = (
                 t.timing.scoring.end
@@ -259,7 +260,7 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                 or t.timing.generation.end
                 or now
             )
-            prompt, completion, cached, reasoning = _tokens(t)
+            prompt, completion, cached, reasoning, nbranches = _tokens(t)
             cost = t.usage.cost if t.usage else None
             tokens = ""
             if prompt or completion:
