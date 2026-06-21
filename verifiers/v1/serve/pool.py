@@ -37,7 +37,7 @@ import zmq.asyncio
 
 from verifiers.v1.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import HealthResponse
+from verifiers.v1.serve.types import HealthResponse, RunGroupRequest
 
 logger = logging.getLogger(__name__)
 
@@ -218,8 +218,10 @@ class EnvServerPool:
                         rollout_slots = 1
                         if method == b"run_group":
                             with contextlib.suppress(Exception):
-                                n = msgpack.unpackb(payload, raw=False)["n"]
-                                rollout_slots = n if type(n) is int and n > 0 else 1
+                                request = RunGroupRequest.model_validate(
+                                    msgpack.unpackb(payload, raw=False)
+                                )
+                                rollout_slots = max(1, request.n)
                         worker = min(self.workers, key=lambda w: w["active"])
                         worker["active"] += rollout_slots
                         pending[request_id] = {
