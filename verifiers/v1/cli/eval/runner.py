@@ -38,8 +38,8 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     out = output_path(config)
     # Write config.toml up front, then persist each trace as it completes (so the results are
     # durable mid-run, not only at the end). On resume, keep the saved config + good traces and
-    # run only the owed rollouts. `append_trace` is a sync single-line append, safe to call from
-    # concurrent rollouts in the one event loop.
+    # run only the owed rollouts. One lock serializes worker-thread appends from concurrent
+    # rollouts while keeping large trace serialization off the event loop.
     owed: dict[str, int] | None = None
     if config.resume is not None:
         group = bool(discover_decorated(env.taskset, "group_reward"))
@@ -68,8 +68,10 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     start = time.time()
     logger.info("results: %s", out)
 
-    def on_complete(trace: Trace) -> None:
-        append_trace(out, trace)
+    write_lock = asyncio.Lock()
+
+    async def on_complete(trace: Trace) -> None:
+        await append_trace(out, trace, write_lock)
 
     # Shared tool servers (if any) come up once here and their URLs flow into every rollout
     # (non-shared ones start per rollout inside the episodes); the interception pool comes up
@@ -183,6 +185,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         semaphore = (
             asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
         )
+        write_lock = asyncio.Lock()
 
         async def run_group_unit(idx: int) -> list[Trace]:
             async with semaphore or contextlib.nullcontext():
@@ -194,7 +197,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                     sampling=config.sampling,
                 )
             for trace in traces:
-                append_trace(out, trace)
+                await append_trace(out, trace, write_lock)
             return traces
 
         async def run_rollout_unit(idx: int) -> list[Trace]:
@@ -205,7 +208,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                     model=config.model,
                     sampling=config.sampling,
                 )
-            append_trace(out, trace)
+            await append_trace(out, trace, write_lock)
             return [trace]
 
         # A group-scored taskset must run each task's rollouts together (cross-rollout

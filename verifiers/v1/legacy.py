@@ -450,6 +450,7 @@ async def run_legacy_eval(config) -> list[Trace]:
     )
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+    write_lock = asyncio.Lock()
 
     async def run_one(task_idx: int) -> Trace:
         async def go() -> Trace:
@@ -461,7 +462,7 @@ async def run_legacy_eval(config) -> list[Trace]:
                 state_columns=["trajectory"],
             )
             trace = rollout_output_to_trace(out, task_idx)
-            append_trace(out_dir, trace)
+            await append_trace(out_dir, trace, write_lock)
             return trace
 
         if sem is None:
