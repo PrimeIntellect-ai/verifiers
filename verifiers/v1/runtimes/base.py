@@ -327,9 +327,12 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
             try:
                 await asyncio.shield(stop_task)
             except asyncio.CancelledError:
-                # Finish synchronous teardown before propagating cancellation.
+                # Ignore repeated cancellation until synchronous teardown finishes.
+                while not stop_task.done():
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await asyncio.shield(stop_task)
                 with contextlib.suppress(Exception):
-                    await stop_task
+                    stop_task.result()
                 raise
 
 
