@@ -35,6 +35,8 @@ async def trim_memory_periodically() -> None:
     trim runs in a worker thread — `ctypes` releases the GIL during the call, so the heap walk
     doesn't block the event loop (and every other in-flight rollout with it)."""
     global _rollouts_since_trim
+    if _malloc_trim is False:
+        return
     _rollouts_since_trim += 1
     if _rollouts_since_trim >= _TRIM_EVERY_ROLLOUTS:
         _rollouts_since_trim = 0
