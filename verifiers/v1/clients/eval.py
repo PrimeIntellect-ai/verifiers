@@ -72,7 +72,11 @@ class EvalClient(Client):
         # No timeout: agentic completions are slow and the rollout timeout is the real backstop.
         # Build full URLs ourselves (base_url + dialect.upstream_path) rather than relying on
         # httpx base-url joining, which drops the base path for a leading-slash request path.
-        self.http = httpx.AsyncClient(timeout=None)
+        # Match V1's default concurrency while retaining HTTPX's 20-idle keepalive bound.
+        self.http = httpx.AsyncClient(
+            timeout=None,
+            limits=httpx.Limits(max_connections=128, max_keepalive_connections=20),
+        )
 
     async def get_response(
         self,
