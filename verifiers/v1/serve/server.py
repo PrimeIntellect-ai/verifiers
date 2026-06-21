@@ -165,7 +165,10 @@ class EnvServer:
             use_bin_type=True,
         )
         try:
-            await self.frontend.send_multipart([client_id, request_id, data])
+            # Let ZMQ retain the packed response instead of copying large traces.
+            await self.frontend.send_multipart(
+                [client_id, request_id, data], copy=False
+            )
         except zmq.ZMQError as e:
             logger.warning("failed to send response: %s", e)
 
