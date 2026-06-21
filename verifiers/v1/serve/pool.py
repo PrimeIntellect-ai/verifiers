@@ -161,7 +161,7 @@ class EnvServerPool:
             self._poller.register(dealer, zmq.POLLIN)
 
     def _maybe_scale_up(self, in_flight: int) -> None:
-        """Spawn one more worker when weighted in-flight load reaches 90% of capacity.
+        """Spawn one more worker when in-flight rollout slots reach 90% of capacity.
 
         A new worker starts at `active=0`, so least-busy dispatch funnels the backlog to
         it as it comes online (a few seconds to load the env) — fine, since we only scale
@@ -188,7 +188,8 @@ class EnvServerPool:
         # (`max_workers` is a concrete count when elastic is off).
         for _ in range(1 if self.elastic else (self.max_workers or 1)):
             self._spawn_worker()
-        pending: dict[bytes, dict] = {}  # request_id -> {client_id, worker}
+        # request_id -> {client_id, worker, rollout_slots}
+        pending: dict[bytes, dict] = {}
         logger.info(
             "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
             self.address,
@@ -214,19 +215,19 @@ class EnvServerPool:
                         )
                     else:
                         # Pool capacity is measured in rollouts; one group request carries n.
-                        weight = 1
+                        rollout_slots = 1
                         if method == b"run_group":
                             with contextlib.suppress(Exception):
                                 n = msgpack.unpackb(payload, raw=False)["n"]
-                                weight = n if type(n) is int and n > 0 else 1
+                                rollout_slots = n if type(n) is int and n > 0 else 1
                         worker = min(self.workers, key=lambda w: w["active"])
-                        worker["active"] += weight
+                        worker["active"] += rollout_slots
                         pending[request_id] = {
                             "client_id": client_id,
                             "worker": worker,
-                            "weight": weight,
+                            "rollout_slots": rollout_slots,
                         }
-                        in_flight += weight
+                        in_flight += rollout_slots
                         # forward without client_id — the DEALER identity is the worker's
                         # `client_id`; we hold the real one in `pending`.
                         await worker["dealer"].send_multipart(
@@ -241,8 +242,8 @@ class EnvServerPool:
                         entry = pending.pop(request_id.bytes, None)
                         if entry is None:
                             continue
-                        entry["worker"]["active"] -= entry["weight"]
-                        in_flight -= entry["weight"]
+                        entry["worker"]["active"] -= entry["rollout_slots"]
+                        in_flight -= entry["rollout_slots"]
                         with contextlib.suppress(zmq.ZMQError):
                             await self.frontend.send_multipart(
                                 [entry["client_id"], request_id, data], copy=False

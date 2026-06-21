@@ -13,7 +13,7 @@ from verifiers.v1.serve.pool import EnvServerPool
     "payload",
     [b"\xc1", msgpack.packb({}), msgpack.packb({"n": "eight"})],
 )
-async def test_malformed_group_payload_falls_back_to_one(payload: bytes) -> None:
+async def test_malformed_group_payload_uses_one_rollout_slot(payload: bytes) -> None:
     pool = object.__new__(EnvServerPool)
     pool.elastic = True
     pool.max_workers = 2
