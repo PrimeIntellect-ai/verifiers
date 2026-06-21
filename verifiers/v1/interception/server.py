@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 from pydantic import ValidationError
-from pydantic_core import from_json
+from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
@@ -58,6 +58,15 @@ _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 # The server binds loopback; callers reach it via localhost or a host tunnel (see `reachable_url`).
 _HOST = "127.0.0.1"
+
+
+def _completion_response(completion: dict | None) -> web.Response:
+    """Serialize a model's JSON-native response without an intermediate string."""
+    try:
+        body = to_json(completion, inf_nan_mode="constants")
+    except PydanticSerializationError:
+        return web.json_response(completion)
+    return web.Response(body=body, content_type="application/json", charset="utf-8")
 
 
 @dataclass(frozen=True)
@@ -292,7 +301,7 @@ class InterceptionServer:
                     return web.json_response(
                         dialect.error_body(f"rollout stopped: {refused}"), status=400
                     )
-                return web.json_response(completion)
+                return _completion_response(completion)
             turn = graph.prepare_turn(session.trace, prompt)
             session.error = None
             try:
@@ -316,7 +325,7 @@ class InterceptionServer:
                         dialect.error_body("rollout stopped: context_length"),
                         status=400,
                     )
-                return web.json_response(completion)
+                return _completion_response(completion)
             except RolloutError as e:
                 # Stash the real cause; the rollout re-raises it after the harness returns. Relay
                 # the provider's status so the harness SDK retries 5xx/429 and not 4xx.
@@ -351,7 +360,7 @@ class InterceptionServer:
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
-                return web.json_response(completion)
+                return _completion_response(completion)
             try:
                 user_messages = await session.user(response.message.content or "")
             except RolloutError as e:
