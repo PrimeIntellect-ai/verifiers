@@ -13,7 +13,7 @@ change. Endpoint config (base url, api key, billing headers) comes from the clie
 """
 
 from collections.abc import Mapping
-import json
+import math
 import re
 
 import httpx
@@ -128,11 +128,20 @@ class EvalClient(Client):
         *,
         stream: bool = False,
     ) -> httpx.Response:
+        # HTTPX rejects non-finite floats. Preserve that policy without inspecting or copying
+        # string payloads, which commonly dominate large upstream requests.
+        pending = [body]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError(
+                    f"Out of range float values are not JSON compliant: {value}"
+                )
+            if isinstance(value, dict):
+                pending.extend(value.values())
+            elif isinstance(value, (list, tuple)):
+                pending.extend(value)
         content = to_json(body)
-        # HTTPX rejects non-finite floats. Pay for stdlib validation only when the native
-        # bytes contain a possible NaN/Infinity token (a match inside a string is harmless).
-        if b"NaN" in content or b"Infinity" in content:
-            json.dumps(body, allow_nan=False)
         headers.setdefault("content-type", "application/json")
         request = self.http.build_request("POST", url, content=content, headers=headers)
         try:
