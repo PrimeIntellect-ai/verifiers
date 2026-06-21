@@ -478,7 +478,8 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
             sampled=True,
             token_ids=[*gen_prompt, *comp_ids],
             mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
-            logprobs=list(tokens.completion_logprobs) if tokens else [],
+            # TurnTokens is discarded after commit, so transfer its logprobs without copying.
+            logprobs=tokens.completion_logprobs if tokens else [],
             finish_reason=response.finish_reason,
             usage=response.usage,
         )
