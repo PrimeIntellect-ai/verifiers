@@ -16,6 +16,7 @@ from collections.abc import Mapping
 import re
 
 import httpx
+from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.dialects import ChatDialect, Dialect
@@ -89,7 +90,7 @@ class EvalClient(Client):
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
         )
-        raw = resp.json()
+        raw = from_json(resp.content)
         response = dialect.parse_response(dialect.validate_response(raw))
         response.raw = raw  # the program gets the provider's bytes back 1:1
         return response
@@ -126,7 +127,13 @@ class EvalClient(Client):
         *,
         stream: bool = False,
     ) -> httpx.Response:
-        request = self.http.build_request("POST", url, json=body, headers=headers)
+        headers.setdefault("content-type", "application/json")
+        request = self.http.build_request(
+            "POST",
+            url,
+            content=to_json(body, inf_nan_mode="null"),
+            headers=headers,
+        )
         try:
             response = await self.http.send(request, stream=stream)
         except httpx.TimeoutException as e:
@@ -200,7 +207,7 @@ class EvalClient(Client):
             body,
             self._headers(dialect, None, None),
         )
-        return resp.json()
+        return from_json(resp.content)
 
     async def close(self) -> None:
         await self.http.aclose()
