@@ -11,9 +11,11 @@ trace to `results.jsonl` as it completes (`append_trace`), so a long run's resul
 durable as they land rather than only at the end.
 """
 
+import asyncio
 from pathlib import Path
 
 import tomli_w
+from pydantic import TypeAdapter
 
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.trace import Trace
@@ -48,9 +50,25 @@ def save_config(config: EvalConfig, results_dir: Path) -> None:
     )  # fresh; appended to as traces complete
 
 
-def append_trace(results_dir: Path, trace: Trace) -> None:
-    """Append one finished trace to `results.jsonl` (one full trace per line). Called per
-    trace as it completes — a synchronous, single-line append, so concurrent rollouts in
-    one event loop never interleave."""
-    with (results_dir / "results.jsonl").open("a") as f:
-        f.write(trace.model_dump_json(exclude_none=True) + "\n")
+def write_trace(results_dir: Path, trace: Trace) -> None:
+    """Serialize and append one trace in the worker thread."""
+    data = TypeAdapter(type(trace)).dump_json(trace, exclude_none=True)
+    with (results_dir / "results.jsonl").open("ab") as f:
+        f.write(data + b"\n")
+
+
+async def append_trace(results_dir: Path, trace: Trace, lock: asyncio.Lock) -> None:
+    """Append one finished trace without blocking the event loop. The run's shared lock
+    preserves whole-line ordering, and awaiting the worker preserves per-trace durability."""
+
+    async def persist() -> None:
+        async with lock:
+            await asyncio.to_thread(write_trace, results_dir, trace)
+
+    # Shield lock acquisition and the worker so finalized traces survive cancellation.
+    persist_task = asyncio.create_task(persist())
+    try:
+        await asyncio.shield(persist_task)
+    except asyncio.CancelledError:
+        await persist_task
+        raise
