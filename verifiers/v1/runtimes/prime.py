@@ -7,10 +7,10 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 """
 
 import asyncio
-import base64
 import contextlib
 import logging
 import shlex
+import tempfile
 from pathlib import PurePosixPath
 from typing import ClassVar, Literal
 
@@ -176,10 +176,21 @@ class PrimeRuntime(Runtime):
             )
 
     async def read(self, path: str) -> bytes:
-        result = await self.run(["sh", "-c", f"base64 {shlex.quote(path)}"], {})
-        if result.exit_code != 0:
-            raise SandboxError(f"read {path!r}: {result.stderr.strip()}")
-        return base64.b64decode(result.stdout)
+        # Avoid background-job log limits and base64 overhead by downloading binary data directly.
+        # The temporary file is removed on every exit, and its byte read stays off the event loop.
+        target = (
+            path
+            if path.startswith("/")
+            else f"{self.config.workdir.rstrip('/')}/{path}"
+        )
+        try:
+            with tempfile.NamedTemporaryFile() as download:
+                await self._client.download_file(
+                    self._sandbox_id, target, download.name
+                )
+                return await asyncio.to_thread(download.read)
+        except Exception as e:
+            raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, path: str, data: bytes) -> None:
         # Upload via the gateway (multipart) — never inline the bytes on the command line
