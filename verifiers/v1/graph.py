@@ -282,8 +282,17 @@ class PendingTurn:
     def prompt_message_spans(
         self, tail_attribution: RenderedTokens
     ) -> list[tuple[int, int] | None]:
-        """Convert tail-relative bridge spans into full-prompt message spans."""
-        return [None] * self.tail_start + tail_attribution.message_token_spans()
+        """Convert bridge-tail attribution into full-prompt message spans."""
+        # Reused bridge tokens are unattributed, so scan only the newly rendered tail.
+        tail_spans = RenderedTokens(
+            message_indices=tail_attribution.message_indices[self.path_len :],
+            message_roles=tail_attribution.message_roles,
+        ).message_token_spans()
+        # Tail spans are slice-relative; restore their full-prompt token offsets.
+        return [None] * self.tail_start + [
+            None if span is None else (span[0] + self.path_len, span[1] + self.path_len)
+            for span in tail_spans
+        ]
 
     def commit(self, response: Response) -> None:
         _commit_turn(self, response)
