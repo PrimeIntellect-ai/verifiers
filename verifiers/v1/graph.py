@@ -375,18 +375,20 @@ def _attribute_routed_experts(
     raw = binascii.a2b_base64(payload["data"])
     arr = np.frombuffer(raw, dtype=np.uint8).reshape(payload["shape"])
     off = path_len - int(payload.get("start", 0) or 0)
-    # The engine omits routing for the turn's final position (no forward pass follows the last
-    # generated token), so the array is one row short of the turn's new tokens. Pad the tail
-    # with a copy of the last row so the final node still aligns 1:1 with its tokens.
     needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
-    if arr.shape[0] and 0 < needed - arr.shape[0] <= 1:
-        arr = np.concatenate([arr, arr[-1:]], axis=0)
     for nid in new_node_ids:
         n = len(trace.nodes[nid].token_ids)
-        if n and 0 <= off and off + n <= arr.shape[0]:
+        end = off + n
+        if n and 0 <= off and end <= arr.shape[0]:
             # Own only this node's rows; a view would retain the turn's full-context array.
-            trace.nodes[nid].routed_experts = arr[off : off + n].copy()
-        off += n
+            trace.nodes[nid].routed_experts = arr[off:end].copy()
+        elif n and arr.shape[0] and 0 <= off and end == needed == arr.shape[0] + 1:
+            # The engine omits the turn's final position because no forward pass follows it.
+            # Pad only the final node's suffix instead of copying the full-context array.
+            trace.nodes[nid].routed_experts = np.concatenate(
+                [arr[off:], arr[-1:]], axis=0
+            )
+        off = end
 
 
 def _commit_turn(turn: PendingTurn, response: Response) -> None:
