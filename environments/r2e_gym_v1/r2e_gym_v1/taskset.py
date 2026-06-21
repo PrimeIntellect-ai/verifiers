@@ -10,8 +10,11 @@ map exactly matches the row's ``expected_output_json``. A v1 port of the v0 Comp
 ``R2EGymTaskSet``.
 """
 
+import hashlib
+import hmac
 import json
 import re
+import secrets
 import tempfile
 import weakref
 from functools import cached_property
@@ -29,6 +32,7 @@ REGISTRY = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
 REPO_PATH = "/testbed"
 ALT_PATH = "/root"
 REMOTE_TESTS_ARCHIVE = "/tmp/r2e_tests.tar.gz"
+REMOTE_TESTS_CIPHERTEXT = f"{REMOTE_TESTS_ARCHIVE}.sealed"
 
 # The testbed venv (project + pytest installed) plus quiet, non-interactive tooling —
 # exported for every command the taskset runs in the sandbox.
@@ -66,13 +70,41 @@ CLEAN_PYCACHE = (
 )
 
 ARCHIVE_TESTS = f"tar -C / -czf {REMOTE_TESTS_ARCHIVE} r2e_tests"
-REMOVE_TESTS = f"rm -rf /r2e_tests && rm -f {REMOTE_TESTS_ARCHIVE}"
+REMOVE_TESTS = (
+    f"rm -rf /r2e_tests && rm -f {REMOTE_TESTS_ARCHIVE} {REMOTE_TESTS_CIPHERTEXT}"
+)
 MOVE_TESTS = f"rm -rf {REPO_PATH}/r2e_tests && mv /r2e_tests {REPO_PATH}/r2e_tests"
 RESTORE_TESTS = (
     f"rm -rf {REPO_PATH}/r2e_tests && "
     f"tar -C {REPO_PATH} -xzf {REMOTE_TESTS_ARCHIVE} && "
-    f"rm -f {REMOTE_TESTS_ARCHIVE}"
+    f"rm -f {REMOTE_TESTS_ARCHIVE} {REMOTE_TESTS_CIPHERTEXT}"
 )
+DECRYPT_TESTS = f"""
+import hashlib
+import hmac
+import os
+
+sealed_path = {REMOTE_TESTS_CIPHERTEXT!r}
+archive_path = {REMOTE_TESTS_ARCHIVE!r}
+key = bytes.fromhex(os.environ["R2E_ARCHIVE_KEY"])
+with open(sealed_path, "rb") as file:
+    sealed = file.read()
+tag, ciphertext = sealed[:32], sealed[32:]
+mac_key = hashlib.sha256(b"r2e-tests-mac\\0" + key).digest()
+expected = hmac.digest(mac_key, ciphertext, "sha256")
+if len(tag) != 32 or not hmac.compare_digest(tag, expected):
+    raise SystemExit("invalid R2E test archive")
+stream = hashlib.shake_256(b"r2e-tests-enc\\0" + key).digest(len(ciphertext))
+plaintext = bytes(a ^ b for a, b in zip(ciphertext, stream))
+try:
+    os.unlink(archive_path)
+except FileNotFoundError:
+    pass
+with open(archive_path, "xb") as file:
+    file.write(plaintext)
+os.chmod(archive_path, 0o600)
+os.unlink(sealed_path)
+"""
 SNAPSHOT_PROCESSES = r"""
 for path in /proc/[0-9]*; do
     pid=${path##*/}
@@ -341,13 +373,36 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
             ):
                 return 0.0
             try:
+                cleanup_env = SYSTEM_ENV | {
+                    "R2E_BASELINE_PROCESSES": baseline_processes
+                }
                 cleanup = await runtime.run(
                     ["/bin/sh", "-c", KILL_AGENT_PROCESSES],
-                    SYSTEM_ENV | {"R2E_BASELINE_PROCESSES": baseline_processes},
+                    cleanup_env,
                 )
                 if cleanup.exit_code != 0:
                     return 0.0
-                await runtime.write(REMOTE_TESTS_ARCHIVE, host_archive.read_bytes())
+                archive = host_archive.read_bytes()
+                key = secrets.token_bytes(32)
+                # write() may invoke sandbox helpers: expose only ciphertext, then reap again.
+                stream = hashlib.shake_256(b"r2e-tests-enc\0" + key).digest(
+                    len(archive)
+                )
+                ciphertext = bytes(a ^ b for a, b in zip(archive, stream))
+                mac_key = hashlib.sha256(b"r2e-tests-mac\0" + key).digest()
+                sealed = hmac.digest(mac_key, ciphertext, "sha256") + ciphertext
+                await runtime.write(REMOTE_TESTS_CIPHERTEXT, sealed)
+                cleanup = await runtime.run(
+                    ["/bin/sh", "-c", KILL_AGENT_PROCESSES], cleanup_env
+                )
+                if cleanup.exit_code != 0:
+                    return 0.0
+                decrypt = await runtime.run(
+                    ["/usr/bin/python3", "-I", "-S", "-c", DECRYPT_TESTS],
+                    SYSTEM_ENV | {"R2E_ARCHIVE_KEY": key.hex()},
+                )
+                if decrypt.exit_code != 0:
+                    return 0.0
                 restore = await runtime.run(
                     ["/bin/sh", "-c", RESTORE_TESTS], SYSTEM_ENV
                 )
