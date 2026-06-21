@@ -19,6 +19,7 @@ import sys
 import tarfile
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -44,7 +45,7 @@ logger = logging.getLogger(__name__)
 # The verifiers source tree's wheel-build inputs — uploaded into a sandbox so it installs the
 # developer's working-tree verifiers (deps resolve from PyPI off the uploaded pyproject), with no
 # publish or git pin to keep in sync.
-VF_BUILD_INPUTS = ["pyproject.toml", "README.md", "LICENSE", "verifiers"]
+VF_BUILD_INPUTS = ("pyproject.toml", "README.md", "LICENSE", "verifiers")
 
 # The model's last assistant text in; the next user messages out. The user sim ends the trajectory
 # by setting a flag on the shared `self.state` that the taskset's `@vf.stop` checks, not via a return
@@ -100,17 +101,23 @@ _TAR_EXCLUDE = {
 and can be gigabytes (a `.venv` alone is many GB), which would otherwise stall the upload."""
 
 
-def _tar_source(src: Path, members: list[str] | None = None) -> bytes:
+@cache
+def _tar_source(src: Path, members: tuple[str, ...] = ()) -> bytes:
     """Gzipped tarball of a local package dir, rooted at `src.name/`, skipping `_TAR_EXCLUDE` dirs.
     `members` limits it to those top-level entries (the verifiers tree only needs its package +
-    project files); otherwise the whole dir (a small env package)."""
+    project files); otherwise the whole dir (a small env package).
+
+    An eval worker's imported code is already a startup snapshot, so its source archives are too.
+    If development-time source mutation becomes supported, replace this process cache with an
+    explicit cache scoped to that lifecycle rather than serving stale global data.
+    """
 
     def keep(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
         return None if _TAR_EXCLUDE & set(info.name.split("/")) else info
 
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for member in members or [""]:
+        for member in members or ("",):
             path = src / member if member else src
             if path.exists():
                 tar.add(path, arcname=f"{src.name}/{member}".rstrip("/"), filter=keep)
