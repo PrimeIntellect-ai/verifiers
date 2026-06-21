@@ -11,6 +11,7 @@ trace to `results.jsonl` as it completes (`append_trace`), so a long run's resul
 durable as they land rather than only at the end.
 """
 
+import asyncio
 from pathlib import Path
 
 import tomli_w
@@ -48,9 +49,24 @@ def save_config(config: EvalConfig, results_dir: Path) -> None:
     )  # fresh; appended to as traces complete
 
 
-def append_trace(results_dir: Path, trace: Trace) -> None:
-    """Append one finished trace to `results.jsonl` (one full trace per line). Called per
-    trace as it completes — a synchronous, single-line append, so concurrent rollouts in
-    one event loop never interleave."""
-    with (results_dir / "results.jsonl").open("a") as f:
-        f.write(trace.model_dump_json(exclude_none=True) + "\n")
+def write_trace(results_dir: Path, trace: Trace) -> None:
+    """Serialize and append one trace in the worker thread."""
+    data = trace.__pydantic_serializer__.to_json(trace, exclude_none=True)
+    with (results_dir / "results.jsonl").open("ab") as f:
+        f.write(data + b"\n")
+
+
+async def append_trace(results_dir: Path, trace: Trace, lock: asyncio.Lock) -> None:
+    """Append one finished trace without blocking the event loop. The run's shared lock
+    preserves whole-line ordering, and awaiting the worker preserves per-trace durability."""
+    async with lock:
+        # Serialize large traces off-loop while the lock preserves line ordering.
+        # Cancellation cannot stop a thread, so defer it until the lock is safe to release.
+        write_task = asyncio.create_task(
+            asyncio.to_thread(write_trace, results_dir, trace)
+        )
+        try:
+            await asyncio.shield(write_task)
+        except asyncio.CancelledError:
+            await write_task
+            raise

@@ -18,7 +18,7 @@ runtimes — only the rollouts and the scoring across them.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
@@ -44,7 +44,7 @@ class Episode:
     async def run(
         self,
         semaphore: asyncio.Semaphore | None = None,
-        on_complete: Callable[[Trace], None] = lambda _trace: None,
+        on_complete: Callable[[Trace], Awaitable[None]] | None = None,
     ) -> list[Trace]:
         """Run all rollouts (each under `semaphore`), then group-score across their
         traces. Without `@group_reward`s a rollout's reward is final the moment its own
@@ -62,7 +62,8 @@ class Episode:
                 trace = await run_with_retry(rollout, self.retry)
             if not group_scored:  # reward already final → don't wait for the group
                 rollout.phase = Phase.DONE
-                on_complete(trace)
+                if on_complete is not None:
+                    await on_complete(trace)
             # hand freed per-turn request bodies (base64 images) back to the OS
             await trim_memory_periodically()
             return trace
@@ -73,5 +74,6 @@ class Episode:
             for rollout in self.rollouts:
                 rollout.phase = Phase.DONE
             for trace in traces:
-                on_complete(trace)
+                if on_complete is not None:
+                    await on_complete(trace)
         return traces
