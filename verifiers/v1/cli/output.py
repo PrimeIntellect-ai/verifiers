@@ -15,6 +15,7 @@ import asyncio
 from pathlib import Path
 
 import tomli_w
+from pydantic import TypeAdapter
 
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.trace import Trace
@@ -51,7 +52,7 @@ def save_config(config: EvalConfig, results_dir: Path) -> None:
 
 def write_trace(results_dir: Path, trace: Trace) -> None:
     """Serialize and append one trace in the worker thread."""
-    data = trace.__pydantic_serializer__.to_json(trace, exclude_none=True)
+    data = TypeAdapter(type(trace)).dump_json(trace, exclude_none=True)
     with (results_dir / "results.jsonl").open("ab") as f:
         f.write(data + b"\n")
 
