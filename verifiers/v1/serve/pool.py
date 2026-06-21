@@ -224,14 +224,15 @@ class EnvServerPool:
                             self._maybe_scale_up(len(pending))
                 for w in self.workers:
                     if w["dealer"] in events:
-                        request_id, data = await w["dealer"].recv_multipart()
-                        entry = pending.pop(request_id, None)
+                        request_id, data = await w["dealer"].recv_multipart(copy=False)
+                        # Copy only the routing key; relay the response Frames unchanged.
+                        entry = pending.pop(request_id.bytes, None)
                         if entry is None:
                             continue
                         entry["worker"]["active"] -= 1
                         with contextlib.suppress(zmq.ZMQError):
                             await self.frontend.send_multipart(
-                                [entry["client_id"], request_id, data]
+                                [entry["client_id"], request_id, data], copy=False
                             )
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
