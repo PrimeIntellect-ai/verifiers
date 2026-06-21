@@ -15,6 +15,7 @@ For a heterogeneous taskset (different verification per task), have a single
 `@reward` branch on a typed task field.
 """
 
+import asyncio
 from collections.abc import Mapping
 from typing import ClassVar, Generic, TypeVar
 
@@ -105,7 +106,7 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Score one rollout: run all `@metric` then `@reward` over its trace,
-        in priority order within each phase. Each metric is recorded in `trace.metrics`
+        concurrently within each phase. Each metric is recorded in `trace.metrics`
         (a number, or a mapping merged in); each reward (weighted — likewise a number or a
         mapping merged in) in `trace.rewards`, which `trace.reward` sums. Signals declare
         what they need — `task`, `trace`,
@@ -114,19 +115,23 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         available = {"task": trace.task, "trace": trace, "runtime": runtime}
         async with boundary(TasksetError, f"taskset {type(self).__name__} scoring"):
             metrics = discover_decorated(self, "metric")
-            for fn, result in zip(
-                metrics,
-                [await invoke(fn, available) for fn in metrics],
-            ):
+            metric_results = (
+                [await invoke(fn, available) for fn in metrics]
+                if len(metrics) < 2
+                else await asyncio.gather(*(invoke(fn, available) for fn in metrics))
+            )
+            for fn, result in zip(metrics, metric_results):
                 if isinstance(result, Mapping):
                     trace.record_metrics(result)
                 else:
                     trace.record_metric(fn.__name__, result)
             rewards = discover_decorated(self, "reward")
-            for fn, result in zip(
-                rewards,
-                [await invoke(fn, available) for fn in rewards],
-            ):
+            reward_results = (
+                [await invoke(fn, available) for fn in rewards]
+                if len(rewards) < 2
+                else await asyncio.gather(*(invoke(fn, available) for fn in rewards))
+            )
+            for fn, result in zip(rewards, reward_results):
                 weight = getattr(fn, "_vf_weight", 1.0)
                 if isinstance(result, Mapping):
                     for name, value in result.items():
@@ -148,10 +153,12 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         async with boundary(
             TasksetError, f"taskset {type(self).__name__} group scoring"
         ):
-            for fn, scores in zip(
-                rewards,
-                [await invoke(fn, available) for fn in rewards],
-            ):
+            reward_results = (
+                [await invoke(fn, available) for fn in rewards]
+                if len(rewards) < 2
+                else await asyncio.gather(*(invoke(fn, available) for fn in rewards))
+            )
+            for fn, scores in zip(rewards, reward_results):
                 weight = getattr(fn, "_vf_weight", 1.0)
                 for trace, score in zip(traces, scores):
                     trace.record_reward(fn.__name__, score, weight)

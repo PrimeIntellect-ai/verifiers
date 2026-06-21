@@ -6,6 +6,7 @@ runs during rollout setup; only execution counts against the harness timeout. Th
 runtime and the interception server are owned by the Rollout.
 """
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -139,7 +140,7 @@ class Harness(ABC, Generic[ConfigT]):
         trace.stop("agent_completed")
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
-        """Run this harness's `@metric` methods over the finished trace in priority order,
+        """Run this harness's `@metric` methods over the finished trace, concurrently,
         recording each into `trace.metrics`. Mirrors `Taskset.score` (which the
         Rollout runs in parallel with this); metrics declare what they need (`task`,
         `trace`, `runtime`) and can read what the harness left behind in the runtime.
@@ -147,7 +148,11 @@ class Harness(ABC, Generic[ConfigT]):
         available = {"task": trace.task, "trace": trace, "runtime": runtime}
         fns = discover_decorated(self, "metric")
         async with boundary(HarnessError, f"harness {self.config.id!r} metric"):
-            results = [await invoke(fn, available) for fn in fns]
+            results = (
+                [await invoke(fn, available) for fn in fns]
+                if len(fns) < 2
+                else await asyncio.gather(*(invoke(fn, available) for fn in fns))
+            )
         for fn, result in zip(fns, results):
             if isinstance(result, Mapping):
                 trace.record_metrics(result)
