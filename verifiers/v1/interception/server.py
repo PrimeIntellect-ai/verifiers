@@ -73,12 +73,15 @@ def _completion_response(completion: dict | None) -> web.Response:
 async def _queue_chunks(
     chunks: AsyncIterator[bytes],
     queue: asyncio.Queue[bytes | None],
+    ready: asyncio.Event,
 ) -> None:
     try:
         async for chunk in chunks:
             await queue.put(chunk)
+            ready.set()
     finally:
         await queue.put(None)
+        ready.set()
 
 
 @dataclass(frozen=True)
@@ -454,20 +457,24 @@ class InterceptionServer:
         )
         resp.content_type = reply.content_type.split(";")[0].strip()
         buffer = bytearray()
-        # One bounded producer removes per-event task churn without losing backpressure.
+        # One bounded producer avoids per-event tasks; keepalive timeouts only cancel readiness waits.
         queue: asyncio.Queue[bytes | None] = asyncio.Queue(
             maxsize=_STREAM_QUEUE_MAXSIZE
         )
-        producer = asyncio.create_task(_queue_chunks(reply.chunks, queue))
+        ready = asyncio.Event()
+        producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
         try:
             await resp.prepare(request)
             while True:
                 try:
                     async with asyncio.timeout(_KEEPALIVE_INTERVAL_SECONDS):
-                        chunk = await queue.get()
+                        await ready.wait()
                 except TimeoutError:
                     await resp.write(b": keepalive\n\n")
                     continue
+                chunk = queue.get_nowait()
+                if queue.empty():
+                    ready.clear()
                 if chunk is None:
                     await producer
                     break
