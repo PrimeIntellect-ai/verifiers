@@ -214,11 +214,11 @@ class EnvServerPool:
                         )
                     else:
                         # Pool capacity is measured in rollouts; one group request carries n.
-                        weight = (
-                            msgpack.unpackb(payload, raw=False)["n"]
-                            if method == b"run_group"
-                            else 1
-                        )
+                        weight = 1
+                        if method == b"run_group":
+                            with contextlib.suppress(Exception):
+                                n = msgpack.unpackb(payload, raw=False)["n"]
+                                weight = n if type(n) is int and n > 0 else 1
                         worker = min(self.workers, key=lambda w: w["active"])
                         worker["active"] += weight
                         pending[request_id] = {
