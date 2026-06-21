@@ -115,19 +115,23 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         available = {"task": trace.task, "trace": trace, "runtime": runtime}
         async with boundary(TasksetError, f"taskset {type(self).__name__} scoring"):
             metrics = discover_decorated(self, "metric")
-            for fn, result in zip(
-                metrics,
-                await asyncio.gather(*(invoke(fn, available) for fn in metrics)),
-            ):
+            metric_results = (
+                [await invoke(fn, available) for fn in metrics]
+                if len(metrics) < 2
+                else await asyncio.gather(*(invoke(fn, available) for fn in metrics))
+            )
+            for fn, result in zip(metrics, metric_results):
                 if isinstance(result, Mapping):
                     trace.record_metrics(result)
                 else:
                     trace.record_metric(fn.__name__, result)
             rewards = discover_decorated(self, "reward")
-            for fn, result in zip(
-                rewards,
-                await asyncio.gather(*(invoke(fn, available) for fn in rewards)),
-            ):
+            reward_results = (
+                [await invoke(fn, available) for fn in rewards]
+                if len(rewards) < 2
+                else await asyncio.gather(*(invoke(fn, available) for fn in rewards))
+            )
+            for fn, result in zip(rewards, reward_results):
                 weight = getattr(fn, "_vf_weight", 1.0)
                 if isinstance(result, Mapping):
                     for name, value in result.items():
@@ -149,10 +153,12 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         async with boundary(
             TasksetError, f"taskset {type(self).__name__} group scoring"
         ):
-            for fn, scores in zip(
-                rewards,
-                await asyncio.gather(*(invoke(fn, available) for fn in rewards)),
-            ):
+            reward_results = (
+                [await invoke(fn, available) for fn in rewards]
+                if len(rewards) < 2
+                else await asyncio.gather(*(invoke(fn, available) for fn in rewards))
+            )
+            for fn, scores in zip(rewards, reward_results):
                 weight = getattr(fn, "_vf_weight", 1.0)
                 for trace, score in zip(traces, scores):
                     trace.record_reward(fn.__name__, score, weight)

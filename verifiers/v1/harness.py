@@ -148,7 +148,11 @@ class Harness(ABC, Generic[ConfigT]):
         available = {"task": trace.task, "trace": trace, "runtime": runtime}
         fns = discover_decorated(self, "metric")
         async with boundary(HarnessError, f"harness {self.config.id!r} metric"):
-            results = await asyncio.gather(*(invoke(fn, available) for fn in fns))
+            results = (
+                [await invoke(fn, available) for fn in fns]
+                if len(fns) < 2
+                else await asyncio.gather(*(invoke(fn, available) for fn in fns))
+            )
         for fn, result in zip(fns, results):
             if isinstance(result, Mapping):
                 trace.record_metrics(result)
