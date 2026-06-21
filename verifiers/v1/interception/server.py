@@ -553,17 +553,12 @@ class InterceptionServer:
         raw = await request.read()
         try:
             new_state = state_cls.model_validate_json(raw)
-        except ValidationError:
-            try:
-                # Pydantic's JSON parser caps nesting; retain the stdlib path for valid deep state.
-                new_state = state_cls.model_validate(json.loads(raw))
-            except (ValidationError, ValueError, RecursionError) as e:
-                # Malformed JSON or a state that doesn't fit the trace's `State` type (almost always
-                # a `StateT` mismatch between the taskset and a server) is a clean 400, not a 500.
-                logger.warning("state PUT rejected: id=%s %s", session.trace.id, e)
-                return web.json_response(
-                    {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},
-                    status=400,
-                )
+        except ValidationError as e:
+            # Reject malformed, over-nested, or mismatched state before it enters the shared channel.
+            logger.warning("state PUT rejected: id=%s %s", session.trace.id, e)
+            return web.json_response(
+                {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},
+                status=400,
+            )
         session.trace.state = new_state
         return web.json_response({"ok": True})
