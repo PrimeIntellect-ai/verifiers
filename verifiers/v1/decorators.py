@@ -45,8 +45,8 @@ def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
 
 def invoke(fn: Callable[..., Any], available: dict[str, Any]) -> Any:
     """Call `fn`, passing only the items of `available` whose name it declares as a
-    parameter. `fn` is a bound method (so `self` is already excluded); the result
-    (a coroutine, since handlers are async) is returned un-awaited for `gather`."""
+    parameter. `fn` is a bound method (so `self` is already excluded); the result is
+    a coroutine because handlers are async."""
     params = inspect.signature(fn).parameters
     return fn(**{name: value for name, value in available.items() if name in params})
 
