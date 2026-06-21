@@ -323,7 +323,9 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
         yield url
     finally:
         with contextlib.suppress(Exception):
-            tunnel.sync_stop()
+            # Tunnel shutdown is synchronous, so run it off-loop.
+            # Await the worker to preserve finalizer ordering and error handling.
+            await asyncio.to_thread(tunnel.sync_stop)
 
 
 class _Host:
