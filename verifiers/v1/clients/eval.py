@@ -13,9 +13,11 @@ change. Endpoint config (base url, api key, billing headers) comes from the clie
 """
 
 from collections.abc import Mapping
+import math
 import re
 
 import httpx
+from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.dialects import ChatDialect, Dialect
@@ -89,7 +91,7 @@ class EvalClient(Client):
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
         )
-        raw = resp.json()
+        raw = from_json(resp.content)
         response = dialect.parse_response(dialect.validate_response(raw))
         response.raw = raw  # the program gets the provider's bytes back 1:1
         return response
@@ -126,7 +128,22 @@ class EvalClient(Client):
         *,
         stream: bool = False,
     ) -> httpx.Response:
-        request = self.http.build_request("POST", url, json=body, headers=headers)
+        # HTTPX rejects non-finite floats. Preserve that policy without inspecting or copying
+        # string payloads, which commonly dominate large upstream requests.
+        pending = [body]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError(
+                    f"Out of range float values are not JSON compliant: {value}"
+                )
+            if isinstance(value, dict):
+                pending.extend(value.values())
+            elif isinstance(value, (list, tuple)):
+                pending.extend(value)
+        content = to_json(body)
+        headers.setdefault("content-type", "application/json")
+        request = self.http.build_request("POST", url, content=content, headers=headers)
         try:
             response = await self.http.send(request, stream=stream)
         except httpx.TimeoutException as e:
@@ -200,7 +217,7 @@ class EvalClient(Client):
             body,
             self._headers(dialect, None, None),
         )
-        return resp.json()
+        return from_json(resp.content)
 
     async def close(self) -> None:
         await self.http.aclose()
