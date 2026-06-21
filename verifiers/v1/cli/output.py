@@ -59,14 +59,15 @@ def write_trace(results_dir: Path, trace: Trace) -> None:
 async def append_trace(results_dir: Path, trace: Trace, lock: asyncio.Lock) -> None:
     """Append one finished trace without blocking the event loop. The run's shared lock
     preserves whole-line ordering, and awaiting the worker preserves per-trace durability."""
-    async with lock:
-        # Serialize large traces off-loop while the lock preserves line ordering.
-        # Cancellation cannot stop a thread, so defer it until the lock is safe to release.
-        write_task = asyncio.create_task(
-            asyncio.to_thread(write_trace, results_dir, trace)
-        )
-        try:
-            await asyncio.shield(write_task)
-        except asyncio.CancelledError:
-            await write_task
-            raise
+
+    async def persist() -> None:
+        async with lock:
+            await asyncio.to_thread(write_trace, results_dir, trace)
+
+    # Shield lock acquisition and the worker so finalized traces survive cancellation.
+    persist_task = asyncio.create_task(persist())
+    try:
+        await asyncio.shield(persist_task)
+    except asyncio.CancelledError:
+        await persist_task
+        raise
