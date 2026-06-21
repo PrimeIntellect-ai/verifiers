@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Literal, TypeAlias
 
 # early imports to avoid circular dependencies
 from .errors import *  # noqa # isort: skip
+from .errors import SandboxDeleteError  # noqa # isort: skip
 from .types import *  # noqa # isort: skip
 from .decorators import (  # noqa # isort: skip
     advantage,
@@ -56,6 +57,7 @@ __all__ = [
     "ArtifactsConfig",
     "DatasetBuilder",
     "State",
+    "SandboxDeleteError",
     "BindingsConfig",
     "CallableConfig",
     "Config",

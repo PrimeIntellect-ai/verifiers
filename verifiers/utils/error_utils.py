@@ -112,6 +112,7 @@ def error_from_data(error: ErrorData) -> vf.Error:
 def vf_error_types() -> tuple[type[vf.Error], ...]:
     return (
         vf.BrowserSandboxError,
+        vf.SandboxDeleteError,
         vf.SandboxError,
         vf.TunnelError,
         vf.InfraError,

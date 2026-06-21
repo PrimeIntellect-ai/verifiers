@@ -138,6 +138,108 @@ class TestCliAgentEnv:
         state = {"agent_completed": True}
         assert await env.agent_completed(state) is True
 
+    @pytest.mark.asyncio
+    async def test_destroy_sandbox_consumes_state_id_after_env_delete(
+        self, sample_dataset
+    ):
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+        )
+        try:
+            env.post_rollout = AsyncMock()  # type: ignore[method-assign]
+            env.sandbox_client.delete = AsyncMock()
+            env.register_sandbox("sb-env-delete")
+            state = {
+                "error": None,
+                "is_completed": True,
+                "sandbox_client": object(),
+                "sandbox_id": "sb-env-delete",
+            }
+
+            await env.destroy_sandbox(state)
+
+            env.post_rollout.assert_awaited_once_with(state)
+            env.sandbox_client.delete.assert_awaited_once_with("sb-env-delete")
+            assert "sandbox_id" not in state
+            assert "sb-env-delete" not in env.active_sandboxes
+            assert "sandbox_client" in state
+        finally:
+            env.teardown_sandbox_client()
+
+    @pytest.mark.asyncio
+    async def test_destroy_sandbox_delete_failure_records_error_without_raising(
+        self, sample_dataset
+    ):
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+        )
+        try:
+            env.post_rollout = AsyncMock()  # type: ignore[method-assign]
+            env.sandbox_client.delete = AsyncMock(
+                side_effect=RuntimeError("delete outage")
+            )
+            env.register_sandbox("sb-fail")
+            state = {
+                "error": None,
+                "is_completed": True,
+                "sandbox_client": object(),
+                "sandbox_id": "sb-fail",
+            }
+
+            await env.destroy_sandbox(state)
+
+            env.post_rollout.assert_awaited_once_with(state)
+            env.sandbox_client.delete.assert_awaited_once_with("sb-fail")
+            assert isinstance(state["error"], vf.SandboxDeleteError)
+            assert (
+                str(state["error"]) == "Failed to delete sandbox sb-fail: delete outage"
+            )
+            assert state["cleanup_errors"] == [
+                {
+                    "type": "SandboxDeleteError",
+                    "message": "Failed to delete sandbox sb-fail: delete outage",
+                    "scope": "env_cleanup",
+                    "sandbox_id": "sb-fail",
+                }
+            ]
+            assert state["sandbox_id"] == "sb-fail"
+            assert "sb-fail" in env.active_sandboxes
+        finally:
+            env.teardown_sandbox_client()
+
+    @pytest.mark.asyncio
+    async def test_destroy_sandbox_keeps_scoring_sandbox_tracked_for_teardown(
+        self, sample_dataset
+    ):
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+            keep_sandbox_for_scoring=True,
+        )
+        try:
+            env.post_rollout = AsyncMock()  # type: ignore[method-assign]
+            env.sandbox_client.delete = AsyncMock()
+            env.register_sandbox("sb-scoring")
+            state = {
+                "is_completed": True,
+                "sandbox_client": object(),
+                "sandbox_id": "sb-scoring",
+            }
+
+            await env.destroy_sandbox(state)
+
+            env.post_rollout.assert_awaited_once_with(state)
+            env.sandbox_client.delete.assert_not_awaited()
+            assert state["sandbox_id"] == "sb-scoring"
+            assert "sb-scoring" in env.active_sandboxes
+        finally:
+            env.teardown_sandbox_client()
+
     @pytest.mark.parametrize(
         "timeout_seconds,expected_minutes",
         [

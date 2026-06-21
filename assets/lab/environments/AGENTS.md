@@ -618,6 +618,9 @@ Verifiers defines a hierarchy of error types under `vf.Error`:
 - `vf.OverlongPromptError` — prompt exceeds model context length
 - `vf.ToolError` — tool-related errors (`vf.ToolParseError`, `vf.ToolCallError`)
 - `vf.InfraError` — infrastructure errors (e.g., `vf.SandboxError`, `vf.TunnelError`)
+- `vf.SandboxDeleteError` — sandbox DELETE cleanup failures. This is not an
+  `InfraError` / `SandboxError`, so rollout retry logic does not retry the
+  whole rollout after cleanup deletion fails.
 
 When a `vf.Error` is raised during a rollout, it is automatically caught and stored in `state["error"]`, triggering the built-in `has_error` stop condition at the next check. This allows rollouts to terminate gracefully rather than crashing.
 

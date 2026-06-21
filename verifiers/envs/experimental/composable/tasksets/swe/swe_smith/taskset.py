@@ -28,6 +28,7 @@ from textwrap import dedent
 from typing import Any
 
 import verifiers as vf
+from verifiers.utils.sandbox_delete import cleanup_sandbox_for_rollout
 from datasets import load_dataset
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
@@ -167,10 +168,9 @@ class SWESmithRubric(vf.Rubric):
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
         if sandbox_client and sandbox_id:
-            try:
-                await sandbox_client.delete(sandbox_id)
-            except Exception:
-                pass
+            await cleanup_sandbox_for_rollout(
+                sandbox_client, sandbox_id, state, scope="taskset_cleanup"
+            )
 
 
 class SWESmithTaskSet(SandboxTaskSet):

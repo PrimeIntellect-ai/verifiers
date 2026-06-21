@@ -39,6 +39,7 @@ from verifiers.utils.interception_utils import (
 )
 from verifiers.utils.logging_utils import print_time, truncate
 from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.sandbox_delete import cleanup_sandbox_for_rollout
 
 logger = logging.getLogger(__name__)
 
@@ -751,8 +752,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         When `keep_sandbox_for_scoring` is True, sandbox deletion is deferred
         (e.g. when the rubric needs sandbox access during scoring).
-        The sandbox is still deregistered from active tracking so the
-        environment teardown does not attempt a redundant bulk-delete.
+        The sandbox remains active-tracked so environment teardown can retry
+        deletion if scoring cleanup fails.
 
         If the rollout was not completed (e.g. cancelled during shutdown),
         the sandbox is always deleted since scoring will not happen.
@@ -763,9 +764,19 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         sandbox_id = state.get("sandbox_id")
         if sandbox_id:
             if self.keep_sandbox_for_scoring and completed:
-                self.deregister_sandbox(sandbox_id)
+                # Scoring cleanup owns deletion; keep active tracking as a teardown backstop.
+                return
             else:
-                await self.delete_sandbox(sandbox_id)
+                deleted = await cleanup_sandbox_for_rollout(
+                    self.sandbox_client,
+                    sandbox_id,
+                    state,
+                    scope="env_cleanup",
+                    on_deleted=self.deregister_sandbox,
+                )
+                if deleted:
+                    self.logger.debug(f"Deleted sandbox {sandbox_id}")
+                    state.pop("sandbox_id", None)
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs

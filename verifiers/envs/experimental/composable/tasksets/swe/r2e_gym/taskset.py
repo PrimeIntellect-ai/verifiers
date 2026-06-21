@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import verifiers as vf
+from verifiers.utils.sandbox_delete import cleanup_sandbox_for_rollout
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
 from .log_parser import decolor_dict_keys, parse_log_pytest
@@ -163,10 +164,9 @@ class R2ERubric(vf.Rubric):
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
         if sandbox_client and sandbox_id:
-            try:
-                await sandbox_client.delete(sandbox_id)
-            except Exception:
-                pass
+            await cleanup_sandbox_for_rollout(
+                sandbox_client, sandbox_id, state, scope="taskset_cleanup"
+            )
 
 
 class R2EGymTaskSet(SandboxTaskSet):

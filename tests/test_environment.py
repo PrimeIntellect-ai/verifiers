@@ -721,6 +721,28 @@ class TestMaybeRetry:
         assert calls["n"] == 3  # 1 initial + 2 retries (InfraError is retryable)
         assert result["error"] == serialized  # last result returned after exhaustion
 
+    @pytest.mark.asyncio
+    async def test_sandbox_delete_error_round_trips_without_retry(self):
+        from verifiers.utils.async_utils import maybe_retry
+        from verifiers.utils.error_utils import error_data, error_from_data
+
+        assert vf.SandboxDeleteError.__name__ in vf.__all__
+        error = vf.SandboxDeleteError("delete outage")
+        serialized = error_data(error)
+        rebuilt = error_from_data(serialized)
+        assert isinstance(rebuilt, vf.SandboxDeleteError)
+        assert not isinstance(rebuilt, vf.InfraError)
+
+        calls = {"n": 0}
+
+        async def attempt():
+            calls["n"] += 1
+            return {"error": serialized}
+
+        result = await maybe_retry(attempt, max_retries=2, initial=0.0, max_wait=0.0)()
+        assert calls["n"] == 1
+        assert result["error"] == serialized
+
 
 class TestEmptyModelResponseErrors:
     """Test cases for empty and invalid model response error handling."""
