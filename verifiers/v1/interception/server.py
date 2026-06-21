@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from aiohttp import web
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1.clients import RolloutContext
@@ -518,8 +518,12 @@ class InterceptionServer:
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         logger.debug("intercept GET /state: id=%s", session.trace.id)
+        state = session.trace.state
         return web.Response(
-            text=session.trace.state.model_dump_json(), content_type="application/json"
+            # TypeAdapter emits UTF-8 bytes directly, avoiding a JSON str copy in aiohttp.
+            body=TypeAdapter(type(state)).dump_json(state),
+            content_type="application/json",
+            charset="utf-8",
         )
 
     async def handle_task_get(self, request: web.Request) -> web.Response:
@@ -546,17 +550,20 @@ class InterceptionServer:
             return web.json_response({"error": "unauthorized"}, status=401)
         logger.debug("intercept PUT /state: id=%s", session.trace.id)
         state_cls = type(session.trace.state)
+        raw = await request.read()
         try:
-            new_state = state_cls.model_validate(await request.json())
-        except (ValidationError, ValueError) as e:
-            # Malformed JSON (`request.json()` -> JSONDecodeError, a ValueError) or a pushed state
-            # that doesn't fit the trace's `State` type (almost always a `StateT` mismatch between the
-            # taskset and a server). Surface a clean 400 (with the reason) rather than a 500, so the
-            # server's failed PUT fails the rollout legibly.
-            logger.warning("state PUT rejected: id=%s %s", session.trace.id, e)
-            return web.json_response(
-                {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},
-                status=400,
-            )
+            new_state = state_cls.model_validate_json(raw)
+        except ValidationError:
+            try:
+                # Pydantic's JSON parser caps nesting; retain the stdlib path for valid deep state.
+                new_state = state_cls.model_validate(json.loads(raw))
+            except (ValidationError, ValueError, RecursionError) as e:
+                # Malformed JSON or a state that doesn't fit the trace's `State` type (almost always
+                # a `StateT` mismatch between the taskset and a server) is a clean 400, not a 500.
+                logger.warning("state PUT rejected: id=%s %s", session.trace.id, e)
+                return web.json_response(
+                    {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},
+                    status=400,
+                )
         session.trace.state = new_state
         return web.json_response({"ok": True})
