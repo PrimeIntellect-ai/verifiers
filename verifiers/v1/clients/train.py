@@ -140,7 +140,9 @@ def response_from_generate(
         usage=Usage(
             prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)
         ),
-        tokens=TurnTokens(
+        # generate() returns owned, typed lists. Skip revalidation here to avoid copying
+        # million-token contexts synchronously on the event loop.
+        tokens=TurnTokens.model_construct(
             prompt_ids=prompt_ids,
             completion_ids=completion_ids,
             completion_logprobs=result.get("completion_logprobs") or [],
