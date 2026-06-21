@@ -242,6 +242,10 @@ class InterceptionServer:
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
+        # Keep `read()` for aiohttp's size guard, then release its cache and our local
+        # alias after parsing so the wire body does not survive model inference.
+        request._read_bytes = None
+        del raw
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
