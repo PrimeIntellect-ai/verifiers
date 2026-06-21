@@ -13,11 +13,6 @@ from collections.abc import Mapping
 from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
-from openai.types import CompletionUsage
-from openai.types.completion_usage import (
-    CompletionTokensDetails,
-    PromptTokensDetails,
-)
 from renderers import RenderedTokens
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
@@ -66,23 +61,22 @@ def serialize_completion(response: Response, model: str) -> dict:
             }
             for c in response.message.tool_calls
         ]
-    usage: CompletionUsage | None = None
+    usage: dict | None = None
     if response.usage:
-        usage = CompletionUsage(
-            prompt_tokens=response.usage.input_tokens,
-            completion_tokens=response.usage.completion_tokens,
-            total_tokens=response.usage.total_tokens,
-            prompt_tokens_details=PromptTokensDetails(
-                cached_tokens=response.usage.cached_input_tokens
-            )
-            if response.usage.cached_input_tokens is not None
-            else None,
-            completion_tokens_details=CompletionTokensDetails(
-                reasoning_tokens=response.usage.reasoning_tokens
-            )
-            if response.usage.reasoning_tokens is not None
-            else None,
-        )
+        # Usage is validated earlier in the pipeline; building its wire dict directly saves time.
+        usage = {
+            "completion_tokens": response.usage.completion_tokens,
+            "prompt_tokens": response.usage.input_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+        if response.usage.reasoning_tokens is not None:
+            usage["completion_tokens_details"] = {
+                "reasoning_tokens": response.usage.reasoning_tokens
+            }
+        if response.usage.cached_input_tokens is not None:
+            usage["prompt_tokens_details"] = {
+                "cached_tokens": response.usage.cached_input_tokens
+            }
     return {
         "id": response.id or "vf-intercept",
         "object": "chat.completion",
@@ -95,7 +89,7 @@ def serialize_completion(response: Response, model: str) -> dict:
                 "finish_reason": response.finish_reason or "stop",
             }
         ],
-        "usage": usage.model_dump(exclude_none=True) if usage is not None else None,
+        "usage": usage,
     }
 
 
