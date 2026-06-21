@@ -322,18 +322,18 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
     try:
         yield url
     finally:
+        # Delay cancellation until the synchronous stop has finished.
+        cancelled = None
+        stop_task = asyncio.create_task(asyncio.to_thread(tunnel.sync_stop))
         with contextlib.suppress(Exception):
-            stop_task = asyncio.create_task(asyncio.to_thread(tunnel.sync_stop))
-            try:
-                await asyncio.shield(stop_task)
-            except asyncio.CancelledError:
-                # Ignore repeated cancellation until synchronous teardown finishes.
-                while not stop_task.done():
-                    with contextlib.suppress(asyncio.CancelledError, Exception):
-                        await asyncio.shield(stop_task)
-                with contextlib.suppress(Exception):
-                    stop_task.result()
-                raise
+            while not stop_task.done():
+                try:
+                    await asyncio.shield(stop_task)
+                except asyncio.CancelledError as e:
+                    cancelled = e
+            stop_task.result()
+        if cancelled is not None:
+            raise cancelled
 
 
 class _Host:
