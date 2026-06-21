@@ -94,23 +94,34 @@ while [ "$pid" -gt 1 ] 2>/dev/null; do
     pid=$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$pid/status" 2>/dev/null)
     [ -n "$pid" ] || break
 done
-for path in /proc/[0-9]*; do
-    pid=${path##*/}
-    case "$ancestors" in
-        *" $pid "*) continue ;;
-    esac
-    identity=
-    if IFS= read -r stat < "$path/stat"; then
-        stat=${stat##*) }
-        set -- $stat
-        [ "$#" -lt 20 ] || identity="$pid:${20}"
-    fi
-    if [ -n "$identity" ]; then
-        case "$baseline" in
-            *" $identity "*) continue ;;
+while :; do
+    found=0
+    for path in /proc/[0-9]*; do
+        pid=${path##*/}
+        case "$ancestors" in
+            *" $pid "*) continue ;;
         esac
-    fi
-    kill -KILL "$pid" 2>/dev/null || true
+        identity=
+        state=
+        if IFS= read -r stat < "$path/stat"; then
+            stat=${stat##*) }
+            set -- $stat
+            if [ "$#" -ge 20 ]; then
+                state=$1
+                identity="$pid:${20}"
+            fi
+        fi
+        [ "$state" = Z ] && continue
+        if [ -n "$identity" ]; then
+            case "$baseline" in
+                *" $identity "*) continue ;;
+            esac
+        fi
+        found=1
+        kill -STOP "$pid" 2>/dev/null || true
+        kill -KILL "$pid" 2>/dev/null || true
+    done
+    [ "$found" -eq 0 ] && break
 done
 """
 
@@ -288,6 +299,17 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
             host_archive = Path(file.name)
         self._host_archives[runtime] = host_archive
         weakref.finalize(runtime, host_archive.unlink, missing_ok=True)
+        original_stop = runtime.stop
+
+        async def stop_with_archive_cleanup() -> None:
+            try:
+                host_archive.unlink(missing_ok=True)
+                self._host_archives.pop(runtime, None)
+                self._baseline_processes.pop(runtime, None)
+            finally:
+                await original_stop()
+
+        setattr(runtime, "stop", stop_with_archive_cleanup)
 
         result = await runtime.run(["sh", "-c", REMOVE_TESTS], ENV)
         if result.exit_code != 0:
