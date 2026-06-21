@@ -11,7 +11,7 @@ import contextlib
 import logging
 import shlex
 import tempfile
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 
 from pydantic_config import BaseConfig
@@ -184,11 +184,12 @@ class PrimeRuntime(Runtime):
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
         try:
-            with tempfile.NamedTemporaryFile() as download:
+            with tempfile.TemporaryDirectory() as directory:
+                download = Path(directory) / "download"
                 await self._client.download_file(
-                    self._sandbox_id, target, download.name
+                    self._sandbox_id, target, str(download)
                 )
-                return await asyncio.to_thread(download.read)
+                return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
