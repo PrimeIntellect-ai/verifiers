@@ -402,6 +402,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
+    multi_modal_data = tokens.multi_modal_data if tokens else None
     prompt_ids = tokens.prompt_ids if tokens else []
     spans = tokens.message_spans if tokens else None
     idx = _head_index(trace)
@@ -436,9 +437,12 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     parent = prefix[-1] if prefix else None
     # cursor: in prompt_ids, the end of the previous *new* message's tokens
     cursor: int | None = None
-    # (node_id, message) per prompt message (reused prefix first, then new), for multimodal
-    # attribution; `num_reused` marks where the newly-created nodes begin.
-    path: list[tuple[int, Message]] = [(nid, prompt[i]) for i, nid in enumerate(prefix)]
+    # Track new nodes separately so routed-expert attribution does not need this full path.
+    new_node_ids: list[int] = []
+    # Materialize the reused message path only for multimodal cursor attribution.
+    mm_path: list[tuple[int, Message]] | None = None
+    if multi_modal_data is not None:
+        mm_path = [(nid, prompt[i]) for i, nid in enumerate(prefix)]
     for i, msg in enumerate(prompt[num_reused:], start=num_reused):
         key = (parent, message_hash(msg))
         start = path_len if cursor is None else cursor
@@ -457,7 +461,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
         )
         parent = len(trace.nodes) - 1
         idx[key] = parent
-        path.append((parent, msg))
+        new_node_ids.append(parent)
+        if mm_path is not None:
+            mm_path.append((parent, msg))
         cursor = end
 
     # Assistant node: trailing scaffold (the generation prompt) + the sampled completion.
@@ -477,15 +483,16 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
         )
     )
     # Register the assistant so the next turn's prompt (which restates it) reuses this node.
-    idx[(parent, message_hash(response.message))] = len(trace.nodes) - 1
+    assistant_id = len(trace.nodes) - 1
+    idx[(parent, message_hash(response.message))] = assistant_id
+    new_node_ids.append(assistant_id)
 
     # Attribute this turn's images onto the input nodes that introduced them (by content part).
-    _attribute_mm(trace, path, num_reused, tokens.multi_modal_data if tokens else None)
+    if mm_path is not None:
+        _attribute_mm(trace, mm_path, num_reused, multi_modal_data)
 
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.
-    new_node_ids = [nid for nid, _ in path[num_reused:]]
-    new_node_ids.append(len(trace.nodes) - 1)
     _attribute_routed_experts(
         trace, new_node_ids, path_len, tokens.routed_experts if tokens else None
     )
