@@ -13,6 +13,7 @@ from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import Environment
+from verifiers.v1.taskset import select_tasks
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -25,10 +26,9 @@ _SHUFFLE_SEED = (
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
-    tasks = env.taskset.load_tasks()
-    if config.shuffle:
-        random.Random(_SHUFFLE_SEED).shuffle(tasks)
-    tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
+    # Draw only the tasks this run needs from `load_tasks` (which may be a lazy/unbounded
+    # generator): without `--shuffle`, just the first `--num-tasks` are built.
+    tasks = select_tasks(env.taskset, config.num_tasks, config.shuffle, _SHUFFLE_SEED)
     ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.

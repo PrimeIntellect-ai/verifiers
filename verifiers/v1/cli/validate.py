@@ -13,7 +13,6 @@ nothing is written to disk.
 import asyncio
 import contextlib
 import logging
-import random
 import signal
 import sys
 import time
@@ -31,7 +30,7 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.configs.validate import ValidateConfig
 from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import make_runtime
-from verifiers.v1.taskset import Taskset
+from verifiers.v1.taskset import Taskset, select_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -108,11 +107,7 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     """Run each task's `validate` hook with bounded concurrency, showing progress live. Returns
     the result rows in memory — nothing is persisted."""
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.load_tasks()
-    if config.shuffle:
-        random.Random(0).shuffle(tasks)
-    if config.num_tasks is not None:
-        tasks = tasks[: config.num_tasks]
+    tasks = select_tasks(taskset, config.num_tasks, config.shuffle)
     if isinstance(config.runtime, vf.SubprocessConfig) and (
         taskset.NEEDS_CONTAINER or any(t.image for t in tasks)
     ):

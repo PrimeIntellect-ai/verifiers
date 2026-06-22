@@ -140,7 +140,7 @@ able to change. The base `TasksetConfig` carries `id` (the taskset's id, set via
 
 ## Loading tasks
 
-`def load_tasks(self) -> list[TaskT]` builds the task list. It runs **once at load** (not per
+`def load_tasks(self) -> Iterable[TaskT]` builds the tasks. It runs **once at load** (not per
 rollout), so do dataset loading / filtering / slicing here off `self.config`. Return your typed
 `Task` subclass instances.
 
@@ -157,6 +157,23 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
             for i, row in enumerate(rows)
         ]
 ```
+
+**Lazy / unbounded tasksets.** A fixed dataset returns a `list` (above). A taskset that *builds*
+its tasks — procedurally, from RNG seeds, or any unbounded source — can instead **yield** them
+from a generator, and an eval draws only as many as it needs:
+
+```python
+class SeededTaskset(vf.Taskset[SeededTask, SeededConfig]):
+    def load_tasks(self) -> Iterator[SeededTask]:
+        for i in itertools.count():                  # unbounded — no `num_tasks` cap needed
+            yield SeededTask(idx=i, prompt=make_prompt(seed=i))
+```
+
+`eval -n 50` then builds exactly 50 tasks, not the whole stream (the runner consumes
+`load_tasks` lazily via `select_tasks`). Two caveats: `--shuffle` has to materialize the whole
+set to sample from it (so it can't be combined with an unbounded generator), and the
+index-addressed env-server (`--num-workers`) fully consumes `load_tasks` to fix its index range
+(so it needs a finite taskset). `verifiers.v1.tasksets.textarena_v1` is a worked example.
 
 ## Scoring — rewards, metrics, group rewards
 

@@ -54,8 +54,10 @@ class EnvServer:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
-        # Load tasks once; the index range is fixed for the server's lifetime.
-        self.tasks = self.env.taskset.load_tasks()
+        # Load tasks once, materializing them: the server is index-addressed (`run_rollout`
+        # by `task_idx`), so it fully consumes a lazy `load_tasks` to fix the index range for
+        # its lifetime — an unbounded taskset can't be served this way.
+        self.tasks = list(self.env.taskset.load_tasks())
         self.requires_group_scoring = bool(
             discover_decorated(self.env.taskset, "group_reward")
         )

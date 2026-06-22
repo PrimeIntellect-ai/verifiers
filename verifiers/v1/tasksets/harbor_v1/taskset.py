@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tarfile
 import tomllib
+from collections.abc import Iterator
 from pathlib import Path
 
 from pydantic import Field
@@ -206,7 +207,10 @@ def make_tar(directory: Path) -> bytes:
 
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
-    def load_tasks(self) -> list[HarborTask]:
+    def load_tasks(self) -> Iterator[HarborTask]:
+        # The dataset is downloaded + listed up front (we need the dir set to enumerate idxs),
+        # but each task.toml + instruction.md is parsed lazily — so an eval on a subset only
+        # reads the task dirs it actually runs.
         root = dataset_dir(self.config.dataset)
         task_dirs = [
             toml_path.parent
@@ -218,10 +222,8 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         ]
         if not task_dirs:
             raise ValueError(f"no harbor tasks found in {root}")
-        return [
-            parse_task(task_dir, idx, self.config)
-            for idx, task_dir in enumerate(task_dirs)
-        ]
+        for idx, task_dir in enumerate(task_dirs):
+            yield parse_task(task_dir, idx, self.config)
 
     @reward(weight=1.0)
     async def solved(self, task: HarborTask, trace: Trace, runtime: Runtime) -> float:

@@ -16,7 +16,9 @@ For a heterogeneous taskset (different verification per task), have a single
 """
 
 import asyncio
-from collections.abc import Mapping
+import itertools
+import random
+from collections.abc import Iterable, Mapping
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic_config import BaseConfig
@@ -63,7 +65,11 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
-    def load_tasks(self) -> list[TaskT]:
+    def load_tasks(self) -> Iterable[TaskT]:
+        """Produce this taskset's tasks. Return a list for a fixed dataset, or a generator
+        (yield tasks) for a lazily-built or unbounded one — a run draws only the tasks it
+        needs from it (see `select_tasks`), so an "infinite" taskset never materializes more
+        than the `--num-tasks` it's evaluated on. Runs once at load, not per rollout."""
         raise NotImplementedError
 
     def tools(self, task: TaskT) -> list[Toolset]:
@@ -162,3 +168,27 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
                 weight = getattr(fn, "_vf_weight", 1.0)
                 for trace, score in zip(traces, scores):
                     trace.record_reward(fn.__name__, score, weight)
+
+
+def select_tasks(
+    taskset: Taskset[TaskT, ConfigT, StateT],
+    num_tasks: int | None = None,
+    shuffle: bool = False,
+    seed: int = 0,
+) -> list[TaskT]:
+    """Materialize the tasks a run will use, pulling only as many from `load_tasks` as it
+    needs — so a lazy (generator) taskset never builds tasks the run won't touch.
+
+    Without `shuffle`, only the first `num_tasks` are drawn, consumed lazily — so an
+    unbounded `load_tasks` is fine. `shuffle` has to see the whole set to sample from it,
+    so it materializes everything first and is therefore incompatible with an unbounded
+    `load_tasks`. The result is always a concrete list (the rest of the pipeline indexes
+    and re-iterates it)."""
+    tasks = taskset.load_tasks()
+    if shuffle:
+        tasks = list(tasks)
+        random.Random(seed).shuffle(tasks)
+        return tasks if num_tasks is None else tasks[:num_tasks]
+    if num_tasks is not None:
+        return list(itertools.islice(tasks, num_tasks))
+    return list(tasks)
