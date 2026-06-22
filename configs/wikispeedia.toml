@@ -1,0 +1,9 @@
+# wikispeedia-v1 — its own per-rollout MCP tool server; min/max dist 2 = easy 2-hop tasks.
+#
+#   uv run eval wikispeedia-v1 @ configs/wikispeedia.toml
+num_tasks = 1
+
+[taskset]
+id = "wikispeedia-v1"
+min_dist = 2
+max_dist = 2

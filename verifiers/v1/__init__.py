@@ -1,150 +1,203 @@
-"""Taskset/harness authoring API."""
+"""verifiers v1 — a clean-slate, heavily-typed reimplementation.
 
-import importlib
+Public surface is re-exported here so environments can `import verifiers.v1 as vf`
+and reach everything they need. Built up milestone by milestone.
+"""
 
-from verifiers.decorators import (
-    advantage,
-    cleanup,
-    metric,
-    reward,
-    setup,
-    stop,
-    teardown,
-    update,
-)
-from verifiers.types import (
-    AssistantMessage,
-    EndpointConfig,
-    Message,
-    Messages,
-    SystemMessage,
-    TextMessage,
-    ToolLike,
-    ToolMessage,
-    UserMessage,
-)
-from verifiers.utils.message_utils import get_messages
+import logging as _logging
 
-from .config import (
-    CallableConfig,
-    Config,
-    SignalConfig,
+from pydantic_config import BaseConfig
+
+from verifiers.v1.clients import (
+    BaseClientConfig,
+    Client,
+    ClientConfig,
+    RolloutContext,
+    resolve_client,
 )
-from .env import Env, EnvConfig
-from .artifact import ArtifactConfig, Artifacts, ArtifactsConfig
-from .harness import Harness, HarnessConfig
-from .model import ModelConfig
-from .program import ProgramConfig, ProgramValue
-from .runtime import TrajectoryVisibility
-from .sandbox import SandboxConfig
-from .utils.scoring_utils import (
-    add_metric,
-    add_reward,
-    add_advantage,
-    build_signals,
-    collect_signals,
-    score_group,
-    score_rollout,
+from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
+from verifiers.v1.env import (
+    ElasticPoolConfig,
+    EnvConfig,
+    EnvServerConfig,
+    Environment,
+    StaticPoolConfig,
+    TimeoutConfig,
+    pool_serve_kwargs,
 )
-from .state import State
-from .task import Task
-from .taskset import Taskset, TasksetConfig, discover_sibling_dir
-from .toolset import (
-    MCPTool,
-    MCPToolConfig,
+from verifiers.v1.episode import Episode
+from verifiers.v1.errors import (
+    HarnessError,
+    InterceptionError,
+    ProviderError,
+    RolloutError,
+    SandboxError,
+    TasksetError,
+    ToolsetError,
+    TunnelError,
+    UserError,
+)
+from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.loaders import (
+    default_harness_id,
+    harness_config_type,
+    import_harness,
+    import_taskset,
+    load_harness,
+    load_taskset,
+    task_type,
+    taskset_config_type,
+)
+from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
+from verifiers.v1.rollout import Rollout
+from verifiers.v1.runtimes import (
+    DockerConfig,
+    PrimeConfig,
+    ProgramResult,
+    Runtime,
+    RuntimeConfig,
+    SubprocessConfig,
+)
+from verifiers.v1.state import State, StateT
+from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
+from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.mcp import (
     Toolset,
     ToolsetConfig,
-    Toolsets,
-    VisibilityConfig,
+    User,
+    UserConfig,
 )
-from .utils.endpoint_utils import Endpoint
-from .utils.binding_utils import BindingsConfig, ObjectsConfig
-from .utils.prompt_utils import SystemPrompt, SystemPromptConfig, SystemPromptStrategy
-from .types import (
-    ConfigData,
-    Handler,
-    JsonData,
-    Objects,
-    PromptInput,
-    TaskSplit,
-    Tasks,
+from verifiers.v1.graph import MessageNode
+from verifiers.v1.trace import (
+    Branch,
+    Error,
+    TimeSpan,
+    Timing,
+    Trace,
+    WireTrace,
 )
-from .user import User, UserConfig
+from verifiers.v1.types import (
+    AssistantMessage,
+    ContentPart,
+    EnvId,
+    ImageUrlContentPart,
+    ImageUrlSource,
+    Message,
+    MessageContent,
+    Messages,
+    Response,
+    Sampling,
+    SamplingConfig,
+    StrictBaseModel,
+    SystemMessage,
+    TextContentPart,
+    Tool,
+    ToolCall,
+    TurnTokens,
+    ToolMessage,
+    Usage,
+    UserMessage,
+)
 
 __all__ = [
-    "BindingsConfig",
-    "ArtifactConfig",
-    "Artifacts",
-    "ArtifactsConfig",
-    "ConfigData",
-    "CallableConfig",
-    "Config",
-    "Env",
-    "EnvConfig",
-    "Endpoint",
-    "EndpointConfig",
+    # types
+    "EnvId",
     "AssistantMessage",
-    "Harness",
-    "HarnessConfig",
-    "Handler",
-    "JsonData",
-    "MCPTool",
-    "MCPToolConfig",
+    "ContentPart",
+    "ImageUrlContentPart",
+    "ImageUrlSource",
     "Message",
+    "MessageContent",
     "Messages",
-    "ModelConfig",
-    "Objects",
-    "ObjectsConfig",
-    "ProgramConfig",
-    "ProgramValue",
-    "PromptInput",
-    "SandboxConfig",
-    "SignalConfig",
-    "State",
-    "SystemPrompt",
-    "SystemPromptConfig",
-    "SystemPromptStrategy",
+    "Response",
+    "Sampling",
+    "SamplingConfig",
+    "StrictBaseModel",
+    "SystemMessage",
+    "TextContentPart",
+    "Tool",
+    "ToolCall",
+    "ToolMessage",
+    "Usage",
+    "UserMessage",
+    # task / trace / state
     "Task",
-    "TaskSplit",
-    "Tasks",
+    "WireTask",
+    "TaskResources",
+    "TaskTimeout",
+    "Trace",
+    "WireTrace",
+    "State",
+    "StateT",
+    "MessageNode",
+    "Branch",
+    "TurnTokens",
+    "Timing",
+    "TimeSpan",
+    "Error",
+    # decorators
+    "stop",
+    "tool",
+    "metric",
+    "reward",
+    "group_reward",
+    # errors
+    "RolloutError",
+    "ProviderError",
+    "HarnessError",
+    "ToolsetError",
+    "UserError",
+    "SandboxError",
+    "TasksetError",
+    "InterceptionError",
+    "TunnelError",
+    # clients
+    "Client",
+    "BaseClientConfig",
+    "ClientConfig",
+    "resolve_client",
+    # taskset / harness / runtime / environment
     "Taskset",
     "TasksetConfig",
-    "SystemMessage",
-    "TextMessage",
-    "ToolLike",
+    "BaseConfig",
+    "Harness",
+    "HarnessConfig",
+    "RolloutContext",
+    "Runtime",
+    "RuntimeConfig",
+    "ProgramResult",
+    "SubprocessConfig",
+    "DockerConfig",
+    "PrimeConfig",
+    "Environment",
+    "EnvConfig",
+    "EnvServerConfig",
+    "StaticPoolConfig",
+    "ElasticPoolConfig",
+    "pool_serve_kwargs",
+    "RetryConfig",
+    "RolloutRetryConfig",
+    "TimeoutConfig",
+    "Episode",
+    "Rollout",
+    # loaders
+    "import_taskset",
+    "import_harness",
+    "load_taskset",
+    "load_harness",
+    "task_type",
+    "taskset_config_type",
+    "harness_config_type",
+    "default_harness_id",
+    # mcp
     "Toolset",
     "ToolsetConfig",
-    "Toolsets",
-    "ToolMessage",
-    "TrajectoryVisibility",
+    # user simulator
     "User",
-    "UserMessage",
     "UserConfig",
-    "VisibilityConfig",
-    "add_metric",
-    "add_reward",
-    "add_advantage",
-    "advantage",
-    "build_signals",
-    "cleanup",
-    "collect_signals",
-    "discover_sibling_dir",
-    "metric",
-    "get_messages",
-    "load_harness",
-    "load_taskset",
-    "reward",
-    "score_group",
-    "score_rollout",
-    "setup",
-    "stop",
-    "teardown",
-    "update",
 ]
 
-
-def __getattr__(name: str):
-    if name in ("load_harness", "load_taskset"):
-        module = importlib.import_module("verifiers.utils.env_utils")
-        return getattr(module, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+# The library logs via stdlib logging (per-module `getLogger(__name__)`), but is
+# silent until an app opts in: a NullHandler on the package root absorbs records
+# so nothing is emitted (and no "no handler" warning) unless handlers are added.
+_logging.getLogger(__name__).addHandler(_logging.NullHandler())

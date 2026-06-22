@@ -2,6 +2,8 @@
 
 QUEST tasks ported into the composable search taskset framework.
 
+Install the PDF evaluation dependencies with `uv add "verifiers[quest]"`.
+
 ## Source
 
 - Dataset: [`osunlp/QUEST-RL-Data`](https://huggingface.co/datasets/osunlp/QUEST-RL-Data)

@@ -1,339 +1,254 @@
-# Verifiers v1
-
-`verifiers.v1` is the Taskset/Harness API for reusable eval and training
-environments.
-
-- `Taskset` defines what is being attempted.
-- `Harness` defines how the model or agent attempts it.
-- `Env` adapts one taskset/harness pair to the existing eval/training worker
-  API.
-
-Start with [`docs/byo-harness.md`](../../docs/byo-harness.md) when authoring an
-environment. Use [`docs/reference.md`](../../docs/reference.md) for API lookup
-and [`RE_MIGRATION.md`](RE_MIGRATION.md) for migration notes.
-
-## Mental Model
-
-![Task to Harness to State](../../docs/assets/v1-task-harness-state.svg)
-
-v1 is data-first:
-
-- `Task` is immutable, serializable input data.
-- `State` is mutable, serializable rollout output.
-- Runtime handles such as clients, sandboxes, MCP sessions, and tool backends
-  are process-local and reached through state helpers while a rollout is active.
-- Tasksets and harnesses are configured through strict Pydantic config objects.
-
-## Golden Loader Shape
-
-Environment packages expose typed child loaders and one tiny root loader:
-
-```python
-import verifiers as vf
-
-
-class ReverseTasksetConfig(vf.TasksetConfig):
-    system_prompt: vf.SystemPrompt = "Reverse text exactly."
-
-
-class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        if split == "eval":
-            return []
-        return [
-            {
-                "prompt": [{"role": "user", "content": "Reverse abc."}],
-                "answer": "cba",
-                "max_turns": 1,
-            }
-        ]
-
-    @vf.reward(weight=1.0)
-    async def exact(self, task: vf.Task, state: vf.State) -> float:
-        messages = vf.get_messages(state.get("completion") or [], role="assistant")
-        response = str(messages[-1].content or "") if messages else ""
-        return float(response.strip() == task["answer"])
-
-
-def load_taskset(config: ReverseTasksetConfig) -> ReverseTaskset:
-    return ReverseTaskset(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
-```
-
-Add `load_harness(config: MyHarnessConfig)` only when the package owns reusable
-execution behavior:
-
-```python
-class MyHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(fn="my_env.agent:run")
-
-
-class MyHarness(vf.Harness[MyHarnessConfig]):
-    pass
-
-
-def load_harness(config: MyHarnessConfig) -> MyHarness:
-    return MyHarness(config=config)
-```
-
-Do not subclass `EnvConfig` to narrow child config types. The child loader
-annotations define `[env.taskset]` and `[env.harness]`.
-
-Start with a taskset and the base harness. Add a custom harness only when the
-environment owns a reusable execution protocol, such as a command agent,
-third-party framework adapter, endpoint interceptor, primary sandbox placement,
-or program runner.
-
-## Ownership
-
-| Object | Owns |
-| --- | --- |
-| `Taskset` | Task data, task loading, task prompts, task controls, task tools, users, metrics, rewards, and task-specific lifecycle. |
-| `Harness` | Rollout execution, programs, model/client defaults, endpoint interception, primary sandbox placement, command/framework adapters, and execution artifacts. |
-| `Env` | Worker adapter for one taskset/harness pair. |
-
-Tasksets own the domain. Harnesses own execution. If a tool defines the task's
-action space or success condition, put it on the taskset. If code describes how
-an arbitrary task is attempted, put it on the harness.
-
-## Core Contracts
-
-### Task
-
-`Task` is immutable and serializable. `task["prompt"]` must not contain system
-messages. Use top-level fields for task controls:
-
-| Field | Meaning |
-| --- | --- |
-| `prompt` | User/developer/tool messages. |
-| `system_prompt` | Per-task taskset-side system prompt override. |
-| `answer` | Reference answer or target data. |
-| `info` | Serializable metadata. |
-| `max_turns` | Per-task base-loop limit. |
-| `toolsets` / `tools` | Visibility controls for toolsets and tools. |
-| `sandbox` | Per-task sandbox override. |
-| `program` | Task-owned program files, dirs, setup, env, artifacts, bindings, and args. |
-
-Use `max_turns`, `sandbox`, `program`, and visibility fields in tasks only when
-they genuinely vary by example. Do not copy config defaults or
-framework-managed IDs into task rows.
-
-### State
-
-`State` is mutable during rollout and serializable before return. It stores
-trajectory, completion, metrics, reward, timing, artifacts, errors, and any
-environment output.
-
-Use state helpers for active runtime resources:
-
-- `state.get_model()`
-- `state.get_client(...)`
-- `state.get_endpoint_config(...)`
-- `state.get_max_turns(default)`
-- `state.get_tools()`
-- `state.add_tool("toolset_name", tool)`
-
-### Config
-
-Config values must be serializable. Use import refs for callables in TOML or
-package config. Put task fields on `TasksetConfig`; put execution fields on
-`HarnessConfig`.
-
-Important owner config fields:
-
-- `system_prompt`
-- `user`
-- `toolsets`
-- `objects`
-- `bindings`
-- `artifacts`
-- lifecycle lists such as `setups`, `updates`, `metrics`, `rewards`, and
-  `cleanups`
-- `scoring`
-
-`Taskset.__init__`, `Harness.__init__`, and `User.__init__` are final.
-Customize through config, public load methods, lifecycle decorators, and
-program config.
-
-## System Prompts
-
-System prompts resolve per task during `Harness.setup_state(...)`.
-
-- `T` is the resolved taskset side: `task["system_prompt"]` when present,
-  otherwise `TasksetConfig.system_prompt`.
-- `H` is the harness side: `HarnessConfig.system_prompt`.
-
-`HarnessConfig.system_prompt_strategy` chooses the result:
-
-| Strategy | Meaning |
-| --- | --- |
-| `HT` | Harness side followed by resolved taskset side. Default. |
-| `TH` | Resolved taskset side followed by harness side. |
-| `H_OR_T` | Harness side when present, otherwise resolved taskset side. |
-| `T_OR_H` | Resolved taskset side when present, otherwise harness side. |
-| `H` | Harness side only. |
-| `T` | Resolved taskset side only. |
-| `REJECT` | Error if both sides are present. |
-
-Use `vf.SystemPromptConfig(path="system_prompt.txt")` for file-backed prompts.
-Override `load_system_prompt(config)` only when prompt construction is computed.
-
-## Tasksets
-
-Tasksets load train and eval data through `load_tasks(split=...)`:
-
-```python
-class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        ...
-```
-
-`vf.Tasks` can be a `datasets.Dataset`, an iterable of serializable records, or
-an iterable of `vf.Task` objects. `Taskset.get_dataset()` calls
-`load_tasks(split="train")`; `Taskset.get_eval_dataset()` calls
-`load_tasks(split="eval")`.
-
-Prefer returning a `datasets.Dataset` directly when source columns already
-match the task contract, such as `question` and `answer`. Hardcode fixed
-upstream split names inside `load_tasks(split=...)`. Only expose
-split-name config when the upstream split choice is genuine user-space
-configuration, not the way v1 decides whether eval exists. Return `[]` for
-`split == "eval"` when the taskset has no explicit eval source; `vf.Env` treats the empty
-split as an absent eval dataset so the base environment can fall back to train
-data with its standard warning.
-
-Use tasksets for:
-
-- dataset loading;
-- task-owned tools;
-- user simulators;
-- task-specific setup/update/cleanup;
-- metrics, rewards, advantages, and stop conditions.
-
-## Harnesses And Programs
-
-Harnesses run tasks. The base harness is endpoint-backed and supports the
-default tool loop.
-
-`HarnessConfig.program` controls executable behavior:
-
-| Form | Meaning |
-| --- | --- |
-| `vf.ProgramConfig()` | Base endpoint-backed tool loop. |
-| `vf.ProgramConfig(base=True)` | Explicit base loop. |
-| `vf.ProgramConfig(fn="pkg:run")` | Importable Python program. |
-| `vf.ProgramConfig(command=["agent", "run"])` | Local or sandboxed command. |
-
-Preferred program signature:
-
-```python
-async def program(task: vf.Task, state: vf.State) -> vf.State:
-    ...
-```
-
-Use custom harnesses for reusable command agents, third-party framework
-adapters, endpoint routing, primary sandbox placement, or execution artifacts.
-Use `vf.load_harness(config=config.harness)` otherwise.
-
-## Tools, Users, And Lifecycle
-
-Toolsets package model-visible schemas plus bindings, objects, artifacts, and
-lifecycle hooks:
-
-```python
-class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
-    def load_toolsets(self, config: SearchTasksetConfig) -> vf.Toolsets:
-        return {"search": vf.Toolset(tools=[search])}
-```
-
-Tasks show all tools by default and can restrict visibility with `toolsets` and
-`tools`.
-
-Users subclass `vf.User` and implement `get_response(...)`. Use users for
-environment replies between model turns. Use tools for schema actions. Use
-setup/update handlers for state changes that should not add messages.
-
-Lifecycle behavior belongs on the owner class:
-
-```python
-class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    @vf.update
-    async def extract_answer(self, task: vf.Task, state: vf.State) -> None:
-        ...
-
-    @vf.reward(weight=1.0)
-    async def exact(self, task: vf.Task, state: vf.State) -> float:
-        ...
-```
-
-## Runtime Composition
-
-Advanced code can create child task states and borrow selected runtime handles:
-
-```python
-child_state = state.for_task(child_task, borrow="model", tools=["search"])
-child_state = await child_harness.run(child_task, child_state)
-```
-
-Borrowed resources remain owned by the source runtime and are stripped before
-state serialization.
-
-## TOML Shape
-
-Eval and training config own run settings. v1 child config owns environment
-behavior:
-
-```toml
-[[eval]]
-env_id = "my-v1-env"
-
-[eval.taskset]
-system_prompt = "Answer exactly."
-
-[eval.harness]
-max_turns = 4
-```
-
-CLI overrides target typed child fields:
+# verifiers.v1
+
+The next version of [verifiers](https://github.com/PrimeIntellect-ai/verifiers) —
+**agentic-native, with a composable taskset × harness × runtime core**. A clean-slate,
+heavily-typed rewrite that carries forward the proven high-level abstractions, with a 
+tighter type contract. `import verifiers.v1 as vf`.
+
+## Highlights
+
+- **Composable taskset × harness** — a taskset (data + scoring) is fully decoupled from the
+  harness (the program driving the rollout); any taskset runs under any harness
+  (`default` / `rlm` / `codex` / your own)
+- **Swappable runtime** — the harness, tools, and user simulators all run behind one
+  `Runtime` contract, in `subprocess` / `docker` / `prime` / `modal` / ...
+- **First-class branching rollouts** — a rollout isn't assumed linear: context compaction and
+  subagents are native. Each branch (a root→leaf path through the trace graph) is its own
+  training sample, so a compacting or multi-agent rollout trains end to end.
+- **Fully typed** — pydantic end-to-end (`Task` / `Trace` / configs); no loose
+  `dict` / `object` / `cast`.
+- **Minimal & pythonic** — the high-level abstractions without the implementation bulk;
+  plain classes + decorators (`@vf.reward` / `@vf.metric` / ...).
+- **Training-ready traces** — exact token ids + logprobs straight from an agentic rollout
+  (renderer client); one training sample per branch, recovered for compaction / subagents.
+- **Hub-native + v0-compatible** — ids install on demand from the Environments Hub, and
+  classic v0 envs run through the same CLIs via a bridge.
+
+## Install
 
 ```bash
-prime eval run my-v1-env --taskset.system-prompt "Answer exactly." --harness.max-turns 4
+uv sync   # core + the shipped packages + examples
 ```
 
-## Packaged Implementations
-
-Reusable tasksets and harnesses live under top-level `packages/`.
+## Quickstart
 
 ```bash
-uv add "verifiers[tasksets]"
-uv add "verifiers[harnesses]"
-uv add "verifiers[packages]"
+uv run init my-task-v1           # scaffold a new environment (--add-tool/--add-user/--add-harness)
+uv run eval gsm8k-v1 -n 5 -r 3   # single-turn math; default harness; subprocess runtime
+uv run validate gsm8k-v1 -n 5    # model-free: run each task's gold check (the `validate` hook)
+uv run eval -h                   # typed help (+ the local example tasksets/harnesses)
 ```
 
-Tasksets include Harbor, OpenEnv, OpenReward, TextArena, and NeMoGym. Harnesses
-include OpenCode, Pi, mini-swe-agent, Terminus, RLM, and NeMoGymHarness.
+Everything is typed config, so the advanced knobs — budgets, retries, and
+wall-clock timeouts — are all framework-enforced and apply to any environment: 
 
-They use the same loader shape as local implementations.
+```bash
+uv run eval gsm8k-v1 -n 5 -r 3 \
+  --max-turns 8 --max-total-tokens 8192 \
+  --retries.rollout.max-retries 3 --retries.rollout.include SandboxError \
+  --timeout.setup 120 --timeout.rollout 600 --timeout.finalize 120 --timeout.scoring 120
+```
 
-TOML can also compose packages directly. In that case `[eval.taskset].id`
-selects the taskset loader package and `[eval.harness].id` optionally selects
-the harness loader package:
+Common knobs have short aliases:
 
-```toml
-[[eval]]
+| alias | long               | meaning                       | default                      |
+| ----- | ------------------ | ----------------------------- | ---------------------------- |
+| `-m`  | `--model`          | model id                      | `deepseek/deepseek-v4-flash` |
+| `-n`  | `--num-tasks`      | how many tasks to evaluate    | all tasks                    |
+| `-s`  | `--shuffle`        | shuffle before the `-n` slice | off                          |
+| `-r`  | `--num-rollouts`   | rollouts per task             | `1`                          |
+| `-c`  | `--max-concurrent` | max rollouts in flight        | `128`                        |
+| `-v`  | `--verbose`        | debug logging                 | off (info)                   |
+| `-o`  | `--output-dir`     | where to write results        | a fresh per-run dir          |
+|       | `--no-rich`        | disable the live dashboard    | dashboard on                 |
 
-[eval.taskset]
-id = "tasksets.harbor"
-tasks_dir = "tasks"
+## Tasksets & harnesses
 
-[eval.harness]
-id = "harnesses.opencode"
-max_turns = 8
+Taskset examples (the `*_v1` packages under `environments/`):
+
+| example | pattern it shows |
+| --- | --- |
+| `reverse-text-v1` | the minimal single-turn taskset |
+| `gsm8k-v1`, `aime24-v1`, `math-env-v1` | single-turn + in-runtime scoring |
+| `code-golf-v1` | group rewards (`@group_reward` over a task's N rollouts) |
+| `alphabet-sort-v1` | a multi-turn, stateful task driven by a `vf.User` simulator |
+| `glossary-v1` | a custom **colocated** tool server |
+| `wikispeedia-v1` | a tool server in its **own per-rollout** runtime |
+| `wiki-search-v1` | a **shared** tool server (built once for the eval) + an LLM judge |
+| `deepwiki-v1` | an **existing remote** tool server, by URL |
+| `wordle-v1` | configuring the vendored `textarena-v1` integration |
+| `terminal-bench-2-v1` | configuring the vendored `harbor-v1` integration |
+
+Harness examples (under `environments/`):
+
+| example | pattern it shows |
+| --- | --- |
+| `compact` | context compaction → branching trajectories |
+
+## Patterns
+
+### Swappable harness
+
+The program that drives the rollout — same taskset, different driver:
+
+```bash
+uv run eval gsm8k-v1 -n 1                     # default: bare agent (MCP tools only)
+uv run eval gsm8k-v1 -n 1 --harness.id rlm    # the rlm harness
+uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
+```
+
+The same drivers on an agentic terminal task — harbor's `hello-world`. The task acts on a
+filesystem, so run it under a containerized runtime: `docker` locally, or a remote `prime` /
+`modal` sandbox (not the default `subprocess`). 
+
+```bash
+uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id bash            # bash-only agent
+uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
+uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
+uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id codex           # the codex CLI agent
+```
+
+### Swappable runtime
+
+Where code runs, behind one `Runtime` contract — the same contract backs the harness
+(`--harness.runtime`), a task's own tool servers (`--taskset.tools.runtime`), and the user
+simulator (`--taskset.user.runtime`) — all structurally MCP servers in a runtime:
+
+```bash
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process (default)
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container (requires local docker)
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sandbox (requires auth)
+uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox (requires auth)
+```
+
+The framework manages each runtime's full lifecycle — provisioning through
+guaranteed cleanup of its resources, even on exit/interrupt.
+
+### Tools
+
+A taskset may expose task-specific tools beyond the tools shipping natively with
+the harness as MCP servers. Its placement (separate runtime or colocated with
+harness) is configurable on `taskset.tools` and reachability is handled resolved
+automatically. Tools only run under a harness with `SUPPORTS_MCP` (the `default`
+harness has it; `rlm` doesn't) — an incompatible pairing is refused at load. The tool examples
+each show one placement:
+
+```bash
+uv run eval glossary-v1 -n 1     # colocated — in the harness's own runtime, localhost (default)
+uv run eval wikispeedia-v1 -n 1 --taskset.min-dist 2 --taskset.max-dist 2  # its own per-rollout runtime
+uv run eval wiki-search-v1 -n 1  # shared — one instance built once for the whole eval
+uv run eval deepwiki-v1 -n 1     # an existing remote server, by URL
+```
+
+### User
+
+A stateful, multi-turn task can drive the *user* side of the conversation itself: a taskset's
+`user(task)` returns a `vf.User` — structurally a tool server, but the framework drives it,
+calling it after each assistant turn for the next user message(s) plus a done flag, then
+re-prompting. The harness never knows — it just sees another user turn — but it must support
+one (`SUPPORTS_USER_SIM`; the `default` harness has it, `rlm` doesn't). Placement is config on
+`taskset.user` — colocated in the harness's runtime by default, or its own via
+`--taskset.user.runtime`:
+
+```bash
+uv run eval alphabet-sort-v1 -n 1   # stateful multi-turn — the user sim injects each next turn
+uv run eval wordle-v1 -n 1          # a TextArena game, driven by the same user-sim machinery
+```
+
+### Branching trajectories
+
+Real agents rarely keep one ever-growing context — and the two patterns they use both break
+a linear trace:
+
+- **Compaction** — when context grows too long, the agent summarizes the history into notes
+  and continues from a fresh prompt; each compaction is a new context window.
+- **Subagents** — the agent spawns a child to work a subtask on its own context, then folds
+  the result back.
+
+v1 handles both natively because the trace is a *graph*, not a list: each fresh context
+window (a compaction) or child run (a subagent) is just another **branch** — a root→leaf
+path, surfaced as `trace.branches` / `trace.num_branches` (a linear rollout is one branch).
+And every branch is an independent training sample, so a compacting or multi-agent rollout
+trains end to end with no agent-side changes.
+
+The `compact` example harness is the deliberate stress test: it rewrites its prompt every
+turn — a fresh `[system, user]` with only its carried-over notes plus the last tool output —
+so each turn becomes its own branch:
+
+```bash
+uv run eval wiki-search-v1 -n 1 --harness.id compact  # fresh prompt each turn → num_branches == turns
+```
+
+### Clients
+
+The model sits *behind* the interception server: a harness just points an OpenAI- or
+Anthropic-style SDK at a localhost endpoint, and the framework intercepts every call. A
+**dialect** layer route-detects the wire format the harness speaks — chat-completions,
+Responses, or Anthropic messages (streaming and reasoning preserved) — so an off-the-shelf
+agent or CLI integrates unchanged whatever SDK it's built on .
+
+Behind that endpoint sit two **clients**, switched with `--client.type`:
+
+```bash
+uv run eval gsm8k-v1 -n 1                            # eval (default): a 1:1 relay, text in / text out
+uv run eval gsm8k-v1 -n 1 --client.type train \      # train: client-side tokenization via the renderer (requires vllm)
+  --client.base-url http://localhost:8000/v1
+```
+
+`eval` is the default; `train` is only needed for the prime-rl training
+integration (it tokenizes client-side so each branch comes back as a ready
+training sample).
+
+### Budgets
+
+The framework enforces every rollout's resource limits itself — between turns and around each
+stage — so they hold for any harness or task. Three kinds:
+
+**Caps.** A limit on model turns (`--max-turns`) and three on tokens — `--max-input-tokens`,
+`--max-output-tokens`, `--max-total-tokens` (prompt, completion, and the sum), checked between
+turns. Hitting a cap cleanly truncates the rollout (`trace.is_truncated`) instead of erroring.
+
+**Timeouts.** Wall-clock caps that bound each rollout stage independently — `--timeout.setup`,
+`--timeout.rollout` (the harness run), `--timeout.finalize`, `--timeout.scoring` (seconds;
+default no limit). A `rollout` timeout scores what the harness produced so far (like a turn
+cap); `setup` / `finalize` / `scoring` timeouts error the rollout.
+
+**Retries.** Two granularities — per-call (model + runtime, default 3, reruns just the failed
+call and keeps the rollout's progress) and whole-rollout (default 1). A retry count of 0 turns
+a layer off.
+
+```bash
+uv run eval gsm8k-v1 -n 1 --max-turns 8                  # cap model turns
+uv run eval gsm8k-v1 -n 1 --max-total-tokens 8192        # cap prompt+completion tokens
+                                                          # (also --max-input-tokens / --max-output-tokens)
+
+uv run eval gsm8k-v1 -n 1 --timeout.rollout 600 --timeout.scoring 120  # per-stage wall-clock caps (s)
+
+uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.include SandboxError  # whole-rollout, by exception type (per-call model/runtime retries are owned by the SDKs)
+```
+
+### Integrations
+
+Some tasksets wrap a whole benchmark family rather than a single task — shipped, installed by
+default. For example, `textarena-v1` (TextArena games) and `harbor-v1` (the agentic-
+benchmark registry). Harbor is the showcase: it pulls tasks straight from the Harbor registry
+via the `harbor` CLI (`uv tool install harbor`), each in its own declared, pullable container
+image — e.g. Terminal-Bench 2:
+
+```bash
+uv run eval harbor-v1 --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm
+```
+
+## Backwards compatibility
+
+The v0 framework is untouched — the classic `verifiers` API and its entrypoints (`vf-eval`,
+...) keep working exactly as before; v1 lives alongside it as `verifiers.v1`. On top of
+that, a v0 `verifiers.load_environment` env runs through the v1 CLIs too, via the legacy
+bridge — its rollouts mapped to v1 `Trace`s. Set `--id` (instead of a `taskset`) on either
+`eval` or `serve`:
+
+```bash
+uv run eval --id reverse-text -n 2     # eval a v0 env
+uv run eval --id reverse-text --args.dataset_split train \
+  --extra-env-kwargs.max-total-completion-tokens 256   # construction + post-load kwargs
 ```

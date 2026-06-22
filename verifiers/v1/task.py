@@ -1,150 +1,97 @@
-from copy import deepcopy
+"""The immutable rollout input.
 
-from .artifact import ArtifactsConfig
-from .model import model_config_data
-from .sandbox import SandboxConfig
-from .toolset import VisibilityConfig
-from .utils.task_freeze_utils import assert_serializable, freeze_value
-from .utils.prompt_utils import normalize_prompt, normalize_system_prompt
-from .types import JsonData, JsonValue
+A `Task` is a frozen pydantic model. Environments subclass it to add typed,
+task-specific fields (the reference answer, ground truths, follow-ups, ...) that
+then flow — fully typed — through the rollout and into scoring. This replaces v1's
+`dict`-subclass `Task` with its hand-rolled `freeze()` and serializability probing.
+"""
+
+from typing import TypeVar
+
+from pydantic import ConfigDict
+
+from verifiers.v1.types import Messages, StrictBaseModel
 
 
-class Task(dict):
-    _vf_state_contract = "v1"
+class TaskResources(StrictBaseModel):
+    """Runtime resources a task requests (all optional), in Modal's units. Applied to the
+    runtime config where the field exists; a field the runtime doesn't support is warned
+    about and ignored. Precedence: cli/toml > task > the runtime default (`None` here =
+    use the runtime/provider default)."""
 
-    def __init__(self, task: JsonData | None = None):
-        super().__init__(deepcopy(dict(task or {})))
-        self._frozen = False
+    model_config = ConfigDict(frozen=True)
 
-    def freeze(self) -> "Task":
-        if "runtime" in self:
-            raise TypeError(
-                "task.runtime is not supported; use top-level task fields or state.runtime."
-            )
-        if "prompt" in self:
-            super().__setitem__(
-                "prompt", normalize_prompt(self["prompt"], field_name="task.prompt")
-            )
-        if "system_prompt" in self:
-            super().__setitem__(
-                "system_prompt",
-                normalize_system_prompt(
-                    self["system_prompt"], field_name="task.system_prompt"
-                ),
-            )
-        if "tools" in self:
-            super().__setitem__(
-                "tools",
-                {
-                    name: config.model_dump(mode="json", exclude_none=True)
-                    for name, config in self.tools_config().items()
-                },
-            )
-        if "toolsets" in self:
-            super().__setitem__(
-                "toolsets",
-                self.toolsets_config().model_dump(mode="json", exclude_none=True),
-            )
-        sandbox_config = self.sandbox_config()
-        if sandbox_config is not None:
-            super().__setitem__(
-                "sandbox",
-                sandbox_config.data(fill_defaults=False),
-            )
-        if "program" in self and not isinstance(self["program"], dict):
-            raise TypeError("task.program must be a mapping.")
-        if "artifacts" in self:
-            super().__setitem__(
-                "artifacts",
-                {
-                    name: artifact.data()
-                    for name, artifact in self.artifacts_config()
-                    .artifacts("task.artifacts")
-                    .items()
-                },
-            )
-        if "model" in self:
-            super().__setitem__("model", model_config_data(self["model"]))
-        if "max_turns" in self and (
-            not isinstance(self["max_turns"], int)
-            or isinstance(self["max_turns"], bool)
-        ):
-            raise TypeError("task.max_turns must be an integer.")
-        for key, value in list(self.items()):
-            super().__setitem__(key, freeze_value(value))
-        assert_serializable(self)
-        self._frozen = True
-        return self
+    cpu: float | None = None
+    """CPU cores."""
+    memory: float | None = None
+    """Memory in GB."""
+    gpu: str | None = None
+    """GPU spec, e.g. "A100" or "A100:2" (type[:count])."""
+    disk: float | None = None
+    """Disk in GB (enforced by prime; advisory on docker/modal)."""
 
-    @property
-    def frozen(self) -> bool:
-        return self._frozen
 
-    def toolsets_config(self) -> VisibilityConfig:
-        raw_toolsets = self.get("toolsets") or {}
-        if not isinstance(raw_toolsets, dict):
-            raise TypeError("task.toolsets must be a mapping.")
-        return VisibilityConfig.model_validate(raw_toolsets)
+class TaskTimeout(StrictBaseModel):
+    """Per-task wall-clock timeout overrides (seconds, all optional), one per rollout stage. Each
+    merges with the eval's `timeout` (`TimeoutConfig`): cli/toml > this > default (no limit).
+    Frozen, like `TaskResources`."""
 
-    def tools_config(self) -> dict[str, VisibilityConfig]:
-        raw_tools = self.get("tools") or {}
-        if not isinstance(raw_tools, dict):
-            raise TypeError("task.tools must be a toolset-keyed mapping.")
-        if "show" in raw_tools or "hide" in raw_tools:
-            raise ValueError("task.tools must be keyed by toolset name.")
-        configs: dict[str, VisibilityConfig] = {}
-        for name, raw_filter in raw_tools.items():
-            if not isinstance(name, str):
-                raise TypeError("task.tools keys must be toolset names.")
-            configs[name] = VisibilityConfig.model_validate(raw_filter)
-        return configs
+    model_config = ConfigDict(frozen=True)
 
-    def sandbox_config(self) -> SandboxConfig | None:
-        raw_sandbox = self.get("sandbox")
-        if raw_sandbox is None:
-            return None
-        if not isinstance(raw_sandbox, dict):
-            raise TypeError("task.sandbox must be a mapping.")
-        return SandboxConfig.model_validate(raw_sandbox)
+    setup: float | None = None
+    """The taskset's `setup` hook."""
+    harness: float | None = None
+    """The harness run."""
+    finalize: float | None = None
+    """The taskset's `finalize` hook."""
+    scoring: float | None = None
+    """Verify + rewards/metrics."""
 
-    def artifacts_config(self) -> ArtifactsConfig:
-        raw_artifacts = self.get("artifacts") or {}
-        if not isinstance(raw_artifacts, dict):
-            raise TypeError("task.artifacts must be a mapping.")
-        return ArtifactsConfig.model_validate(raw_artifacts)
 
-    def __setitem__(self, key: str, value: object) -> None:
-        self._raise_if_frozen()
-        super().__setitem__(key, value)
+class Task(StrictBaseModel):
+    """A single problem to solve. Subclass to add typed task-specific fields."""
 
-    def __delitem__(self, key: str) -> None:
-        self._raise_if_frozen()
-        super().__delitem__(key)
+    model_config = ConfigDict(frozen=True)
 
-    def update(self, *args: object, **kwargs: object) -> None:
-        self._raise_if_frozen()
-        super().update(*args, **kwargs)
+    idx: int
+    """Stable integer index of this example within its taskset."""
+    name: str | None = None
+    """Optional human-readable task name/label (for display/filtering)."""
+    description: str | None = None
+    """Optional human-readable task description."""
+    prompt: str | Messages | None
+    """The user message shown to the model (the task's question/framing). Usually a `str`; a
+    `Messages` list seeds a full initial conversation (e.g. a user message carrying images) and
+    is only accepted by harnesses that set `SUPPORTS_MESSAGE_PROMPT`. Required — set it
+    explicitly to `None` to mean the task carries no prompt: the taskset's user simulator
+    (`Taskset.user`) then opens the conversation, its first `respond` supplying the initial user
+    turn before the model is ever called."""
+    system_prompt: str | None = None
+    """Optional system prompt. Harnesses that set `APPENDS_SYSTEM_PROMPT` emit it as a real
+    system message (or their own mechanism); others prepend it to `prompt` (with a
+    warning). See `Harness.resolve_prompt`."""
+    image: str | None = None
+    """Container image this task needs (e.g. its harbor environment). When set, the
+    runtime must be a container (docker/prime): the Environment injects it into the
+    runtime config and refuses the subprocess runtime, which has no container."""
+    workdir: str | None = None
+    """Working directory the harness and scoring run in — the Environment injects it into
+    the runtime config's `workdir` (where the runtime supports one). For a containerized
+    task whose image puts the working tree at a non-default path (e.g. a SWE row's
+    `/workspace/<repo>`)."""
+    timeout: TaskTimeout = TaskTimeout()
+    """Optional per-task timeout overrides, one per rollout stage (merge with the eval's `timeout`)."""
+    resources: TaskResources = TaskResources()
+    """Optional runtime resources this task requests (applied where supported)."""
 
-    def setdefault(self, key: str, default: object = None) -> object:
-        self._raise_if_frozen()
-        return super().setdefault(key, default)
 
-    def pop(self, key: str, default: object = None) -> object:
-        self._raise_if_frozen()
-        return super().pop(key, default)
+class WireTask(Task):
+    """A `Task` that accepts (and preserves) taskset-specific extra fields. Lets a `Trace`
+    be typed on the wire — `Trace[WireTask]` — without importing the taskset, since the real
+    `Task` subclass's extra fields land in `model_extra` instead of being rejected. A caller
+    that imports the taskset upgrades to the real type via `task_type(taskset_id)`."""
 
-    def popitem(self) -> tuple[str, JsonValue]:
-        raise TypeError("Task.popitem() is not supported.")
+    model_config = ConfigDict(extra="allow")
 
-    def clear(self) -> None:
-        self._raise_if_frozen()
-        super().clear()
 
-    def __ior__(self, value: object, /) -> "Task":
-        self._raise_if_frozen()
-        self.update(value)
-        return self
-
-    def _raise_if_frozen(self) -> None:
-        if self._frozen:
-            raise TypeError("Task is immutable after freeze.")
+TaskT = TypeVar("TaskT", bound=Task)

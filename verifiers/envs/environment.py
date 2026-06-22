@@ -1161,22 +1161,28 @@ class Environment(ABC):
         client: Client | ClientConfig,
         **kwargs,
     ) -> GenerateOutputs:
-        coro = self.generate(
-            inputs,
-            client=client,
-            **kwargs,
-        )
         # check if we're in existing event loop (e.g. Jupyter)
         try:
             loop = asyncio.get_running_loop()
-            import nest_asyncio
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            try:
+                import nest_asyncio
+            except ModuleNotFoundError as e:
+                raise ModuleNotFoundError(
+                    "Environment.generate_sync() inside an active event loop requires "
+                    "`verifiers[notebook]`."
+                ) from e
 
             nest_asyncio.apply()
-            return loop.run_until_complete(coro)
-        except RuntimeError:
-            pass
+            return loop.run_until_complete(
+                self.generate(inputs, client=client, **kwargs)
+            )
 
         # script case: create new loop and executor
+        coro = self.generate(inputs, client=client, **kwargs)
         executor = ThreadPoolExecutor(max_workers=self.max_workers)
         loop = asyncio.new_event_loop()
         try:

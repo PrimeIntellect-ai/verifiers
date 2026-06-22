@@ -15,11 +15,17 @@ from typing import List, Optional, Tuple, Union
 from urllib.parse import unquote, urlparse
 
 import aiohttp
-import certifi
-import fitz
 import httpx
 import requests
-from PIL import Image
+
+try:
+    import certifi
+    import fitz
+    from PIL import Image
+except ModuleNotFoundError as e:
+    raise ModuleNotFoundError(
+        "QUEST PDF evaluation requires `verifiers[quest]`."
+    ) from e
 
 from ..utils.url_tools import normalize_url_for_browser
 
@@ -228,7 +234,10 @@ class PDFParser:
                     return await response.read()
 
         data = await download(url)
-        if not data.lstrip().startswith(PDF_MAGIC) and "arxiv.org" in url:
+        if (
+            not data.lstrip().startswith(PDF_MAGIC)
+            and (urlparse(url).hostname or "").lower() == "arxiv.org"
+        ):
             backup = url.replace("://arxiv.org", "://export.arxiv.org")
             try:
                 data = await download(backup)

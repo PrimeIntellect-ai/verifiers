@@ -137,64 +137,6 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
     return env
 ```
 
-For new environments with reusable tasksets, toolsets, custom programs, or
-custom harnesses, use the v1 Taskset/Harness path:
-```python
-# my_env.py
-import verifiers as vf
-
-
-class MyTasksetConfig(vf.TasksetConfig):
-    system_prompt: vf.SystemPrompt = "Reverse text exactly."
-
-
-class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        rows = [
-            {
-                "prompt": [{"role": "user", "content": "Reverse abc."}],
-                "answer": "cba",
-                "split": "train",
-                "max_turns": 1,
-            }
-        ]
-        return [row for row in rows if row["split"] == split]
-
-    @vf.reward(weight=1.0)
-    async def contains_answer(self, task, state) -> float:
-        return float(task["answer"] in str(state.get("completion") or ""))
-
-
-def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    return MyTaskset(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
-```
-The child loader annotation defines the taskset config shape; root
-`load_environment` stays typed as `vf.EnvConfig`. See
-**[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.
-Reusable taskset and harness packages live in `tasksets` and `harnesses`.
-Install them with `uv add "verifiers[packages]"`, or with the narrower
-`verifiers[tasksets]`, `verifiers[harnesses]`, and backend-specific extras. For
-example, Harbor task directories can run through the bundled OpenCode CLI
-harness with:
-
-```python
-from harnesses import OpenCode, OpenCodeConfig
-from tasksets import HarborTaskset, HarborTasksetConfig
-
-env = vf.Env(
-    taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)),
-    harness=OpenCode(config=OpenCodeConfig()),
-)
-```
-
 The same environment package is the unit used by evals and `prime-rl`. The
 trainer owns model, endpoint, sampling, and rollout count; v1-specific options
 stay on the taskset or harness config that owns them:
@@ -252,8 +194,6 @@ prime eval run primeintellect/math-python
 ## Documentation
 
 **[Environments](docs/environments.md)** — Create datasets, rubrics, and custom multi-turn interaction protocols.
-
-**[BYO Harness](docs/byo-harness.md)** — Build v1 Taskset/Harness environments with custom tools, sandboxes, users, and custom programs.
 
 **[Evaluation](docs/evaluation.md)** - Evaluate models using your environments.
 

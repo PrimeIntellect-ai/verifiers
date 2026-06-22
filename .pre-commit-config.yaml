@@ -15,11 +15,6 @@ repos:
         entry: uv run ruff format
         language: system
         types_or: [python, pyi]
-      - id: semgrep-v1-policy
-        name: Semgrep v1 policy
-        entry: uv run --no-dev --group policy semgrep --metrics=off --disable-version-check --config .semgrep/verifiers.yml --error --quiet
-        language: system
-        pass_filenames: false
       - id: sync-agents-md
         name: Check generated AGENTS.md / CLAUDE.md
         entry: uv run python scripts/sync.py --check
@@ -28,7 +23,7 @@ repos:
         pass_filenames: false
       - id: ty
         name: ty (ci parity)
-        entry: uv run --python 3.13 ty check verifiers packages/tasksets/tasksets packages/harnesses/harnesses
+        entry: uv run --python 3.13 ty check verifiers
         language: system
         pass_filenames: false
         stages: [pre-push]

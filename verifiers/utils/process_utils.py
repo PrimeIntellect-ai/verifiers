@@ -15,14 +15,8 @@ VERIFIERS_PROC_PREFIX = "Verifiers"
 
 
 def set_proc_title(name: str) -> None:
-    """Set the process title for visibility in tools like ``ps`` and ``htop``.
-
-    Args:
-        name: A short, descriptive label (e.g. ``EnvServer``, ``EnvWorker0``).
-              The process title is set to ``{VERIFIERS_PROC_PREFIX}::{name}``.
-    """
-    title = f"{VERIFIERS_PROC_PREFIX}::{name}"
-    setproctitle.setproctitle(title)
+    """Set the OS-visible process title."""
+    setproctitle.setproctitle(f"{VERIFIERS_PROC_PREFIX}::{name}")
 
 
 def monitor_death_pipe(death_pipe: Connection) -> None:
@@ -87,3 +81,16 @@ def terminate_processes(
         t.start()
     for t in threads:
         t.join()
+
+
+def use_threading_tqdm_lock() -> None:
+    """Pin tqdm to a threading lock so it never lazily creates an `mp.RLock` a killed worker would
+    leak (a `resource_tracker` semaphore warning). No-op if tqdm isn't installed."""
+    try:
+        import threading
+
+        import tqdm
+
+        tqdm.tqdm.set_lock(threading.RLock())
+    except Exception:
+        pass

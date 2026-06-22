@@ -1,0 +1,11 @@
+# wiki-search-v1 with the compact harness — the transcript is rewritten (branched) each turn,
+# so the model always sees a compacted context instead of the full history.
+#
+#   uv run eval @ configs/wiki_search_compact.toml
+num_tasks = 1
+
+[taskset]
+id = "wiki-search-v1"
+
+[harness]
+id = "compact"
