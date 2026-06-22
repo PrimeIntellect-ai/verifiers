@@ -36,8 +36,10 @@ class InfoRequest(BaseRequest):
 
 
 class InfoResponse(BaseResponse):
-    num_tasks: int = 0
-    """Number of tasks in the taskset — the index range the caller samples from."""
+    num_tasks: int | None = None
+    """Number of tasks in the taskset — the index range the caller samples from. `None` when the
+    taskset is served lazily (a generator `load_tasks`, possibly unbounded): the server has no
+    count, so the caller drives `task_idx` itself (e.g. from `--num-tasks`)."""
     requires_group_scoring: bool = False
     """Whether the taskset defines `@group_reward`s (caller must use `run_group`)."""
 

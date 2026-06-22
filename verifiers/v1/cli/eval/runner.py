@@ -150,11 +150,21 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         client = EnvClient(address=address)
         await client.wait_for_server_startup(timeout=600)
         info = await client.info()
-        idxs = list(range(info.num_tasks))
-        if config.shuffle:
-            random.Random(_SHUFFLE_SEED).shuffle(idxs)
-        if config.num_tasks is not None:
-            idxs = idxs[: config.num_tasks]
+        if info.num_tasks is not None:
+            idxs = list(range(info.num_tasks))
+            if config.shuffle:
+                random.Random(_SHUFFLE_SEED).shuffle(idxs)
+            if config.num_tasks is not None:
+                idxs = idxs[: config.num_tasks]
+        elif config.num_tasks is not None:
+            # The taskset is served lazily (no reported count), so the caller bounds the run:
+            # take the first `--num-tasks` indices (--shuffle has nothing to sample from here).
+            idxs = list(range(config.num_tasks))
+        else:
+            raise SystemExit(
+                "this taskset is served lazily (no task count); pass -n/--num-tasks to bound "
+                "the eval"
+            )
         out = output_path(config)
         if config.resume is not None:
             keep, owed = resume.plan(

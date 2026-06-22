@@ -306,7 +306,7 @@ class LegacyEnvServer(EnvServer):
             self.dataset = self.env.get_dataset()
         except ValueError:
             self.dataset = self.env.get_eval_dataset()
-        self.tasks = self.dataset  # `len(self.tasks)` drives the `info` response
+        self.num_tasks = len(self.dataset)  # v0 datasets are finite; drives the `info` response
         self.requires_group_scoring = self.env.requires_group_rollouts
         self._clients: dict[tuple[str, str], Any] = {}
 
