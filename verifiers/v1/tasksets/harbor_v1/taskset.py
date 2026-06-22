@@ -208,9 +208,6 @@ def make_tar(directory: Path) -> bytes:
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
     def load_tasks(self) -> Iterator[HarborTask]:
-        # The dataset is downloaded + listed up front (we need the dir set to enumerate idxs),
-        # but each task.toml + instruction.md is parsed lazily — so an eval on a subset only
-        # reads the task dirs it actually runs.
         root = dataset_dir(self.config.dataset)
         task_dirs = [
             toml_path.parent

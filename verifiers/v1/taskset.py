@@ -64,8 +64,7 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
 
     UNBOUNDED: ClassVar[bool] = False
     """Whether `load_tasks` may not terminate (an unbounded generator). When True a run must cap
-    it with `num_tasks` and can't `--shuffle` it, and the env-server won't serve it — all refused
-    up front instead of hanging."""
+    it with `num_tasks` and can't `--shuffle` it."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config

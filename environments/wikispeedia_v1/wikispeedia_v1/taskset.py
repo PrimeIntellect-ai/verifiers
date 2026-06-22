@@ -8,6 +8,7 @@ rollout, launches a toolset holding the navigation state (current article + path
 """
 
 import random
+from collections.abc import Iterator
 
 import verifiers.v1 as vf
 
@@ -24,23 +25,23 @@ SYSTEM = (
 )
 
 
-def sample_pairs(wiki: WikiGraph, n: int, lo: int, hi: int, seed: int):
-    """Sample `n` unique `(source, target, dist)` tuples within the distance band."""
+def sample_pairs(
+    wiki: WikiGraph, lo: int, hi: int, seed: int
+) -> Iterator[tuple[str, str, int]]:
+    """Yield unique `(source, target, dist)` tuples within the distance band, forever — the
+    `(source, target)` space is effectively unbounded, so `seed` is the knob that reshuffles
+    which pairs a run draws (in place of `--shuffle`)."""
     rng = random.Random(seed)
     articles = sorted(wiki.articles)
     seen: set[tuple[str, str]] = set()
-    pairs: list[tuple[str, str, int]] = []
-    for _ in range(n * 200):
-        if len(pairs) >= n:
-            break
+    while True:
         s, t = rng.choice(articles), rng.choice(articles)
         if s == t or (s, t) in seen:
             continue
         dist = wiki.shortest_path_length(s, t)
         if dist is not None and lo <= dist <= hi:
-            pairs.append((s, t, dist))
             seen.add((s, t))
-    return pairs
+            yield s, t, dist
 
 
 class WikiTask(vf.Task):
@@ -51,26 +52,25 @@ class WikiTask(vf.Task):
 
 
 class WikispeediaConfig(vf.TasksetConfig):
-    num_tasks: int = 20
     min_dist: int = 3
     max_dist: int = 8
     seed: int = 0
+    """Seeds the pair sampler — change it to draw a different sample of pairs (the unbounded
+    taskset's reproducible stand-in for `--shuffle`); how many are drawn is the eval's `-n`."""
     max_turns: int = 30
     tools: WikiToolsetConfig = WikiToolsetConfig()
 
 
 class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
-    def load_tasks(self) -> list[WikiTask]:
+    UNBOUNDED = True
+
+    def load_tasks(self) -> Iterator[WikiTask]:
         wiki = WikiGraph.load(include_text=not self.config.tools.links_only)
         pairs = sample_pairs(
-            wiki,
-            self.config.num_tasks,
-            self.config.min_dist,
-            self.config.max_dist,
-            self.config.seed,
+            wiki, self.config.min_dist, self.config.max_dist, self.config.seed
         )
-        return [
-            WikiTask(
+        for i, (source, target, dist) in enumerate(pairs):
+            yield WikiTask(
                 idx=i,
                 name=f"{source} -> {target}",
                 source=source,
@@ -82,8 +82,6 @@ class WikispeediaTaskset(vf.Taskset[WikiTask, WikispeediaConfig]):
                     f"{format_article(wiki, source, self.config.tools.links_only)}"
                 ),
             )
-            for i, (source, target, dist) in enumerate(pairs)
-        ]
 
     def tools(self, task: WikiTask) -> list[vf.Toolset]:
         return [WikiToolset(self.config.tools)]
