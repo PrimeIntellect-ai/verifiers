@@ -8,6 +8,7 @@ reuses the chat client's wire translation (message/tool shapes are the same), an
 needs a running vLLM engine.
 """
 
+import asyncio
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -15,7 +16,7 @@ from typing import Any
 from openai import AsyncOpenAI, OpenAIError
 from renderers import RenderedTokens
 from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RendererConfig
+from renderers import RendererConfig, RendererPool
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
@@ -190,16 +191,23 @@ class TrainClient(Client):
         self.pool_size = pool_size
         self.config = config
         self.renderer_model_name = renderer_model_name
-        self._pool = None
+        self._pool_task: asyncio.Task[RendererPool] | None = None
 
-    def _renderer_pool(self, model: str):
-        if self._pool is None:
+    async def _renderer_pool(self, model: str) -> RendererPool:
+        if self._pool_task is None:
             from renderers import create_renderer_pool
 
-            self._pool = create_renderer_pool(
-                self.renderer_model_name or model, self.config, size=self.pool_size
+            # Store one off-loop task before yielding so concurrent first calls initialize once.
+            self._pool_task = asyncio.create_task(
+                asyncio.to_thread(
+                    create_renderer_pool,
+                    self.renderer_model_name or model,
+                    self.config,
+                    size=self.pool_size,
+                )
             )
-        return self._pool
+        # Shield waiter cancellation; the task caches either the pool or its startup failure.
+        return await asyncio.shield(self._pool_task)
 
     async def get_response(
         self,
@@ -230,7 +238,7 @@ class TrainClient(Client):
             tools = parse_tools(body.get("tools"))
         else:
             prompt, tools = dialect.parse_request(body)
-        renderer = self._renderer_pool(model)
+        renderer = await self._renderer_pool(model)
         from renderers.client import _maybe_offload, generate
 
         wire_tools = [tool_to_wire(t) for t in tools] if tools else None
