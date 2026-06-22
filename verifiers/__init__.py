@@ -19,6 +19,7 @@ from .decorators import (  # noqa # isort: skip
     metric,
     reward,
     setup,
+    step_reward,
     stop,
     teardown,
     update,
@@ -75,6 +76,7 @@ __all__ = [
     "JudgeRubric",
     "RubricGroup",
     "MathRubric",
+    "StepRewardRubric",
     "TextArenaEnv",
     "ReasoningGymEnv",
     "GymEnv",
@@ -139,6 +141,7 @@ __all__ = [
     "cleanup",
     "metric",
     "reward",
+    "step_reward",
     "advantage",
     "setup",
     "stop",
@@ -185,6 +188,7 @@ _LAZY_IMPORTS = {
     "ToolEnv": "verifiers.envs.tool_env:ToolEnv",
     "EnvGroup": "verifiers.envs.env_group:EnvGroup",
     "JudgeRubric": "verifiers.rubrics.judge_rubric:JudgeRubric",
+    "StepRewardRubric": "verifiers.rubrics.step_reward_rubric:StepRewardRubric",
     "load_environment": "verifiers.utils.env_utils:load_environment",
     "load_harness": "verifiers.utils.env_utils:load_harness",
     "load_taskset": "verifiers.utils.env_utils:load_taskset",
@@ -318,6 +322,7 @@ if TYPE_CHECKING:
     from .envs.tool_env import ToolEnv  # noqa: F401
     from .rubrics.judge_rubric import JudgeRubric  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
+    from .rubrics.step_reward_rubric import StepRewardRubric  # noqa: F401
     from .utils.env_utils import (  # noqa: F401
         load_environment,
         load_harness,

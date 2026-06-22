@@ -251,6 +251,40 @@ def advantage(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
 
 
 @overload
+def step_reward(
+    func: F,
+    weight: float = 1.0,
+    priority: int = 0,
+) -> F: ...
+
+
+@overload
+def step_reward(
+    func: None = None,
+    weight: float = 1.0,
+    priority: int = 0,
+) -> Callable[[F], F]: ...
+
+
+def step_reward(
+    func: F | None = None,
+    weight: float = 1.0,
+    priority: int = 0,
+) -> F | Callable[[F], F]:
+    """Decorator to mark a per-step reward function called after each turn."""
+
+    def decorator(f: F) -> F:
+        setattr(f, "step_reward", True)
+        setattr(f, "step_reward_priority", priority)
+        setattr(f, "step_reward_weight", weight)
+        return f
+
+    if func is None:
+        return decorator
+    return decorator(func)
+
+
+@overload
 def teardown(func: F, priority: int = 0) -> F: ...
 
 
