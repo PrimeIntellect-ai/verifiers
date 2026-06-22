@@ -50,8 +50,9 @@ class EnvClient:
         self.socket.setsockopt(zmq.SNDHWM, 0)
         self.socket.setsockopt(zmq.RCVHWM, 0)
         self.socket.connect(address)
-        self._pending: dict[str, asyncio.Future] = {}
+        self._pending: dict[str, asyncio.Future[bytes]] = {}
         self._receiver: asyncio.Task | None = None
+        self._decode_lock = asyncio.Lock()
 
     def _ensure_receiver(self) -> None:
         if self._receiver is None:
@@ -65,7 +66,7 @@ class EnvClient:
                 break
             future = self._pending.pop(request_id_bytes.decode(), None)
             if future is not None and not future.done():
-                future.set_result(msgpack.unpackb(data, raw=False))
+                future.set_result(data)
 
     async def _request(
         self,
@@ -77,18 +78,38 @@ class EnvClient:
         `timeout` is only used for health polling — rollouts run untimed."""
         self._ensure_receiver()
         request_id = uuid.uuid4().hex
-        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         payload = msgpack.packb(request.model_dump(mode="json"), use_bin_type=True)
         await self.socket.send_multipart(
             [request_id.encode(), request.method.encode(), payload]
         )
         try:
-            raw = await asyncio.wait_for(future, timeout)
+            data = await asyncio.wait_for(future, timeout)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             self._pending.pop(request_id, None)
             raise
-        response = response_type.model_validate(raw)
+        if response_type in (HealthResponse, InfoResponse):
+            response = response_type.model_validate(msgpack.unpackb(data, raw=False))
+        else:
+            # Keep large trace replies compact on the loop and expand only one at a time.
+            await self._decode_lock.acquire()
+            decoding = asyncio.create_task(
+                asyncio.to_thread(
+                    lambda: response_type.model_validate(
+                        msgpack.unpackb(data, raw=False)
+                    )
+                )
+            )
+            # The worker owns the slot so caller cancellation cannot overlap decodes.
+            decoding.add_done_callback(lambda _: self._decode_lock.release())
+            try:
+                response = await asyncio.shield(decoding)
+            except asyncio.CancelledError:
+                decoding.add_done_callback(
+                    lambda task: None if task.cancelled() else task.exception()
+                )
+                raise
         if not response.success:
             raise RuntimeError(response.error or "env server request failed")
         return response
