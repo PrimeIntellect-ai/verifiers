@@ -5,6 +5,14 @@ many rollouts on one server keyed by their secret; `pool` shares those servers (
 each, behind a remote runtime) across all of an eval's or env-server's rollouts.
 """
 
+from verifiers.v1.interception.config import (
+    BaseInterceptionConfig,
+    InterceptionConfig,
+    ModalInterceptionConfig,
+    PrimeInterceptionConfig,
+    UrlInterceptionConfig,
+    expose_interception,
+)
 from verifiers.v1.interception.pool import InterceptionPool, PooledServer
 from verifiers.v1.interception.server import (
     InterceptionServer,
@@ -18,4 +26,10 @@ __all__ = [
     "InterceptionServer",
     "RolloutLimits",
     "RolloutSession",
+    "BaseInterceptionConfig",
+    "InterceptionConfig",
+    "PrimeInterceptionConfig",
+    "ModalInterceptionConfig",
+    "UrlInterceptionConfig",
+    "expose_interception",
 ]

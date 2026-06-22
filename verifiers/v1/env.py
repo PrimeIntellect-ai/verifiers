@@ -23,7 +23,12 @@ from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.types import EnvId
-from verifiers.v1.interception import InterceptionPool, RolloutLimits
+from verifiers.v1.interception import (
+    InterceptionConfig,
+    InterceptionPool,
+    PrimeInterceptionConfig,
+    RolloutLimits,
+)
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
@@ -113,10 +118,11 @@ class EnvConfig(BaseConfig):
     max_total_tokens: int | None = None
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
     trace's `total_tokens`; framework-enforced between turns."""
-    multiplex: int = Field(32, ge=1)
-    """Rollouts that share one interception server (and, behind a remote runtime, one
-    tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
-    key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
+    interception: InterceptionConfig = PrimeInterceptionConfig()
+    """How the host interception server is reached from the harness's runtime, behind a remote
+    runtime: `prime` (prime_tunnel, the default), `modal` (Modal forwarding, framework-in-container
+    only), or `url` (bring your own reverse proxy). Carries the shared `multiplex` — rollouts per
+    interception server (and tunnel). Select with `--interception.type prime|modal|url`."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
@@ -382,10 +388,10 @@ class Environment:
 
     def interception_pool(self) -> InterceptionPool:
         """The shared interception pool for this env's rollouts — one server (+ tunnel
-        behind a remote runtime) per `multiplex` rollouts, grown on demand. Built here,
-        where the harness runtime and `multiplex` live; the caller (eval runner / env
-        server) enters it for the run and tears it down. Pass it to `Episode.run`."""
-        return InterceptionPool(self.harness.config.runtime, self.config.multiplex)
+        behind a remote runtime) per `multiplex` rollouts, reached per `interception.type`,
+        grown on demand. Built here, where the harness runtime and `interception` config live;
+        the caller (eval runner / env server) enters it for the run and tears it down."""
+        return InterceptionPool(self.harness.config.runtime, self.config.interception)
 
     @contextlib.asynccontextmanager
     async def shared_tools(self, tasks: list[Task]):

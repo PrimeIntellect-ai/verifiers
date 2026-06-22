@@ -16,8 +16,14 @@ import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
+from verifiers.v1.interception.config import (
+    BaseInterceptionConfig,
+    UrlInterceptionConfig,
+    bind_host,
+    expose_interception,
+)
 from verifiers.v1.interception.server import InterceptionServer, RolloutSession
-from verifiers.v1.runtimes import HOST, RuntimeConfig, reachable_url, runtime_is_local
+from verifiers.v1.runtimes import RuntimeConfig, runtime_is_local
 
 logger = logging.getLogger(__name__)
 
@@ -30,17 +36,22 @@ class PooledServer:
 
 
 class InterceptionPool:
-    """Shared interception servers. `multiplex` rollouts share one
-    server (one tunnel behind a remote runtime); `acquire` hands a rollout a slot on one,
-    bringing up a new server when all are at capacity."""
+    """Shared interception servers, reached per the `InterceptionConfig`'s type. `multiplex`
+    rollouts share one server (one tunnel behind a remote runtime); `acquire` hands a rollout a
+    slot on one, bringing up a new server when all are at capacity. The `url` type is a single
+    bring-your-own endpoint, so every rollout shares its one server (multiplex doesn't apply)."""
 
-    def __init__(self, runtime_config: RuntimeConfig, multiplex: int) -> None:
+    def __init__(
+        self, runtime_config: RuntimeConfig, config: BaseInterceptionConfig
+    ) -> None:
         # The harness runtime's topology decides reachability: a remote one needs a host tunnel
         # to the interception port, a local one is reached at localhost. Read off the runtime
         # class (no provisioning) — the pool never runs a sandbox.
         self.runtime_type = runtime_config.type
         self.is_local = runtime_is_local(runtime_config)
-        self.multiplex = max(1, multiplex)
+        self.config = config
+        self.multiplex = max(1, config.multiplex)
+        self._single = isinstance(config, UrlInterceptionConfig)
         self._servers: list[PooledServer] = []
         self._lock = asyncio.Lock()
         self._stack = AsyncExitStack()
@@ -55,24 +66,29 @@ class InterceptionPool:
 
     async def _entry(self) -> PooledServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new one
-        (its own host endpoint). The caller holds `_lock`."""
+        (its own host endpoint). A `url` (bring-your-own) endpoint is a single server every rollout
+        shares. The caller holds `_lock`."""
         for entry in self._servers:
-            if entry.load < self.multiplex:
+            if self._single or entry.load < self.multiplex:
                 return entry
-        server = InterceptionServer()
+        # `url` interception binds the fixed port its reverse proxy forwards to; others take an
+        # ephemeral port and are bridged to the host by the configured tunnel backend.
+        bind_port = self.config.port if self._single else 0
+        server = InterceptionServer(bind_port=bind_port, bind_host=bind_host(self.config))
         await self._stack.enter_async_context(server)
         # The interception server is a HOST service the harness reaches: localhost for a local
         # harness runtime, a tunnel for a remote one. Owned by the pool's stack, torn down with it.
         url = await self._stack.enter_async_context(
-            reachable_url(HOST, server.port, consumer_is_local=self.is_local)
+            expose_interception(self.config, server.port, is_local=self.is_local)
         )
         entry = PooledServer(server, url)
         self._servers.append(entry)
         logger.info(
-            "interception pool: %d server(s), multiplex=%d (%s)",
+            "interception pool: %d server(s), multiplex=%d (%s, %s)",
             len(self._servers),
             self.multiplex,
             self.runtime_type,
+            self.config.type,
         )
         return entry
 

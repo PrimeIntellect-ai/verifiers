@@ -159,9 +159,11 @@ class InterceptionServer:
     matches its bearer token. A single server can multiplex many rollouts (the basis for
     `interception.pool`); used 1:1 it's just a server with one session."""
 
-    def __init__(self) -> None:
+    def __init__(self, bind_port: int = 0, bind_host: str = _HOST) -> None:
         self.sessions: dict[str, RolloutSession] = {}
         self.port = 0
+        self._bind_port = bind_port  # 0 = an ephemeral port; fixed for a BYO reverse-proxy target
+        self._bind_host = bind_host  # loopback by default; 0.0.0.0 only when modal forwarding needs it
         self.runner: web.AppRunner | None = None
 
     def register(self, session: RolloutSession) -> str:
@@ -205,10 +207,10 @@ class InterceptionServer:
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        site = web.TCPSite(self.runner, _HOST, 0)
+        site = web.TCPSite(self.runner, self._bind_host, self._bind_port)
         await site.start()
-        self.port = site._server.sockets[0].getsockname()[1]  # actual ephemeral port
-        logger.info("interception up: url=http://%s:%d", _HOST, self.port)
+        self.port = site._server.sockets[0].getsockname()[1]  # the bound port (ephemeral if 0)
+        logger.info("interception up: url=http://%s:%d", self._bind_host, self.port)
         return self
 
     async def __aexit__(self, *exc) -> None:
