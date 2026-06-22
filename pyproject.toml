@@ -89,7 +89,7 @@ examples = [
 rg = [
     "reasoning-gym",
 ]
-textarena = [
+ta = [
     "textarena==0.7.4",
     "nltk>=3.9.2",
 ]

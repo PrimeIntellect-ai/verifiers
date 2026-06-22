@@ -31,13 +31,13 @@ Third-party library wrappers that require additional dependencies:
 
 | Environment | Extra | Install Command |
 |-------------|-------|-----------------|
-| `TextArenaEnv` | `textarena` | `uv add 'verifiers[textarena]'` |
+| `TextArenaEnv` | `ta` | `uv add 'verifiers[ta]'` |
 | `ReasoningGymEnv` | `rg` | `uv add 'verifiers[rg]'` |
 | `BrowserEnv` | `browser` | `uv add 'verifiers[browser]'` |
 
 When developing in the `verifiers` repo:
 ```bash
-uv sync --extra textarena       # for TextArenaEnv
+uv sync --extra ta       # for TextArenaEnv
 uv sync --extra rg       # for ReasoningGymEnv
 uv sync --extra browser  # for BrowserEnv
 ```

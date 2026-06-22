@@ -4,7 +4,7 @@ Integrations with third-party environment libraries, which may require additiona
 
 | Environment | Extra | Install Command |
 |-------------|-------|-----------------|
-| `TextArenaEnv` | `textarena` | `uv add 'verifiers[textarena]'` |
+| `TextArenaEnv` | `ta` | `uv add 'verifiers[ta]'` |
 | `ReasoningGymEnv` | `rg` | `uv add 'verifiers[rg]'` |
 | `BrowserEnv` | `browser` | `uv add 'verifiers[browser]'` |
 | `OpenEnvEnv` | none | `uv add verifiers` |

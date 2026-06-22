@@ -27,7 +27,7 @@ try:
     import textarena as ta
 except ImportError as e:
     raise ImportError(
-        "textarena_v1 requires nltk and textarena. Install with: uv add 'verifiers[textarena]'"
+        "textarena_v1 requires nltk and textarena. Install with: uv add 'verifiers[ta]'"
     ) from e
 
 SYSTEM_PROMPT = (

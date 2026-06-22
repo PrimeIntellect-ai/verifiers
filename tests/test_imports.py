@@ -24,7 +24,7 @@ class TestImports:
             "install as `verifiers[math]`",
             "install as `verifiers[",  # catches any [extra] pattern
             "verifiers[browser]",  # browser extra
-            "verifiers[textarena]",  # textarena extra
+            "verifiers[ta]",  # textarena extra
             "verifiers[rg]",  # reasoning-gym extra
         ]
         return any(pattern in error_msg for pattern in optional_dependency_patterns)
