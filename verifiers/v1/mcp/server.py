@@ -326,7 +326,14 @@ class ServerBase(Generic[ConfigT, StateT]):
         from mcp.server.transport_security import TransportSecuritySettings
 
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
-        mcp = FastMCP(self.server_name, transport_security=security)
+        # Short vf-native rollouts do tiny tool calls; stateless JSON avoids FastMCP's
+        # session/SSE overhead while keeping the same MCP initialize/list/call flow.
+        mcp = FastMCP(
+            self.server_name,
+            json_response=True,
+            stateless_http=True,
+            transport_security=security,
+        )
         self._register(mcp)
         app = mcp.streamable_http_app()
         mcp_lifespan = app.router.lifespan_context
