@@ -62,6 +62,11 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     Environment refuses the subprocess runtime — for tasksets whose work only makes sense
     inside a per-task image (e.g. a SWE repo sandbox)."""
 
+    UNBOUNDED: ClassVar[bool] = False
+    """Whether `load_tasks` may not terminate (an unbounded generator). When True a run must cap
+    it with `num_tasks` and can't `--shuffle` it, and the env-server won't serve it — all refused
+    up front instead of hanging."""
+
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
@@ -69,7 +74,8 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         """Produce this taskset's tasks. Return a list for a fixed dataset, or a generator
         (yield tasks) for a lazily-built or unbounded one — a run draws only the tasks it
         needs from it (see `select_tasks`), so an "infinite" taskset never materializes more
-        than the `--num-tasks` it's evaluated on. Runs once at load, not per rollout."""
+        than the `--num-tasks` it's evaluated on (declare `UNBOUNDED` if it never terminates).
+        Runs once at load, not per rollout."""
         raise NotImplementedError
 
     def tools(self, task: TaskT) -> list[Toolset]:
@@ -179,11 +185,24 @@ def select_tasks(
     """Materialize the tasks a run will use, pulling only as many from `load_tasks` as it
     needs — so a lazy (generator) taskset never builds tasks the run won't touch.
 
-    Without `shuffle`, only the first `num_tasks` are drawn, consumed lazily — so an
-    unbounded `load_tasks` is fine. `shuffle` has to see the whole set to sample from it,
-    so it materializes everything first and is therefore incompatible with an unbounded
-    `load_tasks`. The result is always a concrete list (the rest of the pipeline indexes
-    and re-iterates it)."""
+    Without `shuffle`, only the first `num_tasks` are drawn, consumed lazily. `shuffle` has to
+    see the whole set to sample from it, so it materializes everything first. A taskset that
+    declares itself `UNBOUNDED` therefore must be drawn with a `num_tasks` cap and can't be
+    shuffled — both are refused here rather than hanging on a non-terminating `load_tasks`. The
+    result is always a concrete list (the rest of the pipeline indexes and re-iterates it)."""
+    if taskset.UNBOUNDED:
+        if shuffle:
+            raise ValueError(
+                f"taskset {type(taskset).__name__} is UNBOUNDED, so --shuffle — which must "
+                "materialize every task to sample from — would never terminate. Drop --shuffle: "
+                "the first --num-tasks tasks of an unbounded taskset are already an arbitrary "
+                "sample."
+            )
+        if num_tasks is None:
+            raise ValueError(
+                f"taskset {type(taskset).__name__} is UNBOUNDED, so it must be drawn with a "
+                "cap; pass --num-tasks to bound how many tasks are taken."
+            )
     tasks = taskset.load_tasks()
     if shuffle:
         tasks = list(tasks)

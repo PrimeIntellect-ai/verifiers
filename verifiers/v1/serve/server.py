@@ -56,7 +56,14 @@ class EnvServer:
         self.env = Environment(config)
         # Load tasks once, materializing them: the server is index-addressed (`run_rollout`
         # by `task_idx`), so it fully consumes a lazy `load_tasks` to fix the index range for
-        # its lifetime — an unbounded taskset can't be served this way.
+        # its lifetime — which a non-terminating `load_tasks` would hang on, so refuse an
+        # UNBOUNDED taskset up front instead.
+        if self.env.taskset.UNBOUNDED:
+            raise ValueError(
+                f"taskset {self.taskset_id} is UNBOUNDED; the env-server is index-addressed "
+                "and can't serve a taskset whose load_tasks doesn't terminate. Cap it to a "
+                "finite count, or run it in-process (`eval` without --server) with --num-tasks."
+            )
         self.tasks = list(self.env.taskset.load_tasks())
         self.requires_group_scoring = bool(
             discover_decorated(self.env.taskset, "group_reward")

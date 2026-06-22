@@ -80,10 +80,12 @@ these off the generic bases to type `self.config`, `trace.task`, and `trace.stat
 The taskset module must export its `Taskset` subclass via `__all__` — the loader walks the
 exported names and finds the single `Taskset` subclass.
 
-**Capability flag.** A taskset has one class var, `NEEDS_CONTAINER` (default `False`); set it `True`
-to declare the taskset only runs in a container runtime (`docker` / `prime`), so the framework
-refuses the subprocess runtime up front — the taskset-wide counterpart to a task's per-row `image`
-(see [Runtimes](#runtimes)).
+**Capability flags.** A taskset has two class vars (both default `False`). `NEEDS_CONTAINER`
+declares it only runs in a container runtime (`docker` / `prime`), so the framework refuses the
+subprocess runtime up front — the taskset-wide counterpart to a task's per-row `image` (see
+[Runtimes](#runtimes)). `UNBOUNDED` declares `load_tasks` may never terminate (see [Loading
+tasks](#loading-tasks)) — a run must then cap it with `-n/--num-tasks` and can't `--shuffle` it,
+and the env-server won't serve it.
 
 ## The task
 
@@ -160,20 +162,25 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
 
 **Lazy / unbounded tasksets.** A fixed dataset returns a `list` (above). A taskset that *builds*
 its tasks — procedurally, from RNG seeds, or any unbounded source — can instead **yield** them
-from a generator, and an eval draws only as many as it needs:
+from a generator, and an eval draws only as many as it needs. A generator that never terminates
+declares `UNBOUNDED = True`:
 
 ```python
 class SeededTaskset(vf.Taskset[SeededTask, SeededConfig]):
+    UNBOUNDED = True
+
     def load_tasks(self) -> Iterator[SeededTask]:
-        for i in itertools.count():                  # unbounded — no `num_tasks` cap needed
+        for i in itertools.count():                  # never terminates
             yield SeededTask(idx=i, prompt=make_prompt(seed=i))
 ```
 
 `eval -n 50` then builds exactly 50 tasks, not the whole stream (the runner consumes
-`load_tasks` lazily via `select_tasks`). Two caveats: `--shuffle` has to materialize the whole
-set to sample from it (so it can't be combined with an unbounded generator), and the
-index-addressed env-server (`--num-workers`) fully consumes `load_tasks` to fix its index range
-(so it needs a finite taskset). `verifiers.v1.tasksets.textarena_v1` is a worked example.
+`load_tasks` lazily via `select_tasks`). An `UNBOUNDED` taskset must be drawn with `-n/--num-tasks`
+and can't be `--shuffle`d — both would have to read the whole stream, so they're refused up front
+rather than hanging (and `--shuffle` is moot anyway: the first `-n` seeds are already an arbitrary
+sample). It also can't be served by the index-addressed env-server (`--server` / `--num-workers`),
+which materializes the whole taskset to fix its index range. `verifiers.v1.tasksets.textarena_v1`
+is a worked example — finite, because it caps generation at `num_tasks`.
 
 ## Scoring — rewards, metrics, group rewards
 
