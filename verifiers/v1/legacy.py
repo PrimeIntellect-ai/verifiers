@@ -185,13 +185,35 @@ def _timing(raw: Any) -> Timing:
     )
 
 
+# v0 records truncation in a dedicated ``is_truncated`` flag and names stop conditions after the
+# env's stop functions; v1 has no such flag and derives ``Trace.is_truncated`` from the stop name
+# (plus the final turn's ``finish_reason``). Translate the v0 stop names that mean truncation into
+# the v1 vocabulary so the derived flag survives the bridge.
+_V0_TO_V1_TRUNCATION_STOP = {
+    "max_turns_reached": "max_turns",
+    "prompt_too_long": "context_length",
+    "timeout_reached": "harness_timeout",
+    "max_total_completion_tokens_reached": "max_output_tokens",
+}
+
+
+def _v1_stop_condition(out: dict) -> str | None:
+    """The v1 stop condition for a v0 rollout. When v0 flagged the rollout truncated, return a
+    name in v1's truncation vocabulary so ``Trace.is_truncated`` derives ``True`` — mapping the
+    known v0 stop names and falling back to ``max_output_tokens`` for the rest. An untruncated
+    rollout keeps its v0 stop condition unchanged."""
+    stop = out.get("stop_condition")
+    if not out.get("is_truncated"):
+        return stop
+    return _V0_TO_V1_TRUNCATION_STOP.get(stop, "max_output_tokens")
+
+
 def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     """Map a v0 ``RolloutOutput`` into a v1 ``Trace``, preserving the meta a native v1
     trace carries: per-turn prompt messages, the response message (content / reasoning /
     tool calls), ``finish_reason`` and ``usage``, the token ids/logprobs, and the task's
-    system prompt / prompt / answer. The v0 ``is_truncated`` flag is carried over explicitly
-    (as ``truncated``) since v0 stop names don't map onto the v1 vocabulary that
-    ``Trace.is_truncated`` otherwise derives truncation from."""
+    system prompt / prompt / answer. A truncated v0 rollout is mapped to a v1 truncation
+    stop condition (see ``_v1_stop_condition``) so ``Trace.is_truncated`` derives ``True``."""
     model = str(out.get("model") or "")
 
     error = None
@@ -211,8 +233,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         rewards={"reward": float(out.get("reward") or 0.0)},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         is_completed=bool(out.get("is_completed", True)),
-        stop_condition=out.get("stop_condition"),
-        truncated=bool(out.get("is_truncated", False)),
+        stop_condition=_v1_stop_condition(out),
         errors=[error] if error else [],
         timing=_timing(out.get("timing")),
     )
