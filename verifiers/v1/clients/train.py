@@ -14,14 +14,8 @@ from typing import Any
 
 import httpx
 from openai import AsyncOpenAI, OpenAIError
-from openai.types import CompletionUsage
-from openai.types.completion_usage import (
-    CompletionTokensDetails,
-    PromptTokensDetails,
-)
-from renderers import RenderedTokens, RendererPool
 from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RendererConfig
+from renderers import RenderedTokens, RendererConfig, RendererPool
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools

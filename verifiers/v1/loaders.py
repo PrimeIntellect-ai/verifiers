@@ -1,4 +1,4 @@
-"""Loaders: resolve a plugin id to its taskset or harness.
+"""Loaders: resolve a plugin id to its taskset, harness, or algorithm.
 
 A plugin (taskset or harness) is a module that exports its `Taskset` / `Harness` subclass via
 `__all__` — vf walks the exported names and finds the single subclass of the base. An id (an
@@ -22,10 +22,11 @@ from typing import Callable, get_args, get_origin
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.algorithm import Algorithm, AlgorithmConfig
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.utils.install import ensure_installed
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.utils.install import ensure_installed
 
 
 def narrow_plugin_field(
@@ -117,6 +118,10 @@ def import_harness(harness_id: str) -> ModuleType:
     return _import_plugin(harness_id, "harness", "verifiers.v1.harnesses")
 
 
+def import_algorithm(algorithm_id: str) -> ModuleType:
+    return _import_plugin(algorithm_id, "algorithm", "algorithms")
+
+
 def taskset_class(taskset_id: str) -> type[Taskset]:
     """The taskset's `Taskset` subclass, exported via its module's `__all__`."""
     return _plugin_class(import_taskset(taskset_id), Taskset, "taskset")
@@ -142,6 +147,11 @@ def default_harness_id(taskset_id: str) -> str:
     return taskset_id
 
 
+def algorithm_class(algorithm_id: str) -> type[Algorithm]:
+    """The algorithm's `Algorithm` subclass, exported via its module's `__all__`."""
+    return _plugin_class(import_algorithm(algorithm_id), Algorithm, "algorithm")
+
+
 def load_taskset(config: TasksetConfig) -> Taskset:
     """Build the taskset for a config by dispatching on its `id` (the taskset id)."""
     return taskset_class(config.id)(config)
@@ -150,6 +160,13 @@ def load_taskset(config: TasksetConfig) -> Taskset:
 def load_harness(config: HarnessConfig) -> Harness:
     """Build the harness for a config by dispatching on its `id` (the harness id)."""
     return harness_class(config.id)(config)
+
+
+def load_algorithm(config: AlgorithmConfig) -> Algorithm:
+    """Build the algorithm for a config by dispatching on its `id`."""
+    config_type = algorithm_config_type(config.id)
+    typed_config = config_type.model_validate(config.model_dump())
+    return algorithm_class(config.id)(typed_config)
 
 
 def taskset_config_type(taskset_id: str) -> type[TasksetConfig]:
@@ -166,6 +183,14 @@ def harness_config_type(harness_id: str) -> type[HarnessConfig]:
         if isinstance(arg, type) and issubclass(arg, HarnessConfig):
             return arg
     return HarnessConfig
+
+
+def algorithm_config_type(algorithm_id: str) -> type[AlgorithmConfig]:
+    """The algorithm's config subclass, from its `Algorithm[ConfigT]` generic."""
+    for arg in _generic_args(algorithm_class(algorithm_id), Algorithm):
+        if isinstance(arg, type) and issubclass(arg, AlgorithmConfig):
+            return arg
+    return AlgorithmConfig
 
 
 def task_type(taskset_id: str) -> type[Task]:

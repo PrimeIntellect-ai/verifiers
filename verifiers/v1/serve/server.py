@@ -18,10 +18,7 @@ the structure leaves room to add a pool later. Health is just another request ty
 
 import asyncio
 import contextlib
-import importlib
-import inspect
 import logging
-from collections.abc import Callable
 
 import msgpack
 import zmq
@@ -33,16 +30,17 @@ from verifiers.utils.serve_utils import msgpack_encoder
 from verifiers.v1.clients import ModelRuntime, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
-from verifiers.v1.decorators import discover_decorated, invoke
+from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import EnvConfig, Environment
+from verifiers.v1.loaders import load_algorithm
 from verifiers.v1.serve.types import (
     AdvantageBranch,
     BaseResponse,
     HealthResponse,
     InfoResponse,
     ModelRuntimeConfig,
-    RunAdvantagesRequest,
-    RunAdvantagesResponse,
+    RunAlgorithmsRequest,
+    RunAlgorithmsResponse,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
@@ -165,77 +163,35 @@ class EnvServer:
         # Avoid a dump-and-validate copy for every trusted trace in the group.
         return RunGroupResponse.model_construct(traces=traces)
 
-    def _load_advantage(
-        self, ref: str
-    ) -> Callable[[list[Trace[WireTask]]], list[Trace[WireTask]]]:
-        module_name, sep, attr = ref.rpartition(".")
-        if not sep:
-            raise ValueError(
-                f"advantage ref must be a module path plus function name: {ref!r}"
-            )
-        fn = getattr(importlib.import_module(module_name), attr)
-        if not callable(fn):
-            raise TypeError(f"advantage ref {ref!r} did not resolve to a callable")
-        if not getattr(fn, "advantage", False):
-            raise TypeError(
-                f"advantage ref {ref!r} is not decorated with @vf.advantage"
-            )
-        return fn
-
-    async def _run_advantage_ref(
-        self,
-        fn: Callable[[list[Trace[WireTask]]], list[Trace[WireTask]]],
-        traces: list[Trace[WireTask]],
-        models: dict[str, ModelRuntime],
-    ) -> list[Trace[WireTask]]:
-        scope = getattr(fn, "advantage_scope", "group")
-        if scope == "rollout":
-            out: list[Trace[WireTask]] = []
-            for trace in traces:
-                result = invoke(fn, {"traces": [trace], "models": models})
-                if inspect.isawaitable(result):
-                    result = await result
-                if len(result) != 1:
-                    raise ValueError(
-                        "rollout-scope advantage functions must return one trace"
-                    )
-                out.extend(result)
-            return out
-        if scope != "group":
-            raise ValueError(f"unknown advantage scope {scope!r}")
-        result = invoke(fn, {"traces": traces, "models": models})
-        if inspect.isawaitable(result):
-            result = await result
-        if len(result) != len(traces):
-            raise ValueError(
-                f"group-scope advantage returned {len(result)} traces for {len(traces)} inputs"
-            )
-        return result
-
-    async def _run_advantages(self, req: RunAdvantagesRequest) -> RunAdvantagesResponse:
+    async def _run_algorithms(self, req: RunAlgorithmsRequest) -> RunAlgorithmsResponse:
         traces = [Trace[WireTask].model_validate(t.model_dump()) for t in req.traces]
         models = {key: self._runtime(config) for key, config in req.models.items()}
         collected = [TraceAdvantages(branches=[]) for _ in traces]
-        for ref in req.refs:
-            fn = self._load_advantage(ref)
-            loss = getattr(fn, "advantage_loss", "rl")
+        for algorithm_config in req.algorithms:
+            algorithm = load_algorithm(algorithm_config)
+            await algorithm.setup(models)
+            loss = algorithm.loss()
             for trace in traces:
                 for branch in trace.branches:
                     branch.advantages = []
                     branch.mask = []
-            traces = await self._run_advantage_ref(fn, traces, models)
+            traces = await algorithm.advantage(traces)
+            if len(traces) != len(collected):
+                raise ValueError(
+                    f"algorithm {algorithm_config.id!r} returned {len(traces)} traces for {len(collected)} inputs"
+                )
             for trace_index, trace in enumerate(traces):
                 for branch in trace.branches:
                     if not branch.advantages and not branch.mask:
                         continue
                     if len(branch.advantages) != len(branch.mask):
                         raise ValueError(
-                            f"{ref} wrote mismatched advantages/mask lengths on trace {trace_index}, "
+                            f"{algorithm_config.id} wrote mismatched advantages/mask lengths on trace {trace_index}, "
                             f"branch {branch.index}: {len(branch.advantages)} != {len(branch.mask)}"
                         )
                     if len(branch.advantages) != len(branch.token_ids):
                         raise ValueError(
-                            f"{ref} wrote {len(branch.advantages)} advantages for trace {trace_index}, "
+                            f"{algorithm_config.id} wrote {len(branch.advantages)} advantages for trace {trace_index}, "
                             f"branch {branch.index} with {len(branch.token_ids)} tokens"
                         )
                     collected[trace_index].branches.append(
@@ -246,7 +202,7 @@ class EnvServer:
                             mask=list(branch.mask),
                         )
                     )
-        return RunAdvantagesResponse(advantages=collected)
+        return RunAlgorithmsResponse(advantages=collected)
 
     async def _handle(
         self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes
@@ -267,9 +223,9 @@ class EnvServer:
                 )
             elif route == "run_group":
                 response = await self._run_group(RunGroupRequest.model_validate(raw))
-            elif route == "run_advantages":
-                response = await self._run_advantages(
-                    RunAdvantagesRequest.model_validate(raw)
+            elif route == "run_algorithms":
+                response = await self._run_algorithms(
+                    RunAlgorithmsRequest.model_validate(raw)
                 )
             else:
                 response = BaseResponse(

@@ -75,9 +75,9 @@ class Branch(StrictBaseModel):
     index: int
     nodes: list[MessageNode]
     advantages: list[float] = Field(default_factory=list)
-    """Per-token training scores aligned to `token_ids`, written by advantage functions."""
+    """Per-token training scores aligned to `token_ids`, written by algorithms."""
     mask: list[bool] = Field(default_factory=list)
-    """Per-token participation mask aligned to `token_ids`, written by advantage functions."""
+    """Per-token participation mask aligned to `token_ids`, written by algorithms."""
 
     @property
     def num_turns(self) -> int:

@@ -26,7 +26,7 @@ runtime is recorded per rollout as a `@metric` first.
 """
 
 import inspect
-from typing import Any, Callable, Literal, TypeVar, overload
+from typing import Any, Callable, TypeVar, overload
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -123,26 +123,4 @@ def group_reward(
     of trace metadata. Each score is weighted and summed into that trace's reward,
     alongside the per-rollout rewards."""
     decorator = mark("group_reward", group_reward_priority=priority, _vf_weight=weight)
-    return decorator if func is None else decorator(func)
-
-
-@overload
-def advantage(
-    func: F,
-    loss: str = "rl",
-    scope: Literal["rollout", "group"] = "group",
-) -> F: ...
-@overload
-def advantage(
-    func: None = None,
-    loss: str = "rl",
-    scope: Literal["rollout", "group"] = "group",
-) -> Callable[[F], F]: ...
-def advantage(
-    func: F | None = None,
-    loss: str = "rl",
-    scope: Literal["rollout", "group"] = "group",
-) -> F | Callable[[F], F]:
-    """Mark a trace transform as an advantage function."""
-    decorator = mark("advantage", advantage_loss=loss, advantage_scope=scope)
     return decorator if func is None else decorator(func)

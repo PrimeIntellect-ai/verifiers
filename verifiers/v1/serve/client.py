@@ -19,6 +19,7 @@ import msgpack
 import zmq
 import zmq.asyncio
 
+from verifiers.v1.algorithm import AlgorithmConfig
 from verifiers.v1.serve.types import (
     BaseRequest,
     BaseResponse,
@@ -27,8 +28,8 @@ from verifiers.v1.serve.types import (
     InfoRequest,
     InfoResponse,
     ModelRuntimeConfig,
-    RunAdvantagesRequest,
-    RunAdvantagesResponse,
+    RunAlgorithmsRequest,
+    RunAlgorithmsResponse,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
@@ -143,16 +144,16 @@ class EnvClient:
         )
         return response.traces
 
-    async def run_advantages(
+    async def run_algorithms(
         self,
-        refs: list[str],
+        algorithms: list[AlgorithmConfig],
         traces: list[Trace[WireTask]],
         models: dict[str, ModelRuntimeConfig],
     ) -> list[TraceAdvantages]:
-        """Run env-owned advantage functions over traces inside the env server."""
+        """Run env-owned algorithms over traces inside the env server."""
         response = await self._request(
-            RunAdvantagesRequest(refs=refs, traces=traces, models=models),
-            RunAdvantagesResponse,
+            RunAlgorithmsRequest(algorithms=algorithms, traces=traces, models=models),
+            RunAlgorithmsResponse,
         )
         return response.advantages or []
 

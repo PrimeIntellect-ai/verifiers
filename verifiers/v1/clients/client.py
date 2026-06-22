@@ -84,7 +84,7 @@ class ModelRuntime:
 
     This is not a config and it is not serialized onto traces. Env servers build
     and cache these from request configs, then pass them to rollouts and
-    advantage functions. Renderer-backed models expose the actual RendererPool;
+    algorithms. Renderer-backed models expose the actual RendererPool;
     there is no wrapper client for renderer methods.
     """
 

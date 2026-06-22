@@ -4,6 +4,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, Field, field_serializer
 
+from verifiers.v1.algorithm import AlgorithmConfig
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.task import WireTask
 from verifiers.v1.trace import Trace
@@ -92,9 +93,9 @@ class TraceAdvantages(BaseModel):
     branches: list[AdvantageBranch]
 
 
-class RunAdvantagesRequest(BaseRequest):
-    method: ClassVar[str] = "run_advantages"
-    refs: list[str]
+class RunAlgorithmsRequest(BaseRequest):
+    method: ClassVar[str] = "run_algorithms"
+    algorithms: list[AlgorithmConfig]
     traces: list[Trace[WireTask]]
     models: dict[str, ModelRuntimeConfig] = Field(default_factory=dict)
 
@@ -103,5 +104,5 @@ class RunAdvantagesRequest(BaseRequest):
         return [t.model_dump() for t in traces]
 
 
-class RunAdvantagesResponse(BaseResponse):
+class RunAlgorithmsResponse(BaseResponse):
     advantages: list[TraceAdvantages] | None = None
