@@ -56,10 +56,14 @@ version = "0.1.0"
 source = { editable = "environments/aime24_v1" }
 dependencies = [
     { name = "datasets" },
+    { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "datasets" }]
+requires-dist = [
+    { name = "datasets" },
+    { name = "verifiers" },
+]
 
 [[package]]
 name = "aiofiles"
@@ -823,6 +827,12 @@ wheels = [
 name = "code-golf-v1"
 version = "0.1.0"
 source = { editable = "environments/code_golf_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "color-codeword-v1"
@@ -861,6 +871,12 @@ wheels = [
 name = "compact"
 version = "0.1.0"
 source = { editable = "environments/compact" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "compressed-tensors"
@@ -1817,11 +1833,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/1d/17/afa56379f94ad0fe8
 wheels = [
     { url = "https://files.pythonhosted.org/packages/69/b2/119f6e6dcbd96f9069ce9a2665e0146588dc9f88f29549711853645e736a/h2-4.3.0-py3-none-any.whl", hash = "sha256:c438f029a25f7945c69e0ccf0fb951dc3f73a5f6412981daee861431b70e2bdd", size = 61779, upload-time = "2025-08-23T18:12:17.779Z" },
 ]
-
-[[package]]
-name = "harnesses"
-version = "0.2.0"
-source = { editable = "packages/harnesses" }
 
 [[package]]
 name = "hf-xet"
@@ -5622,11 +5633,11 @@ name = "swebench-verified-v1"
 version = "0.1.0"
 source = { editable = "environments/swebench_verified_v1" }
 dependencies = [
-    { name = "tasksets" },
+    { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "tasksets" }]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "swelego-v1"
@@ -5671,24 +5682,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/ec/fe/802052aecb21e3797
 wheels = [
     { url = "https://files.pythonhosted.org/packages/40/44/4a5f08c96eb108af5cb50b41f76142f0afa346dfa99d5296fe7202a11854/tabulate-0.9.0-py3-none-any.whl", hash = "sha256:024ca478df22e9340661486f85298cff5f6dcdba14f3813e8830015b9ed1948f", size = 35252, upload-time = "2022-10-06T17:21:44.262Z" },
 ]
-
-[[package]]
-name = "tasksets"
-version = "0.2.0"
-source = { editable = "packages/tasksets" }
-
-[package.optional-dependencies]
-textarena = [
-    { name = "nltk" },
-    { name = "textarena" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "nltk", marker = "extra == 'textarena'", specifier = ">=3.9.2" },
-    { name = "textarena", marker = "extra == 'textarena'", specifier = "==0.7.4" },
-]
-provides-extras = ["textarena"]
 
 [[package]]
 name = "tau2"
@@ -5754,11 +5747,11 @@ name = "terminal-bench-2-v1"
 version = "0.1.0"
 source = { editable = "environments/terminal_bench_2_v1" }
 dependencies = [
-    { name = "tasksets" },
+    { name = "verifiers" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "tasksets" }]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "textarena"
@@ -6348,12 +6341,6 @@ examples = [
     { name = "wikispeedia-v1" },
     { name = "wordle-v1" },
 ]
-harnesses = [
-    { name = "harnesses" },
-]
-tasksets = [
-    { name = "tasksets" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -6448,8 +6435,6 @@ examples = [
     { name = "wikispeedia-v1", editable = "environments/wikispeedia_v1" },
     { name = "wordle-v1", editable = "environments/wordle_v1" },
 ]
-harnesses = [{ name = "harnesses", editable = "packages/harnesses" }]
-tasksets = [{ name = "tasksets", editable = "packages/tasksets" }]
 
 [[package]]
 name = "virtualenv"
@@ -6764,11 +6749,11 @@ name = "wordle-v1"
 version = "0.1.0"
 source = { editable = "environments/wordle_v1" }
 dependencies = [
-    { name = "tasksets", extra = ["textarena"] },
+    { name = "verifiers", extra = ["ta"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "tasksets", extras = ["textarena"] }]
+requires-dist = [{ name = "verifiers", extras = ["ta"] }]
 
 [[package]]
 name = "wrapt"

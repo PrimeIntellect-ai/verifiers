@@ -7,7 +7,7 @@ the `harbor` CLI (`uv tool install harbor`) and a container runtime (docker/prim
 from typing import Literal
 
 import verifiers.v1 as vf
-from tasksets.harbor_v1 import HarborConfig, HarborTask, HarborTaskset
+from verifiers.v1.tasksets.harbor_v1 import HarborConfig, HarborTask, HarborTaskset
 
 
 class TerminalBench2Config(HarborConfig):

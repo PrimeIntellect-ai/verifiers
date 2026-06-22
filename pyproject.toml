@@ -73,11 +73,9 @@ dev = [
     "nltk",
     "textarena",
 ]
-# v1 plugins vendored under packages/ and environments/, resolved by id via
-# [tool.uv.sources]. Installed by default (tool.uv.default-groups) so the v1 CLIs
-# (eval --taskset.id <id>, serve) run straight from this repo.
-tasksets = ["tasksets"]
-harnesses = ["harnesses"]
+# v1 example environments vendored under environments/, resolved by id via [tool.uv.sources].
+# Installed by default (tool.uv.default-groups) so the v1 CLIs (eval <id>, serve) run straight
+# from this repo. The built-in tasksets/harnesses ship inside verifiers (verifiers/v1/...).
 examples = [
     "compact",
     "gsm8k-v1", "wikispeedia-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
@@ -128,7 +126,7 @@ rl = [
 preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
-default-groups = ["dev", "tasksets", "harnesses", "examples"]
+default-groups = ["dev", "examples"]
 
 [[tool.uv.index]]
 name = "pypi"
@@ -136,8 +134,6 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
-tasksets = { path = "packages/tasksets", editable = true }
-harnesses = { path = "packages/harnesses", editable = true }
 compact = { path = "environments/compact", editable = true }
 glossary-v1 = { path = "environments/glossary_v1", editable = true }
 deepwiki-v1 = { path = "environments/deepwiki_v1", editable = true }

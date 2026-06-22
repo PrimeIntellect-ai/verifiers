@@ -3,7 +3,7 @@ name = "terminal-bench-2-v1"
 version = "0.1.0"
 description = "Terminal-Bench 2 — the harbor taskset pinned to terminal-bench/terminal-bench-2."
 requires-python = ">=3.10"
-dependencies = ["tasksets"]
+dependencies = ["verifiers"]
 
 [build-system]
 requires = ["hatchling"]
