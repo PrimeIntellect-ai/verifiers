@@ -229,13 +229,19 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
 
     def parse_stream(self, raw: bytes) -> Response:
         """Assemble `chat.completion.chunk` deltas into one completion, then parse it."""
-        chunks = iter_sse(raw)
         message: dict = {"role": "assistant", "content": None}
+        # Join streamed fields once; repeated concatenation recopies the growing response.
+        message_parts = {key: [] for key in REASONING_FIELDS[:2] + ("content",)}
         tool_calls: dict[int, dict] = {}
+        tool_arguments: dict[int, list[str]] = {}
         reasoning_details: list[dict] = []
+        reasoning_detail_parts: dict[int, list[str]] = {}
         finish_reason = None
         usage = None
-        for chunk in chunks:
+        head = None
+        for chunk in iter_sse(raw):
+            if head is None:
+                head = chunk
             usage = chunk.get("usage") or usage
             for choice in chunk.get("choices") or []:
                 if choice.get("index", 0) != 0:
@@ -244,32 +250,43 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
                 delta = choice.get("delta") or {}
                 for key in ("content", "reasoning_content", "reasoning"):
                     if delta.get(key) is not None:
-                        message[key] = (message.get(key) or "") + delta[key]
+                        message_parts[key].append(delta[key])
                 for detail in delta.get("reasoning_details") or []:
                     previous = reasoning_details[-1] if reasoning_details else {}
                     if detail.get("type") == previous.get("type") == "reasoning.text":
-                        previous["text"] = (previous.get("text") or "") + (
-                            detail.get("text") or ""
-                        )
+                        reasoning_detail_parts.setdefault(
+                            len(reasoning_details) - 1, [previous.get("text") or ""]
+                        ).append(detail.get("text") or "")
                         for field in ("signature", "format"):
                             previous[field] = previous.get(field) or detail.get(field)
                     else:
                         reasoning_details.append(detail)
                 for tc in delta.get("tool_calls") or []:
+                    index = tc.get("index", 0)
                     slot = tool_calls.setdefault(
-                        tc.get("index", 0),
+                        index,
                         {"type": "function", "function": {"name": "", "arguments": ""}},
                     )
                     slot["id"] = tc.get("id") or slot.get("id", "")
                     fn = tc.get("function") or {}
                     if fn.get("name"):
                         slot["function"]["name"] = fn["name"]
-                    slot["function"]["arguments"] += fn.get("arguments") or ""
+                    tool_arguments.setdefault(index, []).append(
+                        fn.get("arguments") or ""
+                    )
+        for key, parts in message_parts.items():
+            if parts:
+                message[key] = "".join(parts)
+        for index, parts in reasoning_detail_parts.items():
+            reasoning_details[index]["text"] = "".join(parts)
+        for index, parts in tool_arguments.items():
+            tool_calls[index]["function"]["arguments"] = "".join(parts)
         if tool_calls:
             message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
         if reasoning_details:
             message["reasoning_details"] = reasoning_details
-        head = chunks[0] if chunks else {}
+        if head is None:
+            head = {}
         return response_from_wire(
             ChatCompletion.model_validate(
                 {
