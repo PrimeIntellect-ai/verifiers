@@ -2,6 +2,6 @@
 tool. Its `harness.py` (class + config) and the `program.py` script staged into the runtime.
 Resolved by id via `load_harness`."""
 
-from harnesses.bash.harness import BashHarness, BashHarnessConfig
+from verifiers.v1.harnesses.bash.harness import BashHarness, BashHarnessConfig
 
 __all__ = ["BashHarness", "BashHarnessConfig"]

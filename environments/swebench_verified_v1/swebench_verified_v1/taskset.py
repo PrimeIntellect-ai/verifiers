@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 import verifiers.v1 as vf
-from tasksets.harbor_v1 import HarborConfig, HarborTask, HarborTaskset
+from verifiers.v1.tasksets.harbor_v1 import HarborConfig, HarborTask, HarborTaskset
 
 # Prime's Artifact Registry mirror of the SWE-bench instance images.
 REGISTRY_PREFIX = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"

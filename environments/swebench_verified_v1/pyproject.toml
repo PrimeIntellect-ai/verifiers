@@ -3,7 +3,7 @@ name = "swebench-verified-v1"
 version = "0.1.0"
 description = "SWE-bench Verified — harbor taskset using prime's prebuilt instance images."
 requires-python = ">=3.10"
-dependencies = ["tasksets"]
+dependencies = ["verifiers"]
 
 [build-system]
 requires = ["hatchling"]

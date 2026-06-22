@@ -3,10 +3,10 @@
 A plugin (taskset or harness) is a module that exports its `Taskset` / `Harness` subclass via
 `__all__` — vf walks the exported names and finds the single subclass of the base. An id (an
 `EnvId`) resolves to that module: a built-in id (`default`, `rlm`, `harbor_v1`, `textarena_v1`)
-resolves to its namespaced module under the group package (`harnesses.rlm`, `tasksets.harbor_v1`,
-...); any other id names a flat module — a local package (hyphens → underscores), or an
-`org/name[@version]` package installed on demand from the Environments Hub.
-Built-ins live under `packages/`, installed by default via the `tasksets`/`harnesses` extras;
+resolves to its namespaced module under the group package (`verifiers.v1.harnesses.rlm`,
+`verifiers.v1.tasksets.harbor_v1`, ...); any other id names a flat module — a local package
+(hyphens → underscores), or an `org/name[@version]` package installed on demand from the
+Environments Hub. Built-ins ship with verifiers under `verifiers/v1/{harnesses,tasksets}`;
 custom ones live under `environments/`, on `sys.path`, or on the hub.
 
 The taskset/harness class carries its types as generic args — `Taskset[TaskT, ConfigT]`,
@@ -50,8 +50,9 @@ def narrow_plugin_field(
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     """Import a plugin by id. A built-in id resolves to its namespaced module under the
-    `group` package (`harnesses` / `tasksets`); a hub `org/name[@version]` id is installed on
-    demand; any other is a local package (hyphens → underscores)."""
+    `group` package (`verifiers.v1.harnesses` / `verifiers.v1.tasksets`); a hub
+    `org/name[@version]` id is installed on demand; any other is a local package
+    (hyphens → underscores)."""
     module = ensure_installed(plugin_id)
     namespaced = f"{group}.{module}"
     target = namespaced if importlib.util.find_spec(namespaced) else module
@@ -61,7 +62,7 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
         raise ModuleNotFoundError(
             f"{kind} {plugin_id!r} not found (tried to import {target!r}). A {kind} is a "
             f"package exporting its {kind.capitalize()} subclass via `__all__` — the built-in "
-            f"ones are bundled in the `{group}` package (vendored by default), installed from "
+            f"ones ship with verifiers in the `{group}` package, installed from "
             f"the Environments Hub (`org/name`), or authored yourself."
         ) from e
 
@@ -109,11 +110,11 @@ def _generic_args(cls: type, base: type) -> list:
 
 
 def import_taskset(taskset_id: str) -> ModuleType:
-    return _import_plugin(taskset_id, "taskset", "tasksets")
+    return _import_plugin(taskset_id, "taskset", "verifiers.v1.tasksets")
 
 
 def import_harness(harness_id: str) -> ModuleType:
-    return _import_plugin(harness_id, "harness", "harnesses")
+    return _import_plugin(harness_id, "harness", "verifiers.v1.harnesses")
 
 
 def taskset_class(taskset_id: str) -> type[Taskset]:

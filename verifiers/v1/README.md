@@ -64,16 +64,6 @@ Common knobs have short aliases:
 
 ## Tasksets & harnesses
 
-Tasksets (data + scoring) and harnesses (the rollout driver) are Python packages 
-and live in two places:
-
-- **`packages/`** — shipped, installed by default. Commonly-used **harnesses** (`default`,
-  `bash`, `rlm`, `codex`, ...) and **taskset integrations** that wrap a whole benchmark family (`harbor-v1` — 
-  the agentic-benchmark registry; `textarena-v1` — TextArena games).
-- **`environments/`** — small reference implementations to copy when **authoring your own**
-  (the `*_v1` tasksets and the `compact` harness), co-located with the standalone v0
-  environments. Each shows one pattern.
-
 Taskset examples (the `*_v1` packages under `environments/`):
 
 | example | pattern it shows |

@@ -8,7 +8,7 @@ and game-authoritative scoring — is inherited unchanged.
 from typing import Literal
 
 import verifiers.v1 as vf
-from tasksets.textarena_v1 import (
+from verifiers.v1.tasksets.textarena_v1 import (
     TextArenaConfig,
     TextArenaState,
     TextArenaTask,
