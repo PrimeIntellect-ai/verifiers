@@ -1,3 +1,5 @@
+import base64
+import json
 from typing import Any, cast
 
 import httpx
@@ -8,6 +10,7 @@ from verifiers.clients.openai_chat_completions_token_client import (
     OpenAIChatCompletionsTokenClient,
 )
 from verifiers.types import State
+from verifiers.utils.client_utils import post_chat_completion_with_routed_experts_sidecar
 
 
 class _NoopClient:
@@ -43,6 +46,40 @@ class _RecordingClient(_NoopClient):
                 "path": path,
                 "body": body,
             },
+        )
+
+
+class _DynamoRoutedExpertsClient(_NoopClient):
+    async def post(
+        self, path: str, body: dict[str, Any], cast_to: type, **kwargs: Any
+    ) -> Any:
+        payload = {
+            "id": "x",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "nvext": {
+                "engine_data": {
+                    "completion_token_ids": [10],
+                    "routed_experts": {
+                        "data": base64.b64encode(b"abc").decode("ascii"),
+                        "shape": [3, 1, 1],
+                        "start": 0,
+                        "dtype": "uint8",
+                    },
+                }
+            },
+        }
+        return httpx.Response(
+            200,
+            content=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
         )
 
 
@@ -293,3 +330,167 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
     assert len(recording_client.calls) == 1
     assert recording_client.calls[0]["path"] == "/chat/completions/tokens"
     assert recording_client.calls[0]["body"]["tokens"] == [10, 20]
+
+
+@pytest.mark.asyncio
+async def test_post_dynamo_scrubs_vllm_only_and_forwards_sampling():
+    """dynamo wire body: vLLM-only keys scrubbed, standard sampling args
+    forwarded, nvext token_data + passthrough preserved."""
+    recording_client = _RecordingClient()
+    client = OpenAIChatCompletionsTokenClient(recording_client)
+
+    await client._post_dynamo(
+        prompt=cast(Any, [{"role": "user", "content": ""}]),
+        prompt_ids=[1, 2, 3],
+        model="test-model",
+        tools=None,
+        sampling_args={
+            "temperature": 0.5,
+            "presence_penalty": 0.2,
+            "reasoning_effort": "high",  # arbitrary key: full parity, not an allowlist
+            "spaces_between_special_tokens": False,  # vLLM-only — must be scrubbed
+            "extra_body": {
+                "return_token_ids": True,  # vLLM-only — must be scrubbed
+                "nvext": {"extra_fields": ["engine_data"]},
+                "cache_salt": "ckpt-1",
+            },
+        },
+        extra_headers=None,
+    )
+
+    body = recording_client.calls[0]["body"]
+    assert "return_token_ids" not in body
+    assert "spaces_between_special_tokens" not in body
+    assert body["presence_penalty"] == 0.2
+    assert body["temperature"] == 0.5
+    assert body["reasoning_effort"] == "high"
+    assert body["nvext"]["token_data"] == [1, 2, 3]
+    assert body["nvext"]["extra_fields"] == ["engine_data"]
+    assert body["cache_salt"] == "ckpt-1"
+
+
+@pytest.mark.asyncio
+async def test_post_dynamo_uses_placeholder_messages():
+    recording_client = _RecordingClient()
+    client = OpenAIChatCompletionsTokenClient(recording_client)
+
+    await client._post_dynamo(
+        prompt=cast(Any, [{"role": "user", "content": "real prompt"}]),
+        prompt_ids=[1, 2, 3],
+        model="test-model",
+        tools=None,
+        sampling_args={"extra_body": {"nvext": {"extra_fields": ["engine_data"]}}},
+        extra_headers=None,
+    )
+
+    assert recording_client.calls[0]["body"]["messages"] == [
+        {"role": "user", "content": ""}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sidecar_helper_reattaches_dynamo_engine_routed_experts():
+    response = await post_chat_completion_with_routed_experts_sidecar(
+        _DynamoRoutedExpertsClient(),
+        "/chat/completions",
+        body={},
+    )
+
+    routed = response.model_extra["nvext"]["engine_data"]["routed_experts"]
+    assert isinstance(routed["data"], memoryview)
+    assert routed["data"].tobytes() == base64.b64encode(b"abc")
+
+
+@pytest.mark.asyncio
+async def test_graft_engine_data_synthesizes_logprobs_when_content_less():
+    """engine_data.completion_logprobs must be grafted even when the choice
+    carries a content-less logprobs object (not only when absent)."""
+    from openai.types.chat import ChatCompletion
+
+    client = OpenAIChatCompletionsClient(_NoopClient())
+    native = ChatCompletion.model_validate(
+        {
+            "id": "x",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                    "logprobs": {"content": None},  # present but content-less
+                }
+            ],
+            "nvext": {
+                "engine_data": {
+                    "completion_token_ids": [10, 11],
+                    "prompt_token_ids": [1, 2, 3],
+                    "completion_logprobs": [-0.1, -0.2],
+                }
+            },
+        }
+    )
+
+    vf_response = await client.from_native_response(native)
+    tokens = vf_response.message.tokens
+    assert tokens is not None  # would be None before the fix (TITO lost)
+    assert tokens.completion_ids == [10, 11]
+    assert tokens.prompt_ids == [1, 2, 3]
+    assert tokens.completion_logprobs == [-0.1, -0.2]
+
+
+@pytest.mark.asyncio
+async def test_parse_tokens_reads_dynamo_engine_routed_experts():
+    from openai.types.chat import ChatCompletion
+
+    client = OpenAIChatCompletionsClient(_NoopClient())
+    native = ChatCompletion.model_validate(
+        {
+            "id": "x",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                    "logprobs": {
+                        "content": [
+                            {
+                                "token": "ok",
+                                "logprob": -0.1,
+                                "bytes": [111, 107],
+                                "top_logprobs": [],
+                            }
+                        ]
+                    },
+                }
+            ],
+            "nvext": {
+                "engine_data": {
+                    "completion_token_ids": [10],
+                    "prompt_token_ids": [1, 2, 3],
+                    "completion_logprobs": [-0.1],
+                    "routed_experts": {
+                        "data": "QUJD",
+                        "shape": [3, 1, 1],
+                        "start": 0,
+                        "dtype": "uint8",
+                    },
+                }
+            },
+        }
+    )
+
+    vf_response = await client.from_native_response(native)
+    tokens = vf_response.message.tokens
+
+    assert tokens is not None
+    assert tokens.routed_experts == {
+        "data": "QUJD",
+        "shape": [3, 1, 1],
+        "start": 0,
+        "dtype": "uint8",
+    }
