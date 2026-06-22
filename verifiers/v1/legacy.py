@@ -189,8 +189,9 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     """Map a v0 ``RolloutOutput`` into a v1 ``Trace``, preserving the meta a native v1
     trace carries: per-turn prompt messages, the response message (content / reasoning /
     tool calls), ``finish_reason`` and ``usage``, the token ids/logprobs, and the task's
-    system prompt / prompt / answer. ``is_truncated`` is a computed v1 field derived
-    from the final turn's ``finish_reason`` and the stop condition."""
+    system prompt / prompt / answer. The v0 ``is_truncated`` flag is carried over explicitly
+    (as ``truncated``) since v0 stop names don't map onto the v1 vocabulary that
+    ``Trace.is_truncated`` otherwise derives truncation from."""
     model = str(out.get("model") or "")
 
     error = None
@@ -211,6 +212,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         is_completed=bool(out.get("is_completed", True)),
         stop_condition=out.get("stop_condition"),
+        truncated=bool(out.get("is_truncated", False)),
         errors=[error] if error else [],
         timing=_timing(out.get("timing")),
     )

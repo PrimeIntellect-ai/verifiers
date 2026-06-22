@@ -219,6 +219,11 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
 
     is_completed: bool = False
     stop_condition: str | None = None
+    truncated: bool | None = None
+    """Authoritative truncation flag when the derivation can't be trusted. Native v1 leaves
+    this `None` and `is_truncated` is derived from `stop_condition` + the final turn's
+    `finish_reason`; the v0→v1 bridge sets it from the v0 rollout's own flag, whose stop names
+    don't map onto v1's vocabulary."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest first (more than one only when the
     rollout was retried). `error` exposes the most recent."""
@@ -308,7 +313,10 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         own terms: the framework halted it (`max_turns`, a token budget, or
         `harness_timeout`), the prompt outgrew the model's context window
         (`context_length`), or the final turn hit the token cap (`finish_reason ==
-        "length"`)."""
+        "length"`). An explicit `truncated` flag (set by the v0→v1 bridge) takes
+        precedence over the derivation."""
+        if self.truncated is not None:
+            return self.truncated
         if self.stop_condition in (
             "max_turns",
             "max_input_tokens",
