@@ -72,6 +72,42 @@ class PrimeRuntime(Runtime):
     def published_port(self) -> int | None:
         return SERVICE_PORT
 
+    async def _wait_until_running(self) -> None:
+        assert self._client is not None
+        assert self._sandbox_id is not None
+        try:
+            await self._client.wait_for_creation(self._sandbox_id)
+            return
+        except Exception as wait_error:
+            logger.warning(
+                "prime: wait_for_creation failed for sandbox %s; polling status: %s",
+                self._sandbox_id,
+                wait_error,
+            )
+            delay = 1.0
+            deadline = asyncio.get_running_loop().time() + 180
+            last_status = "unknown"
+            while asyncio.get_running_loop().time() < deadline:
+                with contextlib.suppress(Exception):
+                    sandbox = await self._client.get(self._sandbox_id)
+                    last_status = sandbox.status
+                    if sandbox.status == "RUNNING":
+                        logger.info(
+                            "prime: sandbox %s reported RUNNING after wait fallback",
+                            self._sandbox_id,
+                        )
+                        return
+                    if sandbox.status in {"FAILED", "TERMINATED", "ERROR"}:
+                        break
+                sleep_for = min(delay, deadline - asyncio.get_running_loop().time())
+                if sleep_for > 0:
+                    await asyncio.sleep(sleep_for)
+                delay = min(delay * 1.2, 5.0)
+            raise SandboxError(
+                f"prime sandbox {self._sandbox_id} did not reach RUNNING after "
+                f"wait_for_creation failed (last status={last_status!r})"
+            ) from wait_error
+
     async def start(self) -> None:
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
 
@@ -107,7 +143,7 @@ class PrimeRuntime(Runtime):
                     )
                 )
             self._sandbox_id = sandbox.id
-            await self._client.wait_for_creation(self._sandbox_id)
+            await self._wait_until_running()
             logger.info(
                 "prime: sandbox %s up (image=%s)", self._sandbox_id, self.config.image
             )
