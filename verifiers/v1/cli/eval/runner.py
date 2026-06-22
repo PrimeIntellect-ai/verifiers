@@ -186,8 +186,13 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                 config.model,
             )
         logger.info("results: %s", out)
+        request_concurrency = config.max_concurrent
+        if request_concurrency and info.requires_group_scoring:
+            # max_concurrent is a rollout resource bound, not a request-throughput target.
+            # A group is indivisible, so one oversized group must still be allowed to run.
+            request_concurrency = max(1, request_concurrency // config.num_rollouts)
         semaphore = (
-            asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+            asyncio.Semaphore(request_concurrency) if request_concurrency else None
         )
         write_lock = asyncio.Lock()
 
