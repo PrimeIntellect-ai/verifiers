@@ -11,13 +11,18 @@ from verifiers.v1.interception.config import (
     ModalInterceptionConfig,
     PrimeInterceptionConfig,
     UrlInterceptionConfig,
-    expose_interception,
 )
 from verifiers.v1.interception.pool import InterceptionPool, PooledServer
 from verifiers.v1.interception.server import (
     InterceptionServer,
     RolloutLimits,
     RolloutSession,
+)
+from verifiers.v1.interception.tunnel import (
+    CustomTunnel,
+    ModalTunnel,
+    PrimeTunnel,
+    Tunnel,
 )
 
 __all__ = [
@@ -31,5 +36,8 @@ __all__ = [
     "PrimeInterceptionConfig",
     "ModalInterceptionConfig",
     "UrlInterceptionConfig",
-    "expose_interception",
+    "Tunnel",
+    "PrimeTunnel",
+    "ModalTunnel",
+    "CustomTunnel",
 ]

@@ -16,12 +16,7 @@ import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
-from verifiers.v1.interception.config import (
-    BaseInterceptionConfig,
-    UrlInterceptionConfig,
-    bind_host,
-    expose_interception,
-)
+from verifiers.v1.interception.config import BaseInterceptionConfig
 from verifiers.v1.interception.server import InterceptionServer, RolloutSession
 from verifiers.v1.runtimes import RuntimeConfig, runtime_is_local
 
@@ -51,7 +46,7 @@ class InterceptionPool:
         self.is_local = runtime_is_local(runtime_config)
         self.config = config
         self.multiplex = max(1, config.multiplex)
-        self._single = isinstance(config, UrlInterceptionConfig)
+        self._tunnel = config.tunnel()
         self._servers: list[PooledServer] = []
         self._lock = asyncio.Lock()
         self._stack = AsyncExitStack()
@@ -65,21 +60,22 @@ class InterceptionPool:
         await self._stack.aclose()
 
     async def _entry(self) -> PooledServer:
-        """A server with spare capacity — reuse one under `multiplex`, else bring up a new one
-        (its own host endpoint). A `url` (bring-your-own) endpoint is a single server every rollout
+        """A server with spare capacity — reuse one under `multiplex`, else bring up a new one (its
+        own host endpoint). A single-endpoint tunnel (a BYO `url`) is one server every rollout
         shares. The caller holds `_lock`."""
         for entry in self._servers:
-            if self._single or entry.load < self.multiplex:
+            if self._tunnel.single_server or entry.load < self.multiplex:
                 return entry
-        # `url` interception binds the fixed port its reverse proxy forwards to; others take an
-        # ephemeral port and are bridged to the host by the configured tunnel backend.
-        bind_port = self.config.port if self._single else 0
-        server = InterceptionServer(bind_port=bind_port, bind_host=bind_host(self.config))
+        # The tunnel decides where the server binds (fixed port + 0.0.0.0 for modal, else an
+        # ephemeral loopback port) and how it's reached from the harness runtime.
+        server = InterceptionServer(
+            bind_port=self._tunnel.bind_port, bind_host=self._tunnel.bind_host
+        )
         await self._stack.enter_async_context(server)
         # The interception server is a HOST service the harness reaches: localhost for a local
         # harness runtime, a tunnel for a remote one. Owned by the pool's stack, torn down with it.
         url = await self._stack.enter_async_context(
-            expose_interception(self.config, server.port, is_local=self.is_local)
+            self._tunnel.reachable(server.port, is_local=self.is_local)
         )
         entry = PooledServer(server, url)
         self._servers.append(entry)
