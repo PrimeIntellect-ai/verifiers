@@ -27,7 +27,9 @@ VERIFIABLE_TASK_TYPE = "Closed-ended Multi-hop Resolution"
 
 
 def _iter_s1_records(*, dataset_name: str, data_file: str) -> Iterable[dict[str, Any]]:
-    path = hf_hub_download(repo_id=dataset_name, filename=data_file, repo_type="dataset")
+    path = hf_hub_download(
+        repo_id=dataset_name, filename=data_file, repo_type="dataset"
+    )
     with open(path, encoding="utf-8") as f:
         for line in f:
             if line.strip():
