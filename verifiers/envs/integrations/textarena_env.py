@@ -12,7 +12,7 @@ try:
     import nltk
 except ImportError as e:
     raise ImportError(
-        "TextArenaEnv requires nltk. Install with: uv add 'verifiers[ta]'"
+        "TextArenaEnv requires nltk. Install with: uv add 'verifiers[textarena]'"
     ) from e
 
 
@@ -30,7 +30,7 @@ try:
     import textarena as ta
 except ImportError as e:
     raise ImportError(
-        "TextArenaEnv requires textarena. Install with: uv add 'verifiers[ta]'"
+        "TextArenaEnv requires textarena. Install with: uv add 'verifiers[textarena]'"
     ) from e
 
 

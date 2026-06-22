@@ -3,7 +3,7 @@ name = "wordle-v1"
 version = "0.1.0"
 description = "Wordle — the textarena taskset pinned to Wordle-v0."
 requires-python = ">=3.10"
-dependencies = ["verifiers[ta]"]
+dependencies = ["verifiers[textarena]"]
 
 [build-system]
 requires = ["hatchling"]

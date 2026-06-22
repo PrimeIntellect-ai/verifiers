@@ -70,8 +70,8 @@ dev = [
     "stagehand>=3.0.0",
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
-    "nltk",
-    "textarena",
+    "nltk>=3.9.2",
+    "textarena==0.7.4",
 ]
 # v1 example environments vendored under environments/, resolved by id via [tool.uv.sources].
 # Installed by default (tool.uv.default-groups) so the v1 CLIs (eval <id>, serve) run straight
@@ -89,9 +89,9 @@ examples = [
 rg = [
     "reasoning-gym",
 ]
-ta = [
-    "nltk",
-    "textarena",
+textarena = [
+    "textarena==0.7.4",
+    "nltk>=3.9.2",
 ]
 browser = [
     "stagehand>=3.0.0",

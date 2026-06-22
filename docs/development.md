@@ -234,7 +234,7 @@ uv sync
 ### Integration Tests
 ```bash
 # Install optional dependencies for specific integrations
-uv sync --extra ta   # for TextArenaEnv
+uv sync --extra textarena   # for TextArenaEnv
 uv sync --extra rg   # for ReasoningGymEnv
 uv sync --extra modal     # for the v1 Modal runtime
 uv sync --extra notebook  # for generate_sync() in Jupyter

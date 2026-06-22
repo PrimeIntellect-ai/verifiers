@@ -6295,7 +6295,7 @@ rl = [
     { name = "vllm" },
     { name = "wandb" },
 ]
-ta = [
+textarena = [
     { name = "nltk" },
     { name = "textarena" },
 ]
@@ -6362,7 +6362,7 @@ requires-dist = [
     { name = "modal", marker = "extra == 'modal'", specifier = ">=1.4.0" },
     { name = "msgpack", specifier = ">=1.1.2" },
     { name = "nest-asyncio", marker = "extra == 'notebook'", specifier = ">=1.6.0" },
-    { name = "nltk", marker = "extra == 'ta'" },
+    { name = "nltk", marker = "extra == 'textarena'", specifier = ">=3.9.2" },
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-agents", specifier = ">=0.0.7" },
@@ -6383,7 +6383,7 @@ requires-dist = [
     { name = "setproctitle", specifier = ">=1.3.0" },
     { name = "stagehand", marker = "extra == 'browser'", specifier = ">=3.0.0" },
     { name = "tenacity", specifier = ">=8.5.0" },
-    { name = "textarena", marker = "extra == 'ta'" },
+    { name = "textarena", marker = "extra == 'textarena'", specifier = "==0.7.4" },
     { name = "tomli-w", specifier = ">=1.0.0" },
     { name = "torch", marker = "extra == 'rl'", specifier = ">=2.8.0,<2.9.0" },
     { name = "transformers", marker = "extra == 'rl'", specifier = ">=4.56.2" },
@@ -6392,14 +6392,14 @@ requires-dist = [
     { name = "vllm", marker = "extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
     { name = "wandb", marker = "extra == 'rl'" },
 ]
-provides-extras = ["browser", "modal", "notebook", "quest", "rg", "rl", "ta"]
+provides-extras = ["browser", "modal", "notebook", "quest", "rg", "rl", "textarena"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "aiohttp", specifier = ">=3.9.0" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
-    { name = "nltk" },
+    { name = "nltk", specifier = ">=3.9.2" },
     { name = "pre-commit" },
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.21.0" },
@@ -6409,7 +6409,7 @@ dev = [
     { name = "reasoning-gym" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
-    { name = "textarena" },
+    { name = "textarena", specifier = "==0.7.4" },
     { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
 ]
 examples = [
@@ -6749,11 +6749,11 @@ name = "wordle-v1"
 version = "0.1.0"
 source = { editable = "environments/wordle_v1" }
 dependencies = [
-    { name = "verifiers", extra = ["ta"] },
+    { name = "verifiers", extra = ["textarena"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "verifiers", extras = ["ta"] }]
+requires-dist = [{ name = "verifiers", extras = ["textarena"] }]
 
 [[package]]
 name = "wrapt"
