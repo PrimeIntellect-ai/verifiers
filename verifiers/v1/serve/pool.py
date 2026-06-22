@@ -65,7 +65,13 @@ def _arm_teardown(death_pipe=None) -> None:
 
 
 def _worker_entry(
-    *, server_kwargs: dict, address: str, death_pipe, legacy: bool, log_setup=None
+    *,
+    server_kwargs: dict,
+    address: str,
+    death_pipe,
+    legacy: bool,
+    task_limit: int | None,
+    log_setup=None,
 ) -> None:
     """Spawned worker: an ordinary EnvServer/LegacyEnvServer bound to `address` (ipc).
     A native config arrives as a dict (`config_data`): the eval/serve CLI's narrowed
@@ -81,6 +87,8 @@ def _worker_entry(
         server_kwargs = {
             "config": EnvConfig.model_validate(server_kwargs["config_data"])
         }
+    if "config" in server_kwargs:
+        server_kwargs["task_limit"] = task_limit
     cls = LegacyEnvServer if legacy else EnvServer
     cls.run_server(address=address, **server_kwargs)
 
@@ -101,6 +109,7 @@ class EnvServerPool:
         max_workers: int | None,
         address: str,
         legacy: bool,
+        task_limit: int | None = None,
         log_setup: Callable[[], None] | None = None,
         multiplex: int = 128,
         elastic: bool = True,
@@ -110,6 +119,7 @@ class EnvServerPool:
         self.multiplex = multiplex
         self.elastic = elastic
         self.legacy = legacy
+        self.task_limit = task_limit
         self.log_setup = log_setup
         self.session = uuid.uuid4().hex[:12]
         self.workers: list[dict] = []
@@ -139,6 +149,7 @@ class EnvServerPool:
                 address=address,
                 death_pipe=child_conn,
                 legacy=self.legacy,
+                task_limit=self.task_limit,
                 log_setup=self.log_setup,
             ),
             daemon=False,
@@ -278,6 +289,7 @@ def serve_env(
     log_setup: Callable[[], None] | None = None,
     multiplex: int = 128,
     elastic: bool = True,
+    task_limit: int | None = None,
     **server_kwargs,
 ) -> None:
     """Serve one env over ZMQ: a single in-process `EnvServer` when `max_workers <= 1`,
@@ -301,7 +313,8 @@ def serve_env(
     (rollout start/done, the pool line) are silently dropped.
 
     `death_pipe` (when spawned by a parent, e.g. the eval main process) makes this server
-    self-terminate if that parent dies abruptly — see `_arm_teardown`."""
+    self-terminate if that parent dies abruptly — see `_arm_teardown`. `task_limit` bounds
+    native task loading at the source."""
     # Graceful SIGTERM (run asyncio teardown) + self-terminate if the parent dies. The
     # re-raised KeyboardInterrupt is swallowed below for a clean exit (no spurious traceback).
     _arm_teardown(death_pipe)
@@ -320,6 +333,7 @@ def serve_env(
                 max_workers,
                 address,
                 legacy,
+                task_limit,
                 log_setup,
                 multiplex,
                 elastic,
@@ -336,6 +350,8 @@ def serve_env(
                 server_kwargs = {
                     "config": EnvConfig.model_validate(server_kwargs["config_data"])
                 }
+            if "config" in server_kwargs:
+                server_kwargs["task_limit"] = task_limit
             cls = LegacyEnvServer if legacy else EnvServer
             cls.run_server(
                 address=address, address_queue=address_queue, **server_kwargs

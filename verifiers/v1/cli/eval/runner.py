@@ -25,6 +25,8 @@ _SHUFFLE_SEED = (
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
+    # Exact shuffling needs the full taskset; num_tasks is still applied below.
+    env.taskset._task_limit = None if config.shuffle else config.num_tasks
     tasks = env.taskset.load_tasks()
     if config.shuffle:
         random.Random(_SHUFFLE_SEED).shuffle(tasks)
@@ -139,6 +141,8 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             address_queue=address_queue,
             death_pipe=child_conn,
             log_setup=partial(setup_logging, level, log_file),
+            # Exact shuffling happens over all server task indices below.
+            task_limit=None if config.shuffle else config.num_tasks,
             **server_kwargs,
         ),
         daemon=False,

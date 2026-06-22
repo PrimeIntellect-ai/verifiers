@@ -183,9 +183,7 @@ class R2EGymTaskset(vf.Taskset[R2EGymTask, R2EGymConfig]):
     NEEDS_CONTAINER = True
 
     def load_tasks(self) -> list[R2EGymTask]:
-        from datasets import load_dataset
-
-        rows = load_dataset(DATASET, split="train")
+        rows = self.load_dataset(DATASET, split="train")
         return [
             R2EGymTask(
                 idx=i,
