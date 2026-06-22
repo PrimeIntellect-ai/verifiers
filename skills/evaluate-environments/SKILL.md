@@ -35,6 +35,7 @@ prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 --shuffle -s
 prime eval run my-env
 prime eval run my-env -m openai/gpt-4.1-mini
 ```
+8. When debugging transient failures in saved results, inspect `retry`, `last_model_request`, and `last_model_error` in `results.jsonl` before assuming the model, sandbox, or scorer caused the failure.
 
 ## Endpoint Shortcuts And Model Family Choice
 1. Encourage users to define endpoint aliases in `configs/endpoints.toml` so model, base URL, and key wiring stay reusable.

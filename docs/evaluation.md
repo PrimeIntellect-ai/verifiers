@@ -253,7 +253,11 @@ When `--shuffle` is enabled, Verifiers shuffles the full evaluation dataset firs
 
 By default, scoring runs interleaved with generation. Use `--no-interleave-scoring` to score all rollouts after generation completes.
 
-The `--max-retries` flag enables automatic retry with exponential backoff when rollouts fail due to transient infrastructure errors (e.g., sandbox timeouts, API failures).
+The `--max-retries` flag enables automatic retry with exponential backoff when rollouts fail due to transient infrastructure or model-response errors, such as sandbox timeouts, API failures, or empty model responses.
+
+When a rollout retries, its saved output includes a `retry` block. It records attempt count, exhaustion status, elapsed retry time, and the retryable errors that triggered each attempt. Retry events also include model request metadata when available, so a failed empty-response attempt can be traced by `request_id` even if a later retry succeeds.
+
+Model calls record lightweight request diagnostics in the rollout state. `last_model_request` identifies the most recent model request. `last_model_error` is present when the latest model request failed.
 
 The `--num-workers` flag controls how many worker processes the env server spawns. Each worker owns its own environment instance and runs rollouts independently. The default `auto` scales with concurrency.
 

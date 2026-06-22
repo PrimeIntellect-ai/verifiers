@@ -72,6 +72,7 @@ from verifiers.utils.async_utils import (
     with_sem,
 )
 from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.error_utils import error_data
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
@@ -523,13 +524,26 @@ class Environment(ABC):
 
         self._get_usage_tracker(state, create_if_missing=True)
 
-        response = await client.get_response(
-            prompt=prompt,
-            model=model,
-            tools=tool_defs,
-            sampling_args=sampling_args,
-            state=state,
-        )
+        request_id = f"model_{uuid.uuid4().hex}"
+        state["last_model_request"] = {
+            "request_id": request_id,
+            "model": model,
+            "trajectory_id": str(state.get("trajectory_id", "")),
+        }
+        try:
+            response = await client.get_response(
+                prompt=prompt,
+                model=model,
+                tools=tool_defs,
+                sampling_args=sampling_args,
+                state=state,
+            )
+        except vf.Error as error:
+            state["last_model_error"] = {
+                **state["last_model_request"],
+                **error_data(error),
+            }
+            raise
         self.increment_state_usage_from_response(state, response)
 
         return response

@@ -652,6 +652,50 @@ class TestMaybeRetry:
 
         assert states[0].get("error") is None
         assert env.call_counts[0] == 3
+        assert states[0]["retry"]["attempts"] == 3
+        assert states[0]["retry"]["retry_count"] == 2
+        assert states[0]["retry"]["exhausted"] is False
+
+    @pytest.mark.asyncio
+    async def test_empty_model_response_retries_and_records_request(
+        self, mock_client, sample_dataset, make_input
+    ):
+        env = SimpleEnvironment(
+            dataset=sample_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+        mock_client.get_response = AsyncMock(
+            side_effect=[
+                vf.EmptyModelResponseError("provider returned only reasoning"),
+                Response(
+                    id="ok",
+                    created=0,
+                    model="test-model",
+                    message=ResponseMessage(
+                        role="assistant",
+                        content="Recovered",
+                        finish_reason="stop",
+                        is_truncated=False,
+                    ),
+                ),
+            ]
+        )
+
+        outputs = await env.generate(
+            [make_input()],
+            client=mock_client,
+            model="test-model",
+            max_retries=1,
+        )
+
+        rollout = outputs["outputs"][0]
+        assert rollout["error"] is None
+        assert rollout["completion"][-1]["content"] == "Recovered"
+        assert rollout["retry"]["retry_count"] == 1
+        assert rollout["retry"]["events"][0]["error"] == "EmptyModelResponseError"
+        assert rollout["retry"]["events"][0]["request_id"].startswith("model_")
+        assert rollout["retry"]["events"][0]["model"] == "test-model"
 
     @pytest.mark.asyncio
     async def test_no_retry_after_non_retryable_error(self, mock_client, make_input):
@@ -696,6 +740,11 @@ class TestMaybeRetry:
         assert rollout_outputs[0].get("error") is not None
         error_data = rollout_outputs[0]["error"]
         assert "InfraError" == error_data["error"]
+        retry = rollout_outputs[0]["retry"]
+        assert retry["attempts"] == 3
+        assert retry["retry_count"] == 2
+        assert retry["exhausted"] is True
+        assert retry["events"][-1]["error"] == "InfraError"
 
     @pytest.mark.asyncio
     async def test_retries_serialized_infra_error_subclass(self):
@@ -720,6 +769,36 @@ class TestMaybeRetry:
         result = await maybe_retry(attempt, max_retries=2, initial=0.0, max_wait=0.0)()
         assert calls["n"] == 3  # 1 initial + 2 retries (InfraError is retryable)
         assert result["error"] == serialized  # last result returned after exhaustion
+
+    @pytest.mark.asyncio
+    async def test_group_retry_metadata_uses_retryable_state_index(self):
+        """Retry metadata should point at the state that actually triggered retry."""
+        from verifiers.utils.async_utils import maybe_retry
+
+        calls = {"n": 0}
+
+        async def attempt():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return [
+                    {"error": vf.ToolError("bad tool call")},
+                    {"error": vf.InfraError("worker timed out")},
+                ]
+            return [
+                {"error": None},
+                {"error": None},
+            ]
+
+        result = await maybe_retry(
+            attempt,
+            max_retries=1,
+            initial=0.0,
+            max_wait=0.0,
+        )()
+
+        assert calls["n"] == 2
+        assert result[0]["retry"]["events"][0]["state_index"] == "1"
+        assert result[1]["retry"]["events"][0]["state_index"] == "1"
 
 
 class TestEmptyModelResponseErrors:
