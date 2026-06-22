@@ -66,7 +66,6 @@ class UrlInterceptionConfig(BaseInterceptionConfig):
         self.url = self.url.rstrip("/")
 
 
-# Discriminated on `type` so the CLI selects with `--interception.type prime|modal|url`.
 InterceptionConfig = Annotated[
     PrimeInterceptionConfig | ModalInterceptionConfig | UrlInterceptionConfig,
     Field(discriminator="type"),
