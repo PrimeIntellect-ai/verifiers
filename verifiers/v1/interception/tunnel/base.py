@@ -27,15 +27,13 @@ class Tunnel(ABC, Generic[ConfigT]):
     one server). The pool reads it off the tunnel class. True only for `CustomTunnel` — one BYO URL
     is structurally one server."""
 
+    bind_host: ClassVar[str] = "127.0.0.1"
+    """Interface the interception server binds for this tunnel to reach it. Loopback by default —
+    frpc reaches it over localhost; `CustomTunnel` binds all interfaces so a remote harness can reach
+    it directly (or via a proxy)."""
+
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = config
-
-    @property
-    def bind_host(self) -> str:
-        """Interface the interception server binds for this tunnel to reach it. Loopback by default —
-        frpc / a same-host proxy connect over localhost; `CustomTunnel` can bind a reachable
-        interface (its `bind_host`) for a direct, no-proxy exposure."""
-        return "127.0.0.1"
 
     @property
     def bind_port(self) -> int:

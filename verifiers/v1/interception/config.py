@@ -5,9 +5,9 @@ reaches it over a tunnel. `InterceptionConfig` is the discriminated union choosi
 matching `Tunnel` (see `verifiers.v1.interception.tunnel`, picked by `tunnel_cls`) implements it:
 
 - `prime` (default): `prime_tunnel` (frpc) — works from any host with prime credentials;
-- `custom`: bring your own endpoint — the framework opens no tunnel and trusts a public `url`. Front
-  the loopback `port` with a reverse proxy (default), or set `bind_host` to expose the `port`
-  directly (`url=http://<host>:<port>`, no proxy) on a host the harness can reach.
+- `custom`: bring your own endpoint — the framework opens no tunnel and trusts a public `url`. The
+  server binds all interfaces on a fixed `port`; `url` is either a reverse proxy you front it with or
+  a direct `http://<host>:<port>` on a host the harness can reach.
 """
 
 from typing import Annotated, Literal
@@ -34,22 +34,20 @@ class PrimeInterceptionConfig(BaseInterceptionConfig):
 
 class CustomInterceptionConfig(BaseInterceptionConfig):
     """Bring your own endpoint: the framework opens no tunnel and reaches the interception server at
-    `url`. By default it binds the fixed local `port` on loopback for a reverse proxy you front it
-    with; set `bind_host` to a reachable interface to expose the `port` directly (no proxy), with
-    `url=http://<host>:<port>`. One URL is one server, so every rollout shares it (`multiplex`
-    doesn't apply)."""
+    `url`. The server binds all interfaces on the fixed local `port`, so `url` is either a reverse
+    proxy you front it with or a direct `http://<host>:<port>` on a reachable host. One URL is one
+    server, so every rollout shares it (`multiplex` doesn't apply). The interception port is plaintext
+    HTTP (auth'd by the per-rollout secret) — front it with a TLS proxy / firewall on an untrusted
+    network."""
 
     type: Literal["custom"] = "custom"
     url: str
-    """Public base URL the harness reaches the interception server at (no trailing slash). The model
-    route is `{url}/v1`; the tool/user state channels are `{url}/state` + `/task`."""
+    """Public base URL the harness reaches the interception server at (no trailing slash) — a reverse
+    proxy's URL, or `http://<host>:<port>` for a direct bind. The model route is `{url}/v1`; the
+    tool/user state channels are `{url}/state` + `/task`."""
     port: int = Field(ge=1, le=65535)
-    """Fixed local port the interception server binds — your reverse proxy's target, or the public
-    port for a direct bind."""
-    bind_host: str = "127.0.0.1"
-    """Interface the server listens on. Loopback (default) for a same-host reverse proxy; set a
-    reachable interface (`0.0.0.0`, or a specific public/LAN IP) to expose `port` directly with no
-    proxy. A direct bind is plaintext HTTP carrying the per-rollout secret — trusted-network only."""
+    """Fixed local port the interception server binds (on all interfaces) — your reverse proxy's
+    target, or the public port for a direct bind."""
 
     def model_post_init(self, _ctx) -> None:
         self.url = self.url.rstrip("/")
