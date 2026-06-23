@@ -187,7 +187,9 @@ class InterceptionServer(Interception):
         self.is_local = is_local
         self.port = 0
         self.host = "127.0.0.1"  # actual bind interface decided in __aenter__ (is_local vs tunnel)
-        self.base_url: str  # set in __aenter__, the URL the harness reaches this server at
+        self.base_url: (
+            str  # set in __aenter__, the URL the harness reaches this server at
+        )
         self.runner: web.AppRunner | None = None
 
     def register(self, session: RolloutSession) -> str:
