@@ -41,9 +41,13 @@ _DOWNLOAD_UV = (
 )
 _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
-    "command -v uv >/dev/null 2>&1 "
-    "|| pip install -q uv 2>/dev/null "
-    f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
+    # Reuse the image's uv only if it supports inline-script metadata (`uv sync --script`,
+    # which prepare_uv_script relies on). Old base images can ship a uv that predates `--script`
+    # (or a stale one shadowing on PATH), so otherwise install a fresh uv into $HOME/.local/bin
+    # (ahead of any system uv on PATH); fall back to pip when no downloader is available.
+    "{ command -v uv >/dev/null 2>&1 && uv sync --help 2>/dev/null | grep -q -- --script; } "
+    f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} "
+    "|| pip install -q -U uv 2>/dev/null"
 )
 
 # The single port a self-publishing runtime (modal/prime) forwards to a public URL for a server
