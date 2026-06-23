@@ -2,6 +2,7 @@
 endpoint. The default; works from any host with prime credentials, for harnesses in prime *or*
 modal sandboxes alike."""
 
+import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 
@@ -34,5 +35,15 @@ class PrimeTunnel(Tunnel):
         try:
             yield url
         finally:
+            # Delay cancellation until the synchronous stop has finished.
+            cancelled = None
+            stop_task = asyncio.create_task(asyncio.to_thread(client.sync_stop))
             with contextlib.suppress(Exception):
-                client.sync_stop()
+                while not stop_task.done():
+                    try:
+                        await asyncio.shield(stop_task)
+                    except asyncio.CancelledError as e:
+                        cancelled = e
+                stop_task.result()
+            if cancelled is not None:
+                raise cancelled
