@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 _STREAM_QUEUE_MAXSIZE = 16
+_SSE_DONE_EVENTS = frozenset({b"data: [DONE]\n\n", b"data: [DONE]\r\n\r\n"})
 # The server binds loopback; callers reach it via localhost or a host tunnel (see `reachable_url`).
 _HOST = "127.0.0.1"
 
@@ -463,6 +464,7 @@ class InterceptionServer:
         # Parse complete events as they relay, avoiding a full-stream byte copy.
         parser = dialect.stream_parser()
         feed_event = parser.feed
+        on_done = parser.on_done
         # One bounded producer avoids per-event tasks; keepalive timeouts only cancel readiness waits.
         queue: asyncio.Queue[bytes | None] = asyncio.Queue(
             maxsize=_STREAM_QUEUE_MAXSIZE
@@ -488,6 +490,8 @@ class InterceptionServer:
                 await resp.write(chunk)
                 if parser_error is None:
                     try:
+                        if on_done is not None and chunk in _SSE_DONE_EVENTS:
+                            on_done()
                         feed_event(chunk)
                     except Exception as e:
                         parser_error = e

@@ -240,9 +240,15 @@ class ResponsesStreamParser(StreamParser):
     def __init__(self) -> None:
         self.events: deque[bytes] = deque(maxlen=2)
         self.feed = self.events.append
+        self.terminal_events: tuple[bytes, ...] | None = None
+
+    def on_done(self) -> None:
+        # Freeze the terminal tail before later relay chunks can evict it.
+        self.terminal_events = tuple(self.events)
 
     def finish(self) -> Response:
-        for event in iter_sse_reverse(b"".join(self.events)):
+        events = self.terminal_events or self.events
+        for event in iter_sse_reverse(b"".join(events)):
             if event.get("type") in FINAL_EVENTS:
                 return response_from_wire(
                     OpenAIResponse.model_validate(event["response"])

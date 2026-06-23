@@ -94,6 +94,9 @@ class StreamParser(ABC):
     feed: Callable[[bytes], None]
     """Consume one complete SSE event without retaining its raw bytes."""
 
+    on_done: Callable[[], None] | None = None
+    """Preserve terminal state before events following the DONE sentinel."""
+
     @abstractmethod
     def finish(self) -> Response:
         """Finalize and return the assembled response after the stream ends."""
