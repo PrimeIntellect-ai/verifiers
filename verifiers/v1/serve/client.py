@@ -52,7 +52,7 @@ class EnvClient:
         self.socket.connect(address)
         self._pending: dict[str, asyncio.Future[bytes]] = {}
         self._receiver: asyncio.Task | None = None
-        self._decode_lock = asyncio.Lock()
+        self._decode_slots = asyncio.BoundedSemaphore(1)
 
     def _ensure_receiver(self) -> None:
         if self._receiver is None:
@@ -93,7 +93,7 @@ class EnvClient:
             response = response_type.model_validate(msgpack.unpackb(data, raw=False))
         else:
             # Keep large trace replies compact on the loop and expand only one at a time.
-            await self._decode_lock.acquire()
+            await self._decode_slots.acquire()
             decoding = asyncio.create_task(
                 asyncio.to_thread(
                     lambda: response_type.model_validate(
@@ -101,8 +101,8 @@ class EnvClient:
                     )
                 )
             )
-            # The worker owns the slot so caller cancellation cannot overlap decodes.
-            decoding.add_done_callback(lambda _: self._decode_lock.release())
+            # Hold the slot until the worker finishes so cancellation cannot overlap decodes.
+            decoding.add_done_callback(lambda _: self._decode_slots.release())
             try:
                 response = await asyncio.shield(decoding)
             except asyncio.CancelledError:
