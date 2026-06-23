@@ -5,5 +5,6 @@ here — it imports the optional `textarena` dependency at module load — but s
 `tasksets.textarena_v1`."""
 
 from tasksets.harbor_v1 import HarborConfig, HarborTaskset
+from tasksets.openenv_v1 import OpenEnvConfig, OpenEnvTaskset
 
-__all__ = ["HarborConfig", "HarborTaskset"]
+__all__ = ["HarborConfig", "HarborTaskset", "OpenEnvConfig", "OpenEnvTaskset"]
