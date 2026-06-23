@@ -11,7 +11,6 @@ from collections.abc import AsyncIterator
 from typing import ClassVar
 
 from verifiers.v1.interception.tunnel.base import Tunnel
-from verifiers.v1.runtimes.base import open_tunnel
 
 
 class ModalTunnel(Tunnel):
@@ -25,13 +24,5 @@ class ModalTunnel(Tunnel):
             raise ModuleNotFoundError(
                 "modal interception requires the Modal SDK; install `verifiers[modal]`."
             ) from e
-        stack = contextlib.AsyncExitStack()
-
-        async def _start() -> str:
-            tunnel = await stack.enter_async_context(modal.forward(port))
-            return str(tunnel.url).rstrip("/")
-
-        try:
-            yield await open_tunnel(_start, f"modal host tunnel (port {port})")
-        finally:
-            await stack.aclose()
+        async with modal.forward(port) as tunnel:
+            yield str(tunnel.url).rstrip("/")

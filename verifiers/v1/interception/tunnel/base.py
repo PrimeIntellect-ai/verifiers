@@ -25,10 +25,6 @@ class Tunnel(ABC):
     """Address the interception server must bind for this tunnel to reach it. Loopback by default —
     frpc / a BYO proxy connect over localhost on the same host."""
 
-    single_server: ClassVar[bool] = False
-    """Whether this is a single fixed endpoint shared by every rollout (so the pool never grows past
-    one server). True only for `CustomTunnel` — one BYO URL is structurally one server."""
-
     def __init__(self, config: "BaseInterceptionConfig") -> None:
         self.config = config
 
@@ -36,6 +32,13 @@ class Tunnel(ABC):
     def bind_port(self) -> int:
         """Fixed local port the interception server must bind (0 = an ephemeral port)."""
         return 0
+
+    @property
+    def single_server(self) -> bool:
+        """One server shared by every rollout (the pool never grows past it). True iff the server
+        binds a fixed port — two servers can't share one, so a fixed port is a single endpoint
+        (only `CustomTunnel`, a single BYO URL)."""
+        return self.bind_port != 0
 
     @contextlib.asynccontextmanager
     async def reachable(self, port: int, *, is_local: bool) -> AsyncIterator[str]:
