@@ -82,6 +82,15 @@ class MessageNode(StrictBaseModel):
     """Per-token, parallel to `token_ids`: True for trainable, model-sampled tokens (only an
     assistant node's completion span); False for template scaffold and every input-message
     token."""
+    is_content: list[bool] = Field(default_factory=list)
+    """Per-token, parallel to `token_ids` (when populated): True for message-body tokens (the
+    renderer's content), False for template scaffold (role-tag openers/closers, inter-turn
+    separators, tool-response wraps, the generation prompt). Populated from the renderer's
+    `RenderedTokens.is_content`; empty when the renderer doesn't attribute content (e.g. the
+    default Jinja renderer) or for relay (eval) turns that carry no token ids. Distinct from
+    `mask`: `mask` is "did the model sample this?" (assistant completion only); `is_content`
+    is "is this caller/model body vs scaffold?" — meaningful on every role, so observation
+    weighting (prime-rl `echo`) can train a tool/user message's *body* without its scaffold."""
     logprobs: list[float] = Field(default_factory=list)
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
@@ -433,6 +442,11 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     multi_modal_data = tokens.multi_modal_data if tokens else None
     prompt_ids = tokens.prompt_ids if tokens else []
     spans = tokens.message_spans if tokens else None
+    # Per-token content flags, parallel to prompt_ids (see MessageNode.is_content). Required
+    # exactly parallel so each node's [start:end] slice lines up with its token_ids; if the
+    # renderer didn't attribute content (empty/absent) every node's is_content stays [].
+    is_content = tokens.is_content if tokens else None
+    has_is_content = is_content is not None and len(is_content) == len(prompt_ids)
     idx = _head_index(trace)
 
     # Token-based prefix reuse. `prepare_turn` matched the prefix by message hash (content); when
@@ -485,6 +499,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
                 message=msg,
                 token_ids=node_tokens,
                 mask=[False] * len(node_tokens),
+                is_content=is_content[start:end] if has_is_content else [],
             )
         )
         parent = len(trace.nodes) - 1
@@ -505,6 +520,12 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
             sampled=True,
             token_ids=[*gen_prompt, *comp_ids],
             mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
+            # is_content == mask for an assistant node by construction: the generation-prompt
+            # scaffold is not content, the sampled completion is. Derive it (don't slice) so it
+            # stays correct, but only when the turn carries content attribution at all.
+            is_content=([False] * len(gen_prompt) + [True] * len(comp_ids))
+            if has_is_content
+            else [],
             # TurnTokens is discarded after commit, so transfer its logprobs without copying.
             logprobs=tokens.completion_logprobs if tokens else [],
             finish_reason=response.finish_reason,

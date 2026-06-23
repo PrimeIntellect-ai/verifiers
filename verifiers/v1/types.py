@@ -219,6 +219,10 @@ class TurnTokens(StrictBaseModel):
     message_spans: list[tuple[int, int] | None] | None = Field(
         default=None, exclude=True
     )
+    # Transient carrier (excluded): the renderer's per-token content flags, parallel to
+    # `prompt_ids` (`RenderedTokens.is_content`). The turn's `commit` slices it per node into
+    # `MessageNode.is_content`, then drops it. None when the renderer doesn't attribute content.
+    is_content: list[bool] | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the renderer's multimodal sidecar (image tensors + offsets),
     # attributed per node by the turn's `commit`, then dropped — never persisted.
     multi_modal_data: MultiModalData | None = Field(default=None, exclude=True)
