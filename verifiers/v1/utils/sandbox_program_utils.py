@@ -179,6 +179,20 @@ def sandbox_runner_program(
     compaction = state.runtime_state().get("compaction")
     if isinstance(compaction, dict) and compaction:
         runner_config["compaction"] = compaction
+    # Forward the consecutive malformed/invalid-tool caps so the in-sandbox base
+    # loop can enforce them mid-rollout. The host ``@vf.stop`` reads host state,
+    # but in-sandbox tool events land only in the SANDBOX-LOCAL state until the
+    # end-of-rollout state patch, so the host stop is inert mid-rollout; the loop
+    # must check the same event tags locally. Values come from the harness-owned
+    # ``runtime_state['invalid_tool_caps']`` when present; otherwise the decided
+    # policy defaults (malformed_computer=1, invalid_tool=2) apply. Kept generic
+    # here (forwarded ints + event tags) so the runner never imports worldsims.
+    invalid_tool_caps = state.runtime_state().get("invalid_tool_caps")
+    runner_config["invalid_tool_caps"] = (
+        invalid_tool_caps
+        if isinstance(invalid_tool_caps, dict)
+        else {"malformed_computer": 1, "invalid_tool": 2}
+    )
     files[RUNNER_CONFIG_PATH] = json.dumps(runner_config)
     command = python_runtime_command(
         RUNNER_PATH,
@@ -578,6 +592,44 @@ def _message_text(message):
     return ""
 
 
+def consecutive_tag_cap_triggered(events, tag, cap, action=None):
+    # Generic consecutive-invalid cap over recorded browser tool events. Mirrors
+    # the host taskset cap (_consecutive_tag_cap_triggered): count CONSECUTIVE
+    # events carrying ``tag`` (within ``action`` scope when set), reset the run on
+    # any in-scope event WITHOUT the tag, ignore out-of-scope events. cap <= 0
+    # disables it. Keyed only on the event tags the in-sandbox MiniBrowse service
+    # already sets (no worldsims import here).
+    if cap <= 0:
+        return False
+    run = 0
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        if action is not None and event.get("action") != action:
+            continue
+        if event.get(tag):
+            run += 1
+            if run >= cap:
+                return True
+        else:
+            run = 0
+    return False
+
+
+def invalid_tool_caps_triggered(state, caps):
+    # In-sandbox mirror of the host @vf.stop invalid_tool_call_cap. Rule 1:
+    # consecutive malformed `computer` calls (computer-scoped). Rule 2: consecutive
+    # input/schema-invalid calls of ANY tool. Defaults match the decided policy
+    # (malformed_computer=1, invalid_tool=2) when a cap is absent.
+    events = state.get("browser_tool_results")
+    caps = caps if isinstance(caps, dict) else {}
+    malformed_cap = int(caps.get("malformed_computer", 1))
+    invalid_cap = int(caps.get("invalid_tool", 2))
+    return consecutive_tag_cap_triggered(
+        events, "malformed_computer", malformed_cap, "computer"
+    ) or consecutive_tag_cap_triggered(events, "invalid_tool_call", invalid_cap)
+
+
 async def run_base(task, state):
     system_messages = list(state.get("system_prompt") or [])
     prompt_messages = [*system_messages, *(state.get("prompt") or [])]
@@ -591,6 +643,14 @@ async def run_base(task, state):
     summarize = compaction.get("mode") == "summarize"
     checkpoint_prompt = compaction.get("checkpoint_prompt") or ""
     framing = compaction.get("framing") or ""
+    # Consecutive malformed/invalid-tool caps, enforced in-sandbox because the host
+    # @vf.stop reads host state and the in-sandbox tool events only reach the host
+    # at end-of-rollout. Defaults to the decided policy (malformed_computer=1,
+    # invalid_tool=2) when the host did not forward them.
+    invalid_tool_caps = config.get("invalid_tool_caps") or {
+        "malformed_computer": 1,
+        "invalid_tool": 2,
+    }
     # Tools tagged with a sandbox_endpoint dispatch in-sandbox (loopback) instead
     # of the host /vf/tools tunnel.
     tool_endpoints = {
@@ -608,6 +668,9 @@ async def run_base(task, state):
     # immediately. Skip exactly one should_compact after compacting.
     suppress_compaction = False
     while max_turns <= 0 or turn < max_turns:
+        if invalid_tool_caps_triggered(state, invalid_tool_caps):
+            set_stop_condition(state, "invalid_tool_call_cap")
+            break
         if await check_stop(state):
             break
         message, should_compact = await create_model_message(state, messages)
@@ -662,6 +725,16 @@ async def run_base(task, state):
                     "content": content,
                 }
             )
+            # In-sandbox enforcement of the consecutive malformed/invalid-tool
+            # caps: the tagged event was just appended to the sandbox-local
+            # ``state['browser_tool_results']`` by ``call_sandbox_local_tool``, so
+            # check it here (the host @vf.stop cannot see it mid-rollout). Stop with
+            # no submit -> reward 0. The host @vf.stop stays as an end-of-rollout
+            # backstop.
+            if invalid_tool_caps_triggered(state, invalid_tool_caps):
+                set_stop_condition(state, "invalid_tool_call_cap")
+                completed = True
+                break
             if await check_stop(state):
                 completed = True
                 break
