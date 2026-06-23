@@ -50,7 +50,7 @@ class PrimeConfig(BaseConfig):
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
-    and globally — see limiters.TUNNEL_LIMITER.)"""
+    and globally — see interception.tunnel's TUNNEL_LIMITER.)"""
 
 
 class PrimeRuntime(Runtime):

@@ -207,8 +207,8 @@ class InterceptionServer:
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        # The tunnel decides where to bind: an ephemeral loopback port by default, a fixed port
-        # (and 0.0.0.0, for modal forwarding) when it needs one.
+        # The tunnel decides where to bind: an ephemeral loopback port by default, or a fixed port
+        # (a BYO reverse-proxy target) when it needs one.
         site = web.TCPSite(self.runner, self.tunnel.bind_host, self.tunnel.bind_port)
         await site.start()
         self.port = site._server.sockets[0].getsockname()[1]  # the bound port (ephemeral if 0)

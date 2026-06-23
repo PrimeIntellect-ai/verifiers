@@ -15,7 +15,6 @@ even if `run()` crashes.
 import asyncio
 import logging
 import time
-from contextlib import asynccontextmanager
 from enum import StrEnum
 
 from verifiers.v1.harness import Harness
@@ -30,8 +29,6 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.interception import (
     InterceptionPool,
-    InterceptionServer,
-    PrimeTunnel,
     RolloutLimits,
     RolloutSession,
 )
@@ -103,34 +100,6 @@ class Rollout:
         """The live trace, set the moment `run()` creates it; a --rich dashboard reads
         it to show in-flight progress (None until the rollout starts)."""
 
-    @asynccontextmanager
-    async def _serve_interception(
-        self,
-        pool: InterceptionPool | None,
-        runtime: Runtime,
-        session: RolloutSession,
-    ):
-        """Yield `(endpoint, secret, state_port, state_base)` for the harness — a slot on the shared
-        `pool` if one is given, else a per-rollout server exposed via this rollout's own runtime.
-        `endpoint` is the model route; `state_port` the interception server's host port (a per-rollout
-        tool server tunnels to it itself); `state_base` its reachable URL (localhost, or the pool's
-        tunnel) — how a SHARED tool server reaches this rollout's `/state` + `/task` channel."""
-        if pool is not None:
-            async with pool.acquire(session) as (
-                endpoint,
-                secret,
-                state_port,
-                state_base,
-            ):
-                yield endpoint, secret, state_port, state_base
-        else:
-            # No pool: a per-rollout server on its own prime tunnel, reached from this rollout's
-            # runtime (localhost if local, a tunnel if remote).
-            async with InterceptionServer(PrimeTunnel()) as server:
-                secret = server.register(session)
-                async with server.reachable(is_local=runtime.is_local) as url:
-                    yield f"{url}/v1", secret, server.port, url
-
     async def run(self) -> Trace:
         """Run the rollout and return its trace. Captures expected `RolloutError`s onto
         the trace (a bad rollout is data, not a crash), runs per-rollout scoring while
@@ -171,9 +140,10 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
-            async with self._serve_interception(
-                self.interception, runtime, session
-            ) as (
+            # A slot on the shared interception pool (built by `Environment.serving`, always present):
+            # `endpoint` is the model route; `state_port` the interception server's host port; `state_base`
+            # its reachable URL — how a SHARED tool server reaches this rollout's `/state` + `/task`.
+            async with self.interception.acquire(session) as (
                 endpoint,
                 secret,
                 state_port,

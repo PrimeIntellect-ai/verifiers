@@ -5,8 +5,6 @@ reaches it over a tunnel. `InterceptionConfig` is the discriminated union choosi
 matching `Tunnel` (see `verifiers.v1.interception.tunnel`, picked by `tunnel_cls`) implements it:
 
 - `prime` (default): `prime_tunnel` (frpc) — works from any host with prime credentials;
-- `modal`: Modal's own port forwarding (`modal.forward`) — only when the framework itself runs
-  inside a Modal container (a Modal-hosted trainer/eval); `modal.forward` refuses elsewhere;
 - `custom`: bring your own reverse proxy — the framework opens no tunnel and trusts a public `url`
   you front the interception port with (nginx/caddy, an ngrok tunnel, ...).
 """
@@ -33,12 +31,6 @@ class PrimeInterceptionConfig(BaseInterceptionConfig):
     type: Literal["prime"] = "prime"
 
 
-class ModalInterceptionConfig(BaseInterceptionConfig):
-    """Expose the host interception port via Modal's own forwarding (`modal.forward`)."""
-
-    type: Literal["modal"] = "modal"
-
-
 class CustomInterceptionConfig(BaseInterceptionConfig):
     """Bring your own reverse proxy: the framework opens no tunnel and reaches the interception
     server at `url`, which you front the fixed local `port` with. One public URL is one
@@ -57,6 +49,6 @@ class CustomInterceptionConfig(BaseInterceptionConfig):
 
 
 InterceptionConfig = Annotated[
-    PrimeInterceptionConfig | ModalInterceptionConfig | CustomInterceptionConfig,
+    PrimeInterceptionConfig | CustomInterceptionConfig,
     Field(discriminator="type"),
 ]

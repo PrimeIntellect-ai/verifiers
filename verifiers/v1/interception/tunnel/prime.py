@@ -6,6 +6,12 @@ import contextlib
 from collections.abc import AsyncIterator
 
 from verifiers.v1.interception.tunnel.base import Tunnel
+from verifiers.v1.runtimes.limiters import creation_limiter
+
+# prime_tunnel caps tunnel starts at 512/min per API token — a property of the tunnel service,
+# host-wide across every process that opens one. One limiter, not a per-runtime knob.
+TUNNELS_PER_MIN = 512
+TUNNEL_LIMITER = creation_limiter(TUNNELS_PER_MIN / 60, "prime-tunnel")
 
 
 class PrimeTunnel(Tunnel):
@@ -18,7 +24,6 @@ class PrimeTunnel(Tunnel):
         from prime_tunnel import Tunnel as TunnelClient
 
         from verifiers.v1.retries import retrying
-        from verifiers.v1.runtimes.limiters import TUNNEL_LIMITER
 
         client = None
         async for attempt in retrying(retries=3, label=f"host tunnel (port {port})"):

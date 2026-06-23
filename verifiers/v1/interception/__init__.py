@@ -9,7 +9,6 @@ from verifiers.v1.interception.config import (
     BaseInterceptionConfig,
     CustomInterceptionConfig,
     InterceptionConfig,
-    ModalInterceptionConfig,
     PrimeInterceptionConfig,
 )
 from verifiers.v1.interception.pool import InterceptionPool, PooledServer
@@ -20,7 +19,6 @@ from verifiers.v1.interception.server import (
 )
 from verifiers.v1.interception.tunnel import (
     CustomTunnel,
-    ModalTunnel,
     PrimeTunnel,
     Tunnel,
     tunnel_cls,
@@ -35,11 +33,9 @@ __all__ = [
     "BaseInterceptionConfig",
     "InterceptionConfig",
     "PrimeInterceptionConfig",
-    "ModalInterceptionConfig",
     "CustomInterceptionConfig",
     "Tunnel",
     "PrimeTunnel",
-    "ModalTunnel",
     "CustomTunnel",
     "tunnel_cls",
 ]
