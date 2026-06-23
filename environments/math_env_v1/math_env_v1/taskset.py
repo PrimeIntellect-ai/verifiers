@@ -35,9 +35,7 @@ class MathConfig(vf.TasksetConfig):
 
 class MathTaskset(vf.Taskset[MathTask, MathConfig]):
     def load_tasks(self) -> list[MathTask]:
-        from datasets import load_dataset
-
-        rows = load_dataset(
+        rows = self.load_dataset(
             self.config.dataset_name,
             self.config.dataset_subset,
             split=self.config.dataset_split,

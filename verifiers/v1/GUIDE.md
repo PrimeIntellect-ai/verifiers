@@ -141,13 +141,17 @@ able to change. The base `TasksetConfig` carries `id` (the taskset's id, set via
 ## Loading tasks
 
 `def load_tasks(self) -> list[TaskT]` builds the task list. It runs **once at load** (not per
-rollout), so do dataset loading / filtering / slicing here off `self.config`. Return your typed
-`Task` subclass instances.
+rollout), so do dataset loading / filtering here off `self.config`. Return your typed `Task`
+subclass instances. For a Hugging Face split with one task per row, use
+`self.load_dataset(...)`: the framework automatically streams only `-n` rows for an unshuffled
+limited run, while a full or shuffled run keeps normal dataset loading.
 
 ```python
 class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
     def load_tasks(self) -> list[GSM8KTask]:
-        rows = load_dataset("openai/gsm8k", "main", split=self.config.split)   # read knobs off self.config
+        rows = self.load_dataset(
+            "openai/gsm8k", "main", split=self.config.split
+        )
         return [
             GSM8KTask(
                 idx=i,

@@ -8,6 +8,8 @@ the toolset is SHARED — one instance for the whole eval, not rebuilt per rollo
 asks a judge model whether the harness's answer matches the ground truth.
 """
 
+from itertools import islice
+
 import verifiers.v1 as vf
 from verifiers.v1.dialects import ChatDialect
 
@@ -66,9 +68,7 @@ class WikiSearchConfig(vf.TasksetConfig):
 
 class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
     def load_tasks(self) -> list[TriviaTask]:
-        from datasets import load_dataset
-
-        rows = load_dataset(QUESTIONS_DATASET, split="train")
+        rows = self.load_dataset(QUESTIONS_DATASET, split="train")
         return [
             TriviaTask(
                 idx=i,
@@ -76,7 +76,7 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
                 answer=str(row["answer"]),
                 prompt=f"{SYSTEM}\n\nQuestion: {row['question']}",
             )
-            for i, row in enumerate(rows.select(range(min(NUM_QUESTIONS, len(rows)))))
+            for i, row in enumerate(islice(rows, NUM_QUESTIONS))
         ]
 
     def tools(self, task: TriviaTask) -> list[vf.Toolset]:

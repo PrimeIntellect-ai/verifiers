@@ -33,6 +33,7 @@ class ValidateConfig(BaseConfig):
     """Max wall-clock for the taskset's `validate` hook per task (None = no limit)."""
     num_tasks: int | None = Field(
         None,
+        ge=0,
         validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),
     )
     """How many tasks to validate (None = all)."""

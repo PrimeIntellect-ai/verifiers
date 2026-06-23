@@ -31,9 +31,7 @@ class AIME24Config(vf.TasksetConfig):
 
 class AIME24Taskset(vf.Taskset[AIME24Task, AIME24Config]):
     def load_tasks(self) -> list[AIME24Task]:
-        from datasets import load_dataset
-
-        rows = load_dataset(
+        rows = self.load_dataset(
             self.config.dataset_name,
             split=self.config.dataset_split,
             revision=self.config.dataset_revision,
