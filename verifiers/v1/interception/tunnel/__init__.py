@@ -13,7 +13,7 @@ from verifiers.v1.interception.config import (
 from verifiers.v1.interception.tunnel.base import Tunnel
 from verifiers.v1.interception.tunnel.custom import CustomTunnel
 from verifiers.v1.interception.tunnel.modal import ModalTunnel
-from verifiers.v1.interception.tunnel.prime import PrimeTunnel
+from verifiers.v1.interception.tunnel.prime import PrimeTunnel, host_endpoint
 
 
 def _tunnel_cls(config: BaseInterceptionConfig) -> type[Tunnel]:
@@ -35,4 +35,5 @@ __all__ = [
     "ModalTunnel",
     "CustomTunnel",
     "make_tunnel",
+    "host_endpoint",
 ]

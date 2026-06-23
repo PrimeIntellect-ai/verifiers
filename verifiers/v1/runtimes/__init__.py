@@ -15,7 +15,6 @@ from verifiers.v1.runtimes.base import (
     HOST,
     ProgramResult,
     Runtime,
-    host_endpoint,
     reachable_url,
     register,
 )
@@ -60,7 +59,6 @@ __all__ = [
     "RuntimeConfig",
     "make_runtime",
     "runtime_is_local",
-    "host_endpoint",
     "reachable_url",
     "HOST",
     "SubprocessConfig",

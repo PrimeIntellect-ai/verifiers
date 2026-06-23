@@ -45,6 +45,7 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
+    from verifiers.v1.interception.tunnel import Tunnel
     from verifiers.v1.mcp import Respond
 
 logger = logging.getLogger(__name__)
@@ -159,11 +160,10 @@ class InterceptionServer:
     matches its bearer token. A single server can multiplex many rollouts (the basis for
     `interception.pool`); used 1:1 it's just a server with one session."""
 
-    def __init__(self, bind_port: int = 0, bind_host: str = _HOST) -> None:
+    def __init__(self, tunnel: "Tunnel | None" = None) -> None:
         self.sessions: dict[str, RolloutSession] = {}
         self.port = 0
-        self._bind_port = bind_port  # 0 = an ephemeral port; fixed for a BYO reverse-proxy target
-        self._bind_host = bind_host  # loopback by default; 0.0.0.0 only when modal forwarding needs it
+        self._tunnel = tunnel  # binds where the tunnel reaches it; None = loopback ephemeral
         self.runner: web.AppRunner | None = None
 
     def register(self, session: RolloutSession) -> str:
@@ -207,10 +207,14 @@ class InterceptionServer:
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        site = web.TCPSite(self.runner, self._bind_host, self._bind_port)
+        # The tunnel decides where to bind: an ephemeral loopback port by default, a fixed port
+        # (and 0.0.0.0, for modal forwarding) when it needs one. No tunnel → loopback ephemeral.
+        host = self._tunnel.bind_host if self._tunnel else _HOST
+        port = self._tunnel.bind_port if self._tunnel else 0
+        site = web.TCPSite(self.runner, host, port)
         await site.start()
         self.port = site._server.sockets[0].getsockname()[1]  # the bound port (ephemeral if 0)
-        logger.info("interception up: url=http://%s:%d", self._bind_host, self.port)
+        logger.info("interception up: url=http://%s:%d", host, self.port)
         return self
 
     async def __aexit__(self, *exc) -> None:

@@ -14,12 +14,9 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import ClassVar, TypeVar
-
-from verifiers.v1.retries import retrying
+from typing import ClassVar
 
 logger = logging.getLogger(__name__)
 
@@ -275,57 +272,6 @@ class Runtime(ABC):
         return None
 
 
-TunnelT = TypeVar("TunnelT")
-
-
-async def open_tunnel(
-    start: Callable[[], Awaitable[TunnelT]], what: str, *, retries: int = 3
-) -> TunnelT:
-    """Open the host interception-server tunnel via `start`, retrying transient failures and raise
-    `TunnelError` if it still fails. Tunnel creation is network-bound and globally rate-capped
-    (`prime_tunnel` — 512/min shared across runtimes), so a transient failure is common and worth a
-    few retries before failing the rollout. `what` names the tunnel in the error."""
-    from verifiers.v1.errors import TunnelError
-
-    try:
-        async for attempt in retrying(retries=retries, label=what):
-            with attempt:
-                return await start()
-    except Exception as e:
-        raise TunnelError(f"{what} failed after {retries} retries: {e}") from e
-    raise TunnelError(f"{what} failed")  # unreachable: retrying() returns or reraises
-
-
-@contextlib.asynccontextmanager
-async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = None):
-    """Yield a URL a program *inside a runtime* uses to reach a HOST service on `port`. A local
-    runtime shares the host network → localhost; a remote one needs a host-side reverse tunnel
-    (`prime_tunnel`), torn down on exit. This is the host-side, provider-agnostic counterpart to
-    `Runtime.expose` (which publishes a port running *inside* a runtime) — so the runtime only
-    reports `is_local` and callers (interception pool, rollout, tool serving) bridge to the host
-    here, rather than every runtime reimplementing the tunnel."""
-    if is_local:
-        yield f"http://127.0.0.1:{port}"
-        return
-    from prime_tunnel import Tunnel
-
-    from verifiers.v1.runtimes.limiters import TUNNEL_LIMITER
-
-    async def _start() -> tuple[Tunnel, str]:
-        tunnel = Tunnel(local_port=port, labels=labels or None)
-        async with (
-            TUNNEL_LIMITER
-        ):  # shared prime_tunnel rate (512/min, runtime-independent)
-            return tunnel, str(await tunnel.start()).rstrip("/")
-
-    tunnel, url = await open_tunnel(_start, f"host tunnel (port {port})")
-    try:
-        yield url
-    finally:
-        with contextlib.suppress(Exception):
-            tunnel.sync_stop()
-
-
 class _Host:
     """The host network as a `reachable_url` location: shares the host network (so it's `is_local`)
     and publishes nothing itself (it's reached *into* via `host_endpoint`, not via `expose`)."""
@@ -364,5 +310,9 @@ async def reachable_url(
     ):  # in a sandbox → it publishes its own port
         yield await service.expose(port)
     else:  # on the host network → reach it from wherever the consumer runs
+        # The prime_tunnel host bridge lives with the tunnels (interception.tunnel); imported here
+        # to avoid an import cycle (that package depends on this module).
+        from verifiers.v1.interception.tunnel import host_endpoint
+
         async with host_endpoint(port, is_local) as url:
             yield url

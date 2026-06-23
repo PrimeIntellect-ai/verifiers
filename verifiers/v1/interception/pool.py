@@ -67,11 +67,9 @@ class InterceptionPool:
         for entry in self._servers:
             if self._tunnel.single_server or entry.load < self.multiplex:
                 return entry
-        # The tunnel decides where the server binds (fixed port + 0.0.0.0 for modal, else an
-        # ephemeral loopback port) and how it's reached from the harness runtime.
-        server = InterceptionServer(
-            bind_port=self._tunnel.bind_port, bind_host=self._tunnel.bind_host
-        )
+        # The server binds where its tunnel reaches it (the tunnel owns bind_host/bind_port);
+        # the tunnel then bridges that bound port to the harness runtime via `reachable`.
+        server = InterceptionServer(self._tunnel)
         await self._stack.enter_async_context(server)
         # The interception server is a HOST service the harness reaches: localhost for a local
         # harness runtime, a tunnel for a remote one. Owned by the pool's stack, torn down with it.
