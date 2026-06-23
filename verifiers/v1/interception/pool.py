@@ -7,7 +7,7 @@ env server) can fan out. Each shared `InterceptionServer` serves up to `multiple
 one tunnel. The pool is elastic: `acquire` reuses a server with a free slot, else brings up a new
 one — so it fits both the bounded eval runner and the env server's unbounded request load. The
 harness is unchanged: it authenticates with a per-rollout secret, which is what the server routes
-by. The custom (BYO endpoint) type uses `SingleInterception` instead — one server, no pool.
+by. The custom (BYO endpoint) type uses a single `InterceptionServer` directly — one server, no pool.
 """
 
 import asyncio
@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PooledServer:
     server: InterceptionServer
-    base_url: str  # reachable interception base: `{base_url}/v1` (model), `/state` + `/task` (servers)
     load: int = 0
 
 
@@ -51,17 +50,13 @@ class InterceptionPool(Interception):
 
     async def _entry(self) -> PooledServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new one (its
-        own prime tunnel). The caller holds `_lock`."""
+        own prime tunnel, on `_stack`, torn down with the pool). The caller holds `_lock`."""
         for entry in self._servers:
             if entry.load < self.multiplex:
                 return entry
-        # Each server owns its own prime tunnel; both are on `_stack`, torn down with it (LIFO).
-        server = InterceptionServer(PrimeTunnel())
+        server = InterceptionServer(PrimeTunnel(), self.is_local)
         await self._stack.enter_async_context(server)
-        url = await self._stack.enter_async_context(
-            server.reachable(is_local=self.is_local)
-        )
-        entry = PooledServer(server, url)
+        entry = PooledServer(server)
         self._servers.append(entry)
         logger.info(
             "interception pool: %d server(s), multiplex=%d (%s)",
@@ -73,17 +68,13 @@ class InterceptionPool(Interception):
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession):
-        """Register `session` on a server with spare capacity (bringing one up if needed) and yield
-        its `(endpoint, secret, port, base_url)` — `endpoint` is the model route (`{base_url}/v1`),
-        `port` the interception server's host port (a per-rollout tool server's own channel), and
-        `base_url` its reachable URL (how a `shared` server reaches this rollout's `/state` + `/task`);
-        free the slot on exit."""
+        """Pick a server with spare capacity (bringing one up if needed) and hand `session` a slot
+        on it (see `InterceptionServer.acquire`); free the slot on exit."""
         async with self._lock:
             entry = await self._entry()
-            secret = entry.server.register(session)
             entry.load += 1
         try:
-            yield f"{entry.base_url}/v1", secret, entry.server.port, entry.base_url
+            async with entry.server.acquire(session) as slot:
+                yield slot
         finally:
-            entry.server.unregister(secret)
             entry.load -= 1

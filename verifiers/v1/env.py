@@ -24,13 +24,11 @@ from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.types import EnvId
 from verifiers.v1.interception import (
-    CustomInterceptionConfig,
     Interception,
     InterceptionConfig,
-    InterceptionPool,
     PrimeInterceptionConfig,
     RolloutLimits,
-    SingleInterception,
+    make_interception,
 )
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
@@ -389,15 +387,12 @@ class Environment:
                 del self._interception
 
     def interception(self) -> Interception:
-        """The interception for this env's rollouts, picked by `interception.type`: a pooled
-        `InterceptionPool` for `prime` (one server + tunnel per `multiplex` rollouts, grown on
-        demand) or a single `SingleInterception` server for `custom` (one BYO endpoint). Built here,
-        where the harness runtime and `interception` config live; the caller (eval runner / env
-        server) enters it for the run and tears it down."""
-        runtime, config = self.harness.config.runtime, self.config.interception
-        if isinstance(config, CustomInterceptionConfig):
-            return SingleInterception(runtime, config)
-        return InterceptionPool(runtime, config)
+        """The interception for this env's rollouts, picked by `interception.type` (see
+        `make_interception`): a pooled `InterceptionPool` for `prime` (one server + tunnel per
+        `multiplex` rollouts, grown on demand) or a single `InterceptionServer` for `custom` (one
+        BYO endpoint). Built here, where the harness runtime and `interception` config live; the
+        caller (eval runner / env server) enters it for the run and tears it down."""
+        return make_interception(self.harness.config.runtime, self.config.interception)
 
     @contextlib.asynccontextmanager
     async def shared_tools(self, tasks: list[Task]):
