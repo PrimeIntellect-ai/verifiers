@@ -306,7 +306,23 @@ def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
     path_len = 0
     prefix_node_ids: list[int] = []
     for msg in prompt:
-        existing = idx.get((parent, message_hash(msg)))
+        existing = None
+        if (
+            isinstance(msg.content, list)
+            and len(idx) <= 10
+            and any(part.type == "image_url" for part in msg.content)
+        ):
+            children = [
+                node_id
+                for (node_parent, _), node_id in idx.items()
+                if node_parent == parent
+            ]
+            # Repeated image URLs are cheaper to compare than to encode and hash again.
+            # Only scan short, unambiguous parents; all other cases use the stable index.
+            if len(children) == 1 and trace.nodes[children[0]].message == msg:
+                existing = children[0]
+        if existing is None:
+            existing = idx.get((parent, message_hash(msg)))
         if existing is None:
             break
         prefix_node_ids.append(existing)
