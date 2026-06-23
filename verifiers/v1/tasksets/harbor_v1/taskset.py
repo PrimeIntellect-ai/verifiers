@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tarfile
 import tomllib
+from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field
@@ -196,6 +197,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
     )
 
 
+# Harbor test directories are immutable after download, so repeated rollouts can reuse
+# the latest archive. One entry bounds retained memory to one task.
+@lru_cache(maxsize=1)
 def make_tar(directory: Path) -> bytes:
     """Tar a directory's contents (flat) into a gzipped tarball."""
     buffer = io.BytesIO()
