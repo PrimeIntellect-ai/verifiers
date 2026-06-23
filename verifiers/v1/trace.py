@@ -242,6 +242,9 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     _head_index: dict = PrivateAttr(default_factory=dict)
     """`(parent, msg_hash) -> node_id` for the graph builder (`graph.prepare_turn` / `commit`);
     rebuilt lazily from `nodes` after deserialization."""
+    _branch_cache: list[Branch] = PrivateAttr(default_factory=list)
+    _branch_cache_node_count: int = PrivateAttr(default=-1)
+    """The derived branch view, rebuilt whenever the graph grows."""
 
     @property
     def reward(self) -> float:
@@ -295,6 +298,10 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         """The conversation segmented into linear branches — a view over the graph: each
         leaf's root→leaf path is a branch (one when linear, several under compaction or
         subagents). Branching falls out of walking each leaf's parents back to its root."""
+        node_count = len(self.nodes)
+        if self._branch_cache_node_count == node_count:
+            return self._branch_cache.copy()
+
         branches: list[Branch] = []
         for i, leaf in enumerate(graph.leaves(self)):
             path: list[int] = []
@@ -304,11 +311,15 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
                 nid = self.nodes[nid].parent
             path.reverse()
             branches.append(Branch(index=i, nodes=[self.nodes[n] for n in path]))
-        return branches
+        self._branch_cache = branches
+        self._branch_cache_node_count = node_count
+        return branches.copy()
 
     @property
     def num_branches(self) -> int:
         """How many branches (1 = linear; >1 = compaction/subagents)."""
+        if self._branch_cache_node_count == len(self.nodes):
+            return len(self._branch_cache)
         return len(graph.leaves(self))
 
     @property
