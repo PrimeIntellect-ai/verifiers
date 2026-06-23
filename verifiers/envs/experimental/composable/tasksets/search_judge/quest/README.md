@@ -1,6 +1,6 @@
-# QUEST Search Taskset
+# QUEST Search Judge Taskset
 
-QUEST tasks ported into the composable search taskset framework.
+QUEST objective and open-ended judge tasks ported into the composable search-judge taskset framework.
 
 Install the PDF evaluation dependencies with `uv add "verifiers[quest]"`.
 

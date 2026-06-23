@@ -9,7 +9,6 @@ def make_search_taskset(backend: str = "quest", **kwargs: Any) -> TaskSet:
     """Create a search/research TaskSet from a backend name."""
     factories = {
         "openseeker": make_openseeker_taskset,
-        "quest": make_quest_taskset,
         "redsearcher": make_redsearcher_taskset,
         "s1_deepresearch": make_s1_deepresearch_taskset,
     }
@@ -18,15 +17,6 @@ def make_search_taskset(backend: str = "quest", **kwargs: Any) -> TaskSet:
             f"Unknown search backend: {backend!r}. Available: {list(factories)}"
         )
     return factories[backend](**kwargs)
-
-
-def make_quest_taskset(**kwargs: Any) -> TaskSet:
-    """QUEST objective deep-research TaskSet."""
-    from verifiers.envs.experimental.composable.tasksets.search.quest import (
-        QuestTaskSet,
-    )
-
-    return QuestTaskSet(**kwargs)
 
 
 def make_openseeker_taskset(**kwargs: Any) -> TaskSet:

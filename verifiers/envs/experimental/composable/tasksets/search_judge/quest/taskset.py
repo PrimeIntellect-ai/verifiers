@@ -434,7 +434,7 @@ class QuestTaskSet(SandboxTaskSet):
         self._quest_eval_concurrency = quest_eval_concurrency
         super().__init__(
             dataset=self._build_dataset,
-            name=f"search/quest/{category}",
+            name=f"search_judge/quest/{category}",
             filter_fn=filter_fn,
         )
 
