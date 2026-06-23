@@ -24,14 +24,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from verifiers.v1.errors import RolloutError, ToolsetError, UserError
+from verifiers.v1.errors import RolloutError, ToolsetError, TunnelError, UserError
+from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerBase
-from verifiers.v1.runtimes import (
-    HOST,
-    Runtime,
-    make_runtime,
-    reachable_url,
-)
+from verifiers.v1.runtimes import Runtime, make_runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.types import Messages
 
@@ -257,6 +253,35 @@ async def serve_in_runtime(
 
 
 @contextlib.asynccontextmanager
+async def reachable_url(
+    service: Runtime, port: int, *, colocated: bool, consumer_is_local: bool
+) -> AsyncIterator[str]:
+    """Yield the URL a consumer uses to reach the server at (`service`, `port`), over two primitives:
+    `Runtime.expose` (publish a port out of a sandbox) and a host `Tunnel` (reach into the host from
+    a remote runtime). `colocated` = the server shares the consumer's runtime; `consumer_is_local` =
+    the consumer is on the host network.
+
+    - `colocated` -> localhost (same runtime, in-sandbox or host loopback);
+    - the server runs in a remote sandbox -> its own published URL (`expose`), reachable anywhere;
+    - else it's on the host network -> localhost to a local consumer, a host tunnel to a remote one."""
+    if colocated:
+        yield f"http://127.0.0.1:{port}"
+    elif not service.is_local:  # in a remote sandbox → it publishes its own port
+        yield await service.expose(port)
+    elif consumer_is_local:  # host network, local consumer → localhost, no tunnel
+        yield f"http://127.0.0.1:{port}"
+    else:  # host network, remote consumer → a host tunnel publishes the port outward
+        # Wrap only tunnel setup as TunnelError — the exit stack scopes it, so a body error during
+        # `yield` propagates raw.
+        async with contextlib.AsyncExitStack() as stack:
+            try:
+                url = await stack.enter_async_context(PrimeTunnel().expose(port))
+            except Exception as e:
+                raise TunnelError(f"host tunnel (port {port}) failed: {e}") from e
+            yield url
+
+
+@contextlib.asynccontextmanager
 async def serve(
     server: ServerBase,
     task,
@@ -329,13 +354,22 @@ async def serve(
             state_url=state_url,
             state_secret=state_secret,
         )
-        # Who consumes the server decides reachability (see `reachable_url`): a user sim is reached
-        # by the host (`for_host`); a tool by the harness — its `harness_runtime` per rollout, or, for
-        # a shared eval-level tool with no single harness, just the harness locality (`harness_is_local`).
-        consumer = HOST if for_host else harness_runtime
+        # Who consumes the server decides reachability (see `reachable_url`): a user sim is reached by
+        # the HOST (`for_host`, always local, never colocated with it); a tool by the harness — so it's
+        # colocated when it shares the harness's runtime, and reached with the harness's locality (read
+        # off the harness runtime when there is one, else `harness_is_local` for an eval-level shared tool).
+        if for_host:
+            colocated, consumer_is_local = False, True
+        else:
+            colocated = runtime is harness_runtime
+            consumer_is_local = (
+                harness_runtime.is_local
+                if harness_runtime is not None
+                else harness_is_local
+            )
         base = await stack.enter_async_context(
             reachable_url(
-                runtime, port, consumer=consumer, consumer_is_local=harness_is_local
+                runtime, port, colocated=colocated, consumer_is_local=consumer_is_local
             )
         )
         yield f"{base.rstrip('/')}/mcp"
