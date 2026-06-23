@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 KEEPALIVE_INTERVAL_SECONDS = float(
     os.environ.get("INTERCEPTION_SERVER_KEEPALIVE_INTERVAL_SECONDS", "3.0")
 )
-DEFAULT_CLIENT_MAX_SIZE_BYTES = 24 * 1024 * 1024
+DEFAULT_CLIENT_MAX_SIZE_BYTES = 50 * 1024 * 1024
 
 
 class StreamInterrupted(InfraError):
