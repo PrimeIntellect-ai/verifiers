@@ -19,7 +19,6 @@ from verifiers.v1.interception.base import Interception
 from verifiers.v1.interception.config import PrimeInterceptionConfig
 from verifiers.v1.interception.server import InterceptionServer, RolloutSession
 from verifiers.v1.interception.tunnel import PrimeTunnel
-from verifiers.v1.runtimes import RuntimeConfig, runtime_is_local
 
 logger = logging.getLogger(__name__)
 
@@ -33,17 +32,12 @@ class PooledServer:
 class InterceptionPool(Interception):
     """Shared interception servers behind prime tunnels. `multiplex` rollouts share one server (one
     tunnel); `acquire` hands a rollout a slot on one, bringing up a new server when all are at
-    capacity."""
+    capacity. `is_local` (no consumer is remote) means servers reach the harness at localhost
+    without a tunnel; otherwise each server is exposed via its own prime tunnel."""
 
-    def __init__(
-        self, runtime_config: RuntimeConfig, config: PrimeInterceptionConfig
-    ) -> None:
+    def __init__(self, is_local: bool, config: PrimeInterceptionConfig) -> None:
         super().__init__()
-        # The harness runtime's topology decides reachability: a remote one needs a host tunnel
-        # to the interception port, a local one is reached at localhost. Read off the runtime
-        # class (no provisioning) — the pool never runs a sandbox.
-        self.runtime_type = runtime_config.type
-        self.is_local = runtime_is_local(runtime_config)
+        self.is_local = is_local
         self.multiplex = max(1, config.multiplex)
         self._servers: list[PooledServer] = []
         self._lock = asyncio.Lock()
@@ -59,10 +53,9 @@ class InterceptionPool(Interception):
         entry = PooledServer(server)
         self._servers.append(entry)
         logger.info(
-            "interception pool: %d server(s), multiplex=%d (%s)",
+            "interception pool: %d server(s), multiplex=%d",
             len(self._servers),
             self.multiplex,
-            self.runtime_type,
         )
         return entry
 

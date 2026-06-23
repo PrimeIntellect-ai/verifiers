@@ -140,15 +140,13 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
-            # A slot on the eval's shared interception (built by `Environment.serving`, always present):
-            # `endpoint` is the model route; `state_port` the interception server's host port; `state_base`
-            # its reachable URL — how a SHARED tool server reaches this rollout's `/state` + `/task`.
-            async with self.interception.acquire(session) as (
-                endpoint,
-                secret,
-                state_port,
-                state_base,
-            ):
+            # A slot on the eval's shared interception (built by `Environment.serving`, always
+            # present): `base_url` is the interception server's reachable URL for this rollout. The
+            # harness reaches the model at `{base_url}/v1`; tool/user servers reach this rollout's
+            # `/state` + `/task` at `base_url` — it's universally reachable (the interception is
+            # exposed whenever any consumer is remote), so every server uses it directly.
+            async with self.interception.acquire(session) as (base_url, secret):
+                endpoint = f"{base_url}/v1"
                 async with boundary(ToolsetError, "building tool servers"):
                     tool_servers = self.taskset.tools(self.task)
                 async with (
@@ -157,17 +155,15 @@ class Rollout:
                         runtime,
                         self.task,
                         shared_urls=self.shared_urls,
-                        state_port=state_port,
                         state_secret=secret,
-                        state_base=state_base,
+                        state_base=base_url,
                     ) as urls,
                     serve_user(
                         self.taskset.user(self.task),
                         self.task,
                         harness_runtime=runtime,
-                        state_port=state_port,
                         state_secret=secret,
-                        state_base=state_base,
+                        state_base=base_url,
                     ) as session.user,
                 ):
                     if self.task.prompt is None and session.user is None:

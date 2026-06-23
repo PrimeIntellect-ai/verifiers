@@ -20,18 +20,17 @@ from verifiers.v1.interception.server import (
     RolloutSession,
 )
 from verifiers.v1.interception.tunnel import CustomTunnel
-from verifiers.v1.runtimes import RuntimeConfig, runtime_is_local
 
 
-def make_interception(
-    runtime_config: RuntimeConfig, config: InterceptionConfig
-) -> Interception:
+def make_interception(is_local: bool, config: InterceptionConfig) -> Interception:
     """The interception for a config, picked by type (the host-side counterpart to `make_runtime`):
     a single `InterceptionServer` at the BYO endpoint for `custom`, else a pooled `InterceptionPool`
-    for `prime`. `runtime_config` is the harness runtime, whose locality decides reachability."""
+    for `prime`. `is_local` (no consumer — harness or tool/user server — runs in a remote runtime)
+    decides whether the server is reached at localhost or exposed via a tunnel; the caller computes
+    it (see `Environment.interception`)."""
     if isinstance(config, CustomInterceptionConfig):
-        return InterceptionServer(CustomTunnel(config), runtime_is_local(runtime_config))
-    return InterceptionPool(runtime_config, config)
+        return InterceptionServer(CustomTunnel(config), is_local)
+    return InterceptionPool(is_local, config)
 
 
 __all__ = [

@@ -376,7 +376,7 @@ class Environment:
         this context; the resources are torn down on exit."""
         async with (
             self.shared_tools(tasks) as shared_urls,
-            self.interception() as interception,
+            self.interception(tasks) as interception,
         ):
             self._shared_urls = shared_urls
             self._interception = interception
@@ -386,13 +386,39 @@ class Environment:
                 self._shared_urls = {}
                 del self._interception
 
-    def interception(self) -> Interception:
+    def interception(self, tasks: list[Task]) -> Interception:
         """The interception for this env's rollouts, picked by `interception.type` (see
-        `make_interception`): a pooled `InterceptionPool` for `prime` (one server + tunnel per
-        `multiplex` rollouts, grown on demand) or a single `InterceptionServer` for `custom` (one
-        BYO endpoint). Built here, where the harness runtime and `interception` config live; the
-        caller (eval runner / env server) enters it for the run and tears it down."""
-        return make_interception(self.harness.config.runtime, self.config.interception)
+        `make_interception`): a pooled `InterceptionPool` for `prime` or a single `InterceptionServer`
+        for `custom`. Reachability is decided from ALL its consumers — the harness AND the tool/user
+        servers, any of which reaches it from its own runtime: localhost only when every consumer is
+        local, else exposed via the configured tunnel (a public URL all of them can reach). Built
+        here, where the runtimes and config live; the caller enters it for the run and tears it down."""
+        is_local = runtime_is_local(
+            self.harness.config.runtime
+        ) and not self._has_remote_server(tasks)
+        return make_interception(is_local, self.config.interception)
+
+    def _has_remote_server(self, tasks: list[Task]) -> bool:
+        """Whether any tool/user server runs in a remote runtime — so the interception must be
+        exposed (a public tunnel) even when the harness is local, since that server reaches the
+        `/state` channel from its own runtime. Placement/runtime is task-agnostic, so read it off the
+        first task (as `shared_tools` does). A colocated server shares the harness's runtime (already
+        covered by the harness check); a `url` server is external (it connects out, not a consumer)."""
+        if not tasks:
+            return False
+        task = tasks[0]
+        for toolset in self.taskset.tools(task):
+            cfg = toolset.config
+            if getattr(cfg, "url", None) or cfg.colocated:
+                continue
+            if not runtime_is_local(cfg.runtime):
+                return True
+        user = self.taskset.user(task)
+        return (
+            user is not None
+            and not user.config.colocated
+            and not runtime_is_local(user.config.runtime)
+        )
 
     @contextlib.asynccontextmanager
     async def shared_tools(self, tasks: list[Task]):

@@ -273,11 +273,11 @@ class InterceptionServer(Interception):
 
     @contextlib.asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
-        """Register `session` on this server and yield its `(endpoint, secret, port, base_url)`;
-        free the slot on exit. See `interception.base.Slot` for the tuple's meaning."""
+        """Register `session` on this server and yield its `(base_url, secret)`; free the slot on
+        exit. See `interception.base.Slot` for the meaning."""
         secret = self.register(session)
         try:
-            yield f"{self.base_url}/v1", secret, self.port, self.base_url
+            yield self.base_url, secret
         finally:
             self.unregister(secret)
 

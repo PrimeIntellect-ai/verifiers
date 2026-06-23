@@ -15,10 +15,11 @@ from typing import TYPE_CHECKING, Self
 if TYPE_CHECKING:
     from verifiers.v1.interception.server import RolloutSession
 
-# (endpoint, secret, state_port, state_base): `endpoint` is the model route (`{base}/v1`),
-# `state_port` the interception server's host port, `state_base` its reachable base URL (how a
-# shared tool server reaches this rollout's `/state` + `/task`).
-Slot = tuple[str, str, int, str]
+# (base_url, secret): the interception server's reachable base URL for this rollout, and the bearer
+# the harness/tool/user servers authenticate with. The harness reaches the model at `{base_url}/v1`;
+# tool/user servers reach this rollout's shared state at `{base_url}/state` + `/task`. `base_url` is
+# universally reachable — the interception is exposed (tunnel) whenever any consumer is remote.
+Slot = tuple[str, str]
 
 
 class Interception(ABC):
