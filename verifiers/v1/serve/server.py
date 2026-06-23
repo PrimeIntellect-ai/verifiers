@@ -28,7 +28,7 @@ from verifiers.utils.process_utils import use_threading_tqdm_lock
 from verifiers.utils.serve_utils import msgpack_encoder
 from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.config import ClientConfig
+from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import EnvConfig, Environment
 from verifiers.v1.serve.types import (
@@ -61,7 +61,7 @@ class EnvServer:
         )
         self._clients: dict[
             tuple[str, str], Client
-        ] = {}  # (client_config, model) -> Client
+        ] = {}  # (client_config, tokenizer/model) -> Client
 
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
@@ -96,10 +96,13 @@ class EnvServer:
             pass
 
     def _client(self, client_config: ClientConfig, model: str) -> Client:
-        """Resolve (and cache) a `Client` for this config+model. Cached because a
-        renderer client builds the model's tokenizer pool on first use — doing that
-        per request would be ruinous."""
-        key = (client_config.model_dump_json(), model)
+        """Resolve and cache a client, sharing explicitly pinned renderer models."""
+        cache_model = (
+            client_config.renderer_model_name
+            if isinstance(client_config, TrainClientConfig)
+            else None
+        ) or model
+        key = (client_config.model_dump_json(), cache_model)
         if key not in self._clients:
             self._clients[key] = resolve_client(client_config)
         return self._clients[key]
