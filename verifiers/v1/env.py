@@ -120,9 +120,7 @@ class EnvConfig(BaseConfig):
     trace's `total_tokens`; framework-enforced between turns."""
     interception: InterceptionConfig = PrimeInterceptionConfig()
     """How the host interception server is reached from a remote runtime: `prime` (prime_tunnel, the
-    default) or `custom` (bring your own endpoint — a reverse proxy, or a direct bind via
-    `bind_host`). Carries the shared `multiplex` — rollouts per interception server (and tunnel).
-    Select with `--interception.type prime|custom`."""
+    default) or `custom` (bring your own endpoint — a reverse proxy, or a direct `http://<host>:<port>`)."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
@@ -290,10 +288,11 @@ class Environment:
         )
         self._warned_resources: set[tuple[str, str]] = set()
         self._shared_urls: dict[str, str] = {}
-        self._interception: InterceptionPool | None = None
+        self._interception: InterceptionPool
         """Eval-level serving resources, live only inside `serving()`: shared tool servers
-        ({name: url}) and the interception pool. `episode()` injects them into every rollout
-        so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
+        ({name: url}, `_shared_urls`) and the interception pool (`_interception`, set in `serving()`).
+        `episode()` injects them into every rollout so neither runner has to thread them through
+        `Episode.run`/`Rollout.run` — and is only valid inside that context."""
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
         """Resolve the runtime config for a task off the harness's runtime (see
@@ -348,11 +347,6 @@ class Environment:
             else task.timeout.scoring
         )
         retries = self.config.retries
-        if self._interception is None:
-            raise RuntimeError(
-                "Environment.episode() must run within Environment.serving() — the interception "
-                "pool (and shared tool servers) are only live inside that context"
-            )
         rollouts = [
             Rollout(
                 task=task,
@@ -389,7 +383,6 @@ class Environment:
                 yield
             finally:
                 self._shared_urls = {}
-                self._interception = None
 
     def interception_pool(self) -> InterceptionPool:
         """The shared interception pool for this env's rollouts — one server (+ tunnel

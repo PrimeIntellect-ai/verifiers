@@ -19,6 +19,8 @@ opens the conversation: its first turn is seeded before the model is ever called
 handled out-of-band (run by the harness).
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import json
@@ -118,7 +120,7 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
-    user: "Respond | None" = None
+    user: Respond | None = None
     """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
     injected as a user turn, and the model is re-prompted — all within one program request,
@@ -128,7 +130,7 @@ class RolloutSession:
     every request until the first turn lands on the trace — so a retried opening request (e.g. the
     harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`
     twice and advances the simulator's queue past the opening."""
-    error: "RolloutError | None" = None
+    error: RolloutError | None = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
@@ -160,7 +162,7 @@ class InterceptionServer:
     matches its bearer token. A single server can multiplex many rollouts (the basis for
     `interception.pool`); used 1:1 it's just a server with one session."""
 
-    def __init__(self, tunnel: "Tunnel") -> None:
+    def __init__(self, tunnel: Tunnel) -> None:
         self.sessions: dict[str, RolloutSession] = {}
         self.port = 0
         # binds where the tunnel reaches it, and bridges that bound port via `reachable`

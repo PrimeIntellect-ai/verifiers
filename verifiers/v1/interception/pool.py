@@ -16,7 +16,7 @@ import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
-from verifiers.v1.interception.config import BaseInterceptionConfig
+from verifiers.v1.interception.config import InterceptionConfig
 from verifiers.v1.interception.server import InterceptionServer, RolloutSession
 from verifiers.v1.interception.tunnel import tunnel_cls
 from verifiers.v1.runtimes import RuntimeConfig, runtime_is_local
@@ -38,7 +38,7 @@ class InterceptionPool:
     bring-your-own endpoint, so every rollout shares its one server (multiplex doesn't apply)."""
 
     def __init__(
-        self, runtime_config: RuntimeConfig, config: BaseInterceptionConfig
+        self, runtime_config: RuntimeConfig, config: InterceptionConfig
     ) -> None:
         # The harness runtime's topology decides reachability: a remote one needs a host tunnel
         # to the interception port, a local one is reached at localhost. Read off the runtime

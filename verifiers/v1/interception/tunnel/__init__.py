@@ -7,15 +7,15 @@ tunnel per server (each server owns its own).
 """
 
 from verifiers.v1.interception.config import (
-    BaseInterceptionConfig,
     CustomInterceptionConfig,
+    InterceptionConfig,
 )
 from verifiers.v1.interception.tunnel.base import Tunnel
 from verifiers.v1.interception.tunnel.custom import CustomTunnel
 from verifiers.v1.interception.tunnel.prime import PrimeTunnel
 
 
-def tunnel_cls(config: BaseInterceptionConfig) -> type[Tunnel]:
+def tunnel_cls(config: InterceptionConfig) -> type[Tunnel]:
     """The tunnel class matching a config's type — the host-side counterpart to `_runtime_cls`."""
     if isinstance(config, CustomInterceptionConfig):
         return CustomTunnel
