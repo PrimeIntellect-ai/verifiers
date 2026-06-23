@@ -262,15 +262,18 @@ class ServerBase(Generic[ConfigT, StateT]):
 
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
-            state = await self._pull_state()
+            # Base State has no fields and rejects extras, so only subclasses need channel sync.
+            sync_state = self._state_cls is not State
+            state = await self._pull_state() if sync_state else State()
             token = _call_state.set(state)
             try:
                 # Reuse the second serialization as the PUT body when the callback mutates state.
-                before = self._state_adapter.dump_json(state)
+                before = self._state_adapter.dump_json(state) if sync_state else None
                 result = fn(*args, **kwargs)
                 if inspect.isawaitable(result):
                     result = await result
-                await self._push_state(before)
+                if before is not None:
+                    await self._push_state(before)
                 return result
             finally:
                 _call_state.reset(token)
