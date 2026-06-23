@@ -61,10 +61,12 @@ class DirectInterceptionConfig(BaseInterceptionConfig):
 
     type: Literal["direct"] = "direct"
     host: str
-    """Address the harness reaches this host at (public IP or DNS name); each server's URL is
-    `http://{host}:{port}` for its bound port."""
-    bind_host: str = "0.0.0.0"
-    """Local interface the interception server binds (0.0.0.0 = all interfaces)."""
+    """Address the harness *reaches this host at* — goes in the URL (`http://{host}:{port}`). A
+    routable IP or DNS name (it can't be `0.0.0.0`, which isn't a dialable destination)."""
+    bind_host: str | None = None
+    """Local interface the server *listens on* (`socket.bind`). `None` = bind `host` itself, so it
+    listens only on the advertised interface (not all of them) — bind a private NIC and it's never on
+    the public NIC. Set `0.0.0.0` to listen everywhere, or a different local IP behind a 1:1 NAT."""
 
 
 InterceptionConfig = Annotated[
