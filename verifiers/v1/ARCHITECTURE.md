@@ -68,10 +68,14 @@ several. A branch *is* a training sample: concatenating its nodes' `token_ids` r
 `logprobs` line up — no agent-specific export code. This is why compaction and subagents train
 end to end: each surviving context window is just another root→leaf path.
 
-`Trace.to_wire()` (`trace.py`) is `model_dump` minus what shouldn't travel: computed views
-(`reward`, `branches`, `num_turns`), per-span `duration`s (recomputed on the far side), and
-`usage`. Multimodal pixel tensors *do* travel — base64-encoded by a field serializer on
-`MessageNode.multi_modal_data` (`graph.py`) so they survive JSON + msgpack to the trainer.
+`Trace.to_record()` (`trace.py`) is the JSON record dump (`model_dump(mode="json")`) for
+`results.jsonl` / W&B tables, minus the per-node training tensors (`MessageNode.multi_modal_data`,
+`routed_experts`, via `_NODE_DUMP_EXCLUDE`): those hold raw numpy bytes that can't round-trip JSON
+(the dump raises `UnicodeDecodeError` on real expert ids) and bloat every line. Computed views
+(`reward`, `branches`, `num_turns`, per-span `duration`) are pydantic properties, so they're never
+serialized and recompute on load; `state` is excluded. The tensors still reach the trainer over the
+env-server *wire*, which uses msgpack `model_dump(mode="python")` and carries them as raw `bin` bytes
+(not base64) via the field serializers on `MessageNode` (`graph.py`); only the JSON record strips them.
 
 ### Branching: message-level vs renderer-level, and the token invariant
 
