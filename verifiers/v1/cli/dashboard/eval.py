@@ -209,14 +209,16 @@ def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
 def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
     # The n rollouts of each task, grouped together (so they sit adjacent); groups ordered by
     # earliest start, rollouts within a group by start. Finished ones stay (never removed).
+    # Ordered by `setup.start` (the rollout's true start) so a rollout still in setup — which
+    # has no `generation.start` yet — sorts and shows in its real position, not pinned at 0.
     by_task: dict[int, list[Rollout]] = {}
     for rollout in rollouts:
         if rollout.trace is not None:
             by_task.setdefault(rollout.trace.task.idx, []).append(rollout)
     groups = list(by_task.values())
     for group in groups:
-        group.sort(key=lambda r: r.trace.timing.generation.start)
-    groups.sort(key=lambda g: g[0].trace.timing.generation.start)
+        group.sort(key=lambda r: r.trace.timing.setup.start)
+    groups.sort(key=lambda g: g[0].trace.timing.setup.start)
     return groups
 
 
@@ -253,7 +255,7 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             )
             runtime = f"{runtime_type}({descriptor})" if descriptor else runtime_type
             turns = t.num_turns
-            start = t.timing.generation.start
+            start = t.timing.setup.start
             end = (
                 t.timing.scoring.end
                 or t.timing.finalize.end
@@ -282,7 +284,9 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                 f"{format_cost_usd(cost)}" if cost is not None else "",
                 stop,  # stop condition (agent_completed / max_turns / harness_timeout), once done
             ]
-            # No start time yet (queued, not generating) → blank, not `now - 0` (~56 years).
+            # Time from `setup.start` (the rollout's true start) so it spans the whole rollout —
+            # runtime + taskset + harness setup, then generation — not just generation. Blank
+            # before setup starts → no `now - 0` (~56 years).
             elapsed = format_time(end - start) if start else ""
             rows.append((_brace(i, len(group)), state, left, result, elapsed))
     grid = Table.grid(expand=True, padding=(0, 1))
