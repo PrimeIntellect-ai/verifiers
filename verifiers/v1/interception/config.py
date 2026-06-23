@@ -2,7 +2,7 @@
 
 The interception server runs on the host; a harness in a remote runtime (a prime/modal sandbox)
 reaches it over a tunnel. `InterceptionConfig` is the discriminated union choosing the type; the
-matching `Tunnel` (see `verifiers.v1.interception.tunnel`, built by `make_tunnel`) implements it:
+matching `Tunnel` (see `verifiers.v1.interception.tunnel`, picked by `tunnel_cls`) implements it:
 
 - `prime` (default): `prime_tunnel` (frpc) — works from any host with prime credentials;
 - `modal`: Modal's own port forwarding (`modal.forward`) — only when the framework itself runs

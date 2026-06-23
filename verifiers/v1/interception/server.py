@@ -24,7 +24,7 @@ import contextlib
 import json
 import logging
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -160,10 +160,10 @@ class InterceptionServer:
     matches its bearer token. A single server can multiplex many rollouts (the basis for
     `interception.pool`); used 1:1 it's just a server with one session."""
 
-    def __init__(self, tunnel: "Tunnel | None" = None) -> None:
+    def __init__(self, tunnel: "Tunnel") -> None:
         self.sessions: dict[str, RolloutSession] = {}
         self.port = 0
-        self._tunnel = tunnel  # binds where the tunnel reaches it; None = loopback ephemeral
+        self.tunnel = tunnel  # binds where the tunnel reaches it, and bridges it via `reachable`
         self.runner: web.AppRunner | None = None
 
     def register(self, session: RolloutSession) -> str:
@@ -208,19 +208,36 @@ class InterceptionServer:
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         # The tunnel decides where to bind: an ephemeral loopback port by default, a fixed port
-        # (and 0.0.0.0, for modal forwarding) when it needs one. No tunnel → loopback ephemeral.
-        host = self._tunnel.bind_host if self._tunnel else _HOST
-        port = self._tunnel.bind_port if self._tunnel else 0
-        site = web.TCPSite(self.runner, host, port)
+        # (and 0.0.0.0, for modal forwarding) when it needs one.
+        site = web.TCPSite(self.runner, self.tunnel.bind_host, self.tunnel.bind_port)
         await site.start()
         self.port = site._server.sockets[0].getsockname()[1]  # the bound port (ephemeral if 0)
-        logger.info("interception up: url=http://%s:%d", host, self.port)
+        logger.info("interception up: url=http://%s:%d", self.tunnel.bind_host, self.port)
         return self
 
     async def __aexit__(self, *exc) -> None:
         logger.info("interception down: url=http://%s:%d", _HOST, self.port)
         if self.runner is not None:
             await self.runner.cleanup()
+
+    @contextlib.asynccontextmanager
+    async def reachable(self, *, is_local: bool) -> AsyncIterator[str]:
+        """Yield the base URL a harness reaches this server at — its bound port bridged by its
+        tunnel (localhost for a local runtime, a tunnel for a remote one). A tunnel-setup failure
+        surfaces as `TunnelError`; the exit stack scopes the wrap to setup only, so a rollout-body
+        error (raised while the URL is held) propagates unchanged."""
+        from verifiers.v1.errors import TunnelError
+
+        async with contextlib.AsyncExitStack() as stack:
+            try:
+                url = await stack.enter_async_context(
+                    self.tunnel.reachable(self.port, is_local=is_local)
+                )
+            except Exception as e:
+                raise TunnelError(
+                    f"interception tunnel (port {self.port}) failed: {e}"
+                ) from e
+            yield url
 
     def _fail(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError

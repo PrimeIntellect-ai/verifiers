@@ -23,7 +23,7 @@ from verifiers.v1.interception.tunnel import (
     ModalTunnel,
     PrimeTunnel,
     Tunnel,
-    make_tunnel,
+    tunnel_cls,
 )
 
 __all__ = [
@@ -41,5 +41,5 @@ __all__ = [
     "PrimeTunnel",
     "ModalTunnel",
     "CustomTunnel",
-    "make_tunnel",
+    "tunnel_cls",
 ]

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from verifiers.v1.interception.config import BaseInterceptionConfig
 from verifiers.v1.interception.server import InterceptionServer, RolloutSession
-from verifiers.v1.interception.tunnel import make_tunnel
+from verifiers.v1.interception.tunnel import tunnel_cls
 from verifiers.v1.runtimes import RuntimeConfig, runtime_is_local
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ class InterceptionPool:
         self.is_local = runtime_is_local(runtime_config)
         self.config = config
         self.multiplex = max(1, config.multiplex)
-        self._tunnel = make_tunnel(config)
+        self.tunnel_cls = tunnel_cls(config)  # one tunnel instance per server, built from this
         self._servers: list[PooledServer] = []
         self._lock = asyncio.Lock()
         self._stack = AsyncExitStack()
@@ -65,16 +65,15 @@ class InterceptionPool:
         own host endpoint). A single-endpoint tunnel (a BYO `url`) is one server every rollout
         shares. The caller holds `_lock`."""
         for entry in self._servers:
-            if self._tunnel.single_server or entry.load < self.multiplex:
+            if self.tunnel_cls.single_server or entry.load < self.multiplex:
                 return entry
-        # The server binds where its tunnel reaches it (the tunnel owns bind_host/bind_port);
-        # the tunnel then bridges that bound port to the harness runtime via `reachable`.
-        server = InterceptionServer(self._tunnel)
+        # Each server owns its own tunnel instance: it binds where the tunnel reaches it
+        # (bind_host/bind_port) and exposes that bound port to the harness via `server.reachable`.
+        # Both are owned by the pool's stack, torn down with it (LIFO).
+        server = InterceptionServer(self.tunnel_cls(self.config))
         await self._stack.enter_async_context(server)
-        # The interception server is a HOST service the harness reaches: localhost for a local
-        # harness runtime, a tunnel for a remote one. Owned by the pool's stack, torn down with it.
         url = await self._stack.enter_async_context(
-            self._tunnel.reachable(server.port, is_local=self.is_local)
+            server.reachable(is_local=self.is_local)
         )
         entry = PooledServer(server, url)
         self._servers.append(entry)

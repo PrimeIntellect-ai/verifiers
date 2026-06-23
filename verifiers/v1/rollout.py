@@ -31,15 +31,14 @@ from verifiers.v1.errors import (
 from verifiers.v1.interception import (
     InterceptionPool,
     InterceptionServer,
+    PrimeTunnel,
     RolloutLimits,
     RolloutSession,
 )
 from verifiers.v1.runtimes import (
-    HOST,
     Runtime,
     RuntimeConfig,
     make_runtime,
-    reachable_url,
 )
 from verifiers.v1.mcp import serve_tools, serve_user
 from verifiers.v1.state import state_cls
@@ -125,10 +124,11 @@ class Rollout:
             ):
                 yield endpoint, secret, state_port, state_base
         else:
-            async with InterceptionServer() as server:
+            # No pool: a per-rollout server on its own prime tunnel, reached from this rollout's
+            # runtime (localhost if local, a tunnel if remote).
+            async with InterceptionServer(PrimeTunnel()) as server:
                 secret = server.register(session)
-                # a HOST service the harness (in `runtime`) reaches: localhost or a tunnel
-                async with reachable_url(HOST, server.port, consumer=runtime) as url:
+                async with server.reachable(is_local=runtime.is_local) as url:
                     yield f"{url}/v1", secret, server.port, url
 
     async def run(self) -> Trace:

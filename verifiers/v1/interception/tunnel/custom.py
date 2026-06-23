@@ -4,16 +4,14 @@ rollout."""
 
 import contextlib
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import ClassVar
 
+from verifiers.v1.interception.config import CustomInterceptionConfig
 from verifiers.v1.interception.tunnel.base import Tunnel
 
-if TYPE_CHECKING:
-    from verifiers.v1.interception.config import CustomInterceptionConfig
 
-
-class CustomTunnel(Tunnel):
-    config: "CustomInterceptionConfig"
+class CustomTunnel(Tunnel[CustomInterceptionConfig]):
+    single_server: ClassVar[bool] = True
 
     @property
     def bind_port(self) -> int:

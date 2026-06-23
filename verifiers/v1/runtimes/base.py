@@ -310,9 +310,17 @@ async def reachable_url(
     ):  # in a sandbox → it publishes its own port
         yield await service.expose(port)
     else:  # on the host network → reach it from wherever the consumer runs
-        # The prime_tunnel host bridge lives with the tunnels (interception.tunnel); imported here
-        # to avoid an import cycle (that package depends on this module).
-        from verifiers.v1.interception.tunnel import host_endpoint
+        # The prime_tunnel host bridge is a `PrimeTunnel` (interception.tunnel); imported here to
+        # avoid an import cycle (that package depends on this module). Wrap only tunnel setup as
+        # TunnelError — the exit stack scopes it, so a body error during `yield` propagates raw.
+        from verifiers.v1.errors import TunnelError
+        from verifiers.v1.interception.tunnel import PrimeTunnel
 
-        async with host_endpoint(port, is_local) as url:
+        async with contextlib.AsyncExitStack() as stack:
+            try:
+                url = await stack.enter_async_context(
+                    PrimeTunnel().reachable(port, is_local=is_local)
+                )
+            except Exception as e:
+                raise TunnelError(f"host tunnel (port {port}) failed: {e}") from e
             yield url
