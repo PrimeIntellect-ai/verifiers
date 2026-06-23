@@ -215,8 +215,8 @@ def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
             by_task.setdefault(rollout.trace.task.idx, []).append(rollout)
     groups = list(by_task.values())
     for group in groups:
-        group.sort(key=lambda r: r.trace.timing.generation.start)
-    groups.sort(key=lambda g: g[0].trace.timing.generation.start)
+        group.sort(key=lambda r: r.trace.timing.setup.start)
+    groups.sort(key=lambda g: g[0].trace.timing.setup.start)
     return groups
 
 
@@ -253,11 +253,14 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             )
             runtime = f"{runtime_type}({descriptor})" if descriptor else runtime_type
             turns = t.num_turns
-            start = t.timing.generation.start
+            start = t.timing.setup.start
             end = (
                 t.timing.scoring.end
                 or t.timing.finalize.end
                 or t.timing.generation.end
+                # a rollout that errored in setup has only setup.end — freeze there once done,
+                # else (still running) the timer would grow off `now` forever
+                or (t.timing.setup.end if t.is_completed else 0)
                 or now
             )
             prompt, completion, cached, reasoning, nbranches = _tokens(t)
