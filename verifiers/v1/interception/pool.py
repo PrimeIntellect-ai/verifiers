@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from verifiers.v1.interception.config import BaseInterceptionConfig
 from verifiers.v1.interception.server import InterceptionServer, RolloutSession
+from verifiers.v1.interception.tunnel import make_tunnel
 from verifiers.v1.runtimes import RuntimeConfig, runtime_is_local
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ class InterceptionPool:
         self.is_local = runtime_is_local(runtime_config)
         self.config = config
         self.multiplex = max(1, config.multiplex)
-        self._tunnel = config.tunnel()
+        self._tunnel = make_tunnel(config)
         self._servers: list[PooledServer] = []
         self._lock = asyncio.Lock()
         self._stack = AsyncExitStack()

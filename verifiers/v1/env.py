@@ -119,10 +119,10 @@ class EnvConfig(BaseConfig):
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
     trace's `total_tokens`; framework-enforced between turns."""
     interception: InterceptionConfig = PrimeInterceptionConfig()
-    """How the host interception server is reached from the harness's runtime, behind a remote
-    runtime: `prime` (prime_tunnel, the default), `modal` (Modal forwarding, framework-in-container
-    only), or `url` (bring your own reverse proxy). Carries the shared `multiplex` — rollouts per
-    interception server (and tunnel). Select with `--interception.type prime|modal|url`."""
+    """How the host interception server is reached from a remote runtime: `prime` (prime_tunnel,
+    the default), `modal` (Modal forwarding, framework-in-container only), or `url` (bring your own
+    reverse proxy). Carries the shared `multiplex` — rollouts per interception server (and tunnel).
+    Select with `--interception.type prime|modal|url`."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`

@@ -1,8 +1,8 @@
 """How the host interception server is made reachable from the harness's runtime.
 
 The interception server runs on the host; a harness in a remote runtime (a prime/modal sandbox)
-reaches it over a tunnel. `InterceptionConfig` is the discriminated union choosing the type, and
-each config owns the `Tunnel` (see `verifiers.v1.interception.tunnel`) implementing it:
+reaches it over a tunnel. `InterceptionConfig` is the discriminated union choosing the type; the
+matching `Tunnel` (see `verifiers.v1.interception.tunnel`, built by `make_tunnel`) implements it:
 
 - `prime` (default): `prime_tunnel` (frpc) — works from any host with prime credentials;
 - `modal`: Modal's own port forwarding (`modal.forward`) — only when the framework itself runs
@@ -20,13 +20,6 @@ from typing import Annotated, Literal
 from pydantic import Field
 from pydantic_config import BaseConfig
 
-from verifiers.v1.interception.tunnel import (
-    CustomTunnel,
-    ModalTunnel,
-    PrimeTunnel,
-    Tunnel,
-)
-
 
 class BaseInterceptionConfig(BaseConfig):
     """Fields shared by every interception type."""
@@ -37,19 +30,12 @@ class BaseInterceptionConfig(BaseConfig):
     per-token tunnel cap. 1 = a server (+ tunnel) per rollout. `url` ignores it (one BYO endpoint
     is structurally a single server)."""
 
-    def tunnel(self) -> Tunnel:
-        """The tunnel that makes the host interception server reachable for this config."""
-        raise NotImplementedError
-
 
 class PrimeInterceptionConfig(BaseInterceptionConfig):
     """Expose the host interception port via `prime_tunnel` (frpc). The default — works from any
     host with prime credentials, for harnesses in prime *or* modal sandboxes alike."""
 
     type: Literal["prime"] = "prime"
-
-    def tunnel(self) -> Tunnel:
-        return PrimeTunnel(self)
 
 
 class ModalInterceptionConfig(BaseInterceptionConfig):
@@ -58,9 +44,6 @@ class ModalInterceptionConfig(BaseInterceptionConfig):
     `modal.forward` raises anywhere else."""
 
     type: Literal["modal"] = "modal"
-
-    def tunnel(self) -> Tunnel:
-        return ModalTunnel(self)
 
 
 class UrlInterceptionConfig(BaseInterceptionConfig):
@@ -78,9 +61,6 @@ class UrlInterceptionConfig(BaseInterceptionConfig):
 
     def model_post_init(self, _ctx) -> None:
         self.url = self.url.rstrip("/")
-
-    def tunnel(self) -> Tunnel:
-        return CustomTunnel(self)
 
 
 InterceptionConfig = Annotated[
