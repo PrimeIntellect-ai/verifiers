@@ -309,7 +309,9 @@ async def reachable_url(
         service is not HOST and not service.is_local
     ):  # in a sandbox → it publishes its own port
         yield await service.expose(port)
-    else:  # on the host network → reach it from wherever the consumer runs
+    elif is_local:  # host network, local consumer → localhost, no tunnel
+        yield f"http://127.0.0.1:{port}"
+    else:  # host network, remote consumer → a host tunnel publishes the port outward
         # The prime_tunnel host bridge is a `PrimeTunnel` (interception.tunnel); imported here to
         # avoid an import cycle (that package depends on this module). Wrap only tunnel setup as
         # TunnelError — the exit stack scopes it, so a body error during `yield` propagates raw.
@@ -318,9 +320,7 @@ async def reachable_url(
 
         async with contextlib.AsyncExitStack() as stack:
             try:
-                url = await stack.enter_async_context(
-                    PrimeTunnel().reachable(port, is_local=is_local)
-                )
+                url = await stack.enter_async_context(PrimeTunnel().expose(port))
             except Exception as e:
                 raise TunnelError(f"host tunnel (port {port}) failed: {e}") from e
             yield url

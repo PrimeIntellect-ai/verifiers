@@ -1,15 +1,15 @@
-"""The Tunnel contract: make the host interception server reachable from a remote harness.
+"""The Tunnel contract: expose a host interception port to a remote harness runtime.
 
-The interception server runs on the host; a harness in a remote runtime reaches it over a tunnel.
-`Tunnel` is that contract — how to build the reachable URL, and what address/port the server must
-bind. Concrete tunnels live alongside this base; the interception pool picks the one matching its
-config's type. The host-side counterpart to a `Runtime`: a `Runtime.expose` publishes a port
-*inside* a sandbox; a `Tunnel.expose` publishes a *host* port outward.
+The interception server runs on the host. A *local* harness (host network) reaches it at localhost —
+no tunnel, whatever the config. A *remote* harness needs the port published outward: that's a
+`Tunnel`. It says where the server must bind for the tunnel to reach it (`bind_host`/`bind_port`) and
+`expose`s the bound port as a public URL. So a tunnel knows nothing about locality — the caller (the
+interception server / `reachable_url`) uses it only in the remote case. The host-side counterpart to
+a `Runtime`: `Runtime.expose` publishes a port *inside* a sandbox; `Tunnel.expose` a *host* port.
 """
 
 import contextlib
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
 from typing import ClassVar, Generic, TypeVar
 
 from verifiers.v1.interception.config import BaseInterceptionConfig
@@ -18,9 +18,9 @@ ConfigT = TypeVar("ConfigT", bound=BaseInterceptionConfig)
 
 
 class Tunnel(ABC, Generic[ConfigT]):
-    """Makes the host interception server reachable from a remote harness runtime. One per
-    interception type (the pool picks it by config); lightweight and stateless beyond the config it
-    holds (generic over its config type, so `self.config` is typed per subclass)."""
+    """Exposes a host interception port to a remote harness runtime. One per interception type (the
+    pool picks it by config); lightweight and stateless beyond the config it holds (generic over its
+    config type, so `self.config` is typed per subclass)."""
 
     bind_host: ClassVar[str] = "127.0.0.1"
     """Interface the interception server binds for this tunnel to reach it. Loopback by default —
@@ -34,17 +34,6 @@ class Tunnel(ABC, Generic[ConfigT]):
     def bind_port(self) -> int:
         """Fixed local port the interception server must bind (0 = an ephemeral port)."""
         return 0
-
-    @contextlib.asynccontextmanager
-    async def reachable(self, port: int, *, is_local: bool) -> AsyncIterator[str]:
-        """Yield a URL the harness's runtime uses to reach the host interception server on `port`. A
-        local runtime shares the host network → localhost (no tunnel, whatever the type); a remote
-        one is bridged by `expose`."""
-        if is_local:
-            yield f"http://127.0.0.1:{port}"
-        else:
-            async with self.expose(port) as url:
-                yield url
 
     @abstractmethod
     def expose(self, port: int) -> contextlib.AbstractAsyncContextManager[str]:

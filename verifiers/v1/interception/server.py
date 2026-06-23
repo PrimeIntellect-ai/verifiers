@@ -186,7 +186,7 @@ class InterceptionServer(Interception):
         self.tunnel = tunnel
         self.is_local = is_local
         self.port = 0
-        self.host = tunnel.bind_host
+        self.host = "127.0.0.1"  # actual bind interface decided in __aenter__ (is_local vs tunnel)
         self.base_url: str  # set in __aenter__, the URL the harness reaches this server at
         self.runner: web.AppRunner | None = None
 
@@ -236,24 +236,32 @@ class InterceptionServer(Interception):
             self.runner = web.AppRunner(app)
             await self.runner.setup()
             self._stack.push_async_callback(self.runner.cleanup)
-            # The tunnel decides where to bind: an ephemeral loopback port by default, or a fixed
-            # port (a BYO reverse-proxy target) when it needs one.
-            site = web.TCPSite(self.runner, self.host, self.tunnel.bind_port)
+            # A local harness shares the host network → reach the server at localhost on any
+            # ephemeral port, no tunnel. Only a remote harness needs the tunnel, which says where to
+            # bind for it to reach the port (bind_host/bind_port) and `expose`s it outward.
+            if self.is_local:
+                self.host, bind_port = "127.0.0.1", 0
+            else:
+                self.host, bind_port = self.tunnel.bind_host, self.tunnel.bind_port
+            site = web.TCPSite(self.runner, self.host, bind_port)
             await site.start()
             # the actual bound port (ephemeral when bind_port is 0)
             self.port = site._server.sockets[0].getsockname()[1]
             logger.info("interception up: url=http://%s:%d", self.host, self.port)
-            # Bridge the bound port to the URL the harness reaches it at. A tunnel-setup failure
-            # surfaces as `TunnelError`; the wrap is scoped to setup, so a rollout-body error
-            # (raised while the URL is held) propagates unchanged.
-            try:
-                self.base_url = await self._stack.enter_async_context(
-                    self.tunnel.reachable(self.port, is_local=self.is_local)
-                )
-            except Exception as e:
-                raise TunnelError(
-                    f"interception tunnel (port {self.port}) failed: {e}"
-                ) from e
+            if self.is_local:
+                self.base_url = f"http://127.0.0.1:{self.port}"
+            else:
+                # Expose the bound port to the remote harness. A tunnel-setup failure surfaces as
+                # `TunnelError`; the wrap is scoped to setup, so a rollout-body error (raised while
+                # the URL is held) propagates unchanged.
+                try:
+                    self.base_url = await self._stack.enter_async_context(
+                        self.tunnel.expose(self.port)
+                    )
+                except Exception as e:
+                    raise TunnelError(
+                        f"interception tunnel (port {self.port}) failed: {e}"
+                    ) from e
         except BaseException:
             await self._stack.aclose()
             raise
