@@ -34,7 +34,7 @@ class PooledServer:
 class InterceptionPool:
     """Shared interception servers, reached per the `InterceptionConfig`'s type. `multiplex`
     rollouts share one server (one tunnel behind a remote runtime); `acquire` hands a rollout a
-    slot on one, bringing up a new server when all are at capacity. The `url` type is a single
+    slot on one, bringing up a new server when all are at capacity. The `custom` type is a single
     bring-your-own endpoint, so every rollout shares its one server (multiplex doesn't apply)."""
 
     def __init__(

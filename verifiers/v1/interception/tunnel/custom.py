@@ -9,11 +9,11 @@ from typing import TYPE_CHECKING, ClassVar
 from verifiers.v1.interception.tunnel.base import Tunnel
 
 if TYPE_CHECKING:
-    from verifiers.v1.interception.config import UrlInterceptionConfig
+    from verifiers.v1.interception.config import CustomInterceptionConfig
 
 
 class CustomTunnel(Tunnel):
-    config: "UrlInterceptionConfig"
+    config: "CustomInterceptionConfig"
     single_server: ClassVar[bool] = True
 
     @property

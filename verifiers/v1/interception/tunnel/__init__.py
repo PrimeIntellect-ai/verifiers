@@ -7,8 +7,8 @@ proxy). `make_tunnel` builds the tunnel for a config — the host-side counterpa
 
 from verifiers.v1.interception.config import (
     BaseInterceptionConfig,
+    CustomInterceptionConfig,
     ModalInterceptionConfig,
-    UrlInterceptionConfig,
 )
 from verifiers.v1.interception.tunnel.base import Tunnel
 from verifiers.v1.interception.tunnel.custom import CustomTunnel
@@ -19,7 +19,7 @@ from verifiers.v1.interception.tunnel.prime import PrimeTunnel
 def _tunnel_cls(config: BaseInterceptionConfig) -> type[Tunnel]:
     if isinstance(config, ModalInterceptionConfig):
         return ModalTunnel
-    if isinstance(config, UrlInterceptionConfig):
+    if isinstance(config, CustomInterceptionConfig):
         return CustomTunnel
     return PrimeTunnel
 

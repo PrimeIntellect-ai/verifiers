@@ -7,10 +7,10 @@ each, behind a remote runtime) across all of an eval's or env-server's rollouts.
 
 from verifiers.v1.interception.config import (
     BaseInterceptionConfig,
+    CustomInterceptionConfig,
     InterceptionConfig,
     ModalInterceptionConfig,
     PrimeInterceptionConfig,
-    UrlInterceptionConfig,
 )
 from verifiers.v1.interception.pool import InterceptionPool, PooledServer
 from verifiers.v1.interception.server import (
@@ -36,7 +36,7 @@ __all__ = [
     "InterceptionConfig",
     "PrimeInterceptionConfig",
     "ModalInterceptionConfig",
-    "UrlInterceptionConfig",
+    "CustomInterceptionConfig",
     "Tunnel",
     "PrimeTunnel",
     "ModalTunnel",
