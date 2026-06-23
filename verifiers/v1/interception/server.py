@@ -34,6 +34,7 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
+from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1 import graph
 from verifiers.v1.errors import (
     OverlongPromptError,
@@ -411,8 +412,8 @@ class InterceptionServer:
         prompt: Messages,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
-        accumulating the bytes to record the turn on the trace. Single-shot — a streamed turn
-        never drives a user simulator (the only client that streams is the eval relay)."""
+        incrementally assembling the response to record on the trace. Single-shot — a streamed
+        turn never drives a user simulator (the only client that streams is the eval relay)."""
         try:
             refused = await session.refused()
         except RolloutError as e:
@@ -460,13 +461,17 @@ class InterceptionServer:
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
         )
         resp.content_type = reply.content_type.split(";")[0].strip()
-        buffer = bytearray()
+        # Parse complete events as they relay, avoiding a full-stream byte copy.
+        parser = dialect.stream_parser()
+        feed_event = parser.feed
+        on_done = parser.on_done
         # One bounded producer avoids per-event tasks; keepalive timeouts only cancel readiness waits.
         queue: asyncio.Queue[bytes | None] = asyncio.Queue(
             maxsize=_STREAM_QUEUE_MAXSIZE
         )
         ready = asyncio.Event()
         producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
+        parser_error: Exception | None = None
         try:
             await resp.prepare(request)
             while True:
@@ -482,8 +487,14 @@ class InterceptionServer:
                 if chunk is None:
                     await producer
                     break
-                buffer += chunk
                 await resp.write(chunk)
+                if parser_error is None:
+                    try:
+                        if on_done is not None and is_sse_done_event(chunk):
+                            on_done()
+                        feed_event(chunk)
+                    except Exception as e:
+                        parser_error = e
         except ConnectionResetError:
             return resp
         finally:
@@ -495,7 +506,9 @@ class InterceptionServer:
             await reply.close()
 
         try:
-            turn.commit(dialect.parse_stream(bytes(buffer)))
+            if parser_error is not None:
+                raise parser_error
+            turn.commit(parser.finish())
             logger.debug("intercept stream turn: id=%s", session.trace.id)
         finally:
             with contextlib.suppress(ConnectionResetError):
