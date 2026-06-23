@@ -258,6 +258,9 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                 t.timing.scoring.end
                 or t.timing.finalize.end
                 or t.timing.generation.end
+                # a rollout that errored in setup has only setup.end — freeze there once done,
+                # else (still running) the timer would grow off `now` forever
+                or (t.timing.setup.end if t.is_completed else 0)
                 or now
             )
             prompt, completion, cached, reasoning, nbranches = _tokens(t)
