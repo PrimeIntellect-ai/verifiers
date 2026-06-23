@@ -20,6 +20,7 @@ from pydantic import Field, PrivateAttr
 from renderers.base import MultiModalData
 
 from verifiers.v1 import graph
+from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import TaskT, WireTask
@@ -372,12 +373,16 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
             self.stop_condition = condition
 
     def capture_error(self, error: Exception) -> None:
-        """Record a caught error (with traceback) and stop the rollout."""
+        """Record a caught error and stop the rollout."""
         self.errors.append(
             Error(
                 type=type(error).__name__,
                 message=str(error),
-                traceback=traceback.format_exc(),
+                # Provider errors already carry the actionable upstream diagnostic.
+                # Keep full tracebacks for every other failure.
+                traceback=None
+                if isinstance(error, ProviderError)
+                else traceback.format_exc(),
             )
         )
         self.stop("error")
