@@ -13,37 +13,63 @@ the eval's model + sampling in this format's shape) and `extend` (chat-only user
 """
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel
+from pydantic_core import from_json
 
 from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
 
 ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
 
+logger = logging.getLogger(__name__)
 
-def iter_sse(raw: bytes) -> list[dict]:
-    """Parse a complete SSE byte stream into its JSON data payloads, in order (skipping
-    non-JSON sentinels like OpenAI's `data: [DONE]`). Shared by the dialects' `parse_stream`."""
-    events: list[dict] = []
-    for block in raw.decode("utf-8", errors="replace").split("\n\n"):
-        data = "\n".join(
-            line.removeprefix("data:").strip()
+
+def iter_sse(raw: bytes) -> Iterator[dict]:
+    """Yield JSON SSE payloads in order without retaining prior events."""
+    # Detect the wire line ending once, then scan without retaining prior payloads.
+    first_newline = raw.find(b"\n")
+    separator = (
+        b"\r\n\r\n"
+        if first_newline > 0 and raw[first_newline - 1] == ord("\r")
+        else b"\n\n"
+    )
+    start = 0
+    while start < len(raw):
+        end = raw.find(separator, start)
+        if end == -1:
+            end = len(raw)
+        block = raw[start:end]
+        data = b"\n".join(
+            line.removeprefix(b"data:").strip()
             for line in block.splitlines()
-            if line.startswith("data:")
+            if line.startswith(b"data:")
         )
-        if not data or data == "[DONE]":
-            continue
-        events.append(json.loads(data))
-    return events
+        if data and data != b"[DONE]":
+            try:
+                yield from_json(data)
+            except ValueError:
+                logger.warning(
+                    "SSE JSON fast-path failed; falling back to stdlib with invalid UTF-8 replacement"
+                )
+                yield json.loads(data.decode("utf-8", errors="replace"))
+        start = end + len(separator)
 
 
 def iter_sse_reverse(raw: bytes) -> Iterator[dict]:
     """Yield JSON SSE payloads from the end without decoding earlier events."""
-    for block in reversed(raw.decode("utf-8", errors="replace").split("\n\n")):
+    decoded = raw.decode("utf-8", errors="replace")
+    first_newline = decoded.find("\n")
+    separator = (
+        "\r\n\r\n"
+        if first_newline > 0 and decoded[first_newline - 1] == "\r"
+        else "\n\n"
+    )
+    for block in reversed(decoded.split(separator)):
         data = "\n".join(
             line.removeprefix("data:").strip()
             for line in block.splitlines()

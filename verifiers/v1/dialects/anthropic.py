@@ -122,15 +122,15 @@ def response_from_wire(message: AnthropicMessage) -> Response:
     data = message.model_dump()
     blocks = data.get("content") or []
     state = [block for block in blocks if block["type"] in THINKING]
-    content = ""
-    reasoning = ""
+    content: list[str] = []
+    reasoning: list[str] = []
     calls: list[ToolCall] = []
     for block in blocks:
         kind = block.get("type")
         if kind == "text":
-            content += block.get("text", "")
+            content.append(block.get("text", ""))
         elif kind == "thinking":
-            reasoning += block.get("thinking", "")
+            reasoning.append(block.get("thinking", ""))
         elif kind == "tool_use":
             calls.append(
                 ToolCall(
@@ -161,8 +161,8 @@ def response_from_wire(message: AnthropicMessage) -> Response:
         created=0,
         model=data.get("model", ""),
         message=AssistantMessage(
-            content=content or None,
-            reasoning_content=reasoning or None,
+            content="".join(content) or None,
+            reasoning_content="".join(reasoning) or None,
             tool_calls=calls or None,
             provider_state=state or None,
         ),
@@ -220,30 +220,38 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
         message, then parse it."""
         message: dict = {}
         blocks: dict[int, dict] = {}
-        partial_json: dict[int, str] = {}
+        block_parts: dict[int, dict[str, list[str]]] = {}
+        partial_json: dict[int, list[str]] = {}
         for event in iter_sse(raw):
             kind = event.get("type")
             if kind == "message_start":
                 message = event.get("message") or {}
             elif kind == "content_block_start":
-                blocks[event["index"]] = dict(event.get("content_block") or {})
+                index = event["index"]
+                blocks[index] = dict(event.get("content_block") or {})
+                block_parts.pop(index, None)
             elif kind == "content_block_delta":
-                block = blocks.setdefault(event["index"], {"type": "text", "text": ""})
+                index = event["index"]
+                block = blocks.setdefault(index, {"type": "text", "text": ""})
                 delta = event.get("delta") or {}
-                if delta.get("type") == "text_delta":
-                    block["text"] = block.get("text", "") + delta.get("text", "")
-                elif delta.get("type") == "thinking_delta":
-                    block["thinking"] = block.get("thinking", "") + delta.get(
-                        "thinking", ""
-                    )
-                elif delta.get("type") == "signature_delta":
-                    block["signature"] = block.get("signature", "") + delta.get(
-                        "signature", ""
-                    )
-                elif delta.get("type") == "input_json_delta":
-                    partial_json[event["index"]] = partial_json.get(
-                        event["index"], ""
-                    ) + delta.get("partial_json", "")
+                delta_type = delta.get("type")
+                if delta_type in ("text_delta", "thinking_delta", "signature_delta"):
+                    field = delta_type.removesuffix("_delta")
+                    fields = block_parts.get(index)
+                    if fields is None:
+                        fields = {}
+                        block_parts[index] = fields
+                    parts = fields.get(field)
+                    if parts is None:
+                        parts = [block.get(field, "")]
+                        fields[field] = parts
+                    parts.append(delta.get(field, ""))
+                elif delta_type == "input_json_delta":
+                    parts = partial_json.get(index)
+                    if parts is None:
+                        parts = []
+                        partial_json[index] = parts
+                    parts.append(delta.get("partial_json", ""))
             elif kind == "message_delta":
                 message.update(
                     {
@@ -256,8 +264,11 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
                     **(message.get("usage") or {}),
                     **(event.get("usage") or {}),
                 }
-        for index, partial in partial_json.items():
-            blocks[index]["input"] = json.loads(partial or "{}")
+        for index, fields in block_parts.items():
+            for field, parts in fields.items():
+                blocks[index][field] = "".join(parts)
+        for index, parts in partial_json.items():
+            blocks[index]["input"] = json.loads("".join(parts) or "{}")
         message["content"] = [blocks[i] for i in sorted(blocks)]
         return response_from_wire(self.validate_response(message))
 
