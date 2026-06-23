@@ -22,10 +22,6 @@ class Tunnel(ABC, Generic[ConfigT]):
     interception type (picked by `tunnel_cls`); lightweight and stateless beyond the config it
     holds (generic over its config type, so `self.config` is typed per subclass)."""
 
-    bind_host: ClassVar[str] = "127.0.0.1"
-    """Address the interception server must bind for this tunnel to reach it. Loopback by default —
-    frpc / a BYO proxy connect over localhost on the same host."""
-
     single_server: ClassVar[bool] = False
     """Whether this is a single fixed endpoint shared by every rollout (so the pool never grows past
     one server). The pool reads it off the tunnel class. True only for `CustomTunnel` — one BYO URL
@@ -33,6 +29,12 @@ class Tunnel(ABC, Generic[ConfigT]):
 
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = config
+
+    @property
+    def bind_host(self) -> str:
+        """Address the interception server binds for this tunnel to reach it. Loopback by default —
+        frpc / a BYO proxy connect over localhost on the same host; `DirectTunnel` binds publicly."""
+        return "127.0.0.1"
 
     @property
     def bind_port(self) -> int:

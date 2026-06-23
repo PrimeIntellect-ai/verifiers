@@ -8,6 +8,7 @@ each, behind a remote runtime) across all of an eval's or env-server's rollouts.
 from verifiers.v1.interception.config import (
     BaseInterceptionConfig,
     CustomInterceptionConfig,
+    DirectInterceptionConfig,
     InterceptionConfig,
     PrimeInterceptionConfig,
 )
@@ -19,6 +20,7 @@ from verifiers.v1.interception.server import (
 )
 from verifiers.v1.interception.tunnel import (
     CustomTunnel,
+    DirectTunnel,
     PrimeTunnel,
     Tunnel,
     tunnel_cls,
@@ -34,8 +36,10 @@ __all__ = [
     "InterceptionConfig",
     "PrimeInterceptionConfig",
     "CustomInterceptionConfig",
+    "DirectInterceptionConfig",
     "Tunnel",
     "PrimeTunnel",
     "CustomTunnel",
+    "DirectTunnel",
     "tunnel_cls",
 ]
