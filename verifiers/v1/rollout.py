@@ -26,6 +26,7 @@ from verifiers.v1.errors import (
     RolloutError,
     TasksetError,
     ToolsetError,
+    UserError,
     boundary,
 )
 from verifiers.v1.interception import (
@@ -181,6 +182,22 @@ class Rollout:
             ):
                 async with boundary(ToolsetError, "building tool servers"):
                     tool_servers = self.taskset.tools(self.task)
+                    if runtime.interception_only and tool_servers:
+                        raise ValueError(
+                            "Docker network_access='interception' does not yet support MCP "
+                            "tool servers; use a taskset without tools"
+                        )
+                async with boundary(UserError, "building user simulator"):
+                    user = self.taskset.user(self.task)
+                    if (
+                        runtime.interception_only
+                        and user is not None
+                        and user.config.colocated
+                    ):
+                        raise ValueError(
+                            "Docker network_access='interception' does not support a colocated "
+                            "user simulator; run the user in its own runtime"
+                        )
                 async with (
                     serve_tools(
                         tool_servers,
@@ -192,7 +209,7 @@ class Rollout:
                         state_base=state_base,
                     ) as urls,
                     serve_user(
-                        self.taskset.user(self.task),
+                        user,
                         self.task,
                         harness_runtime=runtime,
                         state_port=state_port,
@@ -206,6 +223,7 @@ class Rollout:
                             "conversation; set task.prompt or have Taskset.user return "
                             "a simulator"
                         )
+                    endpoint = await runtime.seal_agent_network(endpoint)
                     # setup done — the harness is now driving
                     now = time.time()
                     trace.timing.setup.end = now

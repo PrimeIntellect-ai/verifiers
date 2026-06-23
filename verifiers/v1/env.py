@@ -30,6 +30,7 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
     runtime_is_local,
+    runtime_reaches_host_locally,
 )
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
@@ -400,6 +401,6 @@ class Environment:
         if not any(server.config.shared for server in servers):
             yield {}
             return
-        harness_is_local = runtime_is_local(self.harness.config.runtime)
+        harness_is_local = runtime_reaches_host_locally(self.harness.config.runtime)
         async with serve_shared(servers, harness_is_local=harness_is_local) as urls:
             yield urls

@@ -47,11 +47,14 @@ def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
 
 
 def runtime_is_local(config: RuntimeConfig) -> bool:
-    """Whether a runtime of this config shares the host network (so a program inside it reaches a
-    host service at localhost, no tunnel) — read off the runtime class, without provisioning one.
-    The interception pool / rollout use it to decide whether to tunnel their host port via
-    `host_endpoint`."""
+    """Whether this is a local runtime rather than a provider sandbox. Config-specific network
+    restrictions do not change this topology; use `runtime_reaches_host_locally` for host URLs."""
     return _runtime_cls(config).is_local
+
+
+def runtime_reaches_host_locally(config: RuntimeConfig) -> bool:
+    """Whether this runtime config reaches a host service at localhost rather than by tunnel."""
+    return _runtime_cls(config).config_reaches_host_locally(config)
 
 
 __all__ = [
@@ -60,6 +63,7 @@ __all__ = [
     "RuntimeConfig",
     "make_runtime",
     "runtime_is_local",
+    "runtime_reaches_host_locally",
     "host_endpoint",
     "reachable_url",
     "HOST",

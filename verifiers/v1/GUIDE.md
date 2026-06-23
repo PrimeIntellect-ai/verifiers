@@ -627,6 +627,24 @@ uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sand
 A taskset that sets `NEEDS_CONTAINER` (or a task with an `image`) refuses the subprocess runtime —
 pass `docker` / `prime` / `modal`.
 
+## Interception-only Docker agents
+
+Set `network_access = "interception"` to let Docker setup download harness dependencies, then
+remove internet access before the agent starts:
+
+```toml
+harness = { id = "codex", runtime = { type = "docker", network_access = "interception" } }
+```
+
+The runtime moves the agent onto an internal per-rollout network and rewrites its model endpoint
+through a fixed reverse relay to the interception tunnel. The relay cannot proxy another host, and
+the agent has no route to the internet, host, or other containers. The restriction remains active
+through finalization and scoring so a child process left by the agent cannot regain network access.
+Docker pulls the pinned official `nginx:1.28.3-alpine` relay image on first use.
+
+This mode currently supports tasksets without MCP tools. User simulators must run in their own
+runtime rather than `colocated`; both cases fail early with a clear rollout error.
+
 ---
 
 # CLI reference
