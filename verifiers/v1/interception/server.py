@@ -24,7 +24,7 @@ import contextlib
 import json
 import logging
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 # context window are the real limits, this is just a host-OOM backstop.
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
+_STREAM_QUEUE_MAXSIZE = 16
 # The server binds loopback; callers reach it via localhost or a host tunnel (see `reachable_url`).
 _HOST = "127.0.0.1"
 
@@ -67,6 +68,20 @@ def _completion_response(completion: dict | None) -> web.Response:
     except PydanticSerializationError:
         return web.json_response(completion)
     return web.Response(body=body, content_type="application/json", charset="utf-8")
+
+
+async def _queue_chunks(
+    chunks: AsyncIterator[bytes],
+    queue: asyncio.Queue[bytes | None],
+    ready: asyncio.Event,
+) -> None:
+    try:
+        async for chunk in chunks:
+            await queue.put(chunk)
+            ready.set()
+    finally:
+        await queue.put(None)
+        ready.set()
 
 
 @dataclass(frozen=True)
@@ -446,28 +461,37 @@ class InterceptionServer:
         )
         resp.content_type = reply.content_type.split(";")[0].strip()
         buffer = bytearray()
-        chunks = reply.chunks.__aiter__()
-        next_chunk = asyncio.create_task(anext(chunks, None))
+        # One bounded producer avoids per-event tasks; keepalive timeouts only cancel readiness waits.
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue(
+            maxsize=_STREAM_QUEUE_MAXSIZE
+        )
+        ready = asyncio.Event()
+        producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
         try:
             await resp.prepare(request)
             while True:
-                done, _ = await asyncio.wait(
-                    {next_chunk}, timeout=_KEEPALIVE_INTERVAL_SECONDS
-                )
-                if not done:
+                try:
+                    async with asyncio.timeout(_KEEPALIVE_INTERVAL_SECONDS):
+                        await ready.wait()
+                except TimeoutError:
                     await resp.write(b": keepalive\n\n")
                     continue
-                chunk = next_chunk.result()
+                chunk = queue.get_nowait()
+                if queue.empty():
+                    ready.clear()
                 if chunk is None:
+                    await producer
                     break
                 buffer += chunk
                 await resp.write(chunk)
-                next_chunk = asyncio.create_task(anext(chunks, None))
         except ConnectionResetError:
             return resp
         finally:
-            next_chunk.cancel()
-            await asyncio.gather(next_chunk, return_exceptions=True)
+            producer.cancel()
+            # Let a canceled producer enqueue EOF while unwinding.
+            if queue.full():
+                queue.get_nowait()
+            await asyncio.gather(producer, return_exceptions=True)
             await reply.close()
 
         try:
