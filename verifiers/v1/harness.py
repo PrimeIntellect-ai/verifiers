@@ -6,7 +6,6 @@ runs during rollout setup; only execution counts against the harness timeout. Th
 runtime and the interception server are owned by the Rollout.
 """
 
-import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -28,6 +27,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import EnvId, Messages
+from verifiers.v1.utils.asyncio import gather_cancel_on_error
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +151,9 @@ class Harness(ABC, Generic[ConfigT]):
             results = (
                 [await invoke(fn, available) for fn in fns]
                 if len(fns) < 2
-                else await asyncio.gather(*(invoke(fn, available) for fn in fns))
+                else await gather_cancel_on_error(
+                    *(invoke(fn, available) for fn in fns)
+                )
             )
         for fn, result in zip(fns, results):
             if isinstance(result, Mapping):

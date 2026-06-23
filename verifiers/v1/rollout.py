@@ -46,6 +46,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.asyncio import gather_cancel_on_error
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +253,7 @@ class Rollout:
                 # runtime. (Cross-rollout `@group_reward`s run later, in the Episode.) Each
                 # method types its own failures; only a timeout is attributed here.
                 await asyncio.wait_for(
-                    asyncio.gather(
+                    gather_cancel_on_error(
                         self.taskset.score(trace, runtime),
                         self.harness.score(trace, runtime),
                     ),
