@@ -48,12 +48,21 @@ class ModalConfig(BaseConfig):
     creates_per_sec: float | None = 40.0
     """Pace sandbox creation to this many per second, enforced host-wide across every
     env-server worker process (None/<= 0 disables it)."""
+    enable_snapshot: bool = False
+    """Provision the sandbox so its live state (memory + filesystem) can be captured by
+    `snapshot()`. Opt-in: Modal's memory snapshots are experimental, expire after 7 days,
+    and pin the sandbox to one instance type, so a normal rollout shouldn't pay for it."""
+    resume_from: str | None = None
+    """A snapshot id from a prior `snapshot()` to restore instead of provisioning fresh: the
+    new sandbox is an exact clone of the snapshotted one (process state, packages, workdir).
+    None provisions a clean sandbox from `image`."""
 
 
 class ModalRuntime(Runtime):
     """Runs the program in a Modal sandbox; the server is reached via a tunnel."""
 
     is_local: ClassVar[bool] = False
+    supports_snapshot: ClassVar[bool] = True
 
     def __init__(self, config: ModalConfig, name: str | None = None) -> None:
         super().__init__(name)
@@ -83,26 +92,44 @@ class ModalRuntime(Runtime):
                 creation_limiter(self.config.creates_per_sec, "modal-sandbox")
                 or contextlib.nullcontext()
             ):
-                self._sandbox = await modal.Sandbox.create.aio(
-                    "sleep",
-                    "infinity",  # keep-alive entrypoint; the harness runs via `exec`
-                    app=app,
-                    name=self.name,
-                    image=modal.Image.from_registry(self.config.image),
-                    workdir=self.config.workdir,
-                    cpu=self.config.cpu,
-                    memory=int(self.config.memory * 1024),  # Modal memory is MB
-                    gpu=self.config.gpu,
-                    region=self.config.region,
-                    block_network=not self.config.network_access,
-                    timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
-                    encrypted_ports=[SERVICE_PORT],
-                )
+                if self.config.resume_from is not None:
+                    # Restore an exact clone (memory + filesystem) of a sandbox a prior
+                    # runtime snapshotted: process state, installed packages, and the workdir
+                    # come back as they were, so there's nothing to re-provision or mkdir.
+                    snapshot = await modal.SandboxSnapshot.from_id.aio(
+                        self.config.resume_from
+                    )
+                    self._sandbox = await modal.Sandbox._experimental_from_snapshot.aio(
+                        snapshot
+                    )
+                else:
+                    self._sandbox = await modal.Sandbox.create.aio(
+                        "sleep",
+                        "infinity",  # keep-alive entrypoint; the harness runs via `exec`
+                        app=app,
+                        name=self.name,
+                        image=modal.Image.from_registry(self.config.image),
+                        workdir=self.config.workdir,
+                        cpu=self.config.cpu,
+                        memory=int(self.config.memory * 1024),  # Modal memory is MB
+                        gpu=self.config.gpu,
+                        region=self.config.region,
+                        block_network=not self.config.network_access,
+                        timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
+                        encrypted_ports=[SERVICE_PORT],
+                        # Opt-in live-state capture so `snapshot()` can clone this sandbox.
+                        _experimental_enable_snapshot=self.config.enable_snapshot,
+                    )
             self._sandbox_id = self._sandbox.object_id
             logger.info(
-                "modal: sandbox %s up (image=%s)", self._sandbox_id, self.config.image
+                "modal: sandbox %s up (%s)",
+                self._sandbox_id,
+                f"resumed from {self.config.resume_from}"
+                if self.config.resume_from is not None
+                else f"image={self.config.image}",
             )
-            await self._sandbox.filesystem.make_directory.aio(self.config.workdir)
+            if self.config.resume_from is None:
+                await self._sandbox.filesystem.make_directory.aio(self.config.workdir)
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
@@ -120,6 +147,23 @@ class ModalRuntime(Runtime):
             raise SandboxError(f"modal tunnels unavailable (port {port}): {e}") from e
         tunnel = tunnels.get(port)
         return str(tunnel.url).rstrip("/") if tunnel else None
+
+    async def snapshot(self) -> str:
+        # Capture the sandbox's live state (memory + filesystem) and return the snapshot id a
+        # later runtime feeds back via `resume_from`. Requires the sandbox to have been created
+        # with `enable_snapshot` (Modal refuses otherwise).
+        if self._sandbox is None:
+            raise SandboxError("cannot snapshot a modal sandbox that is not running")
+        try:
+            snapshot = await self._sandbox._experimental_snapshot.aio()
+        except Exception as e:
+            raise SandboxError(f"modal snapshot failed: {e}") from e
+        logger.info(
+            "modal: snapshotted sandbox %s -> %s",
+            self._sandbox_id,
+            snapshot.object_id,
+        )
+        return snapshot.object_id
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         try:

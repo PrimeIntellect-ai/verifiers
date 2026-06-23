@@ -283,6 +283,12 @@ class Environment:
             max_total_tokens=config.max_total_tokens,
         )
         self._warned_resources: set[tuple[str, str]] = set()
+        self._snapshot_refs: dict[int, str] = {}
+        """Per-task (`task.idx`) snapshot refs from snapshot-capable runtimes that opted in
+        (`runtime.enable_snapshot`): a finished rollout stores its end-state ref here, and the
+        next rollout of that task resumes from it (injected as `resume_from` in `episode`).
+        In-process only — it lives with this Environment, so it does not survive a restart or
+        reach other workers; concurrent rollouts of one task race to be the stored ref."""
         self._shared_urls: dict[str, str] = {}
         self._interception: InterceptionPool | None = None
         """Eval-level serving resources, live only inside `serving()`: shared tool servers
@@ -310,6 +316,15 @@ class Environment:
                 f"need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
             )
         runtime_config = self.runtime_for(task)
+        # Snapshot/resume (opt-in via the runtime's `enable_snapshot`): if a prior rollout of
+        # this task stored an end-state ref, resume from it; and let this task's rollouts store
+        # their own. Keyed off the config field so non-snapshot runtimes are untouched.
+        snapshot_enabled = getattr(runtime_config, "enable_snapshot", False)
+        if snapshot_enabled and task.idx in self._snapshot_refs:
+            runtime_config = runtime_config.model_copy(
+                update={"resume_from": self._snapshot_refs[task.idx]}
+            )
+        snapshot_sink = self._snapshot_refs.__setitem__ if snapshot_enabled else None
         setup_timeout = (
             self.setup_timeout if self.setup_timeout is not None else task.timeout.setup
         )
@@ -356,6 +371,7 @@ class Environment:
                 limits=self.limits,
                 shared_urls=self._shared_urls,
                 interception=self._interception,
+                snapshot_sink=snapshot_sink,
             )
             for _ in range(n)
         ]

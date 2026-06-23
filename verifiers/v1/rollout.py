@@ -15,6 +15,7 @@ even if `run()` crashes.
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from enum import StrEnum
 
@@ -76,6 +77,7 @@ class Rollout:
         limits: RolloutLimits | None = None,
         shared_urls: dict[str, str] | None = None,
         interception: InterceptionPool | None = None,
+        snapshot_sink: Callable[[int, str], None] | None = None,
     ) -> None:
         self.task = task
         self.taskset = taskset
@@ -93,6 +95,10 @@ class Rollout:
         `Environment.serving` context — so a rollout always has them and no runner has to thread
         them in."""
         self.interception = interception
+        self.snapshot_sink = snapshot_sink
+        """When set, snapshot the runtime's end state on teardown and report `(task.idx, ref)`
+        here (the Environment's per-task snapshot store) so a later rollout of the same task
+        can resume from it. None disables it; only set for snapshot-capable runtimes."""
         self.phase = Phase.SETUP
         """Lifecycle phase for display (see `Phase`); advanced through the rollout, and
         set to DONE by the Episode once group scoring has run."""
@@ -277,6 +283,17 @@ class Rollout:
                 trace.timing.generation.end = now  # error mid-run: close generation
             if trace.timing.finalize.start and not trace.timing.finalize.end:
                 trace.timing.finalize.end = now  # error mid-finalize: close finalize
+            # Snapshot the end state before teardown (while the sandbox is still live), so a
+            # later rollout of the same task can resume from it. Best-effort: a snapshot
+            # failure must not fail the rollout or block teardown of the costly runtime.
+            if self.snapshot_sink is not None and runtime.supports_snapshot:
+                try:
+                    ref = await runtime.snapshot()
+                    self.snapshot_sink(self.task.idx, ref)
+                except Exception:
+                    logger.warning(
+                        "runtime snapshot failed (rollout %s)", trace.id, exc_info=True
+                    )
             # Tear down here — group rewards (later) need only the trace, not a live
             # runtime. `runtime` is always set: make_runtime() ran before the `try`.
             try:
