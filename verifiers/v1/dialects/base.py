@@ -29,6 +29,19 @@ RespT = TypeVar("RespT", bound=BaseModel)
 logger = logging.getLogger(__name__)
 
 
+def is_sse_done_event(raw: bytes) -> bool:
+    """Whether one complete SSE event carries the DONE sentinel."""
+    # Ordinary OpenAI events carry JSON objects; reject their hot path before splitting lines.
+    if raw.startswith((b"data: {", b"data:{")):
+        return False
+    data = b"\n".join(
+        line.removeprefix(b"data:").strip()
+        for line in raw.splitlines()
+        if line.startswith(b"data:")
+    )
+    return data == b"[DONE]"
+
+
 def parse_sse_event(raw: bytes) -> dict | None:
     """Parse one complete SSE event's JSON data payload, ignoring comments and sentinels."""
     data = b"\n".join(

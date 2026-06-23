@@ -34,6 +34,7 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
+from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1 import graph
 from verifiers.v1.errors import (
     OverlongPromptError,
@@ -57,7 +58,6 @@ logger = logging.getLogger(__name__)
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 _STREAM_QUEUE_MAXSIZE = 16
-_SSE_DONE_EVENTS = frozenset({b"data: [DONE]\n\n", b"data: [DONE]\r\n\r\n"})
 # The server binds loopback; callers reach it via localhost or a host tunnel (see `reachable_url`).
 _HOST = "127.0.0.1"
 
@@ -490,7 +490,7 @@ class InterceptionServer:
                 await resp.write(chunk)
                 if parser_error is None:
                     try:
-                        if on_done is not None and chunk in _SSE_DONE_EVENTS:
+                        if on_done is not None and is_sse_done_event(chunk):
                             on_done()
                         feed_event(chunk)
                     except Exception as e:
