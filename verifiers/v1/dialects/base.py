@@ -5,17 +5,17 @@ trace from the program's native request + the provider's native response. The se
 every registered dialect's `routes` (see `dialects.DIALECTS`), so a request's format is resolved
 from the endpoint the program's SDK posts to — the harness declares nothing.
 
-The eval client relays a request's bytes verbatim to a matching endpoint, so the dialect only
-parses a *copy* for the trace (incl. assembling a relayed SSE stream via `parse_stream`); the
-renderer is chat-only. A dialect is therefore mostly wire -> vf
-(`parse_request`/`parse_response`/`parse_stream`); the exceptions are `apply_overrides` (impose
-the eval's model + sampling in this format's shape) and `extend` (chat-only user-sim injection).
+The eval client relays a request's bytes verbatim to a matching endpoint, while a dialect-owned
+`StreamParser` incrementally assembles a response copy for the trace; the renderer is chat-only.
+A dialect is therefore mostly wire -> vf (`parse_request`/`parse_response`/`stream_parser`); the
+exceptions are `apply_overrides` (impose the eval's model + sampling in this format's shape) and
+`extend` (chat-only user-sim injection).
 """
 
 import json
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel
@@ -27,6 +27,24 @@ ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
+
+
+def parse_sse_event(raw: bytes) -> dict | None:
+    """Parse one complete SSE event's JSON data payload, ignoring comments and sentinels."""
+    data = b"\n".join(
+        line.removeprefix(b"data:").strip()
+        for line in raw.splitlines()
+        if line.startswith(b"data:")
+    )
+    if not data or data == b"[DONE]":
+        return None
+    try:
+        return from_json(data)
+    except ValueError:
+        logger.warning(
+            "SSE JSON fast-path failed; falling back to stdlib with invalid UTF-8 replacement"
+        )
+        return json.loads(data.decode("utf-8", errors="replace"))
 
 
 def iter_sse(raw: bytes) -> Iterator[dict]:
@@ -44,19 +62,9 @@ def iter_sse(raw: bytes) -> Iterator[dict]:
         if end == -1:
             end = len(raw)
         block = raw[start:end]
-        data = b"\n".join(
-            line.removeprefix(b"data:").strip()
-            for line in block.splitlines()
-            if line.startswith(b"data:")
-        )
-        if data and data != b"[DONE]":
-            try:
-                yield from_json(data)
-            except ValueError:
-                logger.warning(
-                    "SSE JSON fast-path failed; falling back to stdlib with invalid UTF-8 replacement"
-                )
-                yield json.loads(data.decode("utf-8", errors="replace"))
+        event = parse_sse_event(block)
+        if event is not None:
+            yield event
         start = end + len(separator)
 
 
@@ -78,6 +86,17 @@ def iter_sse_reverse(raw: bytes) -> Iterator[dict]:
         if not data or data == "[DONE]":
             continue
         yield json.loads(data)
+
+
+class StreamParser(ABC):
+    """Incrementally assemble one native SSE stream into a vf response."""
+
+    feed: Callable[[bytes], None]
+    """Consume one complete SSE event without retaining its raw bytes."""
+
+    @abstractmethod
+    def finish(self) -> Response:
+        """Finalize and return the assembled response after the stream ends."""
 
 
 class Dialect(ABC, Generic[ReqT, RespT]):
@@ -133,9 +152,8 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         return self.response_type.model_validate(raw)
 
     @abstractmethod
-    def parse_stream(self, raw: bytes) -> Response:
-        """A complete native SSE byte stream -> the vf `Response` (assembling the final message
-        from the events), to record a relayed stream on the trace."""
+    def stream_parser(self) -> StreamParser:
+        """Create the per-request incremental parser for a native SSE response."""
 
     @abstractmethod
     def apply_overrides(self, body: ReqT, model: str, sampling: SamplingConfig) -> ReqT:

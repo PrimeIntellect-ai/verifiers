@@ -8,6 +8,7 @@ endpoint and this dialect parses a copy for the trace. Server-side statefulness
 """
 
 import json
+from collections import deque
 from typing import Any, cast
 
 from openai.types.responses import (
@@ -26,7 +27,7 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel, ConfigDict
 
-from verifiers.v1.dialects.base import Dialect, iter_sse_reverse
+from verifiers.v1.dialects.base import Dialect, StreamParser, iter_sse_reverse
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -233,6 +234,22 @@ def response_from_wire(response: OpenAIResponse) -> Response:
     )
 
 
+class ResponsesStreamParser(StreamParser):
+    """Retain only the complete terminal response event and trailing DONE event."""
+
+    def __init__(self) -> None:
+        self.events: deque[bytes] = deque(maxlen=2)
+        self.feed = self.events.append
+
+    def finish(self) -> Response:
+        for event in iter_sse_reverse(b"".join(self.events)):
+            if event.get("type") in FINAL_EVENTS:
+                return response_from_wire(
+                    OpenAIResponse.model_validate(event["response"])
+                )
+        raise ValueError("Responses stream ended without a terminal event")
+
+
 class ResponsesDialect(Dialect[dict, OpenAIResponse]):
     """The OpenAI Responses wire format."""
 
@@ -295,15 +312,8 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)
 
-    def parse_stream(self, raw: bytes) -> Response:
-        """The terminal event (`response.completed` / `.incomplete` / `.failed`) carries the
-        full response object — parse that."""
-        for event in iter_sse_reverse(raw):
-            if event.get("type") in FINAL_EVENTS:
-                return response_from_wire(
-                    OpenAIResponse.model_validate(event["response"])
-                )
-        raise ValueError("Responses stream ended without a terminal event")
+    def stream_parser(self) -> StreamParser:
+        return ResponsesStreamParser()
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
         # Forward verbatim except the eval's model + sampling, mapped to the Responses shape
