@@ -47,7 +47,8 @@ class InterceptionPool:
         self.is_local = runtime_is_local(runtime_config)
         self.config = config
         self.multiplex = max(1, config.multiplex)
-        self.tunnel_cls = tunnel_cls(config)  # one tunnel instance per server, built from this
+        # the tunnel class for this config; the pool builds one tunnel instance per server
+        self.tunnel_cls = tunnel_cls(config)
         self._servers: list[PooledServer] = []
         self._lock = asyncio.Lock()
         self._stack = AsyncExitStack()

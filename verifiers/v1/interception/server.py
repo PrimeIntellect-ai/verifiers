@@ -163,7 +163,8 @@ class InterceptionServer:
     def __init__(self, tunnel: "Tunnel") -> None:
         self.sessions: dict[str, RolloutSession] = {}
         self.port = 0
-        self.tunnel = tunnel  # binds where the tunnel reaches it, and bridges it via `reachable`
+        # binds where the tunnel reaches it, and bridges that bound port via `reachable`
+        self.tunnel = tunnel
         self.runner: web.AppRunner | None = None
 
     def register(self, session: RolloutSession) -> str:
@@ -209,10 +210,12 @@ class InterceptionServer:
         await self.runner.setup()
         # The tunnel decides where to bind: an ephemeral loopback port by default, or a fixed port
         # (a BYO reverse-proxy target) when it needs one.
-        site = web.TCPSite(self.runner, self.tunnel.bind_host, self.tunnel.bind_port)
+        host = self.tunnel.bind_host
+        site = web.TCPSite(self.runner, host, self.tunnel.bind_port)
         await site.start()
-        self.port = site._server.sockets[0].getsockname()[1]  # the bound port (ephemeral if 0)
-        logger.info("interception up: url=http://%s:%d", self.tunnel.bind_host, self.port)
+        # the actual bound port (ephemeral when bind_port is 0)
+        self.port = site._server.sockets[0].getsockname()[1]
+        logger.info("interception up: url=http://%s:%d", host, self.port)
         return self
 
     async def __aexit__(self, *exc) -> None:
