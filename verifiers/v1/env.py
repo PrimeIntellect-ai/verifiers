@@ -383,6 +383,7 @@ class Environment:
                 yield
             finally:
                 self._shared_urls = {}
+                del self._interception
 
     def interception_pool(self) -> InterceptionPool:
         """The shared interception pool for this env's rollouts — one server (+ tunnel
