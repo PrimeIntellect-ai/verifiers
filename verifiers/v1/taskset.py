@@ -18,7 +18,7 @@ For a heterogeneous taskset (different verification per task), have a single
 import asyncio
 import itertools
 import random
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sized
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic_config import BaseConfig
@@ -210,3 +210,38 @@ def select_tasks(
     if num_tasks is not None:
         return list(itertools.islice(tasks, num_tasks))
     return list(tasks)
+
+
+class IndexedTasks(Generic[TaskT]):
+    """Index-addressed access to a `load_tasks()` result, for a caller that resolves tasks by
+    arbitrary index rather than consuming a prefix (the env-server, addressed by `task_idx`).
+
+    A list (or other `Sized`) is materialized and its `count` is known; any other iterable is
+    consumed lazily and cached on demand, with `count = None` (unknown / possibly unbounded) — so
+    a generator taskset is served by index without ever being materialized. `__getitem__` is
+    synchronous and never awaits, so concurrent rollouts on one event loop can't interleave a
+    partial cache extension (no lock needed). The cache grows to the highest index accessed —
+    bounded for a finite taskset; TODO: evict for very long unbounded runs (needs a contract on
+    access order)."""
+
+    def __init__(self, tasks: Iterable[TaskT]) -> None:
+        if isinstance(tasks, Sized):
+            self._tasks: list[TaskT] = list(tasks)
+            self._iter: Iterator[TaskT] | None = None
+            self.count: int | None = len(self._tasks)
+        else:
+            self._tasks = []
+            self._iter = iter(tasks)
+            self.count = None
+
+    def __getitem__(self, idx: int) -> TaskT:
+        if self._iter is not None:
+            while len(self._tasks) <= idx:
+                try:
+                    self._tasks.append(next(self._iter))
+                except StopIteration:
+                    raise IndexError(
+                        f"task index {idx} out of range: load_tasks yielded "
+                        f"{len(self._tasks)} task(s)"
+                    ) from None
+        return self._tasks[idx]

@@ -19,7 +19,6 @@ the structure leaves room to add a pool later. Health is just another request ty
 import asyncio
 import contextlib
 import logging
-from collections.abc import Iterable, Iterator, Sized
 
 import msgpack
 import zmq
@@ -32,7 +31,7 @@ from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import EnvConfig, Environment
-from verifiers.v1.task import Task
+from verifiers.v1.taskset import IndexedTasks
 from verifiers.v1.serve.types import (
     BaseResponse,
     HealthResponse,
@@ -57,10 +56,11 @@ class EnvServer:
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
         # The server is purely index-addressed (`run_rollout`/`run_group` by `task_idx`), so it
-        # doesn't need the whole taskset up front. A `load_tasks` with a free length (a list) is
-        # materialized and its count reported via `info`; a generator is consumed lazily by index
-        # (see `_task`) with no count — so an unbounded taskset is served without materializing.
-        self._load_tasks(self.env.taskset.load_tasks())
+        # resolves tasks by index: a list-backed taskset is materialized + counted, a generator
+        # is consumed lazily with no count (so an unbounded taskset is served without ever being
+        # materialized). `num_tasks` is None in the lazy case (reported via `info`).
+        self._index: IndexedTasks = IndexedTasks(self.env.taskset.load_tasks())
+        self.num_tasks: int | None = self._index.count
         self.requires_group_scoring = bool(
             discover_decorated(self.env.taskset, "group_reward")
         )
@@ -116,37 +116,6 @@ class EnvServer:
             client=self._client(client_config, model), model=model, sampling=sampling
         )
 
-    def _load_tasks(self, tasks: Iterable[Task]) -> None:
-        """Set up index-addressed task resolution from `load_tasks`'s result. A `Sized` (a
-        list) has a free length, so materialize it and report `num_tasks`; any other iterable
-        is a lazy stream — cached on demand by `_task`, with `num_tasks=None` (unknown / possibly
-        unbounded)."""
-        if isinstance(tasks, Sized):
-            self._tasks: list[Task] = list(tasks)
-            self._task_iter: Iterator[Task] | None = None
-            self.num_tasks: int | None = len(self._tasks)
-        else:
-            self._tasks = []
-            self._task_iter = iter(tasks)
-            self.num_tasks = None
-
-    def _task(self, idx: int) -> Task:
-        """Resolve task `idx`, extending the lazy cache from `load_tasks` on demand (a
-        materialized list is already fully cached). Synchronous and non-awaiting, so concurrent
-        rollouts can't interleave a partial extension of the cache. The cache grows to the
-        highest index served (bounded for a finite taskset; TODO: evict for very long unbounded
-        runs, which needs a contract on index-access order)."""
-        if self._task_iter is not None:
-            while len(self._tasks) <= idx:
-                try:
-                    self._tasks.append(next(self._task_iter))
-                except StopIteration:
-                    raise IndexError(
-                        f"task_idx {idx} out of range: taskset {self.taskset_id} yielded "
-                        f"{len(self._tasks)} task(s)"
-                    ) from None
-        return self._tasks[idx]
-
     def serving(self):
         """Context for the server's eval-level serving resources (shared tool servers +
         interception pool), entered for the server's lifetime so they're reused across
@@ -155,21 +124,21 @@ class EnvServer:
         # Shared tool servers are task-agnostic; build them from a representative task (the
         # first, resolved lazily). An empty taskset has none.
         try:
-            sample = [self._task(0)]
+            sample = [self._index[0]]
         except IndexError:
             sample = []
         return self.env.serving(sample)
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self._task(req.task_idx), ctx, n=1)
+        episode = self.env.episode(self._index[req.task_idx], ctx, n=1)
         traces = await episode.run()
         # Trust the concrete trace; serialize it once before client-side re-typing.
         return RunRolloutResponse.model_construct(trace=traces[0])
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self._task(req.task_idx), ctx, n=req.n)
+        episode = self.env.episode(self._index[req.task_idx], ctx, n=req.n)
         traces = await episode.run()
         # Avoid a dump-and-validate copy for every trusted trace in the group.
         return RunGroupResponse.model_construct(traces=traces)
