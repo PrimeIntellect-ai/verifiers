@@ -2,7 +2,8 @@
 
 Run inside the task's repo (cwd) by the testbed python (which has pytest + the project
 installed) — NOT a uv script, since the tests need the project's own environment. argv[1]
-is a JSON list of pytest node ids. We write JUnit XML and match each expected id against
+is the path to a JSON file of pytest node ids (a file, not inline, so a large id list can't
+overflow the sandbox exec command line). We write JUnit XML and match each expected id against
 it (a pytest node id and the JUnit classname/name don't line up, so we try a few forms),
 printing the score on the last line. Any failure prints 0.0.
 """
@@ -67,7 +68,7 @@ def _all_passed(xml_content: str, expected: list[str]) -> bool:
 
 
 def main() -> None:
-    expected = json.loads(sys.argv[1])
+    expected = json.load(open(sys.argv[1]))
     if not expected:
         print(0.0)
         return
