@@ -91,13 +91,20 @@ class Branch(StrictBaseModel):
     def token_ids(self) -> list[int]:
         """The branch's full token sequence — every node's tokens concatenated in order
         (final-turn prompt + every completion). The training sample's input ids."""
-        return [t for node in self.nodes for t in node.token_ids]
+        tokens: list[int] = []
+        # Extend node spans in bulk to avoid per-token Python work.
+        for node in self.nodes:
+            tokens.extend(node.token_ids)
+        return tokens
 
     @property
     def sampled_mask(self) -> list[bool]:
         """Per-token trainable flag aligned to `token_ids`: True for the model-sampled
         (completion) tokens, False for prompt/template scaffold."""
-        return [m for node in self.nodes for m in node.mask]
+        mask: list[bool] = []
+        for node in self.nodes:
+            mask.extend(node.mask)
+        return mask
 
     @property
     def logprobs(self) -> list[float]:
@@ -105,8 +112,15 @@ class Branch(StrictBaseModel):
         their sampled positions, 0.0 on every non-sampled token."""
         out: list[float] = []
         for node in self.nodes:
+            mask = node.mask
+            sampled = sum(mask) if node.logprobs else 0
+            # Bulk-fill the canonical unsampled-prefix/sampled-suffix layout.
+            if not sampled or all(mask[-sampled:]):
+                out += [0.0] * (len(mask) - sampled) + node.logprobs[:sampled]
+                out += [0.0] * max(0, sampled - len(node.logprobs))
+                continue
             li = 0
-            for sampled in node.mask:
+            for sampled in mask:
                 if sampled:
                     out.append(node.logprobs[li] if li < len(node.logprobs) else 0.0)
                     li += 1
