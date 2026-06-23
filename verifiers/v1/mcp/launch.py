@@ -278,7 +278,7 @@ async def serve(
     depends on who consumes it: `for_host` (a user sim the framework drives) yields a
     host-reachable URL; otherwise (a tool the model calls) a harness-reachable one — localhost
     in-sandbox when colocated, else the tool runtime's `expose` (its published URL) or, for a
-    host-side tool reached by an in-sandbox harness, a `host_endpoint` tunnel to the host port."""
+    host-side tool reached by an in-sandbox harness, a host `Tunnel` to the host port."""
     cfg = server.config
     shared = getattr(cfg, "shared", False)
     if shared and task is not None:

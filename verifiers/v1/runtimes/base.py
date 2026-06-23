@@ -102,7 +102,7 @@ class Runtime(ABC):
     """Whether this runtime shares the host network — a program inside it reaches a host service
     at localhost (no tunnel) and a service inside it is reachable at localhost. True for
     subprocess / docker(--network host); remote runtimes (modal/prime) override to False (they
-    need a tunnel each way: `host_endpoint` inward, `expose` outward)."""
+    need a tunnel each way: a host `Tunnel` inward, `expose` outward)."""
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
@@ -267,14 +267,14 @@ class Runtime(ABC):
         """Publish a port running *inside this runtime* to a URL reachable from the host/outside,
         or None when local (it's on the host network — reach it at localhost). A remote runtime
         overrides this with the provider's native port exposure (modal `tunnels()`, prime
-        `client.expose`), torn down with the sandbox in `stop()`. The reverse of `host_endpoint`
+        `client.expose`), torn down with the sandbox in `stop()`. The reverse of a host `Tunnel`
         (which reaches a host port from inside a runtime)."""
         return None
 
 
 class _Host:
     """The host network as a `reachable_url` location: shares the host network (so it's `is_local`)
-    and publishes nothing itself (it's reached *into* via `host_endpoint`, not via `expose`)."""
+    and publishes nothing itself (it's reached *into* via a host `Tunnel`, not via `expose`)."""
 
     is_local = True
 
@@ -290,7 +290,7 @@ async def reachable_url(
 ):
     """Yield a URL for the service at (`service`, `port`) reachable from its consumer — the single
     place tool / user / interception reachability is decided, over the two primitives `expose`
-    (publish *out* of a runtime) and `host_endpoint` (reach *into* the host from a runtime).
+    (publish *out* of a runtime) and a host `Tunnel` (reach *into* the host from a runtime).
 
     `service` is the `Runtime` the service runs in, or `HOST` (a host-network service). `consumer` is
     the consuming `Runtime` (used for the colocated check and its locality); leave it `None` for a
@@ -301,7 +301,7 @@ async def reachable_url(
     - the service runs in a sandbox (a remote runtime): its own published URL (`expose`), reachable
       from anywhere;
     - the service is on the host network: localhost to a host-network consumer, else a host tunnel
-      (`host_endpoint`)."""
+      (a host `Tunnel`)."""
     is_local = consumer.is_local if consumer is not None else consumer_is_local
     if service is consumer:  # colocated in the consumer's runtime (or host -> host)
         yield f"http://127.0.0.1:{port}"

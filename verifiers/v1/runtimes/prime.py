@@ -3,7 +3,7 @@
 `expose` (sandbox port -> public URL) uses the SDK's native exposure (`client.expose`), so a
 host-side harness/framework can reach a tool/user server hosted in the sandbox. The reverse
 direction (a program in the sandbox reaching a host service) is the shared host-side
-`host_endpoint` tunnel, not the runtime's concern.
+host `Tunnel` (interception.tunnel), not the runtime's concern.
 """
 
 import asyncio
