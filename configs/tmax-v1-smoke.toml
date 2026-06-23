@@ -1,0 +1,26 @@
+# tmax-v1 smoke config. TMax is loaded from the runnable Harbor dataset; these
+# five task ids have prebuilt public Prime images.
+num_tasks = 5
+num_rollouts = 1
+max_concurrent = 1
+
+[taskset]
+id = "tmax-v1"
+tasks = [
+    "task_000004_aeddda76",
+    "task_000047_9e04faa8",
+    "task_000075_827b7baa",
+    "task_000102_23d0bca1",
+    "task_000105_0594c6f6",
+]
+
+[taskset.image_map]
+task_000004_aeddda76 = "team-clyvldofb0000gg1kx39rgzjq/tmax-smoke-task-000004-aeddda76:20260623"
+task_000047_9e04faa8 = "team-clyvldofb0000gg1kx39rgzjq/tmax-smoke-task-000047-9e04faa8:20260623"
+task_000075_827b7baa = "team-clyvldofb0000gg1kx39rgzjq/tmax-smoke-task-000075-827b7baa:20260623"
+task_000102_23d0bca1 = "team-clyvldofb0000gg1kx39rgzjq/tmax-smoke-task-000102-23d0bca1:20260623"
+task_000105_0594c6f6 = "team-clyvldofb0000gg1kx39rgzjq/tmax-smoke-task-000105-0594c6f6:20260623"
+
+[harness]
+id = "bash"
+runtime = { type = "prime" }

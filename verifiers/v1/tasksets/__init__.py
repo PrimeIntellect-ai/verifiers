@@ -5,5 +5,6 @@ here — it imports the optional `textarena` dependency at module load — but s
 `verifiers.v1.tasksets.textarena_v1`."""
 
 from verifiers.v1.tasksets.harbor_v1 import HarborConfig, HarborTaskset
+from verifiers.v1.tasksets.tmax_v1 import TMaxConfig, TMaxTaskset
 
-__all__ = ["HarborConfig", "HarborTaskset"]
+__all__ = ["HarborConfig", "HarborTaskset", "TMaxConfig", "TMaxTaskset"]

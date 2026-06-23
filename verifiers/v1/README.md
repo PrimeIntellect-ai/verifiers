@@ -78,6 +78,7 @@ Taskset examples (the `*_v1` packages under `environments/`):
 | `deepwiki-v1` | an **existing remote** tool server, by URL |
 | `wordle-v1` | configuring the vendored `textarena-v1` integration |
 | `terminal-bench-2-v1` | configuring the vendored `harbor-v1` integration |
+| `tmax-v1` | a built-in Harbor specialization pinned to TMax, with per-task Prime images |
 
 Harness examples (under `environments/`):
 
@@ -237,6 +238,21 @@ image — e.g. Terminal-Bench 2:
 
 ```bash
 uv run eval harbor-v1 --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm
+```
+
+`tmax-v1` is a built-in Harbor specialization pinned to the runnable
+`tmax/TMax-15K-Harbor@latest` dataset. Treat Harbor as the execution source; the TMax paper,
+GitHub repo, and Hugging Face records are provenance checks, not the runtime contract. TMax
+tasks use Dockerfile environments, so select only tasks with prebuilt images and provide a
+mapping keyed by Harbor task directory id:
+
+```toml
+[taskset]
+id = "tmax-v1"
+tasks = ["task_000004_aeddda76"]
+
+[taskset.image_map]
+task_000004_aeddda76 = "team-clyvldofb0000gg1kx39rgzjq/tmax-smoke-task-000004-aeddda76:20260623"
 ```
 
 ## Backwards compatibility

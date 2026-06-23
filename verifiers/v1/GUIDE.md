@@ -492,6 +492,11 @@ The `*_v1` tasksets under `environments/` are the reference library — each sho
 | `scaleswe-v1`, `swelego-v1`, `r2e-gym-v1` | containerized SWE tasks (rlm harness, prime runtime) |
 | `swebench-verified-v1` | SWE-bench Verified via `harbor-v1` on prime's prebuilt images (no Dockerfile build) |
 | `wordle-v1`, `terminal-bench-2-v1` | thin configs over the shipped `textarena-v1` / `harbor-v1` integrations |
+| `tmax-v1` | built-in Harbor TMax taskset pinned to `tmax/TMax-15K-Harbor@latest`; requires `[taskset.image_map]` for selected task ids |
+
+For `tmax-v1`, use Harbor as the runnable source. The TMax paper, GitHub repo, and Hugging
+Face records are provenance only; execution comes from Harbor task directories plus the Prime
+image mapped for each selected task.
 
 ---
 
