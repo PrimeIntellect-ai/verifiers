@@ -65,13 +65,13 @@ class Rollout:
         harness: Harness,
         ctx: RolloutContext,
         runtime_config: RuntimeConfig,
+        interception: InterceptionPool,
         setup_timeout: float | None = None,
         harness_timeout: float | None = None,
         finalize_timeout: float | None = None,
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
         shared_urls: dict[str, str] | None = None,
-        interception: InterceptionPool | None = None,
     ) -> None:
         self.task = task
         self.taskset = taskset

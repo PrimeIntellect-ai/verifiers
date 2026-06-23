@@ -347,6 +347,11 @@ class Environment:
             else task.timeout.scoring
         )
         retries = self.config.retries
+        if self._interception is None:
+            raise RuntimeError(
+                "Environment.episode() must run within Environment.serving() — the interception "
+                "pool (and shared tool servers) are only live inside that context"
+            )
         rollouts = [
             Rollout(
                 task=task,
