@@ -422,12 +422,12 @@ async def call_sandbox_local_tool(state, name, arguments, endpoint):
         {"Content-Type": "application/json"},
         SANDBOX_LOCAL_TOOL_TIMEOUT,
     )
-    if isinstance(payload, dict) and payload.get("ok") is False:
-        raise RuntimeError(
-            f"{payload.get('error_type')}: {payload.get('error_message')}"
-        )
     # Apply rollout-state events the tool returned (verifier evidence); they ride
-    # home in the runner's state patch.
+    # home in the runner's state patch. This MUST run before any failure raise so
+    # that failed/invalid tool calls (malformed `computer`, input/schema-invalid)
+    # still land in state["browser_tool_results"] and the cross-turn @vf.stop caps
+    # (malformed-computer / invalid-tool consecutive caps) can see them. On the
+    # success path this is unchanged.
     appends = payload.get("state_appends") if isinstance(payload, dict) else None
     if isinstance(appends, dict):
         for key, value in appends.items():
@@ -436,6 +436,10 @@ async def call_sandbox_local_tool(state, name, arguments, endpoint):
                 bucket = []
                 state[key] = bucket
             bucket.append(value)
+    if isinstance(payload, dict) and payload.get("ok") is False:
+        raise RuntimeError(
+            f"{payload.get('error_type')}: {payload.get('error_message')}"
+        )
     return payload.get("content") if isinstance(payload, dict) else payload
 
 
