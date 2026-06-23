@@ -6,6 +6,7 @@ from verifiers.v1.clients.config import (
     ClientConfig,
     EvalClientConfig,
     TrainClientConfig,
+    make_async_openai,
     resolve_client,
 )
 from verifiers.v1.clients.eval import EvalClient
@@ -18,6 +19,7 @@ __all__ = [
     "ClientConfig",
     "EvalClientConfig",
     "TrainClientConfig",
+    "make_async_openai",
     "resolve_client",
     "EvalClient",
     "TrainClient",

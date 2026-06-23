@@ -88,7 +88,11 @@ ClientConfig = Annotated[
 ]
 
 
-def resolve_client(config: BaseClientConfig) -> Client:
+def _resolve_api_key(config: BaseClientConfig) -> str:
+    """The api-key resolution shared by `resolve_client` and `make_async_openai`: the
+    configured env var, falling back to the active Prime CLI config's key only for the
+    default `PRIME_API_KEY` var on a Prime inference host. Returns "EMPTY" when nothing
+    resolves (vLLM and other local engines ignore the key)."""
     api_key = os.environ.get(config.api_key_var)
     host = urlparse(config.base_url).hostname or ""
     if (
@@ -97,19 +101,33 @@ def resolve_client(config: BaseClientConfig) -> Client:
         and (host == PRIME_INFERENCE_HOST or host.endswith(f".{PRIME_INFERENCE_HOST}"))
     ):
         api_key = load_prime_config().get("api_key")
-    api_key = api_key or "EMPTY"
+    return api_key or "EMPTY"
+
+
+def make_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
+    """Build a raw `AsyncOpenAI` for `config`'s endpoint with the same api-key / base-url
+    / Prime-config + header resolution `resolve_client` applies — but unwrapped (no
+    `Train`/`Eval` `Client`). For ad-hoc OpenAI-compatible calls that aren't a rollout turn,
+    e.g. prefill-scoring a teacher's token ids via `renderers.client.score`;
+    use `resolve_client` for rollouts. Resolution is identical regardless of `config.type` —
+    a direct engine call needs only an endpoint + key, not the renderer/relay wrapper."""
+    return AsyncOpenAI(
+        base_url=config.base_url,
+        api_key=_resolve_api_key(config),
+        default_headers=config.headers or None,
+    )
+
+
+def resolve_client(config: BaseClientConfig) -> Client:
     if isinstance(config, TrainClientConfig):
         # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
-        openai = AsyncOpenAI(
-            base_url=config.base_url,
-            api_key=api_key,
-            default_headers=config.headers or None,
-        )
         return TrainClient(
-            openai,
+            make_async_openai(config),
             pool_size=config.pool_size,
             config=config.renderer,
             renderer_model_name=config.renderer_model_name,
         )
     # The proxy is a raw httpx forwarder; the dialect supplies the auth scheme + upstream path.
-    return EvalClient(config.base_url, api_key, headers=config.headers or None)
+    return EvalClient(
+        config.base_url, _resolve_api_key(config), headers=config.headers or None
+    )

@@ -13,6 +13,7 @@ from verifiers.v1.clients import (
     Client,
     ClientConfig,
     RolloutContext,
+    make_async_openai,
     resolve_client,
 )
 from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
@@ -155,6 +156,7 @@ __all__ = [
     "Client",
     "BaseClientConfig",
     "ClientConfig",
+    "make_async_openai",
     "resolve_client",
     # taskset / harness / runtime / environment
     "Taskset",

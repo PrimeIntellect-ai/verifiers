@@ -116,8 +116,23 @@ async def post_chat_completion_with_routed_experts_sidecar(
     return response
 
 
+def _reject_v1_config(config: object) -> None:
+    """v1 client configs (`verifiers.v1.clients.config.{Eval,Train}ClientConfig`) are a
+    different shape and otherwise crash deep inside `resolve_client_config` with a cryptic
+    `AttributeError: ... has no attribute 'endpoint_configs'`. Catch the mistake here with
+    an actionable message. Checked by module rather than `isinstance` to avoid importing v1
+    into v0 (v1's config imports `load_prime_config` from this module — a circular import)."""
+    if type(config).__module__.startswith("verifiers.v1"):
+        raise TypeError(
+            f"{type(config).__name__} is a verifiers.v1 client config; build its client with "
+            f"verifiers.v1.resolve_client(config) or verifiers.v1.make_async_openai(config), "
+            f"not the v0 setup_openai_client/setup_anthropic_client."
+        )
+
+
 def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
     """Setup an AsyncOpenAI client from config."""
+    _reject_v1_config(config)
     resolved_config = resolve_client_config(config)
     headers, api_key = _build_headers_and_api_key(resolved_config)
     return AsyncOpenAI(
@@ -130,6 +145,7 @@ def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
 
 def setup_anthropic_client(config: ClientConfig) -> AsyncAnthropic:
     """Setup an AsyncAnthropic client from config."""
+    _reject_v1_config(config)
     resolved_config = resolve_client_config(config)
     headers, api_key = _build_headers_and_api_key(resolved_config)
     return AsyncAnthropic(
