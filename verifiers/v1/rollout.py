@@ -1,8 +1,8 @@
 """A rollout: one trajectory — drive an harness in a runtime and score its trace.
 
 A Rollout owns a single trajectory end-to-end, including its runtime's lifecycle. It
-makes and starts the runtime, gets an interception endpoint (a slot on the shared pool if
-one is given, else a per-rollout server exposed via its own runtime), then drives the
+makes and starts the runtime, gets an interception endpoint (a slot on the eval's shared
+interception, built by `Environment.serving`), then drives the
 staged lifecycle while the runtime is live — taskset + harness setup, the harness run,
 taskset `finalize`, and per-rollout `@reward`/`@metric` scoring — each under its own stage
 timeout (`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`),
@@ -28,7 +28,7 @@ from verifiers.v1.errors import (
     boundary,
 )
 from verifiers.v1.interception import (
-    InterceptionPool,
+    Interception,
     RolloutLimits,
     RolloutSession,
 )
@@ -65,7 +65,7 @@ class Rollout:
         harness: Harness,
         ctx: RolloutContext,
         runtime_config: RuntimeConfig,
-        interception: InterceptionPool,
+        interception: Interception,
         setup_timeout: float | None = None,
         harness_timeout: float | None = None,
         finalize_timeout: float | None = None,
@@ -85,7 +85,7 @@ class Rollout:
         self.limits = limits or RolloutLimits()
         self.shared_urls = shared_urls or {}
         """Eval-level shared tool servers ({name: url}) to reuse instead of starting per rollout;
-        the eval-level interception pool. Both injected by `Environment.episode` from the active
+        the eval-level interception. Both injected by `Environment.episode` from the active
         `Environment.serving` context — so a rollout always has them and no runner has to thread
         them in."""
         self.interception = interception
@@ -104,7 +104,7 @@ class Rollout:
         """Run the rollout and return its trace. Captures expected `RolloutError`s onto
         the trace (a bad rollout is data, not a crash), runs per-rollout scoring while
         the runtime is live, then tears the runtime down in a `finally`. Reuses the
-        eval-level shared tool servers / interception pool injected at construction (see
+        eval-level shared tool servers / interception injected at construction (see
         `self.shared_urls` / `self.interception`)."""
         trace: Trace = Trace(task=self.task, state=state_cls(type(self.taskset))())
         self.trace = trace  # expose for the --rich dashboard
@@ -140,7 +140,7 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
-            # A slot on the shared interception pool (built by `Environment.serving`, always present):
+            # A slot on the eval's shared interception (built by `Environment.serving`, always present):
             # `endpoint` is the model route; `state_port` the interception server's host port; `state_base`
             # its reachable URL — how a SHARED tool server reaches this rollout's `/state` + `/task`.
             async with self.interception.acquire(session) as (

@@ -2,9 +2,9 @@
 
 The interception server runs on the host; a harness in a remote runtime reaches it over a tunnel.
 `Tunnel` is that contract — how to build the reachable URL, and what address/port the server must
-bind. Concrete tunnels live alongside this base; `tunnel_cls` picks the one matching a config's
-type. The host-side counterpart to a `Runtime`: a `Runtime.expose` publishes a port *inside* a
-sandbox; a `Tunnel.expose` publishes a *host* port outward.
+bind. Concrete tunnels live alongside this base; the interception pool picks the one matching its
+config's type. The host-side counterpart to a `Runtime`: a `Runtime.expose` publishes a port
+*inside* a sandbox; a `Tunnel.expose` publishes a *host* port outward.
 """
 
 import contextlib
@@ -19,13 +19,8 @@ ConfigT = TypeVar("ConfigT", bound=BaseInterceptionConfig)
 
 class Tunnel(ABC, Generic[ConfigT]):
     """Makes the host interception server reachable from a remote harness runtime. One per
-    interception type (picked by `tunnel_cls`); lightweight and stateless beyond the config it
+    interception type (the pool picks it by config); lightweight and stateless beyond the config it
     holds (generic over its config type, so `self.config` is typed per subclass)."""
-
-    single_server: ClassVar[bool] = False
-    """Whether this is a single fixed endpoint shared by every rollout (so the pool never grows past
-    one server). The pool reads it off the tunnel class. True only for `CustomTunnel` — one BYO URL
-    is structurally one server."""
 
     bind_host: ClassVar[str] = "127.0.0.1"
     """Interface the interception server binds for this tunnel to reach it. Loopback by default —

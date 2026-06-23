@@ -11,21 +11,19 @@ from verifiers.v1.interception.config import (
     InterceptionConfig,
     PrimeInterceptionConfig,
 )
+from verifiers.v1.interception.base import Interception
 from verifiers.v1.interception.pool import InterceptionPool, PooledServer
 from verifiers.v1.interception.server import (
     InterceptionServer,
     RolloutLimits,
     RolloutSession,
 )
-from verifiers.v1.interception.tunnel import (
-    CustomTunnel,
-    PrimeTunnel,
-    Tunnel,
-    tunnel_cls,
-)
+from verifiers.v1.interception.single import SingleInterception
 
 __all__ = [
+    "Interception",
     "InterceptionPool",
+    "SingleInterception",
     "PooledServer",
     "InterceptionServer",
     "RolloutLimits",
@@ -34,8 +32,4 @@ __all__ = [
     "InterceptionConfig",
     "PrimeInterceptionConfig",
     "CustomInterceptionConfig",
-    "Tunnel",
-    "PrimeTunnel",
-    "CustomTunnel",
-    "tunnel_cls",
 ]

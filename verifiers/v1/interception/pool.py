@@ -1,24 +1,24 @@
-"""A pool of shared interception servers, grown on demand, so N concurrent rollouts need
-~N/multiplex servers + tunnels rather than one each.
+"""A pool of shared interception servers (prime tunnels), grown on demand, so N concurrent rollouts
+need ~N/multiplex servers + tunnels rather than one each.
 
-Behind a remote runtime each rollout's interception endpoint needs a tunnel, and tunnel
-creation is rate-capped per API token — so one-tunnel-per-rollout caps how wide a remote
-eval (or env server) can fan out. Each shared `InterceptionServer` serves up to `multiplex`
-rollouts behind one tunnel (created via a host-side exposer runtime of the harness's runtime
-type). The pool is elastic: `acquire` reuses a server with a free slot, else brings up a new
-one — so it fits both the bounded eval runner and the env server's unbounded request load.
-The harness is unchanged: it authenticates with a per-rollout secret, which is what the
-server routes by.
+Behind a remote runtime each rollout's interception endpoint needs a prime tunnel, and tunnel
+creation is rate-capped per API token — so one-tunnel-per-rollout caps how wide a remote eval (or
+env server) can fan out. Each shared `InterceptionServer` serves up to `multiplex` rollouts behind
+one tunnel. The pool is elastic: `acquire` reuses a server with a free slot, else brings up a new
+one — so it fits both the bounded eval runner and the env server's unbounded request load. The
+harness is unchanged: it authenticates with a per-rollout secret, which is what the server routes
+by. The custom (BYO endpoint) type uses `SingleInterception` instead — one server, no pool.
 """
 
 import asyncio
 import logging
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from verifiers.v1.interception.config import InterceptionConfig
+from verifiers.v1.interception.base import Interception
+from verifiers.v1.interception.config import PrimeInterceptionConfig
 from verifiers.v1.interception.server import InterceptionServer, RolloutSession
-from verifiers.v1.interception.tunnel import tunnel_cls
+from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.runtimes import RuntimeConfig, runtime_is_local
 
 logger = logging.getLogger(__name__)
@@ -31,47 +31,32 @@ class PooledServer:
     load: int = 0
 
 
-class InterceptionPool:
-    """Shared interception servers, reached per the `InterceptionConfig`'s type. `multiplex`
-    rollouts share one server (one tunnel behind a remote runtime); `acquire` hands a rollout a
-    slot on one, bringing up a new server when all are at capacity. The `custom` type is a single
-    bring-your-own endpoint, so every rollout shares its one server (multiplex doesn't apply)."""
+class InterceptionPool(Interception):
+    """Shared interception servers behind prime tunnels. `multiplex` rollouts share one server (one
+    tunnel); `acquire` hands a rollout a slot on one, bringing up a new server when all are at
+    capacity."""
 
     def __init__(
-        self, runtime_config: RuntimeConfig, config: InterceptionConfig
+        self, runtime_config: RuntimeConfig, config: PrimeInterceptionConfig
     ) -> None:
+        super().__init__()
         # The harness runtime's topology decides reachability: a remote one needs a host tunnel
         # to the interception port, a local one is reached at localhost. Read off the runtime
         # class (no provisioning) — the pool never runs a sandbox.
         self.runtime_type = runtime_config.type
         self.is_local = runtime_is_local(runtime_config)
-        self.config = config
         self.multiplex = max(1, config.multiplex)
-        # the tunnel class for this config; the pool builds one tunnel instance per server
-        self.tunnel_cls = tunnel_cls(config)
         self._servers: list[PooledServer] = []
         self._lock = asyncio.Lock()
-        self._stack = AsyncExitStack()
-
-    async def __aenter__(self) -> "InterceptionPool":
-        await self._stack.__aenter__()
-        return self
-
-    async def __aexit__(self, *exc) -> None:
-        # The stack tears down every server + its host tunnel (LIFO), even if one teardown fails.
-        await self._stack.aclose()
 
     async def _entry(self) -> PooledServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new one (its
-        own host endpoint). A single-endpoint tunnel (a BYO `url`) is one server every rollout
-        shares. The caller holds `_lock`."""
+        own prime tunnel). The caller holds `_lock`."""
         for entry in self._servers:
-            if self.tunnel_cls.single_server or entry.load < self.multiplex:
+            if entry.load < self.multiplex:
                 return entry
-        # Each server owns its own tunnel instance: it binds where the tunnel reaches it
-        # (bind_host/bind_port) and exposes that bound port to the harness via `server.reachable`.
-        # Both are owned by the pool's stack, torn down with it (LIFO).
-        server = InterceptionServer(self.tunnel_cls(self.config))
+        # Each server owns its own prime tunnel; both are on `_stack`, torn down with it (LIFO).
+        server = InterceptionServer(PrimeTunnel())
         await self._stack.enter_async_context(server)
         url = await self._stack.enter_async_context(
             server.reachable(is_local=self.is_local)
@@ -79,11 +64,10 @@ class InterceptionPool:
         entry = PooledServer(server, url)
         self._servers.append(entry)
         logger.info(
-            "interception pool: %d server(s), multiplex=%d (%s, %s)",
+            "interception pool: %d server(s), multiplex=%d (%s)",
             len(self._servers),
             self.multiplex,
             self.runtime_type,
-            self.config.type,
         )
         return entry
 

@@ -12,7 +12,6 @@ from verifiers.v1.interception.tunnel.base import Tunnel
 
 
 class CustomTunnel(Tunnel[CustomInterceptionConfig]):
-    single_server: ClassVar[bool] = True
     bind_host: ClassVar[str] = "0.0.0.0"
 
     @property
