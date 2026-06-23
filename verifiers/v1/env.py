@@ -120,9 +120,9 @@ class EnvConfig(BaseConfig):
     trace's `total_tokens`; framework-enforced between turns."""
     interception: InterceptionConfig = PrimeInterceptionConfig()
     """How the host interception server is reached from a remote runtime: `prime` (prime_tunnel, the
-    default), `custom` (bring your own reverse proxy), or `direct` (bind a reachable host interface
-    directly, no tunnel). Carries the shared `multiplex` — rollouts per interception server (and
-    tunnel). Select with `--interception.type prime|custom|direct`."""
+    default) or `custom` (bring your own endpoint — a reverse proxy, or a direct bind via
+    `bind_host`). Carries the shared `multiplex` — rollouts per interception server (and tunnel).
+    Select with `--interception.type prime|custom`."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`

@@ -32,8 +32,9 @@ class Tunnel(ABC, Generic[ConfigT]):
 
     @property
     def bind_host(self) -> str:
-        """Address the interception server binds for this tunnel to reach it. Loopback by default —
-        frpc / a BYO proxy connect over localhost on the same host; `DirectTunnel` binds publicly."""
+        """Interface the interception server binds for this tunnel to reach it. Loopback by default —
+        frpc / a same-host proxy connect over localhost; `CustomTunnel` can bind a reachable
+        interface (its `bind_host`) for a direct, no-proxy exposure."""
         return "127.0.0.1"
 
     @property

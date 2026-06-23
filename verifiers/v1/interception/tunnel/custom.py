@@ -14,6 +14,10 @@ class CustomTunnel(Tunnel[CustomInterceptionConfig]):
     single_server: ClassVar[bool] = True
 
     @property
+    def bind_host(self) -> str:
+        return self.config.bind_host
+
+    @property
     def bind_port(self) -> int:
         return self.config.port
 

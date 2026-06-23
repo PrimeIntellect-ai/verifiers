@@ -5,12 +5,9 @@ reaches it over a tunnel. `InterceptionConfig` is the discriminated union choosi
 matching `Tunnel` (see `verifiers.v1.interception.tunnel`, picked by `tunnel_cls`) implements it:
 
 - `prime` (default): `prime_tunnel` (frpc) — works from any host with prime credentials;
-- `custom`: bring your own reverse proxy — the framework opens no tunnel and trusts a public `url`
-  you front the interception port with (nginx/caddy, an ngrok tunnel, ...);
-- `direct`: bind the interception server(s) directly on a reachable host interface (a public IP, or
-  a trusted private network) — no tunnel, no proxy. Plaintext HTTP carrying the per-rollout secret,
-  so trusted-network only; multiplexes like prime (a server per `multiplex` rollouts, each on its
-  own ephemeral port at `host:port`), so the firewall must allow those ports.
+- `custom`: bring your own endpoint — the framework opens no tunnel and trusts a public `url`. Front
+  the loopback `port` with a reverse proxy (default), or set `bind_host` to expose the `port`
+  directly (`url=http://<host>:<port>`, no proxy) on a host the harness can reach.
 """
 
 from typing import Annotated, Literal
@@ -36,40 +33,29 @@ class PrimeInterceptionConfig(BaseInterceptionConfig):
 
 
 class CustomInterceptionConfig(BaseInterceptionConfig):
-    """Bring your own reverse proxy: the framework opens no tunnel and reaches the interception
-    server at `url`, which you front the fixed local `port` with. One public URL is one
-    interception server, so every rollout shares it (`multiplex` doesn't apply)."""
+    """Bring your own endpoint: the framework opens no tunnel and reaches the interception server at
+    `url`. By default it binds the fixed local `port` on loopback for a reverse proxy you front it
+    with; set `bind_host` to a reachable interface to expose the `port` directly (no proxy), with
+    `url=http://<host>:<port>`. One URL is one server, so every rollout shares it (`multiplex`
+    doesn't apply)."""
 
     type: Literal["custom"] = "custom"
     url: str
-    """Public base URL your reverse proxy serves, forwarding to the host's `port` (no trailing
-    slash). The model route is `{url}/v1`; the tool/user state channels are `{url}/state` +
-    `/task`."""
+    """Public base URL the harness reaches the interception server at (no trailing slash). The model
+    route is `{url}/v1`; the tool/user state channels are `{url}/state` + `/task`."""
     port: int = Field(ge=1, le=65535)
-    """Fixed local port the interception server binds, so your reverse proxy has a stable target."""
+    """Fixed local port the interception server binds — your reverse proxy's target, or the public
+    port for a direct bind."""
+    bind_host: str = "127.0.0.1"
+    """Interface the server listens on. Loopback (default) for a same-host reverse proxy; set a
+    reachable interface (`0.0.0.0`, or a specific public/LAN IP) to expose `port` directly with no
+    proxy. A direct bind is plaintext HTTP carrying the per-rollout secret — trusted-network only."""
 
     def model_post_init(self, _ctx) -> None:
         self.url = self.url.rstrip("/")
 
 
-class DirectInterceptionConfig(BaseInterceptionConfig):
-    """Bind the interception server(s) directly on a reachable host interface — no tunnel, no proxy.
-    For a host the harness can reach directly (a public IP, or a trusted private network). Plaintext
-    HTTP carrying the per-rollout secret, so trusted-network only. Multiplexes like prime: a server
-    per `multiplex` rollouts, each on its own ephemeral port reached at `host:port` — the host
-    firewall must allow those ports inbound."""
-
-    type: Literal["direct"] = "direct"
-    host: str
-    """Address the harness *reaches this host at* — goes in the URL (`http://{host}:{port}`). A
-    routable IP or DNS name (it can't be `0.0.0.0`, which isn't a dialable destination)."""
-    bind_host: str | None = None
-    """Local interface the server *listens on* (`socket.bind`). `None` = bind `host` itself, so it
-    listens only on the advertised interface (not all of them) — bind a private NIC and it's never on
-    the public NIC. Set `0.0.0.0` to listen everywhere, or a different local IP behind a 1:1 NAT."""
-
-
 InterceptionConfig = Annotated[
-    PrimeInterceptionConfig | CustomInterceptionConfig | DirectInterceptionConfig,
+    PrimeInterceptionConfig | CustomInterceptionConfig,
     Field(discriminator="type"),
 ]
