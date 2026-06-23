@@ -64,6 +64,7 @@ done
 
 PATCH = "/tmp/scaleswe_f2p.patch"
 SCORER = "/tmp/scaleswe_scorer.py"
+TEST_IDS = "/tmp/scaleswe_test_ids.json"
 SCORER_SRC = (Path(__file__).parent / "score.py").read_bytes()
 
 
@@ -224,7 +225,8 @@ class ScaleSWETaskset(vf.Taskset[ScaleSWETask, ScaleSWEConfig]):
         if task.f2p_script:
             await runtime.write("test_fail_to_pass.py", task.f2p_script.encode())
         await runtime.write(SCORER, SCORER_SRC)
-        result = await runtime.run(["python", SCORER, json.dumps(test_ids)], ENV)
+        await runtime.write(TEST_IDS, json.dumps(test_ids).encode())
+        result = await runtime.run(["python", SCORER, TEST_IDS], ENV)
         lines = result.stdout.strip().splitlines()
         return float(lines[-1]) if lines else 0.0
 
