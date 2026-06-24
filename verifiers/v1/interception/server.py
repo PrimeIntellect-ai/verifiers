@@ -500,7 +500,8 @@ class InterceptionServer:
                             feed_event(chunk)
                         except Exception as e:
                             parser_error = e
-                    deferred.append(chunk)  # forwarded after the turn is committed, below
+                    # forwarded after the turn is committed, below
+                    deferred.append(chunk)
                     continue
                 await resp.write(chunk)
                 if parser_error is None:
