@@ -147,6 +147,7 @@ def response_from_generate(
             completion_ids=completion_ids,
             completion_logprobs=result.get("completion_logprobs") or [],
             message_spans=message_spans,
+            is_content=attribution.is_content if attribution is not None else None,
             multi_modal_data=result.get("multi_modal_data"),
             routed_experts=result.get("routed_experts"),
         ),
