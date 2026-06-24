@@ -9,8 +9,8 @@ state copy-on-write (in-memory state isolated on write), runs in a private worki
 (relative-path writes isolated), and runs `setup_task` for its rollout's task (fetched from the
 interception server's `/task` channel — a shared server gets no task via env). The parent is a thin
 async reverse proxy that pins each rollout to its child and streams MCP traffic (so SSE works). So an
-ordinary stateful per-rollout server (expensive `setup` + per-rollout `setup_task`, e.g.
-`wikispeedia-v1`) is isolated per rollout with no rollout-aware code.
+ordinary stateful per-rollout server (expensive `setup` + per-rollout `setup_task`) is isolated
+per rollout with no rollout-aware code.
 
 The rollout key is the per-rollout secret the framework tags onto a shared server's URL
 (`STATE_SECRET_PARAM`, see `serve_tools`), alongside the reachable interception base
