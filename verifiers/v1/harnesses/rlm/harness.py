@@ -23,8 +23,6 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
-# Built-in skills rlm ships (see rlm.skills); kept in sync so configs are validated
-# client-side rather than failing at rollout time.
 BuiltinSkill = Literal["edit", "search"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/rlm.git"
