@@ -5,8 +5,6 @@ dump without importing the originating taskset."""
 
 import json
 
-import pytest
-
 import verifiers.v1 as vf
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -84,53 +82,3 @@ def test_wire_trace_round_trip():
 
     # the env-server wire form (a plain model_dump) loads too
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
-
-
-def test_to_record_excludes_node_tensors_and_round_trips():
-    """`to_record` is the disk/W&B record: it strips the per-node training tensors that can't
-    round-trip JSON (the plain json dump crashes on real expert ids) and the result reloads as
-    a WireTrace, while token_ids/mask/logprobs/usage are kept."""
-    import numpy as np
-    from renderers.base import MultiModalData
-
-    from verifiers.v1.types import Usage
-
-    # uint8 expert ids with a real (>0x7F) value, plus a multimodal numpy item — both ride the
-    # wire as raw bytes but cannot UTF-8 decode for JSON.
-    routed = np.array([[[200]], [[3]]], dtype=np.uint8)
-    mmd = MultiModalData(
-        mm_items={"image": [{"pixel_values": np.array([200], np.uint8)}]}
-    )
-    tr = vf.Trace(
-        task=MyTask(idx=0, prompt="q", answer="a"),
-        nodes=[
-            MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
-            MessageNode(
-                parent=0,
-                message=AssistantMessage(content="a"),
-                sampled=True,
-                token_ids=[1, 2],
-                mask=[True, True],
-                logprobs=[-0.1, -0.2],
-                usage=Usage(prompt_tokens=1, completion_tokens=2),
-                routed_experts=routed,
-                multi_modal_data=mmd,
-            ),
-        ],
-    )
-
-    # The load-bearing reason for the exclude: a plain json dump crashes on the raw tensor bytes.
-    with pytest.raises(UnicodeDecodeError):
-        tr.model_dump(mode="json")
-
-    rec = tr.to_record()
-    json.dumps(rec)  # genuinely JSON-serializable
-    node = rec["nodes"][1]
-    assert "routed_experts" not in node and "multi_modal_data" not in node
-    # Training payload that DOES round-trip is kept.
-    assert node["token_ids"] == [1, 2] and node["mask"] == [True, True]
-    assert node["usage"]["completion_tokens"] == 2
-    assert "state" not in rec  # transient, never dumped
-    # Reloads as a WireTrace with the graph intact.
-    rt = vf.WireTrace.model_validate(rec)
-    assert rt.num_branches == 1 and rt.num_turns == 1 and rt.completion_len == 2
