@@ -87,9 +87,6 @@ class RLMHarness(Harness[RLMHarnessConfig]):
                 tool for tool in tools if tool not in disabled_tools
             )
         if mcp_urls:
-            # rlm has no MCP client in its tool-call loop; it exposes each tool server's
-            # tools as pre-imported IPython skills the agent calls programmatically. Hand
-            # it the same standard `mcpServers` URL config the other harnesses use.
             env["RLM_MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
