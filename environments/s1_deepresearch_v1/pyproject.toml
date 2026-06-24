@@ -1,0 +1,13 @@
+[project]
+name = "s1-deepresearch-v1"
+version = "0.1.0"
+description = "s1-deepresearch-v1 — deep-research QA over the web (Serper search/visit tools + answer-match judge)."
+requires-python = ">=3.11"
+dependencies = ["verifiers", "huggingface_hub", "httpx", "pdfminer.six"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["s1_deepresearch_v1"]

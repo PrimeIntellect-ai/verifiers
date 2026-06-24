@@ -3899,6 +3899,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pdfminer-six"
+version = "20260107"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "charset-normalizer" },
+    { name = "cryptography" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/34/a4/5cec1112009f0439a5ca6afa8ace321f0ab2f48da3255b7a1c8953014670/pdfminer_six-20260107.tar.gz", hash = "sha256:96bfd431e3577a55a0efd25676968ca4ce8fd5b53f14565f85716ff363889602", size = 8512094, upload-time = "2026-01-07T13:29:12.937Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/20/8b/28c4eaec9d6b036a52cb44720408f26b1a143ca9bce76cc19e8f5de00ab4/pdfminer_six-20260107-py3-none-any.whl", hash = "sha256:366585ba97e80dffa8f00cebe303d2f381884d8637af4ce422f1df3ef38111a9", size = 6592252, upload-time = "2026-01-07T13:29:10.742Z" },
+]
+
+[[package]]
 name = "peft"
 version = "0.19.1"
 source = { registry = "https://pypi.org/simple" }
@@ -5215,6 +5228,25 @@ wheels = [
 ]
 
 [[package]]
+name = "s1-deepresearch-v1"
+version = "0.1.0"
+source = { editable = "environments/s1_deepresearch_v1" }
+dependencies = [
+    { name = "httpx" },
+    { name = "huggingface-hub" },
+    { name = "pdfminer-six" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx" },
+    { name = "huggingface-hub" },
+    { name = "pdfminer-six" },
+    { name = "verifiers" },
+]
+
+[[package]]
 name = "safetensors"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -6331,6 +6363,7 @@ examples = [
     { name = "math-env-v1" },
     { name = "r2e-gym-v1" },
     { name = "reverse-text-v1" },
+    { name = "s1-deepresearch-v1" },
     { name = "scaleswe-v1" },
     { name = "scratchpad-v1" },
     { name = "swebench-verified-v1" },
@@ -6425,6 +6458,7 @@ examples = [
     { name = "math-env-v1", editable = "environments/math_env_v1" },
     { name = "r2e-gym-v1", editable = "environments/r2e_gym_v1" },
     { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
+    { name = "s1-deepresearch-v1", editable = "environments/s1_deepresearch_v1" },
     { name = "scaleswe-v1", editable = "environments/scaleswe_v1" },
     { name = "scratchpad-v1", editable = "environments/scratchpad_v1" },
     { name = "swebench-verified-v1", editable = "environments/swebench_verified_v1" },
