@@ -199,6 +199,16 @@ def _eval_config(
         max_output_tokens=max_tokens,
         sampling={"max_tokens": max_tokens, "temperature": 0},
         timeout={"rollout": rollout_timeout, "scoring": 60},
+        # These trivial tasks score 1.0 with an empty `trace.errors` on a clean rollout, so the
+        # only errors we ever see are transient upstream provider blips (e.g. an intermittent
+        # `ProviderError: upstream 400` from a hosted model under load) — noise, not a regression.
+        # Retry the whole rollout a couple of times on a `ProviderError` so one hiccup doesn't fail
+        # CI. This can't mask a real break: a consistent error fails every attempt and the
+        # accumulated errors still land on the returned trace (so the `trace.errors == []` asserts
+        # below catch it). Exact-name match, so the deterministic `OverlongPromptError` subclass is
+        # not retried. Off by default in the framework — opt in here because the e2e suite is the
+        # one place we drive a live provider.
+        retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
         rich=False,
         output_dir=output_dir,
         **({"pool": pool} if pool else {}),
