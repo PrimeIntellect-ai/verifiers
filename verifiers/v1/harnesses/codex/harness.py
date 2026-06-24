@@ -9,6 +9,7 @@ session secret) is read from an env var.
 
 import logging
 import shlex
+from typing import Literal
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.harness import Harness, HarnessConfig
@@ -41,6 +42,11 @@ class CodexHarnessConfig(HarnessConfig):
 
     version: str = "0.137.0"
     """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
+    web_search: Literal["disabled", "cached", "live"] | None = None
+    """Codex's web search mode, passed as `-c web_search=<mode>`. None leaves Codex's own
+    default. Web search is a server-side Responses hosted tool (`{"type": "web_search"}`): it
+    only returns results when the model provider's `/responses` endpoint executes it — which
+    Prime inference does. `live` hits the live web, `cached` an indexed snapshot."""
 
 
 class CodexHarness(Harness[CodexHarnessConfig]):
@@ -83,6 +89,8 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             for tool in self.config.disabled_tools or []
             for arg in ("--disable", tool)
         ]
+        if self.config.web_search:
+            tool_config += ["-c", f"web_search={self.config.web_search}"]
         # `-c` values parse as TOML, falling back to a raw string (so the url / `responses`
         # come through literally); `requires_openai_auth=false` parses as a bool.
         argv = [
