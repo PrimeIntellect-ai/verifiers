@@ -88,7 +88,10 @@ class ModalRuntime(Runtime):
                     "infinity",  # keep-alive entrypoint; the harness runs via `exec`
                     app=app,
                     name=self.name,
-                    image=modal.Image.from_registry(self.config.image),
+                    # Clear the image's ENTRYPOINT so `sleep infinity` runs as the command
+                    # rather than as args to it — otherwise an image with its own entrypoint
+                    # (e.g. SWE task images) never starts the keep-alive and the sandbox dies.
+                    image=modal.Image.from_registry(self.config.image).entrypoint([]),
                     workdir=self.config.workdir,
                     cpu=self.config.cpu,
                     memory=int(self.config.memory * 1024),  # Modal memory is MB
