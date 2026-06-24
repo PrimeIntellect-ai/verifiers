@@ -1,0 +1,33 @@
+[project]
+name = "search-v1"
+description = "Composable search/research tasksets (QUEST, OpenSeeker, REDSearcher) as a v1 vf.Taskset. Harness-agnostic: pair with an agent harness (e.g. rlm) that gives the model web-search tools and writes the final answer to /task/answer.txt."
+tags = ["search", "research", "qa", "rlm", "sandbox", "quest", "openseeker", "redsearcher", "v1"]
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers",
+    "datasets>=4.0.0",
+    "openai>=1.0",
+    "httpx",
+    # QUEST objective evaluator (obj_task_eval) deps:
+    "pymupdf",
+    "pillow",
+    "aiohttp",
+    "requests",
+    "certifi",
+    "huggingface-hub",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["search_v1"]
+
+[project.entry-points."verifiers.environments"]
+search-v1 = "search_v1:load_environment"
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1
