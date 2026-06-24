@@ -19,18 +19,10 @@ EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 2)
 
 ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
-# v1 tasksets that need a docker/prime runtime + image-backed sandboxes, so they can't run a
-# smoke eval in plain CI — covered by the dedicated v1 e2e tests.
-NEEDS_CONTAINER = {
-    "r2e_gym_v1",
-    "swelego_v1",
-}
-
-# v1 tasksets that can't run a plain-CI smoke eval for non-container reasons — e.g. the eval
-# clones a corpus repo that CI has no credentials to read.
-SKIP_SMOKE_EVAL = {
-    "general_agent_v1",  # clones a corpus repo unreadable from CI
-}
+# v1 tasksets that can't run a plain-CI smoke eval — e.g. they need a docker/prime runtime or
+# clone a corpus CI can't read. Empty: the SWE/container and corpus tasksets live in
+# research-environments now.
+SKIP_EVAL: set[str] = set()
 
 
 def v1_tasksets() -> list[str]:
@@ -44,12 +36,8 @@ def v1_tasksets() -> list[str]:
 @pytest.mark.parametrize("taskset", v1_tasksets())
 def test_eval(taskset: str):
     """Run one capped rollout of `taskset`; a taskset that bundles a harness uses it by default."""
-    if taskset in NEEDS_CONTAINER:
-        pytest.skip(f"{taskset} needs a docker/prime runtime (covered by v1 e2e tests)")
-    if taskset in SKIP_SMOKE_EVAL:
-        pytest.skip(
-            f"{taskset} can't run a CI smoke eval (clones a corpus repo unreadable here)"
-        )
+    if taskset in SKIP_EVAL:
+        pytest.skip(f"{taskset} can't run a plain-CI smoke eval")
     if os.getenv("PRIME_API_KEY"):
         model = [
             "-m", "openai/gpt-4.1-mini",

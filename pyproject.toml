@@ -78,11 +78,9 @@ dev = [
 # from this repo. The built-in tasksets/harnesses ship inside verifiers (verifiers/v1/...).
 examples = [
     "compact",
-    "gsm8k-v1", "wikispeedia-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
-    "reverse-text-v1", "math-env-v1", "aime24-v1", "color-codeword-v1",
-    "wordle-v1", "alphabet-sort-v1",
-    "r2e-gym-v1", "swelego-v1", "scratchpad-v1",
-    "general-agent-v1", "tau2-bench-v1",
+    "gsm8k-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
+    "reverse-text-v1", "color-codeword-v1",
+    "wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
 ]
 
 [project.optional-dependencies]
@@ -137,22 +135,15 @@ default = true
 compact = { path = "environments/compact", editable = true }
 glossary-v1 = { path = "environments/glossary_v1", editable = true }
 deepwiki-v1 = { path = "environments/deepwiki_v1", editable = true }
-wikispeedia-v1 = { path = "environments/wikispeedia_v1", editable = true }
 wiki-search-v1 = { path = "environments/wiki_search_v1", editable = true }
 gsm8k-v1 = { path = "environments/gsm8k_v1", editable = true }
 code-golf-v1 = { path = "environments/code_golf_v1", editable = true }
 reverse-text-v1 = { path = "environments/reverse_text_v1", editable = true }
 reverse-text = { path = "environments/reverse_text", editable = true }
 wordle-v1 = { path = "environments/wordle_v1", editable = true }
-math-env-v1 = { path = "environments/math_env_v1", editable = true }
-aime24-v1 = { path = "environments/aime24_v1", editable = true }
 color-codeword-v1 = { path = "environments/color_codeword_v1", editable = true }
-r2e-gym-v1 = { path = "environments/r2e_gym_v1", editable = true }
-swelego-v1 = { path = "environments/swelego_v1", editable = true }
 alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
-general-agent-v1 = { path = "environments/general_agent_v1", editable = true }
-tau2-bench-v1 = { path = "environments/tau2_bench_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
