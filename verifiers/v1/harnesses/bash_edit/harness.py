@@ -19,10 +19,11 @@ from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
-# Tells the model about its local tools (a pure-text chat loop gets no harness-injected prompt).
+# Frames the model as a coding agent and names its local tools (a pure-text chat loop gets no
+# harness-injected prompt).
 BASH_EDIT_SYSTEM_PROMPT = (
-    "You have access to a bash tool for running shell commands and an edit tool for "
-    "single-occurrence string replacement in a file."
+    "You are a coding agent. You have access to a bash tool for running shell commands and "
+    "an edit tool for single-occurrence string replacement in a file."
 )
 
 

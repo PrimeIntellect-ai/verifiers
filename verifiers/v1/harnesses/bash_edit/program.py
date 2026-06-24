@@ -81,16 +81,28 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
         return "error: 'path' is required"
     if not isinstance(old_str, str) or not isinstance(new_str, str):
         return "error: 'old_str' and 'new_str' must be strings"
+    if not old_str:
+        # '' matches everywhere (''.count('') == 1 on an empty file), so it would insert
+        # rather than replace — reject it to keep the "exactly once" contract honest.
+        return "error: 'old_str' must be a non-empty string"
     filepath = Path(path)
     if not filepath.is_absolute():
         filepath = Path.cwd() / filepath
     if not filepath.exists():
         return f"error: {path} not found"
-    content = filepath.read_text()
+    # Reading/writing can fail on a directory, permissions, or non-text content; return the
+    # error as a tool result instead of letting it abort the chat loop.
+    try:
+        content = filepath.read_text()
+    except Exception as e:
+        return f"error: could not read {path}: {e}"
     count = content.count(old_str)
     if count != 1:
         return f"error: old_str must appear exactly once in {path} (found {count})"
-    filepath.write_text(content.replace(old_str, new_str, 1))
+    try:
+        filepath.write_text(content.replace(old_str, new_str, 1))
+    except Exception as e:
+        return f"error: could not write {path}: {e}"
     return f"Edited {path}"
 
 
