@@ -1,9 +1,7 @@
-import json
 import logging
 import os
 from collections.abc import Mapping
 from typing import Any
-from pathlib import Path
 
 import httpx
 from anthropic import AsyncAnthropic
@@ -14,7 +12,10 @@ from verifiers.types import (
     ClientConfig,
     EndpointClientConfig,
 )
+from verifiers.utils.install_utils import load_prime_config
 from verifiers.utils.response_utils import strip_routed_experts_data
+
+__all__ = ["load_prime_config"]
 
 logger = logging.getLogger(__name__)
 
@@ -47,19 +48,6 @@ def resolve_client_configs(config: ClientConfig) -> list[ClientConfig]:
     if config.endpoint_configs:
         return [_merge_endpoint(config, ep) for ep in config.endpoint_configs]
     return [resolve_client_config(config)]
-
-
-def load_prime_config() -> dict:
-    try:
-        config_file = Path.home() / ".prime" / "config.json"
-        if config_file.exists():
-            data = json.loads(config_file.read_text())
-            if isinstance(data, dict):
-                return data
-            logger.warning("Invalid prime config: expected dict")
-    except (RuntimeError, json.JSONDecodeError, OSError) as e:
-        logger.warning(f"Failed to load prime config: {e}")
-    return {}
 
 
 def _build_headers_and_api_key(
