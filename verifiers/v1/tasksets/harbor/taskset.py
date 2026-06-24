@@ -101,7 +101,11 @@ def dataset_dir(dataset: str) -> Path:
     ref = ref or "latest"
     url = os.getenv("HARBOR_SUPABASE_URL", HARBOR_SUPABASE_URL).rstrip("/")
     key = os.getenv("HARBOR_SUPABASE_PUBLISHABLE_KEY", HARBOR_SUPABASE_PUBLISHABLE_KEY)
-    headers = {"apikey": key, "Content-Type": "application/json"}
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
     # Harbor stores datasets in version tables; standalone tasks use the RPC fallback below.
     version_query = {
         "package.name": f"eq.{name}",
