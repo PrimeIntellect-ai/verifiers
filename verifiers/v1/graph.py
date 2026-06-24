@@ -442,9 +442,6 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     multi_modal_data = tokens.multi_modal_data if tokens else None
     prompt_ids = tokens.prompt_ids if tokens else []
     spans = tokens.message_spans if tokens else None
-    # Per-token content flags, parallel to prompt_ids (see MessageNode.is_content). Required
-    # exactly parallel so each node's [start:end] slice lines up with its token_ids; if the
-    # renderer didn't attribute content (empty/absent) every node's is_content stays [].
     is_content = tokens.is_content if tokens else None
     has_is_content = is_content is not None and len(is_content) == len(prompt_ids)
     idx = _head_index(trace)
@@ -520,9 +517,6 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
             sampled=True,
             token_ids=[*gen_prompt, *comp_ids],
             mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
-            # is_content == mask for an assistant node by construction: the generation-prompt
-            # scaffold is not content, the sampled completion is. Derive it (don't slice) so it
-            # stays correct, but only when the turn carries content attribution at all.
             is_content=([False] * len(gen_prompt) + [True] * len(comp_ids))
             if has_is_content
             else [],

@@ -147,8 +147,6 @@ def response_from_generate(
             completion_ids=completion_ids,
             completion_logprobs=result.get("completion_logprobs") or [],
             message_spans=message_spans,
-            # Parallel to prompt_ids in both the full-render and bridge paths (the renderer's
-            # is_content tracks token_ids, not message indices, so it needs no span remap).
             is_content=attribution.is_content if attribution is not None else None,
             multi_modal_data=result.get("multi_modal_data"),
             routed_experts=result.get("routed_experts"),
