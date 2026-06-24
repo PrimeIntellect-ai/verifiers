@@ -2,6 +2,10 @@
 
 `RLMHarnessConfig` carries both how to install rlm (repo/branch/token/path) and its
 runtime knobs (`max_depth`, `tools`), which rlm reads from `RLM_*` env vars.
+
+A task's MCP tool servers are passed to rlm via `RLM_MCP_CONFIG` (a standard `mcpServers`
+URL map); rlm exposes each tool as a pre-imported IPython skill the agent calls
+programmatically (`await tools_<name>(...)`), rather than via a native MCP client.
 """
 
 import json
@@ -37,7 +41,6 @@ class RLMHarnessConfig(HarnessConfig):
 
 class RLMHarness(Harness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
-    SUPPORTS_MCP = False
 
     async def setup(self, runtime: Runtime) -> None:
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
@@ -82,6 +85,13 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             disabled_tools = set(self.config.disabled_tools or [])
             env["RLM_TOOLS"] = ",".join(
                 tool for tool in tools if tool not in disabled_tools
+            )
+        if mcp_urls:
+            # rlm has no MCP client in its tool-call loop; it exposes each tool server's
+            # tools as pre-imported IPython skills the agent calls programmatically. Hand
+            # it the same standard `mcpServers` URL config the other harnesses use.
+            env["RLM_MCP_CONFIG"] = json.dumps(
+                {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
         return await runtime.run_program([RLM_BIN, prompt], env)
 
