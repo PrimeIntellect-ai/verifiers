@@ -38,7 +38,7 @@ class RLMHarnessConfig(HarnessConfig):
     The tool set is fixed (ipython); only built-in skills are selectable."""
 
     @model_validator(mode="after")
-    def _reject_disabled_tools(self) -> "RLMHarnessConfig":
+    def reject_disabled_tools(self) -> "RLMHarnessConfig":
         # rlm's only tool is ipython, which must stay enabled, so there's nothing to disable.
         if self.disabled_tools:
             raise ValueError(
