@@ -201,6 +201,16 @@ class Branch(StrictBaseModel):
         return usage.completion_tokens if usage else 0
 
 
+_NODE_DUMP_EXCLUDE: dict = {
+    "nodes": {"__all__": {"multi_modal_data", "routed_experts"}}
+}
+"""The per-node fields `Trace.to_record` strips from a JSON dump: the multimodal `mm_kwargs`
+carrier and the router-replay `routed_experts` array. Both hold raw numpy bytes (msgpack `bin`)
+that the env-server wire carries fine but JSON cannot — `model_dump(mode="json")` raises
+`UnicodeDecodeError` on real (>0x7F) expert ids — and they bloat every record line besides.
+Lives with the schema it excludes so a new tensor field can't silently start crashing dumps."""
+
+
 class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """The full record of one rollout. Subclass to add typed fields."""
 
@@ -229,7 +239,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """Transient per-rollout runtime state (see `verifiers.v1.state.State`): shared with the tool/user
     servers as `self.state` (synced over the interception server) and read+written by scoring. Runtime
     scratch (counters, game progress, end-of-trajectory flags) — excluded from every dump (`model_dump`
-    + `to_wire`), unlike `info` which persists. Type it via `Taskset[Task, Config, MyState]`; defaults
+    / `to_record`), unlike `info` which persists. Type it via `Taskset[Task, Config, MyState]`; defaults
     to the base `State`."""
 
     is_completed: bool = False
@@ -400,6 +410,18 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
             )
         )
         self.stop("error")
+
+    def to_record(self) -> dict[str, Any]:
+        """A JSON-serializable record of this rollout for `results.jsonl` / W&B tables.
+
+        `model_dump(mode="json")` minus the per-node training tensors (`_NODE_DUMP_EXCLUDE`):
+        those carry raw numpy bytes that JSON can't encode (the plain dump raises
+        `UnicodeDecodeError` on real expert ids) and that bloat every line. Everything else —
+        including `token_ids` / `mask` / `logprobs` / `is_content` and provider `usage` — is
+        kept; `state` and the computed-property views (`reward`, `branches`, `duration`) are
+        absent by construction (excluded / never serialized). The tensors still reach the
+        trainer over the env-server wire (msgpack raw bytes); only this record path strips them."""
+        return self.model_dump(mode="json", exclude=_NODE_DUMP_EXCLUDE)
 
 
 TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]
