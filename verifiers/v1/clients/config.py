@@ -30,6 +30,10 @@ PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"
 class BaseClientConfig(BaseConfig):
     """An OpenAI-compatible endpoint. The API key is read from an env var."""
 
+    model: str | None = None
+    """Served model name. Optional for ordinary eval configs because callers often pass the
+    request model separately; prime-rl stamps it when a trace needs to reconnect to this
+    client without additional prime-rl context."""
     base_url: str = DEFAULT_PRIME_INFERENCE_URL
     api_key_var: str = "PRIME_API_KEY"
     headers: dict[str, str] = Field(default_factory=dict)

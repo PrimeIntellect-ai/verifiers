@@ -12,10 +12,12 @@ from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
+    EvalClientConfig,
     RolloutContext,
+    TrainClientConfig,
     resolve_client,
 )
-from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
+from verifiers.v1.decorators import advantage, group_reward, metric, reward, stop, tool
 from verifiers.v1.env import (
     ElasticPoolConfig,
     EnvConfig,
@@ -136,6 +138,7 @@ __all__ = [
     "TimeSpan",
     "Error",
     # decorators
+    "advantage",
     "stop",
     "tool",
     "metric",
@@ -155,6 +158,8 @@ __all__ = [
     "Client",
     "BaseClientConfig",
     "ClientConfig",
+    "EvalClientConfig",
+    "TrainClientConfig",
     "resolve_client",
     # taskset / harness / runtime / environment
     "Taskset",

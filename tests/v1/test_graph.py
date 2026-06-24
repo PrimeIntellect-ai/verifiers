@@ -107,6 +107,50 @@ def test_routed_experts_none_when_absent():
     assert trace.branches[-1].routed_experts is None
 
 
+def test_branch_advantage_annotations_are_plain_lists():
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="x"))
+    graph.prepare_turn(trace, [vf.UserMessage(content="u1")]).commit(
+        vf.Response(
+            id="a",
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content="a1"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1, 2], completion_ids=[3], message_spans=[(0, 2)]
+            ),
+        )
+    )
+
+    branch = trace.branches[0]
+    branch.advantages = [0.0, 0.0, 1.0]
+    branch.mask = [False, False, True]
+
+    assert trace.branches[0].advantages == [0.0, 0.0, 1.0]
+    assert trace.branches[0].mask == [False, False, True]
+    branch.advantages = [1.0]
+    assert trace.branches[0].advantages == [1.0]
+
+
+def test_advantage_decorator_records_loss_metadata():
+    @vf.advantage(loss="ce", scope="rollout")
+    async def sft(traces: list[vf.Trace]) -> list[vf.Trace]:
+        return traces
+
+    assert sft.advantage is True
+    assert sft.advantage_loss == "ce"
+    assert sft.advantage_scope == "rollout"
+
+
+def test_trace_model_metadata_is_keyed_by_model_id():
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="x"))
+    trace.actor = "teacher"
+    trace.models["teacher"] = vf.EvalClientConfig(model="teacher-model")
+
+    assert trace.actor == "teacher"
+    assert trace.models["teacher"].model == "teacher-model"
+
+
 def test_tool_call_hash_matches_v0_content_and_arguments_normalization():
     left = vf.AssistantMessage(
         content=None,
