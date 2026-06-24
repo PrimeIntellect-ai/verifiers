@@ -199,7 +199,10 @@ def dataset_dir(dataset: str) -> Path:
             )
             with urlopen(request) as response:
                 with tarfile.open(fileobj=response, mode="r|gz") as tar:
-                    tar.extractall(target, filter="data")
+                    kwargs = (
+                        {"filter": "data"} if hasattr(tarfile, "data_filter") else {}
+                    )
+                    tar.extractall(target, **kwargs)
 
         with ThreadPoolExecutor(max_workers=100) as pool:
             list(pool.map(extract, downloads))

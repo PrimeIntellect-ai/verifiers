@@ -228,7 +228,7 @@ uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.incl
 
 Some tasksets wrap a whole benchmark family rather than a single task — shipped, installed by
 default. For example, `textarena` (TextArena games) and `harbor` (the agentic-
-benchmark registry). Harbor is the showcase: it pulls tasks straight from the Harbor registry
+benchmark registry). Harbor is the showcase: it pulls tasks straight from the Harbor registry,
 each in its own declared, pullable container image — e.g. Terminal-Bench 2:
 
 ```bash
