@@ -8,6 +8,8 @@ import json
 import logging
 import shlex
 
+from pydantic import model_validator
+
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import metric
@@ -34,6 +36,16 @@ class RLMHarnessConfig(HarnessConfig):
     skills: list[str] | None = None
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; None enables none.
     The tool set is fixed (ipython); only built-in skills are selectable."""
+
+    @model_validator(mode="after")
+    def _reject_disabled_tools(self) -> "RLMHarnessConfig":
+        # rlm's only tool is ipython, which must stay enabled, so there's nothing to disable.
+        if self.disabled_tools:
+            raise ValueError(
+                "the rlm harness has a fixed tool set (ipython) and does not support "
+                "`disabled_tools`; use `skills` to enable built-in skills instead."
+            )
+        return self
 
 
 class RLMHarness(Harness[RLMHarnessConfig]):
