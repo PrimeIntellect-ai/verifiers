@@ -10,7 +10,7 @@ from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.dashboard import dashboard
-from verifiers.v1.cli.output import append_trace, output_path, save_config
+from verifiers.v1.cli.output import append_trace, output_path
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import Environment
 from verifiers.v1.trace import Trace
@@ -36,9 +36,9 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
     out = output_path(config)
-    # Write config.toml up front, then persist each trace as it completes (so the results are
-    # durable mid-run, not only at the end). On resume, keep the saved config + good traces and
-    # run only the owed rollouts. One lock serializes worker-thread appends from concurrent
+    # The process entrypoint initialized config.toml + results.jsonl. Persist each trace as it
+    # completes, keeping results durable mid-run. On resume, keep the saved config + good traces
+    # and run only the owed rollouts. One lock serializes worker-thread appends from concurrent
     # rollouts while keeping large trace serialization off the event loop.
     owed: dict[str, int] | None = None
     if config.resume is not None:
@@ -58,7 +58,6 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             sum(owed.values()),
         )
     else:
-        save_config(config, out)
         logger.info(
             "running %dx%d rollouts on %s",
             len(tasks),
@@ -173,7 +172,6 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             )
         else:
             owed = {idx: config.num_rollouts for idx in idxs}
-            save_config(config, out)
             logger.info(
                 "running %dx%d rollouts via the env-server %s pool on %s",
                 len(idxs),

@@ -15,7 +15,6 @@ v1 stays importable without the v0 package present.
 
 import contextlib
 import logging
-from pathlib import Path
 from typing import Any
 
 import zmq
@@ -418,17 +417,6 @@ def _eval_client(client_config: ClientConfig, model: str):
     )
 
 
-def _legacy_output_dir(config) -> Path:
-    """The legacy run's output dir, mirroring the native `output_path` shape but keyed by
-    the v0 env id (`outputs/<id>--<model>--legacy/<uuid>`); honors `--output-dir`."""
-    from verifiers.v1.utils.install import env_name
-
-    if config.output_dir is not None:
-        return config.output_dir
-    name = f"{env_name(config.id)}--{config.model.replace('/', '--')}--legacy"
-    return Path("outputs") / name / config.uuid
-
-
 async def run_legacy_eval(config) -> list[Trace]:
     """In-process v0 eval used by the `eval` CLI when `config.is_legacy` (a legacy `id` is
     set, no v1 `taskset`).
@@ -444,7 +432,7 @@ async def run_legacy_eval(config) -> list[Trace]:
 
     from verifiers import load_environment
 
-    from verifiers.v1.cli.output import append_trace, save_config
+    from verifiers.v1.cli.output import append_trace, output_path
     from verifiers.v1.utils.install import ensure_installed
 
     # Install from the env hub on demand for an `org/name[@version]` id (a local id is
@@ -461,8 +449,7 @@ async def run_legacy_eval(config) -> list[Trace]:
 
     client = _eval_client(config.client, config.model)
     sampling_args = config.sampling.model_dump(exclude_none=True)
-    out_dir = _legacy_output_dir(config)
-    save_config(config, out_dir)
+    out_dir = output_path(config)
     logger.info("results: %s", out_dir)
     logger.info(
         "running %dx%d v0 rollouts on %s (legacy: %s)",

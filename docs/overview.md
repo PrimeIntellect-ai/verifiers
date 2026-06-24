@@ -115,6 +115,8 @@ prime eval run primeintellect/math-python
 
 **[Evaluation](evaluation.md)** - Evaluate models using your environments.
 
+**[Eval process protocol](eval-process-protocol.md)** — Integrate with Verifiers eval resolution, execution, and run artifacts.
+
 **[Training](training.md)** — Train models in your environments with reinforcement learning.
 
 **[Development](development.md)** — Contributing to verifiers
