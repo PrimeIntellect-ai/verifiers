@@ -110,6 +110,11 @@ class Runtime(ABC):
     subprocess / docker(--network host); remote runtimes (modal/prime) override to False (they
     need a tunnel each way: `host_endpoint` inward, `expose` outward)."""
 
+    supports_snapshot: ClassVar[bool] = False
+    """Whether this runtime can `snapshot()` its live state into a ref that a later runtime of
+    the same type restores from. False for runtimes with no provider snapshot primitive
+    (subprocess / docker / prime); a snapshot-capable runtime (modal) overrides to True."""
+
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
         """Resource name — the subprocess workdir, docker `--name`, prime sandbox name.
@@ -148,6 +153,14 @@ class Runtime(ABC):
         """Synchronously free the provisioned resource — best-effort and idempotent. The
         source of truth for teardown: usable from the atexit backstop where async machinery
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
+
+    async def snapshot(self) -> str:
+        """Capture the runtime's current state and return an opaque ref string that a later
+        runtime of the same type restores from (how the ref is fed back into provisioning is
+        per-runtime — e.g. a `resume_from` config field). Only snapshot-capable runtimes
+        (`supports_snapshot`) override; the default refuses so a misconfigured resume fails
+        loudly instead of silently discarding state."""
+        raise NotImplementedError(f"{type(self).__name__} does not support snapshot")
 
     # --- execution ---
 
