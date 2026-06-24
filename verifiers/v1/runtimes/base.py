@@ -41,13 +41,11 @@ _DOWNLOAD_UV = (
 )
 _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
-    # Reuse the image's uv only if it supports inline-script metadata. Probe `uv python find
-    # --script` specifically: it gained `--script` later than `uv sync`, so some images have a uv
-    # that accepts `uv sync --script` but not `uv python find --script` (prepare_uv_script runs
-    # both). Otherwise install a fresh uv into $HOME/.local/bin (ahead of any system uv on PATH);
-    # fall back to pip when no downloader is available.
-    "{ command -v uv >/dev/null 2>&1 && uv python find --help 2>/dev/null | grep -q -- --script; } "
-    f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} "
+    # Always install the latest uv into $HOME/.local/bin (ahead of any image uv on PATH) rather
+    # than reusing whatever the image ships: base images carry wildly varying uvs (too old for the
+    # `uv sync --script` / `uv python find --script` that prepare_uv_script runs, or stale/shadowed
+    # on PATH). Installing fresh sidesteps all version probing. Falls back to pip when no downloader.
+    f"{{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} "
     "|| pip install -q -U uv 2>/dev/null"
 )
 
