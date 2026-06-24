@@ -1,10 +1,9 @@
 """harbor: run a Harbor (Terminal-Bench) dataset.
 
-`dataset` is a Harbor Hub registry id (e.g. "name", "name@version",
-"org/name@ref"), downloaded + cached on first use via the `harbor` CLI
-(fetched on demand with `uv` when needed). Each task dir ships task.toml +
-instruction.md (+ tests/, solution/, environment/). Defaults to the registry
-`hello-world` task.
+`dataset` is a Harbor Hub package id (e.g. "org/name" or "org/name@ref"),
+downloaded directly from the registry and cached on first use. Each task dir
+ships task.toml + instruction.md (+ tests/, solution/, environment/). Defaults
+to the registry `harbor/hello-world` dataset.
 
 The harness runs in a container and edits /app; then the task's verifier
 (tests/test.sh) runs in the SAME container and the reward it writes to
@@ -20,14 +19,16 @@ no environment at all also runs on that image, unless `require_image`.
 """
 
 import io
-import logging
-import shutil
-import subprocess
-import sys
+import json
+import os
 import tarfile
+import tempfile
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from pydantic import Field
 
@@ -40,14 +41,14 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"
-HARBOR_PACKAGE = "harbor==0.14.0"
-logger = logging.getLogger("verifiers.v1.tasksets.harbor")
+HARBOR_SUPABASE_URL = "https://ofhuhcpkvzjlejydnvyd.supabase.co"
+HARBOR_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_Z-vuQbpvpG-PStjbh4yE0Q_e-d3MTIH"
 
 
 class HarborConfig(TasksetConfig):
-    dataset: str = "hello-world"
-    """A Harbor Hub registry id ("name", "name@version", "org/name@ref"),
-    downloaded + cached via the `harbor` CLI."""
+    dataset: str = "harbor/hello-world"
+    """A Harbor Hub package id ("org/name" or "org/name@ref"), where ref is a
+    tag, integer revision, or sha256 digest. Downloaded directly and cached."""
     tasks: list[str] | None = None
     """Optional subset of task names to load (None = all)."""
     timeout_multiplier: float = Field(1.0, gt=0)
@@ -87,30 +88,115 @@ class HarborTask(Task):
 
 
 def dataset_dir(dataset: str) -> Path:
-    """Download a Harbor Hub `dataset` to a directory of task dirs via the `harbor`
-    CLI, cached on first use."""
+    """Download a Harbor Hub task or dataset package, cached on first use.
+
+    Harbor refs are tags, integer revisions, or ``sha256:`` digests.
+    """
     out = CACHE / dataset.replace("/", "_").replace("@", "_")
     if out.is_dir():
         return out
 
-    harbor_bin = shutil.which("harbor")
-    if harbor_bin is not None:
-        command = [harbor_bin]
+    package, _, ref = dataset.partition("@")
+    org, name = package.split("/", 1)
+    ref = ref or "latest"
+    url = os.getenv("HARBOR_SUPABASE_URL", HARBOR_SUPABASE_URL).rstrip("/")
+    key = os.getenv("HARBOR_SUPABASE_PUBLISHABLE_KEY", HARBOR_SUPABASE_PUBLISHABLE_KEY)
+    headers = {"apikey": key, "Content-Type": "application/json"}
+    # Harbor stores datasets in version tables; standalone tasks use the RPC fallback below.
+    version_query = {
+        "package.name": f"eq.{name}",
+        "package.type": "eq.dataset",
+        "package.org.name": f"eq.{org}",
+        "limit": 1,
+    }
+    if ref.isdigit():
+        table = "dataset_version"
+        version_query |= {
+            "select": "id,package:package_id!inner(name,type,org:org_id!inner(name))",
+            "revision": f"eq.{ref}",
+        }
+    elif ref.startswith("sha256:"):
+        table = "dataset_version"
+        version_query |= {
+            "select": "id,package:package_id!inner(name,type,org:org_id!inner(name))",
+            "content_hash": f"eq.{ref.removeprefix('sha256:')}",
+        }
     else:
-        uv_bin = shutil.which("uv")
-        if uv_bin is None:
-            raise RuntimeError(
-                "Harbor datasets require an installed `harbor` CLI or `uv` for automatic installation"
-            )
-        logger.info("harbor: installing %s with uv", HARBOR_PACKAGE)
-        command = [uv_bin, "tool", "run"]
-        # Harbor requires Python 3.12, while Verifiers also supports Python 3.11.
-        if sys.version_info[:2] == (3, 11):
-            command.extend(["--python", "3.12"])
-        command.extend(["--from", HARBOR_PACKAGE, "harbor"])
-    subprocess.run(
-        [*command, "download", dataset, "--export", "-o", str(out)], check=True
+        table = "dataset_version_tag"
+        version_query |= {
+            "select": "dataset_version:dataset_version_id(id),package:package_id!inner(name,type,org:org_id!inner(name))",
+            "tag": f"eq.{ref}",
+        }
+    request = Request(
+        f"{url}/rest/v1/{table}?{urlencode(version_query)}", headers=headers
     )
+    with urlopen(request) as response:
+        versions = json.load(response)
+
+    if versions:
+        version = versions[0]
+        version_id = version.get("id") or version["dataset_version"]["id"]
+        task_query = {
+            "select": "task_version:task_version_id(archive_path,package:package_id(name))",
+            "dataset_version_id": f"eq.{version_id}",
+            "order": "task_version_id",
+            "limit": 1000,
+            "offset": 0,
+        }
+        request = Request(
+            f"{url}/rest/v1/dataset_version_task?{urlencode(task_query)}",
+            headers={**headers, "Prefer": "count=exact"},
+        )
+        with urlopen(request) as response:
+            pages = [json.load(response)]
+            total = int(response.headers["Content-Range"].rsplit("/", 1)[1])
+
+        for offset in range(1000, total, 1000):
+            task_query["offset"] = offset
+            request = Request(
+                f"{url}/rest/v1/dataset_version_task?{urlencode(task_query)}",
+                headers=headers,
+            )
+            with urlopen(request) as response:
+                pages.append(json.load(response))
+        downloads = [
+            (
+                Path(name) / row["task_version"]["package"]["name"],
+                row["task_version"]["archive_path"],
+            )
+            for page in pages
+            for row in page
+        ]
+    else:
+        body = json.dumps({"p_org": org, "p_name": name, "p_ref": ref}).encode()
+        request = Request(
+            f"{url}/rest/v1/rpc/resolve_task_version", body, headers=headers
+        )
+        with urlopen(request) as response:
+            task = json.load(response)
+        if task is None:
+            raise ValueError(f"Harbor package not found: {dataset}")
+        downloads = [(Path(name), task["archive_path"])]
+
+    CACHE.mkdir(parents=True, exist_ok=True)
+    # Stream archives concurrently into a temporary directory; publish only a complete cache.
+    with tempfile.TemporaryDirectory(dir=CACHE) as temp:
+
+        def extract(item: tuple[Path, str]) -> None:
+            relative_path, archive_path = item
+            target = Path(temp) / relative_path
+            target.mkdir(parents=True, exist_ok=True)
+            request = Request(
+                f"{url}/storage/v1/object/authenticated/packages/{archive_path}",
+                headers=headers,
+            )
+            with urlopen(request) as response:
+                with tarfile.open(fileobj=response, mode="r|gz") as tar:
+                    tar.extractall(target, filter="data")
+
+        with ThreadPoolExecutor(max_workers=100) as pool:
+            list(pool.map(extract, downloads))
+        Path(temp).rename(out)
     return out
 
 
