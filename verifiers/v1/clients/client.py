@@ -9,6 +9,8 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
+from renderers import RendererPool
+
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, Sampling, SamplingConfig
@@ -77,10 +79,16 @@ class Client(ABC):
 
 
 @dataclass(frozen=True)
-class RolloutContext:
-    """The collaborators a single rollout needs (client + model + sampling), bundled
-    so harnesses hold no rollout state. Built by the Environment."""
+class ModelRuntime:
+    """Live runtime resources for one configured model key.
+
+    This is not a config and it is not serialized onto traces. Env servers build
+    and cache these from request configs, then pass them to rollouts and
+    algorithms. Renderer-backed models expose the actual RendererPool;
+    there is no wrapper client for renderer methods.
+    """
 
     model: str
     client: Client
     sampling: Sampling
+    renderer: RendererPool | None = None

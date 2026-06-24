@@ -12,10 +12,10 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+import httpx
 from openai import AsyncOpenAI, OpenAIError
-from renderers import RenderedTokens
 from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RendererConfig
+from renderers import RenderedTokens, RendererConfig, RendererPool
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
@@ -186,12 +186,13 @@ class TrainClient(Client):
         pool_size: int = 1,
         config: RendererConfig | None = None,
         renderer_model_name: str | None = None,
+        renderer: RendererPool | None = None,
     ) -> None:
         self.openai = openai
         self.pool_size = pool_size
         self.config = config
         self.renderer_model_name = renderer_model_name
-        self._pool = None
+        self._pool = renderer
 
     def _renderer_pool(self, model: str):
         if self._pool is None:
@@ -201,6 +202,42 @@ class TrainClient(Client):
                 self.renderer_model_name or model, self.config, size=self.pool_size
             )
         return self._pool
+
+    async def prefill_logprobs(self, model: str, token_ids: list[int]) -> list[float]:
+        """Score ``token_ids`` via vLLM prompt logprobs.
+
+        Returns one value per token. The leading token has no preceding context,
+        so its logprob is reported as 0.0.
+        """
+        base = str(self.openai.base_url).rstrip("/").removesuffix("/v1")
+        response = await self.openai.post(
+            f"{base}/inference/v1/generate",
+            cast_to=httpx.Response,
+            body={
+                "model": model,
+                "token_ids": token_ids,
+                "sampling_params": {
+                    "max_tokens": 1,
+                    "temperature": 1.0,
+                    "top_p": 1.0,
+                    "prompt_logprobs": 1,
+                },
+            },
+        )
+        data = response.json()
+        out: list[float] = []
+        for entry in data.get("prompt_logprobs") or []:
+            if not entry:
+                out.append(0.0)
+                continue
+            first = next(iter(entry.values()))
+            logprob = (
+                first.get("logprob")
+                if isinstance(first, dict)
+                else getattr(first, "logprob", None)
+            )
+            out.append(float(logprob) if logprob is not None else 0.0)
+        return out
 
     async def get_response(
         self,

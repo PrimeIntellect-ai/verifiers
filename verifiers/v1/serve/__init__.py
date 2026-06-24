@@ -9,14 +9,19 @@ from verifiers.v1.serve.client import EnvClient
 from verifiers.v1.serve.pool import EnvServerPool, env_config_data, serve_env
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
+    AdvantageBranch,
     HealthRequest,
     HealthResponse,
     InfoRequest,
     InfoResponse,
+    ModelRuntimeConfig,
+    RunAlgorithmsRequest,
+    RunAlgorithmsResponse,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    TraceAdvantages,
 )
 
 __all__ = [
@@ -29,8 +34,13 @@ __all__ = [
     "HealthResponse",
     "InfoRequest",
     "InfoResponse",
+    "ModelRuntimeConfig",
     "RunRolloutRequest",
     "RunRolloutResponse",
     "RunGroupRequest",
     "RunGroupResponse",
+    "RunAlgorithmsRequest",
+    "RunAlgorithmsResponse",
+    "TraceAdvantages",
+    "AdvantageBranch",
 ]

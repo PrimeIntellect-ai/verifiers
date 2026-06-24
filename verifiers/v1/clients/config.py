@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from openai import AsyncOpenAI
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
-from renderers import RendererConfig
+from renderers import RendererConfig, RendererPool
 
 from verifiers.utils.client_utils import load_prime_config
 from verifiers.v1.clients.client import Client
@@ -88,7 +88,9 @@ ClientConfig = Annotated[
 ]
 
 
-def resolve_client(config: BaseClientConfig) -> Client:
+def resolve_client(
+    config: BaseClientConfig, renderer: RendererPool | None = None
+) -> Client:
     api_key = os.environ.get(config.api_key_var)
     host = urlparse(config.base_url).hostname or ""
     if (
@@ -110,6 +112,7 @@ def resolve_client(config: BaseClientConfig) -> Client:
             pool_size=config.pool_size,
             config=config.renderer,
             renderer_model_name=config.renderer_model_name,
+            renderer=renderer,
         )
     # The proxy is a raw httpx forwarder; the dialect supplies the auth scheme + upstream path.
     return EvalClient(config.base_url, api_key, headers=config.headers or None)

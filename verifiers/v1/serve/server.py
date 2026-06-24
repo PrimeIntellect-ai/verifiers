@@ -6,7 +6,7 @@ loads it. A caller (e.g. the orchestrator) stays env-agnostic: it asks `info` fo
 the task count + whether group scoring is needed, then `run_rollout` / `run_group`
 by task index. Per request the server resolves a `Client` from the request's
 `client` config (cached, so a renderer's tokenizer is built once), wraps it in a
-`RolloutContext`, and runs `env.episode(task, ctx, n).run()`, returning each
+`ModelRuntime`, and runs `env.episode(task, ctx, n).run()`, returning each
 `Trace` as a JSON dict (with its computed `branches`).
 
 Minimal port of `verifiers.serve` (ROUTER + msgpack), single async process: each
@@ -23,24 +23,32 @@ import logging
 import msgpack
 import zmq
 import zmq.asyncio
+from renderers import RendererPool
 
 from verifiers.utils.process_utils import use_threading_tqdm_lock
 from verifiers.utils.serve_utils import msgpack_encoder
-from verifiers.v1.clients import RolloutContext, resolve_client
+from verifiers.v1.clients import ModelRuntime, resolve_client
 from verifiers.v1.clients.client import Client
-from verifiers.v1.clients.config import ClientConfig
+from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import EnvConfig, Environment
+from verifiers.v1.loaders import load_algorithm
 from verifiers.v1.serve.types import (
+    AdvantageBranch,
     BaseResponse,
     HealthResponse,
     InfoResponse,
+    ModelRuntimeConfig,
+    RunAlgorithmsRequest,
+    RunAlgorithmsResponse,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    TraceAdvantages,
 )
-from verifiers.v1.types import SamplingConfig
+from verifiers.v1.task import WireTask
+from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +70,7 @@ class EnvServer:
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client
+        self._renderers: dict[tuple[str, str], RendererPool] = {}
 
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
@@ -95,20 +104,42 @@ class EnvServer:
             # of a spurious multiprocessing traceback, matching serve_env's own handling.
             pass
 
-    def _client(self, client_config: ClientConfig, model: str) -> Client:
+    def _client(
+        self,
+        client_config: ClientConfig,
+        model: str,
+        renderer: RendererPool | None = None,
+    ) -> Client:
         """Resolve (and cache) a `Client` for this config+model. Cached because a
         renderer client builds the model's tokenizer pool on first use — doing that
         per request would be ruinous."""
         key = (client_config.model_dump_json(), model)
         if key not in self._clients:
-            self._clients[key] = resolve_client(client_config)
+            self._clients[key] = resolve_client(client_config, renderer=renderer)
         return self._clients[key]
 
-    def _context(
-        self, client_config: ClientConfig, model: str, sampling: SamplingConfig
-    ) -> RolloutContext:
-        return RolloutContext(
-            client=self._client(client_config, model), model=model, sampling=sampling
+    def _renderer(self, config: ModelRuntimeConfig) -> RendererPool | None:
+        client_config = config.client
+        if not isinstance(client_config, TrainClientConfig):
+            return None
+        key = (client_config.model_dump_json(), config.model)
+        if key not in self._renderers:
+            from renderers import create_renderer_pool
+
+            self._renderers[key] = create_renderer_pool(
+                client_config.renderer_model_name or config.model,
+                client_config.renderer,
+                size=client_config.pool_size,
+            )
+        return self._renderers[key]
+
+    def _runtime(self, config: ModelRuntimeConfig) -> ModelRuntime:
+        renderer = self._renderer(config)
+        return ModelRuntime(
+            model=config.model,
+            client=self._client(config.client, config.model, renderer=renderer),
+            sampling=config.sampling,
+            renderer=renderer,
         )
 
     def serving(self):
@@ -119,18 +150,59 @@ class EnvServer:
         return self.env.serving(self.tasks)
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
-        ctx = self._context(req.client, req.model, req.sampling)
+        ctx = self._runtime(req.actor)
         episode = self.env.episode(self.tasks[req.task_idx], ctx, n=1)
         traces = await episode.run()
         # Trust the concrete trace; serialize it once before client-side re-typing.
         return RunRolloutResponse.model_construct(trace=traces[0])
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
-        ctx = self._context(req.client, req.model, req.sampling)
+        ctx = self._runtime(req.actor)
         episode = self.env.episode(self.tasks[req.task_idx], ctx, n=req.n)
         traces = await episode.run()
         # Avoid a dump-and-validate copy for every trusted trace in the group.
         return RunGroupResponse.model_construct(traces=traces)
+
+    async def _run_algorithms(self, req: RunAlgorithmsRequest) -> RunAlgorithmsResponse:
+        traces = [Trace[WireTask].model_validate(t.model_dump()) for t in req.traces]
+        models = {key: self._runtime(config) for key, config in req.models.items()}
+        collected = [TraceAdvantages(branches=[]) for _ in traces]
+        for algorithm_config in req.algorithms:
+            algorithm = load_algorithm(algorithm_config)
+            await algorithm.setup(models)
+            loss = algorithm.loss()
+            for trace in traces:
+                for branch in trace.branches:
+                    branch.advantages = []
+                    branch.mask = []
+            traces = await algorithm.advantage(traces)
+            if len(traces) != len(collected):
+                raise ValueError(
+                    f"algorithm {algorithm_config.id!r} returned {len(traces)} traces for {len(collected)} inputs"
+                )
+            for trace_index, trace in enumerate(traces):
+                for branch in trace.branches:
+                    if not branch.advantages and not branch.mask:
+                        continue
+                    if len(branch.advantages) != len(branch.mask):
+                        raise ValueError(
+                            f"{algorithm_config.id} wrote mismatched advantages/mask lengths on trace {trace_index}, "
+                            f"branch {branch.index}: {len(branch.advantages)} != {len(branch.mask)}"
+                        )
+                    if len(branch.advantages) != len(branch.token_ids):
+                        raise ValueError(
+                            f"{algorithm_config.id} wrote {len(branch.advantages)} advantages for trace {trace_index}, "
+                            f"branch {branch.index} with {len(branch.token_ids)} tokens"
+                        )
+                    collected[trace_index].branches.append(
+                        AdvantageBranch(
+                            branch_index=branch.index,
+                            loss=loss,
+                            advantages=list(branch.advantages),
+                            mask=list(branch.mask),
+                        )
+                    )
+        return RunAlgorithmsResponse(advantages=collected)
 
     async def _handle(
         self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes
@@ -151,6 +223,10 @@ class EnvServer:
                 )
             elif route == "run_group":
                 response = await self._run_group(RunGroupRequest.model_validate(raw))
+            elif route == "run_algorithms":
+                response = await self._run_algorithms(
+                    RunAlgorithmsRequest.model_validate(raw)
+                )
             else:
                 response = BaseResponse(
                     success=False, error=f"unknown method {route!r}"

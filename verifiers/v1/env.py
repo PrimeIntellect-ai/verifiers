@@ -19,7 +19,7 @@ from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import HarnessConfig
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelRuntime
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.types import EnvId
@@ -296,7 +296,7 @@ class Environment:
             self.harness.config.runtime, task, self._warned_resources
         )
 
-    def episode(self, task: Task, ctx: RolloutContext, n: int = 1) -> Episode:
+    def episode(self, task: Task, ctx: ModelRuntime, n: int = 1) -> Episode:
         """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime
         (image + resources) and its timeouts (cli/toml > task > default, None = no limit),
         build one `Rollout` per sample sharing them, and wrap them in an `Episode` (which

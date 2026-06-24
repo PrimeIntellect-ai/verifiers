@@ -8,19 +8,24 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.algorithm import Algorithm, AlgorithmConfig
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
-    RolloutContext,
+    EvalClient,
+    EvalClientConfig,
+    ModelRuntime,
+    TrainClient,
+    TrainClientConfig,
     resolve_client,
 )
 from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
 from verifiers.v1.env import (
     ElasticPoolConfig,
     EnvConfig,
-    EnvServerConfig,
     Environment,
+    EnvServerConfig,
     StaticPoolConfig,
     TimeoutConfig,
     pool_serve_kwargs,
@@ -37,16 +42,27 @@ from verifiers.v1.errors import (
     TunnelError,
     UserError,
 )
+from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.loaders import (
+    algorithm_class,
+    algorithm_config_type,
     default_harness_id,
     harness_config_type,
+    import_algorithm,
     import_harness,
     import_taskset,
+    load_algorithm,
     load_harness,
     load_taskset,
     task_type,
     taskset_config_type,
+)
+from verifiers.v1.mcp import (
+    Toolset,
+    ToolsetConfig,
+    User,
+    UserConfig,
 )
 from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
 from verifiers.v1.rollout import Rollout
@@ -61,13 +77,6 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.mcp import (
-    Toolset,
-    ToolsetConfig,
-    User,
-    UserConfig,
-)
-from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     Branch,
     Error,
@@ -93,8 +102,8 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolCall,
-    TurnTokens,
     ToolMessage,
+    TurnTokens,
     Usage,
     UserMessage,
 )
@@ -155,14 +164,20 @@ __all__ = [
     "Client",
     "BaseClientConfig",
     "ClientConfig",
+    "EvalClientConfig",
+    "TrainClientConfig",
     "resolve_client",
+    "EvalClient",
+    "TrainClient",
     # taskset / harness / runtime / environment
     "Taskset",
     "TasksetConfig",
     "BaseConfig",
     "Harness",
     "HarnessConfig",
-    "RolloutContext",
+    "Algorithm",
+    "AlgorithmConfig",
+    "ModelRuntime",
     "Runtime",
     "RuntimeConfig",
     "ProgramResult",
@@ -183,12 +198,16 @@ __all__ = [
     # loaders
     "import_taskset",
     "import_harness",
+    "import_algorithm",
     "load_taskset",
     "load_harness",
+    "load_algorithm",
+    "algorithm_class",
     "task_type",
     "taskset_config_type",
     "harness_config_type",
     "default_harness_id",
+    "algorithm_config_type",
     # mcp
     "Toolset",
     "ToolsetConfig",
