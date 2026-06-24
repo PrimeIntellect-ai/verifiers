@@ -178,6 +178,9 @@ def dataset_dir(dataset: str) -> Path:
             raise ValueError(f"Harbor package not found: {dataset}")
         downloads = [(Path(name), task["archive_path"])]
 
+    if not downloads:
+        raise ValueError(f"Harbor dataset has no tasks: {dataset}")
+
     CACHE.mkdir(parents=True, exist_ok=True)
     # Stream archives concurrently into a temporary directory; publish only a complete cache.
     with tempfile.TemporaryDirectory(dir=CACHE) as temp:
@@ -196,7 +199,12 @@ def dataset_dir(dataset: str) -> Path:
 
         with ThreadPoolExecutor(max_workers=100) as pool:
             list(pool.map(extract, downloads))
-        Path(temp).rename(out)
+        try:
+            Path(temp).rename(out)
+        except OSError:
+            if out.is_dir():
+                return out
+            raise
     return out
 
 
