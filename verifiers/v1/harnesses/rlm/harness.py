@@ -11,6 +11,7 @@ programmatically (`await tools_<name>(...)`), rather than via a native MCP clien
 import json
 import logging
 import shlex
+from typing import Literal
 
 from pydantic import model_validator
 
@@ -21,6 +22,10 @@ from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
+# Built-in skills rlm ships (see rlm.skills); kept in sync so configs are validated
+# client-side rather than failing at rollout time.
+BuiltinSkill = Literal["edit", "search"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/rlm.git"
 # rlm writes its session under $RLM_HOME/sessions/<id>/; point it at a workdir-
@@ -37,7 +42,7 @@ class RLMHarnessConfig(HarnessConfig):
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
-    skills: list[str] | None = None
+    skills: list[BuiltinSkill] | None = None
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; None enables none.
     The tool set is fixed (ipython); only built-in skills are selectable."""
 
