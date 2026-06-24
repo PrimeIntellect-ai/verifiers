@@ -486,7 +486,7 @@ The `*_v1` tasksets under `environments/` are the reference library — each sho
 | `scratchpad-v1` | a shared, **writable** tool server — per-rollout state isolated via `self.state` |
 | `deepwiki-v1` | an existing remote tool server, by URL |
 | `color-codeword-v1` | a multimodal (image) task |
-| `wordle-v1` | a thin config over the shipped `textarena-v1` integration |
+| `wordle-v1` | a thin config over the shipped `textarena` integration |
 
 ---
 
