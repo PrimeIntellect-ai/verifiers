@@ -1,7 +1,7 @@
 """The rlm harness: installs the rlm CLI into the runtime and runs the binary.
 
 `RLMHarnessConfig` carries both how to install rlm (repo/branch/token/path) and its
-runtime knobs (`max_depth`, `tools`), which rlm reads from `RLM_*` env vars.
+runtime knobs (`max_depth`, `skills`), which rlm reads from `RLM_*` env vars.
 """
 
 import json
@@ -31,8 +31,9 @@ class RLMHarnessConfig(HarnessConfig):
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
-    tools: list[str] | None = None
-    """Built-in rlm tools to enable (RLM_TOOLS); None uses rlm's default set."""
+    skills: list[str] | None = None
+    """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; None enables none.
+    The tool set is fixed (ipython); only built-in skills are selectable."""
 
 
 class RLMHarness(Harness[RLMHarnessConfig]):
@@ -77,12 +78,8 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
-        if self.config.tools is not None or self.config.disabled_tools:
-            tools = self.config.tools if self.config.tools is not None else ["ipython"]
-            disabled_tools = set(self.config.disabled_tools or [])
-            env["RLM_TOOLS"] = ",".join(
-                tool for tool in tools if tool not in disabled_tools
-            )
+        if self.config.skills:
+            env["RLM_SKILLS"] = ",".join(self.config.skills)
         return await runtime.run_program([RLM_BIN, prompt], env)
 
     @metric
