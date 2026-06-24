@@ -77,7 +77,6 @@ Taskset examples (the `*_v1` packages under `environments/`):
 | `wiki-search-v1` | a **shared** tool server (built once for the eval) + an LLM judge |
 | `deepwiki-v1` | an **existing remote** tool server, by URL |
 | `wordle-v1` | configuring the vendored `textarena-v1` integration |
-| `terminal-bench-2-v1` | configuring the vendored `harbor-v1` integration |
 
 Harness examples (under `environments/`):
 

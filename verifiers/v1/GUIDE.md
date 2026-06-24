@@ -489,9 +489,8 @@ The `*_v1` tasksets under `environments/` are the reference library — each sho
 | `deepwiki-v1` | an existing remote tool server, by URL |
 | `tau2-bench-v1` | a taskset that **bundles its own harness** (runs the whole tau2 benchmark sim in a subprocess, result into `trace.info`) |
 | `color-codeword-v1` | a multimodal (image) task |
-| `scaleswe-v1`, `swelego-v1`, `r2e-gym-v1` | containerized SWE tasks (rlm harness, prime runtime) |
-| `swebench-verified-v1` | SWE-bench Verified via `harbor-v1` on prime's prebuilt images (no Dockerfile build) |
-| `wordle-v1`, `terminal-bench-2-v1` | thin configs over the shipped `textarena-v1` / `harbor-v1` integrations |
+| `swelego-v1`, `r2e-gym-v1` | containerized SWE tasks (rlm harness, prime runtime) |
+| `wordle-v1` | a thin config over the shipped `textarena-v1` integration |
 
 ---
 

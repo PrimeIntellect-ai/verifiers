@@ -23,10 +23,7 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 # smoke eval in plain CI — covered by the dedicated v1 e2e tests.
 NEEDS_CONTAINER = {
     "r2e_gym_v1",
-    "scaleswe_v1",
     "swelego_v1",
-    "swebench_verified_v1",
-    "terminal_bench_2_v1",
 }
 
 # v1 tasksets that can't run a plain-CI smoke eval for non-container reasons — e.g. the eval

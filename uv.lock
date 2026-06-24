@@ -5237,17 +5237,6 @@ wheels = [
 ]
 
 [[package]]
-name = "scaleswe-v1"
-version = "0.1.0"
-source = { editable = "environments/scaleswe_v1" }
-dependencies = [
-    { name = "datasets" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "datasets" }]
-
-[[package]]
 name = "scikit-learn"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5629,17 +5618,6 @@ wheels = [
 ]
 
 [[package]]
-name = "swebench-verified-v1"
-version = "0.1.0"
-source = { editable = "environments/swebench_verified_v1" }
-dependencies = [
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
-
-[[package]]
 name = "swelego-v1"
 version = "0.1.0"
 source = { editable = "environments/swelego_v1" }
@@ -5741,17 +5719,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/47/c6/ee486fd809e357697
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55", size = 28926, upload-time = "2026-02-07T10:45:32.24Z" },
 ]
-
-[[package]]
-name = "terminal-bench-2-v1"
-version = "0.1.0"
-source = { editable = "environments/terminal_bench_2_v1" }
-dependencies = [
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "textarena"
@@ -6331,12 +6298,9 @@ examples = [
     { name = "math-env-v1" },
     { name = "r2e-gym-v1" },
     { name = "reverse-text-v1" },
-    { name = "scaleswe-v1" },
     { name = "scratchpad-v1" },
-    { name = "swebench-verified-v1" },
     { name = "swelego-v1" },
     { name = "tau2-bench-v1" },
-    { name = "terminal-bench-2-v1" },
     { name = "wiki-search-v1" },
     { name = "wikispeedia-v1" },
     { name = "wordle-v1" },
@@ -6425,12 +6389,9 @@ examples = [
     { name = "math-env-v1", editable = "environments/math_env_v1" },
     { name = "r2e-gym-v1", editable = "environments/r2e_gym_v1" },
     { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
-    { name = "scaleswe-v1", editable = "environments/scaleswe_v1" },
     { name = "scratchpad-v1", editable = "environments/scratchpad_v1" },
-    { name = "swebench-verified-v1", editable = "environments/swebench_verified_v1" },
     { name = "swelego-v1", editable = "environments/swelego_v1" },
     { name = "tau2-bench-v1", editable = "environments/tau2_bench_v1" },
-    { name = "terminal-bench-2-v1", editable = "environments/terminal_bench_2_v1" },
     { name = "wiki-search-v1", editable = "environments/wiki_search_v1" },
     { name = "wikispeedia-v1", editable = "environments/wikispeedia_v1" },
     { name = "wordle-v1", editable = "environments/wordle_v1" },
