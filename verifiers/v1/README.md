@@ -30,6 +30,12 @@ tighter type contract. `import verifiers.v1 as vf`.
 uv sync   # core + the shipped packages + examples
 ```
 
+Harbor's optional Python package and CLI require Python 3.12+:
+
+```bash
+uv sync --python 3.12 --extra harbor
+```
+
 ## Quickstart
 
 ```bash

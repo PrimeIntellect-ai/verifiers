@@ -96,6 +96,10 @@ browser = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
 ]
+harbor = [
+    # Harbor currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
+    "harbor==0.14.0; python_version >= '3.12'",
+]
 modal = [
     "modal>=1.4.0",
 ]
