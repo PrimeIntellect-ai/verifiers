@@ -250,12 +250,12 @@ def _breakdown(done: list[Trace]) -> Table | None:
         usage = [tokens]
         if have_judge:
             usage.append(
-                f"+{format_count(total_judge_in)}/{format_count(total_judge_out)} judge"
+                f"+ {format_count(total_judge_in)}/{format_count(total_judge_out)} judge"
             )
         if have_cost:
             cost = format_cost_usd(total_cost)
             if total_judge_cost:
-                cost += f" +{format_cost_usd(total_judge_cost)} judge"
+                cost += f" + {format_cost_usd(total_judge_cost)} judge"
             usage.append(cost)
         grid.add_row("usage", "  ·  ".join(usage))
     time_segments = [
