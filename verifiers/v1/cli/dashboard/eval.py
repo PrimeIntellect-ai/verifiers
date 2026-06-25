@@ -253,10 +253,9 @@ def _breakdown(done: list[Trace]) -> Table | None:
                 f"+{format_count(total_judge_in)}/{format_count(total_judge_out)} judge"
             )
         if have_cost:
-            cost = f"total {format_cost_usd(total_cost)}"
-            if have_judge and total_judge_cost:
-                cost += f" ({format_cost_usd(total_judge_cost)} judge)"
-            usage.append(cost)
+            usage.append(format_cost_usd(total_cost - total_judge_cost))
+            if total_judge_cost:
+                usage.append(f"+{format_cost_usd(total_judge_cost)} judge")
         grid.add_row("usage", "  ·  ".join(usage))
     time_segments = [
         f"{phase} {format_time(phase_secs[phase] / phase_count[phase])}"
@@ -351,7 +350,12 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                 or now
             )
             prompt, completion, cached, reasoning, nbranches = _tokens(t)
+            # Agent-only cost, to match the agent-only token counts on this row (judge spend is
+            # broken out in the overview's usage row, not per rollout).
             cost = t.usage.cost if t.usage else None
+            judge = Usage.aggregate(t.extra_usage)
+            if cost is not None and judge is not None and judge.cost is not None:
+                cost -= judge.cost
             tokens = ""
             if prompt or completion:
                 tokens = f"{format_count(prompt)}/{format_count(completion)} tokens"
