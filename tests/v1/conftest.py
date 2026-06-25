@@ -199,6 +199,7 @@ def _eval_config(
         max_output_tokens=max_tokens,
         sampling={"max_tokens": max_tokens, "temperature": 0},
         timeout={"rollout": rollout_timeout, "scoring": 60},
+        retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
         rich=False,
         output_dir=output_dir,
         **({"pool": pool} if pool else {}),

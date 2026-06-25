@@ -1,4 +1,4 @@
-# textarena-v1 — single-player TextArena games driven by a user simulator (vf.User).
+# textarena — single-player TextArena games driven by a user simulator (vf.User).
 # Supported (--taskset.game): Wordle-v0, Wordle-v0-long, Hangman-v0, WordLadder-v0,
 # WordSearch-v0. The framework's interception server plays the game; the harness never sees
 # it. The user sim runs colocated in the harness's runtime.
@@ -9,7 +9,7 @@ num_rollouts = 2
 max_turns = 15
 
 [taskset]
-id = "textarena-v1"
+id = "textarena"
 game = "Wordle-v0"
 num_tasks = 50  # pool of seeded episodes to draw the eval's tasks from
 

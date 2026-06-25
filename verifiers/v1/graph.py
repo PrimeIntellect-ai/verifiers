@@ -82,6 +82,15 @@ class MessageNode(StrictBaseModel):
     """Per-token, parallel to `token_ids`: True for trainable, model-sampled tokens (only an
     assistant node's completion span); False for template scaffold and every input-message
     token."""
+    is_content: list[bool] = Field(default_factory=list)
+    """Per-token, parallel to `token_ids` (when populated): True for message-body tokens (the
+    renderer's content), False for template scaffold (role-tag openers/closers, inter-turn
+    separators, tool-response wraps, the generation prompt). Populated from the renderer's
+    `RenderedTokens.is_content`; empty when the renderer doesn't attribute content (e.g. the
+    default Jinja renderer) or for relay (eval) turns that carry no token ids. Distinct from
+    `mask`: `mask` is "did the model sample this?" (assistant completion only); `is_content`
+    is "is this caller/model body vs scaffold?" — meaningful on every role, so observation
+    weighting (prime-rl `echo`) can train a tool/user message's *body* without its scaffold."""
     logprobs: list[float] = Field(default_factory=list)
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
@@ -283,8 +292,17 @@ class PendingTurn:
     def prompt_message_spans(
         self, tail_attribution: RenderedTokens
     ) -> list[tuple[int, int] | None]:
-        """Convert tail-relative bridge spans into full-prompt message spans."""
-        return [None] * self.tail_start + tail_attribution.message_token_spans()
+        """Convert bridge-tail attribution into full-prompt message spans."""
+        # Reused bridge tokens are unattributed, so scan only the newly rendered tail.
+        tail_spans = RenderedTokens(
+            message_indices=tail_attribution.message_indices[self.path_len :],
+            message_roles=tail_attribution.message_roles,
+        ).message_token_spans()
+        # Tail spans are slice-relative; restore their full-prompt token offsets.
+        return [None] * self.tail_start + [
+            None if span is None else (span[0] + self.path_len, span[1] + self.path_len)
+            for span in tail_spans
+        ]
 
     def commit(self, response: Response) -> None:
         _commit_turn(self, response)
@@ -297,7 +315,23 @@ def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
     path_len = 0
     prefix_node_ids: list[int] = []
     for msg in prompt:
-        existing = idx.get((parent, message_hash(msg)))
+        existing = None
+        if (
+            isinstance(msg.content, list)
+            and len(idx) <= 10
+            and any(part.type == "image_url" for part in msg.content)
+        ):
+            children = [
+                node_id
+                for (node_parent, _), node_id in idx.items()
+                if node_parent == parent
+            ]
+            # Repeated image URLs are cheaper to compare than to encode and hash again.
+            # Only scan short, unambiguous parents; all other cases use the stable index.
+            if len(children) == 1 and trace.nodes[children[0]].message == msg:
+                existing = children[0]
+        if existing is None:
+            existing = idx.get((parent, message_hash(msg)))
         if existing is None:
             break
         prefix_node_ids.append(existing)
@@ -376,18 +410,20 @@ def _attribute_routed_experts(
     raw = binascii.a2b_base64(payload["data"])
     arr = np.frombuffer(raw, dtype=np.uint8).reshape(payload["shape"])
     off = path_len - int(payload.get("start", 0) or 0)
-    # The engine omits routing for the turn's final position (no forward pass follows the last
-    # generated token), so the array is one row short of the turn's new tokens. Pad the tail
-    # with a copy of the last row so the final node still aligns 1:1 with its tokens.
     needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
-    if arr.shape[0] and 0 < needed - arr.shape[0] <= 1:
-        arr = np.concatenate([arr, arr[-1:]], axis=0)
     for nid in new_node_ids:
         n = len(trace.nodes[nid].token_ids)
-        if n and 0 <= off and off + n <= arr.shape[0]:
+        end = off + n
+        if n and 0 <= off and end <= arr.shape[0]:
             # Own only this node's rows; a view would retain the turn's full-context array.
-            trace.nodes[nid].routed_experts = arr[off : off + n].copy()
-        off += n
+            trace.nodes[nid].routed_experts = arr[off:end].copy()
+        elif n and arr.shape[0] and 0 <= off and end == needed == arr.shape[0] + 1:
+            # The engine omits the turn's final position because no forward pass follows it.
+            # Pad only the final node's suffix instead of copying the full-context array.
+            trace.nodes[nid].routed_experts = np.concatenate(
+                [arr[off:], arr[-1:]], axis=0
+            )
+        off = end
 
 
 def _commit_turn(turn: PendingTurn, response: Response) -> None:
@@ -406,6 +442,8 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     multi_modal_data = tokens.multi_modal_data if tokens else None
     prompt_ids = tokens.prompt_ids if tokens else []
     spans = tokens.message_spans if tokens else None
+    is_content = tokens.is_content if tokens else None
+    has_is_content = is_content is not None and len(is_content) == len(prompt_ids)
     idx = _head_index(trace)
 
     # Token-based prefix reuse. `prepare_turn` matched the prefix by message hash (content); when
@@ -458,6 +496,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
                 message=msg,
                 token_ids=node_tokens,
                 mask=[False] * len(node_tokens),
+                is_content=is_content[start:end] if has_is_content else [],
             )
         )
         parent = len(trace.nodes) - 1
@@ -478,6 +517,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
             sampled=True,
             token_ids=[*gen_prompt, *comp_ids],
             mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
+            is_content=([False] * len(gen_prompt) + [True] * len(comp_ids))
+            if has_is_content
+            else [],
             # TurnTokens is discarded after commit, so transfer its logprobs without copying.
             logprobs=tokens.completion_logprobs if tokens else [],
             finish_reason=response.finish_reason,

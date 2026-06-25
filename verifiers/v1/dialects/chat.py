@@ -8,11 +8,12 @@ read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning
 
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any
 
 from openai.types.chat import ChatCompletion
 
-from verifiers.v1.dialects.base import Dialect, iter_sse
+from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -202,6 +203,101 @@ def response_from_wire(completion: ChatCompletion) -> Response:
     )
 
 
+@dataclass
+class ChatStreamParser(StreamParser):
+    """Incrementally assemble Chat Completions deltas without retaining SSE bytes."""
+
+    message: dict = dataclass_field(
+        default_factory=lambda: {"role": "assistant", "content": None}
+    )
+    message_parts: dict[str, list[str]] = dataclass_field(
+        default_factory=lambda: {key: [] for key in REASONING_FIELDS[:2] + ("content",)}
+    )
+    tool_calls: dict[int, dict] = dataclass_field(default_factory=dict)
+    tool_arguments: dict[int, list[str]] = dataclass_field(default_factory=dict)
+    reasoning_details: list[dict] = dataclass_field(default_factory=list)
+    reasoning_detail_parts: dict[int, list[str]] = dataclass_field(default_factory=dict)
+    finish_reason: str | None = None
+    usage: dict | None = None
+    head: dict | None = None
+
+    def feed(self, raw: bytes) -> None:
+        chunk = parse_sse_event(raw)
+        if chunk is None:
+            return
+        if self.head is None:
+            self.head = chunk
+        self.usage = chunk.get("usage") or self.usage
+        for choice in chunk.get("choices") or []:
+            if choice.get("index", 0) != 0:
+                continue
+            self.finish_reason = choice.get("finish_reason") or self.finish_reason
+            delta = choice.get("delta") or {}
+            for key in ("content", "reasoning_content", "reasoning"):
+                if delta.get(key) is not None:
+                    self.message_parts[key].append(delta[key])
+            for detail in delta.get("reasoning_details") or []:
+                previous = self.reasoning_details[-1] if self.reasoning_details else {}
+                if detail.get("type") == previous.get("type") == "reasoning.text":
+                    self.reasoning_detail_parts.setdefault(
+                        len(self.reasoning_details) - 1,
+                        [previous.get("text") or ""],
+                    ).append(detail.get("text") or "")
+                    for field_name in ("signature", "format"):
+                        previous[field_name] = previous.get(field_name) or detail.get(
+                            field_name
+                        )
+                else:
+                    self.reasoning_details.append(detail)
+            for tool_call in delta.get("tool_calls") or []:
+                index = tool_call.get("index", 0)
+                slot = self.tool_calls.setdefault(
+                    index,
+                    {"type": "function", "function": {"name": "", "arguments": ""}},
+                )
+                slot["id"] = tool_call.get("id") or slot.get("id", "")
+                function = tool_call.get("function") or {}
+                if function.get("name"):
+                    slot["function"]["name"] = function["name"]
+                self.tool_arguments.setdefault(index, []).append(
+                    function.get("arguments") or ""
+                )
+
+    def finish(self) -> Response:
+        for key, parts in self.message_parts.items():
+            if parts:
+                self.message[key] = "".join(parts)
+        for index, parts in self.reasoning_detail_parts.items():
+            self.reasoning_details[index]["text"] = "".join(parts)
+        for index, parts in self.tool_arguments.items():
+            self.tool_calls[index]["function"]["arguments"] = "".join(parts)
+        if self.tool_calls:
+            self.message["tool_calls"] = [
+                self.tool_calls[index] for index in sorted(self.tool_calls)
+            ]
+        if self.reasoning_details:
+            self.message["reasoning_details"] = self.reasoning_details
+        head = self.head or {}
+        return response_from_wire(
+            ChatCompletion.model_validate(
+                {
+                    "id": head.get("id", "vf-intercept"),
+                    "object": "chat.completion",
+                    "created": head.get("created", int(time.time())),
+                    "model": head.get("model", ""),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": self.message,
+                            "finish_reason": self.finish_reason or "stop",
+                        }
+                    ],
+                    "usage": self.usage,
+                }
+            )
+        )
+
+
 class ChatDialect(Dialect[dict, ChatCompletion]):
     """The OpenAI chat-completions wire format."""
 
@@ -227,67 +323,8 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
 
-    def parse_stream(self, raw: bytes) -> Response:
-        """Assemble `chat.completion.chunk` deltas into one completion, then parse it."""
-        chunks = iter_sse(raw)
-        message: dict = {"role": "assistant", "content": None}
-        tool_calls: dict[int, dict] = {}
-        reasoning_details: list[dict] = []
-        finish_reason = None
-        usage = None
-        for chunk in chunks:
-            usage = chunk.get("usage") or usage
-            for choice in chunk.get("choices") or []:
-                if choice.get("index", 0) != 0:
-                    continue
-                finish_reason = choice.get("finish_reason") or finish_reason
-                delta = choice.get("delta") or {}
-                for key in ("content", "reasoning_content", "reasoning"):
-                    if delta.get(key) is not None:
-                        message[key] = (message.get(key) or "") + delta[key]
-                for detail in delta.get("reasoning_details") or []:
-                    previous = reasoning_details[-1] if reasoning_details else {}
-                    if detail.get("type") == previous.get("type") == "reasoning.text":
-                        previous["text"] = (previous.get("text") or "") + (
-                            detail.get("text") or ""
-                        )
-                        for field in ("signature", "format"):
-                            previous[field] = previous.get(field) or detail.get(field)
-                    else:
-                        reasoning_details.append(detail)
-                for tc in delta.get("tool_calls") or []:
-                    slot = tool_calls.setdefault(
-                        tc.get("index", 0),
-                        {"type": "function", "function": {"name": "", "arguments": ""}},
-                    )
-                    slot["id"] = tc.get("id") or slot.get("id", "")
-                    fn = tc.get("function") or {}
-                    if fn.get("name"):
-                        slot["function"]["name"] = fn["name"]
-                    slot["function"]["arguments"] += fn.get("arguments") or ""
-        if tool_calls:
-            message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
-        if reasoning_details:
-            message["reasoning_details"] = reasoning_details
-        head = chunks[0] if chunks else {}
-        return response_from_wire(
-            ChatCompletion.model_validate(
-                {
-                    "id": head.get("id", "vf-intercept"),
-                    "object": "chat.completion",
-                    "created": head.get("created", int(time.time())),
-                    "model": head.get("model", ""),
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": message,
-                            "finish_reason": finish_reason or "stop",
-                        }
-                    ],
-                    "usage": usage,
-                }
-            )
-        )
+    def stream_parser(self) -> StreamParser:
+        return ChatStreamParser()
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
         # Forward the program's body verbatim, overlaying only what the eval owns: the model and

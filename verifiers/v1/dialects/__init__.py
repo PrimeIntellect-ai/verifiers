@@ -6,7 +6,7 @@ resolved from the endpoint the program's SDK posts to — no per-harness declara
 """
 
 from verifiers.v1.dialects.anthropic import AnthropicDialect
-from verifiers.v1.dialects.base import Dialect, iter_sse
+from verifiers.v1.dialects.base import Dialect, StreamParser, iter_sse
 from verifiers.v1.dialects.chat import (
     FINISH_REASONS,
     ChatDialect,
@@ -27,6 +27,7 @@ __all__ = [
     "AnthropicDialect",
     "ChatDialect",
     "ResponsesDialect",
+    "StreamParser",
     "iter_sse",
     "parse_message",
     "parse_tools",

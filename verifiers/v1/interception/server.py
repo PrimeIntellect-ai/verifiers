@@ -24,16 +24,17 @@ import contextlib
 import json
 import logging
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from aiohttp import web
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
+from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1 import graph
 from verifiers.v1.errors import (
     OverlongPromptError,
@@ -56,6 +57,7 @@ logger = logging.getLogger(__name__)
 # context window are the real limits, this is just a host-OOM backstop.
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
+_STREAM_QUEUE_MAXSIZE = 16
 # The server binds loopback; callers reach it via localhost or a host tunnel (see `reachable_url`).
 _HOST = "127.0.0.1"
 
@@ -67,6 +69,20 @@ def _completion_response(completion: dict | None) -> web.Response:
     except PydanticSerializationError:
         return web.json_response(completion)
     return web.Response(body=body, content_type="application/json", charset="utf-8")
+
+
+async def _queue_chunks(
+    chunks: AsyncIterator[bytes],
+    queue: asyncio.Queue[bytes | None],
+    ready: asyncio.Event,
+) -> None:
+    try:
+        async for chunk in chunks:
+            await queue.put(chunk)
+            ready.set()
+    finally:
+        await queue.put(None)
+        ready.set()
 
 
 @dataclass(frozen=True)
@@ -396,8 +412,8 @@ class InterceptionServer:
         prompt: Messages,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
-        accumulating the bytes to record the turn on the trace. Single-shot — a streamed turn
-        never drives a user simulator (the only client that streams is the eval relay)."""
+        incrementally assembling the response to record on the trace. Single-shot — a streamed
+        turn never drives a user simulator (the only client that streams is the eval relay)."""
         try:
             refused = await session.refused()
         except RolloutError as e:
@@ -445,36 +461,74 @@ class InterceptionServer:
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
         )
         resp.content_type = reply.content_type.split(";")[0].strip()
-        buffer = bytearray()
-        chunks = reply.chunks.__aiter__()
-        next_chunk = asyncio.create_task(anext(chunks, None))
+        # Parse complete events as they relay, avoiding a full-stream byte copy.
+        parser = dialect.stream_parser()
+        feed_event = parser.feed
+        on_done = parser.on_done
+        # One bounded producer avoids per-event tasks; keepalive timeouts only cancel readiness waits.
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue(
+            maxsize=_STREAM_QUEUE_MAXSIZE
+        )
+        ready = asyncio.Event()
+        producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
+        parser_error: Exception | None = None
+        # SSE events from the turn-ending one onward (the terminal event and any trailing
+        # `[DONE]`), withheld until the turn is committed: a client that ends its turn on the
+        # terminal event (e.g. codex on `response.completed`) would otherwise reach scoring
+        # with the turn still unrecorded.
+        deferred: list[bytes] = []
         try:
             await resp.prepare(request)
             while True:
-                done, _ = await asyncio.wait(
-                    {next_chunk}, timeout=_KEEPALIVE_INTERVAL_SECONDS
-                )
-                if not done:
+                try:
+                    async with asyncio.timeout(_KEEPALIVE_INTERVAL_SECONDS):
+                        await ready.wait()
+                except TimeoutError:
                     await resp.write(b": keepalive\n\n")
                     continue
-                chunk = next_chunk.result()
+                chunk = queue.get_nowait()
+                if queue.empty():
+                    ready.clear()
                 if chunk is None:
+                    await producer
                     break
-                buffer += chunk
+                if deferred or dialect.is_terminal_event(chunk):
+                    if parser_error is None:
+                        try:
+                            if on_done is not None and is_sse_done_event(chunk):
+                                on_done()
+                            feed_event(chunk)
+                        except Exception as e:
+                            parser_error = e
+                    # forwarded after the turn is committed, below
+                    deferred.append(chunk)
+                    continue
                 await resp.write(chunk)
-                next_chunk = asyncio.create_task(anext(chunks, None))
+                if parser_error is None:
+                    try:
+                        feed_event(chunk)
+                    except Exception as e:
+                        parser_error = e
         except ConnectionResetError:
             return resp
         finally:
-            next_chunk.cancel()
-            await asyncio.gather(next_chunk, return_exceptions=True)
+            producer.cancel()
+            # Let a canceled producer enqueue EOF while unwinding.
+            if queue.full():
+                queue.get_nowait()
+            await asyncio.gather(producer, return_exceptions=True)
             await reply.close()
 
         try:
-            turn.commit(dialect.parse_stream(bytes(buffer)))
+            if parser_error is not None:
+                raise parser_error
+            turn.commit(parser.finish())
             logger.debug("intercept stream turn: id=%s", session.trace.id)
         finally:
+            # Release the withheld events only now — after the commit — then close.
             with contextlib.suppress(ConnectionResetError):
+                for event in deferred:
+                    await resp.write(event)
                 await resp.write_eof()
         return resp
 
@@ -522,8 +576,12 @@ class InterceptionServer:
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         logger.debug("intercept GET /state: id=%s", session.trace.id)
+        state = session.trace.state
         return web.Response(
-            text=session.trace.state.model_dump_json(), content_type="application/json"
+            # TypeAdapter emits UTF-8 bytes directly, avoiding a JSON str copy in aiohttp.
+            body=TypeAdapter(type(state)).dump_json(state),
+            content_type="application/json",
+            charset="utf-8",
         )
 
     async def handle_task_get(self, request: web.Request) -> web.Response:
@@ -550,13 +608,11 @@ class InterceptionServer:
             return web.json_response({"error": "unauthorized"}, status=401)
         logger.debug("intercept PUT /state: id=%s", session.trace.id)
         state_cls = type(session.trace.state)
+        raw = await request.read()
         try:
-            new_state = state_cls.model_validate(await request.json())
-        except (ValidationError, ValueError) as e:
-            # Malformed JSON (`request.json()` -> JSONDecodeError, a ValueError) or a pushed state
-            # that doesn't fit the trace's `State` type (almost always a `StateT` mismatch between the
-            # taskset and a server). Surface a clean 400 (with the reason) rather than a 500, so the
-            # server's failed PUT fails the rollout legibly.
+            new_state = state_cls.model_validate_json(raw)
+        except ValidationError as e:
+            # Reject malformed, over-nested, or mismatched state before it enters the shared channel.
             logger.warning("state PUT rejected: id=%s %s", session.trace.id, e)
             return web.json_response(
                 {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},

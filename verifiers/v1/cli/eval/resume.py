@@ -11,7 +11,10 @@ together), so any task that isn't fully complete is redone from scratch.
 import json
 import tomllib
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
+
+from pydantic_core import from_json
 
 from verifiers.v1.configs.eval import EvalConfig
 
@@ -45,54 +48,71 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
     return config
 
 
-def _read_results(results_path: Path) -> list[dict]:
-    """The previous run's traces as raw dicts. The on-disk dump carries computed fields a
-    strict `Trace` can't re-validate, so we read the JSON directly — resume only needs each
-    trace's `task.idx` and whether it `errors`ed."""
+def _read_results(results_path: Path) -> Iterator[tuple[int, int, bool]]:
+    """Stream `(file reference, task idx, errored)` without retaining decoded traces."""
     if not results_path.exists():
-        return []
-    return [
-        json.loads(line)
-        for line in results_path.read_text().split("\n")
-        if line.strip()
-    ]
+        return
+    with results_path.open("rb") as results:
+        while True:
+            offset = results.tell()
+            line = results.readline()
+            if not line:
+                break
+            if line.strip():
+                try:
+                    row = from_json(line)
+                except ValueError:
+                    row = json.loads(line)
+                yield offset, row["task"]["idx"], bool(row.get("errors"))
 
 
 def plan(
     resume_dir: Path, selected_idxs: list[int], num_rollouts: int, group: bool
-) -> tuple[list[dict], dict[int, int]]:
+) -> tuple[list[int], dict[int, int]]:
     """Diff the saved results against the run's target (`num_rollouts` per selected task).
-    Returns (rows to keep in `results.jsonl`, rollouts owed per task idx). An errored trace is
-    dropped and re-run; a group-scored task is kept only if fully complete, else its whole
-    group is redone."""
-    by_idx: dict[int, list[dict]] = defaultdict(list)
-    for row in _read_results(resume_dir / "results.jsonl"):
-        by_idx[row["task"]["idx"]].append(row)
-    keep: list[dict] = []
+    Returns (byte offsets of rows to keep, rollouts owed per task idx). An errored trace is
+    dropped and re-run; a group-scored task is kept only if fully complete, else its whole group
+    is redone."""
+    # Retain only the offsets resume can reuse; trace payloads stay on disk.
+    selected = set(selected_idxs)
+    by_idx: dict[int, list[int]] = defaultdict(list)
+    for offset, idx, errored in _read_results(resume_dir / "results.jsonl"):
+        if idx in selected and not errored and len(by_idx[idx]) < num_rollouts:
+            by_idx[idx].append(offset)
+    keep: list[int] = []
     owed: dict[int, int] = {}
     for idx in selected_idxs:
-        good = [row for row in by_idx.get(idx, []) if not row.get("errors")]
+        good = by_idx.get(idx, [])
         if group:
             if len(good) >= num_rollouts:
-                keep.extend(good[:num_rollouts])
+                keep.extend(good)
             else:
                 owed[idx] = num_rollouts  # re-run the whole group; keep none of it
         else:
-            keep.extend(good[:num_rollouts])
-            missing = num_rollouts - min(len(good), num_rollouts)
+            keep.extend(good)
+            missing = num_rollouts - len(good)
             if missing:
                 owed[idx] = missing
     return keep, owed
 
 
-def rewrite_results(resume_dir: Path, keep: list[dict]) -> None:
+def rewrite_results(resume_dir: Path, keep: list[int]) -> None:
     """Replace `results.jsonl` with just the kept (good) traces; resumed rollouts append. Via a
     temp file + atomic rename, so an interrupted resume can't corrupt the prior good results."""
     path = resume_dir / "results.jsonl"
     tmp = path.with_suffix(".jsonl.tmp")
-    with tmp.open("w") as f:
-        for row in keep:
-            f.write(json.dumps(row) + "\n")
+    if not keep:
+        tmp.write_bytes(b"")
+        tmp.replace(path)
+        return
+    # Re-read retained rows by offset while building the atomic replacement.
+    with path.open("rb") as results, tmp.open("wb") as output:
+        for offset in keep:
+            results.seek(offset)
+            raw = results.readline()
+            output.write(raw)
+            if not raw.endswith(b"\n"):
+                output.write(b"\n")
     tmp.replace(path)
 
 

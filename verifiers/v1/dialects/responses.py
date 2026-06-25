@@ -8,6 +8,7 @@ endpoint and this dialect parses a copy for the trace. Server-side statefulness
 """
 
 import json
+from collections import deque
 from typing import Any, cast
 
 from openai.types.responses import (
@@ -26,7 +27,7 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel, ConfigDict
 
-from verifiers.v1.dialects.base import Dialect, iter_sse_reverse
+from verifiers.v1.dialects.base import Dialect, StreamParser, iter_sse_reverse
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -46,6 +47,13 @@ from verifiers.v1.types import (
 )
 
 FINAL_EVENTS = ("response.completed", "response.incomplete", "response.failed")
+# Byte markers for the terminal event types above, in both compact and spaced JSON, so the
+# interception server can cheaply spot the turn-ending event without parsing each delta.
+_TERMINAL_MARKERS = tuple(
+    marker.encode()
+    for event in FINAL_EVENTS
+    for marker in (f'"type":"{event}"', f'"type": "{event}"')
+)
 # Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
 
@@ -233,12 +241,39 @@ def response_from_wire(response: OpenAIResponse) -> Response:
     )
 
 
+class ResponsesStreamParser(StreamParser):
+    """Retain only the complete terminal response event and trailing DONE event."""
+
+    def __init__(self) -> None:
+        self.events: deque[bytes] = deque(maxlen=2)
+        self.feed = self.events.append
+        self.terminal_events: tuple[bytes, ...] | None = None
+
+    def on_done(self) -> None:
+        # Freeze the terminal tail before later relay chunks can evict it.
+        self.terminal_events = tuple(self.events)
+
+    def finish(self) -> Response:
+        events = self.terminal_events or self.events
+        for event in iter_sse_reverse(b"".join(events)):
+            if event.get("type") in FINAL_EVENTS:
+                return response_from_wire(
+                    OpenAIResponse.model_validate(event["response"])
+                )
+        raise ValueError("Responses stream ended without a terminal event")
+
+
 class ResponsesDialect(Dialect[dict, OpenAIResponse]):
     """The OpenAI Responses wire format."""
 
     routes = ("/v1/responses",)
     upstream_path = "/responses"
     response_type = OpenAIResponse
+
+    def is_terminal_event(self, chunk: bytes) -> bool:
+        # A Responses client (e.g. codex) ends its turn on `response.completed`, before the
+        # trailing `[DONE]`, so the turn-ending event is the final event, not the sentinel.
+        return any(marker in chunk for marker in _TERMINAL_MARKERS)
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
         prompt: Messages = []
@@ -295,15 +330,8 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)
 
-    def parse_stream(self, raw: bytes) -> Response:
-        """The terminal event (`response.completed` / `.incomplete` / `.failed`) carries the
-        full response object — parse that."""
-        for event in iter_sse_reverse(raw):
-            if event.get("type") in FINAL_EVENTS:
-                return response_from_wire(
-                    OpenAIResponse.model_validate(event["response"])
-                )
-        raise ValueError("Responses stream ended without a terminal event")
+    def stream_parser(self) -> StreamParser:
+        return ResponsesStreamParser()
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
         # Forward verbatim except the eval's model + sampling, mapped to the Responses shape

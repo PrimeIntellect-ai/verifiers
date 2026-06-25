@@ -69,15 +69,13 @@ Taskset examples (the `*_v1` packages under `environments/`):
 | example | pattern it shows |
 | --- | --- |
 | `reverse-text-v1` | the minimal single-turn taskset |
-| `gsm8k-v1`, `aime24-v1`, `math-env-v1` | single-turn + in-runtime scoring |
+| `gsm8k-v1` | single-turn + in-runtime scoring |
 | `code-golf-v1` | group rewards (`@group_reward` over a task's N rollouts) |
 | `alphabet-sort-v1` | a multi-turn, stateful task driven by a `vf.User` simulator |
 | `glossary-v1` | a custom **colocated** tool server |
-| `wikispeedia-v1` | a tool server in its **own per-rollout** runtime |
 | `wiki-search-v1` | a **shared** tool server (built once for the eval) + an LLM judge |
 | `deepwiki-v1` | an **existing remote** tool server, by URL |
-| `wordle-v1` | configuring the vendored `textarena-v1` integration |
-| `terminal-bench-2-v1` | configuring the vendored `harbor-v1` integration |
+| `wordle-v1` | configuring the vendored `textarena` integration |
 
 Harness examples (under `environments/`):
 
@@ -102,10 +100,10 @@ filesystem, so run it under a containerized runtime: `docker` locally, or a remo
 `modal` sandbox (not the default `subprocess`). 
 
 ```bash
-uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id bash            # bash-only agent
-uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
-uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
-uv run eval harbor-v1 -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id codex           # the codex CLI agent
+uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id bash            # bash-only agent
+uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
+uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
+uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id codex           # the codex CLI agent
 ```
 
 ### Swappable runtime
@@ -135,7 +133,6 @@ each show one placement:
 
 ```bash
 uv run eval glossary-v1 -n 1     # colocated — in the harness's own runtime, localhost (default)
-uv run eval wikispeedia-v1 -n 1 --taskset.min-dist 2 --taskset.max-dist 2  # its own per-rollout runtime
 uv run eval wiki-search-v1 -n 1  # shared — one instance built once for the whole eval
 uv run eval deepwiki-v1 -n 1     # an existing remote server, by URL
 ```
@@ -230,13 +227,12 @@ uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.incl
 ### Integrations
 
 Some tasksets wrap a whole benchmark family rather than a single task — shipped, installed by
-default. For example, `textarena-v1` (TextArena games) and `harbor-v1` (the agentic-
-benchmark registry). Harbor is the showcase: it pulls tasks straight from the Harbor registry
-via the `harbor` CLI (`uv tool install harbor`), each in its own declared, pullable container
-image — e.g. Terminal-Bench 2:
+default. For example, `textarena` (TextArena games) and `harbor` (the agentic-
+benchmark registry). Harbor is the showcase: it pulls tasks straight from the Harbor registry,
+each in its own declared, pullable container image — e.g. Terminal-Bench 2:
 
 ```bash
-uv run eval harbor-v1 --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm
+uv run eval harbor --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm
 ```
 
 ## Backwards compatibility

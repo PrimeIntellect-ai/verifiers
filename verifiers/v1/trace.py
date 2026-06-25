@@ -20,6 +20,7 @@ from pydantic import Field, PrivateAttr
 from renderers.base import MultiModalData
 
 from verifiers.v1 import graph
+from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import TaskT, WireTask
@@ -90,13 +91,20 @@ class Branch(StrictBaseModel):
     def token_ids(self) -> list[int]:
         """The branch's full token sequence — every node's tokens concatenated in order
         (final-turn prompt + every completion). The training sample's input ids."""
-        return [t for node in self.nodes for t in node.token_ids]
+        tokens: list[int] = []
+        # Extend node spans in bulk to avoid per-token Python work.
+        for node in self.nodes:
+            tokens.extend(node.token_ids)
+        return tokens
 
     @property
     def sampled_mask(self) -> list[bool]:
         """Per-token trainable flag aligned to `token_ids`: True for the model-sampled
         (completion) tokens, False for prompt/template scaffold."""
-        return [m for node in self.nodes for m in node.mask]
+        mask: list[bool] = []
+        for node in self.nodes:
+            mask.extend(node.mask)
+        return mask
 
     @property
     def logprobs(self) -> list[float]:
@@ -104,8 +112,15 @@ class Branch(StrictBaseModel):
         their sampled positions, 0.0 on every non-sampled token."""
         out: list[float] = []
         for node in self.nodes:
+            mask = node.mask
+            sampled = sum(mask) if node.logprobs else 0
+            # Bulk-fill the canonical unsampled-prefix/sampled-suffix layout.
+            if not sampled or all(mask[-sampled:]):
+                out += [0.0] * (len(mask) - sampled) + node.logprobs[:sampled]
+                out += [0.0] * max(0, sampled - len(node.logprobs))
+                continue
             li = 0
-            for sampled in node.mask:
+            for sampled in mask:
                 if sampled:
                     out.append(node.logprobs[li] if li < len(node.logprobs) else 0.0)
                     li += 1
@@ -186,6 +201,16 @@ class Branch(StrictBaseModel):
         return usage.completion_tokens if usage else 0
 
 
+_NODE_DUMP_EXCLUDE: dict = {
+    "nodes": {"__all__": {"multi_modal_data", "routed_experts"}}
+}
+"""The per-node fields `Trace.to_record` strips from a JSON dump: the multimodal `mm_kwargs`
+carrier and the router-replay `routed_experts` array. Both hold raw numpy bytes (msgpack `bin`)
+that the env-server wire carries fine but JSON cannot — `model_dump(mode="json")` raises
+`UnicodeDecodeError` on real (>0x7F) expert ids — and they bloat every record line besides.
+Lives with the schema it excludes so a new tensor field can't silently start crashing dumps."""
+
+
 class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """The full record of one rollout. Subclass to add typed fields."""
 
@@ -214,7 +239,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """Transient per-rollout runtime state (see `verifiers.v1.state.State`): shared with the tool/user
     servers as `self.state` (synced over the interception server) and read+written by scoring. Runtime
     scratch (counters, game progress, end-of-trajectory flags) — excluded from every dump (`model_dump`
-    + `to_wire`), unlike `info` which persists. Type it via `Taskset[Task, Config, MyState]`; defaults
+    / `to_record`), unlike `info` which persists. Type it via `Taskset[Task, Config, MyState]`; defaults
     to the base `State`."""
 
     is_completed: bool = False
@@ -372,15 +397,31 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
             self.stop_condition = condition
 
     def capture_error(self, error: Exception) -> None:
-        """Record a caught error (with traceback) and stop the rollout."""
+        """Record a caught error and stop the rollout."""
         self.errors.append(
             Error(
                 type=type(error).__name__,
                 message=str(error),
-                traceback=traceback.format_exc(),
+                # Provider errors already carry the actionable upstream diagnostic.
+                # Keep full tracebacks for every other failure.
+                traceback=None
+                if isinstance(error, ProviderError)
+                else traceback.format_exc(),
             )
         )
         self.stop("error")
+
+    def to_record(self) -> dict[str, Any]:
+        """A JSON-serializable record of this rollout for `results.jsonl` / W&B tables.
+
+        `model_dump(mode="json")` minus the per-node training tensors (`_NODE_DUMP_EXCLUDE`):
+        those carry raw numpy bytes that JSON can't encode (the plain dump raises
+        `UnicodeDecodeError` on real expert ids) and that bloat every line. Everything else —
+        including `token_ids` / `mask` / `logprobs` / `is_content` and provider `usage` — is
+        kept; `state` and the computed-property views (`reward`, `branches`, `duration`) are
+        absent by construction (excluded / never serialized). The tensors still reach the
+        trainer over the env-server wire (msgpack raw bytes); only this record path strips them."""
+        return self.model_dump(mode="json", exclude=_NODE_DUMP_EXCLUDE)
 
 
 TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]

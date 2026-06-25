@@ -56,7 +56,8 @@ _BLOCKED_REQUEST_HEADERS = frozenset(
         "signature-input",
     }
 )
-_SSE_EVENT_END = re.compile(rb"(?:\r\n|\r|\n){2}")
+# Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
+_SSE_EVENT_END = re.compile(rb"(?>\r\n|\r|\n){2}")
 
 
 class EvalClient(Client):

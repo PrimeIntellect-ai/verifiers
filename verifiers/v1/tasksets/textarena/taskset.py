@@ -1,4 +1,4 @@
-"""textarena_v1 — TextArena games as a v1 taskset, driven by a user simulator.
+"""textarena — TextArena games as a v1 taskset, driven by a user simulator.
 
 Each task is one episode of a TextArena game (the working example is Wordle). The model
 plays by emitting moves; the framework's interception server drives a `vf.User` (the game
@@ -28,7 +28,7 @@ try:
     import textarena as ta
 except ImportError as e:
     raise ImportError(
-        "textarena_v1 requires nltk and textarena. Install with: uv add 'verifiers[ta]'"
+        "textarena requires nltk and textarena. Install with: uv add 'verifiers[ta]'"
     ) from e
 
 SYSTEM_PROMPT = (

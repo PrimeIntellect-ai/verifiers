@@ -2,9 +2,9 @@
 
 A plugin (taskset or harness) is a module that exports its `Taskset` / `Harness` subclass via
 `__all__` — vf walks the exported names and finds the single subclass of the base. An id (an
-`EnvId`) resolves to that module: a built-in id (`default`, `rlm`, `harbor_v1`, `textarena_v1`)
+`EnvId`) resolves to that module: a built-in id (`default`, `rlm`, `harbor`, `textarena`)
 resolves to its namespaced module under the group package (`verifiers.v1.harnesses.rlm`,
-`verifiers.v1.tasksets.harbor_v1`, ...); any other id names a flat module — a local package
+`verifiers.v1.tasksets.harbor`, ...); any other id names a flat module — a local package
 (hyphens → underscores), or an `org/name[@version]` package installed on demand from the
 Environments Hub. Built-ins ship with verifiers under `verifiers/v1/{harnesses,tasksets}`;
 custom ones live under `environments/`, on `sys.path`, or on the hub.

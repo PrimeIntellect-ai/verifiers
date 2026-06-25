@@ -9,8 +9,8 @@ state copy-on-write (in-memory state isolated on write), runs in a private worki
 (relative-path writes isolated), and runs `setup_task` for its rollout's task (fetched from the
 interception server's `/task` channel — a shared server gets no task via env). The parent is a thin
 async reverse proxy that pins each rollout to its child and streams MCP traffic (so SSE works). So an
-ordinary stateful per-rollout server (expensive `setup` + per-rollout `setup_task`, e.g.
-`wikispeedia-v1`) is isolated per rollout with no rollout-aware code.
+ordinary stateful per-rollout server (expensive `setup` + per-rollout `setup_task`) is isolated
+per rollout with no rollout-aware code.
 
 The rollout key is the per-rollout secret the framework tags onto a shared server's URL
 (`STATE_SECRET_PARAM`, see `serve_tools`), alongside the reachable interception base
@@ -31,6 +31,7 @@ to absolute paths outside the private CWD are not isolated.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import hashlib
 import logging
@@ -148,8 +149,7 @@ def serve_forked(app, sock: socket.socket, server) -> None:
         child = children.get(key)
         if child is not None and child.ready.is_set():
             return child
-        # The lock is held ONLY for the synchronous fork()+register, never the readiness wait — so a
-        # cold fork serializes other forks (fork-safety) but doesn't stall traffic to other children.
+        # Readiness waits stay outside the lock, so traffic to ready children remains lock-free.
         async with forking:
             child = children.get(key)
             creating = child is None
@@ -177,15 +177,29 @@ def serve_forked(app, sock: socket.socket, server) -> None:
         return child
 
     async def reap(key: str) -> None:
-        child = children.pop(key, None)
-        if not child:
-            return
-        child.ready.set()  # wake any waiter blocked in `ensure` — it re-checks `children` and re-forks
-        with contextlib.suppress(Exception):
-            os.kill(child.pid, signal.SIGKILL)
-        with contextlib.suppress(Exception):
-            os.waitpid(child.pid, 0)
-        shutil.rmtree(child.cwd, ignore_errors=True)
+        # Keep fork() out of the cleanup thread's lifetime; ready children bypass this lock.
+        async with forking:
+            child = children.pop(key, None)
+            if not child:
+                return
+            child.ready.set()  # wake waiters; they re-check `children` before re-forking
+            with contextlib.suppress(Exception):
+                os.kill(child.pid, signal.SIGKILL)
+
+            def cleanup() -> None:
+                with contextlib.suppress(Exception):
+                    os.waitpid(child.pid, 0)
+                shutil.rmtree(child.cwd, ignore_errors=True)
+
+            # One worker keeps cleanup ordered and lets it finish if this task is cancelled.
+            loop = asyncio.get_running_loop()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = loop.run_in_executor(executor, cleanup)
+                try:
+                    await asyncio.shield(future)
+                except asyncio.CancelledError:
+                    await future
+                    raise
         logger.info("fork: reaped child pid=%d", child.pid)
 
     async def _respond(send, status: int, body: bytes) -> None:

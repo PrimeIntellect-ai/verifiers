@@ -12,18 +12,21 @@ import contextlib
 import contextvars
 import functools
 import inspect
+import logging
 import os
 from typing import TYPE_CHECKING, Callable, ClassVar, Generic, TypeVar, get_args
 
+from pydantic import TypeAdapter, ValidationError
 from pydantic_config import BaseConfig
 
 from verifiers.v1.state import State, StateT, state_cls
 
 if TYPE_CHECKING:
-    from httpx import AsyncClient
+    from httpx import AsyncClient, Response
     from mcp.server.fastmcp import FastMCP
 
 ConfigT = TypeVar("ConfigT", bound=BaseConfig)
+logger = logging.getLogger(__name__)
 
 STATE_TIMEOUT = 30.0
 """Seconds for a state-channel GET/PUT (localhost, or a tunnel to the host)."""
@@ -38,13 +41,13 @@ async def _channel_request(
     url: str,
     secret: str,
     *,
-    json: dict | None = None,
+    content: bytes | None = None,
     client: AsyncClient | None = None,
-) -> dict:
+) -> Response:
     """One bearer-authed call to the interception `/state` or `/task` channel, retried with
     exponential backoff + jitter on transient failures (connection resets / 5xx from the host
     tunnel). A 4xx is a real error (e.g. an invalid state PUT) and is not retried. Returns the
-    parsed JSON body."""
+    response so typed callers can validate its JSON bytes directly."""
     import httpx
     from tenacity import (
         AsyncRetrying,
@@ -58,18 +61,21 @@ async def _channel_request(
             isinstance(e, httpx.HTTPStatusError) and e.response.status_code >= 500
         )
 
-    async def request() -> dict:
+    async def request() -> Response:
         manager = (
             contextlib.nullcontext(client)
             if client is not None
             else httpx.AsyncClient(timeout=STATE_TIMEOUT)
         )
         async with manager as request_client:
+            headers = {"Authorization": f"Bearer {secret}"}
+            if content is not None:
+                headers["Content-Type"] = "application/json"
             resp = await request_client.request(
-                method, url, json=json, headers={"Authorization": f"Bearer {secret}"}
+                method, url, content=content, headers=headers
             )
             resp.raise_for_status()
-            return resp.json()
+            return resp
 
     return await AsyncRetrying(
         stop=stop_after_attempt(STATE_RETRIES + 1),
@@ -158,6 +164,8 @@ class ServerBase(Generic[ConfigT, StateT]):
     def __init__(self, config: ConfigT) -> None:
         self.config = config
         self._state_cls = state_cls(type(self))
+        # Reuse Pydantic's public byte serializer/validator across state-channel calls.
+        self._state_adapter = TypeAdapter(self._state_cls)
         self._inert_state: StateT = self._state_cls()  # type: ignore[assignment]
         """A fresh state used outside a tool/respond call (setup, or a manual debug run) — there's
         no channel to sync, so writes to it don't escape the process (matches the no-channel case)."""
@@ -188,27 +196,31 @@ class ServerBase(Generic[ConfigT, StateT]):
         """Fetch the in-flight call's shared state from the channel (so it reflects other servers'
         writes); a fresh inert state when there's no channel."""
         url, secret = self._state_channel()
-        cls = self._state_cls
         if not url:
-            return cls()
-        return cls.model_validate(
-            await _channel_request("GET", url, secret, client=self._state_client)
-        )
+            return self._state_cls()
+        response = await _channel_request("GET", url, secret, client=self._state_client)
+        try:
+            return self._state_adapter.validate_json(response.content)
+        except ValidationError as e:
+            # Excessively nested or otherwise invalid state is a broken channel contract.
+            logger.warning(
+                "state pull rejected for %s: %s", self._state_cls.__name__, e
+            )
+            raise
 
-    async def _push_state(self, before: dict) -> None:
+    async def _push_state(self, before: bytes) -> None:
         """Push the in-flight call's `self.state` back to the shared channel if it changed. No-op
         without a channel or when nothing changed."""
         url, secret = self._state_channel()
         if not url:
             return
         state = _call_state.get()
-        after = (state if state is not None else self._inert_state).model_dump(
-            mode="json"
-        )
+        current = state if state is not None else self._inert_state
+        after = self._state_adapter.dump_json(current)
         if after == before:
             return
         await _channel_request(
-            "PUT", url, secret, json=after, client=self._state_client
+            "PUT", url, secret, content=after, client=self._state_client
         )
 
     async def _fetch_task(self, state_url: str | None, secret: str):
@@ -222,7 +234,7 @@ class ServerBase(Generic[ConfigT, StateT]):
             if state_url.endswith("/state")
             else state_url
         )
-        data = await _channel_request("GET", task_url, secret)
+        data = (await _channel_request("GET", task_url, secret)).json()
         return _import_ref(data["cls"]).model_validate_json(data["task"])
 
     async def _setup_task_from_channel(
@@ -250,14 +262,18 @@ class ServerBase(Generic[ConfigT, StateT]):
 
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
-            state = await self._pull_state()
+            # Base State has no fields and rejects extras, so only subclasses need channel sync.
+            sync_state = self._state_cls is not State
+            state = await self._pull_state() if sync_state else State()
             token = _call_state.set(state)
             try:
-                before = state.model_dump(mode="json")
+                # Reuse the second serialization as the PUT body when the callback mutates state.
+                before = self._state_adapter.dump_json(state) if sync_state else None
                 result = fn(*args, **kwargs)
                 if inspect.isawaitable(result):
                     result = await result
-                await self._push_state(before)
+                if before is not None:
+                    await self._push_state(before)
                 return result
             finally:
                 _call_state.reset(token)
