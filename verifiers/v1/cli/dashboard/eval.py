@@ -25,6 +25,7 @@ from verifiers.v1.cli.output import output_path
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Usage
 from verifiers.v1.utils.format import format_count, format_mean, format_time
 from verifiers.utils.pricing_utils import format_cost_usd
 
@@ -199,8 +200,9 @@ def _breakdown(done: list[Trace]) -> Table | None:
     # cost are summed; each timing phase is averaged over the rollouts that have it timed (averaged
     # per phase rather than summed, since phases run concurrently across rollouts).
     total_in = total_out = total_cached = total_reasoning = 0
-    total_cost = 0.0
-    have_cost = have_cached = have_reasoning = False
+    total_judge_in = total_judge_out = 0
+    total_cost = total_judge_cost = 0.0
+    have_cost = have_cached = have_reasoning = have_judge = False
     phase_secs: dict[str, float] = {}
     phase_count: dict[str, int] = {}
     for trace in done:
@@ -214,25 +216,47 @@ def _breakdown(done: list[Trace]) -> Table | None:
             total_reasoning += reasoning
             have_reasoning = True
         if trace.usage is not None and trace.usage.cost is not None:
-            total_cost += trace.usage.cost
+            total_cost += trace.usage.cost  # includes judge (extra_usage)
             have_cost = True
+        # Judge / auxiliary scoring calls (off the message graph) shown separately from the agent's.
+        judge = Usage.aggregate(trace.extra_usage)
+        if judge is not None:
+            total_judge_in += judge.input_tokens
+            total_judge_out += judge.completion_tokens
+            if judge.cost is not None:
+                total_judge_cost += judge.cost
+            have_judge = True
         for phase in ("setup", "generation", "finalize", "scoring"):
             span = getattr(trace.timing, phase)
             if span.end:  # phase was timed for this rollout
                 phase_secs[phase] = phase_secs.get(phase, 0.0) + span.duration
                 phase_count[phase] = phase_count.get(phase, 0) + 1
-    if total_in or total_out or have_cost or have_cached or have_reasoning:
+    if (
+        total_in
+        or total_out
+        or have_cost
+        or have_cached
+        or have_reasoning
+        or have_judge
+    ):
         tokens = f"{format_count(total_in)}/{format_count(total_out)} tokens"
         details = []
         if have_cached:
             details.append(f"{format_count(total_cached)} cached")
         if have_reasoning:
             details.append(f"{format_count(total_reasoning)} reasoning")
+        if have_judge:
+            details.append(
+                f"+{format_count(total_judge_in)}/{format_count(total_judge_out)} judge"
+            )
         if details:
             tokens += f" ({', '.join(details)})"
         usage = [tokens]
         if have_cost:
-            usage.append(f"total {format_cost_usd(total_cost)}")
+            cost = f"total {format_cost_usd(total_cost)}"
+            if have_judge and total_judge_cost:
+                cost += f" ({format_cost_usd(total_judge_cost)} judge)"
+            usage.append(cost)
         grid.add_row("usage", "  ·  ".join(usage))
     time_segments = [
         f"{phase} {format_time(phase_secs[phase] / phase_count[phase])}"
@@ -254,8 +278,12 @@ def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
 
     Prefers the token-id counts; falls back to provider-reported usage when the endpoint returns
     no token ids (e.g. plain OpenAI completions), so the counts aren't shown as 0/0. Returns
-    the branch count from the same derived view so each dashboard tick materializes it once."""
-    usage = trace.usage
+    the branch count from the same derived view so each dashboard tick materializes it once.
+
+    cached/reasoning come from the sampled nodes' usage (not `trace.usage`, which also folds in
+    `extra_usage`) so they describe the same calls as the in/out counts — judge usage is shown
+    separately by the caller."""
+    usage = Usage.aggregate([n.usage for n in trace.nodes if n.usage is not None])
     cached = usage.cached_input_tokens if usage else None
     reasoning = usage.reasoning_tokens if usage else None
     branches = trace.branches
