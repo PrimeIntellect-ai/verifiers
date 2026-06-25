@@ -200,6 +200,22 @@ class Branch(StrictBaseModel):
         usage = self.usage
         return usage.completion_tokens if usage else 0
 
+    @property
+    def input_len(self) -> int:
+        """Best-available input-context size: the token-id `prompt_len`, falling back to
+        provider-reported `num_prompt_tokens` when the endpoint returns no token ids (so it isn't
+        reported as 0). For display/metrics — use `prompt_len` when you need the strict token-id
+        count (e.g. token-cap enforcement)."""
+        return self.prompt_len or self.num_prompt_tokens
+
+    @property
+    def output_len(self) -> int:
+        """Best-available completion size: the token-id `completion_len`, falling back to
+        provider-reported `num_completion_tokens` when the endpoint returns no token ids (so it
+        isn't reported as 0). For display/metrics — use `completion_len` when you need the strict
+        token-id count (e.g. training, token-cap enforcement)."""
+        return self.completion_len or self.num_completion_tokens
+
 
 _NODE_DUMP_EXCLUDE: dict = {
     "nodes": {"__all__": {"multi_modal_data", "routed_experts"}}
