@@ -25,13 +25,212 @@ Anthropic, ...) — and the framework intercepts every call behind that endpoint
 framework does — building the trace, capturing tokens, enforcing budgets, injecting a user
 simulator — is invisible to the harness, which stays a plain program.
 
+The pieces, and how they interact (everything inside *one Rollout* is per-trajectory):
+
+```mermaid
+flowchart TB
+    EVAL["uv run eval<br/>(in-process)"]
+    ORCH["prime-rl<br/>(EnvClient, by task idx)"]
+
+    subgraph serve["serving — serve/ (ZMQ ROUTER + msgpack)"]
+        POOL["EnvServerPool<br/>elastic broker"]
+        SRV["EnvServer · LegacyEnvServer<br/>loads env once, runs by task idx"]
+        POOL --> SRV
+    end
+
+    subgraph environment["Environment — env.py"]
+        TASKSET["Taskset<br/>load_tasks · tools · user · score"]
+        HARNESS["Harness<br/>drives the model, runs in a runtime"]
+    end
+
+    subgraph one["one Rollout — rollout.py"]
+        RUNTIME["Runtime<br/>subprocess · docker · prime · modal"]
+        PROG["harness program"]
+        INT["InterceptionServer<br/>sessions · /state"]
+        DIAL["Dialect<br/>chat · responses · anthropic"]
+        CLIENT["Client<br/>EvalClient | TrainClient"]
+        TRACE["Trace<br/>message graph + scoring"]
+        TOOLS["Toolset (MCP)"]
+        USER["User simulator"]
+        RUNTIME --> PROG
+        PROG -->|localhost completions| INT
+        PROG -->|MCP tool calls| TOOLS
+        INT -->|route-detect| DIAL
+        INT --> CLIENT
+        INT -->|record turn| TRACE
+        INT -->|inject user turn| USER
+        TOOLS <-->|/state| INT
+        USER <-->|/state| INT
+    end
+
+    POOLX["InterceptionPool<br/>N rollouts share a server + tunnel"]
+    MODEL["model endpoint<br/>provider relay · or renderer → engine"]
+
+    ORCH --> serve
+    SRV --> environment
+    EVAL --> environment
+    environment ==>|"episode(task, n) → N rollouts"| one
+    INT -.slot.-> POOLX
+    CLIENT --> MODEL
+```
+
+And what each component holds and how it relates (associations are runtime references,
+diamonds are ownership):
+
+```mermaid
+classDiagram
+    class Environment {
+        +config
+        +taskset
+        +harness
+        +limits
+        +episode()
+        +serving()
+    }
+    class Taskset {
+        +config
+        +load_tasks()
+        +tools()
+        +user()
+        +setup()
+        +finalize()
+        +score()
+        +score_group()
+    }
+    class Harness {
+        +config
+        +SUPPORTS_TASK_TOOLS
+        +SUPPORTS_USER_SIM
+        +resolve_prompt()
+        +launch()
+        +run()
+        +score()
+    }
+    class Runtime {
+        +name
+        +is_local
+        +config
+        +start()
+        +stop()
+        +run()
+        +expose()
+        +run_uv_script()
+    }
+    class Episode {
+        +rollouts
+        +taskset
+        +run()
+    }
+    class Rollout {
+        +task
+        +runtime
+        +trace
+        +phase
+        +run()
+    }
+    class Trace {
+        +id
+        +task
+        +nodes
+        +rewards
+        +metrics
+        +info
+        +state
+        +timing
+        +reward()
+        +branches()
+    }
+    class MessageNode {
+        +parent
+        +message
+        +sampled
+        +token_ids
+        +mask
+        +logprobs
+    }
+    class InterceptionServer {
+        +sessions
+        +port
+        +register()
+        +handle_request()
+    }
+    class InterceptionPool {
+        +multiplex
+        +acquire()
+    }
+    class RolloutSession {
+        +ctx
+        +trace
+        +stops
+        +limits
+        +user
+    }
+    class RolloutContext {
+        +client
+        +model
+        +sampling
+    }
+    class Client {
+        <<abstract>>
+        +get_response()
+    }
+    class EvalClient
+    class TrainClient
+    class Dialect {
+        <<abstract>>
+        +routes
+        +parse_request()
+        +parse_response()
+        +apply_overrides()
+    }
+    class ChatDialect
+    class ResponsesDialect
+    class AnthropicDialect
+    class Toolset {
+        +config
+        +state
+    }
+    class User {
+        +config
+        +state
+        +respond()
+    }
+
+    Environment *-- Taskset
+    Environment *-- Harness
+    Environment ..> Episode : builds
+    Episode *-- Rollout
+    Rollout --> Runtime : owns
+    Rollout --> Trace : produces
+    Rollout ..> InterceptionServer : endpoint
+    InterceptionPool o-- InterceptionServer
+    InterceptionServer *-- RolloutSession
+    InterceptionServer ..> Dialect : route-detect
+    RolloutSession --> RolloutContext
+    RolloutSession --> Trace
+    RolloutContext --> Client
+    Client <|-- EvalClient
+    Client <|-- TrainClient
+    Client ..> Dialect : uses
+    Dialect <|-- ChatDialect
+    Dialect <|-- ResponsesDialect
+    Dialect <|-- AnthropicDialect
+    Trace *-- MessageNode
+    Taskset ..> Toolset : tools()
+    Taskset ..> User : user()
+    Toolset ..> InterceptionServer : /state
+    User ..> InterceptionServer : /state
+```
+
+At run time, that composition unfolds as a staged, individually-bounded lifecycle:
+
 ```
 Episode (task, n)
 └─ Rollout.run()                              # rollout.py, one asyncio.Task per rollout
    ├─ runtime.start()                         # provision workspace / container / sandbox
    ├─ taskset.setup(task, runtime)            # Phase.SETUP   — wait_for(setup_timeout)
    ├─ harness.run(ctx, trace, runtime, …)     # Phase.RUNNING — wait_for(rollout_timeout)
-   │     └─ model calls → interception server → client → graph.add_turn()
+   │     └─ model calls → interception server → client → graph.prepare_turn()+commit()
    ├─ taskset.finalize(task, trace, runtime)  # Phase.FINALIZE— wait_for(finalize_timeout)
    ├─ taskset.score + harness.score           # Phase.SCORING — wait_for(scoring_timeout)
    └─ runtime.stop()                          # guaranteed teardown (also atexit-guarded)
@@ -52,12 +251,31 @@ A `Trace` stores each message **once**, as a `MessageNode` (`graph.py`) linked t
 predecessor (`parent: int | None`). A node carries the message plus its training payload:
 `token_ids` (this node's delta tokens — leading scaffold + own tokens), a per-token trainable
 `mask`, `logprobs`, `sampled` (did the model produce it?), `finish_reason`, optional
-`multi_modal_data`, and transient `usage`.
+`multi_modal_data`, optional `routed_experts` (the MoE router-replay slice for this node's
+tokens), and transient `usage`.
 
-Storing deltas, not full conversations, is what makes the trace **linear in turns, not
-quadratic** — and it's what makes branching first-class. `add_turn()` (`graph.py`) inserts a
-turn by *reusing* any existing prefix node whose `(parent, message_hash)` matches, and only
-creating nodes for genuinely new messages. `message_hash()` canonicalizes role + content
+```mermaid
+flowchart LR
+    sys["system<br/>(input)"] --> u0["user<br/>(input)"]
+    u0 --> a0["assistant ✦<br/>sampled"]
+    a0 --> t0["tool<br/>(input)"]
+    t0 --> a1["assistant ✦<br/>sampled"]
+    a1 --> u1["user<br/>(input)"]
+    u1 --> a2["assistant ✦<br/>sampled — leaf A"]
+    a1 -. compaction / subagent .-> c0["system'<br/>(summary, input)"]
+    c0 --> a3["assistant ✦<br/>sampled — leaf B"]
+
+    classDef sampled fill:#1f6f43,stroke:#0d3,color:#fff
+    classDef input fill:#1f3a5f,stroke:#9bf,color:#fff
+    class a0,a1,a2,a3 sampled
+    class sys,u0,t0,u1,c0 input
+```
+
+Each leaf is one branch (one training sample); `✦` marks a model-sampled node. Storing
+deltas, not full conversations, is what makes the trace **linear in turns, not
+quadratic** — and it's what makes branching first-class. `prepare_turn()` then `commit()`
+(`graph.py`) insert a turn by *reusing* any existing prefix node whose `(parent, message_hash)`
+matches, and only creating nodes for genuinely new messages. `message_hash()` canonicalizes role + content
 (+ `reasoning_content` for assistants, + tool calls with canonical-JSON args + `tool_call_id`
 for tools), so identical prefixes collapse and forks share their common history.
 
@@ -70,8 +288,9 @@ end to end: each surviving context window is just another root→leaf path.
 
 `Trace.to_wire()` (`trace.py`) is `model_dump` minus what shouldn't travel: computed views
 (`reward`, `branches`, `num_turns`), per-span `duration`s (recomputed on the far side), and
-`usage`. Multimodal pixel tensors *do* travel — base64-encoded by a field serializer on
-`MessageNode.multi_modal_data` (`graph.py`) so they survive JSON + msgpack to the trainer.
+`usage`. Multimodal pixel tensors and `routed_experts` *do* travel — serialized to raw bytes
+(msgpack `bin`) by field serializers on `MessageNode` (`graph.py`), and the trace is dumped in
+`mode="python"` (not JSON) so the numpy arrays ride the env-server wire to the trainer untouched.
 
 ### Branching: message-level vs renderer-level, and the token invariant
 
@@ -116,8 +335,8 @@ silent corruption.
 When the harness POSTs a completion to its localhost endpoint, the `InterceptionServer`
 (`interception/server.py`) routes by the per-rollout bearer secret to a `RolloutSession`, then,
 per turn: checks `refused()` (the rollout's `RolloutLimits` + the taskset's `@stop`s), calls
-the session's client, records the result with `graph.add_turn()`, and — if the taskset has a
-user simulator — appends the next user message and loops, all invisibly to the harness.
+the session's client, records the result with `graph.prepare_turn()` + `commit()`, and — if the
+taskset has a user simulator — appends the next user message and loops, all invisibly to the harness.
 
 The wire format is abstracted by a **`Dialect`** (`dialects/`), chosen by the request's route:
 `ChatDialect` (OpenAI chat-completions), `ResponsesDialect`, `AnthropicDialect`. A dialect
