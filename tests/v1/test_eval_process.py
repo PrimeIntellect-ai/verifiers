@@ -41,10 +41,9 @@ def test_resume_uses_persisted_run_id(tmp_path) -> None:
     ]
     main(["run", *args])
 
-    invocation = resolve_eval(["--resume", str(output_dir)])
+    config = resolve_eval(["--resume", str(output_dir)])
 
-    assert invocation.run_id == "fixed-run-id"
-    assert invocation.config.uuid == "fixed-run-id"
+    assert config.uuid == "fixed-run-id"
 
 
 def test_main_does_not_mutate_sys_argv(capsys) -> None:
