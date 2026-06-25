@@ -48,7 +48,7 @@ class EvalConfig(EnvServerConfig):
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = False
-    """Resolve + validate the config and write it, then exit."""
+    """Resolve + validate the config and dump it, then exit."""
     rich: bool = True
     """Show a live dashboard instead of per-rollout logs (in-process only)."""
     server: bool = False
