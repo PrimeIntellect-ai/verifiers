@@ -1,15 +1,16 @@
 """Local Docker runtime with full or interception-only agent networking.
 
-Full mode shares the host network. Interception mode provisions over an ordinary bridge, then
-moves the container onto an internal per-rollout network whose only peer is a fixed reverse proxy
-to the interception tunnel before the agent starts.
+Full mode shares the host network. Interception mode provisions on Docker's bridge, then installs
+a network-namespace firewall that limits the agent to the host interception port.
 """
 
 import asyncio
 import contextlib
+import json
 import logging
-import re
+import os
 import shlex
+import shutil
 import subprocess
 from pathlib import PurePosixPath
 from typing import Literal
@@ -21,11 +22,6 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import ProgramResult, Runtime, parse_gpu
 
 logger = logging.getLogger(__name__)
-
-# The trusted, fixed-upstream reverse relay. It never receives the Docker socket.
-_RELAY_IMAGE = "nginx:1.28.3-alpine"
-_RELAY_HOST = "vf-interception"
-_RELAY_PORT = 8080
 
 
 class DockerConfig(BaseConfig):
@@ -64,6 +60,44 @@ async def docker(*args: str) -> ProgramResult:
     )
 
 
+async def network_iptables(pid: int, *args: str) -> ProgramResult:
+    """Run host iptables inside a container's network namespace."""
+    proc = await asyncio.create_subprocess_exec(
+        "nsenter",
+        "--target",
+        str(pid),
+        "--net",
+        "iptables",
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    return ProgramResult(
+        exit_code=proc.returncode or 0,
+        stdout=stdout.decode(errors="replace"),
+        stderr=stderr.decode(errors="replace"),
+    )
+
+
+async def docker_bridge_gateway() -> str:
+    """Return the IPv4 address through which containers reach host services."""
+    result = await docker(
+        "network",
+        "inspect",
+        "--format",
+        "{{(index .IPAM.Config 0).Gateway}}",
+        "bridge",
+    )
+    gateway = result.stdout.strip()
+    if result.exit_code != 0 or not gateway:
+        raise SandboxError(
+            "could not resolve the Docker host gateway: "
+            f"{(result.stderr or result.stdout).strip()}"
+        )
+    return gateway
+
+
 class DockerRuntime(Runtime):
     """Runs programs in a local container, optionally sealing agent egress to interception."""
 
@@ -72,21 +106,20 @@ class DockerRuntime(Runtime):
         self.config = config
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._container_id: str | None = None  # docker's short id (for display)
-        self._relay: str | None = None
-        self._network: str | None = None
+        self._host_gateway: str | None = None
         self._stopped = False
 
     @property
     def descriptor(self) -> str | None:
         return self._container_id
 
-    @classmethod
-    def config_reaches_host_locally(cls, config: object) -> bool:
-        return isinstance(config, DockerConfig) and config.network_access
-
     @property
     def interception_only(self) -> bool:
         return not self.config.network_access
+
+    @property
+    def interception_host(self) -> str | None:
+        return self._host_gateway if self.interception_only else None
 
     async def start(self) -> None:
         try:
@@ -107,6 +140,32 @@ class DockerRuntime(Runtime):
             raise RuntimeError(
                 f"docker runtime selected but the Docker daemon is not reachable: {detail}{hint}"
             )
+
+        network = "host"
+        options: list[str] = []
+        if self.interception_only:
+            missing = [
+                cmd for cmd in ("iptables", "nsenter") if shutil.which(cmd) is None
+            ]
+            if os.geteuid() != 0 or missing:
+                detail = f"; missing {', '.join(missing)}" if missing else ""
+                raise RuntimeError(
+                    "Docker network_access=false requires root on a Linux Docker host "
+                    f"with iptables and nsenter{detail}"
+                )
+            self._host_gateway = await docker_bridge_gateway()
+            network = "bridge"
+            options = [
+                "--add-host",
+                f"host.docker.internal:{self._host_gateway}",
+                "--cap-drop",
+                "NET_ADMIN",
+                "--cap-drop",
+                "NET_RAW",
+                "--sysctl",
+                "net.ipv6.conf.all.disable_ipv6=1",
+            ]
+
         self._container = self.name
         limits: list[str] = []
         if self.config.cpu is not None:
@@ -116,14 +175,12 @@ class DockerRuntime(Runtime):
         _, gpu_count = parse_gpu(self.config.gpu)
         if gpu_count:
             limits += ["--gpus", str(gpu_count)]
-        network = "bridge" if self.interception_only else "host"
-        capabilities = ["--cap-drop", "NET_ADMIN"] if self.interception_only else []
         run = await docker(
             "run",
             "--detach",
             "--network",
             network,
-            *capabilities,
+            *options,
             *limits,
             "--workdir",
             self.config.workdir,
@@ -142,7 +199,7 @@ class DockerRuntime(Runtime):
             "docker: started container %s (image=%s, network=%s)",
             self._container,
             self.config.image,
-            self.config.network_access,
+            network,
         )
 
     async def seal_agent_network(self, endpoint: str) -> str:
@@ -151,8 +208,10 @@ class DockerRuntime(Runtime):
         if self._container is None:
             raise SandboxError("docker container is not running")
 
+        if self._host_gateway is None:
+            raise SandboxError("docker host gateway is not available")
+
         parsed = urlsplit(endpoint)
-        host = parsed.hostname
         try:
             port = parsed.port
         except ValueError as e:
@@ -160,148 +219,59 @@ class DockerRuntime(Runtime):
                 f"invalid interception endpoint {endpoint!r}: {e}"
             ) from e
         if (
-            parsed.scheme not in {"http", "https"}
-            or host is None
+            parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "localhost"}
+            or port is None
             or parsed.username is not None
             or parsed.password is not None
-            or re.fullmatch(r"[A-Za-z0-9.-]+", host) is None
         ):
             raise SandboxError(f"invalid interception endpoint {endpoint!r}")
 
-        authority = f"{host}:{port}" if port is not None else host
-        upstream = f"{parsed.scheme}://{authority}"
-        self._network = f"{self.name}-network"
-        self._relay = f"{self.name}-relay"
-        # Static proxy_pass + Host/SNI prevent the agent from selecting another upstream.
-        config = f"""
-worker_processes 1;
-pid /tmp/nginx.pid;
-error_log stderr warn;
-events {{ worker_connections 128; }}
-http {{
-    access_log off;
-    client_body_temp_path /tmp/client_body;
-    proxy_temp_path /tmp/proxy;
-    fastcgi_temp_path /tmp/fastcgi;
-    uwsgi_temp_path /tmp/uwsgi;
-    scgi_temp_path /tmp/scgi;
-    server {{
-        listen {_RELAY_PORT};
-        client_max_body_size 0;
-        location / {{
-            proxy_pass {upstream};
-            proxy_set_header Host {authority};
-            proxy_ssl_server_name on;
-            proxy_ssl_name {host};
-            proxy_ssl_verify on;
-            proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
-            proxy_ssl_verify_depth 3;
-            proxy_http_version 1.1;
-            proxy_set_header Connection "";
-            proxy_request_buffering off;
-            proxy_buffering off;
-            proxy_next_upstream off;
-            proxy_read_timeout 86400s;
-            proxy_send_timeout 86400s;
-        }}
-    }}
-}}
-"""
+        inspected = await docker("inspect", self._container)
+        if inspected.exit_code != 0:
+            raise SandboxError(f"docker inspect failed: {inspected.stderr.strip()}")
+        details = json.loads(inspected.stdout)[0]
+        pid = details["State"]["Pid"]
+        chain = "VF-AGENT"
+        # Build the chain before activating it. Docker DNS can proxy through the host namespace,
+        # so reject its loopback listener before allowing the container's own loopback traffic.
+        commands = [
+            ("-N", chain),
+            (
+                "-A",
+                chain,
+                "-d",
+                self._host_gateway,
+                "-p",
+                "tcp",
+                "--dport",
+                str(port),
+                "-j",
+                "ACCEPT",
+            ),
+            ("-A", chain, "-d", "127.0.0.11", "-j", "REJECT"),
+            ("-A", chain, "-o", "lo", "-j", "ACCEPT"),
+            ("-A", chain, "-j", "REJECT"),
+            ("-I", "OUTPUT", "1", "-j", chain),
+        ]
+        for command in commands:
+            installed = await network_iptables(pid, "--wait", *command)
+            if installed.exit_code != 0:
+                raise SandboxError(
+                    "docker agent firewall failed: "
+                    f"{(installed.stderr or installed.stdout).strip()}"
+                )
 
-        created = await docker(
-            "network",
-            "create",
-            "--internal",
-            "--opt",
-            "com.docker.network.bridge.gateway_mode_ipv4=isolated",
-            "--label",
-            f"verifiers.runtime={self.name}",
-            self._network,
-        )
-        if created.exit_code != 0:
-            raise SandboxError(
-                f"docker internal network creation failed: {created.stderr.strip()}"
-            )
-        relay = await docker(
-            "create",
-            "--name",
-            self._relay,
-            "--network",
-            "bridge",
-            "--label",
-            f"verifiers.runtime={self.name}",
-            "--user",
-            "101:101",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--read-only",
-            "--tmpfs",
-            "/tmp:rw,noexec,nosuid,size=16m,uid=101,gid=101",
-            "--entrypoint",
-            "sh",
-            _RELAY_IMAGE,
-            "-c",
-            'printf "%s" "$1" > /tmp/nginx.conf && '
-            'exec nginx -c /tmp/nginx.conf -g "daemon off;"',
-            "vf-relay",
-            config,
-        )
-        if relay.exit_code != 0:
-            raise SandboxError(
-                f"docker interception relay creation failed: {relay.stderr.strip()}"
-            )
-        connected = await docker(
-            "network",
-            "connect",
-            "--alias",
-            _RELAY_HOST,
-            self._network,
-            self._relay,
-        )
-        if connected.exit_code != 0:
-            raise SandboxError(
-                f"docker interception relay network failed: {connected.stderr.strip()}"
-            )
-        started = await docker("start", self._relay)
-        if started.exit_code != 0:
-            raise SandboxError(
-                f"docker interception relay start failed: {started.stderr.strip()}"
-            )
-        for _ in range(20):
-            ready = await docker(
-                "exec", self._relay, "nginx", "-t", "-c", "/tmp/nginx.conf"
-            )
-            if ready.exit_code == 0:
-                break
-            await asyncio.sleep(0.05)
-        else:
-            logs = await docker("logs", self._relay)
-            raise SandboxError(
-                "docker interception relay did not become ready: "
-                f"{(logs.stderr or logs.stdout).strip()[-2000:]}"
-            )
-
-        connected = await docker("network", "connect", self._network, self._container)
-        if connected.exit_code != 0:
-            raise SandboxError(
-                f"docker agent network connection failed: {connected.stderr.strip()}"
-            )
-        disconnected = await docker("network", "disconnect", "bridge", self._container)
-        if disconnected.exit_code != 0:
-            raise SandboxError(
-                f"docker setup network removal failed: {disconnected.stderr.strip()}"
-            )
         logger.info(
-            "docker: sealed container %s to interception relay %s",
+            "docker: sealed container %s to interception port %s:%d",
             self._container,
-            self._relay,
+            self._host_gateway,
+            port,
         )
         return urlunsplit(
             (
                 "http",
-                f"{_RELAY_HOST}:{_RELAY_PORT}",
+                f"host.docker.internal:{port}",
                 parsed.path,
                 parsed.query,
                 "",
@@ -375,26 +345,14 @@ http {{
             )
 
     def cleanup(self) -> None:
-        if self._stopped or not any((self._container, self._relay, self._network)):
+        if self._stopped or self._container is None:
             return
         self._stopped = True  # keep the names so descriptors and logs survive teardown
-        for container in (self._relay, self._container):
-            if container is None:
-                continue
-            logger.debug("docker: removing container %s", container)
-            with contextlib.suppress(Exception):
-                subprocess.run(
-                    ["docker", "rm", "--force", container],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=30,
-                )
-        if self._network is not None:
-            logger.debug("docker: removing network %s", self._network)
-            with contextlib.suppress(Exception):
-                subprocess.run(
-                    ["docker", "network", "rm", self._network],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=30,
-                )
+        logger.debug("docker: removing container %s", self._container)
+        with contextlib.suppress(Exception):
+            subprocess.run(
+                ["docker", "rm", "--force", self._container],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            )

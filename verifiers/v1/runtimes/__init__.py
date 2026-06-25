@@ -47,14 +47,8 @@ def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
 
 
 def runtime_is_local(config: RuntimeConfig) -> bool:
-    """Whether this is a local runtime rather than a provider sandbox. Config-specific network
-    restrictions do not change this topology; use `runtime_reaches_host_locally` for host URLs."""
+    """Whether a runtime of this config runs on the host rather than in a provider sandbox."""
     return _runtime_cls(config).is_local
-
-
-def runtime_reaches_host_locally(config: RuntimeConfig) -> bool:
-    """Whether this runtime config reaches a host service at localhost rather than by tunnel."""
-    return _runtime_cls(config).config_reaches_host_locally(config)
 
 
 __all__ = [
@@ -63,7 +57,6 @@ __all__ = [
     "RuntimeConfig",
     "make_runtime",
     "runtime_is_local",
-    "runtime_reaches_host_locally",
     "host_endpoint",
     "reachable_url",
     "HOST",

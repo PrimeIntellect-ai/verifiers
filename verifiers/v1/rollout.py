@@ -126,7 +126,7 @@ class Rollout:
             ):
                 yield endpoint, secret, state_port, state_base
         else:
-            async with InterceptionServer() as server:
+            async with InterceptionServer(host=runtime.interception_host) as server:
                 secret = server.register(session)
                 # a HOST service the harness (in `runtime`) reaches: localhost or a tunnel
                 async with reachable_url(HOST, server.port, consumer=runtime) as url:

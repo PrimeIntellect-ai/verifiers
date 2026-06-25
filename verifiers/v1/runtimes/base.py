@@ -102,9 +102,9 @@ def cleanup_at_exit() -> None:
 
 class Runtime(ABC):
     is_local: ClassVar[bool] = True
-    """Whether this runtime is ordinarily on the host network. True for subprocess / Docker;
-    remote runtimes (Modal/Prime) override to False. Config-specific restrictions may still make
-    a local runtime require a tunnel to reach the host; use `host_is_local` for that direction."""
+    """Whether this runtime runs locally rather than in a provider sandbox. Local services use
+    loopback by default; interception-only Docker rewrites its endpoint when networking is sealed.
+    Remote runtimes (Modal/Prime) override to False."""
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
@@ -128,20 +128,15 @@ class Runtime(ABC):
         runtime: subprocess workdir, docker image, prime sandbox id."""
         return None
 
-    @classmethod
-    def config_reaches_host_locally(cls, config: object) -> bool:
-        """Whether this config reaches a host service at localhost rather than through a tunnel."""
-        return cls.is_local
-
-    @property
-    def host_is_local(self) -> bool:
-        """Whether this instance reaches a host service at localhost."""
-        return type(self).config_reaches_host_locally(self.config)
-
     @property
     def interception_only(self) -> bool:
         """Whether agent execution is limited to the interception endpoint."""
         return False
+
+    @property
+    def interception_host(self) -> str | None:
+        """Additional host address on which the interception server must listen."""
+        return None
 
     # --- lifecycle ---
 
@@ -178,7 +173,7 @@ class Runtime(ABC):
         """Apply the runtime's agent-execution network policy and return its reachable endpoint.
 
         Setup has already completed when this is called. Most runtimes keep their existing
-        network and endpoint; Docker's interception-only mode replaces both for agent execution.
+        network and endpoint; Docker's interception-only mode installs its namespace policy.
         """
         return endpoint
 
@@ -321,11 +316,10 @@ async def open_tunnel(
 @contextlib.asynccontextmanager
 async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = None):
     """Yield a URL a program *inside a runtime* uses to reach a HOST service on `port`. A local
-    connection uses localhost; any config that cannot reach the host locally needs a host-side
-    reverse tunnel (`prime_tunnel`), torn down on exit. This is the host-side, provider-agnostic
-    counterpart to `Runtime.expose` (which publishes a port running *inside* a runtime) — so it only
-    reports whether the active config reaches the host locally and callers (interception pool,
-    rollout, tool serving) bridge here, rather than every runtime reimplementing the tunnel."""
+    runtime shares the host network → localhost; a remote one needs a host-side reverse tunnel
+    (`prime_tunnel`), torn down on exit. This is the host-side, provider-agnostic counterpart to
+    `Runtime.expose` (which publishes a port running *inside* a runtime) — so the runtime only
+    reports `is_local` and callers bridge to the host here."""
     if is_local:
         yield f"http://127.0.0.1:{port}"
         return
@@ -363,7 +357,6 @@ class _Host:
     and publishes nothing itself (it's reached *into* via `host_endpoint`, not via `expose`)."""
 
     is_local = True
-    host_is_local = True
 
 
 HOST = _Host()
@@ -380,16 +373,16 @@ async def reachable_url(
     (publish *out* of a runtime) and `host_endpoint` (reach *into* the host from a runtime).
 
     `service` is the `Runtime` the service runs in, or `HOST` (a host-network service). `consumer` is
-    the consuming `Runtime` (used for the colocated check and its host reachability); leave it
-    `None` for a host consumer or an eval-level consumer with no single instance (a shared tool
-    reused by every rollout's harness) and pass its locality as `consumer_is_local`:
+    the consuming `Runtime` (used for the colocated check and its locality); leave it `None` for a
+    host consumer or an eval-level consumer with no single instance (a shared tool reused by every
+    rollout's harness) and pass its locality as `consumer_is_local`:
 
     - same location (a colocated tool in the consumer's own runtime, or host -> host): localhost;
     - the service runs in a sandbox (a remote runtime): its own published URL (`expose`), reachable
       from anywhere;
     - the service is on the host network: localhost to a host-network consumer, else a host tunnel
       (`host_endpoint`)."""
-    is_local = consumer.host_is_local if consumer is not None else consumer_is_local
+    is_local = consumer.is_local if consumer is not None else consumer_is_local
     if service is consumer:  # colocated in the consumer's runtime (or host -> host)
         yield f"http://127.0.0.1:{port}"
     elif (
