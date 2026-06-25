@@ -51,6 +51,21 @@ def verify_response(
         return 0.0, elapsed
 
 
+class _TimeoutWarningFilter(logging.Filter):
+    """Filter to suppress math_verify timeout disabled warnings."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Suppress the specific warning about timeout being disabled
+        if "Timeout is disabled" in record.getMessage():
+            return False
+        return True
+
+
+# Apply the filter once at module load time to ensure it's set before any MathRubric usage
+_grader_logger = logging.getLogger("math_verify.grader")
+_grader_logger.addFilter(_TimeoutWarningFilter())
+
+
 class MathRubric(Rubric):
     HARD_TIMEOUT_SECONDS: float = 120.0
     MAX_VERIFY_CHARS: int = 50_000
