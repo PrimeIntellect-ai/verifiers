@@ -37,9 +37,10 @@ class InfoRequest(BaseRequest):
 
 class InfoResponse(BaseResponse):
     num_tasks: int | None = None
-    """Number of tasks in the taskset — the index range the caller samples from. `None` when the
-    taskset is served lazily (a generator `load_tasks`, possibly unbounded): the server has no
-    count, so the caller drives `task_idx` itself (e.g. from `--num-tasks`)."""
+    """Number of tasks in the taskset — the index range the caller samples from. `None` only when
+    the taskset is `UNBOUNDED` (served lazily by index with no count): the caller then drives
+    `task_idx` itself, bounded by `--num-tasks`. A finite taskset (list or finite generator) is
+    materialized and reports a real count."""
     requires_group_scoring: bool = False
     """Whether the taskset defines `@group_reward`s (caller must use `run_group`)."""
 

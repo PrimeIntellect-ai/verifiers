@@ -80,12 +80,12 @@ these off the generic bases to type `self.config`, `trace.task`, and `trace.stat
 The taskset module must export its `Taskset` subclass via `__all__` — the loader walks the
 exported names and finds the single `Taskset` subclass.
 
-**Capability flags.** A taskset has two class vars (both default `False`). `NEEDS_CONTAINER`
-declares it only runs in a container runtime (`docker` / `prime`), so the framework refuses the
-subprocess runtime up front — the taskset-wide counterpart to a task's per-row `image` (see
-[Runtimes](#runtimes)). `UNBOUNDED` declares `load_tasks` may never terminate (see [Loading
-tasks](#loading-tasks)) — a run must then cap it with `-n/--num-tasks`; `--shuffle` is ignored
-(with a warning).
+**Capability flags.** A taskset declares its capabilities with two class vars:
+
+| Var | Default | Description |
+| --- | --- | --- |
+| `NEEDS_CONTAINER` | `False` | The taskset only runs in a container runtime (`docker` / `prime`); the framework refuses the subprocess runtime up front. The taskset-wide counterpart to a task's per-row `image` (see [Runtimes](#runtimes)). |
+| `UNBOUNDED` | `False` | `load_tasks` may never terminate (see [Loading tasks](#loading-tasks)). A run must cap it with `-n/--num-tasks` (refused up front otherwise, rather than hanging); `--shuffle` is ignored with a warning (vary the stream with a config `seed` instead). |
 
 ## The task
 
@@ -166,22 +166,38 @@ from a generator, and an eval draws only as many as it needs. A generator that n
 declares `UNBOUNDED = True`:
 
 ```python
+class SeededConfig(vf.TasksetConfig):
+    seed: int = 0
+    """Vary which tasks the generator yields — the user-controlled, reproducible
+    stand-in for `--shuffle` (which an UNBOUNDED taskset can't use; see below)."""
+
+
 class SeededTaskset(vf.Taskset[SeededTask, SeededConfig]):
     UNBOUNDED = True
 
     def load_tasks(self) -> Iterator[SeededTask]:
-        for i in itertools.count():                  # never terminates
-            yield SeededTask(idx=i, prompt=make_prompt(seed=i))
+        rng = random.Random(self.config.seed)
+        for i in itertools.count():                          # never terminates
+            yield SeededTask(idx=i, prompt=make_prompt(seed=rng.getrandbits(32)))
 ```
 
-`eval -n 50` then builds exactly 50 tasks, not the whole stream (the runner consumes
-`load_tasks` lazily via `select_tasks`). An `UNBOUNDED` taskset must be drawn with `-n/--num-tasks`
-(refused up front rather than hanging); `--shuffle` would have to read the whole stream, so it's
-ignored with a warning. The index-addressed env-server (`--server` / `--num-workers`) serves it too:
-it resolves each `task_idx` by consuming the generator on demand and reports no task count, so the
-caller bounds the run with `--num-tasks`. The `wikispeedia_v1` example environment is `UNBOUNDED`
-(it samples article pairs forever, seeded by its config); the built-in `textarena_v1` is a lazy
-*finite* generator (it caps generation at `num_tasks`).
+`eval -n 50` then builds exactly 50 tasks, not the whole stream (the runner consumes `load_tasks`
+lazily via `select_tasks`). Two rules follow for an `UNBOUNDED` taskset, enforced consistently by
+the `eval` and `validate` entrypoints (in-process and the `--server` env-server path alike):
+
+1. **It must be bounded with `-n/--num-tasks`.** There's no count to enumerate, so an unbounded run
+   is infinite by definition — the entrypoints refuse it up front with a clear error rather than
+   hanging. (Training is the exception: the orchestrator deliberately streams an unbounded train env
+   forever, handing out monotonically increasing `task_idx`.)
+2. **`--shuffle` can't apply.** Shuffling means materializing the whole stream to sample from, which
+   never terminates, so it's ignored with a warning. To vary which tasks a run sees, give the config
+   a `seed` (or similar) field your `load_tasks` reads (above) — a reproducible, user-controlled
+   alternative.
+
+The index-addressed env-server (`--server` / `--num-workers`) serves a generator taskset too: it
+resolves each `task_idx` by consuming the generator on demand and reports no task count, so the
+caller still bounds the run with `--num-tasks`. The built-in `textarena` taskset is a lazy *finite*
+generator (it caps generation at `num_tasks`).
 
 ## Scoring — rewards, metrics, group rewards
 
@@ -540,7 +556,7 @@ uv run eval gsm8k-v1 -n 1 --harness.id rlm   # same taskset, different driver
 Class vars on the harness gate which tasksets it can run, so an incompatible pairing fails fast at
 load instead of mis-running:
 
-| flag | default | gates |
+| Var | Default | Description |
 | --- | --- | --- |
 | `SUPPORTS_MCP` | `True` | exposes the task's MCP tools to the model (set `False` for a harness with no MCP client) |
 | `SUPPORTS_USER_SIM` | `False` | drives a task's user simulator (multi-turn user injection) |

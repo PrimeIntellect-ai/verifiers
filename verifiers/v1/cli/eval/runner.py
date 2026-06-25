@@ -13,14 +13,10 @@ from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import Environment
-from verifiers.v1.taskset import select_tasks
+from verifiers.v1.taskset import SHUFFLE_SEED, select_tasks
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
-
-_SHUFFLE_SEED = (
-    0  # fixed so `--shuffle` samples the same tasks every run (reproducible)
-)
 
 
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
@@ -28,7 +24,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     client = resolve_client(config.client)
     # Draw only the tasks this run needs from `load_tasks` (which may be a lazy/unbounded
     # generator): without `--shuffle`, just the first `--num-tasks` are built.
-    tasks = select_tasks(env.taskset, config.num_tasks, config.shuffle, _SHUFFLE_SEED)
+    tasks = select_tasks(env.taskset, config.num_tasks, config.shuffle)
     ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.
@@ -153,17 +149,23 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         if info.num_tasks is not None:
             idxs = list(range(info.num_tasks))
             if config.shuffle:
-                random.Random(_SHUFFLE_SEED).shuffle(idxs)
+                random.Random(SHUFFLE_SEED).shuffle(idxs)
             if config.num_tasks is not None:
                 idxs = idxs[: config.num_tasks]
         elif config.num_tasks is not None:
-            # The taskset is served lazily (no reported count), so the caller bounds the run:
-            # take the first `--num-tasks` indices (--shuffle has nothing to sample from here).
+            # The taskset is unbounded (no reported count), so the caller bounds the run: take the
+            # first `--num-tasks` indices (--shuffle has nothing to sample from here).
+            if config.shuffle:
+                logger.warning(
+                    "taskset is unbounded (no task count), so --shuffle has nothing to sample "
+                    "from; ignoring it and taking the first %d task(s). Use a config `seed` to "
+                    "vary which tasks the generator yields.",
+                    config.num_tasks,
+                )
             idxs = list(range(config.num_tasks))
         else:
             raise SystemExit(
-                "this taskset is served lazily (no task count); pass -n/--num-tasks to bound "
-                "the eval"
+                "this taskset is unbounded (no task count); pass -n/--num-tasks to bound the eval"
             )
         out = output_path(config)
         if config.resume is not None:

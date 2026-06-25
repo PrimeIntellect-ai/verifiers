@@ -136,7 +136,7 @@ class EnvClient:
         )
 
     async def info(self) -> InfoResponse:
-        """Return the taskset `num_tasks` (None when served lazily) + `requires_group_scoring`."""
+        """Return the taskset `num_tasks` (None when the taskset is unbounded) + `requires_group_scoring`."""
         return await self._request(InfoRequest(), InfoResponse)
 
     async def run_rollout(

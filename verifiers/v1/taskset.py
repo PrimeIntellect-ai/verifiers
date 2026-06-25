@@ -19,7 +19,7 @@ import asyncio
 import itertools
 import logging
 import random
-from collections.abc import Iterable, Iterator, Mapping, Sized
+from collections.abc import Iterable, Iterator, Mapping
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic_config import BaseConfig
@@ -35,6 +35,10 @@ from verifiers.v1.task import TaskT
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
+SHUFFLE_SEED = 0
+"""Fixed seed so `--shuffle` draws the same tasks every run (reproducible). The single source
+for the shuffle seed — `select_tasks` defaults to it, and the env-server's index shuffle uses it."""
 
 
 class TasksetConfig(BaseConfig):
@@ -183,7 +187,7 @@ def select_tasks(
     taskset: Taskset[TaskT, ConfigT, StateT],
     num_tasks: int | None = None,
     shuffle: bool = False,
-    seed: int = 0,
+    seed: int = SHUFFLE_SEED,
 ) -> list[TaskT]:
     """Materialize the tasks a run will use, pulling only as many from `load_tasks` as it
     needs — so a lazy (generator) taskset never builds tasks the run won't touch.
@@ -222,23 +226,30 @@ class IndexedTasks(Generic[TaskT]):
     """Index-addressed access to a `load_tasks()` result, for a caller that resolves tasks by
     arbitrary index rather than consuming a prefix (the env-server, addressed by `task_idx`).
 
-    A list (or other `Sized`) is materialized and its `count` is known; any other iterable is
-    consumed lazily and cached on demand, with `count = None` (unknown / possibly unbounded) — so
-    a generator taskset is served by index without ever being materialized. `__getitem__` is
+    A finite taskset (`unbounded=False` — a list, or a finite generator) is materialized once and
+    its `count` is known, so the caller can enumerate / shuffle / epoch it. An `unbounded` taskset
+    is consumed lazily and cached on demand, with `count = None` — served by index without ever
+    being materialized. Either way the taskset must yield at least one task. `__getitem__` is
     synchronous and never awaits, so concurrent rollouts on one event loop can't interleave a
-    partial cache extension (no lock needed). The cache grows to the highest index accessed —
-    bounded for a finite taskset; TODO: evict for very long unbounded runs (needs a contract on
-    access order)."""
+    partial cache extension (no lock needed). For an unbounded taskset the cache grows to the
+    highest index accessed; TODO: evict for very long unbounded runs (needs a contract on access
+    order)."""
 
-    def __init__(self, tasks: Iterable[TaskT]) -> None:
-        if isinstance(tasks, Sized):
-            self._tasks: list[TaskT] = list(tasks)
-            self._iter: Iterator[TaskT] | None = None
-            self.count: int | None = len(self._tasks)
+    def __init__(self, tasks: Iterable[TaskT], unbounded: bool = False) -> None:
+        if unbounded:
+            self._tasks: list[TaskT] = []
+            self._iter: Iterator[TaskT] | None = iter(tasks)
+            self.count: int | None = None
+            try:
+                self._tasks.append(next(self._iter))  # assert non-empty; cache the first task
+            except StopIteration:
+                raise ValueError("taskset load_tasks() yielded no tasks") from None
         else:
-            self._tasks = []
-            self._iter = iter(tasks)
-            self.count = None
+            self._tasks = list(tasks)
+            self._iter = None
+            if not self._tasks:
+                raise ValueError("taskset load_tasks() returned no tasks")
+            self.count = len(self._tasks)
 
     def __getitem__(self, idx: int) -> TaskT:
         if self._iter is not None:

@@ -56,10 +56,12 @@ class EnvServer:
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
         # The server is purely index-addressed (`run_rollout`/`run_group` by `task_idx`), so it
-        # resolves tasks by index: a list-backed taskset is materialized + counted, a generator
-        # is consumed lazily with no count (so an unbounded taskset is served without ever being
-        # materialized). `num_tasks` is None in the lazy case (reported via `info`).
-        self._index: IndexedTasks = IndexedTasks(self.env.taskset.load_tasks())
+        # resolves tasks by index: a finite taskset is materialized + counted, an unbounded one is
+        # consumed lazily by index with no count (served without ever being materialized).
+        # `num_tasks` is None only when the taskset is UNBOUNDED (reported via `info`).
+        self._index: IndexedTasks = IndexedTasks(
+            self.env.taskset.load_tasks(), unbounded=self.env.taskset.UNBOUNDED
+        )
         self.num_tasks: int | None = self._index.count
         self.requires_group_scoring = bool(
             discover_decorated(self.env.taskset, "group_reward")
@@ -121,13 +123,10 @@ class EnvServer:
         interception pool), entered for the server's lifetime so they're reused across
         requests; episodes built inside it inherit them (see `Environment.serving`). The
         legacy v0 bridge overrides this (it runs its own rollouts, with no v1 serving)."""
-        # Shared tool servers are task-agnostic; build them from a representative task (the
-        # first, resolved lazily). An empty taskset has none.
-        try:
-            sample = [self._index[0]]
-        except IndexError:
-            sample = []
-        return self.env.serving(sample)
+        # Shared tool servers are task-agnostic, but `Environment.serving` builds them from a
+        # task, so hand it a representative one — the first (`IndexedTasks` guarantees the taskset
+        # is non-empty).
+        return self.env.serving([self._index[0]])
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
