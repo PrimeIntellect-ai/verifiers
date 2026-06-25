@@ -3,8 +3,8 @@
 Most tasksets that can't grade deterministically reach for the same shape: an OpenAI-compatible
 endpoint, a prompt built from `(question, answer, response)`, one chat call, and a verdict parsed
 out of the reply. `Judge` centralizes that — the client construction (incl. the Prime key/team
-fallback), the call, usage/cost capture, and recording each call to `trace.info["judge"]` — and
-leaves the two things that actually differ as hooks: `build_messages` (prompt setup) and `parse`
+fallback), the call, and usage/cost capture — and leaves the two things that actually differ as
+hooks: `build_messages` (prompt setup) and `parse`
 (verdict parsing). Set `schema` to use OpenAI structured outputs (where the provider supports it),
 in which case `JudgeResponse.parsed` is the validated pydantic object.
 
