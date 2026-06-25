@@ -245,13 +245,15 @@ def _breakdown(done: list[Trace]) -> Table | None:
             details.append(f"{format_count(total_cached)} cached")
         if have_reasoning:
             details.append(f"{format_count(total_reasoning)} reasoning")
-        if have_judge:
-            details.append(
-                f"+{format_count(total_judge_in)}/{format_count(total_judge_out)} judge"
-            )
         if details:
             tokens += f" ({', '.join(details)})"
         usage = [tokens]
+        # Judge tokens are additional to the agent's headline (the parens above are subsets of it),
+        # so they read `+in/out judge`; the judge's cost, by contrast, is part of the total below.
+        if have_judge:
+            usage.append(
+                f"+{format_count(total_judge_in)}/{format_count(total_judge_out)} judge"
+            )
         if have_cost:
             cost = f"total {format_cost_usd(total_cost)}"
             if have_judge and total_judge_cost:
