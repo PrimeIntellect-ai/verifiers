@@ -391,6 +391,15 @@ class ErrorData(TypedDict):
     error_chain_str: str
 
 
+class FailureInfo(TypedDict):
+    reason: str
+    origin: str
+    error_type: str | None
+    root_error_type: str | None
+    message: str
+    logs: dict[str, str]
+
+
 class RolloutOutput(dict):
     """Serialized output from a rollout (mirrors RolloutInput).
 
@@ -400,8 +409,8 @@ class RolloutOutput(dict):
 
     Required fields: example_id, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
-    Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
-                     token_usage
+    Optional fields: answer, info, error, failure, stop_condition, trajectory,
+                     tool_defs, token_usage
     Additional fields: arbitrary serializable state_columns
     """
 
@@ -418,6 +427,7 @@ class RolloutOutput(dict):
     answer: str
     info: Info
     error: ErrorData | None
+    failure: FailureInfo | None
     stop_condition: str | None
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]
