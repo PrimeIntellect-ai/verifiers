@@ -9,9 +9,11 @@ import contextlib
 import logging
 import shlex
 import subprocess
+import sys
 from pathlib import PurePosixPath
 from typing import Literal
 
+from pydantic import Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
@@ -24,6 +26,8 @@ class DockerConfig(BaseConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
     workdir: str = "/app"
+    mounts: list["DockerMount"] = Field(default_factory=list)
+    """Bind mounts to attach to the container before the harness runs."""
     # TaskResources in Modal's units (also settable per-task via Task.resources).
     cpu: float | None = None
     """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
@@ -35,6 +39,32 @@ class DockerConfig(BaseConfig):
     disk: float | None = None
     """Advisory disk request in GB. Docker has no portable per-container size limit, so
     this is accepted (so a task can declare it without a warning) but not enforced."""
+    host_address: str | None = None
+    """Host address visible inside the container. Defaults to Docker Desktop's host alias
+    on macOS and loopback elsewhere."""
+
+
+class DockerMount(BaseConfig):
+    source: str
+    target: str
+    read_only: bool = True
+
+
+def mount_args(mounts: list[DockerMount]) -> list[str]:
+    args = []
+    for mount in mounts:
+        value = f"type=bind,source={mount.source},target={mount.target}"
+        if mount.read_only:
+            value = f"{value},readonly"
+        args.extend(["--mount", value])
+    return args
+
+
+def docker_host_endpoint_url(config: DockerConfig, port: int) -> str:
+    host = config.host_address
+    if host is None:
+        host = "host.docker.internal" if sys.platform == "darwin" else "127.0.0.1"
+    return f"http://{host}:{port}"
 
 
 async def docker(*args: str) -> ProgramResult:
@@ -67,6 +97,9 @@ class DockerRuntime(Runtime):
     def descriptor(self) -> str | None:
         return self._container_id
 
+    def host_endpoint_url(self, port: int) -> str | None:
+        return docker_host_endpoint_url(self.config, port)
+
     async def start(self) -> None:
         try:
             version = await docker("version", "--format", "{{.Server.Version}}")
@@ -95,12 +128,14 @@ class DockerRuntime(Runtime):
         _, gpu_count = parse_gpu(self.config.gpu)
         if gpu_count:
             limits += ["--gpus", str(gpu_count)]
+        mounts = mount_args(self.config.mounts)
         run = await docker(
             "run",
             "--detach",
             "--network",
             "host",
             *limits,
+            *mounts,
             "--workdir",
             self.config.workdir,
             "--name",

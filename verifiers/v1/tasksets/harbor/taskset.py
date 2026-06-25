@@ -1,37 +1,66 @@
 """harbor: run a Harbor (Terminal-Bench) dataset.
 
 `dataset` is a Harbor Hub package id (e.g. "org/name" or "org/name@ref"),
-downloaded directly from the registry and cached on first use. Each task dir
-ships task.toml + instruction.md (+ tests/, solution/, environment/). Defaults
-to the registry `harbor/hello-world` dataset.
+downloaded directly from the registry and cached on first use, or a local path to
+Harbor task directories. Each task dir ships task.toml plus either a single root
+instruction/tests pair or a Harbor multi-step `steps/` layout. Defaults to the
+registry `harbor/hello-world` dataset.
 
-The harness runs in a container and edits /app; then the task's verifier
-(tests/test.sh) runs in the SAME container and the reward it writes to
-/logs/verifier/reward.txt becomes the score. The verification lives on the
-taskset (the `solved` reward), so a harbor task runs under ANY harness.
+The harness runs in a container and edits the task's declared workdir; then the task's
+verifier (tests/test.sh, or each step's tests/test.sh) runs in the SAME container and the
+reward it writes to /logs/verifier/reward.txt or reward.json becomes the score.
+The verification lives on the taskset, so a harbor task runs under any harness.
 
 A task's declared [environment].docker_image becomes a first-class `Task.image`
 the Environment injects into the runtime (docker/prime both pull it). A task whose
-environment is only a `Dockerfile` has no pullable image — we don't build Dockerfiles
-(a locally-built image isn't pullable by a remote sandbox) — so it's rejected unless
-`ignore_dockerfile`, which runs it on the harness runtime's image instead. A task with
-no environment at all also runs on that image, unless `require_image`.
+environment is only a `Dockerfile` uses the harness runtime image by default.
+`dockerfile_policy` can switch that behavior to a deterministic local Docker build or a
+hard error. A task with no environment at all runs on the runtime image, unless
+`require_image`.
 """
 
+import asyncio
+import base64
+import hashlib
 import io
 import json
+import logging
 import os
+import re
+import shlex
+import shutil
+import subprocess
 import tarfile
 import tempfile
-import tomllib
 from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
 from pathlib import Path
+from pathlib import PurePosixPath
+from typing import Literal
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
+from verifiers.harbor import (
+    HarborDockerfileEnvironment,
+    HarborEnvironment,
+    HarborArtifact,
+    HarborImageEnvironment,
+    HarborStep,
+    HarborStepResult,
+    RewardStrategy,
+    harbor_step_summary,
+    harbor_task_prompt,
+    load_harbor_config,
+    load_harbor_environment,
+    load_harbor_steps,
+    make_harbor_tar,
+    parse_harbor_rewards,
+    run_harbor_steps,
+    scaled_timeout,
+    sum_timeouts,
+    valid_harbor_task_dir,
+)
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
@@ -43,12 +72,18 @@ from verifiers.v1.types import StrictBaseModel
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_SUPABASE_URL = "https://ofhuhcpkvzjlejydnvyd.supabase.co"
 HARBOR_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_Z-vuQbpvpG-PStjbh4yE0Q_e-d3MTIH"
+TESTS_TAR = "/tmp/harbor_tests.tgz"
+ARTIFACT_TAR = "/tmp/harbor_artifact.tgz"
+SETUP_TAR = "/tmp/harbor_setup.tgz"
+logger = logging.getLogger("verifiers.v1.tasksets.harbor")
+
+DockerfilePolicy = Literal["build", "ignore", "error"]
 
 
 class HarborConfig(TasksetConfig):
     dataset: str = "harbor/hello-world"
     """A Harbor Hub package id ("org/name" or "org/name@ref"), where ref is a
-    tag, integer revision, or sha256 digest. Downloaded directly and cached."""
+    tag, integer revision, or sha256 digest; or a local directory of Harbor task dirs."""
     tasks: list[str] | None = None
     """Optional subset of task names to load (None = all)."""
     timeout_multiplier: float = Field(1.0, gt=0)
@@ -57,14 +92,32 @@ class HarborConfig(TasksetConfig):
     """Scale each task's CPU, memory, and disk requests. GPU requests are unchanged."""
     require_image: bool = False
     """For a task with NO declared environment at all (no docker_image, no Dockerfile),
-    whether to reject it (True) or run it on the runtime's default image (False). A task
-    whose environment is a `Dockerfile` is rejected too (building Dockerfiles isn't
-    supported), unless `ignore_dockerfile`."""
+    whether to reject it (True) or run it on the runtime's default image (False)."""
+    dockerfile_policy: DockerfilePolicy = "ignore"
+    """How to handle a task whose environment is declared by `environment/Dockerfile` but not
+    `[environment].docker_image`: ignore the Dockerfile and use the runtime image (default),
+    build a local deterministic Docker image, or raise an error."""
     ignore_dockerfile: bool = False
-    """Run a task whose environment is only a `Dockerfile` on the harness runtime's image
-    instead of rejecting it. The Dockerfile is NOT built, so the task scores against the
-    harness image rather than its declared environment — only correct when that image already
-    has what the task needs (e.g. you've pointed the runtime at the right image)."""
+    """Legacy alias for `dockerfile_policy = "ignore"`. Explicit `dockerfile_policy` wins when
+    both are set."""
+    workspace_overlays: list["HarborWorkspaceOverlay"] = Field(default_factory=list)
+    """Host directories to extract into the runtime before the harness runs. Intended for
+    verifier-only artifact replay; each directory's contents land under `target`."""
+    run_solutions: bool = False
+    """Run checked-in Harbor `solution/solve.sh` scripts before the harness. Intended for
+    oracle-style verifier-only runs."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_ignore_dockerfile(cls, data):
+        if (
+            isinstance(data, dict)
+            and data.get("ignore_dockerfile")
+            and "dockerfile_policy" not in data
+        ):
+            data = dict(data)
+            data["dockerfile_policy"] = "ignore"
+        return data
 
 
 class Author(StrictBaseModel):
@@ -72,26 +125,37 @@ class Author(StrictBaseModel):
     email: str | None = None
 
 
-class HarborTask(Task):
-    """A Harbor task. The base fields carry instruction.md (`prompt`), the
-    resolved container `image`, the `harness_timeout`/`scoring_timeout`/`resources`
-    (from task.toml's [harness]/[verifier]/[environment]), and [task].name/description;
-    the rest mirror [metadata]."""
+class HarborWorkspaceOverlay(StrictBaseModel):
+    source: str
+    target: str = "/"
 
-    keywords: list[str] = []
-    authors: list[Author] = []
+
+class HarborTask(Task):
+    """A Harbor task. The base fields carry instruction text (`prompt`), the
+    resolved container `image`, total task timeouts/resources, and [task]
+    name/description. `steps` is populated for Harbor multi-step tasks."""
+
+    keywords: list[str] = Field(default_factory=list)
+    authors: list[Author] = Field(default_factory=list)
     difficulty: str | None = None
     category: str | None = None
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
     task_dir: str = Field(exclude=True)
     """Host path to the task dir; used to stage tests/ to verify, not serialized."""
+    environment: HarborEnvironment = Field(exclude=True)
+    """Parsed Harbor environment spec, kept for diagnostics and policy-specific tests."""
+    multi_step_reward_strategy: RewardStrategy = "mean"
+    steps: list[HarborStep] = Field(default_factory=list)
 
 
 def dataset_dir(dataset: str) -> Path:
-    """Download a Harbor Hub task or dataset package, cached on first use.
+    """Resolve a local Harbor dataset path or download a Harbor Hub package.
 
     Harbor refs are tags, integer revisions, or ``sha256:`` digests.
     """
+    local = Path(dataset).expanduser()
+    if local.is_dir():
+        return local
     out = CACHE / dataset.replace("/", "_").replace("@", "_")
     if out.is_dir():
         return out
@@ -215,32 +279,90 @@ def dataset_dir(dataset: str) -> Path:
     return out
 
 
-def resolve_image(
-    task_dir: Path,
-    config: dict,
-    require_image: bool,
-    ignore_dockerfile: bool = False,
-) -> str | None:
-    """The task's declared registry image (usable by docker or prime). A pullable
-    `[environment].docker_image` is used directly. A task whose environment is a
-    `Dockerfile` is rejected — we don't build Dockerfiles, and running it on the default
-    image would silently score against the wrong environment (e.g. SWE-bench's `/testbed`
-    repo would be missing) — unless `ignore_dockerfile`, which returns None to run it on the
-    harness runtime's image. A task with no environment at all runs on that image too, unless
-    `require_image`. None means "use the runtime's own image"."""
-    declared = config.get("environment", {}).get("docker_image")
-    if declared:
-        return declared
-    if (task_dir / "environment" / "Dockerfile").exists():
-        if ignore_dockerfile:
-            return None
-        raise ValueError(
-            f"{task_dir.name}: environment is a Dockerfile, not a pullable "
-            "[environment].docker_image — building Dockerfiles isn't supported, so this "
-            "task can't run (it would otherwise score against the wrong default image). "
-            "Pass --taskset.ignore-dockerfile to run it on the harness runtime's image instead."
+def dockerfile_context_digest(context: Path) -> str:
+    """Content hash for a Docker build context, independent of mtimes."""
+    digest = hashlib.sha256()
+    for path in sorted(context.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(context).as_posix()
+        digest.update(relative.encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def docker_tag_component(value: str) -> str:
+    component = re.sub(r"[^a-z0-9_.-]+", "-", value.lower()).strip(".-")
+    return component or "task"
+
+
+def docker_image_exists(tag: str) -> bool:
+    result = subprocess.run(
+        ["docker", "image", "inspect", tag],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def build_dockerfile_image(
+    environment: HarborDockerfileEnvironment, task_name: str
+) -> str:
+    """Build a Harbor `environment/Dockerfile` into a deterministic local image tag."""
+    context = environment.context
+    dockerfile = context / "Dockerfile"
+    if not dockerfile.is_file():
+        raise FileNotFoundError(dockerfile)
+    digest = dockerfile_context_digest(context)[:16]
+    tag = f"vf-harbor-{docker_tag_component(task_name)}:{digest}"
+    docker_bin = shutil.which("docker")
+    if docker_bin is None:
+        raise RuntimeError(
+            f"{task_name}: Dockerfile environment requires the `docker` CLI to build. "
+            "Install Docker, publish the image and set [environment].docker_image, or pass "
+            "--taskset.dockerfile-policy ignore to run on the harness runtime image."
         )
-    if require_image:
+    if docker_image_exists(tag):
+        logger.info("harbor: using cached Dockerfile image %s", tag)
+        return tag
+    logger.info("harbor: building Dockerfile image %s from %s", tag, context)
+    try:
+        result = subprocess.run(
+            [docker_bin, "build", "-t", tag, str(context)],
+            capture_output=True,
+            text=True,
+            timeout=environment.build_timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        timeout = environment.build_timeout
+        detail = f" after {timeout:.0f}s" if timeout is not None else ""
+        raise RuntimeError(f"{task_name}: Dockerfile build timed out{detail}") from e
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()[-2000:]
+        raise RuntimeError(f"{task_name}: Dockerfile build failed: {detail}")
+    return tag
+
+
+def resolve_image(
+    task_dir: Path, environment: HarborEnvironment, harbor_config: HarborConfig
+) -> str | None:
+    """Resolve the task image within Harbor loading, keeping Dockerfile policy local to Harbor."""
+    if isinstance(environment, HarborImageEnvironment):
+        return environment.image
+    if isinstance(environment, HarborDockerfileEnvironment):
+        if harbor_config.dockerfile_policy == "ignore":
+            return None
+        if harbor_config.dockerfile_policy == "error":
+            raise ValueError(
+                f"{task_dir.name}: environment is a Dockerfile, not a pullable "
+                "[environment].docker_image. Set --taskset.dockerfile-policy build to build "
+                "it locally, publish an image and set [environment].docker_image, or pass "
+                "--taskset.dockerfile-policy ignore to run on the harness runtime image."
+            )
+        return build_dockerfile_image(environment, task_dir.name)
+    if harbor_config.require_image:
         raise ValueError(
             f"{task_dir.name}: no [environment].docker_image and require_image=True"
         )
@@ -257,35 +379,70 @@ def parse_resources(env: dict, multiplier: float = 1.0) -> TaskResources:
     )
 
 
+def artifact_destination(artifact: HarborArtifact) -> str:
+    """Return the Harbor-compatible relative destination for an artifact entry."""
+    if artifact.destination is not None:
+        return artifact.destination
+    parts = [
+        part
+        for part in PurePosixPath(artifact.source).parts
+        if part not in ("", "/", "..")
+    ]
+    return PurePosixPath(*parts).as_posix() if parts else "."
+
+
+def tar_exclude_args(patterns: list[str]) -> str:
+    return " ".join(f"--exclude={shlex.quote(pattern)}" for pattern in patterns)
+
+
+def tar_file_records(data: bytes) -> list[dict[str, str]]:
+    records = []
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        for member in sorted(tar.getmembers(), key=lambda item: item.name):
+            if not member.isfile():
+                continue
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                continue
+            path = member.name.removeprefix("./")
+            records.append(
+                {
+                    "path": path,
+                    "content": base64.b64encode(extracted.read()).decode("ascii"),
+                }
+            )
+    return records
+
+
 def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborTask:
-    """Read a harbor task dir (task.toml + instruction.md) into a typed task,
-    handling both the [task].authors and legacy [metadata].author_name layouts."""
-    config = tomllib.loads((task_dir / "task.toml").read_text())
+    """Read a Harbor task dir into a typed task, supporting both single-step
+    (`instruction.md` + `tests/`) and multi-step (`[[steps]]` + `steps/<name>/`) layouts."""
+    config = load_harbor_config(task_dir)
     task, meta = config.get("task", {}), config.get("metadata", {})
     authors = [Author(**a) for a in task.get("authors", [])]
     if not authors and meta.get("author_name"):
         authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
-    harness_timeout = config.get("agent", {}).get("timeout_sec")
-    scoring_timeout = config.get("verifier", {}).get("timeout_sec")
+    steps = load_harbor_steps(task_dir, config, harbor_config.timeout_multiplier)
+    environment = load_harbor_environment(
+        task_dir, config, harbor_config.timeout_multiplier
+    )
+    harness_timeout = scaled_timeout(
+        config.get("agent", {}).get("timeout_sec"), harbor_config.timeout_multiplier
+    )
+    scoring_timeout = scaled_timeout(
+        config.get("verifier", {}).get("timeout_sec"), harbor_config.timeout_multiplier
+    )
+    if steps:
+        harness_timeout = sum_timeouts(step.harness_timeout for step in steps)
+        scoring_timeout = sum_timeouts(step.scoring_timeout for step in steps)
     return HarborTask(
         idx=idx,
         name=task.get("name") or task_dir.name,
         description=task.get("description"),
-        prompt=(task_dir / "instruction.md").read_text().strip(),
-        image=resolve_image(
-            task_dir,
-            config,
-            harbor_config.require_image,
-            harbor_config.ignore_dockerfile,
-        ),
-        timeout=TaskTimeout(
-            harness=harness_timeout * harbor_config.timeout_multiplier
-            if harness_timeout is not None
-            else None,
-            scoring=scoring_timeout * harbor_config.timeout_multiplier
-            if scoring_timeout is not None
-            else None,
-        ),
+        prompt=harbor_task_prompt(task_dir, steps),
+        image=resolve_image(task_dir, environment, harbor_config),
+        workdir=config.get("environment", {}).get("workdir"),
+        timeout=TaskTimeout(harness=harness_timeout, scoring=scoring_timeout),
         resources=parse_resources(
             config.get("environment", {}), harbor_config.resource_multiplier
         ),
@@ -295,19 +452,10 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
         category=meta.get("category"),
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
+        environment=environment,
+        multi_step_reward_strategy=config.get("multi_step_reward_strategy") or "mean",
+        steps=steps,
     )
-
-
-# Harbor test directories are immutable after download, so repeated rollouts can reuse
-# the latest archive. One entry bounds retained memory to one task.
-@lru_cache(maxsize=1)
-def make_tar(directory: Path) -> bytes:
-    """Tar a directory's contents (flat) into a gzipped tarball."""
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        for item in sorted(directory.iterdir()):
-            tar.add(item, arcname=item.name)
-    return buffer.getvalue()
 
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
@@ -316,7 +464,7 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         task_dirs = [
             toml_path.parent
             for toml_path in sorted(root.rglob("task.toml"))
-            if (toml_path.parent / "instruction.md").is_file()
+            if valid_harbor_task_dir(toml_path.parent)
             and (
                 self.config.tasks is None or toml_path.parent.name in self.config.tasks
             )
@@ -328,23 +476,287 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
             for idx, task_dir in enumerate(task_dirs)
         ]
 
-    @reward(weight=1.0)
-    async def solved(self, task: HarborTask, trace: Trace, runtime: Runtime) -> float:
-        # Stage the task's tests into the live runtime, run its harbor verifier, and
-        # read back the reward it writes — runtime-opaque (write/run/read hide whether
-        # that's the host fs or across a container boundary), so it scores under any harness.
-        await runtime.write("/tmp/tests.tgz", make_tar(Path(task.task_dir) / "tests"))
+    async def setup(self, task: HarborTask, runtime: Runtime) -> None:
+        await self.materialize_workdirs(task, runtime)
+        for overlay in self.config.workspace_overlays:
+            await self.extract_workspace_overlay(runtime, overlay)
+        if self.config.run_solutions:
+            await self.run_task_solutions(task, runtime)
+
+    async def materialize_workdirs(self, task: HarborTask, runtime: Runtime) -> None:
+        workdirs = [Path(task.task_dir) / "workdir"]
+        workdirs.extend(step.task_dir / "workdir" for step in task.steps)
+        for workdir in workdirs:
+            if workdir.is_dir():
+                await self.extract_workdir(runtime, workdir, task.workdir or "/")
+
+    async def extract_workdir(
+        self, runtime: Runtime, source: Path, target: str
+    ) -> None:
+        target_path = target.strip("/")
+        await runtime.write(SETUP_TAR, make_harbor_tar([(source, target_path)]))
+        target_arg = shlex.quote("/" if not target_path else f"/{target_path}")
+        result = await runtime.run(
+            [
+                "sh",
+                "-c",
+                f"mkdir -p {target_arg} && tar -xzf {SETUP_TAR} -C /",
+            ],
+            {},
+        )
+        if result.exit_code != 0:
+            raise SandboxError(f"extract workdir {source}: {result.stderr.strip()}")
+        setup = source / "setup.sh"
+        if setup.is_file():
+            result = await runtime.run(
+                ["sh", "-c", f"cd {target_arg} && bash setup.sh"],
+                {},
+            )
+            if result.exit_code != 0:
+                output = (result.stderr or result.stdout).strip()
+                raise SandboxError(f"workdir setup failed: {output}")
+
+    async def extract_workspace_overlay(
+        self, runtime: Runtime, overlay: HarborWorkspaceOverlay
+    ) -> None:
+        source = Path(overlay.source).expanduser().resolve()
+        if not source.is_dir():
+            raise FileNotFoundError(
+                f"workspace overlay source is not a directory: {source}"
+            )
+        target = overlay.target.strip("/")
+        await runtime.write(SETUP_TAR, make_harbor_tar([(source, target)]))
+        target_arg = shlex.quote("/" if not target else f"/{target}")
+        result = await runtime.run(
+            [
+                "sh",
+                "-c",
+                f"mkdir -p {target_arg} && tar -xzf {SETUP_TAR} -C /",
+            ],
+            {},
+        )
+        if result.exit_code != 0:
+            raise SandboxError(
+                f"extract workspace overlay {source}: {result.stderr.strip()}"
+            )
+
+    async def run_task_solutions(self, task: HarborTask, runtime: Runtime) -> None:
+        if task.steps:
+            for step in task.steps:
+                await self.run_solution(
+                    task,
+                    runtime,
+                    solution_dir=step.task_dir / "solution",
+                    timeout=step.harness_timeout,
+                )
+            return
+        await self.run_solution(
+            task,
+            runtime,
+            solution_dir=Path(task.task_dir) / "solution",
+            timeout=task.timeout.harness,
+        )
+
+    async def run_solution(
+        self,
+        task: HarborTask,
+        runtime: Runtime,
+        *,
+        solution_dir: Path,
+        timeout: float | None,
+    ) -> None:
+        solve = solution_dir / "solve.sh"
+        if not solve.is_file():
+            raise FileNotFoundError(f"missing Harbor solution entrypoint: {solve}")
+        await runtime.write(SETUP_TAR, make_harbor_tar([(solution_dir, "oracle")]))
         await runtime.run(
             [
                 "sh",
                 "-c",
-                "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests",
+                f"rm -rf /oracle && mkdir -p /oracle && tar -xzf {SETUP_TAR} -C /",
             ],
             {},
         )
-        await runtime.run(["sh", "-c", "cd /tests && bash test.sh"], {})
+        workdir = shlex.quote(task.workdir or "/")
+        command = "bash /oracle/solve.sh"
+        if timeout is not None:
+            command = f"timeout {shlex.quote(f'{timeout}s')} {command}"
+        result = await runtime.run(["sh", "-c", f"cd {workdir} && {command}"], {})
+        if result.exit_code != 0:
+            output = (result.stderr or result.stdout).strip()
+            raise SandboxError(f"Harbor solution failed: {output}")
+
+    async def run_harness(
+        self,
+        task: HarborTask,
+        trace: Trace,
+        runtime: Runtime,
+        harness,
+        ctx,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+    ) -> None:
+        if (
+            not task.steps
+            or self.config.run_solutions
+            or self.config.workspace_overlays
+        ):
+            await harness.run(ctx, trace, runtime, endpoint, secret, mcp_urls)
+            return
+
+        original_task = trace.task
         try:
-            reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
-            return float(reward or 0)
-        except (SandboxError, OSError, ValueError):
-            return 0.0
+            for index, step in enumerate(task.steps):
+                logger.info(
+                    "harbor step harness start: task=%s step=%s index=%d/%d timeout=%s",
+                    task.name or Path(task.task_dir).name,
+                    step.name,
+                    index + 1,
+                    len(task.steps),
+                    step.harness_timeout,
+                )
+                trace.task = task.model_copy(
+                    update={
+                        "name": f"{task.name or Path(task.task_dir).name}/{step.name}",
+                        "prompt": step.prompt,
+                        "timeout": TaskTimeout(
+                            harness=step.harness_timeout,
+                            scoring=step.scoring_timeout,
+                        ),
+                        "steps": [],
+                    }
+                )
+                await asyncio.wait_for(
+                    harness.run(ctx, trace, runtime, endpoint, secret, mcp_urls),
+                    step.harness_timeout,
+                )
+                logger.info(
+                    "harbor step harness end: task=%s step=%s index=%d/%d stop=%s",
+                    task.name or Path(task.task_dir).name,
+                    step.name,
+                    index + 1,
+                    len(task.steps),
+                    trace.stop_condition,
+                )
+                if index < len(task.steps) - 1:
+                    if trace.stop_condition != "agent_completed":
+                        return
+                    trace.stop_condition = None
+                    trace.is_completed = False
+        finally:
+            trace.task = original_task
+
+    async def finalize(self, task: HarborTask, trace: Trace, runtime: Runtime) -> None:
+        records = []
+        for step in task.steps:
+            for artifact in step.artifacts:
+                files = await self.collect_artifact_files(runtime, artifact)
+                records.append(
+                    {
+                        "step": step.name,
+                        "source": artifact.source,
+                        "destination": artifact_destination(artifact),
+                        "files": files,
+                    }
+                )
+        if records:
+            trace.info["harbor_step_artifacts"] = records
+
+    async def collect_artifact_files(
+        self, runtime: Runtime, artifact: HarborArtifact
+    ) -> list[dict[str, str]]:
+        source = PurePosixPath(artifact.source)
+        if source.name in ("", ".", ".."):
+            raise ValueError(f"Artifact source must name a file or directory: {source}")
+        excludes = tar_exclude_args(artifact.exclude)
+        archive = shlex.quote(ARTIFACT_TAR)
+        source_arg = shlex.quote(artifact.source)
+        parent_arg = shlex.quote(source.parent.as_posix())
+        name_arg = shlex.quote(source.name)
+        command = (
+            f"rm -f {archive}; "
+            f"if [ -d {source_arg} ]; then "
+            f"tar {excludes} -czf {archive} -C {source_arg} .; "
+            f"elif [ -f {source_arg} ]; then "
+            f"tar {excludes} -czf {archive} -C {parent_arg} {name_arg}; "
+            "else "
+            f"tar -czf {archive} -T /dev/null; "
+            "fi"
+        )
+        result = await runtime.run(["sh", "-c", command], {})
+        if result.exit_code != 0:
+            raise SandboxError(
+                f"collect artifact {artifact.source!r}: {result.stderr.strip()}"
+            )
+        return tar_file_records(await runtime.read(ARTIFACT_TAR))
+
+    def record_step_results(
+        self, trace: Trace, task: HarborTask, results: list[HarborStepResult]
+    ) -> None:
+        steps, aggregate = harbor_step_summary(results, task.multi_step_reward_strategy)
+        trace.info["harbor_steps"] = steps
+        trace.info["harbor_multi_step_reward"] = aggregate
+
+    async def run_verifier(
+        self,
+        runtime: Runtime,
+        tests_dir: Path,
+        solution_dir: Path,
+        *,
+        shared_tests_dir: Path | None = None,
+        verifier_env: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, float]:
+        directories = []
+        if shared_tests_dir is not None:
+            directories.append((shared_tests_dir, "tests"))
+        directories.extend([(tests_dir, "tests"), (solution_dir, "oracle")])
+        await runtime.write(TESTS_TAR, make_harbor_tar(directories))
+        await runtime.run(
+            [
+                "sh",
+                "-c",
+                "rm -rf /tests /logs/verifier; "
+                f"mkdir -p /tests /oracle /logs/verifier && tar -xzf {TESTS_TAR} -C /",
+            ],
+            {},
+        )
+        command = "cd /tests && bash test.sh"
+        if timeout is not None:
+            command = f"cd /tests && timeout {shlex.quote(f'{timeout}s')} bash test.sh"
+        await runtime.run(["sh", "-c", command], verifier_env or {})
+        return parse_harbor_rewards(await self.read_reward(runtime))
+
+    async def read_reward(self, runtime: Runtime) -> str:
+        for path in ("/logs/verifier/reward.txt", "/logs/verifier/reward.json"):
+            try:
+                return (await runtime.read(path)).decode().strip()
+            except (SandboxError, OSError, RuntimeError, FileNotFoundError):
+                continue
+        return ""
+
+    @reward(weight=1.0)
+    async def solved(self, task: HarborTask, trace: Trace, runtime: Runtime) -> float:
+        if task.steps:
+
+            async def run_step(step: HarborStep) -> dict[str, float]:
+                return await self.run_verifier(
+                    runtime,
+                    tests_dir=step.task_dir / "tests",
+                    solution_dir=step.task_dir / "solution",
+                    shared_tests_dir=Path(task.task_dir) / "tests",
+                    verifier_env=step.verifier_env,
+                    timeout=step.scoring_timeout,
+                )
+
+            results = await run_harbor_steps(task.steps, run_step)
+            self.record_step_results(trace, task, results)
+            rewards = trace.info["harbor_multi_step_reward"]
+            return float(rewards.get("reward", 0.0))
+        rewards = await self.run_verifier(
+            runtime,
+            tests_dir=Path(task.task_dir) / "tests",
+            solution_dir=Path(task.task_dir) / "solution",
+        )
+        return float(rewards.get("reward", 0.0))

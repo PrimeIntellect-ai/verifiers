@@ -86,6 +86,25 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         a SWE row checking out its base commit). Errors propagate and fail the rollout."""
         return None
 
+    async def run_harness(
+        self,
+        task: TaskT,
+        trace: Trace,
+        runtime: Runtime,
+        harness,
+        ctx,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+    ) -> None:
+        """Drive the harness for this task.
+
+        Most tasksets run one harness trajectory. Tasksets with internal execution
+        units, such as Harbor multi-step tasks, can override this while preserving
+        the same live runtime and scoring lifecycle.
+        """
+        await harness.run(ctx, trace, runtime, endpoint, secret, mcp_urls)
+
     async def finalize(self, task: TaskT, trace: Trace, runtime: Runtime) -> None:
         """Post-process the live runtime after the harness finishes, before scoring. No-op
         by default; override to do per-rollout work the rewards depend on — apply/commit the

@@ -19,7 +19,12 @@ from verifiers.v1.runtimes.base import (
     reachable_url,
     register,
 )
-from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime
+from verifiers.v1.runtimes.docker import (
+    DockerConfig,
+    DockerMount,
+    DockerRuntime,
+    docker_host_endpoint_url,
+)
 from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime
 from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
 from verifiers.v1.runtimes.subprocess import SubprocessConfig, SubprocessRuntime
@@ -54,18 +59,26 @@ def runtime_is_local(config: RuntimeConfig) -> bool:
     return _runtime_cls(config).is_local
 
 
+def runtime_host_endpoint_url(config: RuntimeConfig, port: int) -> str | None:
+    if isinstance(config, DockerConfig):
+        return docker_host_endpoint_url(config, port)
+    return None
+
+
 __all__ = [
     "ProgramResult",
     "Runtime",
     "RuntimeConfig",
     "make_runtime",
     "runtime_is_local",
+    "runtime_host_endpoint_url",
     "host_endpoint",
     "reachable_url",
     "HOST",
     "SubprocessConfig",
     "SubprocessRuntime",
     "DockerConfig",
+    "DockerMount",
     "DockerRuntime",
     "PrimeConfig",
     "PrimeRuntime",

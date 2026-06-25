@@ -189,10 +189,15 @@ def _breakdown(done: list[Trace]) -> Table | None:
             names.extend(n for n in getattr(trace, source) if n not in names)
         if not names:
             continue
-        segments = [
-            f"{name} {format_mean(done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0))}"
-            for name in names
-        ]
+        segments = []
+        for name in names:
+            value = format_mean(
+                done,
+                lambda trace, key=name, source=source: getattr(trace, source).get(
+                    key, 0.0
+                ),
+            )
+            segments.append(f"{name} {value}")
         grid.add_row(label, "  ·  ".join(segments))
 
     # Resource use over every completed rollout (errored ones still spent tokens/time): tokens and
