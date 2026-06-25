@@ -35,11 +35,11 @@ from __future__ import annotations
 from typing import Any, Callable, Generic, TypeVar, cast
 
 from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel
 
 from verifiers.v1.clients.config import BaseClientConfig, build_async_openai
-from verifiers.v1.types import SamplingConfig, StrictBaseModel, Usage
+from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.types import Messages, SamplingConfig, StrictBaseModel, Usage
 
 ParsedT = TypeVar("ParsedT")
 
@@ -90,9 +90,10 @@ class Judge(Generic[ParsedT]):
         self.config = config or JudgeConfig()
         self.client: AsyncOpenAI = build_async_openai(self.config)
 
-    def build_messages(self, **fields: Any) -> str | list[ChatCompletionMessageParam]:
-        """Prompt-setup hook: turn the `evaluate` fields into the messages to send. The default
-        formats the `prompt` class attribute into a single user message."""
+    def build_messages(self, **fields: Any) -> str | Messages:
+        """Prompt-setup hook: turn the `evaluate` fields into the messages to send (a single user
+        message as a plain `str`, or a `vf.Messages` list). The default formats the `prompt` class
+        attribute into a single user message."""
         if self.prompt is None:
             raise ValueError(
                 f"{type(self).__name__} has no `prompt`; set it or override build_messages"
@@ -108,7 +109,7 @@ class Judge(Generic[ParsedT]):
 
     async def complete(
         self,
-        messages: str | list[ChatCompletionMessageParam],
+        messages: str | Messages,
         *,
         schema: type[BaseModel] | None = None,
         parse: Callable[[JudgeResponse[Any]], Any] | None = None,
@@ -121,7 +122,7 @@ class Judge(Generic[ParsedT]):
         wire = (
             [{"role": "user", "content": messages}]
             if isinstance(messages, str)
-            else list(messages)
+            else [message_to_wire(m) for m in messages]
         )
         kwargs: dict[str, Any] = {"model": self.config.model, "messages": wire}
         kwargs.update(self.config.sampling.model_dump(exclude_none=True))
