@@ -186,14 +186,20 @@ def _breakdown(done: list[Trace]) -> Table | None:
     # Resource totals over every completed rollout (errored ones still spent tokens/time): tokens
     # and cost are summed; wall-clock time is averaged, since rollouts run concurrently and summing
     # their durations would overcount.
-    total_in = total_out = 0
+    total_in = total_out = total_cached = total_reasoning = 0
     total_cost = 0.0
-    have_cost = False
+    have_cost = have_cached = have_reasoning = False
     times: list[float] = []
     for trace in done:
-        prompt, completion, _, _, _ = _tokens(trace)
+        prompt, completion, cached, reasoning, _ = _tokens(trace)
         total_in += prompt
         total_out += completion
+        if cached is not None:
+            total_cached += cached
+            have_cached = True
+        if reasoning is not None:
+            total_reasoning += reasoning
+            have_reasoning = True
         if trace.usage is not None and trace.usage.cost is not None:
             total_cost += trace.usage.cost
             have_cost = True
@@ -206,8 +212,16 @@ def _breakdown(done: list[Trace]) -> Table | None:
         )
         if start and end:
             times.append(end - start)
-    if total_in or total_out or have_cost:
-        usage = [f"{format_count(total_in)}/{format_count(total_out)} tokens"]
+    if total_in or total_out or have_cost or have_cached or have_reasoning:
+        tokens = f"{format_count(total_in)}/{format_count(total_out)} tokens"
+        details = []
+        if have_cached:
+            details.append(f"{format_count(total_cached)} cached")
+        if have_reasoning:
+            details.append(f"{format_count(total_reasoning)} reasoning")
+        if details:
+            tokens += f" ({', '.join(details)})"
+        usage = [tokens]
         if have_cost:
             usage.append(format_cost_usd(total_cost))
         grid.add_row("usage", "  ·  ".join(usage))
@@ -301,10 +315,10 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             if prompt or completion:
                 tokens = f"{format_count(prompt)}/{format_count(completion)} tokens"
                 details = []
-                if reasoning is not None:
-                    details.append(f"{format_count(reasoning)} reasoning")
                 if cached is not None:
                     details.append(f"{format_count(cached)} cached")
+                if reasoning is not None:
+                    details.append(f"{format_count(reasoning)} reasoning")
                 if details:
                     tokens += f" ({', '.join(details)})"
             left = [
