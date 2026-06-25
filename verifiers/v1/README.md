@@ -100,10 +100,10 @@ filesystem, so run it under a containerized runtime: `docker` locally, or a remo
 `modal` sandbox (not the default `subprocess`). 
 
 ```bash
-uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id bash            # bash-only agent
-uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
-uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
-uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id codex           # the codex CLI agent
+uv run eval harbor -n 1 --harness.runtime.type docker --harness.id bash            # bash-only agent
+uv run eval harbor -n 1 --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
+uv run eval harbor -n 1 --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
+uv run eval harbor -n 1 --harness.runtime.type docker --harness.id codex           # the codex CLI agent
 ```
 
 ### Swappable runtime
@@ -228,8 +228,11 @@ uv run eval gsm8k-v1 -n 1 --retries.rollout.max-retries 3 --retries.rollout.incl
 
 Some tasksets wrap a whole benchmark family rather than a single task — shipped, installed by
 default. For example, `textarena` (TextArena games) and `harbor` (the agentic-
-benchmark registry). Harbor is the showcase: it pulls tasks straight from the Harbor registry,
-each in its own declared, pullable container image — e.g. Terminal-Bench 2:
+benchmark registry). Harbor is the showcase: it pulls tasks straight from the Harbor registry.
+Pullable `[environment].docker_image` tasks run directly; Dockerfile-only Harbor environments
+use the harness runtime image by default. Use `--taskset.dockerfile-policy build` to build a
+deterministic local Docker image, or `--taskset.dockerfile-policy error` to require prebuilt
+images. For example, Terminal-Bench 2:
 
 ```bash
 uv run eval harbor --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm

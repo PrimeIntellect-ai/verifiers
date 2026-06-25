@@ -1,4 +1,4 @@
-import json
+import io
 import logging
 import tarfile
 import tempfile
@@ -8,6 +8,16 @@ from typing import Any
 from datasets import Dataset
 
 import verifiers as vf
+from verifiers.harbor import (
+    HarborStep,
+    harbor_step_info,
+    harbor_step_summary,
+    harbor_task_prompt,
+    load_harbor_steps,
+    make_harbor_tar,
+    parse_harbor_rewards,
+    run_harbor_steps,
+)
 from verifiers.utils.import_utils import load_toml
 
 from .mcp import HarborMCPHealthcheck, HarborMCPMixin
@@ -64,17 +74,25 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
             task_toml = task_dir / "task.toml"
             instruction_md = task_dir / "instruction.md"
 
-            if not task_toml.exists() or not instruction_md.exists():
-                logger.warning(
-                    f"Skipping {task_dir.name}: missing task.toml or instruction.md"
-                )
+            if not task_toml.exists():
+                logger.warning(f"Skipping {task_dir.name}: missing task.toml")
                 continue
 
             with open(task_toml, "rb") as f:
                 config = load_toml(f)
 
-            instruction = instruction_md.read_text().strip()
+            try:
+                steps = load_harbor_steps(task_dir, config)
+            except (FileNotFoundError, ValueError) as e:
+                logger.warning(f"Skipping {task_dir.name}: invalid Harbor steps: {e}")
+                continue
+            if not instruction_md.exists() and not steps:
+                logger.warning(
+                    f"Skipping {task_dir.name}: missing instruction.md or valid steps"
+                )
+                continue
 
+            instruction = harbor_task_prompt(task_dir, steps)
             messages = [{"role": "user", "content": instruction}]
 
             task_entry = {
@@ -85,6 +103,10 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
                     "task_dir": str(task_dir),
                     "docker_image": config.get("environment", {}).get("docker_image"),
                     "config": config,
+                    "steps": [harbor_step_info(step) for step in steps],
+                    "multi_step_reward_strategy": config.get(
+                        "multi_step_reward_strategy", "mean"
+                    ),
                 },
             }
 
@@ -151,6 +173,19 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
             with tarfile.open(tar_path, "w:gz") as tar:
                 if instruction_path.exists():
                     tar.add(instruction_path, arcname="task/instruction.md")
+                else:
+                    if task_toml_path.exists():
+                        with open(task_toml_path, "rb") as f:
+                            config = load_toml(f)
+                    else:
+                        config = {}
+                    instruction = harbor_task_prompt(
+                        task_dir, load_harbor_steps(task_dir, config)
+                    )
+                    info = tarfile.TarInfo(name="task/instruction.md")
+                    data = instruction.encode()
+                    info.size = len(data)
+                    tar.addfile(info, io.BytesIO(data))
 
                 if task_toml_path.exists():
                     tar.add(task_toml_path, arcname="task/task.toml")
@@ -167,24 +202,32 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
         finally:
             tar_path.unlink(missing_ok=True)
 
-    async def upload_test_assets(self, sandbox_id: str, task_dir: Path) -> None:
-        """Upload oracle/tests after agent completes, right before running tests."""
-        solution_dir = task_dir / "solution"
-        tests_dir = task_dir / "tests"
+    async def upload_test_assets(
+        self,
+        sandbox_id: str,
+        task_dir: Path,
+        tests_dir: Path | None = None,
+        solution_dir: Path | None = None,
+        shared_tests_dir: Path | None = None,
+    ) -> None:
+        """Upload oracle/tests after agent completes, right before running tests.
+
+        Multi-step Harbor tasks merge root tests first, then step tests so the
+        step-local test.sh overrides the shared fallback/helper files.
+        """
+        tests_dir = task_dir / "tests" if tests_dir is None else tests_dir
+        solution_dir = task_dir / "solution" if solution_dir is None else solution_dir
+
+        directories = []
+        if shared_tests_dir is not None:
+            directories.append((shared_tests_dir, "tests"))
+        directories.extend([(tests_dir, "tests"), (solution_dir, "oracle")])
 
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
             tar_path = Path(tmp_file.name)
+            tmp_file.write(make_harbor_tar(directories))
 
         try:
-            with tarfile.open(tar_path, "w:gz") as tar:
-                if solution_dir.exists():
-                    for item in solution_dir.iterdir():
-                        tar.add(item, arcname=f"oracle/{item.name}")
-
-                if tests_dir.exists():
-                    for item in tests_dir.iterdir():
-                        tar.add(item, arcname=f"tests/{item.name}")
-
             remote_tar = "/tmp/harbor_tests.tar.gz"
             await self.sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
             await self.sandbox_client.execute_command(
@@ -209,6 +252,57 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
     async def harbor_reward(self, state: vf.State, **kwargs) -> float:
         return state.get("reward", 0.0)
 
+    async def compute_step_reward(
+        self,
+        state: vf.State,
+        task_dir: Path,
+        verifier_dir: Path,
+        step: HarborStep | None,
+    ) -> dict[str, float]:
+        sandbox_id = state["sandbox_id"]
+        await self.with_retry(self.upload_test_assets)(
+            sandbox_id,
+            task_dir,
+            tests_dir=verifier_dir / "tests",
+            solution_dir=verifier_dir / "solution",
+            shared_tests_dir=task_dir / "tests" if verifier_dir != task_dir else None,
+        )
+
+        logger.info(
+            "Running Harbor tests for task %s step %s",
+            state.get("task"),
+            step.name if step is not None else "single",
+        )
+        timeout = int((step.scoring_timeout if step is not None else None) or 300)
+        results = await self.run_background_job(
+            state,
+            "bash test.sh",
+            timeout=timeout,
+            working_dir="/tests",
+            poll_interval=5,
+        )
+        if getattr(results, "exit_code", 0) != 0:
+            logger.warning(
+                f"Harbor tests exit_code={results.exit_code} "
+                f"stdout_len={len(getattr(results, 'stdout', '') or '')} "
+                f"stderr_len={len(getattr(results, 'stderr', '') or '')}"
+            )
+
+        reward_result = await self.with_retry(self.sandbox_client.execute_command)(
+            sandbox_id,
+            "if [ -s /logs/verifier/reward.txt ]; then cat /logs/verifier/reward.txt; "
+            "elif [ -s /logs/verifier/reward.json ]; then cat /logs/verifier/reward.json; fi",
+            working_dir=None,
+        )
+        stdout_val = getattr(reward_result, "stdout", "")
+        if stdout_val is None:
+            reward_val = ""
+        elif isinstance(stdout_val, str):
+            reward_val = stdout_val.strip()
+        else:
+            reward_val = str(stdout_val).strip()
+        return parse_harbor_rewards(reward_val)
+
     async def compute_reward(self, state: vf.State) -> float:
         """
         Execute Harbor tests (tests/test.sh) inside the sandbox to compute reward.
@@ -229,57 +323,35 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
             logger.error(f"Task directory not found: {task_dir}")
             return 0.0
 
+        task_info: dict[str, Any] = state.get("info") or {}
+        steps = [
+            HarborStep.model_validate(step) for step in task_info.get("steps") or []
+        ]
         try:
-            await self.with_retry(self.upload_test_assets)(sandbox_id, task_dir)
+            if steps:
 
-            logger.info(f"Running Harbor tests for task {state.get('task')}")
-            results = await self.run_background_job(
-                state,
-                "bash test.sh",
-                timeout=300,
-                working_dir="/tests",
-                poll_interval=5,
-            )
-            if getattr(results, "exit_code", 0) != 0:
-                logger.warning(
-                    f"Harbor tests exit_code={results.exit_code} "
-                    f"stdout_len={len(getattr(results, 'stdout', '') or '')} "
-                    f"stderr_len={len(getattr(results, 'stderr', '') or '')}"
-                )
+                async def run_step(step: HarborStep) -> dict[str, float]:
+                    return await self.compute_step_reward(
+                        state, task_dir, step.task_dir, step
+                    )
 
-            reward_result = await self.with_retry(self.sandbox_client.execute_command)(
-                sandbox_id,
-                "if [ -s /logs/verifier/reward.txt ]; then cat /logs/verifier/reward.txt; "
-                "elif [ -s /logs/verifier/reward.json ]; then cat /logs/verifier/reward.json; fi",
-                working_dir=None,
-            )
+                strategy = task_info.get("multi_step_reward_strategy", "mean")
+                step_results = await run_harbor_steps(steps, run_step)
+                step_records, aggregate = harbor_step_summary(step_results, strategy)
+                state["harbor_steps"] = step_records
+                state["harbor_multi_step_reward"] = aggregate
+                return float(aggregate.get("reward", 0.0))
+
+            rewards = await self.compute_step_reward(state, task_dir, task_dir, None)
+            if rewards:
+                value = float(rewards.get("reward", 0.0))
+                logger.info(f"Reward from Harbor verifier: {value}")
+                return value
         except Exception as e:
             if state.get("error") is None:
                 state["error"] = vf.SandboxError(str(e))
             logger.error(f"Error computing Harbor reward: {e}")
             return 0.0
-
-        stdout_val = getattr(reward_result, "stdout", "")
-        if stdout_val is None:
-            reward_val = ""
-        elif isinstance(stdout_val, str):
-            reward_val = stdout_val.strip()
-        else:
-            reward_val = str(stdout_val).strip()
-        if reward_val:
-            try:
-                value = float(reward_val)
-                logger.info(f"Reward from reward.txt: {value}")
-                return value
-            except ValueError:
-                try:
-                    data = json.loads(reward_val)
-                except json.JSONDecodeError as e:
-                    logger.error(f"Invalid reward.json: {e}")
-                    return 0.0
-                value = float(data.get("reward", 0.0))
-                logger.info(f"Reward from reward.json: {value}")
-                return value
 
         logger.warning("No reward.txt or reward.json produced by Harbor tests")
         return 0.0
