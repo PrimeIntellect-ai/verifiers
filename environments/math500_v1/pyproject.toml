@@ -1,0 +1,13 @@
+[project]
+name = "math500-v1"
+version = "0.1.0"
+description = "math500-v1 — MATH-500 competition math (single-turn eval, math-verify scoring)."
+requires-python = ">=3.10"
+dependencies = ["datasets"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["math500_v1"]

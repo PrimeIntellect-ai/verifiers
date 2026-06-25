@@ -1,0 +1,8 @@
+# math500-v1 — MATH-500 competition math, default harness; a few tasks with several rollouts each.
+#
+#   uv run eval math500-v1 @ configs/math500.toml
+num_tasks = 5
+num_rollouts = 3
+
+[taskset]
+id = "math500-v1"
