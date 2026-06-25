@@ -159,17 +159,20 @@ def Progress(
 def _breakdown(done: list[Trace]) -> Table | None:
     """The per-component view under the headline (summed) reward: a `rewards` row of each named
     `@reward` contribution and a `metrics` row of each `@metric`, then a `usage` row (tokens and
-    cost summed over all completed rollouts) and a `time` row (mean wall-clock per rollout), laid
-    out like the Overview (dim label column). Reward/metric components are formatted exactly like
-    the headline reward — the error-corrected mean, with the global mean (an errored trace's value
-    counting as 0) in parens when some errored (see `format_mean`). `None` when nothing has scored
-    yet, so the bar shows alone."""
-    if not any(not t.has_error for t in done):
-        return None
+    cost summed over completed rollouts) and a `time` row (each phase averaged over the rollouts
+    that have it timed), laid out like the Overview (dim label column). Reward/metric components
+    are error-corrected means, with the global mean (an errored trace's value counting as 0) in
+    parens when some errored (see `format_mean`); they're skipped when every rollout errored (no
+    clean mean to show), while usage/time still appear — those resources were spent regardless.
+    `None` when no rollout has completed."""
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim", min_width=_LABEL_WIDTH)
     grid.add_column()
-    for label, source in (("rewards", "rewards"), ("metrics", "metrics")):
+    # rewards/metrics are error-corrected means — skip when every rollout errored (no clean mean to
+    # show); usage/time below still cover errored rollouts (their resources were spent regardless).
+    has_clean = any(not t.has_error for t in done)
+    score_rows = (("rewards", "rewards"), ("metrics", "metrics")) if has_clean else ()
+    for label, source in score_rows:
         # every key seen across traces, first-seen order (a trace records only the functions
         # that ran for it, so keys can vary)
         names: list[str] = []
