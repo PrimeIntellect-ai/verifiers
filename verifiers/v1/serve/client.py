@@ -140,30 +140,27 @@ class EnvClient:
         return await self._request(InfoRequest(), InfoResponse)
 
     async def run_rollout(
-        self, task_idx: int, client: ClientConfig, model: str, sampling: SamplingConfig
+        self, client: ClientConfig, model: str, sampling: SamplingConfig
     ) -> Trace[WireTask]:
-        """Run one rollout for `task_idx`; return a typed `Trace[WireTask]`."""
+        """Pull the next task and run one rollout; return a typed `Trace[WireTask]`. The task
+        the server served is identified by `trace.task.idx`."""
         response = await self._request(
-            RunRolloutRequest(
-                task_idx=task_idx, client=client, model=model, sampling=sampling
-            ),
+            RunRolloutRequest(client=client, model=model, sampling=sampling),
             RunRolloutResponse,
         )
         return response.trace
 
     async def run_group(
         self,
-        task_idx: int,
         n: int,
         client: ClientConfig,
         model: str,
         sampling: SamplingConfig,
     ) -> list[Trace[WireTask]]:
-        """Run `n` rollouts for `task_idx` as a scored group; return typed `Trace[WireTask]`s."""
+        """Pull the next task and run `n` rollouts of it as a scored group; return typed
+        `Trace[WireTask]`s (all of one task, identified by `trace.task.idx`)."""
         response = await self._request(
-            RunGroupRequest(
-                task_idx=task_idx, n=n, client=client, model=model, sampling=sampling
-            ),
+            RunGroupRequest(n=n, client=client, model=model, sampling=sampling),
             RunGroupResponse,
         )
         return response.traces

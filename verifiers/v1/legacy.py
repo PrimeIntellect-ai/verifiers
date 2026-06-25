@@ -288,6 +288,7 @@ class LegacyEnvServer(EnvServer):
         env_args: dict | None = None,
         address: str = "tcp://127.0.0.1:5000",
         extra_env_kwargs: dict | None = None,
+        shuffle: bool = True,
     ) -> None:
         from verifiers import load_environment
         from verifiers.v1.utils.install import ensure_installed, env_name
@@ -307,6 +308,9 @@ class LegacyEnvServer(EnvServer):
         except ValueError:
             self.dataset = self.env.get_eval_dataset()
         self.num_tasks = len(self.dataset)  # v0 datasets are finite; drives the `info` response
+        # The bridge owns scheduling too: callers pull, the server hands out the next dataset
+        # row (shuffled + epoch-looped for a finite v0 dataset).
+        self._init_scheduler(self.num_tasks, shuffle)
         self.requires_group_scoring = self.env.requires_group_rollouts
         self._clients: dict[tuple[str, str], Any] = {}
 
@@ -377,24 +381,22 @@ class LegacyEnvServer(EnvServer):
         )
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
-        out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
-        return RunRolloutResponse(
-            trace=rollout_output_to_trace(out, req.task_idx).model_dump()
-        )
+        idx = self._next_index()
+        out = await self._run_v0(idx, req.client, req.model, req.sampling)
+        return RunRolloutResponse(trace=rollout_output_to_trace(out, idx).model_dump())
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
+        idx = self._next_index()
         client = self._v0_client(req.client, req.model)
         # run_group scores the rollouts together so group/preference reward funcs apply.
         outs = await self.env.run_group(
-            group_inputs=[dict(self.dataset[req.task_idx]) for _ in range(req.n)],
+            group_inputs=[dict(self.dataset[idx]) for _ in range(req.n)],
             client=client,
             model=req.model,
             sampling_args=req.sampling.model_dump(exclude_none=True),
             state_columns=["trajectory"],
         )
-        traces = [
-            rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs
-        ]
+        traces = [rollout_output_to_trace(out, idx).model_dump() for out in outs]
         return RunGroupResponse(traces=traces)
 
 

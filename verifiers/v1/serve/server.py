@@ -1,10 +1,11 @@
-"""The env server: load a taskset once, run rollouts on request by task index.
+"""The env server: load a taskset once, run rollouts on request by pulling tasks.
 
 A ZMQ ROUTER front end (msgpack frames) over a v1 `Environment`. The server
 owns the environment — taskset, harness, runtime — and is the only process that ever
-loads it. A caller (e.g. the orchestrator) stays env-agnostic: it asks `info` for
-the task count + whether group scoring is needed, then `run_rollout` / `run_group`
-by task index. Per request the server resolves a `Client` from the request's
+loads it, including task scheduling (shuffle + epoch). A caller (e.g. the orchestrator)
+stays env-agnostic: it asks `info` for the task count (None if unbounded) + whether group
+scoring is needed, then pulls via `run_rollout` / `run_group` (no task index — the server
+hands out the next task). Per request the server resolves a `Client` from the request's
 `client` config (cached, so a renderer's tokenizer is built once), wraps it in a
 `RolloutContext`, and runs `env.episode(task, ctx, n).run()`, returning each
 `Trace` as a JSON dict (with its computed `branches`).
@@ -19,6 +20,7 @@ the structure leaves room to add a pool later. Health is just another request ty
 import asyncio
 import contextlib
 import logging
+import random
 
 import msgpack
 import zmq
@@ -31,7 +33,7 @@ from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import EnvConfig, Environment
-from verifiers.v1.taskset import IndexedTasks
+from verifiers.v1.taskset import SHUFFLE_SEED, IndexedTasks
 from verifiers.v1.serve.types import (
     BaseResponse,
     HealthResponse,
@@ -55,14 +57,17 @@ class EnvServer:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
-        # The server is purely index-addressed (`run_rollout`/`run_group` by `task_idx`), so it
-        # resolves tasks by index: a finite taskset is materialized + counted, an unbounded one is
-        # consumed lazily by index with no count (served without ever being materialized).
-        # `num_tasks` is None only when the taskset is UNBOUNDED (reported via `info`).
+        # The server owns task scheduling: callers pull (`run_rollout`/`run_group` carry no
+        # task index), and the server hands out the next task. A finite taskset is materialized +
+        # counted and served as a (re)shuffled permutation that loops over epochs; an unbounded
+        # one is consumed lazily by its generator (which owns its own order). `num_tasks` is None
+        # only when the taskset is UNBOUNDED (reported via `info`); a finite eval bounds itself to
+        # `num_tasks`, so it never wraps, while training pulls forever.
         self._index: IndexedTasks = IndexedTasks(
             self.env.taskset.load_tasks(), unbounded=self.env.taskset.UNBOUNDED
         )
         self.num_tasks: int | None = self._index.count
+        self._init_scheduler(self.num_tasks, config.shuffle)
         self.requires_group_scoring = bool(
             discover_decorated(self.env.taskset, "group_reward")
         )
@@ -128,16 +133,49 @@ class EnvServer:
         # is non-empty).
         return self.env.serving([self._index[0]])
 
+    def _init_scheduler(self, count: int | None, shuffle: bool) -> None:
+        """Set up task scheduling: `count` tasks (None = unbounded), shuffled or not. Shared by
+        the native server and the v0 bridge (which serves a finite dataset). The shuffle seed is
+        fixed (`SHUFFLE_SEED`), not configurable — same as eval."""
+        self._count = count
+        self._shuffle = shuffle
+        self._cursor = 0
+        self._order: list[int] | None = None  # current epoch's permutation (finite only)
+        self._epoch = 0
+
+    def _next_index(self) -> int:
+        """The next underlying index to serve. For a finite taskset, walk a (re)shuffled
+        permutation that loops over epochs (reshuffled each epoch via `SHUFFLE_SEED + epoch`);
+        for an unbounded one, just advance — its generator owns the order, so `shuffle` is a
+        no-op. Synchronous and never awaits, so concurrent rollouts on one event loop can't
+        interleave the cursor (no lock needed)."""
+        if self._count is None:  # unbounded
+            i = self._cursor
+            self._cursor += 1
+            return i
+        pos = self._cursor % self._count
+        if pos == 0:  # (re)build the epoch's permutation at each boundary
+            self._order = list(range(self._count))
+            if self._shuffle:
+                random.Random(SHUFFLE_SEED + self._epoch).shuffle(self._order)
+            self._epoch += 1
+        self._cursor += 1
+        return self._order[pos]
+
+    def _next_task(self):
+        """The next task to serve, resolved through `IndexedTasks`."""
+        return self._index[self._next_index()]
+
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self._index[req.task_idx], ctx, n=1)
+        episode = self.env.episode(self._next_task(), ctx, n=1)
         traces = await episode.run()
         # Trust the concrete trace; serialize it once before client-side re-typing.
         return RunRolloutResponse.model_construct(trace=traces[0])
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self._index[req.task_idx], ctx, n=req.n)
+        episode = self.env.episode(self._next_task(), ctx, n=req.n)
         traces = await episode.run()
         # Avoid a dump-and-validate copy for every trusted trace in the group.
         return RunGroupResponse.model_construct(traces=traces)

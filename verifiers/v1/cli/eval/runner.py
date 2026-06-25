@@ -3,8 +3,8 @@
 import asyncio
 import contextlib
 import logging
-import random
 import time
+from collections import defaultdict
 
 from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
@@ -13,7 +13,7 @@ from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import Environment
-from verifiers.v1.taskset import SHUFFLE_SEED, select_tasks
+from verifiers.v1.taskset import select_tasks
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -111,6 +111,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             "env_id": config.id,
             "env_args": config.args,
             "extra_env_kwargs": config.extra_env_kwargs,
+            "shuffle": config.shuffle,
         }
         if legacy
         else {"config_data": env_config_data(config)}  # picklable across the spawn
@@ -146,68 +147,63 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         client = EnvClient(address=address)
         await client.wait_for_server_startup(timeout=600)
         info = await client.info()
-        if info.num_tasks is not None:
-            idxs = list(range(info.num_tasks))
-            if config.shuffle:
-                random.Random(SHUFFLE_SEED).shuffle(idxs)
-            if config.num_tasks is not None:
-                idxs = idxs[: config.num_tasks]
-        elif config.num_tasks is not None:
-            # The taskset is unbounded (no reported count), so the caller bounds the run: take the
-            # first `--num-tasks` indices (--shuffle has nothing to sample from here).
-            if config.shuffle:
-                logger.warning(
-                    "taskset is unbounded (no task count), so --shuffle has nothing to sample "
-                    "from; ignoring it and taking the first %d task(s). Use a config `seed` to "
-                    "vary which tasks the generator yields.",
-                    config.num_tasks,
-                )
-            idxs = list(range(config.num_tasks))
-        else:
+        if config.num_tasks is None and info.num_tasks is None:
             raise SystemExit(
                 "this taskset is unbounded (no task count); pass -n/--num-tasks to bound the eval"
             )
+        # How many tasks to pull. The server owns task order (shuffle/epoch); the runner just
+        # pulls this many — the requested cap, the taskset's count, or the smaller of the two.
+        if config.num_tasks is None:
+            total = info.num_tasks
+        elif info.num_tasks is None:
+            total = config.num_tasks
+        else:
+            total = min(config.num_tasks, info.num_tasks)
         out = output_path(config)
         if config.resume is not None:
-            keep, owed = resume.plan(
-                out, idxs, config.num_rollouts, info.requires_group_scoring
-            )
-            if not owed:  # already complete - report it and exit successfully
-                print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
+            good: dict[int, int] = defaultdict(int)
+            for _offset, idx, errored in resume._read_results(out / "results.jsonl"):
+                if not errored:
+                    good[idx] += 1
+            complete = sum(1 for c in good.values() if c >= config.num_rollouts)
+            if complete >= total:  # already done — report and exit successfully
+                print(resume.nothing_to_resume_msg(out, total, config.num_rollouts))
                 raise SystemExit(0)
-            resume.rewrite_results(out, keep)
-            idxs = [idx for idx in idxs if owed.get(idx)]
-            logger.info(
-                "resuming %s: %d task(s), %d rollout(s) owed",
-                out,
-                len(idxs),
-                sum(owed.values()),
-            )
+            if complete:
+                # Task-less pull can't target the specific missing tasks (the server owns order),
+                # so a partially-complete --server eval resumes by re-running from scratch.
+                logger.warning(
+                    "--server eval resume re-runs from scratch (the server owns task order); "
+                    "discarding %d partially-complete task(s)",
+                    complete,
+                )
+            resume.rewrite_results(out, [])
         else:
-            owed = {idx: config.num_rollouts for idx in idxs}
             save_config(config, out)
-            logger.info(
-                "running %dx%d rollouts via the env-server %s pool on %s",
-                len(idxs),
-                config.num_rollouts,
-                config.pool.type,
-                config.model,
-            )
+        logger.info(
+            "running %dx%d rollouts via the env-server %s pool on %s",
+            total,
+            config.num_rollouts,
+            config.pool.type,
+            config.model,
+        )
         logger.info("results: %s", out)
         request_concurrency = config.max_concurrent
-        if request_concurrency and info.requires_group_scoring:
-            # max_concurrent is a rollout resource bound, not a request-throughput target.
-            # A group is indivisible, so one oversized group must still be allowed to run.
+        if request_concurrency:
+            # A unit pulls one task and runs `num_rollouts` of it together, so it costs
+            # `num_rollouts` rollout slots; max_concurrent bounds rollouts, not requests.
             request_concurrency = max(1, request_concurrency // config.num_rollouts)
         semaphore = (
             asyncio.Semaphore(request_concurrency) if request_concurrency else None
         )
         write_lock = asyncio.Lock()
 
-        async def run_group_unit(idx: int) -> list[Trace]:
+        async def run_unit() -> list[Trace]:
+            # Each unit pulls the next task and runs `num_rollouts` of it (a group when the
+            # taskset scores groups, else independent rollouts of one task). The runner never
+            # addresses a task — the served task is identified by `trace.task.idx`.
             async with semaphore or contextlib.nullcontext():
                 traces = await client.run_group(
-                    task_idx=idx,
                     n=config.num_rollouts,
                     client=config.client,
                     model=config.model,
@@ -217,25 +213,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                 await append_trace(out, trace, write_lock)
             return traces
 
-        async def run_rollout_unit(idx: int) -> list[Trace]:
-            async with semaphore or contextlib.nullcontext():
-                trace = await client.run_rollout(
-                    task_idx=idx,
-                    client=config.client,
-                    model=config.model,
-                    sampling=config.sampling,
-                )
-            await append_trace(out, trace, write_lock)
-            return [trace]
-
-        # A group-scored taskset must run each task's rollouts together (cross-rollout
-        # scoring) → one `run_group` request per task (one worker). Otherwise the rollouts
-        # are independent → one `run_rollout` request each, which the broker round-robins
-        # (least-busy) across workers — mirrors the prime-rl dispatcher.
-        if info.requires_group_scoring:
-            units = [run_group_unit(i) for i in idxs]
-        else:
-            units = [run_rollout_unit(i) for i in idxs for _ in range(owed[i])]
+        units = [run_unit() for _ in range(total)]
         results = await asyncio.gather(*units)
         await client.close()
         return [trace for unit_traces in results for trace in unit_traces]

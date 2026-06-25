@@ -37,17 +37,17 @@ class InfoRequest(BaseRequest):
 
 class InfoResponse(BaseResponse):
     num_tasks: int | None = None
-    """Number of tasks in the taskset — the index range the caller samples from. `None` only when
-    the taskset is `UNBOUNDED` (served lazily by index with no count): the caller then drives
-    `task_idx` itself, bounded by `--num-tasks`. A finite taskset (list or finite generator) is
-    materialized and reports a real count."""
+    """How many distinct tasks the taskset has — the caller pulls (it doesn't address by index),
+    and uses this to bound a finite eval (pull `num_tasks`, never wrapping). `None` only when the
+    taskset is `UNBOUNDED` (the server streams a never-ending order); the caller then bounds the
+    run with `--num-tasks`. A finite taskset (list or finite generator) is materialized and reports
+    its count; training pulls past it (the server loops, reshuffling each epoch)."""
     requires_group_scoring: bool = False
     """Whether the taskset defines `@group_reward`s (caller must use `run_group`)."""
 
 
 class RunRolloutRequest(BaseRequest):
     method: ClassVar[str] = "run_rollout"
-    task_idx: int
     client: ClientConfig
     model: str
     sampling: SamplingConfig
@@ -66,7 +66,6 @@ class RunRolloutResponse(BaseResponse):
 
 class RunGroupRequest(BaseRequest):
     method: ClassVar[str] = "run_group"
-    task_idx: int
     n: int
     client: ClientConfig
     model: str
