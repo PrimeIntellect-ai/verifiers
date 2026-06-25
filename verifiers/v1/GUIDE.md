@@ -280,27 +280,27 @@ class MyTaskset(vf.Taskset[MyTask, MyConfig]):
 
     @vf.reward()
     async def correct(self, task, trace) -> float:
-        result = await self.judge.evaluate(question=task.question, answer=task.answer, response=...)
-        trace.record_judge(result)        # persist: trace.info["judge"] + fold usage/cost
+        result = await self.judge.evaluate(trace=trace, question=task.question, answer=task.answer, response=...)
         return 1.0 if result.parsed else 0.0
 ```
 
-`evaluate(**fields)` is **pure** (data in, a `JudgeResponse{text, parsed, usage}` out): it renders
-the prompt (`build_messages(**fields)`), calls the model, and parses the verdict (`parse`).
-Persisting is the explicit `trace.record_judge(result)` step — it appends the typed record to
-`trace.info["judge"]` (for debugging) and folds the call's tokens + cost into `trace.usage`, kept
-off the message graph so the trainer's token math is unaffected.
+`evaluate(*, task=None, trace=None, **fields)` renders the prompt (`build_messages`), calls the
+model, and parses the verdict (`parse`), returning a `JudgeResponse{text, parsed, usage}`. Passing
+`trace=` **records the call onto it** — a typed record appended to `trace.info["judge"]` (for
+debugging) and the call's tokens + cost folded into `trace.usage` (kept off the message graph, so
+the trainer's token math is unaffected). Omit `trace` for a pure call (e.g. in tests); the
+low-level `complete` never records (record it yourself with `trace.record_judge`).
 
 The two hooks:
 
 | hook | default | override for |
 | --- | --- | --- |
-| `build_messages(**fields) -> str \| Messages` | formats the `prompt` template into one user message | a system+user or non-template prompt (return a `vf.Messages` list) |
+| `build_messages(*, task, trace, **fields) -> str \| Messages` | formats the `prompt` template with `task` + the fields into one user message | a system+user / non-template prompt, or reading the response off the `trace` (return a `vf.Messages` list) |
 | `parse(response) -> ParsedT` | the structured object if `schema` is set, else `response.text` | your verdict (`bool`, a grade `str`, a pydantic model, a `list[float]`, …) |
 
 Good to know:
 
-- **Per-task rubric** rides in as a field — `prompt = "{task.rubric}\n…"` with `evaluate(task=task, …)` (`str.format` does attribute access). For per-task *parsing*, parse in the reward, where the task is in scope.
+- **Per-task rubric** rides in via `task` (or a field) — `prompt = "{task.rubric}\n…"` with `evaluate(task=task, trace=trace, …)` (`str.format` does attribute access); or override `build_messages` to template from `task`/`trace`. For per-task *parsing*, parse in the reward, where the task is in scope.
 - **Structured outputs**: set `schema` to a pydantic model to use OpenAI structured outputs (where the provider supports it — most do); `JudgeResponse.parsed` is then the validated object. For an unsupported model, prompt for JSON and call `Model.model_validate_json(response.text)` in `parse`.
 - **Multiple / dynamic calls per rollout** (e.g. one per table column): call the low-level `complete(messages, *, schema=, parse=)` directly with `vf.Messages` you build, recording each with `trace.record_judge`.
 - **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`, Prime auto-config). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.
