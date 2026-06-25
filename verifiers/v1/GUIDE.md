@@ -627,13 +627,13 @@ uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sand
 A taskset that sets `NEEDS_CONTAINER` (or a task with an `image`) refuses the subprocess runtime —
 pass `docker` / `prime` / `modal`.
 
-## Interception-only Docker agents
+## Offline Docker agents
 
-Set `network_access = "interception"` to let Docker setup download harness dependencies, then
-remove internet access before the agent starts:
+Set `network_access = false` to let Docker setup download harness dependencies, then remove direct
+web access before the agent starts while preserving its connection to the interception server:
 
 ```toml
-harness = { id = "codex", runtime = { type = "docker", network_access = "interception" } }
+harness = { id = "codex", runtime = { type = "docker", network_access = false } }
 ```
 
 The runtime moves the agent onto an internal per-rollout network and rewrites its model endpoint

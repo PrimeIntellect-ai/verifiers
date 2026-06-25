@@ -184,7 +184,7 @@ class Rollout:
                     tool_servers = self.taskset.tools(self.task)
                     if runtime.interception_only and tool_servers:
                         raise ValueError(
-                            "Docker network_access='interception' does not yet support MCP "
+                            "Docker network_access=false does not yet support MCP "
                             "tool servers; use a taskset without tools"
                         )
                 async with boundary(UserError, "building user simulator"):
@@ -195,7 +195,7 @@ class Rollout:
                         and user.config.colocated
                     ):
                         raise ValueError(
-                            "Docker network_access='interception' does not support a colocated "
+                            "Docker network_access=false does not support a colocated "
                             "user simulator; run the user in its own runtime"
                         )
                 async with (

@@ -32,9 +32,9 @@ class DockerConfig(BaseConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
     workdir: str = "/app"
-    network_access: Literal["full", "interception"] = "full"
-    """Agent-execution networking. `full` preserves host networking; `interception` allows
-    internet-backed setup, then limits the agent to the rollout's interception endpoint."""
+    network_access: bool = True
+    """Agent-execution web access. When false, setup can still use the internet, then the agent
+    is limited to the rollout's interception endpoint."""
     # TaskResources in Modal's units (also settable per-task via Task.resources).
     cpu: float | None = None
     """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
@@ -82,11 +82,11 @@ class DockerRuntime(Runtime):
 
     @classmethod
     def config_reaches_host_locally(cls, config: object) -> bool:
-        return isinstance(config, DockerConfig) and config.network_access == "full"
+        return isinstance(config, DockerConfig) and config.network_access
 
     @property
     def interception_only(self) -> bool:
-        return self.config.network_access == "interception"
+        return not self.config.network_access
 
     async def start(self) -> None:
         try:
