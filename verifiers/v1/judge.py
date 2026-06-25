@@ -58,6 +58,9 @@ class JudgeConfig(BaseClientConfig):
     model: str = "openai/gpt-4.1-mini"
     temperature: float | None = None
     max_tokens: int | None = None
+    prompt: str | None = None
+    """Override the judge's default prompt template (the `Judge.prompt` class attribute), so a
+    taskset's grading prompt is tunable from config without subclassing."""
 
 
 class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
@@ -116,12 +119,14 @@ class Judge(Generic[ParsedT]):
 
     def build_messages(self, **fields: Any) -> str | list[dict[str, Any]]:
         """Prompt-setup hook: turn the `evaluate` fields into the messages to send. The default
-        formats `prompt` into a single user message."""
-        if self.prompt is None:
+        formats the prompt template (the config override, else the `prompt` class attribute) into
+        a single user message."""
+        template = self.config.prompt or self.prompt
+        if template is None:
             raise ValueError(
                 f"{type(self).__name__} has no `prompt`; set it or override build_messages"
             )
-        return self.prompt.format(**fields)
+        return template.format(**fields)
 
     def parse(self, response: JudgeResponse[ParsedT]) -> ParsedT:
         """Parsing hook: turn a `JudgeResponse` into the verdict. The default returns the
