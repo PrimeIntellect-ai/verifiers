@@ -1,8 +1,10 @@
 """The validate `--rich` dashboard: a taskset overview, a progress bar, and one row per task.
 
 The model-free counterpart of the eval dashboard — no rollout phases, tokens, turns, or
-reward, just each task's validation outcome: pending ○ / running ● / valid ✓ / invalid ✗ /
-error ✗ / timeout ⏱. The runner advances a `TaskProgress` per task; this reads them each tick.
+reward, just each task's validation outcome, shown as a bracketed marker that reads at a
+glance — `[pending]` / `[running]` / `[valid]` / `[invalid]` / `[error]` / `[timeout]`,
+padded so the brackets line up in a column. The runner advances a `TaskProgress` per task;
+this reads them each tick.
 """
 
 import contextlib
@@ -27,14 +29,10 @@ _STYLE = {
     "error": "red",
     "timeout": "red",
 }
-_MARK = {
-    "pending": "○",
-    "running": "●",
-    "valid": "✓",
-    "invalid": "✗",
-    "error": "✗",
-    "timeout": "⏱",
-}
+_MARK_WIDTH = max(len(state) for state in _STYLE)
+# Each state name padded to a common width and bracketed, so the `[ ]` line up in a column with
+# the name left-aligned inside — the outcome reads at a glance.
+_MARK = {state: f"[{state:<{_MARK_WIDTH}}]" for state in _STYLE}
 _DONE = ("valid", "invalid", "error", "timeout")
 
 
