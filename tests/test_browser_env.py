@@ -6,7 +6,7 @@ without requiring external services (Browserbase, CUA server).
 
 import os
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from datasets import Dataset
 
 # Skip all tests in this module if browser dependencies are not installed
@@ -38,6 +38,43 @@ class TestBrowserEnvValidation:
                         {"question": ["test"], "answer": ["test"]}
                     ),
                 )
+
+    def test_browser_env_reads_credentials_from_configured_env_vars(self):
+        """Test that BrowserEnv resolves credentials through the configured env vars."""
+        from verifiers.envs.integrations.browser_env.browser_env import BrowserEnv
+
+        mock_dom_mode = MagicMock()
+        mock_dom_mode.register_tools = MagicMock()
+        mock_dom_mode.teardown = AsyncMock()
+
+        with patch.dict(
+            os.environ,
+            {"BB_API_KEY": "env-api-key", "MODEL_KEY": "env-model-key"},
+            clear=True,
+        ):
+            with patch(
+                "verifiers.envs.integrations.browser_env.browser_env.DOMMode",
+                return_value=mock_dom_mode,
+            ) as mock_dom_mode_cls:
+                BrowserEnv(
+                    mode="dom",
+                    project_id="project-id",
+                    browserbase_api_key_var="BB_API_KEY",
+                    model_api_key_var="MODEL_KEY",
+                    dataset=Dataset.from_dict(
+                        {"question": ["test"], "answer": ["test"]}
+                    ),
+                )
+
+        mock_dom_mode_cls.assert_called_once_with(
+            browserbase_api_key="env-api-key",
+            project_id="project-id",
+            model_api_key="env-model-key",
+            stagehand_model="openai/gpt-4o-mini",
+            proxy_model_to_stagehand=False,
+            proxies=False,
+            advanced_stealth=False,
+        )
 
 
 # ============================================================================
@@ -96,6 +133,60 @@ class TestCUAModeInit:
                 )
                 assert isinstance(env._mode_impl, CUAMode)
                 assert env._mode_impl._execution_mode == "local"
+
+    def test_sandbox_mode_uses_prime_default_prebuilt_image(self):
+        """Test sandbox mode defaults to the shared Prime prebuilt image."""
+        from verifiers.envs.integrations.browser_env.modes import cua_mode
+
+        mock_request = MagicMock()
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(cua_mode, "SANDBOX_AVAILABLE", True):
+                with patch.object(
+                    cua_mode,
+                    "CreateSandboxRequest",
+                    return_value=mock_request,
+                ) as mock_request_cls:
+                    mode = cua_mode.CUAMode(execution_mode="sandbox")
+
+        assert mode._sandbox_request is mock_request
+        mock_request_cls.assert_called_once_with(
+            name="cua-server",
+            docker_image="browserbase/cua-server:latest",
+            start_command="./cua-server-linux-x64",
+            cpu_cores=2,
+            memory_gb=4,
+            disk_size_gb=10,
+            gpu_count=0,
+            timeout_minutes=60,
+            environment_vars={
+                "CUA_SERVER_PORT": "3000",
+                "CUA_SERVER_HOST": "0.0.0.0",
+            },
+        )
+
+    def test_sandbox_mode_respects_explicit_prebuilt_image_override(self):
+        """Test sandbox mode passes explicit prebuilt image overrides through."""
+        from verifiers.envs.integrations.browser_env.modes import cua_mode
+
+        mock_request = MagicMock()
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch.object(cua_mode, "SANDBOX_AVAILABLE", True):
+                with patch.object(
+                    cua_mode,
+                    "CreateSandboxRequest",
+                    return_value=mock_request,
+                ) as mock_request_cls:
+                    mode = cua_mode.CUAMode(
+                        execution_mode="sandbox",
+                        prebuilt_image="custom-owner/cua-server:test-tag",
+                    )
+
+        assert mode._sandbox_request is mock_request
+        assert mock_request_cls.call_args.kwargs["docker_image"] == (
+            "custom-owner/cua-server:test-tag"
+        )
 
 
 class TestCUASandboxModeBackwardsCompat:
@@ -451,6 +542,61 @@ class TestDOMModeLLMConfig:
 
         assert config is None
 
+    @pytest.mark.asyncio
+    async def test_create_session_omits_project_id_when_missing(self):
+        """Test Stagehand init passes None for browserbase_project_id when unset."""
+        from verifiers.envs.integrations.browser_env.modes.dom_mode import DOMMode
+
+        mock_session = MagicMock(id="session-id")
+        mock_stagehand = MagicMock()
+        mock_stagehand.sessions = MagicMock(start=AsyncMock(return_value=mock_session))
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch(
+                "verifiers.envs.integrations.browser_env.modes.dom_mode.AsyncStagehand",
+                return_value=mock_stagehand,
+            ) as mock_stagehand_cls:
+                mode = DOMMode(
+                    browserbase_api_key="bb-api-key",
+                    model_api_key="model-api-key",
+                )
+                session = await mode._create_session({})
+
+        assert session is mock_session
+        mock_stagehand_cls.assert_called_once_with(
+            browserbase_api_key="bb-api-key",
+            browserbase_project_id=None,
+            model_api_key="model-api-key",
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_session_includes_project_id_when_present(self):
+        """Test Stagehand init includes browserbase_project_id when provided."""
+        from verifiers.envs.integrations.browser_env.modes.dom_mode import DOMMode
+
+        mock_session = MagicMock(id="session-id")
+        mock_stagehand = MagicMock()
+        mock_stagehand.sessions = MagicMock(start=AsyncMock(return_value=mock_session))
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch(
+                "verifiers.envs.integrations.browser_env.modes.dom_mode.AsyncStagehand",
+                return_value=mock_stagehand,
+            ) as mock_stagehand_cls:
+                mode = DOMMode(
+                    browserbase_api_key="bb-api-key",
+                    project_id="project-id",
+                    model_api_key="model-api-key",
+                )
+                session = await mode._create_session({})
+
+        assert session is mock_session
+        mock_stagehand_cls.assert_called_once_with(
+            browserbase_api_key="bb-api-key",
+            browserbase_project_id="project-id",
+            model_api_key="model-api-key",
+        )
+
 
 # ============================================================================
 # Example Environment Tests
@@ -487,6 +633,32 @@ class TestExampleDatasets:
         assert "start_url" in dataset.column_names
         assert "task_id" in dataset.column_names
         assert len(dataset) >= 1
+
+    def test_dom_example_load_environment_allows_missing_project_id(self):
+        """Test DOM example wrapper no longer requires a project ID."""
+        from environments.browser_dom_example.browser_dom_example import (
+            load_environment,
+        )
+
+        mock_env = MagicMock()
+
+        with patch.dict(
+            os.environ,
+            {
+                "BROWSERBASE_API_KEY": "bb-api-key",
+                "MODEL_API_KEY": "model-api-key",
+                "OPENAI_API_KEY": "judge-api-key",
+            },
+            clear=True,
+        ):
+            with patch(
+                "environments.browser_dom_example.browser_dom_example.BrowserEnv",
+                return_value=mock_env,
+            ) as mock_browser_env:
+                env = load_environment()
+
+        assert env is mock_env
+        assert mock_browser_env.call_args.kwargs["project_id"] is None
 
 
 class TestJudgeAnswer:
