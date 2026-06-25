@@ -1,8 +1,10 @@
 """The validate `--rich` dashboard: a taskset overview, a progress bar, and one row per task.
 
 The model-free counterpart of the eval dashboard — no rollout phases, tokens, turns, or
-reward, just each task's validation outcome: pending ○ / running ● / valid ✓ / invalid ✗ /
-error ✗ / timeout ⏱. The runner advances a `TaskProgress` per task; this reads them each tick.
+reward, just each task's validation outcome, shown as a bracketed marker that reads at a
+glance — `[pending]` / `[running]` / `[valid]` / `[invalid]` / `[error]` / `[timeout]`,
+padded so the brackets line up in a column. The runner advances a `TaskProgress` per task;
+this reads them each tick.
 """
 
 import contextlib
@@ -10,6 +12,7 @@ import time
 from dataclasses import dataclass
 
 from rich.console import Group
+from rich.markup import escape
 from rich.progress_bar import ProgressBar
 from rich.rule import Rule
 from rich.table import Table
@@ -27,14 +30,11 @@ _STYLE = {
     "error": "red",
     "timeout": "red",
 }
-_MARK = {
-    "pending": "○",
-    "running": "●",
-    "valid": "✓",
-    "invalid": "✗",
-    "error": "✗",
-    "timeout": "⏱",
-}
+_MARK_WIDTH = max(len(state) for state in _STYLE)
+# Each state name padded to a common width and bracketed, so the `[ ]` line up in a column with
+# the name left-aligned inside — the outcome reads at a glance. `escape` keeps the brackets
+# literal: Rich parses `[name]` in a cell as markup and would otherwise drop it.
+_MARK = {state: escape(f"[{state:<{_MARK_WIDTH}}]") for state in _STYLE}
 _DONE = ("valid", "invalid", "error", "timeout")
 
 

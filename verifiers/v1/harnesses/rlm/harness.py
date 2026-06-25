@@ -1,12 +1,19 @@
 """The rlm harness: installs the rlm CLI into the runtime and runs the binary.
 
 `RLMHarnessConfig` carries both how to install rlm (repo/branch/token/path) and its
-runtime knobs (`max_depth`, `tools`), which rlm reads from `RLM_*` env vars.
+runtime knobs (`max_depth`, `skills`), which rlm reads from `RLM_*` env vars.
+
+A task's MCP tool servers are passed to rlm via `RLM_MCP_CONFIG` (a standard `mcpServers`
+URL map); rlm exposes each tool as a pre-imported IPython skill the agent calls
+programmatically (`await tools_<name>(...)`), rather than via a native MCP client.
 """
 
 import json
 import logging
 import shlex
+from typing import Literal
+
+from pydantic import model_validator
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import RolloutContext
@@ -15,6 +22,8 @@ from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
+BuiltinSkill = Literal["edit", "search"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/rlm.git"
 # rlm writes its session under $RLM_HOME/sessions/<id>/; point it at a workdir-
@@ -31,13 +40,23 @@ class RLMHarnessConfig(HarnessConfig):
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0
     """Recursion depth rlm may spawn sub-harnesses to (RLM_MAX_DEPTH)."""
-    tools: list[str] | None = None
-    """Built-in rlm tools to enable (RLM_TOOLS); None uses rlm's default set."""
+    skills: list[BuiltinSkill] = []
+    """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
+    The tool set is fixed (ipython); only built-in skills are selectable."""
+
+    @model_validator(mode="after")
+    def reject_disabled_tools(self) -> "RLMHarnessConfig":
+        # rlm's only tool is ipython, which must stay enabled, so there's nothing to disable.
+        if self.disabled_tools:
+            raise ValueError(
+                "the rlm harness has a fixed tool set (ipython) and does not support "
+                "`disabled_tools`; use `skills` to enable built-in skills instead."
+            )
+        return self
 
 
 class RLMHarness(Harness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
-    SUPPORTS_MCP = False
 
     async def setup(self, runtime: Runtime) -> None:
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
@@ -77,11 +96,11 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
-        if self.config.tools is not None or self.config.disabled_tools:
-            tools = self.config.tools if self.config.tools is not None else ["ipython"]
-            disabled_tools = set(self.config.disabled_tools or [])
-            env["RLM_TOOLS"] = ",".join(
-                tool for tool in tools if tool not in disabled_tools
+        if self.config.skills:
+            env["RLM_SKILLS"] = ",".join(self.config.skills)
+        if mcp_urls:
+            env["RLM_MCP_CONFIG"] = json.dumps(
+                {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
         return await runtime.run_program([RLM_BIN, prompt], env)
 
