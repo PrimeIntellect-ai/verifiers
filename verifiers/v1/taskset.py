@@ -241,7 +241,9 @@ class IndexedTasks(Generic[TaskT]):
             self._iter: Iterator[TaskT] | None = iter(tasks)
             self.count: int | None = None
             try:
-                self._tasks.append(next(self._iter))  # assert non-empty; cache the first task
+                self._tasks.append(
+                    next(self._iter)
+                )  # assert non-empty; cache the first task
             except StopIteration:
                 raise ValueError("taskset load_tasks() yielded no tasks") from None
         else:

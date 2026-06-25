@@ -140,7 +140,9 @@ class EnvServer:
         self._count = count
         self._shuffle = shuffle
         self._cursor = 0
-        self._order: list[int] | None = None  # current epoch's permutation (finite only)
+        self._order: list[int] | None = (
+            None  # current epoch's permutation (finite only)
+        )
         self._epoch = 0
 
     def _next_index(self) -> int:

@@ -307,7 +307,9 @@ class LegacyEnvServer(EnvServer):
             self.dataset = self.env.get_dataset()
         except ValueError:
             self.dataset = self.env.get_eval_dataset()
-        self.num_tasks = len(self.dataset)  # v0 datasets are finite; drives the `info` response
+        self.num_tasks = len(
+            self.dataset
+        )  # v0 datasets are finite; drives the `info` response
         # The bridge owns scheduling too: callers pull, the server hands out the next dataset
         # row (shuffled + epoch-looped for a finite v0 dataset).
         self._init_scheduler(self.num_tasks, shuffle)
