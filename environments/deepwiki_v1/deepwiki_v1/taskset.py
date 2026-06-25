@@ -53,5 +53,9 @@ class DeepWikiTaskset(vf.Taskset[DeepWikiTask, DeepWikiConfig]):
     async def answered(
         self, task: DeepWikiTask, trace: vf.Trace, runtime: vf.Runtime
     ) -> float:
-        last = trace.assistant_messages[-1].content if trace.assistant_messages else ""
+        last = (
+            (trace.assistant_messages[-1].content or "")
+            if trace.assistant_messages
+            else ""
+        )
         return float(task.answer.lower() in (last or "").lower())

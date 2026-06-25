@@ -29,7 +29,9 @@ SYSTEM = (
 
 def extract_program(trace: vf.Trace) -> str:
     """The python from the last assistant message's code block (or its raw text)."""
-    text = trace.assistant_messages[-1].content if trace.assistant_messages else ""
+    text = (
+        (trace.assistant_messages[-1].content or "") if trace.assistant_messages else ""
+    )
     match = re.search(r"```(?:python)?\n(.*?)```", text or "", re.DOTALL)
     return (match.group(1) if match else text or "").strip()
 

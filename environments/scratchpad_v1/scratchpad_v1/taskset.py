@@ -58,6 +58,8 @@ class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig, ScratchpadS
     @vf.reward(weight=1.0)
     async def isolated(self, task: ScratchpadTask, trace: vf.Trace) -> float:
         answer = (
-            trace.assistant_messages[-1].content if trace.assistant_messages else ""
+            (trace.assistant_messages[-1].content or "")
+            if trace.assistant_messages
+            else ""
         )
         return float(task.word in (answer or ""))
