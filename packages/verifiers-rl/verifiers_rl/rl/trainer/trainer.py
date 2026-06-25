@@ -22,7 +22,7 @@ from transformers.trainer import Trainer
 import verifiers as vf
 from verifiers.errors import Error
 from verifiers_rl.rl.inference.client import VLLMClient
-from verifiers_rl.rl.trainer.config import RLConfig
+from verifiers_rl.rl.trainer.config import RLConfig, SFTConfig
 from verifiers_rl.rl.trainer.orchestrator import Orchestrator
 from verifiers_rl.rl.trainer.utils import (
     entropy_from_logits,
@@ -494,3 +494,263 @@ class RLTrainer(Trainer):
             and self.state.global_step % self.args.torch_empty_cache_steps == 0
         ):
             clear_device_cache()
+
+
+class SFTTrainer(Trainer):
+    """
+    Supervised Fine-Tuning Trainer following the same pattern as RLTrainer.
+
+    Key differences from RLTrainer:
+    - Uses dataset instead of environment
+    - No orchestrator (no async rollouts)
+    - Simple cross-entropy loss instead of PPO
+    - Optional vLLM for sample generation (not required)
+
+    Similarities to RLTrainer:
+    - Same model loading and LoRA setup
+    - Same logging and metrics patterns
+    - Same configuration structure
+    - Same distributed training support
+    """
+
+    def __init__(
+        self,
+        model: PreTrainedModel | str,
+        train_dataset: Dataset,
+        args: SFTConfig,
+        processing_class: Optional[PreTrainedTokenizerBase] = None,
+        eval_dataset: Optional[Dataset] = None,
+        **kwargs,
+    ):
+        self.logger = logging.getLogger(__name__)
+
+        # Model + tokenizer (same as RLTrainer)
+        if isinstance(model, str):
+            self.model_name = model
+            model, processing_class = vf.get_model_and_tokenizer(
+                model, use_liger=args.use_liger
+            )
+        else:
+            self.model_name = model.config._name_or_path
+        assert isinstance(model, PreTrainedModel)
+
+        # LoRA setup (same as RLTrainer)
+        if args.use_lora and isinstance(args.lora_config, PeftConfig):
+            model = prepare_peft_model(model, args.lora_config, args)
+
+        warnings_issued = getattr(model, "warnings_issued", None)
+        if isinstance(warnings_issued, dict):
+            warnings_issued["estimate_tokens"] = True
+
+        # Initialize parent Trainer
+        super().__init__(
+            model=model,
+            args=args,
+            processing_class=processing_class,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            **kwargs,
+        )
+
+        assert isinstance(self.processing_class, PreTrainedTokenizerBase)
+        if self.processing_class.pad_token is None:
+            self.processing_class.pad_token = self.processing_class.eos_token
+        if self.processing_class.pad_token_id is None:
+            self.processing_class.pad_token_id = self.processing_class.eos_token_id
+        assert self.processing_class.pad_token_id is not None
+
+        # Configuration
+        self.batch_size = args.batch_size
+        self.max_steps = args.max_steps
+        self.max_seq_len = args.max_seq_len
+
+        # Optional vLLM client for sample generation
+        self.use_vllm = args.use_vllm
+        if self.use_vllm:
+            from verifiers_rl.rl.inference.client import VLLMClient
+            self.vllm_client = VLLMClient(
+                host=args.vllm_server_host,
+                port=args.vllm_server_port,
+            )
+            self.vllm_sample_every_n_steps = args.vllm_sample_every_n_steps
+            self.vllm_num_samples = args.vllm_num_samples
+        else:
+            self.vllm_client = None
+
+        # Metrics (same pattern as RLTrainer)
+        self._metrics = {"train": defaultdict(list), "eval": defaultdict(list)}
+        self._textual_logs: dict[str, Any] = {
+            "prompt": deque(),
+            "completion": deque(),
+        }
+
+    def compute_loss(
+        self,
+        model: nn.Module,
+        inputs: dict[str, torch.Tensor],
+        return_outputs: bool = False,
+        num_items_in_batch: torch.Tensor | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, dict[str, torch.Tensor]]]:
+        """
+        Compute standard cross-entropy loss for SFT.
+
+        Much simpler than RLTrainer's PPO loss with importance sampling.
+        """
+        # Forward pass
+        # Get labels, masking pad tokens with -100 so they're ignored in loss
+        labels = inputs.get("labels")
+        if labels is None:
+            labels = inputs["input_ids"].clone()
+            # Mask pad tokens with -100 (HuggingFace ignores this index in loss)
+            attention_mask = inputs.get("attention_mask")
+            if attention_mask is not None:
+                labels[attention_mask == 0] = -100
+
+        outputs = model(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            labels=labels,
+        )
+
+        # Standard cross-entropy loss
+        loss = outputs.loss
+
+        if return_outputs:
+            return loss, {"loss": loss}
+        return loss
+
+    def training_step(
+        self,
+        model: nn.Module,
+        *args,
+        **kwargs,
+    ) -> torch.Tensor:
+        """
+        Simple training step without orchestrator.
+
+        Much simpler than RLTrainer which:
+        - Updates vLLM weights
+        - Gets batch from orchestrator
+        - Handles async rollouts
+        """
+        # Standard training loop (no orchestrator, no rollouts)
+        loss = super().training_step(model, *args, **kwargs)
+
+        # Optional: Generate samples with vLLM (only on main process)
+        if self.use_vllm and self.vllm_client and self.process_index == 0:
+            if self.state.global_step % self.vllm_sample_every_n_steps == 0:
+                self._generate_and_log_samples()
+
+        return loss
+
+    async def _generate_samples_async(self, sample_indices: list[int]) -> list[dict]:
+        """Generate samples asynchronously using vLLM."""
+        samples = []
+        for idx in sample_indices:
+            example = self.train_dataset[idx]
+            # Assuming dataset has 'prompt' field with messages
+            prompt = example.get("prompt", example)
+
+            # Convert prompt to proper format for OpenAI API
+            if isinstance(prompt, str):
+                messages = [{"role": "user", "content": prompt}]
+            elif isinstance(prompt, list):
+                messages = prompt
+            else:
+                messages = [{"role": "user", "content": str(prompt)}]
+
+            # Generate using vLLM (via async OpenAI API)
+            response = await self.vllm_client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=self.max_seq_len,
+                temperature=1.0,
+            )
+
+            completion = response.choices[0].message.content or ""
+
+            samples.append({
+                "prompt": prompt,
+                "completion": completion,
+            })
+
+        return samples
+
+    def _generate_and_log_samples(self):
+        """Generate samples using vLLM and log them."""
+        if not self.vllm_client:
+            return
+
+        # Get a few examples from dataset
+        try:
+            import random
+            import asyncio
+
+            sample_indices = random.sample(
+                range(len(self.train_dataset)),
+                min(self.vllm_num_samples, len(self.train_dataset))
+            )
+
+            # Use single asyncio.run() for all samples (not in loop!)
+            samples = asyncio.run(self._generate_samples_async(sample_indices))
+
+            # Log samples
+            self._log_samples(samples)
+
+        except Exception as e:
+            self.logger.warning(f"Failed to generate vLLM samples: {e}")
+
+    def _log_samples(self, samples: list[dict]):
+        """Log generated samples (similar to RLTrainer's log_rollouts)."""
+        for sample in samples:
+            self._textual_logs["prompt"].append(sample["prompt"])
+            self._textual_logs["completion"].append(sample["completion"])
+
+    def log(self, logs: dict[str, float], start_time: float | None = None) -> None:
+        """
+        Log metrics (same pattern as RLTrainer).
+        """
+        mode = "train" if self.model is not None and self.model.training else "eval"
+        metrics = {
+            key: sum(val) / len(val) for key, val in self._metrics[mode].items()
+        }
+
+        logs = {**logs, **metrics}
+        super().log(logs, start_time)
+        self._metrics[mode].clear()
+
+        if self.accelerator.is_main_process:
+            textual_logs = cast(dict[str, Any], self._textual_logs)
+
+            # Only log if we have samples to display
+            if len(textual_logs["prompt"]) > 0:
+                # Print sample prompts/completions
+                from verifiers.utils.logging_utils import print_prompt_completions_sample
+                print_prompt_completions_sample(
+                    prompts=list(textual_logs["prompt"]),
+                    completions=list(textual_logs["completion"]),
+                    errors=[None] * len(textual_logs["prompt"]),
+                    rewards=[0.0] * len(textual_logs["prompt"]),
+                    step=self.state.global_step,
+                )
+
+                # Log to W&B if available
+                if (
+                    self.args.report_to
+                    and "wandb" in self.args.report_to
+                    and wandb.run is not None
+                ):
+                    import pandas as pd
+
+                    table = {
+                        "step": [str(self.state.global_step)] * len(textual_logs["prompt"]),
+                        "prompt": list(textual_logs["prompt"]),
+                        "completion": list(textual_logs["completion"]),
+                    }
+                    df = pd.DataFrame(table)
+                    wandb.log({"samples": wandb.Table(dataframe=df)})
+
+            # Clear after logging
+            textual_logs["prompt"].clear()
+            textual_logs["completion"].clear()
+

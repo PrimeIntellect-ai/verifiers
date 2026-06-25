@@ -304,6 +304,9 @@ class RLConfig(TrainingArguments):
                     lora_alpha=self.lora_alpha,
                     target_modules=self.lora_target_modules,
                     task_type="CAUSAL_LM",
+                    lora_dropout=self.lora_dropout,
+                    modules_to_save=self.lora_modules_to_save,
+                    use_rslora=self.lora_use_rslora,
                 )
 
         self.per_device_train_batch_size = self.micro_batch_size
@@ -339,4 +342,234 @@ class RLConfig(TrainingArguments):
 
         assert self.rollouts_per_example > 1, (
             "2 or more rollouts per example are required."
+        )
+
+
+@dataclass
+class SFTConfig(TrainingArguments):
+    """
+    Configuration class for SFTTrainer.
+
+    Follows the same pattern as RLConfig but simplified for SFT.
+    """
+
+    _VALID_DICT_FIELDS = TrainingArguments._VALID_DICT_FIELDS
+
+    # Model loading parameters (same as RLConfig)
+    use_liger: bool = field(
+        default=True,
+        metadata={"help": "Whether to use Liger kernel for optimized training."},
+    )
+
+    # LoRA parameters (same as RLConfig)
+    use_lora: bool = field(
+        default=True,
+        metadata={"help": "Whether to use LoRA."},
+    )
+    lora_rank: int = field(
+        default=8,
+        metadata={"help": "LoRA rank."},
+    )
+    lora_alpha: int = field(
+        default=32,
+        metadata={"help": "LoRA alpha."},
+    )
+    lora_dropout: float = field(
+        default=0.0,
+        metadata={"help": "LoRA dropout."},
+    )
+    lora_target_modules: List[str] | str | None = field(
+        default=None,
+        metadata={"help": "LoRA target modules (all linear layers by default)."},
+    )
+    lora_modules_to_save: Optional[List[str]] = field(
+        default=None,
+        metadata={"help": "Full model modules to train (instead of LoRA modules)."},
+    )
+    lora_use_rslora: bool = field(
+        default=False,
+        metadata={"help": "Whether to use RSLoRA."},
+    )
+    lora_config: Optional[LoraConfig] = field(
+        default=None,
+        metadata={"help": "LoRA configuration."},
+    )
+
+    # Dataset parameters (SFT-specific)
+    dataset_name: Optional[str] = field(
+        default=None,
+        metadata={"help": "Name of the dataset to use."},
+    )
+    dataset_split: str = field(
+        default="train",
+        metadata={"help": "Dataset split to use."},
+    )
+
+    # Batch arguments (simpler than RLConfig)
+    batch_size: int = field(
+        default=512,
+        metadata={"help": "Total batch size for training."},
+    )
+    micro_batch_size: int = field(
+        default=8,
+        metadata={"help": "Batch size per device per step."},
+    )
+    max_seq_len: int = field(
+        default=2048,
+        metadata={"help": "Maximum length for training sequences."},
+    )
+
+    # Training parameters (same as RLConfig)
+    max_steps: int = field(
+        default=500,
+        metadata={"help": "Total number of training steps to perform."},
+    )
+    num_train_epochs: int = field(
+        default=1,
+        metadata={"help": "Number of training epochs."},
+    )
+    learning_rate: float = field(
+        default=1e-5,
+        metadata={"help": "Initial learning rate for AdamW optimizer."},
+    )
+    adam_beta1: float = field(
+        default=0.9,
+        metadata={"help": "Beta1 for AdamW optimizer."},
+    )
+    adam_beta2: float = field(
+        default=0.999,
+        metadata={"help": "Beta2 for AdamW optimizer."},
+    )
+    weight_decay: float = field(
+        default=0.0,
+        metadata={"help": "Weight decay for AdamW optimizer."},
+    )
+    max_grad_norm: float = field(
+        default=1.0,
+        metadata={"help": "Max gradient norm for clipping."},
+    )
+
+    # Optional vLLM integration for sampling
+    use_vllm: bool = field(
+        default=False,
+        metadata={"help": "Whether to use vLLM for sample generation during training."},
+    )
+    vllm_sample_every_n_steps: int = field(
+        default=100,
+        metadata={"help": "Generate samples every N steps if use_vllm=True."},
+    )
+    vllm_num_samples: int = field(
+        default=5,
+        metadata={"help": "Number of samples to generate when use_vllm=True."},
+    )
+    vllm_server_host: str = field(
+        default="0.0.0.0",
+        metadata={"help": "Host of the vLLM server to connect to."},
+    )
+    vllm_server_port: int = field(
+        default=8000,
+        metadata={"help": "Port of the vLLM server to connect to."},
+    )
+
+    # Standard TrainingArguments (same as RLConfig)
+    output_dir: str | None = field(
+        default=None,
+        metadata={"help": "Where to store artifacts and checkpoints."},
+    )
+    run_name: Optional[str] = field(
+        default=None,
+        metadata={"help": "An optional experiment name for logging."},
+    )
+    lr_scheduler_type: str | SchedulerType = field(
+        default="constant",
+        metadata={"help": "Learning rate scheduler type."},
+    )
+    bf16: bool = field(
+        default=True,
+        metadata={"help": "Whether to use bfloat16 precision."},
+    )
+    gradient_checkpointing: bool = field(
+        default=False,
+        metadata={"help": "Enable gradient checkpointing to save memory."},
+    )
+    save_strategy: str = field(
+        default="steps",
+        metadata={"help": "When to save checkpoints (no, steps, epoch)."},
+    )
+    save_steps: float = field(
+        default=50,
+        metadata={"help": "Save checkpoint every X updates steps."},
+    )
+    eval_strategy: str = field(
+        default="no",
+        metadata={"help": "When to evaluate (no, steps, epoch)."},
+    )
+    eval_steps: float | None = field(
+        default=50,
+        metadata={"help": "Evaluate every X updates steps."},
+    )
+    save_only_model: bool = field(
+        default=True,
+        metadata={"help": "If True, save only model weights."},
+    )
+    logging_steps: float = field(
+        default=1,
+        metadata={"help": "Log every X updates steps."},
+    )
+    log_on_each_node: bool = field(
+        default=False,
+        metadata={"help": "Whether to log on each node."},
+    )
+    report_to: Optional[Union[str, List[str]]] = field(
+        default="wandb",
+        metadata={"help": "Integration to report results to."},
+    )
+    shuffle_dataset: bool = field(
+        default=True,
+        metadata={"help": "Whether to shuffle the training dataset."},
+    )
+
+    def __post_init__(self):
+        # Configure output dir
+        if self.output_dir is None:
+            if self.run_name is None:
+                self.output_dir = "outputs"
+            else:
+                self.output_dir = f"outputs/{self.run_name}"
+
+        # Configure LoRA (same as RLConfig)
+        if not self.use_lora:
+            self.lora_config = None
+        else:
+            if self.lora_target_modules is None:
+                self.lora_target_modules = [
+                    "q_proj", "v_proj", "k_proj", "o_proj",
+                    "gate_proj", "down_proj", "up_proj",
+                ]
+            if self.lora_config is None:
+                self.lora_config = LoraConfig(
+                    r=self.lora_rank,
+                    lora_alpha=self.lora_alpha,
+                    target_modules=self.lora_target_modules,
+                    task_type="CAUSAL_LM",
+                    lora_dropout=self.lora_dropout,
+                    modules_to_save=self.lora_modules_to_save,
+                    use_rslora=self.lora_use_rslora,
+                )
+
+        # Configure batch sizes
+        self.per_device_train_batch_size = self.micro_batch_size
+        if self.eval_strategy != "no":
+            self.per_device_eval_batch_size = self.micro_batch_size
+
+        super().__post_init__()
+
+        # Calculate gradient accumulation steps to achieve effective batch_size
+        # Must be AFTER super().__post_init__() so world_size is properly initialized
+        num_processes = self.world_size
+        self.gradient_accumulation_steps = self.batch_size // (self.micro_batch_size * num_processes)
+
+        # Validate batch size
+        assert self.batch_size % (self.micro_batch_size * num_processes) == 0, (
+            "batch_size must be divisible by (micro_batch_size * num_processes)."
         )
