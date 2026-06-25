@@ -14,6 +14,7 @@ import contextlib
 import time
 
 from rich.console import Console, Group
+from rich.markup import escape
 from rich.progress_bar import ProgressBar
 from rich.rule import Rule
 from rich.table import Table
@@ -53,8 +54,11 @@ _MARK_LABEL = {
 }
 _MARK_WIDTH = max(len(label) for label in _MARK_LABEL.values())
 # Each label padded to a common width and bracketed, so the `[ ]` line up in a column down the
-# left edge (label left-aligned inside) — the current phase reads at a glance.
-_MARK = {state: f"[{label:<{_MARK_WIDTH}}]" for state, label in _MARK_LABEL.items()}
+# left edge (label left-aligned inside) — the current phase reads at a glance. `escape` keeps the
+# brackets literal: Rich parses `[label]` in a cell as markup and would otherwise drop it.
+_MARK = {
+    state: escape(f"[{label:<{_MARK_WIDTH}}]") for state, label in _MARK_LABEL.items()
+}
 
 
 def _limits(config: EvalConfig) -> list[str]:

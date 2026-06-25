@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 
 from rich.console import Group
+from rich.markup import escape
 from rich.progress_bar import ProgressBar
 from rich.rule import Rule
 from rich.table import Table
@@ -31,8 +32,9 @@ _STYLE = {
 }
 _MARK_WIDTH = max(len(state) for state in _STYLE)
 # Each state name padded to a common width and bracketed, so the `[ ]` line up in a column with
-# the name left-aligned inside — the outcome reads at a glance.
-_MARK = {state: f"[{state:<{_MARK_WIDTH}}]" for state in _STYLE}
+# the name left-aligned inside — the outcome reads at a glance. `escape` keeps the brackets
+# literal: Rich parses `[name]` in a cell as markup and would otherwise drop it.
+_MARK = {state: escape(f"[{state:<{_MARK_WIDTH}}]") for state in _STYLE}
 _DONE = ("valid", "invalid", "error", "timeout")
 
 
