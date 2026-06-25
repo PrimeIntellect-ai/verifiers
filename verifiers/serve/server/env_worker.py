@@ -138,6 +138,7 @@ class EnvWorker:
     async def handle_run_rollout(
         self, request: RunRolloutRequest
     ) -> RunRolloutResponse:
+        self.env.rubric.training_context = request.training_context
         client = await self.resolve_client(request.client_config)
         output = await self.env.run_rollout(
             input=request.input,
@@ -150,6 +151,7 @@ class EnvWorker:
         return RunRolloutResponse(output=output)
 
     async def handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
+        self.env.rubric.training_context = request.training_context
         client = await self.resolve_client(request.client_config)
         outputs = await self.env.run_group(
             group_inputs=request.group_inputs,

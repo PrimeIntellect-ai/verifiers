@@ -51,6 +51,7 @@ class RunRolloutRequest(BaseRequest):
     sampling_args: SamplingArgs
     max_retries: int
     state_columns: list[str] | None
+    training_context: dict | None = None
 
 
 class RunRolloutResponse(BaseResponse):
@@ -67,6 +68,7 @@ class RunGroupRequest(BaseRequest):
     sampling_args: SamplingArgs
     max_retries: int
     state_columns: list[str] | None
+    training_context: dict | None = None
 
 
 class RunGroupResponse(BaseResponse):
