@@ -88,7 +88,9 @@ ClientConfig = Annotated[
 ]
 
 
-def resolve_client(config: BaseClientConfig) -> Client:
+def resolve_api_key(config: BaseClientConfig) -> str:
+    """The API key for `config`: its env var, falling back to the Prime CLI config for a
+    `PRIME_API_KEY`-keyed pinference endpoint. `"EMPTY"` when unset."""
     api_key = os.environ.get(config.api_key_var)
     host = urlparse(config.base_url).hostname or ""
     if (
@@ -97,19 +99,29 @@ def resolve_client(config: BaseClientConfig) -> Client:
         and (host == PRIME_INFERENCE_HOST or host.endswith(f".{PRIME_INFERENCE_HOST}"))
     ):
         api_key = load_prime_config().get("api_key")
-    api_key = api_key or "EMPTY"
+    return api_key or "EMPTY"
+
+
+def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
+    """An `AsyncOpenAI` for `config` (resolved key + extra headers) — for in-env model calls
+    (e.g. a judge) and the training client's engine connection."""
+    return AsyncOpenAI(
+        base_url=config.base_url,
+        api_key=resolve_api_key(config),
+        default_headers=config.headers or None,
+    )
+
+
+def resolve_client(config: BaseClientConfig) -> Client:
     if isinstance(config, TrainClientConfig):
         # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.
-        openai = AsyncOpenAI(
-            base_url=config.base_url,
-            api_key=api_key,
-            default_headers=config.headers or None,
-        )
         return TrainClient(
-            openai,
+            build_async_openai(config),
             pool_size=config.pool_size,
             config=config.renderer,
             renderer_model_name=config.renderer_model_name,
         )
     # The proxy is a raw httpx forwarder; the dialect supplies the auth scheme + upstream path.
-    return EvalClient(config.base_url, api_key, headers=config.headers or None)
+    return EvalClient(
+        config.base_url, resolve_api_key(config), headers=config.headers or None
+    )

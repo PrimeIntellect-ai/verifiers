@@ -25,6 +25,7 @@ from verifiers.v1.cli.output import output_path
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Usage
 from verifiers.v1.utils.format import format_count, format_mean, format_time
 from verifiers.utils.pricing_utils import format_cost_usd
 
@@ -199,8 +200,9 @@ def _breakdown(done: list[Trace]) -> Table | None:
     # cost are summed; each timing phase is averaged over the rollouts that have it timed (averaged
     # per phase rather than summed, since phases run concurrently across rollouts).
     total_in = total_out = total_cached = total_reasoning = 0
-    total_cost = 0.0
-    have_cost = have_cached = have_reasoning = False
+    total_judge_in = total_judge_out = 0
+    total_cost = total_judge_cost = 0.0
+    have_cost = have_cached = have_reasoning = have_judge = False
     phase_secs: dict[str, float] = {}
     phase_count: dict[str, int] = {}
     for trace in done:
@@ -216,12 +218,27 @@ def _breakdown(done: list[Trace]) -> Table | None:
         if trace.usage is not None and trace.usage.cost is not None:
             total_cost += trace.usage.cost
             have_cost = True
+        # Judge / auxiliary scoring calls (off the message graph) shown separately from the agent's.
+        judge = Usage.aggregate(trace.extra_usage)
+        if judge is not None:
+            total_judge_in += judge.input_tokens
+            total_judge_out += judge.completion_tokens
+            if judge.cost is not None:
+                total_judge_cost += judge.cost
+            have_judge = True
         for phase in ("setup", "generation", "finalize", "scoring"):
             span = getattr(trace.timing, phase)
             if span.end:  # phase was timed for this rollout
                 phase_secs[phase] = phase_secs.get(phase, 0.0) + span.duration
                 phase_count[phase] = phase_count.get(phase, 0) + 1
-    if total_in or total_out or have_cost or have_cached or have_reasoning:
+    if (
+        total_in
+        or total_out
+        or have_cost
+        or have_cached
+        or have_reasoning
+        or have_judge
+    ):
         tokens = f"{format_count(total_in)}/{format_count(total_out)} tokens"
         details = []
         if have_cached:
@@ -231,8 +248,15 @@ def _breakdown(done: list[Trace]) -> Table | None:
         if details:
             tokens += f" ({', '.join(details)})"
         usage = [tokens]
+        if have_judge:
+            usage.append(
+                f"+ {format_count(total_judge_in)}/{format_count(total_judge_out)} judge"
+            )
         if have_cost:
-            usage.append(f"total {format_cost_usd(total_cost)}")
+            cost = format_cost_usd(total_cost)
+            if total_judge_cost:
+                cost += f" + {format_cost_usd(total_judge_cost)} judge"
+            usage.append(cost)
         grid.add_row("usage", "  ·  ".join(usage))
     time_segments = [
         f"{phase} {format_time(phase_secs[phase] / phase_count[phase])}"

@@ -169,25 +169,7 @@ def response_from_wire(completion: ChatCompletion) -> Response:
     finish: FinishReason = (
         choice.finish_reason if choice.finish_reason in FINISH_REASONS else None
     )
-    usage = None
-    if completion.usage:
-        cached = (
-            completion.usage.prompt_tokens_details.cached_tokens
-            if completion.usage.prompt_tokens_details
-            else None
-        )
-        reasoning = (
-            completion.usage.completion_tokens_details.reasoning_tokens
-            if completion.usage.completion_tokens_details
-            else None
-        )
-        usage = Usage(
-            prompt_tokens=completion.usage.prompt_tokens - (cached or 0),
-            completion_tokens=completion.usage.completion_tokens,
-            cached_input_tokens=cached,
-            reasoning_tokens=reasoning,
-            cost=getattr(completion.usage, "cost", None),
-        )
+    usage = Usage.from_openai(completion.usage)
     return Response(
         id=completion.id,
         created=completion.created,
