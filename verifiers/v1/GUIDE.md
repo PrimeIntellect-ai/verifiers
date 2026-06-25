@@ -295,12 +295,12 @@ The two hooks:
 
 | hook | default | override for |
 | --- | --- | --- |
-| `build_messages(*, task, trace, **fields) -> str \| Messages` | formats the `prompt` template with `task` + the fields into one user message | a system+user / non-template prompt, or reading the response off the `trace` (return a `vf.Messages` list) |
+| `build_messages(**fields) -> str \| Messages` | formats the `prompt` template with the fields into one user message | a system+user / non-template prompt (return a `vf.Messages` list) |
 | `parse(response) -> ParsedT` | the structured object if `schema` is set, else `response.text` | your verdict (`bool`, a grade `str`, a pydantic model, a `list[float]`, …) |
 
 Good to know:
 
-- **Per-task rubric** rides in via `task` (or a field) — `prompt = "{task.rubric}\n…"` with `evaluate(task=task, trace=trace, …)` (`str.format` does attribute access); or override `build_messages` to template from `task`/`trace`. For per-task *parsing*, parse in the reward, where the task is in scope.
+- **Per-task rubric** is just a field — `prompt = "{task.rubric}\n…"` with `evaluate(trace=trace, task=task, …)` (`str.format` does attribute access on a passed-in `task`). For per-task *parsing*, parse in the reward, where the task is in scope.
 - **Structured outputs**: set `schema` to a pydantic model to use OpenAI structured outputs (where the provider supports it — most do); `JudgeResponse.parsed` is then the validated object. For an unsupported model, prompt for JSON and call `Model.model_validate_json(response.text)` in `parse`.
 - **Multiple / dynamic calls per rollout** (e.g. one per table column): call the low-level `complete(messages, *, schema=, parse=)` directly with `vf.Messages` you build, recording each with `trace.record_judge`.
 - **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`, Prime auto-config). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.

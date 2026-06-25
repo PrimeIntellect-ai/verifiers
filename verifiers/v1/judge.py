@@ -92,18 +92,15 @@ class Judge(Generic[ParsedT]):
         self.config = config or JudgeConfig()
         self.client: AsyncOpenAI = build_async_openai(self.config)
 
-    def build_messages(
-        self, *, task: Any = None, trace: "Trace | None" = None, **fields: Any
-    ) -> str | Messages:
-        """Prompt-setup hook: transform the `task` / `trace` / extra fields into the messages to
-        send (a single user message as a plain `str`, or a `vf.Messages` list). The default formats
-        the `prompt` template with `task` + the extra fields (`{task.question}`, `{answer}`, …);
-        override it to read the response off the `trace`, build a system+user prompt, etc."""
+    def build_messages(self, **fields: Any) -> str | Messages:
+        """Prompt-setup hook: turn the `evaluate` fields into the messages to send (a single user
+        message as a plain `str`, or a `vf.Messages` list). The default formats the `prompt`
+        template with the fields; override it for a system+user / non-template prompt."""
         if self.prompt is None:
             raise ValueError(
                 f"{type(self).__name__} has no `prompt`; set it or override build_messages"
             )
-        return self.prompt.format(task=task, **fields)
+        return self.prompt.format(**fields)
 
     def parse(self, response: JudgeResponse[ParsedT]) -> ParsedT:
         """Parsing hook: turn a `JudgeResponse` into the verdict. The default returns the
@@ -165,12 +162,12 @@ class Judge(Generic[ParsedT]):
         return response
 
     async def evaluate(
-        self, *, task: Any = None, trace: "Trace | None" = None, **fields: Any
+        self, *, trace: "Trace | None" = None, **fields: Any
     ) -> JudgeResponse[ParsedT]:
-        """Render the prompt (`build_messages`), call the judge, and parse the verdict (`parse`).
-        `task` / `trace` / extra fields are handed to `build_messages`; when a `trace` is given the
-        call is recorded onto it (`trace.record_judge`: `info["judge"]` + folded usage)."""
-        messages = self.build_messages(task=task, trace=trace, **fields)
+        """Render the prompt (`build_messages(**fields)`), call the judge, and parse the verdict
+        (`parse`). When a `trace` is given the call is recorded onto it (`trace.record_judge`:
+        `info["judge"]` + folded usage)."""
+        messages = self.build_messages(**fields)
         response = await self.complete(messages, schema=self.schema, parse=self.parse)
         if trace is not None:
             trace.record_judge(response)
