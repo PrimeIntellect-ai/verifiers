@@ -17,6 +17,7 @@ For a heterogeneous taskset (different verification per task), have a single
 
 import asyncio
 import itertools
+import logging
 import random
 from collections.abc import Iterable, Iterator, Mapping, Sized
 from typing import ClassVar, Generic, TypeVar
@@ -32,6 +33,8 @@ from verifiers.v1.mcp import Toolset, User
 from verifiers.v1.state import StateT
 from verifiers.v1.task import TaskT
 from verifiers.v1.trace import Trace
+
+logger = logging.getLogger(__name__)
 
 
 class TasksetConfig(BaseConfig):
@@ -64,7 +67,8 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
 
     UNBOUNDED: ClassVar[bool] = False
     """Whether `load_tasks` may not terminate (an unbounded generator). When True a run must cap
-    it with `num_tasks` and can't `--shuffle` it."""
+    it with `num_tasks`; `--shuffle` is ignored (with a warning), since materializing every task
+    to sample from would never terminate."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
@@ -186,17 +190,19 @@ def select_tasks(
 
     Without `shuffle`, only the first `num_tasks` are drawn, consumed lazily. `shuffle` has to
     see the whole set to sample from it, so it materializes everything first. A taskset that
-    declares itself `UNBOUNDED` therefore must be drawn with a `num_tasks` cap and can't be
-    shuffled — both are refused here rather than hanging on a non-terminating `load_tasks`. The
-    result is always a concrete list (the rest of the pipeline indexes and re-iterates it)."""
+    declares itself `UNBOUNDED` therefore must be drawn with a `num_tasks` cap (refused here
+    rather than hanging on a non-terminating `load_tasks`); `--shuffle` on it is ignored with a
+    warning. The result is always a concrete list (the rest of the pipeline indexes and
+    re-iterates it)."""
     if taskset.UNBOUNDED:
         if shuffle:
-            raise ValueError(
-                f"taskset {type(taskset).__name__} is UNBOUNDED, so --shuffle — which must "
-                "materialize every task to sample from — would never terminate. Drop --shuffle: "
-                "the first --num-tasks tasks of an unbounded taskset are already an arbitrary "
-                "sample."
+            logger.warning(
+                "taskset %s is UNBOUNDED, so --shuffle — which must materialize every task to "
+                "sample from — would never terminate; ignoring it. The first --num-tasks tasks "
+                "of an unbounded taskset are already an arbitrary sample.",
+                type(taskset).__name__,
             )
+            shuffle = False
         if num_tasks is None:
             raise ValueError(
                 f"taskset {type(taskset).__name__} is UNBOUNDED, so it must be drawn with a "

@@ -84,7 +84,8 @@ exported names and finds the single `Taskset` subclass.
 declares it only runs in a container runtime (`docker` / `prime`), so the framework refuses the
 subprocess runtime up front — the taskset-wide counterpart to a task's per-row `image` (see
 [Runtimes](#runtimes)). `UNBOUNDED` declares `load_tasks` may never terminate (see [Loading
-tasks](#loading-tasks)) — a run must then cap it with `-n/--num-tasks` and can't `--shuffle` it.
+tasks](#loading-tasks)) — a run must then cap it with `-n/--num-tasks`; `--shuffle` is ignored
+(with a warning).
 
 ## The task
 
@@ -175,8 +176,8 @@ class SeededTaskset(vf.Taskset[SeededTask, SeededConfig]):
 
 `eval -n 50` then builds exactly 50 tasks, not the whole stream (the runner consumes
 `load_tasks` lazily via `select_tasks`). An `UNBOUNDED` taskset must be drawn with `-n/--num-tasks`
-and can't be `--shuffle`d — both would have to read the whole stream, so they're refused up front
-rather than hanging. The index-addressed env-server (`--server` / `--num-workers`) serves it too:
+(refused up front rather than hanging); `--shuffle` would have to read the whole stream, so it's
+ignored with a warning. The index-addressed env-server (`--server` / `--num-workers`) serves it too:
 it resolves each `task_idx` by consuming the generator on demand and reports no task count, so the
 caller bounds the run with `--num-tasks`. The `wikispeedia_v1` example environment is `UNBOUNDED`
 (it samples article pairs forever, seeded by its config); the built-in `textarena_v1` is a lazy
