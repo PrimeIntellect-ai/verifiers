@@ -32,18 +32,13 @@ are no longer invisible.
 
 from __future__ import annotations
 
-import os
 from typing import Any, Callable, Generic, TypeVar, cast
-from urllib.parse import urlparse
 
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel
 
-from verifiers.utils.client_utils import load_prime_config
-from verifiers.v1.clients.config import (
-    PRIME_INFERENCE_HOST,
-    BaseClientConfig,
-)
+from verifiers.v1.clients.config import BaseClientConfig, build_async_openai
 from verifiers.v1.types import SamplingConfig, StrictBaseModel, Usage
 
 ParsedT = TypeVar("ParsedT")
@@ -57,14 +52,11 @@ class JudgeSamplingConfig(SamplingConfig):
 
 class JudgeConfig(BaseClientConfig):
     """An LLM-judge endpoint. Inherits `base_url` / `api_key_var` / `headers` (with the Prime
-    auto-config) from `BaseClientConfig`; adds the model, sampling, and prompt override. Subclass
-    to add taskset-specific fields."""
+    auto-config) from `BaseClientConfig`; adds the model and sampling. Subclass to add
+    taskset-specific fields."""
 
     model: str = "openai/gpt-4.1-mini"
     sampling: JudgeSamplingConfig = JudgeSamplingConfig()
-    prompt: str | None = None
-    """Override the judge's default prompt template (the `Judge.prompt` class attribute), so a
-    taskset's grading prompt is tunable from config without subclassing."""
 
 
 class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
@@ -82,8 +74,8 @@ class Judge(Generic[ParsedT]):
     """A per-task LLM judge over an OpenAI-compatible endpoint.
 
     Override `build_messages` (prompt setup) and `parse` (verdict parsing) — or just set the
-    `prompt` template and use the defaults — then call `evaluate(trace=..., **fields)`. Set
-    `schema` to opt into structured outputs.
+    `prompt` template and use the defaults — then call `evaluate(**fields)`. Set `schema` to opt
+    into structured outputs.
     """
 
     prompt: str | None = None
@@ -96,40 +88,16 @@ class Judge(Generic[ParsedT]):
 
     def __init__(self, config: JudgeConfig | None = None) -> None:
         self.config = config or JudgeConfig()
-        self._client: AsyncOpenAI | None = None
+        self.client: AsyncOpenAI = build_async_openai(self.config)
 
-    @property
-    def client(self) -> AsyncOpenAI:
-        if self._client is None:
-            cfg = self.config
-            api_key = os.environ.get(cfg.api_key_var)
-            host = urlparse(cfg.base_url).hostname or ""
-            if (
-                not api_key
-                and cfg.api_key_var == "PRIME_API_KEY"
-                and (
-                    host == PRIME_INFERENCE_HOST
-                    or host.endswith(f".{PRIME_INFERENCE_HOST}")
-                )
-            ):
-                api_key = load_prime_config().get("api_key")
-            self._client = AsyncOpenAI(
-                base_url=cfg.base_url,
-                api_key=api_key or "EMPTY",
-                default_headers=cfg.headers or None,
-            )
-        return self._client
-
-    def build_messages(self, **fields: Any) -> str | list[dict[str, Any]]:
+    def build_messages(self, **fields: Any) -> str | list[ChatCompletionMessageParam]:
         """Prompt-setup hook: turn the `evaluate` fields into the messages to send. The default
-        formats the prompt template (the config override, else the `prompt` class attribute) into
-        a single user message."""
-        template = self.config.prompt or self.prompt
-        if template is None:
+        formats the `prompt` class attribute into a single user message."""
+        if self.prompt is None:
             raise ValueError(
                 f"{type(self).__name__} has no `prompt`; set it or override build_messages"
             )
-        return template.format(**fields)
+        return self.prompt.format(**fields)
 
     def parse(self, response: JudgeResponse[ParsedT]) -> ParsedT:
         """Parsing hook: turn a `JudgeResponse` into the verdict. The default returns the
@@ -140,7 +108,7 @@ class Judge(Generic[ParsedT]):
 
     async def complete(
         self,
-        messages: str | list[dict[str, Any]],
+        messages: str | list[ChatCompletionMessageParam],
         *,
         schema: type[BaseModel] | None = None,
         parse: Callable[[JudgeResponse[Any]], Any] | None = None,
