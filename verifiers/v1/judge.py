@@ -8,8 +8,11 @@ leaves the two things that actually differ as hooks: `build_messages` (prompt se
 (verdict parsing). Set `schema` to use OpenAI structured outputs (where the provider supports it),
 in which case `JudgeResponse.parsed` is the validated pydantic object.
 
-    class CorrectnessJudge(vf.BinaryJudge):
+    class CorrectnessJudge(vf.Judge[bool]):
         prompt = "Question: {question}\\nAnswer: {answer}\\nResponse: {response}\\nCorrect? yes/no"
+
+        def parse(self, response: vf.JudgeResponse[bool]) -> bool:
+            return response.text.strip().lower().startswith("yes")
 
     self.judge = CorrectnessJudge(self.config.judge)  # self.config.judge: vf.JudgeConfig
 
@@ -28,7 +31,6 @@ longer invisible.
 from __future__ import annotations
 
 import os
-import re
 from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, cast
 from urllib.parse import urlparse
 
@@ -40,24 +42,27 @@ from verifiers.v1.clients.config import (
     PRIME_INFERENCE_HOST,
     BaseClientConfig,
 )
-from verifiers.v1.types import StrictBaseModel, Usage
+from verifiers.v1.types import SamplingConfig, StrictBaseModel, Usage
 
 if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 ParsedT = TypeVar("ParsedT")
 
-_YES_NO = re.compile(r"\b(yes|no)\b")
+
+class JudgeSamplingConfig(SamplingConfig):
+    """Sampling knobs for a judge call (`temperature` / `top_p` / `reasoning_effort` /
+    `max_tokens`, plus provider-specific keys via `extra='allow'`). Same shape as the rollout's
+    `SamplingConfig` — set e.g. `judge.sampling.max_tokens`."""
 
 
 class JudgeConfig(BaseClientConfig):
     """An LLM-judge endpoint. Inherits `base_url` / `api_key_var` / `headers` (with the Prime
-    auto-config) from `BaseClientConfig`; adds the model and sampling knobs. Subclass to add
-    taskset-specific fields (e.g. a `prompt` override)."""
+    auto-config) from `BaseClientConfig`; adds the model, sampling, and prompt override. Subclass
+    to add taskset-specific fields."""
 
     model: str = "openai/gpt-4.1-mini"
-    temperature: float | None = None
-    max_tokens: int | None = None
+    sampling: JudgeSamplingConfig = JudgeSamplingConfig()
     prompt: str | None = None
     """Override the judge's default prompt template (the `Judge.prompt` class attribute), so a
     taskset's grading prompt is tunable from config without subclassing."""
@@ -67,7 +72,6 @@ class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
     """One judge call's result — returned to the caller and (JSON-serialized) appended to
     `trace.info["judge"]` for debugging, including the provider-reported `usage` (tokens + cost)."""
 
-    model: str
     text: str
     """The judge's raw reply."""
     parsed: ParsedT | None = None
@@ -153,10 +157,7 @@ class Judge(Generic[ParsedT]):
             else list(messages)
         )
         kwargs: dict[str, Any] = {"model": self.config.model, "messages": wire}
-        if self.config.temperature is not None:
-            kwargs["temperature"] = self.config.temperature
-        if self.config.max_tokens is not None:
-            kwargs["max_tokens"] = self.config.max_tokens
+        kwargs.update(self.config.sampling.model_dump(exclude_none=True))
         kwargs.update(sampling)
 
         parsed: Any = None
@@ -170,7 +171,6 @@ class Judge(Generic[ParsedT]):
         text = completion.choices[0].message.content or ""
 
         response: JudgeResponse[Any] = JudgeResponse(
-            model=self.config.model,
             text=text,
             parsed=parsed,
             usage=Usage.from_openai(completion.usage),
@@ -192,13 +192,3 @@ class Judge(Generic[ParsedT]):
         return await self.complete(
             messages, trace=trace, schema=self.schema, parse=self.parse
         )
-
-
-class BinaryJudge(Judge[bool]):
-    """A yes/no judge. `parse` reads the first standalone `yes`/`no` word in the reply, so a
-    verbose verdict ("No, the response mentions yes but ...") is graded on its verdict, not on
-    any `yes` it happens to contain. Set `prompt` (asking the model to answer "yes" or "no")."""
-
-    def parse(self, response: JudgeResponse[bool]) -> bool:
-        match = _YES_NO.search(response.text.lower())
-        return bool(match and match.group(1) == "yes")

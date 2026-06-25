@@ -38,7 +38,7 @@ from verifiers.v1.errors import (
     UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.judge import BinaryJudge, Judge, JudgeConfig, JudgeResponse
+from verifiers.v1.judge import Judge, JudgeConfig, JudgeResponse, JudgeSamplingConfig
 from verifiers.v1.loaders import (
     default_harness_id,
     harness_config_type,
@@ -192,8 +192,8 @@ __all__ = [
     "default_harness_id",
     # judge
     "Judge",
-    "BinaryJudge",
     "JudgeConfig",
+    "JudgeSamplingConfig",
     "JudgeResponse",
     # mcp
     "Toolset",
