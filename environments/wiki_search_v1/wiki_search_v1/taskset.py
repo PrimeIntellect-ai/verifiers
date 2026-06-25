@@ -86,9 +86,7 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
     async def judged(
         self, task: TriviaTask, trace: vf.Trace, runtime: vf.Runtime
     ) -> float:
-        response = (
-            trace.assistant_messages[-1].content if trace.assistant_messages else ""
-        )
+        response = trace.final_assistant_content or ""
         prompt = JUDGE_PROMPT.format(
             question=task.question, answer=task.answer, response=response or ""
         )

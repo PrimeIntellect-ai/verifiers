@@ -66,7 +66,7 @@ class ReverseTaskset(vf.Taskset[ReverseTask, ReverseConfig]):
 
     @vf.reward()
     async def exact_match(self, task: ReverseTask, trace: vf.Trace) -> float:
-        return float(trace.assistant_messages[-1].content.strip() == task.answer)
+        return float((trace.final_assistant_content or "").strip() == task.answer)
 
 
 __all__ = ["ReverseTaskset"]   # vf resolves the taskset by finding this Taskset subclass
@@ -250,7 +250,7 @@ VERIFY = (Path(__file__).parent / "verify.py").read_text()   # PEP 723 header de
 
 @vf.reward()
 async def verify(self, task, trace, runtime) -> float:
-    r = await runtime.run_uv_script(VERIFY, args=[task.answer, trace.assistant_messages[-1].content])
+    r = await runtime.run_uv_script(VERIFY, args=[task.answer, trace.final_assistant_content or ""])
     return float(r.stdout.strip() == "1.0")
 ```
 
@@ -263,7 +263,7 @@ a taskset `@vf.stop` fires. A stop is an `async (self, trace) -> bool` checked b
 ```python
 @vf.stop
 async def saw_answer(self, trace) -> bool:
-    last = trace.assistant_messages[-1].content or ""
+    last = trace.final_assistant_content or ""
     return "FINAL:" in last
 ```
 

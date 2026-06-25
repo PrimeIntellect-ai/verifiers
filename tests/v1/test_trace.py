@@ -82,3 +82,25 @@ def test_wire_trace_round_trip():
 
     # the env-server wire form (a plain model_dump) loads too
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
+
+
+def test_final_assistant_content_uses_latest_branch():
+    # Two leaves off one root → branch[0] ends at "a1", the later branch[1] ends at "a2"; the
+    # trace's final content is the latest branch's (the compaction case).
+    tr = vf.Trace(
+        task=vf.Task(idx=0, prompt="q"),
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
+            MessageNode(parent=0, message=AssistantMessage(content="a1"), sampled=True),
+            MessageNode(parent=0, message=AssistantMessage(content="a2"), sampled=True),
+        ],
+    )
+    branches = tr.branches
+    assert branches[0].final_assistant_content == "a1"
+    assert branches[-1].final_assistant_content == "a2"
+    assert tr.final_assistant_content == "a2"
+
+
+def test_final_assistant_content_none_without_response():
+    tr = vf.Trace(task=vf.Task(idx=0, prompt="q"))
+    assert tr.final_assistant_content is None

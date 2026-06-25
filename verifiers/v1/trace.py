@@ -88,6 +88,15 @@ class Branch(StrictBaseModel):
         return [n.message for n in self.nodes]
 
     @property
+    def final_assistant_content(self) -> str | None:
+        """The text content of this branch's last model-produced assistant message (its final
+        answer), or None if the branch produced no assistant content."""
+        for node in reversed(self.nodes):
+            if node.sampled and isinstance(node.message, AssistantMessage):
+                return node.message.content
+        return None
+
+    @property
     def token_ids(self) -> list[int]:
         """The branch's full token sequence — every node's tokens concatenated in order
         (final-turn prompt + every completion). The training sample's input ids."""
@@ -299,6 +308,14 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         """Whether the most recent assistant message produced non-empty content."""
         last = self._last_assistant()
         return bool(last and last.message.content)
+
+    @property
+    def final_assistant_content(self) -> str | None:
+        """The rollout's final assistant content: the last assistant message of the most recent
+        branch. Under compaction or subagents the final answer lives on the latest branch
+        (`branches[-1]`, last in time), not the first; a linear trace has a single branch. None
+        when no branch produced an assistant response."""
+        return self.branches[-1].final_assistant_content if self.branches else None
 
     @property
     def branches(self) -> list[Branch]:

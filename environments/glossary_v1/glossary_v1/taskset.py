@@ -44,5 +44,5 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
         self, task: GlossaryTask, trace: vf.Trace, runtime: vf.Runtime
     ) -> float:
         # The fact only reaches the answer if the model called the MCP tool.
-        last = trace.assistant_messages[-1].content if trace.assistant_messages else ""
-        return float(task.answer.lower() in (last or "").lower())
+        last = trace.final_assistant_content or ""
+        return float(task.answer.lower() in last.lower())
