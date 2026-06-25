@@ -1,9 +1,10 @@
 """The eval `--rich` dashboard: a config overview, a progress bar, and one line per rollout.
 
-Reads each `Rollout.trace`/`phase` every tick — no extra plumbing. Rows are colored by
-phase/outcome: setup (yellow ○), running (cyan ●), finalize (magenta ◑), scoring (blue ◐),
-success (green ✓), error (red ✗) — the reward shows only once a rollout is fully scored (phase
-DONE), so it never flips as scoring lands. A task's rollouts are grouped adjacently and joined
+Reads each `Rollout.trace`/`phase` every tick — no extra plumbing. Each row carries a bracketed
+phase marker that reads at a glance — `[setup]` (yellow), `[rollout]` (cyan), `[finalize]`
+(magenta), `[scoring]` (blue), `[success]` (green), `[error]` (red) — padded so the brackets
+line up in a column down the left edge. The reward shows only once a rollout is fully scored
+(phase DONE), so it never flips as scoring lands. A task's rollouts are grouped adjacently and joined
 by a left brace (╭│╰), so an episode (a task's n rollouts) reads as a unit. Every started
 rollout stays on screen (finished ones keep their result); the overview + progress sit on top,
 above a rule.
@@ -13,6 +14,7 @@ import contextlib
 import time
 
 from rich.console import Console, Group
+from rich.markup import escape
 from rich.progress_bar import ProgressBar
 from rich.rule import Rule
 from rich.table import Table
@@ -42,13 +44,20 @@ _STYLE = {
     "success": "green",
     "error": "red",
 }
+_MARK_LABEL = {
+    "setup": "setup",
+    "running": "rollout",
+    "finalize": "finalize",
+    "scoring": "scoring",
+    "success": "success",
+    "error": "error",
+}
+_MARK_WIDTH = max(len(label) for label in _MARK_LABEL.values())
+# Each label padded to a common width and bracketed, so the `[ ]` line up in a column down the
+# left edge (label left-aligned inside) — the current phase reads at a glance. `escape` keeps the
+# brackets literal: Rich parses `[label]` in a cell as markup and would otherwise drop it.
 _MARK = {
-    "setup": "○",
-    "running": "●",
-    "finalize": "◑",
-    "scoring": "◐",
-    "success": "✓",
-    "error": "✗",
+    state: escape(f"[{label:<{_MARK_WIDTH}}]") for state, label in _MARK_LABEL.items()
 }
 
 
@@ -158,17 +167,21 @@ def Progress(
 
 def _breakdown(done: list[Trace]) -> Table | None:
     """The per-component view under the headline (summed) reward: a `rewards` row of each named
-    `@reward` contribution and a `metrics` row of each `@metric`, laid out like the Overview (dim
-    label column). Each component is formatted exactly like the headline reward — the
-    error-corrected mean, with the global mean (an errored trace's value counting as 0) in parens
-    when some errored (see `format_mean`). `None` when nothing has scored yet, so the bar shows
-    alone."""
-    if not any(not t.has_error for t in done):
-        return None
+    `@reward` contribution and a `metrics` row of each `@metric`, then a `usage` row (tokens and
+    cost summed over completed rollouts) and a `time` row (each phase averaged over the rollouts
+    that have it timed), laid out like the Overview (dim label column). Reward/metric components
+    are error-corrected means, with the global mean (an errored trace's value counting as 0) in
+    parens when some errored (see `format_mean`); they're skipped when every rollout errored (no
+    clean mean to show), while usage/time still appear — those resources were spent regardless.
+    `None` when no rollout has completed."""
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim", min_width=_LABEL_WIDTH)
     grid.add_column()
-    for label, source in (("rewards", "rewards"), ("metrics", "metrics")):
+    # rewards/metrics are error-corrected means — skip when every rollout errored (no clean mean to
+    # show); usage/time below still cover errored rollouts (their resources were spent regardless).
+    has_clean = any(not t.has_error for t in done)
+    score_rows = (("rewards", "rewards"), ("metrics", "metrics")) if has_clean else ()
+    for label, source in score_rows:
         # every key seen across traces, first-seen order (a trace records only the functions
         # that ran for it, so keys can vary)
         names: list[str] = []
@@ -186,14 +199,63 @@ def _breakdown(done: list[Trace]) -> Table | None:
             )
             segments.append(f"{name} {value}")
         grid.add_row(label, "  ·  ".join(segments))
+
+    # Resource use over every completed rollout (errored ones still spent tokens/time): tokens and
+    # cost are summed; each timing phase is averaged over the rollouts that have it timed (averaged
+    # per phase rather than summed, since phases run concurrently across rollouts).
+    total_in = total_out = total_cached = total_reasoning = 0
+    total_cost = 0.0
+    have_cost = have_cached = have_reasoning = False
+    phase_secs: dict[str, float] = {}
+    phase_count: dict[str, int] = {}
+    for trace in done:
+        prompt, completion, cached, reasoning, _ = _tokens(trace)
+        total_in += prompt
+        total_out += completion
+        if cached is not None:
+            total_cached += cached
+            have_cached = True
+        if reasoning is not None:
+            total_reasoning += reasoning
+            have_reasoning = True
+        if trace.usage is not None and trace.usage.cost is not None:
+            total_cost += trace.usage.cost
+            have_cost = True
+        for phase in ("setup", "generation", "finalize", "scoring"):
+            span = getattr(trace.timing, phase)
+            if span.end:  # phase was timed for this rollout
+                phase_secs[phase] = phase_secs.get(phase, 0.0) + span.duration
+                phase_count[phase] = phase_count.get(phase, 0) + 1
+    if total_in or total_out or have_cost or have_cached or have_reasoning:
+        tokens = f"{format_count(total_in)}/{format_count(total_out)} tokens"
+        details = []
+        if have_cached:
+            details.append(f"{format_count(total_cached)} cached")
+        if have_reasoning:
+            details.append(f"{format_count(total_reasoning)} reasoning")
+        if details:
+            tokens += f" ({', '.join(details)})"
+        usage = [tokens]
+        if have_cost:
+            usage.append(f"total {format_cost_usd(total_cost)}")
+        grid.add_row("usage", "  ·  ".join(usage))
+    time_segments = [
+        f"{phase} {format_time(phase_secs[phase] / phase_count[phase])}"
+        for phase in ("setup", "generation", "finalize", "scoring")
+        if phase_count.get(phase)
+    ]
+    if time_segments:
+        grid.add_row("time", "  ·  ".join(time_segments))
     return grid if grid.row_count else None
 
 
 def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
-    """Input/output tokens for the main branch: output is every assistant (completion) token
-    generated across the branch's turns; input is the last turn's prompt — the full final
-    context the model saw. (Output can exceed the final context — reasoning tokens count toward
-    completions but aren't re-fed — so it's not derived by subtraction.)
+    """Input/output tokens summed across all branches: per branch, output is every assistant
+    (completion) token generated across its turns and input is its last turn's prompt — the full
+    final context the model saw. A rollout yields one training sample per branch (a linear trace
+    is a single branch; compaction and subagents add more), so the totals sum them — matching
+    `Trace.prompt_len` / `Trace.completion_len`. (Output can exceed the final context — reasoning
+    tokens count toward completions but aren't re-fed — so it's not derived by subtraction.)
 
     Prefers the token-id counts; falls back to provider-reported usage when the endpoint returns
     no token ids (e.g. plain OpenAI completions), so the counts aren't shown as 0/0. Returns
@@ -203,11 +265,8 @@ def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
     reasoning = usage.reasoning_tokens if usage else None
     branches = trace.branches
     nbranches = len(branches)
-    if not branches or not branches[0].nodes:
-        return 0, 0, cached, reasoning, nbranches
-    b = branches[0]
-    prompt = b.prompt_len or b.num_prompt_tokens
-    completion = b.completion_len or b.num_completion_tokens
+    prompt = sum(b.prompt_len or b.num_prompt_tokens for b in branches)
+    completion = sum(b.completion_len or b.num_completion_tokens for b in branches)
     return prompt, completion, cached, reasoning, nbranches
 
 
@@ -274,10 +333,10 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             if prompt or completion:
                 tokens = f"{format_count(prompt)}/{format_count(completion)} tokens"
                 details = []
-                if reasoning is not None:
-                    details.append(f"{format_count(reasoning)} reasoning")
                 if cached is not None:
                     details.append(f"{format_count(cached)} cached")
+                if reasoning is not None:
+                    details.append(f"{format_count(reasoning)} reasoning")
                 if details:
                     tokens += f" ({', '.join(details)})"
             left = [
