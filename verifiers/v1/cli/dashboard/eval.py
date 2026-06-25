@@ -183,13 +183,14 @@ def _breakdown(done: list[Trace]) -> Table | None:
         ]
         grid.add_row(label, "  ·  ".join(segments))
 
-    # Resource totals over every completed rollout (errored ones still spent tokens/time): tokens
-    # and cost are summed; wall-clock time is averaged, since rollouts run concurrently and summing
-    # their durations would overcount.
+    # Resource use over every completed rollout (errored ones still spent tokens/time): tokens and
+    # cost are summed; each timing phase is averaged over the rollouts that have it timed (averaged
+    # per phase rather than summed, since phases run concurrently across rollouts).
     total_in = total_out = total_cached = total_reasoning = 0
     total_cost = 0.0
     have_cost = have_cached = have_reasoning = False
-    times: list[float] = []
+    phase_secs: dict[str, float] = {}
+    phase_count: dict[str, int] = {}
     for trace in done:
         prompt, completion, cached, reasoning, _ = _tokens(trace)
         total_in += prompt
@@ -203,15 +204,11 @@ def _breakdown(done: list[Trace]) -> Table | None:
         if trace.usage is not None and trace.usage.cost is not None:
             total_cost += trace.usage.cost
             have_cost = True
-        start = trace.timing.setup.start
-        end = (
-            trace.timing.scoring.end
-            or trace.timing.finalize.end
-            or trace.timing.generation.end
-            or (trace.timing.setup.end if trace.is_completed else 0)
-        )
-        if start and end:
-            times.append(end - start)
+        for phase in ("setup", "generation", "finalize", "scoring"):
+            span = getattr(trace.timing, phase)
+            if span.end:  # phase was timed for this rollout
+                phase_secs[phase] = phase_secs.get(phase, 0.0) + span.duration
+                phase_count[phase] = phase_count.get(phase, 0) + 1
     if total_in or total_out or have_cost or have_cached or have_reasoning:
         tokens = f"{format_count(total_in)}/{format_count(total_out)} tokens"
         details = []
@@ -225,8 +222,13 @@ def _breakdown(done: list[Trace]) -> Table | None:
         if have_cost:
             usage.append(format_cost_usd(total_cost))
         grid.add_row("usage", "  ·  ".join(usage))
-    if times:
-        grid.add_row("time", f"mean {format_time(sum(times) / len(times))}")
+    time_segments = [
+        f"{phase} {format_time(phase_secs[phase] / phase_count[phase])}"
+        for phase in ("setup", "generation", "finalize", "scoring")
+        if phase_count.get(phase)
+    ]
+    if time_segments:
+        grid.add_row("time", "  ·  ".join(time_segments))
     return grid if grid.row_count else None
 
 
