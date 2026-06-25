@@ -55,7 +55,7 @@ class JudgeConfig(BaseClientConfig):
     auto-config) from `BaseClientConfig`; adds the model and sampling. Subclass to add
     taskset-specific fields."""
 
-    model: str = "openai/gpt-4.1-mini"
+    model: str = "openai/gpt-5-mini"
     sampling: JudgeSamplingConfig = JudgeSamplingConfig()
 
 
@@ -133,12 +133,19 @@ class Judge(Generic[ParsedT]):
             completion = await self.client.beta.chat.completions.parse(
                 response_format=schema, **kwargs
             )
-            message = completion.choices[0].message
-            if message.refusal is not None:
+            choice = completion.choices[0]
+            if choice.message.refusal is not None:
                 raise RuntimeError(
-                    f"judge refused structured output: {message.refusal}"
+                    f"judge refused structured output: {choice.message.refusal}"
                 )
-            parsed = message.parsed
+            parsed = choice.message.parsed
+            if parsed is None:
+                # No refusal but no object either — e.g. a truncated/malformed reply. Surface it
+                # rather than returning a None verdict callers read as a (falsy) failure.
+                raise RuntimeError(
+                    f"judge returned no parseable structured output "
+                    f"(finish_reason={choice.finish_reason})"
+                )
         else:
             completion = await self.client.chat.completions.create(**kwargs)
         text = completion.choices[0].message.content or ""

@@ -254,7 +254,7 @@ async def verify(self, task, trace, runtime) -> float:
     return float(r.stdout.strip() == "1.0")
 ```
 
-### LLM judges
+### Judges
 
 When grading can't be deterministic, `vf.Judge` is a reusable LLM judge: it owns the OpenAI client
 (with the Prime key/team fallback), the call, and usage/cost capture, and leaves the two things that
