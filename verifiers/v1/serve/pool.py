@@ -47,7 +47,7 @@ _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=T
 def _arm_teardown(death_pipe=None) -> None:
     """Arm a spawned process (serve_env broker/single server, or pool worker) for clean
     teardown: it inherits no signal handlers, so by default SIGTERM kills it abruptly, skipping
-    asyncio.run()'s serving() cleanup and orphaning host_endpoint tunnels (and sandboxes).
+    asyncio.run()'s serving() cleanup and orphaning host tunnels (and sandboxes).
 
     - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (serve_env swallows it);
     - with `death_pipe`, self-SIGTERM when the parent dies (pipe EOF, even on its SIGKILL) so no

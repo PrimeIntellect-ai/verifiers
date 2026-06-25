@@ -19,6 +19,8 @@ opens the conversation: its first turn is seeded before the model is ever called
 handled out-of-band (run by the harness).
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import json
@@ -26,7 +28,7 @@ import logging
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
@@ -42,10 +44,12 @@ from verifiers.v1.errors import (
     TasksetError,
     UserError,
 )
+from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
+    from verifiers.v1.interception.tunnel import Tunnel
     from verifiers.v1.mcp import Respond
 
 logger = logging.getLogger(__name__)
@@ -58,8 +62,6 @@ logger = logging.getLogger(__name__)
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 _STREAM_QUEUE_MAXSIZE = 16
-# The server binds loopback; callers reach it via localhost or a host tunnel (see `reachable_url`).
-_HOST = "127.0.0.1"
 
 
 def _completion_response(completion: dict | None) -> web.Response:
@@ -133,7 +135,7 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
-    user: "Respond | None" = None
+    user: Respond | None = None
     """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
     injected as a user turn, and the model is re-prompted — all within one program request,
@@ -143,7 +145,7 @@ class RolloutSession:
     every request until the first turn lands on the trace — so a retried opening request (e.g. the
     harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`
     twice and advances the simulator's queue past the opening."""
-    error: "RolloutError | None" = None
+    error: RolloutError | None = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
@@ -167,17 +169,28 @@ class RolloutSession:
         return None
 
 
-class InterceptionServer:
-    """A localhost server that proxies model calls for one or more rollouts. It serves every
+class InterceptionServer(Interception):
+    """A server that proxies model calls for one or more rollouts — and is itself the single-server
+    `Interception` (the custom case; the pool composes many of these for prime). It serves every
     registered dialect's routes (see `dialects.DIALECTS`), so a request's wire format is resolved
     from the endpoint it arrived on — not declared by the harness. Each rollout `register`s a
     `RolloutSession` and gets back a secret; each request is routed to the session whose secret
-    matches its bearer token. A single server can multiplex many rollouts (the basis for
-    `interception.pool`); used 1:1 it's just a server with one session."""
+    matches its bearer token, so one server multiplexes many rollouts.
 
-    def __init__(self) -> None:
+    On enter it binds where its `tunnel` says (`bind_host`/`bind_port`) and makes itself reachable
+    (`base_url` — localhost for a local harness runtime, a tunnel for a remote one); `acquire` then
+    hands each rollout a slot on it."""
+
+    def __init__(self, tunnel: Tunnel, is_local: bool) -> None:
+        super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
+        self.tunnel = tunnel
+        self.is_local = is_local
         self.port = 0
+        self.host = "127.0.0.1"  # actual bind interface decided in __aenter__ (is_local vs tunnel)
+        self.base_url: (
+            str  # set in __aenter__, the URL the harness reaches this server at
+        )
         self.runner: web.AppRunner | None = None
 
     def register(self, session: RolloutSession) -> str:
@@ -205,32 +218,71 @@ class InterceptionServer:
 
         return handler
 
-    async def __aenter__(self) -> "InterceptionServer":
-        app = web.Application(client_max_size=_MAX_REQUEST_BODY)
-        for dialect in DIALECTS:
-            for route in dialect.routes:
-                app.router.add_post(route, self._handler_for(dialect))
-            for aux in dialect.aux_routes:
-                app.router.add_post(aux, self._aux_handler_for(dialect, aux))
-        # The shared-state back-channel (see `verifiers.v1.state`): a rollout's tool/user servers
-        # GET/PUT their `self.state` here, keyed by the same bearer secret as the model routes.
-        app.router.add_get("/state", self.handle_state_get)
-        app.router.add_put("/state", self.handle_state_put)
-        # A forked shared server (see `verifiers.v1.mcp.multiplex`) fetches its rollout's task here
-        # to run `setup_task` per child — a shared server gets no task via env, keyed by the secret.
-        app.router.add_get("/task", self.handle_task_get)
-        self.runner = web.AppRunner(app)
-        await self.runner.setup()
-        site = web.TCPSite(self.runner, _HOST, 0)
-        await site.start()
-        self.port = site._server.sockets[0].getsockname()[1]  # actual ephemeral port
-        logger.info("interception up: url=http://%s:%d", _HOST, self.port)
+    async def __aenter__(self) -> Self:
+        from verifiers.v1.errors import TunnelError
+
+        await super().__aenter__()
+        try:
+            app = web.Application(client_max_size=_MAX_REQUEST_BODY)
+            for dialect in DIALECTS:
+                for route in dialect.routes:
+                    app.router.add_post(route, self._handler_for(dialect))
+                for aux in dialect.aux_routes:
+                    app.router.add_post(aux, self._aux_handler_for(dialect, aux))
+            # The shared-state back-channel (see `verifiers.v1.state`): a rollout's tool/user servers
+            # GET/PUT their `self.state` here, keyed by the same bearer secret as the model routes.
+            app.router.add_get("/state", self.handle_state_get)
+            app.router.add_put("/state", self.handle_state_put)
+            # A forked shared server (see `verifiers.v1.mcp.multiplex`) fetches its rollout's task
+            # here to run `setup_task` per child — keyed by the secret, since it gets no task via env.
+            app.router.add_get("/task", self.handle_task_get)
+            self.runner = web.AppRunner(app)
+            await self.runner.setup()
+            self._stack.push_async_callback(self.runner.cleanup)
+            # A local harness shares the host network → reach the server at localhost on any
+            # ephemeral port, no tunnel. Only a remote harness needs the tunnel, which says where to
+            # bind for it to reach the port (bind_host/bind_port) and `expose`s it outward.
+            if self.is_local:
+                self.host, bind_port = "127.0.0.1", 0
+            else:
+                self.host, bind_port = self.tunnel.bind_host, self.tunnel.bind_port
+            site = web.TCPSite(self.runner, self.host, bind_port)
+            await site.start()
+            # the actual bound port (ephemeral when bind_port is 0)
+            self.port = site._server.sockets[0].getsockname()[1]
+            logger.info("interception up: url=http://%s:%d", self.host, self.port)
+            if self.is_local:
+                self.base_url = f"http://127.0.0.1:{self.port}"
+            else:
+                # Expose the bound port to the remote harness. A tunnel-setup failure surfaces as
+                # `TunnelError`; the wrap is scoped to setup, so a rollout-body error (raised while
+                # the URL is held) propagates unchanged.
+                try:
+                    self.base_url = await self._stack.enter_async_context(
+                        self.tunnel.expose(self.port)
+                    )
+                except Exception as e:
+                    raise TunnelError(
+                        f"interception tunnel (port {self.port}) failed: {e}"
+                    ) from e
+        except BaseException:
+            await self._stack.aclose()
+            raise
         return self
 
     async def __aexit__(self, *exc) -> None:
-        logger.info("interception down: url=http://%s:%d", _HOST, self.port)
-        if self.runner is not None:
-            await self.runner.cleanup()
+        logger.info("interception down: url=http://%s:%d", self.host, self.port)
+        await self._stack.aclose()
+
+    @contextlib.asynccontextmanager
+    async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
+        """Register `session` on this server and yield its `(base_url, secret)`; free the slot on
+        exit. See `interception.base.Slot` for the meaning."""
+        secret = self.register(session)
+        try:
+            yield self.base_url, secret
+        finally:
+            self.unregister(secret)
 
     def _fail(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError

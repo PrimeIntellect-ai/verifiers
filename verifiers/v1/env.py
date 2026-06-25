@@ -23,7 +23,13 @@ from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.types import EnvId
-from verifiers.v1.interception import InterceptionPool, RolloutLimits
+from verifiers.v1.interception import (
+    Interception,
+    InterceptionConfig,
+    PrimeInterceptionConfig,
+    RolloutLimits,
+    make_interception,
+)
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
@@ -113,10 +119,9 @@ class EnvConfig(BaseConfig):
     max_total_tokens: int | None = None
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
     trace's `total_tokens`; framework-enforced between turns."""
-    multiplex: int = Field(32, ge=1)
-    """Rollouts that share one interception server (and, behind a remote runtime, one
-    tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
-    key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
+    interception: InterceptionConfig = PrimeInterceptionConfig()
+    """How the host interception server is reached from a remote runtime: `prime` (prime_tunnel, the
+    default) or `custom` (bring your own endpoint — a reverse proxy, or a direct `http://<host>:<port>`)."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
@@ -284,10 +289,11 @@ class Environment:
         )
         self._warned_resources: set[tuple[str, str]] = set()
         self._shared_urls: dict[str, str] = {}
-        self._interception: InterceptionPool | None = None
+        self._interception: Interception
         """Eval-level serving resources, live only inside `serving()`: shared tool servers
-        ({name: url}) and the interception pool. `episode()` injects them into every rollout
-        so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
+        ({name: url}, `_shared_urls`) and the interception (`_interception`, set in `serving()`).
+        `episode()` injects them into every rollout so neither runner has to thread them through
+        `Episode.run`/`Rollout.run` — and is only valid inside that context."""
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
         """Resolve the runtime config for a task off the harness's runtime (see
@@ -364,13 +370,13 @@ class Environment:
     @contextlib.asynccontextmanager
     async def serving(self, tasks: list[Task]):
         """Hold the env-level serving resources for the duration of an eval: the shared tool
-        servers (built once, see `shared_tools`) and the interception pool. Stash them so
-        every `episode()` built inside this context injects them into its rollouts — that's
-        what keeps both eval runners (in-process and env-server) on one serving path. Build
-        episodes inside this context; the resources are torn down on exit."""
+        servers (built once, see `shared_tools`) and the interception. Stash them so every
+        `episode()` built inside this context injects them into its rollouts — that's what keeps
+        both eval runners (in-process and env-server) on one serving path. Build episodes inside
+        this context; the resources are torn down on exit."""
         async with (
             self.shared_tools(tasks) as shared_urls,
-            self.interception_pool() as interception,
+            self.interception(tasks) as interception,
         ):
             self._shared_urls = shared_urls
             self._interception = interception
@@ -378,14 +384,41 @@ class Environment:
                 yield
             finally:
                 self._shared_urls = {}
-                self._interception = None
+                del self._interception
 
-    def interception_pool(self) -> InterceptionPool:
-        """The shared interception pool for this env's rollouts — one server (+ tunnel
-        behind a remote runtime) per `multiplex` rollouts, grown on demand. Built here,
-        where the harness runtime and `multiplex` live; the caller (eval runner / env
-        server) enters it for the run and tears it down. Pass it to `Episode.run`."""
-        return InterceptionPool(self.harness.config.runtime, self.config.multiplex)
+    def interception(self, tasks: list[Task]) -> Interception:
+        """The interception for this env's rollouts, picked by `interception.type` (see
+        `make_interception`): a pooled `InterceptionPool` for `prime` or a single `InterceptionServer`
+        for `custom`. Reachability is decided from ALL its consumers — the harness AND the tool/user
+        servers, any of which reaches it from its own runtime: localhost only when every consumer is
+        local, else exposed via the configured tunnel (a public URL all of them can reach). Built
+        here, where the runtimes and config live; the caller enters it for the run and tears it down."""
+        is_local = runtime_is_local(
+            self.harness.config.runtime
+        ) and not self._has_remote_server(tasks)
+        return make_interception(is_local, self.config.interception)
+
+    def _has_remote_server(self, tasks: list[Task]) -> bool:
+        """Whether any tool/user server runs in a remote runtime — so the interception must be
+        exposed (a public tunnel) even when the harness is local, since that server reaches the
+        `/state` channel from its own runtime. Placement/runtime is task-agnostic, so read it off the
+        first task (as `shared_tools` does). A colocated server shares the harness's runtime (already
+        covered by the harness check); a `url` server is external (it connects out, not a consumer)."""
+        if not tasks:
+            return False
+        task = tasks[0]
+        for toolset in self.taskset.tools(task):
+            cfg = toolset.config
+            if getattr(cfg, "url", None) or cfg.colocated:
+                continue
+            if not runtime_is_local(cfg.runtime):
+                return True
+        user = self.taskset.user(task)
+        return (
+            user is not None
+            and not user.config.colocated
+            and not runtime_is_local(user.config.runtime)
+        )
 
     @contextlib.asynccontextmanager
     async def shared_tools(self, tasks: list[Task]):

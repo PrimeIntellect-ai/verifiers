@@ -3,7 +3,7 @@
 `expose` (sandbox port -> public internet) uses Modal's own forwarding — a port named via
 `encrypted_ports` at `Sandbox.create`, read back from `sandbox.tunnels()` — so a host-side
 harness/framework can reach a tool/user server hosted in the sandbox. The reverse direction (a
-program in the sandbox reaching a host service) is the shared host-side `host_endpoint` tunnel,
+program in the sandbox reaching a host service) is the shared host-side `Tunnel` (interception.tunnel),
 not the runtime's concern.
 """
 

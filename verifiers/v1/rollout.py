@@ -1,8 +1,8 @@
 """A rollout: one trajectory — drive an harness in a runtime and score its trace.
 
 A Rollout owns a single trajectory end-to-end, including its runtime's lifecycle. It
-makes and starts the runtime, gets an interception endpoint (a slot on the shared pool if
-one is given, else a per-rollout server exposed via its own runtime), then drives the
+makes and starts the runtime, gets an interception endpoint (a slot on the eval's shared
+interception, built by `Environment.serving`), then drives the
 staged lifecycle while the runtime is live — taskset + harness setup, the harness run,
 taskset `finalize`, and per-rollout `@reward`/`@metric` scoring — each under its own stage
 timeout (`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`),
@@ -15,7 +15,6 @@ even if `run()` crashes.
 import asyncio
 import logging
 import time
-from contextlib import asynccontextmanager
 from enum import StrEnum
 
 from verifiers.v1.harness import Harness
@@ -29,17 +28,14 @@ from verifiers.v1.errors import (
     boundary,
 )
 from verifiers.v1.interception import (
-    InterceptionPool,
-    InterceptionServer,
+    Interception,
     RolloutLimits,
     RolloutSession,
 )
 from verifiers.v1.runtimes import (
-    HOST,
     Runtime,
     RuntimeConfig,
     make_runtime,
-    reachable_url,
 )
 from verifiers.v1.mcp import serve_tools, serve_user
 from verifiers.v1.state import state_cls
@@ -69,13 +65,13 @@ class Rollout:
         harness: Harness,
         ctx: RolloutContext,
         runtime_config: RuntimeConfig,
+        interception: Interception,
         setup_timeout: float | None = None,
         harness_timeout: float | None = None,
         finalize_timeout: float | None = None,
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
         shared_urls: dict[str, str] | None = None,
-        interception: InterceptionPool | None = None,
     ) -> None:
         self.task = task
         self.taskset = taskset
@@ -89,7 +85,7 @@ class Rollout:
         self.limits = limits or RolloutLimits()
         self.shared_urls = shared_urls or {}
         """Eval-level shared tool servers ({name: url}) to reuse instead of starting per rollout;
-        the eval-level interception pool. Both injected by `Environment.episode` from the active
+        the eval-level interception. Both injected by `Environment.episode` from the active
         `Environment.serving` context — so a rollout always has them and no runner has to thread
         them in."""
         self.interception = interception
@@ -104,38 +100,11 @@ class Rollout:
         """The live trace, set the moment `run()` creates it; a --rich dashboard reads
         it to show in-flight progress (None until the rollout starts)."""
 
-    @asynccontextmanager
-    async def _serve_interception(
-        self,
-        pool: InterceptionPool | None,
-        runtime: Runtime,
-        session: RolloutSession,
-    ):
-        """Yield `(endpoint, secret, state_port, state_base)` for the harness — a slot on the shared
-        `pool` if one is given, else a per-rollout server exposed via this rollout's own runtime.
-        `endpoint` is the model route; `state_port` the interception server's host port (a per-rollout
-        tool server tunnels to it itself); `state_base` its reachable URL (localhost, or the pool's
-        tunnel) — how a SHARED tool server reaches this rollout's `/state` + `/task` channel."""
-        if pool is not None:
-            async with pool.acquire(session) as (
-                endpoint,
-                secret,
-                state_port,
-                state_base,
-            ):
-                yield endpoint, secret, state_port, state_base
-        else:
-            async with InterceptionServer() as server:
-                secret = server.register(session)
-                # a HOST service the harness (in `runtime`) reaches: localhost or a tunnel
-                async with reachable_url(HOST, server.port, consumer=runtime) as url:
-                    yield f"{url}/v1", secret, server.port, url
-
     async def run(self) -> Trace:
         """Run the rollout and return its trace. Captures expected `RolloutError`s onto
         the trace (a bad rollout is data, not a crash), runs per-rollout scoring while
         the runtime is live, then tears the runtime down in a `finally`. Reuses the
-        eval-level shared tool servers / interception pool injected at construction (see
+        eval-level shared tool servers / interception injected at construction (see
         `self.shared_urls` / `self.interception`)."""
         trace: Trace = Trace(task=self.task, state=state_cls(type(self.taskset))())
         self.trace = trace  # expose for the --rich dashboard
@@ -171,14 +140,13 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
-            async with self._serve_interception(
-                self.interception, runtime, session
-            ) as (
-                endpoint,
-                secret,
-                state_port,
-                state_base,
-            ):
+            # A slot on the eval's shared interception (built by `Environment.serving`, always
+            # present): `base_url` is the interception server's reachable URL for this rollout. The
+            # harness reaches the model at `{base_url}/v1`; tool/user servers reach this rollout's
+            # `/state` + `/task` at `base_url` — it's universally reachable (the interception is
+            # exposed whenever any consumer is remote), so every server uses it directly.
+            async with self.interception.acquire(session) as (base_url, secret):
+                endpoint = f"{base_url}/v1"
                 async with boundary(ToolsetError, "building tool servers"):
                     tool_servers = self.taskset.tools(self.task)
                 async with (
@@ -187,17 +155,15 @@ class Rollout:
                         runtime,
                         self.task,
                         shared_urls=self.shared_urls,
-                        state_port=state_port,
                         state_secret=secret,
-                        state_base=state_base,
+                        state_base=base_url,
                     ) as urls,
                     serve_user(
                         self.taskset.user(self.task),
                         self.task,
                         harness_runtime=runtime,
-                        state_port=state_port,
                         state_secret=secret,
-                        state_base=state_base,
+                        state_base=base_url,
                     ) as session.user,
                 ):
                     if self.task.prompt is None and session.user is None:
