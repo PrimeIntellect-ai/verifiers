@@ -47,6 +47,13 @@ from verifiers.v1.types import (
 )
 
 FINAL_EVENTS = ("response.completed", "response.incomplete", "response.failed")
+# Byte markers for the terminal event types above, in both compact and spaced JSON, so the
+# interception server can cheaply spot the turn-ending event without parsing each delta.
+_TERMINAL_MARKERS = tuple(
+    marker.encode()
+    for event in FINAL_EVENTS
+    for marker in (f'"type":"{event}"', f'"type": "{event}"')
+)
 # Sampling knobs the eval owns, in this format's shape (Responses uses `max_output_tokens`).
 _SAMPLING_KEYS = frozenset({"temperature", "top_p", "max_output_tokens", "max_tokens"})
 
@@ -262,6 +269,11 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
     routes = ("/v1/responses",)
     upstream_path = "/responses"
     response_type = OpenAIResponse
+
+    def is_terminal_event(self, chunk: bytes) -> bool:
+        # A Responses client (e.g. codex) ends its turn on `response.completed`, before the
+        # trailing `[DONE]`, so the turn-ending event is the final event, not the sentinel.
+        return any(marker in chunk for marker in _TERMINAL_MARKERS)
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
         prompt: Messages = []
