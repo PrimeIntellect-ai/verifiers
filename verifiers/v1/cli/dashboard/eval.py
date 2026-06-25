@@ -216,7 +216,7 @@ def _breakdown(done: list[Trace]) -> Table | None:
             total_reasoning += reasoning
             have_reasoning = True
         if trace.usage is not None and trace.usage.cost is not None:
-            total_cost += trace.usage.cost  # includes judge (extra_usage)
+            total_cost += trace.usage.cost
             have_cost = True
         # Judge / auxiliary scoring calls (off the message graph) shown separately from the agent's.
         judge = Usage.aggregate(trace.extra_usage)
@@ -253,9 +253,10 @@ def _breakdown(done: list[Trace]) -> Table | None:
                 f"+{format_count(total_judge_in)}/{format_count(total_judge_out)} judge"
             )
         if have_cost:
-            usage.append(format_cost_usd(total_cost - total_judge_cost))
+            cost = format_cost_usd(total_cost)
             if total_judge_cost:
-                usage.append(f"+{format_cost_usd(total_judge_cost)} judge")
+                cost += f" +{format_cost_usd(total_judge_cost)} judge"
+            usage.append(cost)
         grid.add_row("usage", "  ·  ".join(usage))
     time_segments = [
         f"{phase} {format_time(phase_secs[phase] / phase_count[phase])}"
@@ -277,12 +278,8 @@ def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
 
     Prefers the token-id counts; falls back to provider-reported usage when the endpoint returns
     no token ids (e.g. plain OpenAI completions), so the counts aren't shown as 0/0. Returns
-    the branch count from the same derived view so each dashboard tick materializes it once.
-
-    cached/reasoning come from the sampled nodes' usage (not `trace.usage`, which also folds in
-    `extra_usage`) so they describe the same calls as the in/out counts — judge usage is shown
-    separately by the caller."""
-    usage = Usage.aggregate([n.usage for n in trace.nodes if n.usage is not None])
+    the branch count from the same derived view so each dashboard tick materializes it once."""
+    usage = trace.usage
     cached = usage.cached_input_tokens if usage else None
     reasoning = usage.reasoning_tokens if usage else None
     branches = trace.branches
@@ -350,12 +347,7 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                 or now
             )
             prompt, completion, cached, reasoning, nbranches = _tokens(t)
-            # Agent-only cost, to match the agent-only token counts on this row (judge spend is
-            # broken out in the overview's usage row, not per rollout).
             cost = t.usage.cost if t.usage else None
-            judge = Usage.aggregate(t.extra_usage)
-            if cost is not None and judge is not None and judge.cost is not None:
-                cost -= judge.cost
             tokens = ""
             if prompt or completion:
                 tokens = f"{format_count(prompt)}/{format_count(completion)} tokens"

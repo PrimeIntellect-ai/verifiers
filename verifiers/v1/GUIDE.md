@@ -284,12 +284,13 @@ class MyTaskset(vf.Taskset[MyTask, MyConfig]):
         return 1.0 if result.parsed else 0.0
 ```
 
-`evaluate(*, task=None, trace=None, **fields)` renders the prompt (`build_messages`), calls the
-model, and parses the verdict (`parse`), returning a `JudgeResponse{text, parsed, usage}`. Passing
-`trace=` **records the call onto it** — a typed record appended to `trace.info["judge"]` (for
-debugging) and the call's tokens + cost folded into `trace.usage` (kept off the message graph, so
-the trainer's token math is unaffected). Omit `trace` for a pure call (e.g. in tests); the
-low-level `complete` never records (record it yourself with `trace.record_judge`).
+`evaluate(*, trace=None, **fields)` renders the prompt (`build_messages`), calls the model, and
+parses the verdict (`parse`), returning a `JudgeResponse{text, parsed, usage}`. Passing `trace=`
+**records the call onto it** — a typed record appended to `trace.info["judge"]` (for debugging) and
+the call's tokens + cost added to `trace.extra_usage`, kept separate from the agent's `trace.usage`
+and off the message graph (so the trainer's token math is unaffected); the eval dashboard shows the
+agent's usage and `+judge` separately. Omit `trace` for a pure call (e.g. in tests); the low-level
+`complete` never records (record it yourself with `trace.record_judge`).
 
 The two hooks:
 

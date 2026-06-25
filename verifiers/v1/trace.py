@@ -246,10 +246,11 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     to the base `State`."""
 
     extra_usage: list[Usage] = Field(default_factory=list)
-    """Token usage from model calls that aren't part of the message graph — LLM judges and
-    other auxiliary scoring calls (see `verifiers.v1.judge`). Folded into `usage` so the
-    rollout's reported tokens + cost account for them, but kept off the graph so branch/turn
-    counts and the trainer's token math (`total_tokens`, `branches`) see only sampled nodes."""
+    """Token usage from model calls that aren't part of the message graph — LLM judges and other
+    auxiliary scoring calls (see `verifiers.v1.judge`). Kept separate from `usage` (the agent's own
+    spend) and off the graph, so branch/turn counts and the trainer's token math (`total_tokens`,
+    `branches`) see only sampled nodes; consumers that want a grand total add the two (e.g. the eval
+    dashboard shows the agent's usage and `+judge` separately)."""
 
     is_completed: bool = False
     stop_condition: str | None = None
@@ -300,14 +301,10 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
 
     @property
     def usage(self) -> Usage | None:
-        """Provider-reported usage summed once per actual model call in this rollout —
-        the sampled message nodes plus any `extra_usage` (judge / auxiliary scoring calls)."""
-        return Usage.aggregate(
-            [
-                *(n.usage for n in self.nodes if n.usage is not None),
-                *self.extra_usage,
-            ]
-        )
+        """The agent's provider-reported usage, summed once per actual model call in this rollout's
+        message graph (the sampled nodes). Judge / auxiliary scoring calls are kept separate in
+        `extra_usage` — not folded in here — so consumers add the two when they want a grand total."""
+        return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)
 
     @property
     def has_response(self) -> bool:

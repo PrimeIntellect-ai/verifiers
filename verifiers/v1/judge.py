@@ -24,9 +24,9 @@ in which case `JudgeResponse.parsed` is the validated pydantic object.
         return float(result.parsed)
 
 Passing `trace=` records the call onto it — a typed record appended to `trace.info["judge"]` and
-the call's tokens + cost folded into `trace.extra_usage` (-> `trace.usage`), so judge behaviour and
-spend are no longer invisible. Omit `trace` for a pure call (e.g. in tests); the low-level
-`complete` never records (record it yourself with `trace.record_judge`).
+the call's tokens + cost added to `trace.extra_usage` (kept separate from the agent's `trace.usage`),
+so judge behaviour and spend are no longer invisible. Omit `trace` for a pure call (e.g. in tests);
+the low-level `complete` never records (record it yourself with `trace.record_judge`).
 """
 
 from __future__ import annotations
