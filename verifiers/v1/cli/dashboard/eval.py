@@ -158,11 +158,12 @@ def Progress(
 
 def _breakdown(done: list[Trace]) -> Table | None:
     """The per-component view under the headline (summed) reward: a `rewards` row of each named
-    `@reward` contribution and a `metrics` row of each `@metric`, laid out like the Overview (dim
-    label column). Each component is formatted exactly like the headline reward — the
-    error-corrected mean, with the global mean (an errored trace's value counting as 0) in parens
-    when some errored (see `format_mean`). `None` when nothing has scored yet, so the bar shows
-    alone."""
+    `@reward` contribution and a `metrics` row of each `@metric`, then a `usage` row (tokens and
+    cost summed over all completed rollouts) and a `time` row (mean wall-clock per rollout), laid
+    out like the Overview (dim label column). Reward/metric components are formatted exactly like
+    the headline reward — the error-corrected mean, with the global mean (an errored trace's value
+    counting as 0) in parens when some errored (see `format_mean`). `None` when nothing has scored
+    yet, so the bar shows alone."""
     if not any(not t.has_error for t in done):
         return None
     grid = Table.grid(padding=(0, 2))
@@ -181,6 +182,37 @@ def _breakdown(done: list[Trace]) -> Table | None:
             for name in names
         ]
         grid.add_row(label, "  ·  ".join(segments))
+
+    # Resource totals over every completed rollout (errored ones still spent tokens/time): tokens
+    # and cost are summed; wall-clock time is averaged, since rollouts run concurrently and summing
+    # their durations would overcount.
+    total_in = total_out = 0
+    total_cost = 0.0
+    have_cost = False
+    times: list[float] = []
+    for trace in done:
+        prompt, completion, _, _, _ = _tokens(trace)
+        total_in += prompt
+        total_out += completion
+        if trace.usage is not None and trace.usage.cost is not None:
+            total_cost += trace.usage.cost
+            have_cost = True
+        start = trace.timing.setup.start
+        end = (
+            trace.timing.scoring.end
+            or trace.timing.finalize.end
+            or trace.timing.generation.end
+            or (trace.timing.setup.end if trace.is_completed else 0)
+        )
+        if start and end:
+            times.append(end - start)
+    if total_in or total_out or have_cost:
+        usage = [f"{format_count(total_in)}/{format_count(total_out)} tokens"]
+        if have_cost:
+            usage.append(format_cost_usd(total_cost))
+        grid.add_row("usage", "  ·  ".join(usage))
+    if times:
+        grid.add_row("time", f"mean {format_time(sum(times) / len(times))}")
     return grid if grid.row_count else None
 
 
