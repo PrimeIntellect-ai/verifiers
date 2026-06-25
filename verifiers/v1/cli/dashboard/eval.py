@@ -1,9 +1,10 @@
 """The eval `--rich` dashboard: a config overview, a progress bar, and one line per rollout.
 
-Reads each `Rollout.trace`/`phase` every tick — no extra plumbing. Rows are colored by
-phase/outcome: setup (yellow ○), running (cyan ●), finalize (magenta ◑), scoring (blue ◐),
-success (green ✓), error (red ✗) — the reward shows only once a rollout is fully scored (phase
-DONE), so it never flips as scoring lands. A task's rollouts are grouped adjacently and joined
+Reads each `Rollout.trace`/`phase` every tick — no extra plumbing. Each row carries a bracketed
+phase marker that reads at a glance — `[setup]` (yellow), `[rollout]` (cyan), `[finalize]`
+(magenta), `[scoring]` (blue), `[success]` (green), `[error]` (red) — padded so the brackets
+line up in a column down the left edge. The reward shows only once a rollout is fully scored
+(phase DONE), so it never flips as scoring lands. A task's rollouts are grouped adjacently and joined
 by a left brace (╭│╰), so an episode (a task's n rollouts) reads as a unit. Every started
 rollout stays on screen (finished ones keep their result); the overview + progress sit on top,
 above a rule.
@@ -13,6 +14,7 @@ import contextlib
 import time
 
 from rich.console import Console, Group
+from rich.markup import escape
 from rich.progress_bar import ProgressBar
 from rich.rule import Rule
 from rich.table import Table
@@ -42,13 +44,20 @@ _STYLE = {
     "success": "green",
     "error": "red",
 }
+_MARK_LABEL = {
+    "setup": "setup",
+    "running": "rollout",
+    "finalize": "finalize",
+    "scoring": "scoring",
+    "success": "success",
+    "error": "error",
+}
+_MARK_WIDTH = max(len(label) for label in _MARK_LABEL.values())
+# Each label padded to a common width and bracketed, so the `[ ]` line up in a column down the
+# left edge (label left-aligned inside) — the current phase reads at a glance. `escape` keeps the
+# brackets literal: Rich parses `[label]` in a cell as markup and would otherwise drop it.
 _MARK = {
-    "setup": "○",
-    "running": "●",
-    "finalize": "◑",
-    "scoring": "◐",
-    "success": "✓",
-    "error": "✗",
+    state: escape(f"[{label:<{_MARK_WIDTH}}]") for state, label in _MARK_LABEL.items()
 }
 
 
