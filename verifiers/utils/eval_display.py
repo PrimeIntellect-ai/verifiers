@@ -954,6 +954,70 @@ class EvalDisplay(BaseDisplay):
             self._tail_task = None
         await super().__aexit__(exc_type, exc_val, exc_tb)
 
+    def _make_totals_section(self) -> Group | None:
+        """Aggregate usage and time across all evaluated envs for the run summary.
+
+        Tokens and cost are summed (totals across the whole run); wall-clock time
+        is averaged across envs, since envs are evaluated concurrently and summing
+        their elapsed times would overcount.
+        """
+        total_input = 0.0
+        total_output = 0.0
+        total_cost = 0.0
+        have_usage = False
+        have_cost = False
+        times: list[float] = []
+
+        for idx in range(len(self.configs)):
+            env_state = self.state.envs[idx]
+            if env_state.status in ("completed", "failed"):
+                times.append(env_state.elapsed_time)
+
+            results = env_state.results
+            if results is not None:
+                for output in results["outputs"]:
+                    usage = output.get("token_usage")
+                    if isinstance(usage, dict):
+                        total_input += float(usage.get("input_tokens", 0.0))
+                        total_output += float(usage.get("output_tokens", 0.0))
+                        have_usage = True
+                cost = results["metadata"].get("cost")
+            else:
+                cost = env_state.cost
+            if cost is not None:
+                total_cost += float(cost["total_usd"])
+                have_cost = True
+
+        if not (have_usage or have_cost or times):
+            return None
+
+        rows: list[RenderableType] = []
+        if have_usage or have_cost:
+            kv: dict[str, object] = {}
+            if have_usage:
+                kv["input"] = format_numeric(total_input)
+                kv["output"] = format_numeric(total_output)
+                kv["total"] = format_numeric(total_input + total_output)
+            if have_cost:
+                kv["cost (all)"] = format_cost_usd(total_cost)
+            rows.append(
+                make_kv_line(kv, prefix="  ", prefix_style="dim", section_label="usage")
+            )
+        if times:
+            mean_time = sum(times) / len(times)
+            mins, secs = divmod(int(mean_time), 60)
+            time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
+            rows.append(
+                make_kv_line(
+                    {"mean": time_str},
+                    prefix="  ",
+                    prefix_style="dim",
+                    section_label="time",
+                )
+            )
+
+        return Group(Text("Totals", style="bold"), *rows)
+
     def print_final_summary(self) -> None:
         """Print a comprehensive summary after the display closes."""
         self.console.print()
@@ -1082,6 +1146,10 @@ class EvalDisplay(BaseDisplay):
 
         self.console.print()
         self.console.print(table)
+        totals = self._make_totals_section()
+        if totals is not None:
+            self.console.print()
+            self.console.print(totals)
         self.console.print()
 
     def _make_settings_panel(
