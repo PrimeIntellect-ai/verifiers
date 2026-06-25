@@ -8,6 +8,11 @@ from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
+SCRIPT_SETUP_ENV = {
+    "UV_OFFLINE": "false",
+    "PIP_NO_INDEX": "0",
+    "PIP_CONFIG_FILE": "/dev/null",
+}
 
 
 class MiniSWEAgentHarnessConfig(HarnessConfig):
@@ -23,7 +28,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
-        await runtime.prepare_uv_script(source, self.config.env)
+        await runtime.prepare_uv_script(source, self.config.env | SCRIPT_SETUP_ENV)
 
     async def launch(
         self,
@@ -70,5 +75,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "MSWEA_CONFIGURED": "true",
             "MSWEA_SILENT_STARTUP": "true",
         }
-        program = await runtime.prepare_uv_script(source, self.config.env)
+        program = await runtime.prepare_uv_script(
+            source, self.config.env | SCRIPT_SETUP_ENV
+        )
         return await runtime.run_program([*program, *args], env)

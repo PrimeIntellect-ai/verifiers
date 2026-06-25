@@ -66,6 +66,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "ipykernel",
     "ipywidgets",
+    "nest-asyncio>=1.6.0",
     "reasoning-gym",
     "stagehand>=3.0.0",
     "aiohttp>=3.9.0",

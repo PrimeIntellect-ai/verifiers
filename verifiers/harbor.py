@@ -55,6 +55,13 @@ class HarborStep(HarborModel):
     scoring_timeout: float | None = None
     min_reward: MinReward | None = None
     verifier_env: dict[str, str] = Field(default_factory=dict)
+    artifacts: list["HarborArtifact"] = Field(default_factory=list)
+
+
+class HarborArtifact(HarborModel):
+    source: str
+    destination: str | None = None
+    exclude: list[str] = Field(default_factory=list)
 
 
 class HarborStepResult(HarborModel):
@@ -124,6 +131,7 @@ def load_harbor_steps(
                 scoring_timeout=scaled_timeout(scoring_timeout, timeout_multiplier),
                 min_reward=raw_step.get("min_reward"),
                 verifier_env=raw_step.get("verifier", {}).get("env", {}),
+                artifacts=raw_step.get("artifacts", []),
             )
         )
     return steps
@@ -131,11 +139,18 @@ def load_harbor_steps(
 
 def harbor_task_prompt(task_dir: Path, steps: list[HarborStep]) -> str:
     instruction = task_dir / "instruction.md"
-    if instruction.is_file():
-        return instruction.read_text().strip()
+    if not steps:
+        if instruction.is_file():
+            return instruction.read_text().strip()
+        return "Complete this Harbor task."
     step_names = ", ".join(step.name for step in steps)
-    suffix = f" Steps: {step_names}." if step_names else ""
-    return f"Complete this Harbor multi-step task.{suffix}"
+    header = (
+        instruction.read_text().strip()
+        if instruction.is_file()
+        else f"Complete this Harbor multi-step task. Steps: {step_names}."
+    )
+    step_sections = [f"## Step {step.name}\n\n{step.prompt.strip()}" for step in steps]
+    return "\n\n".join([header, *step_sections])
 
 
 def valid_harbor_task_dir(task_dir: Path) -> bool:

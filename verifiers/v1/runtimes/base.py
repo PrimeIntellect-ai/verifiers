@@ -277,6 +277,10 @@ class Runtime(ABC):
         (which reaches a host port from inside a runtime)."""
         return None
 
+    def host_endpoint_url(self, port: int) -> str | None:
+        """Return a runtime-specific URL for reaching a host service, if needed."""
+        return None
+
 
 TunnelT = TypeVar("TunnelT")
 
@@ -376,6 +380,13 @@ async def reachable_url(
         service is not HOST and not service.is_local
     ):  # in a sandbox → it publishes its own port
         yield await service.expose(port)
+    elif service is HOST and consumer is not None:
+        url = consumer.host_endpoint_url(port)
+        if url is not None:
+            yield url
+        else:
+            async with host_endpoint(port, is_local) as url:
+                yield url
     else:  # on the host network → reach it from wherever the consumer runs
         async with host_endpoint(port, is_local) as url:
             yield url

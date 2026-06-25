@@ -218,8 +218,15 @@ class Rollout:
                     # (like max_turns), even if its last call had failed.
                     try:
                         await asyncio.wait_for(
-                            self.harness.run(
-                                ctx, trace, runtime, endpoint, secret, urls
+                            self.taskset.run_harness(
+                                self.task,
+                                trace,
+                                runtime,
+                                self.harness,
+                                ctx,
+                                endpoint,
+                                secret,
+                                urls,
                             ),
                             self.harness_timeout,
                         )

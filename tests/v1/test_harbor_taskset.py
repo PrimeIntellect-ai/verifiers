@@ -1,4 +1,5 @@
 import subprocess
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from collections.abc import Mapping
@@ -88,10 +89,32 @@ class HarborFixtureHarness(Harness[HarnessConfig]):
                 "mkdir -p /workspace && "
                 "printf ok >/workspace/answer.txt && "
                 "printf ok >/workspace/step1.txt && "
-                "printf ok >/workspace/step2.txt",
+                "printf ok >/workspace/step2.txt && "
+                "mkdir -p /workspace/examples/step1 /workspace/examples/step2 && "
+                "printf saved >/workspace/examples/step1/main.py && "
+                "printf junk >/workspace/examples/step1/cache.tmp && "
+                "printf saved >/workspace/examples/step2/main.py && "
+                "printf junk >/workspace/examples/step2/cache.tmp",
             ],
             {},
         )
+
+
+class RecordingStepHarness:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def run(
+        self,
+        ctx: RolloutContext,
+        trace: Trace,
+        runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+    ) -> None:
+        self.prompts.append(trace.task.prompt)
+        trace.stop("agent_completed")
 
 
 def docker_available() -> bool:
@@ -162,6 +185,7 @@ def make_multi_step_e2e_task(root: Path) -> Path:
 
         [[steps]]
         name = "01_step"
+        artifacts = [{source = "/workspace/examples/step1", destination = "step1", exclude = ["*.tmp"]}]
         [steps.agent]
         timeout_sec = 60.0
         [steps.verifier]
@@ -169,6 +193,7 @@ def make_multi_step_e2e_task(root: Path) -> Path:
 
         [[steps]]
         name = "02_step"
+        artifacts = [{source = "/workspace/examples/step2", destination = "step2", exclude = ["*.tmp"]}]
         [steps.agent]
         timeout_sec = 60.0
         [steps.verifier]
@@ -250,6 +275,8 @@ def test_harbor_loads_multi_step_task(
     task = taskset.load_tasks()[0]
 
     assert task.prompt.startswith("Complete this Harbor multi-step task.")
+    assert "01_step instruction" in task.prompt
+    assert "02_step instruction" in task.prompt
     assert task.workdir == "/workspace/examples"
     assert task.resources.memory == 1.0
     assert task.resources.disk == 2.0
@@ -313,6 +340,38 @@ async def test_harbor_v1_multi_step_rollout_records_step_results_in_real_docker_
     }
 
 
+@pytest.mark.asyncio
+@pytest.mark.docker
+async def test_harbor_v1_multi_step_rollout_records_declared_step_artifacts(
+    tmp_path: Path,
+) -> None:
+    if not docker_available():
+        pytest.skip("docker daemon is not available")
+    make_multi_step_e2e_task(tmp_path)
+    taskset = HarborTaskset(
+        HarborConfig(dataset=str(tmp_path), dockerfile_policy="ignore")
+    )
+    task = taskset.load_tasks()[0]
+
+    trace = await run_harbor_rollout(taskset, task)
+
+    assert trace.errors == []
+    assert trace.info["harbor_step_artifacts"] == [
+        {
+            "step": "01_step",
+            "source": "/workspace/examples/step1",
+            "destination": "step1",
+            "files": [{"path": "main.py", "content": "c2F2ZWQ="}],
+        },
+        {
+            "step": "02_step",
+            "source": "/workspace/examples/step2",
+            "destination": "step2",
+            "files": [{"path": "main.py", "content": "c2F2ZWQ="}],
+        },
+    ]
+
+
 def test_harbor_multi_step_timeout_is_unbounded_when_any_step_is_unbounded(
     tmp_path: Path,
 ) -> None:
@@ -333,6 +392,54 @@ def test_harbor_multi_step_timeout_is_unbounded_when_any_step_is_unbounded(
     assert task.steps[0].scoring_timeout is None
     assert task.timeout.harness == 120.0
     assert task.timeout.scoring is None
+
+
+@pytest.mark.asyncio
+async def test_harbor_multi_step_harness_runs_once_per_step_with_step_timeouts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    task_dir = make_multi_step_task(tmp_path)
+    taskset = HarborTaskset(HarborConfig(dataset=tmp_path.as_posix()))
+    task = parse_task(task_dir, 0, taskset.config)
+    trace = Trace(task=task)
+    harness = RecordingStepHarness()
+    timeouts: list[float | None] = []
+
+    async def recording_wait_for(awaitable, timeout):
+        timeouts.append(timeout)
+        return await awaitable
+
+    monkeypatch.setattr(
+        "verifiers.v1.tasksets.harbor.taskset.asyncio.wait_for",
+        recording_wait_for,
+    )
+
+    caplog.set_level(logging.INFO, logger="verifiers.v1.tasksets.harbor")
+    await taskset.run_harness(
+        task,
+        trace,
+        FakeRuntime([]),
+        harness,
+        RolloutContext(model="unused", client=DummyClient(), sampling=SamplingConfig()),
+        "endpoint",
+        "secret",
+        {},
+    )
+
+    assert harness.prompts == ["01_step instruction", "02_step instruction"]
+    assert timeouts == [60.0, 60.0]
+    assert trace.task is task
+    assert trace.stop_condition == "agent_completed"
+    assert [
+        record.message
+        for record in caplog.records
+        if record.message.startswith("harbor step harness")
+    ] == [
+        "harbor step harness start: task=phase_2 step=01_step index=1/2 timeout=60.0",
+        "harbor step harness end: task=phase_2 step=01_step index=1/2 stop=agent_completed",
+        "harbor step harness start: task=phase_2 step=02_step index=2/2 timeout=60.0",
+        "harbor step harness end: task=phase_2 step=02_step index=2/2 stop=agent_completed",
+    ]
 
 
 def make_dockerfile_task(root: Path) -> Path:
