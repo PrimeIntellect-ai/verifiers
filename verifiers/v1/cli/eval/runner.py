@@ -190,8 +190,18 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         logger.info("results: %s", out)
         request_concurrency = config.max_concurrent
         if request_concurrency:
-            # A unit pulls one task and runs `num_rollouts` of it together, so it costs
-            # `num_rollouts` rollout slots; max_concurrent bounds rollouts, not requests.
+            # A unit pulls one task and runs `num_rollouts` of it together in one indivisible
+            # `run_group` request, so it costs `num_rollouts` rollout slots; max_concurrent bounds
+            # rollouts, not requests. A group can't be split, so the cap can't go below one group.
+            if request_concurrency < config.num_rollouts:
+                logger.warning(
+                    "max_concurrent=%d < num_rollouts=%d: a group's rollouts run together in one "
+                    "request, so %d run concurrently regardless of max_concurrent (a group is "
+                    "indivisible under task-less pull).",
+                    request_concurrency,
+                    config.num_rollouts,
+                    config.num_rollouts,
+                )
             request_concurrency = max(1, request_concurrency // config.num_rollouts)
         semaphore = (
             asyncio.Semaphore(request_concurrency) if request_concurrency else None
