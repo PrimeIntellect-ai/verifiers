@@ -31,6 +31,8 @@ from verifiers.v1.serve.types import (
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    SampleRequest,
+    SampleResponse,
 )
 from verifiers.v1.task import WireTask
 from verifiers.v1.trace import Trace
@@ -139,13 +141,21 @@ class EnvClient:
         """Return the taskset `num_tasks` (None when the taskset is unbounded) + `requires_group_scoring`."""
         return await self._request(InfoRequest(), InfoResponse)
 
+    async def sample(self) -> WireTask:
+        """Pull the next task (the server owns the cursor + shuffle/epoch). Echo it back to
+        `run_rollout` to run rollouts of it — lets the caller bound concurrency per rollout while
+        a group still shares one task."""
+        response = await self._request(SampleRequest(), SampleResponse)
+        return response.task
+
     async def run_rollout(
-        self, client: ClientConfig, model: str, sampling: SamplingConfig
+        self, task: WireTask, client: ClientConfig, model: str, sampling: SamplingConfig
     ) -> Trace[WireTask]:
-        """Pull the next task and run one rollout; return a typed `Trace[WireTask]`. The task
-        the server served is identified by `trace.task.idx`."""
+        """Run one rollout of `task` (as returned by `sample()`); return a typed `Trace[WireTask]`."""
         response = await self._request(
-            RunRolloutRequest(client=client, model=model, sampling=sampling),
+            RunRolloutRequest(
+                task=task.model_dump(), client=client, model=model, sampling=sampling
+            ),
             RunRolloutResponse,
         )
         return response.trace

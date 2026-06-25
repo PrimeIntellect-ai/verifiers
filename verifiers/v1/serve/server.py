@@ -42,6 +42,8 @@ from verifiers.v1.serve.types import (
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    SampleRequest,
+    SampleResponse,
 )
 from verifiers.v1.types import SamplingConfig
 
@@ -68,6 +70,9 @@ class EnvServer:
         )
         self.num_tasks: int | None = self._index.count
         self._init_scheduler(self.num_tasks, config.shuffle)
+        # The concrete task type, to rebuild a task that round-tripped through `sample()` →
+        # caller → `run_rollout(task)` (IndexedTasks guarantees a first task to read it from).
+        self._task_type = type(self._index[0])
         self.requires_group_scoring = bool(
             discover_decorated(self.env.taskset, "group_reward")
         )
@@ -168,9 +173,16 @@ class EnvServer:
         """The next task to serve, resolved through `IndexedTasks`."""
         return self._index[self._next_index()]
 
+    def _sample(self, req: SampleRequest) -> SampleResponse:
+        # Pull the next task (cursor + shuffle/epoch are server-owned); the caller echoes it back
+        # to `run_rollout` to run rollouts of it. Lets the caller bound concurrency per rollout
+        # (each `run_rollout` is one permit) while a group still shares one task.
+        return SampleResponse.model_construct(task=self._next_task())
+
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self._next_task(), ctx, n=1)
+        task = self._task_type.model_validate(req.task)
+        episode = self.env.episode(task, ctx, n=1)
         traces = await episode.run()
         # Trust the concrete trace; serialize it once before client-side re-typing.
         return RunRolloutResponse.model_construct(trace=traces[0])
@@ -195,6 +207,8 @@ class EnvServer:
                     num_tasks=self.num_tasks,
                     requires_group_scoring=self.requires_group_scoring,
                 )
+            elif route == "sample":
+                response = self._sample(SampleRequest.model_validate(raw))
             elif route == "run_rollout":
                 response = await self._run_rollout(
                     RunRolloutRequest.model_validate(raw)

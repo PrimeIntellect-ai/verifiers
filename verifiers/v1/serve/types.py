@@ -46,8 +46,25 @@ class InfoResponse(BaseResponse):
     """Whether the taskset defines `@group_reward`s (caller must use `run_group`)."""
 
 
+class SampleRequest(BaseRequest):
+    method: ClassVar[str] = "sample"
+
+
+class SampleResponse(BaseResponse):
+    task: WireTask | None = None
+    """The next task the server pulls (cursor + shuffle/epoch live on the server). The caller
+    echoes it back to `run_rollout` to run rollouts of it — it never addresses tasks by index."""
+
+    @field_serializer("task")
+    def _ser_task(self, task: "WireTask | None") -> dict | None:
+        return task.model_dump() if task is not None else None
+
+
 class RunRolloutRequest(BaseRequest):
     method: ClassVar[str] = "run_rollout"
+    task: dict
+    """The task to run, as returned by `sample()` (its `model_dump`). Echoed back so the server
+    runs this exact task — the caller never addresses the dataset by index."""
     client: ClientConfig
     model: str
     sampling: SamplingConfig

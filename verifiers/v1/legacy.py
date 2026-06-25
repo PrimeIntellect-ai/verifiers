@@ -28,6 +28,8 @@ from verifiers.v1.serve.types import (
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    SampleRequest,
+    SampleResponse,
 )
 from verifiers.v1.task import WireTask
 from verifiers.v1 import graph
@@ -382,8 +384,13 @@ class LegacyEnvServer(EnvServer):
             state_columns=["trajectory"],
         )
 
+    def _sample(self, req: SampleRequest) -> SampleResponse:
+        # The bridge holds the dataset, so the task only needs to carry its index — the caller
+        # echoes it back to `run_rollout`, which re-fetches the row by `idx`.
+        return SampleResponse.model_construct(task=WireTask(idx=self._next_index()))
+
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
-        idx = self._next_index()
+        idx = int(req.task["idx"])
         out = await self._run_v0(idx, req.client, req.model, req.sampling)
         return RunRolloutResponse(trace=rollout_output_to_trace(out, idx).model_dump())
 
