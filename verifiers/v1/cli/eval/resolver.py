@@ -3,7 +3,6 @@
 from pydantic_config import cli
 
 from verifiers.v1.cli.eval.resume import load_resume_config, split_resume
-from verifiers.v1.cli.output import read_run_info
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
@@ -24,12 +23,7 @@ def resolve_eval(argv: list[str], *, prog: str = "eval run") -> EvalConfig:
         raise ValueError("--resume takes no other arguments")
     if resume_dir is not None:
         config = load_resume_config(resume_dir)
-        run_path = resume_dir / "run.json"
-        config.uuid = (
-            read_run_info(resume_dir).run_id
-            if run_path.exists()
-            else resume_dir.resolve().name
-        )
+        config.uuid = resume_dir.resolve().name
         return config
 
     if (

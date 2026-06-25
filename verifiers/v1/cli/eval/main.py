@@ -21,13 +21,7 @@ from pydantic_config import ConfigFileError, cli
 import verifiers.v1 as vf
 from verifiers.v1.cli.eval.resolver import resolve_eval
 from verifiers.v1.cli.eval.runner import run_eval
-from verifiers.v1.cli.output import (
-    PROTOCOL_VERSION,
-    TRACE_SCHEMA_VERSION,
-    output_path,
-    write_config,
-    write_run_info,
-)
+from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import narrow_config, with_positional_taskset
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.utils.logging import setup_logging
@@ -41,10 +35,7 @@ USAGE = (
     "       eval --protocol-version"
 )
 RESOLVE_USAGE = "usage: eval resolve --format json <eval options>"
-VERSIONS = {
-    "protocol_version": PROTOCOL_VERSION,
-    "trace_schema_version": TRACE_SCHEMA_VERSION,
-}
+VERSIONS = {"protocol_version": 1, "trace_schema_version": 1}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -97,7 +88,6 @@ def main(argv: list[str] | None = None) -> None:
         config = resolve_eval(args, prog=prog)
     except (ConfigFileError, ValueError) as exc:
         raise SystemExit(f"{USAGE}\n{exc}") from exc
-    write_run_info(output_path(config), config.uuid)
 
     if config.dry_run:
         setup_logging("DEBUG" if config.verbose else "INFO")
