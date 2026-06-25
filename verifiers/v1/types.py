@@ -185,22 +185,21 @@ class Usage(StrictBaseModel):
         values = list(usages)
         if not values:
             return None
+        # For the optional fields (cached / reasoning / cost), sum the responses that report them
+        # and yield None only when *no* response does — so one response omitting a field (e.g. a
+        # judge whose provider doesn't report reasoning or cost) doesn't null out the whole total.
         cached = [
-            usage.cached_input_tokens
-            for usage in values
-            if usage.cached_input_tokens is not None
+            u.cached_input_tokens for u in values if u.cached_input_tokens is not None
         ]
-        reasoning = [usage.reasoning_tokens for usage in values]
-        # Sum the reported costs; only None when no response reported a cost — so one cost-less
-        # response (e.g. a judge on a provider that omits cost) doesn't null out the whole total.
-        costs = [usage.cost for usage in values if usage.cost is not None]
+        reasoning = [
+            u.reasoning_tokens for u in values if u.reasoning_tokens is not None
+        ]
+        costs = [u.cost for u in values if u.cost is not None]
         return cls(
             prompt_tokens=sum(usage.prompt_tokens for usage in values),
             completion_tokens=sum(usage.completion_tokens for usage in values),
             cached_input_tokens=sum(cached) if cached else None,
-            reasoning_tokens=sum(reasoning)
-            if all(v is not None for v in reasoning)
-            else None,
+            reasoning_tokens=sum(reasoning) if reasoning else None,
             cost=sum(costs) if costs else None,
         )
 
