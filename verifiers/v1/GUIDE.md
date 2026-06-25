@@ -82,7 +82,7 @@ exported names and finds the single `Taskset` subclass.
 
 **Capability flags.** A taskset declares its capabilities with two class vars:
 
-| Var | Default | Description |
+| name | default | description |
 | --- | --- | --- |
 | `NEEDS_CONTAINER` | `False` | The taskset only runs in a container runtime (`docker` / `prime`); the framework refuses the subprocess runtime up front. The taskset-wide counterpart to a task's per-row `image` (see [Runtimes](#runtimes)). |
 | `UNBOUNDED` | `False` | `load_tasks` may never terminate (see [Loading tasks](#loading-tasks)). A run must cap it with `-n/--num-tasks` (refused up front otherwise, rather than hanging); `--shuffle` is ignored with a warning (vary the stream with a config `seed` instead). |
@@ -556,7 +556,7 @@ uv run eval gsm8k-v1 -n 1 --harness.id rlm   # same taskset, different driver
 Class vars on the harness gate which tasksets it can run, so an incompatible pairing fails fast at
 load instead of mis-running:
 
-| Var | Default | Description |
+| name | default | description |
 | --- | --- | --- |
 | `SUPPORTS_MCP` | `True` | exposes the task's MCP tools to the model (set `False` for a harness with no MCP client) |
 | `SUPPORTS_USER_SIM` | `False` | drives a task's user simulator (multi-turn user injection) |
