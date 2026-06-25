@@ -260,8 +260,8 @@ def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
     reasoning = usage.reasoning_tokens if usage else None
     branches = trace.branches
     nbranches = len(branches)
-    prompt = sum(b.prompt_len or b.num_prompt_tokens for b in branches)
-    completion = sum(b.completion_len or b.num_completion_tokens for b in branches)
+    prompt = sum(b.input_len for b in branches)
+    completion = sum(b.output_len for b in branches)
     return prompt, completion, cached, reasoning, nbranches
 
 
