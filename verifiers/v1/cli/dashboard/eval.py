@@ -220,7 +220,7 @@ def _breakdown(done: list[Trace]) -> Table | None:
             tokens += f" ({', '.join(details)})"
         usage = [tokens]
         if have_cost:
-            usage.append(format_cost_usd(total_cost))
+            usage.append(f"total {format_cost_usd(total_cost)}")
         grid.add_row("usage", "  ·  ".join(usage))
     time_segments = [
         f"{phase} {format_time(phase_secs[phase] / phase_count[phase])}"
