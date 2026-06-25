@@ -19,20 +19,19 @@ in which case `JudgeResponse.parsed` is the validated pydantic object.
     @vf.reward
     async def correct(self, task, trace) -> float:
         result = await self.judge.evaluate(
-            question=task.question, answer=task.answer, response=...
+            trace=trace, question=task.question, answer=task.answer, response=...
         )
-        trace.record_judge(result)
         return float(result.parsed)
 
-`evaluate` (and the low-level `complete`) are pure — data in, `JudgeResponse` out. Call
-`trace.record_judge(result)` to append a typed record to `trace.info["judge"]` and fold the
-call's tokens + cost into `trace.extra_usage` (-> `trace.usage`), so judge behaviour and spend
-are no longer invisible.
+Passing `trace=` records the call onto it — a typed record appended to `trace.info["judge"]` and
+the call's tokens + cost folded into `trace.extra_usage` (-> `trace.usage`), so judge behaviour and
+spend are no longer invisible. Omit `trace` for a pure call (e.g. in tests); the low-level
+`complete` never records (record it yourself with `trace.record_judge`).
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, cast
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel
@@ -40,6 +39,9 @@ from pydantic import BaseModel
 from verifiers.v1.clients.config import BaseClientConfig, build_async_openai
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.types import Messages, SamplingConfig, StrictBaseModel, Usage
+
+if TYPE_CHECKING:
+    from verifiers.v1.trace import Trace
 
 ParsedT = TypeVar("ParsedT")
 
@@ -90,15 +92,18 @@ class Judge(Generic[ParsedT]):
         self.config = config or JudgeConfig()
         self.client: AsyncOpenAI = build_async_openai(self.config)
 
-    def build_messages(self, **fields: Any) -> str | Messages:
-        """Prompt-setup hook: turn the `evaluate` fields into the messages to send (a single user
-        message as a plain `str`, or a `vf.Messages` list). The default formats the `prompt` class
-        attribute into a single user message."""
+    def build_messages(
+        self, *, task: Any = None, trace: "Trace | None" = None, **fields: Any
+    ) -> str | Messages:
+        """Prompt-setup hook: transform the `task` / `trace` / extra fields into the messages to
+        send (a single user message as a plain `str`, or a `vf.Messages` list). The default formats
+        the `prompt` template with `task` + the extra fields (`{task.question}`, `{answer}`, …);
+        override it to read the response off the `trace`, build a system+user prompt, etc."""
         if self.prompt is None:
             raise ValueError(
                 f"{type(self).__name__} has no `prompt`; set it or override build_messages"
             )
-        return self.prompt.format(**fields)
+        return self.prompt.format(task=task, **fields)
 
     def parse(self, response: JudgeResponse[ParsedT]) -> ParsedT:
         """Parsing hook: turn a `JudgeResponse` into the verdict. The default returns the
@@ -159,8 +164,14 @@ class Judge(Generic[ParsedT]):
             response.parsed = parse(response)
         return response
 
-    async def evaluate(self, **fields: Any) -> JudgeResponse[ParsedT]:
+    async def evaluate(
+        self, *, task: Any = None, trace: "Trace | None" = None, **fields: Any
+    ) -> JudgeResponse[ParsedT]:
         """Render the prompt (`build_messages`), call the judge, and parse the verdict (`parse`).
-        Pure — pass the returned `JudgeResponse` to `Trace.record_judge` to persist it."""
-        messages = self.build_messages(**fields)
-        return await self.complete(messages, schema=self.schema, parse=self.parse)
+        `task` / `trace` / extra fields are handed to `build_messages`; when a `trace` is given the
+        call is recorded onto it (`trace.record_judge`: `info["judge"]` + folded usage)."""
+        messages = self.build_messages(task=task, trace=trace, **fields)
+        response = await self.complete(messages, schema=self.schema, parse=self.parse)
+        if trace is not None:
+            trace.record_judge(response)
+        return response
