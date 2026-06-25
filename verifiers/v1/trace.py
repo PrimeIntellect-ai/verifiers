@@ -13,11 +13,14 @@ import time
 import traceback
 import uuid
 from collections.abc import Mapping
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import numpy as np
 from pydantic import Field, PrivateAttr
 from renderers.base import MultiModalData
+
+if TYPE_CHECKING:
+    from verifiers.v1.judge import JudgeResponse
 
 from verifiers.v1 import graph
 from verifiers.v1.errors import ProviderError
@@ -391,6 +394,14 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         e.g. an harness's depth/calls/tokens). Each key warns on override as above."""
         for name, value in values.items():
             self.record_metric(name, value)
+
+    def record_judge(self, response: "JudgeResponse") -> None:
+        """Persist a judge call (`Judge.evaluate` / `Judge.complete` is pure): append the typed
+        response to `info["judge"]` for debugging and fold its tokens + cost into `extra_usage`
+        (→ `usage`)."""
+        self.info.setdefault("judge", []).append(response.model_dump(mode="json"))
+        if response.usage is not None:
+            self.extra_usage.append(response.usage)
 
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
         """Record a `@reward`/`@group_reward` contribution under `name` (weight

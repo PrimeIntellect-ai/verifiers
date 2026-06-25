@@ -19,19 +19,21 @@ in which case `JudgeResponse.parsed` is the validated pydantic object.
     @vf.reward
     async def correct(self, task, trace) -> float:
         result = await self.judge.evaluate(
-            trace=trace, question=task.question, answer=task.answer, response=...
+            question=task.question, answer=task.answer, response=...
         )
+        trace.record_judge(result)
         return float(result.parsed)
 
-The judge's tokens + cost land on `trace.extra_usage` (folded into `trace.usage`), and a typed
-record of every call is appended to `trace.info["judge"]`, so judge behaviour and spend are no
-longer invisible.
+`evaluate` (and the low-level `complete`) are pure — data in, `JudgeResponse` out. Call
+`trace.record_judge(result)` to append a typed record to `trace.info["judge"]` and fold the
+call's tokens + cost into `trace.extra_usage` (-> `trace.usage`), so judge behaviour and spend
+are no longer invisible.
 """
 
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, cast
+from typing import Any, Callable, Generic, TypeVar, cast
 from urllib.parse import urlparse
 
 from openai import AsyncOpenAI
@@ -43,9 +45,6 @@ from verifiers.v1.clients.config import (
     BaseClientConfig,
 )
 from verifiers.v1.types import SamplingConfig, StrictBaseModel, Usage
-
-if TYPE_CHECKING:
-    from verifiers.v1.trace import Trace
 
 ParsedT = TypeVar("ParsedT")
 
@@ -143,14 +142,14 @@ class Judge(Generic[ParsedT]):
         self,
         messages: str | list[dict[str, Any]],
         *,
-        trace: "Trace | None" = None,
         schema: type[BaseModel] | None = None,
         parse: Callable[[JudgeResponse[Any]], Any] | None = None,
         **sampling: Any,
     ) -> JudgeResponse[Any]:
-        """Call the judge once: send `messages`, capture usage/cost, record to the trace, and
-        return the `JudgeResponse`. `schema` opts into structured outputs; `parse` sets
-        `JudgeResponse.parsed` from the reply (the structured object, if any, is set first)."""
+        """Call the judge once: send `messages`, capture usage/cost, and return the
+        `JudgeResponse`. Pure — pass the result to `Trace.record_judge` to persist it. `schema`
+        opts into structured outputs; `parse` sets `JudgeResponse.parsed` from the reply (the
+        structured object, if any, is set first)."""
         wire = (
             [{"role": "user", "content": messages}]
             if isinstance(messages, str)
@@ -177,18 +176,10 @@ class Judge(Generic[ParsedT]):
         )
         if parse is not None:
             response.parsed = parse(response)
-        if trace is not None:
-            trace.info.setdefault("judge", []).append(response.model_dump(mode="json"))
-            if response.usage is not None:
-                trace.extra_usage.append(response.usage)
         return response
 
-    async def evaluate(
-        self, *, trace: "Trace | None" = None, **fields: Any
-    ) -> JudgeResponse[ParsedT]:
+    async def evaluate(self, **fields: Any) -> JudgeResponse[ParsedT]:
         """Render the prompt (`build_messages`), call the judge, and parse the verdict (`parse`).
-        Returns the `JudgeResponse` with `.parsed` set to the verdict."""
+        Pure — pass the returned `JudgeResponse` to `Trace.record_judge` to persist it."""
         messages = self.build_messages(**fields)
-        return await self.complete(
-            messages, trace=trace, schema=self.schema, parse=self.parse
-        )
+        return await self.complete(messages, schema=self.schema, parse=self.parse)
