@@ -248,8 +248,6 @@ def _breakdown(done: list[Trace]) -> Table | None:
         if details:
             tokens += f" ({', '.join(details)})"
         usage = [tokens]
-        # Judge tokens are additional to the agent's headline (the parens above are subsets of it),
-        # so they read `+in/out judge`; the judge's cost, by contrast, is part of the total below.
         if have_judge:
             usage.append(
                 f"+{format_count(total_judge_in)}/{format_count(total_judge_out)} judge"
