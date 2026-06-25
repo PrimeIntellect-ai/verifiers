@@ -7,7 +7,7 @@ from pathlib import Path
 from pydantic_config import cli
 
 from verifiers.v1.cli.eval.resume import load_resume_config, split_resume
-from verifiers.v1.cli.output import output_path
+from verifiers.v1.cli.output import output_path, read_run_info
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
@@ -45,7 +45,12 @@ def resolve_eval(argv: Sequence[str], *, prog: str = "eval run") -> EvalInvocati
                 "--resume re-runs a saved config and takes no other arguments"
             )
         config = load_resume_config(resume_dir)
-        run_id = resume_dir.resolve().name
+        run_path = resume_dir / "run.json"
+        run_id = (
+            read_run_info(resume_dir).run_id
+            if run_path.exists()
+            else resume_dir.resolve().name
+        )
         config.uuid = run_id
         return EvalInvocation(
             config=config,

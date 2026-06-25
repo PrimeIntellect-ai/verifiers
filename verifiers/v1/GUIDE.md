@@ -673,12 +673,20 @@ client-side so each node carries the exact `token_ids` / `mask` / `logprobs` (th
 — point it at a vLLM engine with `--client.base-url`.
 
 **What it writes** (into `--output-dir`, default `outputs/<taskset>--<model>--<harness>/<uuid>`):
-`config.toml` (the resolved config, re-runnable via `@ config.toml`), `results.jsonl` (one full
-trace per line, appended as each rollout finishes — durable mid-run), and `eval.log`.
+`run.json` (the run ID and protocol/schema versions), `config.toml` (the resolved config,
+re-runnable via `@ config.toml`), `results.jsonl` (one full trace per line, appended as each
+rollout finishes — durable mid-run), and `eval.log`.
 
 **`--dry-run`** writes `config.toml` and exits (resolve + validate, no run). **`--resume
 <output-dir>`** re-runs only the missing/errored rollouts of a previous run (it reloads that run's
 `config.toml`, so it takes no other args).
+
+### Process protocol
+
+Process hosts should first inspect `eval --protocol-version`, then call `eval resolve --format
+json <args>`. The response contains the resolved `run_id`; pass it back as `eval run <args>
+--uuid <run_id>` so resolution and execution refer to the same run. `run.json` persists that
+identity and the protocol/trace schema versions next to the artifacts.
 
 ## `validate`
 

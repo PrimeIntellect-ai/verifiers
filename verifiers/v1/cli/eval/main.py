@@ -11,7 +11,13 @@ from pydantic_config import ConfigFileError, cli
 import verifiers.v1 as vf
 from verifiers.v1.cli.eval.resolver import resolve_eval
 from verifiers.v1.cli.eval.runner import run_eval
-from verifiers.v1.cli.output import output_path, write_config
+from verifiers.v1.cli.output import (
+    PROTOCOL_VERSION,
+    TRACE_SCHEMA_VERSION,
+    output_path,
+    write_config,
+    write_run_info,
+)
 from verifiers.v1.cli.resolve import narrow_config, with_positional_taskset
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.utils.logging import setup_logging
@@ -26,8 +32,8 @@ USAGE = (
 )
 RESOLVE_USAGE = "usage: eval resolve --format json <eval options>"
 VERSIONS = {
-    "protocol_version": 1,
-    "trace_schema_version": 1,
+    "protocol_version": PROTOCOL_VERSION,
+    "trace_schema_version": TRACE_SCHEMA_VERSION,
 }
 
 
@@ -93,6 +99,7 @@ def main(argv: list[str] | None = None) -> None:
     config = invocation.config
     if config.is_legacy and config.resume is not None:
         raise SystemExit("--resume is not supported for legacy (v0) evals")
+    write_run_info(invocation.output_dir, invocation.run_id)
 
     level = "DEBUG" if config.verbose else "INFO"
     if config.dry_run:
