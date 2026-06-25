@@ -301,9 +301,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
 
     @property
     def usage(self) -> Usage | None:
-        """The agent's provider-reported usage, summed once per actual model call in this rollout's
-        message graph (the sampled nodes). Judge / auxiliary scoring calls are kept separate in
-        `extra_usage` — not folded in here — so consumers add the two when they want a grand total."""
+        """Provider-reported usage summed once per actual model call in this rollout."""
         return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)
 
     @property
