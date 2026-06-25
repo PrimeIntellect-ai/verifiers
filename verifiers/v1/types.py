@@ -161,6 +161,25 @@ class Usage(StrictBaseModel):
     cost: float | None = None
 
     @classmethod
+    def from_openai(cls, usage: Any | None) -> "Usage | None":
+        """Build from an OpenAI chat-completion `usage` object (the `.usage` on a
+        `ChatCompletion`), or `None` when the provider reported none. Splits cache-read tokens
+        out of `prompt_tokens` and carries the reasoning subset + provider-reported `cost`."""
+        if usage is None:
+            return None
+        prompt_details = getattr(usage, "prompt_tokens_details", None)
+        cached = prompt_details.cached_tokens if prompt_details else None
+        completion_details = getattr(usage, "completion_tokens_details", None)
+        reasoning = completion_details.reasoning_tokens if completion_details else None
+        return cls(
+            prompt_tokens=usage.prompt_tokens - (cached or 0),
+            completion_tokens=usage.completion_tokens,
+            cached_input_tokens=cached,
+            reasoning_tokens=reasoning,
+            cost=getattr(usage, "cost", None),
+        )
+
+    @classmethod
     def aggregate(cls, usages: Iterable["Usage"]) -> "Usage | None":
         """Sum per-response usage while preserving whether cache usage was reported."""
         values = list(usages)

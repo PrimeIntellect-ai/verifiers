@@ -242,6 +242,12 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     / `to_record`), unlike `info` which persists. Type it via `Taskset[Task, Config, MyState]`; defaults
     to the base `State`."""
 
+    extra_usage: list[Usage] = Field(default_factory=list)
+    """Token usage from model calls that aren't part of the message graph — LLM judges and
+    other auxiliary scoring calls (see `verifiers.v1.judge`). Folded into `usage` so the
+    rollout's reported tokens + cost account for them, but kept off the graph so branch/turn
+    counts and the trainer's token math (`total_tokens`, `branches`) see only sampled nodes."""
+
     is_completed: bool = False
     stop_condition: str | None = None
     errors: list[Error] = Field(default_factory=list)
@@ -291,8 +297,14 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
 
     @property
     def usage(self) -> Usage | None:
-        """Provider-reported usage summed once per actual model call in this rollout."""
-        return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)
+        """Provider-reported usage summed once per actual model call in this rollout —
+        the sampled message nodes plus any `extra_usage` (judge / auxiliary scoring calls)."""
+        return Usage.aggregate(
+            [
+                *(n.usage for n in self.nodes if n.usage is not None),
+                *self.extra_usage,
+            ]
+        )
 
     @property
     def has_response(self) -> bool:
