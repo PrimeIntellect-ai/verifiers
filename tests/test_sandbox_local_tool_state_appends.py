@@ -108,54 +108,146 @@ def test_invalid_tool_caps_logic_resets_on_valid_call():
         namespace,
     )
     triggered = namespace["invalid_tool_caps_triggered"]
-    caps = {"malformed_computer": 1, "invalid_tool": 2}
+    caps = {"malformed_computer": 1, "invalid_tool": 5}
 
-    # Rule 1: a single malformed computer call trips the K=1 cap.
-    assert triggered(
+    # Legacy malformed_computer=1 is ignored; malformed computer follows the
+    # unified invalid_tool K=5 cap.
+    assert not triggered(
         {"browser_tool_results": [{"action": "computer", "malformed_computer": True}]},
         caps,
     )
-    # A valid computer call resets the malformed-computer run (shown with K=2 so the
-    # reset is observable; with K=1 the first malformed call already trips it).
-    caps_k2 = {"malformed_computer": 2, "invalid_tool": 2}
     assert not triggered(
         {
             "browser_tool_results": [
-                {"action": "computer", "malformed_computer": True},
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
                 {"action": "computer"},
-                {"action": "computer", "malformed_computer": True},
             ]
         },
-        caps_k2,
+        caps,
     )
-    # Two consecutive malformed computer calls trip the K=2 cap.
+    # A valid call resets the unified invalid run.
+    caps_k5 = {"malformed_computer": 2, "invalid_tool": 5}
+    assert not triggered(
+        {
+            "browser_tool_results": [
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
+                {"action": "computer"},
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
+            ]
+        },
+        caps_k5,
+    )
+    # Four consecutive malformed computer calls do not trip the unified K=5 cap.
+    assert not triggered(
+        {
+            "browser_tool_results": [
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
+            ]
+        },
+        caps_k5,
+    )
+    # Five consecutive malformed computer calls trip the unified K=5 invalid cap.
     assert triggered(
         {
             "browser_tool_results": [
-                {"action": "computer", "malformed_computer": True},
-                {"action": "computer", "malformed_computer": True},
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
             ]
         },
-        caps_k2,
+        caps_k5,
     )
-    # A non-computer event between malformed computer calls is ignored (does not
-    # reset the computer-scoped run) -> still trips K=2.
-    assert triggered(
+    # A valid non-invalid event between malformed computer calls resets the
+    # unified invalid run.
+    assert not triggered(
         {
             "browser_tool_results": [
-                {"action": "computer", "malformed_computer": True},
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
                 {"action": "click"},
-                {"action": "computer", "malformed_computer": True},
+                {
+                    "action": "computer",
+                    "malformed_computer": True,
+                    "invalid_tool_call": True,
+                },
             ]
         },
-        caps_k2,
+        caps_k5,
     )
-    # Rule 2: two consecutive any-tool invalids trip the K=2 cap (incl form_input).
+    # Rule 2: two consecutive any-tool invalids are below K=5 (incl form_input).
+    assert not triggered(
+        {
+            "browser_tool_results": [
+                {"action": "form_input", "invalid_tool_call": True},
+                {"action": "click", "invalid_tool_call": True},
+            ]
+        },
+        caps,
+    )
     assert triggered(
         {
             "browser_tool_results": [
                 {"action": "form_input", "invalid_tool_call": True},
                 {"action": "click", "invalid_tool_call": True},
+                {"action": "computer", "invalid_tool_call": True},
+                {"action": "find", "invalid_tool_call": True},
+                {"action": "navigate", "invalid_tool_call": True},
             ]
         },
         caps,

@@ -185,13 +185,18 @@ def sandbox_runner_program(
     # end-of-rollout state patch, so the host stop is inert mid-rollout; the loop
     # must check the same event tags locally. Values come from the harness-owned
     # ``runtime_state['invalid_tool_caps']`` when present; otherwise the decided
-    # policy defaults (malformed_computer=1, invalid_tool=2) apply. Kept generic
+    # policy defaults (unified invalid_tool=5) apply. Kept generic
     # here (forwarded ints + event tags) so the runner never imports worldsims.
     invalid_tool_caps = state.runtime_state().get("invalid_tool_caps")
+    task_invalid_tool_caps = (
+        task.get("invalid_tool_caps") if hasattr(task, "get") else None
+    )
     runner_config["invalid_tool_caps"] = (
         invalid_tool_caps
         if isinstance(invalid_tool_caps, dict)
-        else {"malformed_computer": 1, "invalid_tool": 2}
+        else task_invalid_tool_caps
+        if isinstance(task_invalid_tool_caps, dict)
+        else {"malformed_computer": 5, "invalid_tool": 5}
     )
     files[RUNNER_CONFIG_PATH] = json.dumps(runner_config)
     command = python_runtime_command(
@@ -617,17 +622,15 @@ def consecutive_tag_cap_triggered(events, tag, cap, action=None):
 
 
 def invalid_tool_caps_triggered(state, caps):
-    # In-sandbox mirror of the host @vf.stop invalid_tool_call_cap. Rule 1:
-    # consecutive malformed `computer` calls (computer-scoped). Rule 2: consecutive
-    # input/schema-invalid calls of ANY tool. Defaults match the decided policy
-    # (malformed_computer=1, invalid_tool=2) when a cap is absent.
+    # In-sandbox mirror of the host @vf.stop invalid_tool_call_cap: consecutive
+    # input/schema-invalid calls of ANY tool. Malformed `computer` is tagged as
+    # invalid_tool_call and is governed by the same unified cap; the legacy
+    # malformed_computer key is ignored so it cannot create an independent K=1
+    # kill path.
     events = state.get("browser_tool_results")
     caps = caps if isinstance(caps, dict) else {}
-    malformed_cap = int(caps.get("malformed_computer", 1))
-    invalid_cap = int(caps.get("invalid_tool", 2))
-    return consecutive_tag_cap_triggered(
-        events, "malformed_computer", malformed_cap, "computer"
-    ) or consecutive_tag_cap_triggered(events, "invalid_tool_call", invalid_cap)
+    invalid_cap = int(caps.get("invalid_tool", 5))
+    return consecutive_tag_cap_triggered(events, "invalid_tool_call", invalid_cap)
 
 
 async def run_base(task, state):
@@ -643,13 +646,13 @@ async def run_base(task, state):
     summarize = compaction.get("mode") == "summarize"
     checkpoint_prompt = compaction.get("checkpoint_prompt") or ""
     framing = compaction.get("framing") or ""
-    # Consecutive malformed/invalid-tool caps, enforced in-sandbox because the host
+    # Consecutive invalid-tool cap, enforced in-sandbox because the host
     # @vf.stop reads host state and the in-sandbox tool events only reach the host
-    # at end-of-rollout. Defaults to the decided policy (malformed_computer=1,
-    # invalid_tool=2) when the host did not forward them.
+    # at end-of-rollout. Defaults to the decided policy (unified invalid_tool=5)
+    # when the host did not forward it.
     invalid_tool_caps = config.get("invalid_tool_caps") or {
-        "malformed_computer": 1,
-        "invalid_tool": 2,
+        "malformed_computer": 5,
+        "invalid_tool": 5,
     }
     # Tools tagged with a sandbox_endpoint dispatch in-sandbox (loopback) instead
     # of the host /vf/tools tunnel.
