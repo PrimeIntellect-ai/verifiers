@@ -25,8 +25,9 @@ in which case `JudgeResponse.parsed` is the validated pydantic object.
 
 Passing `trace=` records the call onto it — a typed record appended to `trace.info["judge"]` and
 the call's tokens + cost added to `trace.extra_usage` (kept separate from the agent's `trace.usage`),
-so judge behaviour and spend are no longer invisible. Omit `trace` for a pure call (e.g. in tests);
-the low-level `complete` never records (record it yourself with `trace.record_judge`).
+so judge behaviour and spend are no longer invisible. The record lands even if the judge refuses, an
+empty structured output comes back, or `parse` raises (the request was already billed). Omit `trace`
+for a pure call (e.g. in tests).
 """
 
 from __future__ import annotations
@@ -113,14 +114,15 @@ class Judge(Generic[ParsedT]):
         self,
         messages: str | Messages,
         *,
+        trace: "Trace | None" = None,
         schema: type[BaseModel] | None = None,
         parse: Callable[[JudgeResponse[Any]], Any] | None = None,
         **sampling: Any,
     ) -> JudgeResponse[Any]:
-        """Call the judge once: send `messages`, capture usage/cost, and return the
-        `JudgeResponse`. Pure — pass the result to `Trace.record_judge` to persist it. `schema`
-        opts into structured outputs; `parse` sets `JudgeResponse.parsed` from the reply (the
-        structured object, if any, is set first)."""
+        """Call the judge once: send `messages`, build the `JudgeResponse`, and — when a `trace` is
+        given — record it (`Trace.record_judge`) in a `finally`, so the call's tokens + cost are
+        captured even when a refusal / empty structured output / `parse` hook raises after the
+        billed request. `schema` opts into structured outputs; `parse` sets `JudgeResponse.parsed`."""
         wire = (
             [{"role": "user", "content": messages}]
             if isinstance(messages, str)
@@ -130,45 +132,49 @@ class Judge(Generic[ParsedT]):
         kwargs.update(self.config.sampling.model_dump(exclude_none=True))
         kwargs.update(sampling)
 
-        parsed: Any = None
-        if schema is not None:
-            completion = await self.client.beta.chat.completions.parse(
-                response_format=schema, **kwargs
-            )
-            choice = completion.choices[0]
-            if choice.message.refusal is not None:
-                raise RuntimeError(
-                    f"judge refused structured output: {choice.message.refusal}"
+        response: JudgeResponse[Any] | None = None
+        try:
+            if schema is not None:
+                completion = await self.client.beta.chat.completions.parse(
+                    response_format=schema, **kwargs
                 )
-            parsed = choice.message.parsed
-            if parsed is None:
-                # No refusal but no object either — e.g. a truncated/malformed reply. Surface it
-                # rather than returning a None verdict callers read as a (falsy) failure.
-                raise RuntimeError(
-                    f"judge returned no parseable structured output "
-                    f"(finish_reason={choice.finish_reason})"
+                choice = completion.choices[0]
+                response = JudgeResponse(
+                    text=choice.message.content or "",
+                    parsed=choice.message.parsed,
+                    usage=Usage.from_openai(completion.usage),
                 )
-        else:
-            completion = await self.client.chat.completions.create(**kwargs)
-        text = completion.choices[0].message.content or ""
-
-        response: JudgeResponse[Any] = JudgeResponse(
-            text=text,
-            parsed=parsed,
-            usage=Usage.from_openai(completion.usage),
-        )
-        if parse is not None:
-            response.parsed = parse(response)
-        return response
+                if choice.message.refusal is not None:
+                    raise RuntimeError(
+                        f"judge refused structured output: {choice.message.refusal}"
+                    )
+                if response.parsed is None:
+                    # No refusal but no object either — e.g. a truncated/malformed reply. Surface it
+                    # rather than returning a None verdict callers read as a (falsy) failure.
+                    raise RuntimeError(
+                        f"judge returned no parseable structured output "
+                        f"(finish_reason={choice.finish_reason})"
+                    )
+            else:
+                completion = await self.client.chat.completions.create(**kwargs)
+                response = JudgeResponse(
+                    text=completion.choices[0].message.content or "",
+                    usage=Usage.from_openai(completion.usage),
+                )
+            if parse is not None:
+                response.parsed = parse(response)
+            return response
+        finally:
+            if trace is not None and response is not None:
+                trace.record_judge(response)
 
     async def evaluate(
         self, *, trace: "Trace | None" = None, **fields: Any
     ) -> JudgeResponse[ParsedT]:
         """Render the prompt (`build_messages(**fields)`), call the judge, and parse the verdict
-        (`parse`). When a `trace` is given the call is recorded onto it (`trace.record_judge`:
-        `info["judge"]` + folded usage)."""
+        (`parse`). When a `trace` is given the call is recorded onto it (`trace.info["judge"]` +
+        usage on `trace.extra_usage`), even if a refusal / empty output / parse raises."""
         messages = self.build_messages(**fields)
-        response = await self.complete(messages, schema=self.schema, parse=self.parse)
-        if trace is not None:
-            trace.record_judge(response)
-        return response
+        return await self.complete(
+            messages, trace=trace, schema=self.schema, parse=self.parse
+        )

@@ -289,8 +289,9 @@ parses the verdict (`parse`), returning a `JudgeResponse{text, parsed, usage}`. 
 **records the call onto it** — a typed record appended to `trace.info["judge"]` (for debugging) and
 the call's tokens + cost added to `trace.extra_usage`, kept separate from the agent's `trace.usage`
 and off the message graph (so the trainer's token math is unaffected); the eval dashboard shows the
-agent's usage and `+judge` separately. Omit `trace` for a pure call (e.g. in tests); the low-level
-`complete` never records (record it yourself with `trace.record_judge`).
+agent's usage and `+judge` separately. The record lands even if the judge refuses, returns an empty
+structured output, or `parse` raises (the request was already billed). Omit `trace` for a pure call
+(e.g. in tests).
 
 The two hooks:
 
@@ -303,7 +304,7 @@ Good to know:
 
 - **Per-task rubric** is just a field — `prompt = "{task.rubric}\n…"` with `evaluate(trace=trace, task=task, …)` (`str.format` does attribute access on a passed-in `task`). For per-task *parsing*, parse in the reward, where the task is in scope.
 - **Structured outputs**: set `schema` to a pydantic model to use OpenAI structured outputs (where the provider supports it — most do); `JudgeResponse.parsed` is then the validated object. For an unsupported model, prompt for JSON and call `Model.model_validate_json(response.text)` in `parse`.
-- **Multiple / dynamic calls per rollout** (e.g. one per table column): call the low-level `complete(messages, *, schema=, parse=)` directly with `vf.Messages` you build, recording each with `trace.record_judge`.
+- **Multiple / dynamic calls per rollout** (e.g. one per table column): call the low-level `complete(messages, *, trace=, schema=, parse=)` directly with `vf.Messages` you build — it records each call when passed `trace`.
 - **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`, Prime auto-config). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.
 - **Errors propagate**: a judge API failure errors the rollout (recorded as a `TasksetError` on the trace); the OpenAI SDK already retries transient 429/5xx/connection errors.
 
