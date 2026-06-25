@@ -181,7 +181,7 @@ class EnvServer:
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        task = self._task_type.model_validate(req.task)
+        task = self._task_type.model_validate(req.task.model_dump())
         episode = self.env.episode(task, ctx, n=1)
         traces = await episode.run()
         # Trust the concrete trace; serialize it once before client-side re-typing.
@@ -189,7 +189,8 @@ class EnvServer:
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self._next_task(), ctx, n=req.n)
+        task = self._task_type.model_validate(req.task.model_dump())
+        episode = self.env.episode(task, ctx, n=req.n)
         traces = await episode.run()
         # Avoid a dump-and-validate copy for every trusted trace in the group.
         return RunGroupResponse.model_construct(traces=traces)

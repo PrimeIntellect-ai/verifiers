@@ -390,12 +390,12 @@ class LegacyEnvServer(EnvServer):
         return SampleResponse.model_construct(task=WireTask(idx=self._next_index()))
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
-        idx = int(req.task["idx"])
+        idx = req.task.idx
         out = await self._run_v0(idx, req.client, req.model, req.sampling)
         return RunRolloutResponse(trace=rollout_output_to_trace(out, idx).model_dump())
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
-        idx = self._next_index()
+        idx = req.task.idx
         client = self._v0_client(req.client, req.model)
         # run_group scores the rollouts together so group/preference reward funcs apply.
         outs = await self.env.run_group(

@@ -209,11 +209,12 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         write_lock = asyncio.Lock()
 
         async def run_unit() -> list[Trace]:
-            # Each unit pulls the next task and runs `num_rollouts` of it (a group when the
-            # taskset scores groups, else independent rollouts of one task). The runner never
-            # addresses a task — the served task is identified by `trace.task.idx`.
+            # Each unit samples one task and runs `num_rollouts` of it as a group. The runner
+            # never addresses a task — `sample()` pulls it; the served task is on `trace.task.idx`.
             async with semaphore or contextlib.nullcontext():
+                task = await client.sample()
                 traces = await client.run_group(
+                    task=task,
                     n=config.num_rollouts,
                     client=config.client,
                     model=config.model,

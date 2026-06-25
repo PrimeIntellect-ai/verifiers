@@ -62,9 +62,9 @@ class SampleResponse(BaseResponse):
 
 class RunRolloutRequest(BaseRequest):
     method: ClassVar[str] = "run_rollout"
-    task: dict
-    """The task to run, as returned by `sample()` (its `model_dump`). Echoed back so the server
-    runs this exact task — the caller never addresses the dataset by index."""
+    task: WireTask
+    """The task to run, as returned by `sample()`. Echoed back so the server runs this exact
+    task — the caller never addresses the dataset by index."""
     client: ClientConfig
     model: str
     sampling: SamplingConfig
@@ -83,6 +83,9 @@ class RunRolloutResponse(BaseResponse):
 
 class RunGroupRequest(BaseRequest):
     method: ClassVar[str] = "run_group"
+    task: WireTask
+    """The task to run the group of, as returned by `sample()`. Echoed back so `sample()` stays
+    the only place the cursor advances."""
     n: int
     client: ClientConfig
     model: str

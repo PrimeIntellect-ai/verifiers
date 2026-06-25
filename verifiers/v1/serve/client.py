@@ -153,24 +153,25 @@ class EnvClient:
     ) -> Trace[WireTask]:
         """Run one rollout of `task` (as returned by `sample()`); return a typed `Trace[WireTask]`."""
         response = await self._request(
-            RunRolloutRequest(
-                task=task.model_dump(), client=client, model=model, sampling=sampling
-            ),
+            RunRolloutRequest(task=task, client=client, model=model, sampling=sampling),
             RunRolloutResponse,
         )
         return response.trace
 
     async def run_group(
         self,
+        task: WireTask,
         n: int,
         client: ClientConfig,
         model: str,
         sampling: SamplingConfig,
     ) -> list[Trace[WireTask]]:
-        """Pull the next task and run `n` rollouts of it as a scored group; return typed
-        `Trace[WireTask]`s (all of one task, identified by `trace.task.idx`)."""
+        """Run `n` rollouts of `task` (from `sample()`) as a scored group; return typed
+        `Trace[WireTask]`s (all of one task). For group-scored envs, which run + score together."""
         response = await self._request(
-            RunGroupRequest(n=n, client=client, model=model, sampling=sampling),
+            RunGroupRequest(
+                task=task, n=n, client=client, model=model, sampling=sampling
+            ),
             RunGroupResponse,
         )
         return response.traces
