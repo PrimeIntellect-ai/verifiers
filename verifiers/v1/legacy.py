@@ -432,7 +432,7 @@ async def run_legacy_eval(config) -> list[Trace]:
 
     from verifiers import load_environment
 
-    from verifiers.v1.cli.output import append_trace, output_path
+    from verifiers.v1.cli.output import append_trace, output_path, save_config
     from verifiers.v1.utils.install import ensure_installed
 
     # Install from the env hub on demand for an `org/name[@version]` id (a local id is
@@ -450,6 +450,7 @@ async def run_legacy_eval(config) -> list[Trace]:
     client = _eval_client(config.client, config.model)
     sampling_args = config.sampling.model_dump(exclude_none=True)
     out_dir = output_path(config)
+    save_config(config, out_dir)
     logger.info("results: %s", out_dir)
     logger.info(
         "running %dx%d v0 rollouts on %s (legacy: %s)",

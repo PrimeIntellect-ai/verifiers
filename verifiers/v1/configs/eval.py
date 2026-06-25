@@ -48,7 +48,7 @@ class EvalConfig(EnvServerConfig):
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = False
-    """Resolve + validate the config, write an empty completed run artifact, then exit."""
+    """Resolve + validate the config and write it, then exit."""
     rich: bool = True
     """Show a live dashboard instead of per-rollout logs (in-process only)."""
     server: bool = False
@@ -57,8 +57,8 @@ class EvalConfig(EnvServerConfig):
     output_dir: Path | None = Field(
         None, validation_alias=AliasChoices("output_dir", "o")
     )
-    """Where to write the run artifact. None = a fresh per-run dir under
-    `outputs/<env>--<model>--<harness>/<uuid>` (so runs never overwrite each other)."""
+    """Where to write the run (config.toml + results.jsonl). None = a fresh per-run dir
+    under `outputs/<env>--<model>--<harness>/<uuid>` (so runs never overwrite each other)."""
     resume: Path | None = Field(None, exclude=True)
     """Set by `--resume <dir>`: re-run only the rollouts a previous run left missing or
     errored, appending to that run's own results. The run's saved config is loaded verbatim,
