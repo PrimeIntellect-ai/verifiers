@@ -399,7 +399,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         """Persist a judge call (`Judge.evaluate` / `Judge.complete` is pure): append the typed
         response to `info["judge"]` for debugging and fold its tokens + cost into `extra_usage`
         (→ `usage`)."""
-        self.info.setdefault("judge", []).append(response.model_dump(mode="json"))
+        self.info.setdefault("judge", []).append(response.model_dump())
         if response.usage is not None:
             self.extra_usage.append(response.usage)
 

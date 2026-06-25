@@ -133,7 +133,12 @@ class Judge(Generic[ParsedT]):
             completion = await self.client.beta.chat.completions.parse(
                 response_format=schema, **kwargs
             )
-            parsed = completion.choices[0].message.parsed
+            message = completion.choices[0].message
+            if message.refusal is not None:
+                raise RuntimeError(
+                    f"judge refused structured output: {message.refusal}"
+                )
+            parsed = message.parsed
         else:
             completion = await self.client.chat.completions.create(**kwargs)
         text = completion.choices[0].message.content or ""

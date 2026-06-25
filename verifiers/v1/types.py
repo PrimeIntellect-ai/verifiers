@@ -191,7 +191,9 @@ class Usage(StrictBaseModel):
             if usage.cached_input_tokens is not None
         ]
         reasoning = [usage.reasoning_tokens for usage in values]
-        costs = [usage.cost for usage in values]
+        # Sum the reported costs; only None when no response reported a cost — so one cost-less
+        # response (e.g. a judge on a provider that omits cost) doesn't null out the whole total.
+        costs = [usage.cost for usage in values if usage.cost is not None]
         return cls(
             prompt_tokens=sum(usage.prompt_tokens for usage in values),
             completion_tokens=sum(usage.completion_tokens for usage in values),
@@ -199,7 +201,7 @@ class Usage(StrictBaseModel):
             reasoning_tokens=sum(reasoning)
             if all(v is not None for v in reasoning)
             else None,
-            cost=sum(costs) if all(v is not None for v in costs) else None,
+            cost=sum(costs) if costs else None,
         )
 
     @property
