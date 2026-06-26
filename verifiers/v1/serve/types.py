@@ -39,7 +39,7 @@ class InfoResponse(BaseResponse):
     num_tasks: int | None = None
     """How many distinct tasks the taskset has — the caller pulls (it doesn't address by index),
     and uses this to bound a finite eval (pull `num_tasks`, never wrapping). `None` only when the
-    taskset is `UNBOUNDED` (the server streams a never-ending order); the caller then bounds the
+    taskset is `INFINITE` (the server streams a never-ending order); the caller then bounds the
     run with `--num-tasks`. A finite taskset (list or finite generator) is materialized and reports
     its count; training pulls past it (the server loops, reshuffling each epoch)."""
     requires_group_scoring: bool = False

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
-    # Draw only the tasks this run needs from `load_tasks` (which may be a lazy/unbounded
+    # Draw only the tasks this run needs from `load_tasks` (which may be a lazy/infinite
     # generator): without `--shuffle`, just the first `--num-tasks` are built.
     tasks = select_tasks(env.taskset, config.num_tasks, config.shuffle)
     ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
@@ -149,7 +149,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         info = await client.info()
         if config.num_tasks is None and info.num_tasks is None:
             raise SystemExit(
-                "this taskset is unbounded (no task count); pass -n/--num-tasks to bound the eval"
+                "this taskset is infinite (no task count); pass -n/--num-tasks to bound the eval"
             )
         # How many tasks to pull. The server owns task order (shuffle/epoch); the runner just
         # pulls this many — the requested cap, the taskset's count, or the smaller of the two.

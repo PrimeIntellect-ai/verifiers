@@ -85,7 +85,7 @@ exported names and finds the single `Taskset` subclass.
 | name | default | description |
 | --- | --- | --- |
 | `NEEDS_CONTAINER` | `False` | The taskset only runs in a container runtime (`docker` / `prime`); the framework refuses the subprocess runtime up front. The taskset-wide counterpart to a task's per-row `image` (see [Runtimes](#runtimes)). |
-| `UNBOUNDED` | `False` | `load_tasks` may never terminate (see [Loading tasks](#loading-tasks)). A run must cap it with `-n/--num-tasks` (refused up front otherwise, rather than hanging); `--shuffle` is ignored with a warning (vary the stream with a config `seed` instead). |
+| `INFINITE` | `False` | `load_tasks` may never terminate (see [Loading tasks](#loading-tasks)). A run must cap it with `-n/--num-tasks` (refused up front otherwise, rather than hanging); `--shuffle` is ignored with a warning (vary the stream with a config `seed` instead). |
 
 ## The task
 
@@ -160,20 +160,20 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
         ]
 ```
 
-**Lazy / unbounded tasksets.** A fixed dataset returns a `list` (above). A taskset that *builds*
-its tasks — procedurally, from RNG seeds, or any unbounded source — can instead **yield** them
+**Lazy / infinite tasksets.** A fixed dataset returns a `list` (above). A taskset that *builds*
+its tasks — procedurally, from RNG seeds, or any infinite source — can instead **yield** them
 from a generator, and an eval draws only as many as it needs. A generator that never terminates
-declares `UNBOUNDED = True`:
+declares `INFINITE = True`:
 
 ```python
 class SeededConfig(vf.TasksetConfig):
     seed: int = 0
     """Vary which tasks the generator yields — the user-controlled, reproducible
-    stand-in for `--shuffle` (which an UNBOUNDED taskset can't use; see below)."""
+    stand-in for `--shuffle` (which an INFINITE taskset can't use; see below)."""
 
 
 class SeededTaskset(vf.Taskset[SeededTask, SeededConfig]):
-    UNBOUNDED = True
+    INFINITE = True
 
     def load_tasks(self) -> Iterator[SeededTask]:
         rng = random.Random(self.config.seed)
@@ -182,12 +182,12 @@ class SeededTaskset(vf.Taskset[SeededTask, SeededConfig]):
 ```
 
 `eval -n 50` then builds exactly 50 tasks, not the whole stream (the runner consumes `load_tasks`
-lazily via `select_tasks`). Two rules follow for an `UNBOUNDED` taskset, enforced consistently by
+lazily via `select_tasks`). Two rules follow for an `INFINITE` taskset, enforced consistently by
 the `eval` and `validate` entrypoints (in-process and the `--server` env-server path alike):
 
-1. **It must be bounded with `-n/--num-tasks`.** There's no count to enumerate, so an unbounded run
+1. **It must be bounded with `-n/--num-tasks`.** There's no count to enumerate, so an infinite run
    is infinite by definition — the entrypoints refuse it up front with a clear error rather than
-   hanging. (Training is the exception: the orchestrator deliberately streams an unbounded train env
+   hanging. (Training is the exception: the orchestrator deliberately streams an infinite train env
    forever, handing out monotonically increasing `task_idx`.)
 2. **`--shuffle` can't apply.** Shuffling means materializing the whole stream to sample from, which
    never terminates, so it's ignored with a warning. To vary which tasks a run sees, give the config

@@ -69,8 +69,8 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     Environment refuses the subprocess runtime — for tasksets whose work only makes sense
     inside a per-task image (e.g. a SWE repo sandbox)."""
 
-    UNBOUNDED: ClassVar[bool] = False
-    """Whether `load_tasks` may not terminate (an unbounded generator). When True a run must cap
+    INFINITE: ClassVar[bool] = False
+    """Whether `load_tasks` may not terminate (an infinite generator). When True a run must cap
     it with `num_tasks`; `--shuffle` is ignored (with a warning), since materializing every task
     to sample from would never terminate."""
 
@@ -79,9 +79,9 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
 
     def load_tasks(self) -> Iterable[TaskT]:
         """Produce this taskset's tasks. Return a list for a fixed dataset, or a generator
-        (yield tasks) for a lazily-built or unbounded one — a run draws only the tasks it
+        (yield tasks) for a lazily-built or infinite one — a run draws only the tasks it
         needs from it (see `select_tasks`), so an "infinite" taskset never materializes more
-        than the `--num-tasks` it's evaluated on (declare `UNBOUNDED` if it never terminates).
+        than the `--num-tasks` it's evaluated on (declare `INFINITE` if it never terminates).
         Runs once at load, not per rollout."""
         raise NotImplementedError
 
@@ -194,22 +194,22 @@ def select_tasks(
 
     Without `shuffle`, only the first `num_tasks` are drawn, consumed lazily. `shuffle` has to
     see the whole set to sample from it, so it materializes everything first. A taskset that
-    declares itself `UNBOUNDED` therefore must be drawn with a `num_tasks` cap (refused here
+    declares itself `INFINITE` therefore must be drawn with a `num_tasks` cap (refused here
     rather than hanging on a non-terminating `load_tasks`); `--shuffle` on it is ignored with a
     warning. The result is always a concrete list (the rest of the pipeline indexes and
     re-iterates it)."""
-    if taskset.UNBOUNDED:
+    if taskset.INFINITE:
         if shuffle:
             logger.warning(
-                "taskset %s is UNBOUNDED, so --shuffle — which must materialize every task to "
+                "taskset %s is INFINITE, so --shuffle — which must materialize every task to "
                 "sample from — would never terminate; ignoring it. The first --num-tasks tasks "
-                "of an unbounded taskset are already an arbitrary sample.",
+                "of an infinite taskset are already an arbitrary sample.",
                 type(taskset).__name__,
             )
             shuffle = False
         if num_tasks is None:
             raise ValueError(
-                f"taskset {type(taskset).__name__} is UNBOUNDED, so it must be drawn with a "
+                f"taskset {type(taskset).__name__} is INFINITE, so it must be drawn with a "
                 "cap; pass --num-tasks to bound how many tasks are taken."
             )
     tasks = taskset.load_tasks()

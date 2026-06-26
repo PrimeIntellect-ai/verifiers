@@ -64,7 +64,7 @@ class ElasticPoolConfig(BaseConfig):
 
     type: Literal["elastic"] = "elastic"
     max_workers: int | None = None
-    """Upper bound on workers (None = unbounded)."""
+    """Upper bound on workers (None = infinite)."""
     multiplex: int = Field(128, ge=1)
     """Rollouts per worker for the scale-up trigger: add a worker once in-flight rollouts
     reach 90% of `workers * multiplex`."""
@@ -119,7 +119,7 @@ class EnvConfig(BaseConfig):
     key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
     shuffle: bool = False
     """Whether the env server shuffles a finite taskset before serving it (and reshuffles each
-    epoch as it loops). No-op for an `UNBOUNDED` taskset, whose generator owns its order. The
+    epoch as it loops). No-op for an `INFINITE` taskset, whose generator owns its order. The
     orchestrator pulls tasks by cursor — shuffling lives here, on the server, not the caller.
     Defaults to False (deterministic, like in-process eval); prime-rl's train envs override it to
     True. The seed is fixed (reproducible across runs), not configurable, matching eval."""

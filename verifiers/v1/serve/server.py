@@ -3,7 +3,7 @@
 A ZMQ ROUTER front end (msgpack frames) over a v1 `Environment`. The server
 owns the environment — taskset, harness, runtime — and is the only process that ever
 loads it, including task scheduling (shuffle + epoch). A caller (e.g. the orchestrator)
-stays env-agnostic: it asks `info` for the task count (None if unbounded) + whether group
+stays env-agnostic: it asks `info` for the task count (None if infinite) + whether group
 scoring is needed, then pulls via `run_rollout` / `run_group` (no task index — the server
 hands out the next task). Per request the server resolves a `Client` from the request's
 `client` config (cached, so a renderer's tokenizer is built once), wraps it in a
@@ -62,11 +62,11 @@ class EnvServer:
         self.env = Environment(config)
         # The server owns task scheduling: callers pull (`run_rollout`/`run_group` carry no task
         # index), and the server hands out the next task. A finite taskset is materialized + counted
-        # and served as a (re)shuffled permutation that loops over epochs; an UNBOUNDED one is
+        # and served as a (re)shuffled permutation that loops over epochs; an INFINITE one is
         # streamed straight off its generator (which owns its own order). Pull is sequential and
         # tasks are echoed back by value, so no random-access index/cache is needed.
         tasks = self.env.taskset.load_tasks()
-        if self.env.taskset.UNBOUNDED:
+        if self.env.taskset.INFINITE:
             self._iter: Iterator | None = iter(tasks)
             try:
                 first = next(self._iter)  # peek for non-empty + a representative task
@@ -151,7 +151,7 @@ class EnvServer:
         return self.env.serving([self._first_task])
 
     def _init_scheduler(self, count: int | None, shuffle: bool) -> None:
-        """Set up the finite-taskset scheduler: `count` tasks (None = unbounded → streamed, no
+        """Set up the finite-taskset scheduler: `count` tasks (None = infinite → streamed, no
         scheduler), shuffled or not. Shared by the native server and the v0 bridge (always a finite
         dataset). The shuffle seed is fixed (`SHUFFLE_SEED`), not configurable — same as eval."""
         self._count = count
@@ -175,9 +175,9 @@ class EnvServer:
         return self._order[pos]
 
     def _next_task(self):
-        """The next task to serve: a finite taskset is indexed via `_next_index`; an unbounded one
+        """The next task to serve: a finite taskset is indexed via `_next_index`; an infinite one
         is streamed off its generator (the peeked first, then `next`)."""
-        if self._count is None:  # unbounded: stream (no index, no cache)
+        if self._count is None:  # infinite: stream (no index, no cache)
             if self._pending is not None:
                 task, self._pending = self._pending, None
                 return task
