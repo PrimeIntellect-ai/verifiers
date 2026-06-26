@@ -164,15 +164,6 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
 
     # ---- sandbox helpers ----------------------------------------------------
 
-    async def _write_file(self, runtime: Runtime, path: str, content: str) -> None:
-        """Write ``content`` to ``path`` in the sandbox.
-
-        Uses ``runtime.write`` (multipart upload that creates parent dirs) rather
-        than inlining the bytes on the command line — arbitrary Lean source or a
-        large gold proof would otherwise risk the shell argument-length limit.
-        """
-        await runtime.write(path, content.encode())
-
     async def _compile(self, runtime: Runtime) -> tuple[bool, str, int]:
         """Run ``lake env lean`` on the proof file; returns (compiled, output, exit_code)."""
         cfg = self.config
@@ -194,7 +185,7 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
             imports=task.imports,
             normalize=task.normalize_mathlib_imports,
         )
-        await self._write_file(runtime, self.config.proof_file_path, content)
+        await runtime.write(self.config.proof_file_path, content.encode())
 
     # ---- scoring ------------------------------------------------------------
 
@@ -260,7 +251,7 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
             normalize=task.normalize_mathlib_imports,
             proof_body=gold,
         )
-        await self._write_file(runtime, self.config.proof_file_path, content)
+        await runtime.write(self.config.proof_file_path, content.encode())
         compiled, _, _ = await self._compile(runtime)
         return compiled
 
