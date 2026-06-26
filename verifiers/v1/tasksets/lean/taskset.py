@@ -116,13 +116,13 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
         resources = TaskResources(cpu=4, memory=4, disk=10)
         tasks: list[LeanTask] = []
         for index, row in enumerate(raw):
+            # Unset columns are None, and row.get(None) is None, so the `or`
+            # fallbacks cover both an unset column and an empty value.
             formal_statement = row[ds.statement_column]
-            header = (row.get(ds.header_column) if ds.header_column else "") or ""
-            imports = (
-                row.get(ds.imports_column) if ds.imports_column else ""
-            ) or "import Mathlib"
-            gold = (row.get(ds.proof_column) if ds.proof_column else "") or ""
-            name = row.get(ds.name_column) if ds.name_column else None
+            header = row.get(ds.header_column) or ""
+            imports = row.get(ds.imports_column) or "import Mathlib"
+            gold = row.get(ds.proof_column) or ""
+            name = row.get(ds.name_column)
             tasks.append(
                 LeanTask(
                     idx=index,
