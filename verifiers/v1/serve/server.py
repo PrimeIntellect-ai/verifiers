@@ -68,7 +68,10 @@ class EnvServer:
         # back via `self.config.shuffle.seed`.
         shuffle = config.taskset.shuffle
         self._shuffle = shuffle is not None
-        if self._shuffle:
+        # INFINITE generators stream forward (the broker's cursor can't index them), so offset the
+        # seed per worker to diverge. FINITE workers share the seed: the broker hands each `sample` a
+        # global index, so every worker's permutation must agree.
+        if self._shuffle and self.env.taskset.INFINITE:
             shuffle.seed += idx
         self._seed = shuffle.seed if self._shuffle else 0
         # The server owns task scheduling: callers pull (`run_rollout`/`run_group` carry no task
@@ -163,40 +166,45 @@ class EnvServer:
         scheduler). Reads `self._shuffle`/`self._seed` (set in `__init__`). Shared by the native
         server and the v0 bridge (always a finite dataset)."""
         self._count = count
-        self._cursor = 0
-        self._order: list[int] | None = None  # current epoch's permutation
-        self._epoch = 0
+        self._cursor = (
+            0  # fallback cursor for a lone server; a pool's broker supplies the index
+        )
+        self._order: list[int] | None = None  # cached epoch permutation
+        self._order_epoch = -1
 
-    def _next_index(self) -> int:
-        """The next index of a *finite* taskset to serve: walk a (re)shuffled permutation that loops
-        over epochs (reshuffled each epoch from `self._seed`, which already includes the per-worker
-        offset; the `seed-epoch` string seed keeps (worker, epoch) pairs distinct). Synchronous and
-        never awaits, so concurrent rollouts on one event loop can't interleave the cursor (no lock
-        needed). Used by native-finite (`_next_task`) and the v0 bridge."""
-        pos = self._cursor % self._count
-        if pos == 0:  # (re)build the epoch's permutation at each boundary
+    def _index_at(self, index: int) -> int:
+        """Map a global cursor index to a task index via the epoch's (re)shuffled permutation
+        (reshuffled each epoch from `self._seed`; the `seed-epoch` string seed keeps epochs
+        distinct). All workers share the seed for a finite taskset, so they agree on the permutation
+        for any index — which is what lets the broker hand `sample` to any worker. Synchronous, so
+        concurrent rollouts on one event loop can't interleave the cached order. Used by
+        native-finite (`_next_task`) and the v0 bridge."""
+        epoch, pos = divmod(index, self._count)
+        if epoch != self._order_epoch:  # (re)build + cache this epoch's permutation
             self._order = list(range(self._count))
             if self._shuffle:
-                random.Random(f"{self._seed}-{self._epoch}").shuffle(self._order)
-            self._epoch += 1
-        self._cursor += 1
+                random.Random(f"{self._seed}-{epoch}").shuffle(self._order)
+            self._order_epoch = epoch
         return self._order[pos]
 
-    def _next_task(self):
-        """The next task to serve: a finite taskset is indexed via `_next_index`; an infinite one
-        is streamed off its generator (the peeked first, then `next`)."""
-        if self._count is None:  # infinite: stream (no index, no cache)
+    def _next_task(self, index: int | None):
+        """The task to serve. A finite taskset is indexed by the global cursor `index` (the pool's
+        broker supplies it; a lone server falls back to its own cursor); an infinite one is streamed
+        off its generator (the peeked first, then `next`), ignoring `index`."""
+        if self._count is None:  # infinite: forward stream
             if self._pending is not None:
                 task, self._pending = self._pending, None
                 return task
             return next(self._iter)
-        return self._tasks[self._next_index()]
+        if index is None:
+            index = self._cursor
+            self._cursor += 1
+        return self._tasks[self._index_at(index)]
 
     def _sample(self, req: SampleRequest) -> SampleResponse:
-        # Pull the next task (cursor + shuffle/epoch are server-owned); the caller echoes it back
-        # to `run_rollout` to run rollouts of it. Lets the caller bound concurrency per rollout
-        # (each `run_rollout` is one permit) while a group still shares one task.
-        return SampleResponse.model_construct(task=self._next_task())
+        # The broker stamps a global cursor index (a pool) so workers stay coherent without pinning;
+        # a lone server uses its own cursor. The caller echoes the task back to run_rollout/run_group.
+        return SampleResponse.model_construct(task=self._next_task(req.index))
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)

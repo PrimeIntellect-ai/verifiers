@@ -48,6 +48,9 @@ class InfoResponse(BaseResponse):
 
 class SampleRequest(BaseRequest):
     method: ClassVar[str] = "sample"
+    index: int | None = None
+    """Global cursor index, stamped by the pool broker so workers stay coherent without pinning
+    `sample` to one worker. `None` for a lone server, which uses its own cursor."""
 
 
 class SampleResponse(BaseResponse):

@@ -395,9 +395,14 @@ class LegacyEnvServer(EnvServer):
     def _sample(self, req: SampleRequest) -> SampleResponse:
         # The bridge holds the dataset, so the task only needs to carry its index — the caller
         # echoes it back to `run_rollout`, which re-fetches the row by `idx`. (`prompt` is a
-        # required Task field, so set it explicitly to None.)
+        # required Task field, so set it explicitly to None.) The broker stamps a global cursor
+        # index in a pool; a lone server falls back to its own cursor.
+        index = req.index
+        if index is None:
+            index = self._cursor
+            self._cursor += 1
         return SampleResponse.model_construct(
-            task=WireTask(idx=self._next_index(), prompt=None)
+            task=WireTask(idx=self._index_at(index), prompt=None)
         )
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:

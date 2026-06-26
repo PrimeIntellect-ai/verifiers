@@ -116,14 +116,10 @@ class EnvServerPool:
         self.multiplex = multiplex
         self.elastic = elastic
         self.legacy = legacy
-        # Whether tasks are shuffled: if so, each worker's per-index seed offset makes its stream
-        # diverge, so `sample` load-balances like a rollout; otherwise every worker serves the same
-        # order, so `sample` must pin to one cursor (worker 0) to avoid duplicate task sequences.
-        if legacy:
-            self._shuffle = server_kwargs.get("shuffle") is not None
-        else:
-            taskset = (server_kwargs.get("config_data") or {}).get("taskset") or {}
-            self._shuffle = taskset.get("shuffle") is not None
+        self._sample_cursor = (
+            0  # global task cursor; stamped onto each `sample` so workers stay
+        )
+        # coherent (a finite taskset's permutation agrees across workers) without pinning sample
         self.log_setup = log_setup
         self.session = uuid.uuid4().hex[:12]
         self.workers: list[dict] = []
@@ -230,7 +226,9 @@ class EnvServerPool:
                         )
                     else:
                         # Pool capacity is measured in rollouts; one group request carries n.
-                        # `sample` is not a rollout (0 slots).
+                        # `sample` is not a rollout (0 slots) — instead it advances the global cursor,
+                        # stamped onto the request so any worker serves the right task (a finite
+                        # taskset's permutation agrees across workers). All methods load-balance.
                         rollout_slots = 1
                         if method == b"run_group":
                             with contextlib.suppress(Exception):
@@ -240,16 +238,9 @@ class EnvServerPool:
                                 rollout_slots = max(1, request.n)
                         elif method == b"sample":
                             rollout_slots = 0
-                        # Rollouts carry the task, so always go to the least-busy worker. `sample`
-                        # advances a per-worker cursor: when shuffling, per-index seed offsets make
-                        # the streams diverge, so it load-balances too; otherwise every worker serves
-                        # the same order, so it pins to one cursor (worker 0, stable — upscale-only).
-                        pin_sample = method == b"sample" and not self._shuffle
-                        worker = (
-                            self.workers[0]
-                            if pin_sample
-                            else min(self.workers, key=lambda w: w["active"])
-                        )
+                            payload = msgpack.packb({"index": self._sample_cursor})
+                            self._sample_cursor += 1
+                        worker = min(self.workers, key=lambda w: w["active"])
                         worker["active"] += rollout_slots
                         pending[request_id] = {
                             "client_id": client_id,
