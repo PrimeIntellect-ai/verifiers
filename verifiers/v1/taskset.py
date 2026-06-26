@@ -37,8 +37,18 @@ from verifiers.v1.trace import Trace
 logger = logging.getLogger(__name__)
 
 SHUFFLE_SEED = 0
-"""Fixed seed so `--shuffle` draws the same tasks every run (reproducible). The single source
-for the shuffle seed — `select_tasks` defaults to it, and the env-server's index shuffle uses it."""
+"""Default shuffle seed (reproducible across runs). `ShuffleConfig.seed` defaults to it, and it's
+the seed an INFINITE taskset generates from when no `ShuffleConfig` is set."""
+
+
+class ShuffleConfig(BaseConfig):
+    """Task-order policy. Present on `TasksetConfig.shuffle` → the env server serves a finite
+    taskset as a per-epoch-reshuffled permutation, and an INFINITE taskset's generator should seed
+    its RNG from `Taskset.seed`. Each env-server in a pool offsets `seed` by its worker index, so a
+    multi-worker pool draws divergent task streams (random sampling across servers)."""
+
+    seed: int = SHUFFLE_SEED
+    """Base shuffle/generation seed; the env-server adds its worker index to it."""
 
 
 class TasksetConfig(BaseConfig):
@@ -48,6 +58,11 @@ class TasksetConfig(BaseConfig):
     """The taskset id, which selects this taskset: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
     `EnvId`). Set via `--taskset.id`."""
+
+    shuffle: ShuffleConfig | None = None
+    """Task-order policy (default `None` = serve in load order, deterministic — what eval wants). A
+    `ShuffleConfig` shuffles a finite taskset (reshuffled each epoch) and seeds an INFINITE
+    taskset's generation; prime-rl's train envs set one."""
 
     @property
     def name(self) -> str:
@@ -70,12 +85,16 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     inside a per-task image (e.g. a SWE repo sandbox)."""
 
     INFINITE: ClassVar[bool] = False
-    """Whether `load_tasks` may not terminate (an infinite generator). When True a run must cap
-    it with `num_tasks`; `--shuffle` is ignored (with a warning), since materializing every task
-    to sample from would never terminate."""
+    """Whether `load_tasks` may not terminate (an infinite generator). When True a run must cap it
+    with `num_tasks`, and `load_tasks` should seed its RNG from `self.seed` (set by the framework,
+    offset per env-server) so a multi-worker pool draws divergent streams; finite shuffling
+    (`ShuffleConfig`) doesn't apply — the generator owns its order."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
+        self.seed = config.shuffle.seed if config.shuffle else SHUFFLE_SEED
+        """Effective seed for task generation/shuffling. Defaults from `config.shuffle`; the
+        env-server overrides it with its worker-index offset before `load_tasks` runs."""
 
     def load_tasks(self) -> Iterable[TaskT]:
         """Produce this taskset's tasks. Return a list for a fixed dataset, or a generator
@@ -186,24 +205,23 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
 def select_tasks(
     taskset: Taskset[TaskT, ConfigT, StateT],
     num_tasks: int | None = None,
-    shuffle: bool = False,
-    seed: int = SHUFFLE_SEED,
 ) -> list[TaskT]:
     """Materialize the tasks a run will use, pulling only as many from `load_tasks` as it
     needs — so a lazy (generator) taskset never builds tasks the run won't touch.
 
-    Without `shuffle`, only the first `num_tasks` are drawn, consumed lazily. `shuffle` has to
-    see the whole set to sample from it, so it materializes everything first. A taskset that
-    declares itself `INFINITE` therefore must be drawn with a `num_tasks` cap (refused here
-    rather than hanging on a non-terminating `load_tasks`); `--shuffle` on it is ignored with a
-    warning. The result is always a concrete list (the rest of the pipeline indexes and
-    re-iterates it)."""
+    Order is set by `taskset.config.shuffle` (a `ShuffleConfig` shuffles with `taskset.seed`;
+    `None` keeps load order). Without shuffling, only the first `num_tasks` are drawn, consumed
+    lazily; shuffling has to see the whole set to sample from it, so it materializes everything
+    first. An `INFINITE` taskset must be drawn with a `num_tasks` cap (refused here rather than
+    hanging on a non-terminating `load_tasks`); finite shuffling on it is ignored with a warning.
+    The result is always a concrete list (the rest of the pipeline indexes and re-iterates it)."""
+    shuffle = taskset.config.shuffle is not None
     if taskset.INFINITE:
         if shuffle:
             logger.warning(
-                "taskset %s is INFINITE, so --shuffle — which must materialize every task to "
-                "sample from — would never terminate; ignoring it. The first --num-tasks tasks "
-                "of an infinite taskset are already an arbitrary sample.",
+                "taskset %s is INFINITE, so finite shuffling — which must materialize every task "
+                "to sample from — would never terminate; ignoring it. The generator owns its order "
+                "(seeded from self.seed); the first --num-tasks tasks are already a sample.",
                 type(taskset).__name__,
             )
             shuffle = False
@@ -215,7 +233,7 @@ def select_tasks(
     tasks = taskset.load_tasks()
     if shuffle:
         tasks = list(tasks)
-        random.Random(seed).shuffle(tasks)
+        random.Random(taskset.seed).shuffle(tasks)
         return tasks if num_tasks is None else tasks[:num_tasks]
     if num_tasks is not None:
         return list(itertools.islice(tasks, num_tasks))

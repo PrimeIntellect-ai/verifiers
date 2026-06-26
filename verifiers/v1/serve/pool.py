@@ -65,7 +65,13 @@ def _arm_teardown(death_pipe=None) -> None:
 
 
 def _worker_entry(
-    *, server_kwargs: dict, address: str, death_pipe, legacy: bool, log_setup=None
+    *,
+    server_kwargs: dict,
+    address: str,
+    death_pipe,
+    legacy: bool,
+    log_setup=None,
+    seed_offset: int = 0,
 ) -> None:
     """Spawned worker: an ordinary EnvServer/LegacyEnvServer bound to `address` (ipc).
     A native config arrives as a dict (`config_data`): the eval/serve CLI's narrowed
@@ -82,7 +88,7 @@ def _worker_entry(
             "config": EnvConfig.model_validate(server_kwargs["config_data"])
         }
     cls = LegacyEnvServer if legacy else EnvServer
-    cls.run_server(address=address, **server_kwargs)
+    cls.run_server(address=address, seed_offset=seed_offset, **server_kwargs)
 
 
 class EnvServerPool:
@@ -110,6 +116,14 @@ class EnvServerPool:
         self.multiplex = multiplex
         self.elastic = elastic
         self.legacy = legacy
+        # Whether tasks are shuffled: if so, each worker's per-index seed offset makes its stream
+        # diverge, so `sample` load-balances like a rollout; otherwise every worker serves the same
+        # order, so `sample` must pin to one cursor (worker 0) to avoid duplicate task sequences.
+        if legacy:
+            self._shuffle = server_kwargs.get("shuffle") is not None
+        else:
+            taskset = (server_kwargs.get("config_data") or {}).get("taskset") or {}
+            self._shuffle = taskset.get("shuffle") is not None
         self.log_setup = log_setup
         self.session = uuid.uuid4().hex[:12]
         self.workers: list[dict] = []
@@ -140,6 +154,7 @@ class EnvServerPool:
                 death_pipe=child_conn,
                 legacy=self.legacy,
                 log_setup=self.log_setup,
+                seed_offset=i,  # diverge each worker's shuffle/generation stream
             ),
             daemon=False,
         )
@@ -225,13 +240,14 @@ class EnvServerPool:
                                 rollout_slots = max(1, request.n)
                         elif method == b"sample":
                             rollout_slots = 0
-                        # Each worker is an independent `EnvServer` serving the same task order, so
-                        # `sample` must hit one cursor — else workers hand out the same tasks. Pin it
-                        # to worker 0 (stable: the pool is upscale-only); rollouts carry the task, so
-                        # they stay load-balanced.
+                        # Rollouts carry the task, so always go to the least-busy worker. `sample`
+                        # advances a per-worker cursor: when shuffling, per-index seed offsets make
+                        # the streams diverge, so it load-balances too; otherwise every worker serves
+                        # the same order, so it pins to one cursor (worker 0, stable — upscale-only).
+                        pin_sample = method == b"sample" and not self._shuffle
                         worker = (
                             self.workers[0]
-                            if method == b"sample"
+                            if pin_sample
                             else min(self.workers, key=lambda w: w["active"])
                         )
                         worker["active"] += rollout_slots

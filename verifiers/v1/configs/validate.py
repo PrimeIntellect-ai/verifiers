@@ -36,8 +36,6 @@ class ValidateConfig(BaseConfig):
         validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),
     )
     """How many tasks to validate (None = all)."""
-    shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
-    """Shuffle tasks before taking the first `num_tasks`."""
     max_concurrent: int | None = Field(
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )

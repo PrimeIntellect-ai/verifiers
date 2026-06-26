@@ -55,11 +55,21 @@ class EnvServer:
     """Serve one v1 environment over ZMQ. The only process that loads the env."""
 
     def __init__(
-        self, config: EnvConfig, address: str = "tcp://127.0.0.1:5000"
+        self,
+        config: EnvConfig,
+        address: str = "tcp://127.0.0.1:5000",
+        seed_offset: int = 0,
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
+        # Task order: a `ShuffleConfig` shuffles a finite taskset (reshuffled per epoch) and seeds
+        # an INFINITE one's generation. Each pool worker offsets the seed by its index (when
+        # shuffling) so workers draw divergent streams; `taskset.seed` carries it to `load_tasks`.
+        shuffle = config.taskset.shuffle
+        self._shuffle = shuffle is not None
+        self._seed = (shuffle.seed + seed_offset) if self._shuffle else SHUFFLE_SEED
+        self.env.taskset.seed = self._seed
         # The server owns task scheduling: callers pull (`run_rollout`/`run_group` carry no task
         # index), and the server hands out the next task. A finite taskset is materialized + counted
         # and served as a (re)shuffled permutation that loops over epochs; an INFINITE one is
@@ -82,7 +92,7 @@ class EnvServer:
             self._tasks = [first, *tasks]  # materialized for indexed access
             self._pending = None
             self.num_tasks = len(self._tasks)
-        self._init_scheduler(self.num_tasks, config.shuffle)
+        self._init_scheduler(self.num_tasks)
         self.requires_group_scoring = bool(
             discover_decorated(self.env.taskset, "group_reward")
         )
@@ -147,26 +157,26 @@ class EnvServer:
         # task, so hand it a representative one (the taskset is guaranteed non-empty).
         return self.env.serving([self._first_task])
 
-    def _init_scheduler(self, count: int | None, shuffle: bool) -> None:
-        """Set up the finite-taskset scheduler: `count` tasks (None = infinite → streamed, no
-        scheduler), shuffled or not. Shared by the native server and the v0 bridge (always a finite
-        dataset). The shuffle seed is fixed (`SHUFFLE_SEED`), not configurable — same as eval."""
+    def _init_scheduler(self, count: int | None) -> None:
+        """Set up the finite-taskset cursor: `count` tasks (None = infinite → streamed, no
+        scheduler). Reads `self._shuffle`/`self._seed` (set in `__init__`). Shared by the native
+        server and the v0 bridge (always a finite dataset)."""
         self._count = count
-        self._shuffle = shuffle
         self._cursor = 0
         self._order: list[int] | None = None  # current epoch's permutation
         self._epoch = 0
 
     def _next_index(self) -> int:
-        """The next index of a *finite* taskset to serve: walk a (re)shuffled permutation that
-        loops over epochs (reshuffled each epoch via `SHUFFLE_SEED + epoch`). Synchronous and never
-        awaits, so concurrent rollouts on one event loop can't interleave the cursor (no lock
+        """The next index of a *finite* taskset to serve: walk a (re)shuffled permutation that loops
+        over epochs (reshuffled each epoch from `self._seed`, which already includes the per-worker
+        offset; the `seed-epoch` string seed keeps (worker, epoch) pairs distinct). Synchronous and
+        never awaits, so concurrent rollouts on one event loop can't interleave the cursor (no lock
         needed). Used by native-finite (`_next_task`) and the v0 bridge."""
         pos = self._cursor % self._count
         if pos == 0:  # (re)build the epoch's permutation at each boundary
             self._order = list(range(self._count))
             if self._shuffle:
-                random.Random(SHUFFLE_SEED + self._epoch).shuffle(self._order)
+                random.Random(f"{self._seed}-{self._epoch}").shuffle(self._order)
             self._epoch += 1
         self._cursor += 1
         return self._order[pos]

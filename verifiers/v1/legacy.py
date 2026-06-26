@@ -32,6 +32,7 @@ from verifiers.v1.serve.types import (
     SampleResponse,
 )
 from verifiers.v1.task import WireTask
+from verifiers.v1.taskset import SHUFFLE_SEED, ShuffleConfig
 from verifiers.v1 import graph
 from verifiers.v1.trace import Error, TimeSpan, Timing, Trace
 from verifiers.v1.types import (
@@ -290,12 +291,17 @@ class LegacyEnvServer(EnvServer):
         env_args: dict | None = None,
         address: str = "tcp://127.0.0.1:5000",
         extra_env_kwargs: dict | None = None,
-        shuffle: bool = True,
+        shuffle: ShuffleConfig | None = None,
+        seed_offset: int = 0,
     ) -> None:
         from verifiers import load_environment
         from verifiers.v1.utils.install import ensure_installed, env_name
 
         self.address = address
+        # Same task-order policy as the native server: a `ShuffleConfig` shuffles the (finite) v0
+        # dataset, reshuffled per epoch and offset by the pool worker index so workers diverge.
+        self._shuffle = shuffle is not None
+        self._seed = (shuffle.seed + seed_offset) if self._shuffle else SHUFFLE_SEED
         # Install from the env hub on demand for an `org/name[@version]` id, then load the
         # v0 env by its module name (a local id is already importable).
         module = ensure_installed(env_id)
@@ -314,7 +320,7 @@ class LegacyEnvServer(EnvServer):
         )  # v0 datasets are finite; drives the `info` response
         # The bridge owns scheduling too: callers pull, the server hands out the next dataset
         # row (shuffled + epoch-looped for a finite v0 dataset).
-        self._init_scheduler(self.num_tasks, shuffle)
+        self._init_scheduler(self.num_tasks)
         self.requires_group_scoring = self.env.requires_group_rollouts
         self._clients: dict[tuple[str, str], Any] = {}
 
@@ -468,8 +474,8 @@ async def run_legacy_eval(config) -> list[Trace]:
         env.set_kwargs(**config.extra_env_kwargs)
     dataset = env.get_eval_dataset()  # the eval split (falls back to train when unset)
     idxs = list(range(len(dataset)))
-    if config.shuffle:
-        random.Random(0).shuffle(idxs)  # fixed seed: same sample every run
+    if config.taskset.shuffle is not None:
+        random.Random(config.taskset.shuffle.seed).shuffle(idxs)
     if config.num_tasks is not None:
         idxs = idxs[: config.num_tasks]
 

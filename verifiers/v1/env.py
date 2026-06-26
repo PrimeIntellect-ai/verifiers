@@ -117,12 +117,6 @@ class EnvConfig(BaseConfig):
     """Rollouts that share one interception server (and, behind a remote runtime, one
     tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
     key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
-    shuffle: bool = False
-    """Whether the env server shuffles a finite taskset before serving it (and reshuffles each
-    epoch as it loops). No-op for an `INFINITE` taskset, whose generator owns its order. The
-    orchestrator pulls tasks by cursor — shuffling lives here, on the server, not the caller.
-    Defaults to False (deterministic, like in-process eval); prime-rl's train envs override it to
-    True. The seed is fixed (reproducible across runs), not configurable, matching eval."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`

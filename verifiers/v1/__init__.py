@@ -61,7 +61,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.taskset import ShuffleConfig, Taskset, TasksetConfig
 from verifiers.v1.mcp import (
     Toolset,
     ToolsetConfig,
@@ -160,6 +160,7 @@ __all__ = [
     # taskset / harness / runtime / environment
     "Taskset",
     "TasksetConfig",
+    "ShuffleConfig",
     "BaseConfig",
     "Harness",
     "HarnessConfig",

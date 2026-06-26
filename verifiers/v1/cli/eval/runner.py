@@ -24,7 +24,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     client = resolve_client(config.client)
     # Draw only the tasks this run needs from `load_tasks` (which may be a lazy/infinite
     # generator): without `--shuffle`, just the first `--num-tasks` are built.
-    tasks = select_tasks(env.taskset, config.num_tasks, config.shuffle)
+    tasks = select_tasks(env.taskset, config.num_tasks)
     ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.
@@ -111,7 +111,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             "env_id": config.id,
             "env_args": config.args,
             "extra_env_kwargs": config.extra_env_kwargs,
-            "shuffle": config.shuffle,
+            "shuffle": config.taskset.shuffle,
         }
         if legacy
         else {"config_data": env_config_data(config)}  # picklable across the spawn

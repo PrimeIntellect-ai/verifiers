@@ -107,7 +107,7 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     """Run each task's `validate` hook with bounded concurrency, showing progress live. Returns
     the result rows in memory — nothing is persisted."""
     taskset = vf.load_taskset(config.taskset)
-    tasks = select_tasks(taskset, config.num_tasks, config.shuffle)
+    tasks = select_tasks(taskset, config.num_tasks)
     if isinstance(config.runtime, vf.SubprocessConfig) and (
         taskset.NEEDS_CONTAINER or any(t.image for t in tasks)
     ):
