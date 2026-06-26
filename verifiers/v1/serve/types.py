@@ -2,7 +2,7 @@
 
 from typing import ClassVar
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, SerializeAsAny
 
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.task import WireTask
@@ -51,13 +51,10 @@ class SampleRequest(BaseRequest):
 
 
 class SampleResponse(BaseResponse):
-    task: WireTask | None = None
+    task: SerializeAsAny[WireTask] | None = None
     """The next task the server pulls (cursor + shuffle/epoch live on the server). The caller
-    echoes it back to `run_rollout` to run rollouts of it — it never addresses tasks by index."""
-
-    @field_serializer("task")
-    def _ser_task(self, task: "WireTask | None") -> dict | None:
-        return task.model_dump() if task is not None else None
+    echoes it back to `run_rollout` to run rollouts of it — it never addresses tasks by index.
+    `SerializeAsAny` so a concrete taskset `Task` dumps its own fields, not the base schema."""
 
 
 class RunRolloutRequest(BaseRequest):
@@ -71,14 +68,11 @@ class RunRolloutRequest(BaseRequest):
 
 
 class RunRolloutResponse(BaseResponse):
-    trace: Trace[WireTask] | None = None
+    trace: SerializeAsAny[Trace[WireTask]] | None = None
     """A typed `Trace` with a non-strict `WireTask` (taskset-specific task fields ride in
     `model_extra`), so the server needn't assume the caller imports the taskset. A caller
-    that *does* import it upgrades via `Trace[task_type(taskset_id)].model_validate(...)`."""
-
-    @field_serializer("trace")
-    def _ser_trace(self, trace: "Trace[WireTask] | None") -> dict | None:
-        return trace.model_dump() if trace is not None else None
+    that *does* import it upgrades via `Trace[task_type(taskset_id)].model_validate(...)`.
+    `SerializeAsAny` so the concrete trace dumps its own fields, not the base schema."""
 
 
 class RunGroupRequest(BaseRequest):
@@ -93,9 +87,5 @@ class RunGroupRequest(BaseRequest):
 
 
 class RunGroupResponse(BaseResponse):
-    traces: list[Trace[WireTask]] | None = None
+    traces: list[SerializeAsAny[Trace[WireTask]]] | None = None
     """Typed `Trace`s with non-strict `WireTask`, like `RunRolloutResponse.trace`."""
-
-    @field_serializer("traces")
-    def _ser_traces(self, traces: "list[Trace[WireTask]] | None") -> list[dict] | None:
-        return [t.model_dump() for t in traces] if traces is not None else None
