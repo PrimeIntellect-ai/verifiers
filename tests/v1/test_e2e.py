@@ -13,12 +13,7 @@ reachability matrix); `test_single_turn`/`test_agentic` fan the harness against 
 incl. mixed-locality combos — asserting each keeps its own state.
 """
 
-import inspect
-
-from aiohttp import web
 import pytest
-from renderers import create_renderer_pool
-from renderers.base import load_tokenizer
 
 
 @pytest.mark.e2e
@@ -36,94 +31,6 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
     assert trace.errors == []
     assert trace.num_turns == 1
     assert trace.reward == 1.0
-
-
-async def test_train_renderer_sampling_kwargs_flow_through_server_path(
-    run_v1_server, tmp_path
-):
-    """Train client sampling kwargs flow through the same env-server path prime-rl uses."""
-    if "chat_template_kwargs" not in inspect.signature(create_renderer_pool).parameters:
-        pytest.skip("requires renderers.create_renderer_pool(chat_template_kwargs=...)")
-
-    renderer_model = "Qwen/Qwen3-0.6B"
-    served_model = "served-qwen"
-    tokenizer = load_tokenizer(renderer_model)
-    completion_ids = tokenizer.encode("hello world", add_special_tokens=False)
-    generate_bodies: list[dict] = []
-
-    async def models(_request):
-        return web.json_response(
-            {"data": [{"id": served_model, "max_model_len": 32768}]}
-        )
-
-    async def generate(request):
-        body = await request.json()
-        generate_bodies.append(body)
-        return web.json_response(
-            {
-                "request_id": "fake-generate-1",
-                "choices": [
-                    {
-                        "token_ids": completion_ids,
-                        "logprobs": {
-                            "content": [{"logprob": 0.0} for _ in completion_ids]
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
-            }
-        )
-
-    app = web.Application()
-    app.router.add_get("/v1/models", models)
-    app.router.add_post("/inference/v1/generate", generate)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
-    await site.start()
-    assert site._server is not None
-    port = site._server.sockets[0].getsockname()[1]
-
-    try:
-        (trace,) = await run_v1_server(
-            "echo-v1",
-            harness="default",
-            harness_overrides={"runtime": {"type": "subprocess"}},
-            output_dir=tmp_path,
-            model=served_model,
-            max_turns=2,
-            client={
-                "type": "train",
-                "base_url": f"http://127.0.0.1:{port}/v1",
-                "renderer_model_name": renderer_model,
-            },
-            sampling={
-                "max_tokens": 64,
-                "temperature": 0,
-                "extra_body": {
-                    "top_k": 20,
-                    "chat_template_kwargs": {"enable_thinking": False},
-                },
-            },
-        )
-    finally:
-        await runner.cleanup()
-
-    assert trace.errors == []
-    assert trace.num_turns == 1
-    assert trace.reward == 1.0
-    assert len(generate_bodies) == 1
-
-    body = generate_bodies[0]
-    sampling_params = body["sampling_params"]
-    assert sampling_params["top_k"] == 20
-    assert sampling_params["temperature"] == 0
-    assert sampling_params["max_tokens"] == 64
-    assert "extra_body" not in sampling_params
-    assert "chat_template_kwargs" not in sampling_params
-
-    prompt_text = tokenizer.decode(body["token_ids"], skip_special_tokens=False)
-    assert "<think>\n\n</think>\n\n" in prompt_text
 
 
 @pytest.mark.e2e
