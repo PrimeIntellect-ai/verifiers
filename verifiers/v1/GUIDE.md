@@ -194,11 +194,6 @@ the `eval` and `validate` entrypoints (in-process and the `--server` env-server 
    a `seed` (or similar) field your `load_tasks` reads (above) — a reproducible, user-controlled
    alternative.
 
-The index-addressed env-server (`--server` / `--num-workers`) serves a generator taskset too: it
-resolves each `task_idx` by consuming the generator on demand and reports no task count, so the
-caller still bounds the run with `--num-tasks`. The built-in `textarena` taskset is a lazy *finite*
-generator (it caps generation at `num_tasks`).
-
 ## Scoring — rewards, metrics, group rewards
 
 Rewards and metrics are decorated `async` methods. The framework **injects whichever arguments
