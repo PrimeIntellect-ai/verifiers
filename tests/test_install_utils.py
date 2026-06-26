@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from verifiers.utils.install_utils import (
+    download_environment_source,
     install_from_hub,
     is_hub_env,
     normalize_package_name,
@@ -123,7 +124,7 @@ class TestInstallFromHub:
         mock_fetch.return_value = {
             "visibility": "PRIVATE",
             "package_url": "https://hub.example/private.tar.gz",
-            "latest_version": {"content_hash": content_hash},
+            "sha256": content_hash,
         }
         wheel = tmp_path / "my_env-1.0-py3-none-any.whl"
         wheel.write_bytes(b"wheel")
@@ -137,8 +138,31 @@ class TestInstallFromHub:
 
         assert module == "my_env"
         mock_download.assert_called_once()
-        mock_build.assert_called_once()
+        assert mock_build.call_args.args[1] == (
+            tmp_path
+            / ".cache"
+            / "verifiers"
+            / "hub"
+            / "owner"
+            / "my-env"
+            / content_hash
+        )
         assert mock_run.call_args.args[0][-1] == str(wheel)
+
+
+def test_hub_install_cache_tracks_the_active_owner(monkeypatch):
+    from verifiers.v1.utils import install as install_module
+
+    calls = []
+    monkeypatch.setattr(install_module, "install_from_hub", calls.append)
+    monkeypatch.setattr(install_module, "_installed_hub_refs", {})
+
+    assert install_module.ensure_installed("alice/shared-env") == "shared_env"
+    assert install_module.ensure_installed("alice/shared-env") == "shared_env"
+    assert install_module.ensure_installed("bob/shared-env") == "shared_env"
+    assert install_module.ensure_installed("alice/shared-env") == "shared_env"
+
+    assert calls == ["alice/shared-env", "bob/shared-env", "alice/shared-env"]
 
 
 def test_safe_extract_rejects_parent_traversal(tmp_path):
@@ -153,3 +177,41 @@ def test_safe_extract_rejects_parent_traversal(tmp_path):
     with tarfile.open(archive, "r:gz") as tar:
         with pytest.raises(ValueError, match="unsafe path"):
             safe_extract(tar, destination)
+
+
+def test_download_environment_source_flattens_archive_wrapper(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "pyproject.toml").write_text('[project]\nname = "demo"\n')
+    (source / "demo.py").write_text("VALUE = 1\n")
+    archive = tmp_path / "source.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(source, arcname="demo-1.0")
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+        def iter_bytes(self, chunk_size):
+            yield archive.read_bytes()
+
+    monkeypatch.setattr("httpx.stream", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(
+        "verifiers.utils.client_utils.load_prime_config",
+        lambda: {"api_key": None, "base_url": "https://api.example.test"},
+    )
+
+    destination = download_environment_source(
+        {"package_url": "https://storage.example.test/demo.tar.gz"},
+        tmp_path / "destination",
+    )
+
+    assert (destination / "pyproject.toml").is_file()
+    assert (destination / "demo.py").is_file()
+    assert not (destination / "demo-1.0").exists()

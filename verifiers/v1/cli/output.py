@@ -45,7 +45,7 @@ def read_config(results_dir: Path) -> dict[str, Any]:
     path = results_dir / "config.toml"
     try:
         config = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(f"Invalid Verifiers eval config: {path}") from exc
     if not isinstance(config, dict):
         raise ValueError(f"Invalid Verifiers eval config: {path}")

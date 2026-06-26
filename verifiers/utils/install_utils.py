@@ -140,8 +140,16 @@ def download_environment_source(
                     handle.write(chunk)
         with tarfile.open(archive, "r:gz") as tar:
             safe_extract(tar, extracted)
+        source = extracted
+        entries = list(extracted.iterdir())
+        if (
+            not (extracted / "pyproject.toml").is_file()
+            and len(entries) == 1
+            and entries[0].is_dir()
+        ):
+            source = entries[0]
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(extracted, destination, dirs_exist_ok=True)
+        shutil.copytree(source, destination, dirs_exist_ok=True)
     return destination
 
 
@@ -212,11 +220,11 @@ def install_from_hub(
         command.extend(str(dependency) for dependency in url_dependencies)
     else:
         version_data = details.get("latest_version")
-        content_hash = (
-            version_data.get("content_hash")
-            if isinstance(version_data, dict)
-            else details.get("content_hash")
-        )
+        content_hash = details.get("content_hash") or details.get("sha256")
+        if not content_hash and isinstance(version_data, dict):
+            content_hash = version_data.get("content_hash") or version_data.get(
+                "sha256"
+            )
         valid_hash = (
             isinstance(content_hash, str)
             and len(content_hash) == 64

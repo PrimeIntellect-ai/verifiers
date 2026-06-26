@@ -5,7 +5,6 @@ and make a hub id (`org/name[@version]`) importable on demand (the same path `pr
 install` uses)."""
 
 import logging
-from functools import lru_cache
 
 from verifiers.utils.install_utils import (
     install_from_hub,
@@ -15,6 +14,7 @@ from verifiers.utils.install_utils import (
 )
 
 logger = logging.getLogger(__name__)
+_installed_hub_refs: dict[str, str] = {}
 
 
 def env_name(env_id: str) -> str:
@@ -28,14 +28,16 @@ def env_module(env_id: str) -> str:
     return normalize_package_name(env_name(env_id))
 
 
-@lru_cache(maxsize=None)
 def ensure_installed(env_id: str) -> str:
     """Make `env_id` importable and return its module name.
 
-    A Hub reference is resolved once per process so ``latest`` cannot silently use a stale
-    install and two owners with the same distribution name cannot be confused. A bare local
-    id must already be importable (normally via ``uv pip install -e``)."""
+    A Hub reference is resolved once while it remains the active reference for its module.
+    Switching between owners or versions of the same module reinstalls the requested package.
+    A bare local id must already be importable (normally via ``uv pip install -e``)."""
+    module = env_module(env_id)
     if is_hub_env(env_id):
-        logger.info("installing %s from the environments hub", env_id)
-        install_from_hub(env_id)
-    return env_module(env_id)
+        if _installed_hub_refs.get(module) != env_id:
+            logger.info("installing %s from the environments hub", env_id)
+            install_from_hub(env_id)
+            _installed_hub_refs[module] = env_id
+    return module
