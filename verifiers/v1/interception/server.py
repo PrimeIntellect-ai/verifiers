@@ -11,14 +11,15 @@ own secret (the bearer token the harness already sends), and the server routes b
 secret to the right session. So N rollouts need one server (and, behind a remote runtime,
 one tunnel) per pool member rather than one each — see `interception.pool`.
 
-When a rollout sets a user simulator (see `verifiers.v1.mcp.user`), a harness that supports it
-(`Harness.SUPPORTS_USER_SIM`) drives it explicitly over the `/user` endpoint: on a model turn
-with no tool call the harness POSTs the assistant's text, gets the simulator's next user turn(s)
-back (or `done`), appends them to its OWN conversation, and re-prompts. So every user turn flows
-through the harness's own next request and the message graph stays linear — model calls here are
-a pure 1:1 proxy, never an inject-and-re-prompt. When the task carries no prompt (`task.prompt is
-None`), the harness opens the conversation by POSTing `/user` with an empty message before the
-first model call. Tools are likewise handled out-of-band (run by the harness).
+A user simulator (see `verifiers.v1.mcp.user`) is not the interception server's concern: it is its
+own MCP server, and a harness that supports it (`Harness.SUPPORTS_USER_SIM`) drives it directly —
+calling its `respond` tool for each user turn and injecting the reply into its own conversation
+(append for a chat loop; `codex exec resume` / stream-json stdin for a CLI). So every user turn
+arrives in the harness's own next model call and is recorded as a regular user message on the
+single branch — model calls here are a pure 1:1 proxy, never an inject-and-re-prompt. Tools are
+likewise handled out-of-band (run by the harness). The simulator ends the trajectory by returning
+no further turns and setting a `self.state` flag a taskset `@stop` checks, caught here over the
+`/state` channel like any other state.
 """
 
 import asyncio
@@ -28,7 +29,6 @@ import logging
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
@@ -37,19 +37,14 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
-from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1 import graph
 from verifiers.v1.errors import (
     OverlongPromptError,
     RolloutError,
     TasksetError,
-    UserError,
 )
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
-
-if TYPE_CHECKING:
-    from verifiers.v1.mcp import Respond
 
 logger = logging.getLogger(__name__)
 
@@ -128,19 +123,16 @@ class RolloutLimits:
 class RolloutSession:
     """One rollout's interception state, served by a (possibly shared) `InterceptionServer`
     and keyed there by its secret. Holds everything a single rollout's chat-completions need:
-    the client/model context, the trace to record turns onto, the framework limits + `@stop`s
-    checked before each turn, and (optionally) a user simulator the rollout sets before the
-    harness runs."""
+    the client/model context, the trace to record turns onto, and the framework limits + `@stop`s
+    checked before each turn. A user simulator is not held here — the harness drives it directly
+    over its own MCP server (see `verifiers.v1.mcp.user`), so the interception server is a pure
+    model proxy that knows nothing about user simulation (the simulator's `@stop` flag still reaches
+    it over the `/state` channel like any other state)."""
 
     ctx: RolloutContext
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
-    user: "Respond | None" = None
-    """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
-    When set, a harness that supports it drives it over the `/user` endpoint (`handle_user`): on a
-    no-tool-call turn it POSTs the assistant's text and appends the returned user turn(s) to its own
-    conversation. The interception server never injects user turns itself."""
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
@@ -217,9 +209,6 @@ class InterceptionServer:
         # A forked shared server (see `verifiers.v1.mcp.multiplex`) fetches its rollout's task here
         # to run `setup_task` per child — a shared server gets no task via env, keyed by the secret.
         app.router.add_get("/task", self.handle_task_get)
-        # A harness that supports a user simulator drives it here: POST the model's last message,
-        # get the next user turn(s) back (see `handle_user`), keyed by the same bearer secret.
-        app.router.add_post("/user", self.handle_user)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, _HOST, 0)
@@ -277,8 +266,9 @@ class InterceptionServer:
         if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt)
         # One model call, recorded and returned to the harness 1:1 — no internal multi-turn. A
-        # user simulator (if any) is driven by the harness over `/user` (see `handle_user`), so
-        # every user turn arrives in the harness's own next request and the graph stays linear.
+        # user simulator (if any) is driven by the harness against its own MCP server (it injects
+        # each user turn into its conversation), so every user turn arrives in the harness's own
+        # next request here and the graph stays linear.
         try:
             refused = await session.refused()
         except RolloutError as e:
@@ -564,55 +554,3 @@ class InterceptionServer:
             )
         session.trace.state = new_state
         return web.json_response({"ok": True})
-
-    async def handle_user(self, request: web.Request) -> web.Response:
-        """Drive the rollout's user simulator for a harness that supports it (`SUPPORTS_USER_SIM`):
-        POST the model's last assistant text (`{"message": ...}`, empty `""` to open a no-prompt
-        conversation), get back the simulator's next user turn(s) and whether the trajectory should
-        now end (`{"messages": [...], "done": bool}`). The harness appends the messages to its OWN
-        conversation and re-prompts, so every user turn flows through its requests and the graph
-        stays linear; it stops when `done`. Keyed by the same bearer secret as the model routes.
-        `done` is the framework's `@stop`/limit check, run after the simulator responds — so the
-        simulator still ends the trajectory the usual way (a `self.state` flag a taskset `@vf.stop`
-        reads), the interception server holding no opinion about the state's contents."""
-        session = self._session_for(request)
-        if session is None:
-            return web.json_response({"error": "unauthorized"}, status=401)
-        if session.user is None:
-            return web.json_response(
-                {"error": "rollout has no user simulator"}, status=400
-            )
-        message = (await request.json()).get("message", "")
-        logger.debug("intercept POST /user: id=%s", session.trace.id)
-        session.error = None
-        try:
-            user_messages = await session.user(message)
-        except RolloutError as e:
-            session.error = e  # the rollout re-raises it as the real cause after the harness returns
-            logger.warning(
-                "user simulator failed: id=%s %s: %s",
-                session.trace.id,
-                type(e).__name__,
-                e,
-            )
-            return web.json_response(
-                {"error": str(e)}, status=getattr(e, "status_code", 502)
-            )
-        except Exception as e:
-            err = UserError(f"user simulator failed: {type(e).__name__}: {e}")
-            session.error = err
-            logger.warning("user simulator failed: id=%s %s", session.trace.id, e)
-            return web.json_response({"error": str(err)}, status=502)
-        try:
-            done = await session.refused() is not None
-        except RolloutError as e:
-            session.error = e
-            return web.json_response(
-                {"error": str(e)}, status=getattr(e, "status_code", 502)
-            )
-        except Exception as e:
-            err = TasksetError(f"@stop failed: {type(e).__name__}: {e}")
-            session.error = err
-            return web.json_response({"error": str(err)}, status=502)
-        wire = [m if isinstance(m, dict) else message_to_wire(m) for m in user_messages]
-        return web.json_response({"messages": wire, "done": done})

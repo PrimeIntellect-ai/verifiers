@@ -2,13 +2,16 @@
 
 A taskset registers a `User` via `Taskset.user` — a vf-native class (like `Toolset`, served as an
 MCP server with a runtime) exposing a single `respond` tool. Unlike a tool server it is never handed
-to the model: the framework drives it. After each model turn the interception server calls `respond`
-with the model's last message, appends the simulated user message(s), and re-prompts — so a
-multi-turn game plays out as alternating assistant/user turns in the trace, the harness none the
-wiser. When the task carries no prompt (`task.prompt is None`), the simulator also opens the
-conversation: the interception server calls `respond("")` once before the first model turn and seeds
-its reply as the initial user message. The host side that drives it lives in `launch` (`serve_user` /
-`connect_user`).
+to the model: a harness that supports user simulation (`Harness.SUPPORTS_USER_SIM`) drives it. On a
+model turn with no tool call the harness calls `respond` with the model's last message and injects
+the simulated user message(s) into its OWN conversation, then re-prompts — so a multi-turn game
+plays out as alternating assistant/user turns recorded on the single branch (the user turns are
+regular user messages). When the task carries no prompt (`task.prompt is None`), the harness opens
+the conversation by calling `respond("")` before the first model turn. The simulator ends the
+trajectory by returning no further turns (and setting a `self.state` flag a taskset `@vf.stop`
+checks, a backstop the interception server catches over the `/state` channel). The host side that
+serves it lives in `launch` (`serve_user`; `connect_user` is the host-side client for a CLI-wrapper
+harness).
 """
 
 from __future__ import annotations

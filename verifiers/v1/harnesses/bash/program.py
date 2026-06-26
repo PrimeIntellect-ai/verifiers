@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["openai", "mcp", "httpx"]
+# dependencies = ["openai", "mcp"]
 # ///
 """The bash harness's program: a chat loop with a local `bash` tool (+ optional MCP tools).
 
@@ -8,15 +8,16 @@ A growing-message-list chat loop. It always offers a local `bash` tool that runs
 in the runtime; when the harness sets MCP_CONFIG (a standard `mcpServers` URL map) it also
 connects to those servers over streamable HTTP, exposes their tools to the model as
 `<server>_<tool>`, and routes those calls to the server. The loop runs until the model answers
-without a tool call — unless the task has a user simulator (`--user-url`), in which case a
-no-tool-call turn is a turn boundary: the program POSTs the assistant's text to `/user`, appends
-the simulated user reply, and re-prompts, until the simulator signals `done` (a no-prompt task is
-opened the same way). Carrying every turn in the program's own conversation keeps the recorded
-message graph linear.
+without a tool call — unless the task has a user simulator (`--user-url`, its own MCP server), in
+which case a no-tool-call turn is a turn boundary: the program calls the simulator's `respond`
+tool, appends the user message(s) it returns, and re-prompts, until it returns no further turns (a
+no-prompt task is opened the same way). Carrying every user turn in the program's own conversation
+keeps the recorded message graph linear and the user turns regular user messages.
 
-It runs as a uv script (deps: openai, mcp, httpx), so the chat + tool plumbing is just the SDKs —
-the harness bootstraps `uv` in the runtime. The interception endpoint, per-rollout secret, and
-model arrive as argv (not env), so the bash tool's local subprocesses never inherit them.
+It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing — including the user
+simulator, which is just another MCP server — is just the SDKs; the harness bootstraps `uv` in the
+runtime. The interception endpoint, per-rollout secret, and model arrive as argv (not env), so the
+bash tool's local subprocesses never inherit them.
 """
 
 import argparse
@@ -26,7 +27,6 @@ import os
 import subprocess
 from contextlib import AsyncExitStack
 
-import httpx
 from openai import AsyncOpenAI
 
 BASH_TOOL = {
@@ -123,17 +123,29 @@ async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str | list[dic
     return mcp_content_to_chat_content(result.content)
 
 
-async def next_user_turn(
-    http: httpx.AsyncClient, url: str, secret: str, message: str
-) -> tuple[list[dict], bool]:
-    """Drive the task's user simulator: POST the model's last text to `/user` and return its next
-    user message(s) (already OpenAI wire dicts) and whether the trajectory should now end."""
-    resp = await http.post(
-        url, json={"message": message}, headers={"Authorization": f"Bearer {secret}"}
+async def connect_user_sim(stack: AsyncExitStack, url: str):
+    """Connect to the task's user simulator — its own MCP server (a `vf.User`), never shown to the
+    model — and return an async `respond(text)` that calls its `respond` tool, returning the next
+    user message(s) as OpenAI wire dicts (an empty list = the simulator is done)."""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import (
+        create_mcp_http_client,
+        streamable_http_client,
     )
-    resp.raise_for_status()
-    data = resp.json()
-    return data["messages"], data["done"]
+
+    http_client = await stack.enter_async_context(create_mcp_http_client())
+    read, write, *_ = await stack.enter_async_context(
+        streamable_http_client(url, http_client=http_client)
+    )
+    session = await stack.enter_async_context(ClientSession(read, write))
+    await session.initialize()
+
+    async def respond(text: str) -> list[dict]:
+        result = await session.call_tool("respond", {"message": text})
+        parts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
+        return json.loads("\n".join(parts))["messages"]
+
+    return respond
 
 
 def parse_args() -> argparse.Namespace:
@@ -158,11 +170,7 @@ async def main() -> None:
             await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
         )
         tools = [BASH_TOOL] + mcp_tools
-        http = (
-            await stack.enter_async_context(httpx.AsyncClient(timeout=120))
-            if user_url
-            else None
-        )
+        user_respond = await connect_user_sim(stack, user_url) if user_url else None
         messages = (
             [{"role": "system", "content": args.system_prompt}]
             if args.system_prompt
@@ -177,11 +185,11 @@ async def main() -> None:
             messages.extend(initial)
         elif args.prompt:
             messages.append({"role": "user", "content": args.prompt})
-        elif user_url:
-            opening, done = await next_user_turn(http, user_url, args.api_key, "")
-            messages.extend(opening)
-            if done:
+        elif user_respond:
+            opening = await user_respond("")
+            if not opening:
                 return
+            messages.extend(opening)
         while True:
             message = await chat(client, args.model, messages, tools)
             messages.append(message.model_dump(exclude_none=True))
@@ -211,15 +219,14 @@ async def main() -> None:
                         {"role": "tool", "tool_call_id": call.id, "content": content}
                     )
                 continue
-            # No tool call: a final answer for the current user turn. With a user simulator, fetch
-            # the next user turn and re-prompt; otherwise the conversation is over.
-            if user_url:
-                reply, done = await next_user_turn(
-                    http, user_url, args.api_key, message.content or ""
-                )
-                messages.extend(reply)
-                if done:
+            # No tool call: a final answer for the current user turn. With a user simulator, ask it
+            # for the next user turn and re-prompt; an empty reply means it's done. Without one, the
+            # conversation is over.
+            if user_respond:
+                reply = await user_respond(message.content or "")
+                if not reply:
                     break
+                messages.extend(reply)
                 continue
             break
 

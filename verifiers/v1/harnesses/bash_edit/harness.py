@@ -62,7 +62,8 @@ class BashEditHarness(Harness[BashEditHarnessConfig]):
             f"--system-prompt={system_prompt}",
         ]
         if user_url:
-            # The program POSTs each no-tool-call turn to the user simulator here and re-prompts.
+            # The program MCP-connects to the user simulator here and calls its `respond` tool on
+            # each no-tool-call turn (the user sim is never shown to the model as a tool).
             args.append(f"--user-url={user_url}")
         if mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard
