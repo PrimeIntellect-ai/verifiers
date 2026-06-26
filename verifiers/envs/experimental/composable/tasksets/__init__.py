@@ -17,10 +17,6 @@ from verifiers.envs.experimental.composable.tasksets.swe.swe_tasksets import (
     make_swesmith_taskset,
     make_swesmith_ts_taskset,
 )
-from verifiers.envs.experimental.composable.tasksets.lean.lean_task import (
-    LEAN_SYSTEM_PROMPT,
-    LeanTaskSet,
-)
 from verifiers.envs.experimental.composable.tasksets.math.math_task import MathTaskSet
 from verifiers.envs.experimental.composable.tasksets.cp.cp_task import (
     CPRubric,
@@ -59,8 +55,6 @@ __all__ = [
     "make_swesmith_rs_taskset",
     "make_swesmith_cpp_taskset",
     "make_swesmith_php_taskset",
-    "LeanTaskSet",
-    "LEAN_SYSTEM_PROMPT",
     "MathTaskSet",
     "CPTaskSet",
     "CPRubric",
