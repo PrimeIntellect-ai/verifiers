@@ -3,6 +3,7 @@ starter file, compile-output parsing) in `verifiers.v1.tasksets.lean.scoring`.""
 
 from verifiers.v1.tasksets.lean import (
     LeanConfig,
+    LeanDatasetConfig,
     LeanTaskset,
     build_starter_file,
     expected_protected_signature,
@@ -16,10 +17,10 @@ def test_needs_container():
     assert LeanTaskset.NEEDS_CONTAINER is True
 
 
-def test_dataset_name_required():
+def test_dataset_required():
     import pytest
 
-    # dataset_name has no default — pydantic rejects an unset one at construction
+    # `dataset` has no default — pydantic rejects an unset one at construction
     # (ValidationError is a ValueError subclass).
     with pytest.raises(ValueError):
         LeanConfig()
@@ -33,7 +34,7 @@ def test_validate_true_without_gold():
 
     from verifiers.v1.tasksets.lean import LeanTask
 
-    ts = LeanTaskset(LeanConfig(dataset_name="x"))
+    ts = LeanTaskset(LeanConfig(dataset=LeanDatasetConfig(name="x")))
     task = LeanTask(
         idx=0, prompt="p", formal_statement="theorem t : True := by", formal_proof=""
     )

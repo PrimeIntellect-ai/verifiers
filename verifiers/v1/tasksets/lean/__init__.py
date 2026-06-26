@@ -10,6 +10,7 @@ from verifiers.v1.tasksets.lean.taskset import (
     LEAN_PROJECT_PATH,
     PROOF_FILE_PATH,
     LeanConfig,
+    LeanDatasetConfig,
     LeanTask,
     LeanTaskset,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "LEAN_PROJECT_PATH",
     "PROOF_FILE_PATH",
     "LeanConfig",
+    "LeanDatasetConfig",
     "LeanTask",
     "LeanTaskset",
     "build_starter_file",

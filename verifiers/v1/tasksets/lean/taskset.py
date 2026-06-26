@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import shlex
 
+from pydantic_config import BaseConfig
+
 from verifiers.v1.decorators import reward
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskResources
@@ -51,12 +53,13 @@ class LeanTask(Task):
     formal_proof: str = ""
 
 
-class LeanConfig(TasksetConfig):
-    # ── dataset ───────────────────────────────────────────────────────────────
-    dataset_name: str
+class LeanDatasetConfig(BaseConfig):
+    """Which HuggingFace dataset to load and how to read its columns."""
+
+    name: str
     """HuggingFace dataset id (required; each per-dataset package sets it)."""
-    dataset_split: str = "train"
-    dataset_subset: str | None = None
+    split: str = "train"
+    subset: str | None = None
     statement_column: str = "formal_statement"
     header_column: str | None = None
     imports_column: str | None = None
@@ -64,7 +67,10 @@ class LeanConfig(TasksetConfig):
     proof_column: str | None = None
     """Column holding the gold proof body (used by ``validate``); None = no gold."""
     normalize_mathlib_imports: bool = False
-    # ── sandbox / compile ─────────────────────────────────────────────────────
+
+
+class LeanConfig(TasksetConfig):
+    dataset: LeanDatasetConfig
     docker_image: str = DEFAULT_DOCKER_IMAGE
     lean_project_path: str = LEAN_PROJECT_PATH
     proof_file_path: str = PROOF_FILE_PATH
@@ -82,10 +88,11 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
         from datasets import load_dataset
 
         config = self.config
+        ds = config.dataset
         raw = load_dataset(
-            config.dataset_name,
-            config.dataset_subset,
-            split=config.dataset_split,
+            ds.name,
+            ds.subset,
+            split=ds.split,
             keep_in_memory=True,
             num_proc=8,
         )
@@ -95,29 +102,27 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
         # gold check vacuously fail), or a statement_column typo raises a raw
         # KeyError on the first row instead of this clear error.
         for label, col in (
-            ("statement_column", config.statement_column),
-            ("header_column", config.header_column),
-            ("imports_column", config.imports_column),
-            ("name_column", config.name_column),
-            ("proof_column", config.proof_column),
+            ("statement_column", ds.statement_column),
+            ("header_column", ds.header_column),
+            ("imports_column", ds.imports_column),
+            ("name_column", ds.name_column),
+            ("proof_column", ds.proof_column),
         ):
             if col is not None and col not in raw.column_names:
                 raise ValueError(
-                    f"{label}={col!r} not found in {config.dataset_name!r}; columns={raw.column_names}"
+                    f"dataset.{label}={col!r} not found in {ds.name!r}; columns={raw.column_names}"
                 )
 
         resources = TaskResources(cpu=4, memory=4, disk=10)
         tasks: list[LeanTask] = []
         for index, row in enumerate(raw):
-            formal_statement = row[config.statement_column]
-            header = (
-                row.get(config.header_column) if config.header_column else ""
-            ) or ""
+            formal_statement = row[ds.statement_column]
+            header = (row.get(ds.header_column) if ds.header_column else "") or ""
             imports = (
-                row.get(config.imports_column) if config.imports_column else ""
+                row.get(ds.imports_column) if ds.imports_column else ""
             ) or "import Mathlib"
-            gold = (row.get(config.proof_column) if config.proof_column else "") or ""
-            name = row.get(config.name_column) if config.name_column else None
+            gold = (row.get(ds.proof_column) if ds.proof_column else "") or ""
+            name = row.get(ds.name_column) if ds.name_column else None
             tasks.append(
                 LeanTask(
                     idx=index,
@@ -130,7 +135,7 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                     formal_statement=formal_statement,
                     header=header,
                     imports=imports,
-                    normalize_mathlib_imports=config.normalize_mathlib_imports,
+                    normalize_mathlib_imports=ds.normalize_mathlib_imports,
                     protected_signature=expected_protected_signature(formal_statement),
                     formal_proof=gold,
                 )
