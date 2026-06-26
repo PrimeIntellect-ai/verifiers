@@ -368,17 +368,3 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             if k not in _SAMPLING_KEYS and k not in overrides
         }
         return {**steered, **overrides}
-
-    def extend(
-        self, body: dict, completion: dict | None, user_messages: Messages
-    ) -> dict:
-        """Append raw model output and the user simulator's reply for the next turn."""
-        raw = body.get("input")
-        items: ResponseInputParam = (
-            [EasyInputMessageParam(role="user", content=raw)]
-            if isinstance(raw, str)
-            else cast(ResponseInputParam, list(raw or []))
-        )
-        items.extend(cast(ResponseInputParam, (completion or {}).get("output") or []))
-        items.extend(messages_to_wire(user_messages))
-        return {**body, "input": items}

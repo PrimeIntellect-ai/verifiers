@@ -71,6 +71,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        user_url: str | None = None,
     ) -> ProgramResult:
         _, prompt = self.resolve_prompt(trace.task)
         # codex authenticates to the interception server with the session secret (its provider

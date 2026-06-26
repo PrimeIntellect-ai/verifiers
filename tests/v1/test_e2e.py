@@ -59,6 +59,30 @@ async def test_user(run_v1, harness_runtime, user_runtime, tmp_path):
     )
     assert trace.errors == []
     assert trace.num_turns >= 2  # genuinely multi-turn
+    assert trace.num_branches == 1  # the harness carries every user turn: linear graph
+    assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+async def test_user_tool(run_v1, harness_runtime, tmp_path):
+    """Task tools (the harness runs its own tool loop) AND a user simulator together — the case
+    that forked the message graph under transparent user injection (verifiers#1871), because the
+    harness's tool round-trip re-entered the graph without the injected user turns. Driving the
+    simulator as an explicit harness feature (the `/user` endpoint) keeps every turn in the
+    harness's own conversation, so the graph stays LINEAR: `num_branches == 1` is the regression
+    signal (it was >1 before the fix). Fanned over the harness runtime."""
+    (trace,) = await run_v1(
+        "tool-user-sim-v1",
+        harness="default",
+        harness_overrides={"runtime": {"type": harness_runtime}},
+        output_dir=tmp_path,
+        max_turns=12,
+    )
+    assert trace.errors == []
+    assert (
+        trace.num_turns >= 4
+    )  # a tool call + an answer per user turn, genuinely multi-turn
+    assert trace.num_branches == 1  # no transparent-injection fork
     assert trace.reward == 1.0
 
 

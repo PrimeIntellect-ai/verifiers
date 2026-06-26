@@ -42,6 +42,7 @@ class BashHarness(Harness[BashHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        user_url: str | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
         system_prompt = "\n\n".join(p for p in (BASH_SYSTEM_PROMPT, system_prompt) if p)
@@ -52,6 +53,9 @@ class BashHarness(Harness[BashHarnessConfig]):
             f"--model={ctx.model}",
             f"--system-prompt={system_prompt}",
         ]
+        if user_url:
+            # The program POSTs each no-tool-call turn to the user simulator here and re-prompts.
+            args.append(f"--user-url={user_url}")
         if mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard
             # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).

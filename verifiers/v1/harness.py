@@ -123,12 +123,17 @@ class Harness(ABC, Generic[ConfigT]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        user_url: str | None = None,
     ) -> None:
         """Run the harness in `runtime` (via `launch`) and handle its exit; its model calls
         reach the interception server at `endpoint`, and `mcp_urls` are the task's tool
-        servers (name -> URL) to expose to the model."""
+        servers (name -> URL) to expose to the model. `user_url` is the interception server's
+        `/user` endpoint when the task has a user simulator and this harness supports driving one
+        (`SUPPORTS_USER_SIM`), else None — a supporting harness POSTs each no-tool-call turn there."""
         async with boundary(HarnessError, f"harness {self.config.id!r}"):
-            result = await self.launch(ctx, trace, runtime, endpoint, secret, mcp_urls)
+            result = await self.launch(
+                ctx, trace, runtime, endpoint, secret, mcp_urls, user_url
+            )
         if trace.stop_condition is not None:
             return  # a @stop refused a turn mid-rollout; the harness's exit is expected
         if result.exit_code != 0:
@@ -168,11 +173,15 @@ class Harness(ABC, Generic[ConfigT]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        user_url: str | None = None,
     ) -> ProgramResult:
         """Run the harness program in `runtime` to completion and return its result. The
         task is `trace.task`; model calls should reach the interception server at
         `endpoint` (bearer token `secret`); `mcp_urls` are the task's tool servers
-        (name -> URL) to wire in. Each harness owns the env its program needs — read
-        `ctx.model` for the model id (the default/compact harnesses set OPENAI_*; rlm sets
-        RLM_* too). UV-script harnesses prepare dependencies in `setup`, then launch the
-        returned argv through `runtime.run_program(...)` here."""
+        (name -> URL) to wire in. `user_url` is the `/user` endpoint to drive the task's user
+        simulator over (only set for harnesses that set `SUPPORTS_USER_SIM`; None otherwise) —
+        POST `{"message": <assistant text>}` with the same bearer `secret` on each no-tool-call
+        turn, append the returned `messages`, and re-prompt until `done`. Each harness owns the env
+        its program needs — read `ctx.model` for the model id (the default/compact harnesses set
+        OPENAI_*; rlm sets RLM_* too). UV-script harnesses prepare dependencies in `setup`, then
+        launch the returned argv through `runtime.run_program(...)` here."""

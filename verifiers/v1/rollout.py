@@ -206,6 +206,20 @@ class Rollout:
                             "conversation; set task.prompt or have Taskset.user return "
                             "a simulator"
                         )
+                    if session.user is not None and not self.harness.SUPPORTS_USER_SIM:
+                        raise HarnessError(
+                            f"taskset has a user simulator but harness "
+                            f"{self.harness.config.id!r} does not support driving one "
+                            "(set SUPPORTS_USER_SIM and POST /user in its loop)"
+                        )
+                    # The harness drives the user simulator over this `/user` endpoint (only when
+                    # one is set and the harness supports it); the base reaches the same server as
+                    # the model routes / `/state` channel.
+                    user_url = (
+                        f"{state_base.rstrip('/')}/user"
+                        if session.user is not None
+                        else None
+                    )
                     # setup done — the harness is now driving
                     now = time.time()
                     trace.timing.setup.end = now
@@ -219,7 +233,7 @@ class Rollout:
                     try:
                         await asyncio.wait_for(
                             self.harness.run(
-                                ctx, trace, runtime, endpoint, secret, urls
+                                ctx, trace, runtime, endpoint, secret, urls, user_url
                             ),
                             self.harness_timeout,
                         )

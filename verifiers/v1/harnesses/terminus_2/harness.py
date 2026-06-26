@@ -45,6 +45,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        user_url: str | None = None,
     ) -> ProgramResult:
         if self.config.disabled_tools:
             raise ValueError("Terminus 2 does not support disabling tools")
