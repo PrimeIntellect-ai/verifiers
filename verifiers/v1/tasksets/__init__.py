@@ -5,5 +5,11 @@ here — it imports the optional `textarena` dependency at module load — but s
 `verifiers.v1.tasksets.textarena`."""
 
 from verifiers.v1.tasksets.harbor import HarborConfig, HarborTaskset
+from verifiers.v1.tasksets.nemo_gym import NeMoGymConfig, NeMoGymTaskset
 
-__all__ = ["HarborConfig", "HarborTaskset"]
+__all__ = [
+    "HarborConfig",
+    "HarborTaskset",
+    "NeMoGymConfig",
+    "NeMoGymTaskset",
+]
