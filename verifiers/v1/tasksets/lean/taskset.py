@@ -16,7 +16,6 @@ per-dataset packages live in research-environments.
 
 from __future__ import annotations
 
-import base64
 import shlex
 
 from verifiers.v1.decorators import reward
@@ -202,22 +201,13 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
     # ---- sandbox helpers ----------------------------------------------------
 
     async def _write_file(self, runtime: Runtime, path: str, content: str) -> None:
-        """Write ``content`` to ``path`` in the sandbox via a base64 round-trip.
+        """Write ``content`` to ``path`` in the sandbox.
 
-        base64 avoids any quoting/heredoc hazard from arbitrary Lean source, and
-        keeps a single, proven write mechanism shared by ``setup`` and ``validate``.
+        Uses ``runtime.write`` (multipart upload that creates parent dirs) rather
+        than inlining the bytes on the command line — arbitrary Lean source or a
+        large gold proof would otherwise risk the shell argument-length limit.
         """
-        encoded = base64.b64encode(content.encode()).decode()
-        # Only mkdir a real parent dir; a slashless path (e.g. "proof.lean") has
-        # none, and `mkdir -p proof.lean` would create a dir that clobbers the write.
-        parent = path.rsplit("/", 1)[0] if "/" in path else ""
-        mkdir = f"mkdir -p {shlex.quote(parent)} && " if parent else ""
-        cmd = f"{mkdir}echo {shlex.quote(encoded)} | base64 -d > {shlex.quote(path)}"
-        result = await runtime.run(["bash", "-lc", cmd], {})
-        if result.exit_code != 0:
-            raise RuntimeError(
-                f"Failed to write {path}: exit_code={result.exit_code} stderr={(result.stderr or '')[:500]}"
-            )
+        await runtime.write(path, content.encode())
 
     async def _compile(self, runtime: Runtime) -> tuple[bool, str, int]:
         """Run ``lake env lean`` on the proof file; returns (compiled, output, exit_code)."""
@@ -258,10 +248,13 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
         if trace.has_error:
             return 0.0
 
-        cat = await runtime.run(
-            ["bash", "-lc", f"cat {shlex.quote(self.config.proof_file_path)}"], {}
-        )
-        current = cat.stdout or ""
+        try:
+            current = (await runtime.read(self.config.proof_file_path)).decode(
+                "utf-8", "replace"
+            )
+        except Exception:
+            trace.info["compile_output"] = "proof file unreadable (missing?)"
+            return 0.0
 
         expected_sig = task.protected_signature or expected_protected_signature(
             task.formal_statement
