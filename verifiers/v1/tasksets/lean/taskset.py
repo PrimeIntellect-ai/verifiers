@@ -121,8 +121,10 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
             )
         # Fail loud on a misconfigured column name — otherwise a typo is silently
         # treated as a missing/empty field (e.g. a wrong proof_column makes every
-        # gold check vacuously fail).
+        # gold check vacuously fail), or an explicit statement_column typo raises a
+        # raw KeyError on the first row instead of this clear error.
         for label, col in (
+            ("statement_column", config.statement_column),
             ("header_column", config.header_column),
             ("imports_column", config.imports_column),
             ("name_column", config.name_column),
