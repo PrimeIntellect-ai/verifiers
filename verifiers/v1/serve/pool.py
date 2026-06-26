@@ -116,10 +116,9 @@ class EnvServerPool:
         self.multiplex = multiplex
         self.elastic = elastic
         self.legacy = legacy
-        self._sample_cursor = (
-            0  # global task cursor; stamped onto each `sample` so workers stay
-        )
-        # coherent (a finite taskset's permutation agrees across workers) without pinning sample
+        # Global task cursor, stamped onto each `sample` so workers stay coherent (a finite taskset's
+        # permutation agrees across workers) without pinning sample to one worker.
+        self._sample_cursor = 0
         self.log_setup = log_setup
         self.session = uuid.uuid4().hex[:12]
         self.workers: list[dict] = []
