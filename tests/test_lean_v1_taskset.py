@@ -23,6 +23,21 @@ def test_empty_dataset_raises():
         LeanTaskset(LeanConfig()).load_tasks()
 
 
+def test_validate_true_without_gold():
+    # No gold proof => nothing to refute => valid (matches base no-op); returns
+    # before touching the runtime, so None is safe. False is reserved for a gold
+    # proof that fails to compile.
+    import asyncio
+
+    from verifiers.v1.tasksets.lean import LeanTask
+
+    ts = LeanTaskset(LeanConfig(dataset_name="x"))
+    task = LeanTask(
+        idx=0, prompt="p", formal_statement="theorem t : True := by", formal_proof=""
+    )
+    assert asyncio.run(ts.validate(task, None)) is True
+
+
 def test_build_starter_file_plants_sorry():
     out = build_starter_file("theorem foo : 1 = 1 := by sorry")
     assert "import Mathlib" in out

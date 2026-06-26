@@ -283,12 +283,18 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
     # ---- validation (model-free gold check) ---------------------------------
 
     async def validate(self, task: LeanTask, runtime: Runtime) -> bool:
-        """Compile the gold proof: substitute it for ``sorry`` and check it
-        type-checks. Returns False for rows with no gold proof (statement-only
-        datasets, or rows with an empty proof column)."""
+        """Compile the gold proof: substitute it for ``sorry`` and check it type-checks.
+
+        ``False`` is reserved for a row whose gold proof exists but **fails to
+        compile** (a genuinely bad/unprovable row). A row with **no** gold proof
+        (statement-only datasets, or an empty proof column) returns ``True`` — there
+        is nothing to refute, matching the base ``Taskset.validate`` no-op; flagging
+        it ``invalid`` would both swamp the report on statement-only datasets and
+        mask the rows whose gold actually fails on a sparse-gold dataset.
+        """
         gold = (task.formal_proof or "").rstrip()
         if not gold:
-            return False
+            return True
         content = build_starter_file(
             task.formal_statement,
             header=task.header,
