@@ -120,6 +120,19 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                 f"No formal-statement column in {config.dataset_name!r}; set --taskset.statement-column "
                 f"(columns={raw.column_names})."
             )
+        # Fail loud on a misconfigured column name — otherwise a typo is silently
+        # treated as a missing/empty field (e.g. a wrong proof_column makes every
+        # gold check vacuously fail).
+        for label, col in (
+            ("header_column", config.header_column),
+            ("imports_column", config.imports_column),
+            ("name_column", config.name_column),
+            ("proof_column", config.proof_column),
+        ):
+            if col is not None and col not in raw.column_names:
+                raise ValueError(
+                    f"{label}={col!r} not found in {config.dataset_name!r}; columns={raw.column_names}"
+                )
 
         resources = TaskResources(
             cpu=config.sandbox_cpu_cores,
@@ -195,10 +208,11 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
         keeps a single, proven write mechanism shared by ``setup`` and ``validate``.
         """
         encoded = base64.b64encode(content.encode()).decode()
-        cmd = (
-            f"mkdir -p {shlex.quote(path.rsplit('/', 1)[0] or '/')} && "
-            f"echo {shlex.quote(encoded)} | base64 -d > {shlex.quote(path)}"
-        )
+        # Only mkdir a real parent dir; a slashless path (e.g. "proof.lean") has
+        # none, and `mkdir -p proof.lean` would create a dir that clobbers the write.
+        parent = path.rsplit("/", 1)[0] if "/" in path else ""
+        mkdir = f"mkdir -p {shlex.quote(parent)} && " if parent else ""
+        cmd = f"{mkdir}echo {shlex.quote(encoded)} | base64 -d > {shlex.quote(path)}"
         result = await runtime.run(["bash", "-lc", cmd], {})
         if result.exit_code != 0:
             raise RuntimeError(
