@@ -19,7 +19,7 @@ import asyncio
 import itertools
 import logging
 import random
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Mapping
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic_config import BaseConfig
@@ -220,47 +220,3 @@ def select_tasks(
     if num_tasks is not None:
         return list(itertools.islice(tasks, num_tasks))
     return list(tasks)
-
-
-class IndexedTasks(Generic[TaskT]):
-    """Index-addressed access to a `load_tasks()` result, for a caller that resolves tasks by
-    arbitrary index rather than consuming a prefix (the env-server, addressed by `task_idx`).
-
-    A finite taskset (`unbounded=False` — a list, or a finite generator) is materialized once and
-    its `count` is known, so the caller can enumerate / shuffle / epoch it. An `unbounded` taskset
-    is consumed lazily and cached on demand, with `count = None` — served by index without ever
-    being materialized. Either way the taskset must yield at least one task. `__getitem__` is
-    synchronous and never awaits, so concurrent rollouts on one event loop can't interleave a
-    partial cache extension (no lock needed). For an unbounded taskset the cache grows to the
-    highest index accessed; TODO: evict for very long unbounded runs (needs a contract on access
-    order)."""
-
-    def __init__(self, tasks: Iterable[TaskT], unbounded: bool = False) -> None:
-        if unbounded:
-            self._tasks: list[TaskT] = []
-            self._iter: Iterator[TaskT] | None = iter(tasks)
-            self.count: int | None = None
-            try:
-                self._tasks.append(
-                    next(self._iter)
-                )  # assert non-empty; cache the first task
-            except StopIteration:
-                raise ValueError("taskset load_tasks() yielded no tasks") from None
-        else:
-            self._tasks = list(tasks)
-            self._iter = None
-            if not self._tasks:
-                raise ValueError("taskset load_tasks() returned no tasks")
-            self.count = len(self._tasks)
-
-    def __getitem__(self, idx: int) -> TaskT:
-        if self._iter is not None:
-            while len(self._tasks) <= idx:
-                try:
-                    self._tasks.append(next(self._iter))
-                except StopIteration:
-                    raise IndexError(
-                        f"task index {idx} out of range: load_tasks yielded "
-                        f"{len(self._tasks)} task(s)"
-                    ) from None
-        return self._tasks[idx]

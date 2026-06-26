@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import logging
 import random
+from collections.abc import Iterator
 
 import msgpack
 import zmq
@@ -33,7 +34,7 @@ from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import EnvConfig, Environment
-from verifiers.v1.taskset import SHUFFLE_SEED, IndexedTasks
+from verifiers.v1.taskset import SHUFFLE_SEED
 from verifiers.v1.serve.types import (
     BaseResponse,
     HealthResponse,
@@ -59,20 +60,32 @@ class EnvServer:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
-        # The server owns task scheduling: callers pull (`run_rollout`/`run_group` carry no
-        # task index), and the server hands out the next task. A finite taskset is materialized +
-        # counted and served as a (re)shuffled permutation that loops over epochs; an unbounded
-        # one is consumed lazily by its generator (which owns its own order). `num_tasks` is None
-        # only when the taskset is UNBOUNDED (reported via `info`); a finite eval bounds itself to
-        # `num_tasks`, so it never wraps, while training pulls forever.
-        self._index: IndexedTasks = IndexedTasks(
-            self.env.taskset.load_tasks(), unbounded=self.env.taskset.UNBOUNDED
-        )
-        self.num_tasks: int | None = self._index.count
+        # The server owns task scheduling: callers pull (`run_rollout`/`run_group` carry no task
+        # index), and the server hands out the next task. A finite taskset is materialized + counted
+        # and served as a (re)shuffled permutation that loops over epochs; an UNBOUNDED one is
+        # streamed straight off its generator (which owns its own order). Pull is sequential and
+        # tasks are echoed back by value, so no random-access index/cache is needed.
+        tasks = self.env.taskset.load_tasks()
+        if self.env.taskset.UNBOUNDED:
+            self._iter: Iterator | None = iter(tasks)
+            try:
+                first = next(self._iter)  # peek for non-empty + a representative task
+            except StopIteration:
+                raise ValueError("taskset load_tasks() yielded no tasks") from None
+            self._tasks: list = []
+            self._pending = first  # served on the first pull, so no task is skipped
+            self.num_tasks: int | None = None
+        else:
+            self._iter = None
+            self._tasks = list(tasks)
+            if not self._tasks:
+                raise ValueError("taskset load_tasks() returned no tasks")
+            self._pending = None
+            first = self._tasks[0]
+            self.num_tasks = len(self._tasks)
+        self._first_task = first  # representative task for `serving()` + the task type
+        self._task_type = type(first)
         self._init_scheduler(self.num_tasks, config.shuffle)
-        # The concrete task type, to rebuild a task that round-tripped through `sample()` →
-        # caller → `run_rollout(task)` (IndexedTasks guarantees a first task to read it from).
-        self._task_type = type(self._index[0])
         self.requires_group_scoring = bool(
             discover_decorated(self.env.taskset, "group_reward")
         )
@@ -134,32 +147,24 @@ class EnvServer:
         requests; episodes built inside it inherit them (see `Environment.serving`). The
         legacy v0 bridge overrides this (it runs its own rollouts, with no v1 serving)."""
         # Shared tool servers are task-agnostic, but `Environment.serving` builds them from a
-        # task, so hand it a representative one — the first (`IndexedTasks` guarantees the taskset
-        # is non-empty).
-        return self.env.serving([self._index[0]])
+        # task, so hand it a representative one (the taskset is guaranteed non-empty).
+        return self.env.serving([self._first_task])
 
     def _init_scheduler(self, count: int | None, shuffle: bool) -> None:
-        """Set up task scheduling: `count` tasks (None = unbounded), shuffled or not. Shared by
-        the native server and the v0 bridge (which serves a finite dataset). The shuffle seed is
-        fixed (`SHUFFLE_SEED`), not configurable — same as eval."""
+        """Set up the finite-taskset scheduler: `count` tasks (None = unbounded → streamed, no
+        scheduler), shuffled or not. Shared by the native server and the v0 bridge (always a finite
+        dataset). The shuffle seed is fixed (`SHUFFLE_SEED`), not configurable — same as eval."""
         self._count = count
         self._shuffle = shuffle
         self._cursor = 0
-        self._order: list[int] | None = (
-            None  # current epoch's permutation (finite only)
-        )
+        self._order: list[int] | None = None  # current epoch's permutation
         self._epoch = 0
 
     def _next_index(self) -> int:
-        """The next underlying index to serve. For a finite taskset, walk a (re)shuffled
-        permutation that loops over epochs (reshuffled each epoch via `SHUFFLE_SEED + epoch`);
-        for an unbounded one, just advance — its generator owns the order, so `shuffle` is a
-        no-op. Synchronous and never awaits, so concurrent rollouts on one event loop can't
-        interleave the cursor (no lock needed)."""
-        if self._count is None:  # unbounded
-            i = self._cursor
-            self._cursor += 1
-            return i
+        """The next index of a *finite* taskset to serve: walk a (re)shuffled permutation that
+        loops over epochs (reshuffled each epoch via `SHUFFLE_SEED + epoch`). Synchronous and never
+        awaits, so concurrent rollouts on one event loop can't interleave the cursor (no lock
+        needed). Used by native-finite (`_next_task`) and the v0 bridge."""
         pos = self._cursor % self._count
         if pos == 0:  # (re)build the epoch's permutation at each boundary
             self._order = list(range(self._count))
@@ -170,8 +175,14 @@ class EnvServer:
         return self._order[pos]
 
     def _next_task(self):
-        """The next task to serve, resolved through `IndexedTasks`."""
-        return self._index[self._next_index()]
+        """The next task to serve: a finite taskset is indexed via `_next_index`; an unbounded one
+        is streamed off its generator (the peeked first, then `next`)."""
+        if self._count is None:  # unbounded: stream (no index, no cache)
+            if self._pending is not None:
+                task, self._pending = self._pending, None
+                return task
+            return next(self._iter)
+        return self._tasks[self._next_index()]
 
     def _sample(self, req: SampleRequest) -> SampleResponse:
         # Pull the next task (cursor + shuffle/epoch are server-owned); the caller echoes it back
