@@ -1,7 +1,7 @@
-"""The init entrypoint: `uv run init <name> [--add-tool] [--add-user] [--add-harness]`.
+"""The init entrypoint: `init <name> [--add-tool] [--add-user] [--add-harness]`.
 
-Registered as the `init` console script — the v1 sibling of v0's `vf-init`. It scaffolds a new
-environment package under `--path` (default `./environments`), following the layout of the
+Registered as the `init` console script. It scaffolds a new environment package under
+`--path` (default `./environments`), following the layout of the
 shipped `environments/*_v1` examples: a `pyproject.toml`, a package whose `__init__.py` re-exports
 the plugin via `__all__`, and a `taskset.py` that runs out of the box (replace `load_tasks` and
 the `@reward`). The optional flags add more scaffolding — a `vf.Toolset` (`--add-tool`), a
@@ -17,7 +17,7 @@ from pydantic_config import cli
 from verifiers.v1.configs.init import InitConfig
 
 USAGE = (
-    "usage: uv run init <name> [--path ./environments] [-T/--add-tool] [-U/--add-user] "
+    "usage: init <name> [--path ./environments] [-T/--add-tool] [-U/--add-user] "
     "[-H/--add-harness] [--v0]\n"
     "       scaffold a new v1 environment package (use --v0 for a legacy v0 environment)"
 )
@@ -299,12 +299,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
-        sys.argv = [sys.argv[0], "--help"]
-        cli(InitConfig)
+        cli(InitConfig, args=argv or ["--help"], prog="init")
         return
 
-    sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
-    config = cli(InitConfig)
+    config = cli(InitConfig, args=argv, prog="init")
     if not config.name:
         raise SystemExit(USAGE)
     if config.v0:

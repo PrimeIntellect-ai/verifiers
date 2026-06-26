@@ -524,7 +524,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         if not isinstance(image, str) or not image.strip():
             raise RuntimeError(
                 "Invalid .build.json: `image` must be a non-empty string. "
-                "Run: vf-build <env-id> (optionally with -p <environments-path>)."
+                "Run: prime env build <env-id> (optionally with -p <environments-path>)."
             )
         try:
             port_num = int(port)
@@ -533,12 +533,12 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         if not isinstance(start_command, str) or not start_command.strip():
             raise RuntimeError(
                 "Invalid .build.json: `start_command` must be a non-empty string. "
-                "Run: vf-build <env-id> (optionally with -p <environments-path>)."
+                "Run: prime env build <env-id> (optionally with -p <environments-path>)."
             )
         if not isinstance(contract, str) or contract not in {"gym", "mcp"}:
             raise RuntimeError(
                 "Invalid .build.json: `contract` must be either 'gym' or 'mcp'. "
-                "Run: vf-build <env-id> (optionally with -p <environments-path>)."
+                "Run: prime env build <env-id> (optionally with -p <environments-path>)."
             )
         return image.strip(), port_num, start_command.strip(), contract
 
@@ -547,14 +547,15 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         if not manifest_path.exists():
             raise RuntimeError(
                 "OpenEnv project is missing .build.json. "
-                "Run: vf-build <env-id> (optionally with -p <environments-path>) to build and register the image."
+                "Run: prime env build <env-id> (optionally with -p <environments-path>) "
+                "to build and register the image."
             )
         try:
             data = json.loads(manifest_path.read_text())
         except Exception as e:
             raise RuntimeError(
                 "Failed to parse OpenEnv build manifest at "
-                f"{manifest_path}. Re-run vf-build <env-id>."
+                f"{manifest_path}. Re-run prime env build <env-id>."
             ) from e
         if not isinstance(data, dict):
             raise RuntimeError(

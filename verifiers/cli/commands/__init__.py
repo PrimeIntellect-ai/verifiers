@@ -1,1 +1,1 @@
-"""CLI command modules exposed to host applications."""
+"""Legacy V0 CLI helpers kept for hosted evaluation parsing."""

@@ -101,21 +101,23 @@ prime env init my-env # creates a new template in ./environments/my_env
 ```
 Add an explicit harness loader when the environment owns harness behavior:
 ```bash
-prime env init my-env --with-harness
+prime env init my-env --add-harness
 ```
-For OpenEnv integration, use:
+To scaffold a legacy v0 environment instead:
 ```bash
-prime env init my-openenv --openenv
+prime env init my-openenv --v0
 ```
 Then copy your OpenEnv project into `environments/my_openenv/proj/` and build the image with:
 ```bash
-uv run vf-build my-openenv
+prime env build my-openenv
 ```
 
 This will create a new module called `my_env` with a basic environment template.
 ```
 environments/my_env/
-├── my_env.py           # Main implementation
+├── my_env/
+│   ├── __init__.py
+│   └── taskset.py      # Tasks and rewards
 ├── pyproject.toml      # Dependencies and metadata
 └── README.md           # Documentation
 ```

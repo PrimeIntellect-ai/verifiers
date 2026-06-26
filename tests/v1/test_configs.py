@@ -3,7 +3,7 @@
 Mirrors prime-rl's config test: glob the configs and assert each validates into its config
 type. The root `configs/*.toml` are the `uv run eval @ <file>` v1 configs (EvalConfig);
 `endpoints.toml` isn't an eval config, and `configs/eval|rl|gepa/` are the legacy
-`vf-eval` / training formats (different, non-v1 config classes), so both are out of scope here.
+V0 eval / training formats (different, non-v1 config classes), so both are out of scope here.
 """
 
 import tomllib

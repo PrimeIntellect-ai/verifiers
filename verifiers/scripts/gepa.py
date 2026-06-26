@@ -1,7 +1,7 @@
 """
 GEPA prompt optimization CLI.
 
-Aligned with vf-eval patterns for consistency.
+Aligned with the legacy V0 evaluator for consistency.
 """
 
 import argparse
@@ -196,7 +196,7 @@ def load_gepa_toml_config(path: Path) -> dict[str, Any]:
     if warnings:
         config["_warnings"] = warnings
 
-    # Resolve config-relative paths for consistency with vf-eval.
+    # Resolve config-relative paths for consistency with V0 evals.
     endpoints_path = config.get("endpoints_path")
     if isinstance(endpoints_path, str):
         endpoints_path_obj = Path(endpoints_path)
@@ -261,7 +261,7 @@ def resolve_gepa_config_args(args: argparse.Namespace) -> argparse.Namespace:
 def main():
     parser = argparse.ArgumentParser(description="Run GEPA prompt optimization")
 
-    # Environment (aligned with vf-eval config entrypoint)
+    # Environment (aligned with V0 eval config)
     parser.add_argument(
         "env_id_or_config",
         type=str,
@@ -289,7 +289,7 @@ def main():
         help="Extra environment kwargs as JSON object. Passed to environment constructor.",
     )
 
-    # Model configuration (aligned with vf-eval)
+    # Model configuration (aligned with V0 eval)
     parser.add_argument(
         "--model",
         "-m",
@@ -354,7 +354,7 @@ def main():
         "--num-val", "-N", type=int, default=DEFAULT_NUM_VAL, help="Validation examples"
     )
 
-    # Execution (aligned with vf-eval)
+    # Execution (aligned with V0 eval)
     parser.add_argument("--max-concurrent", "-c", type=int, default=32)
     parser.add_argument("--sampling-args", "-S", type=json.loads, default=None)
     parser.add_argument("--seed", type=int, default=0)
@@ -488,7 +488,7 @@ def main():
         reflection_api_base_url = api_base_url
         reflection_extra_headers = main_extra_headers
 
-    # Generate run_dir (save to environment folder like vf-eval)
+    # Generate run_dir in the environment folder, like V0 evals.
     save_results = not args.no_save
     if args.run_dir:
         run_dir = Path(args.run_dir)

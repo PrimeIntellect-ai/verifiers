@@ -1,4 +1,4 @@
-"""The validate entrypoint: `uv run validate <taskset-id> [--runtime.type subprocess] [options]`.
+"""The validate entrypoint: `validate <taskset-id> [--runtime.type subprocess] [options]`.
 
 Registered as the `validate` console script — the model-free sibling of `eval`. Where `eval`
 runs a model rollout per task, `validate` runs each task's `validate` hook: a per-task check
@@ -36,7 +36,7 @@ from verifiers.v1.taskset import Taskset
 logger = logging.getLogger(__name__)
 
 USAGE = (
-    "usage: uv run validate [<taskset-id>] [--runtime.type subprocess] [options] [@ file.toml]\n"
+    "usage: validate [<taskset-id>] [--runtime.type subprocess] [options] [@ file.toml]\n"
     "       runs each task's `validate` hook (per-task validation, no model)"
 )
 
@@ -163,8 +163,11 @@ def main(argv: list[str] | None = None) -> None:
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
-        sys.argv = [sys.argv[0], "--help"]
-        cli(_narrow(argv))  # full option help, narrowed to the given taskset
+        cli(
+            _narrow(argv),
+            args=argv or ["--help"],
+            prog="validate",
+        )  # full option help, narrowed to the given taskset
         return
     if not extract_id(argv, "taskset") and not references_config_file(argv):
         raise SystemExit(
@@ -172,8 +175,7 @@ def main(argv: list[str] | None = None) -> None:
         )  # need a taskset (positional / --taskset.id) or a @ file.toml
 
     config_type = _narrow(argv)
-    sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
-    config = cli(config_type)
+    config = cli(config_type, args=argv, prog="validate")
     # Nothing is persisted, so logs are the whole output. Under `--rich` the dashboard owns the
     # screen, so keep logs off the console (else stray records print over the UI).
     setup_logging("DEBUG" if config.verbose else "INFO", console=not config.rich)

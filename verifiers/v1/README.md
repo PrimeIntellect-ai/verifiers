@@ -235,13 +235,11 @@ each in its own declared, pullable container image — e.g. Terminal-Bench 2:
 uv run eval harbor --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm
 ```
 
-## Backwards compatibility
+## V0 support
 
-The v0 framework is untouched — the classic `verifiers` API and its entrypoints (`vf-eval`,
-...) keep working exactly as before; v1 lives alongside it as `verifiers.v1`. On top of
-that, a v0 `verifiers.load_environment` env runs through the v1 CLIs too, via the legacy
-bridge — its rollouts mapped to v1 `Trace`s. Set `--id` (instead of a `taskset`) on either
-`eval` or `serve`:
+The classic `verifiers` API remains available, and a v0 `verifiers.load_environment` env runs
+through the current CLIs via the legacy bridge, with its rollouts mapped to v1 `Trace`s. Set
+`--id` instead of a taskset on either `eval` or `serve`:
 
 ```bash
 uv run eval --id reverse-text -n 2     # eval a v0 env
