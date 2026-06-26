@@ -2,11 +2,12 @@
 
 Codex only speaks the streaming OpenAI Responses API, so it reaches the interception server as a
 custom model provider (`wire_api = responses`) pointed at the rollout endpoint — served by the
-Responses dialect + SSE relay (see `verifiers.v1.dialects.responses`). The binary is the static
-musl release, so it drops into any linux container with no runtime deps; its bearer token (the
-session secret) is read from an env var.
+Responses dialect + SSE relay (see `verifiers.v1.dialects.responses`). Task MCP servers are passed
+as Codex MCP config. The binary is the static musl release, so it drops into any linux container
+with no runtime deps; its bearer token (the session secret) is read from an env var.
 """
 
+import json
 import logging
 import shlex
 
@@ -39,13 +40,14 @@ chmod +x {bin}
 class CodexHarnessConfig(HarnessConfig):
     """The Codex CLI harness — which codex release to install in the runtime."""
 
-    version: str = "0.137.0"
-    """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
+    version: str = "0.116.0"
+    """Codex release to install. The last release before custom-provider MCP namespace calls
+    regressed in 0.117."""
 
 
 class CodexHarness(Harness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
-    SUPPORTS_MCP = False  # TODO
+    SUPPORTS_MCP = True
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info("codex: ensuring codex %s is installed", self.config.version)
@@ -83,6 +85,11 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             for tool in self.config.disabled_tools or []
             for arg in ("--disable", tool)
         ]
+        mcp_config = [
+            arg
+            for name, url in mcp_urls.items()
+            for arg in ("-c", f"mcp_servers.{name}.url={json.dumps(url)}")
+        ]
         # `-c` values parse as TOML, falling back to a raw string (so the url / `responses`
         # come through literally); `requires_openai_auth=false` parses as a bool.
         argv = [
@@ -104,6 +111,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             f"model_providers.{PROVIDER}.wire_api=responses",
             "-c",
             f"model_providers.{PROVIDER}.requires_openai_auth=false",
+            *mcp_config,
             *tool_config,
             prompt,
         ]

@@ -82,6 +82,7 @@ Taskset examples (the `*_v1` packages under `environments/`):
 | `wiki-search-v1` | a **shared** tool server (built once for the eval) + an LLM judge |
 | `deepwiki-v1` | an **existing remote** tool server, by URL |
 | `wordle-v1` | configuring the vendored `textarena` integration |
+| `openenv-echo-v1` | a thin config over the reusable OpenEnv image taskset |
 
 Harness examples (under `environments/`):
 
@@ -112,6 +113,28 @@ uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docke
 uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id codex           # the codex CLI agent
 ```
 
+### OpenEnv
+
+The built-in `OpenEnvTaskset` maps a configured image, prompt, workdir, and resources onto an
+ordinary task. It starts the image's OpenEnv server and exposes its JSON-RPC tools through
+`vf.JSONRPCToolset`; the selected Verifiers harness owns the agent loop, OpenEnv owns tool
+execution, and the ordinary model/tool messages form the trace. It deliberately has no default
+image or OpenEnv-specific harness.
+
+`openenv-echo-v1` is the example environment that pins OpenEnv's official Echo image and its
+hello-world prompt:
+
+```bash
+uv run --with-editable . --with-editable environments/openenv_echo_v1 \
+  eval openenv-echo-v1 -n 1 --harness.runtime.type docker
+uv run --with-editable . --with-editable environments/openenv_echo_v1 \
+  eval openenv-echo-v1 -n 1 --harness.runtime.type docker --harness.id rlm
+```
+
+Use any harness with `SUPPORTS_MCP`. Echo's production MCP contract is intentionally unscored,
+so this smoke test returns a neutral `0.0` reward while retaining the hello-world tool call and
+result in the Verifiers trace.
+
 ### Swappable runtime
 
 Where code runs, behind one `Runtime` contract — the same contract backs the harness
@@ -133,9 +156,8 @@ guaranteed cleanup of its resources, even on exit/interrupt.
 A taskset may expose task-specific tools beyond the tools shipping natively with
 the harness as MCP servers. Its placement (separate runtime or colocated with
 harness) is configurable on `taskset.tools` and reachability is handled resolved
-automatically. Tools only run under a harness with `SUPPORTS_MCP` (the `default`
-harness has it; `rlm` doesn't) — an incompatible pairing is refused at load. The tool examples
-each show one placement:
+automatically. Tools only run under a harness with `SUPPORTS_MCP` (including `default`, `codex`,
+and `rlm`) — an incompatible pairing is refused at load. The tool examples each show one placement:
 
 ```bash
 uv run eval glossary-v1 -n 1     # colocated — in the harness's own runtime, localhost (default)

@@ -20,9 +20,10 @@ EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 2)
 ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
 # v1 tasksets that can't run a plain-CI smoke eval — e.g. they need a docker/prime runtime or
-# clone a corpus CI can't read. Empty: the SWE/container and corpus tasksets live in
-# research-environments now.
-SKIP_EVAL: set[str] = set()
+# clone a corpus CI can't read.
+SKIP_EVAL = {
+    "openenv_echo_v1",  # requires its pinned OpenEnv container image
+}
 
 
 def v1_tasksets() -> list[str]:

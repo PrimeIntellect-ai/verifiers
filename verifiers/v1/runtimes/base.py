@@ -192,7 +192,8 @@ class Runtime(ABC):
                         {},
                     )
                     command = (
-                        f"{_ENSURE_UV}; uv sync --script {shlex.quote(path)} -q "
+                        f"{_ENSURE_UV}; unset UV_SYSTEM_PYTHON; "
+                        f"uv sync --script {shlex.quote(path)} -q "
                         f"&& uv python find --script {shlex.quote(path)}"
                     )
                     result = await self.run(["sh", "-c", command], env or {})

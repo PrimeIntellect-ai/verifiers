@@ -470,6 +470,10 @@ Two setup hooks, plus the shared state:
 A taskset exposes a task's tools via `tools(task) -> list[vf.Toolset]`, constructing each from a
 config field so placement is CLI-tunable (below).
 
+For an existing JSON-RPC endpoint that exposes `tools/list` and `tools/call` but is not a
+streamable-HTTP MCP server, return a `vf.JSONRPCToolset`. It discovers the remote schemas and
+re-exposes the calls as ordinary MCP tools; `uds` optionally connects through a Unix socket.
+
 ## User simulators
 
 A user simulator is a `vf.User[ConfigT]` (or `[ConfigT, StateT]`) with one hook:
