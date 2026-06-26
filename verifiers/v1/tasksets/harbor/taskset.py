@@ -22,19 +22,12 @@ import hashlib
 import io
 import tarfile
 import tempfile
+import threading
 import tomllib
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field
-
-try:
-    from harbor.cli.download import download_command
-except ImportError as e:
-    raise ImportError(
-        "Harbor tasksets require Harbor. Install it with: "
-        "`uv sync --python 3.12 --extra harbor`"
-    ) from e
 
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
@@ -45,6 +38,7 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"
+HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 
 
 class HarborConfig(TasksetConfig):
@@ -117,6 +111,61 @@ def cache_dir(config: HarborConfig) -> Path:
     return CACHE / name
 
 
+def download_with_harbor(config: HarborConfig, output_dir: Path) -> None:
+    try:
+        from harbor.cli import download as harbor_download
+    except ImportError as exc:
+        raise ImportError(
+            f"Harbor tasksets require Harbor. Install it with: `{HARBOR_INSTALL_HINT}`"
+        ) from exc
+
+    registry_path = config.registry_path
+    if registry_path is not None and config.repo is None:
+        registry_path = registry_path.expanduser()
+
+    error: Exception | None = None
+    output = ""
+
+    def run_download() -> None:
+        nonlocal error, output
+        capture = harbor_download.console.capture()
+        try:
+            with capture:
+                harbor_download.download_command(
+                    name=config.dataset,
+                    output_dir=output_dir,
+                    overwrite=False,
+                    registry_url=config.registry_url,
+                    registry_path=registry_path,
+                    repo=config.repo,
+                    export=True,
+                    cache=False,
+                )
+        except Exception as exc:
+            error = exc
+        finally:
+            output = capture.get().strip()
+
+    thread = threading.Thread(target=run_download, name="harbor-download")
+    thread.start()
+    thread.join()
+
+    if error is None:
+        return
+
+    exit_code = getattr(error, "exit_code", None)
+    message = f"Harbor download failed for {config.dataset!r}"
+    if exit_code is not None:
+        message = f"{message} with exit code {exit_code}"
+    details = [output] if output else []
+    error_text = str(error).strip()
+    if error_text and exit_code is None:
+        details.append(error_text)
+    if details:
+        message = f"{message}:\n" + "\n".join(details)
+    raise RuntimeError(message) from error
+
+
 def dataset_dir(config: HarborConfig) -> Path:
     """Download a Harbor task or dataset package, cached on first use.
 
@@ -131,19 +180,7 @@ def dataset_dir(config: HarborConfig) -> Path:
     # Publish only a complete Harbor export to the cache.
     with tempfile.TemporaryDirectory(dir=CACHE) as temp:
         export_dir = Path(temp) / "export"
-        registry_path = config.registry_path
-        if registry_path is not None and config.repo is None:
-            registry_path = registry_path.expanduser()
-        download_command(
-            name=config.dataset,
-            output_dir=export_dir,
-            overwrite=False,
-            registry_url=config.registry_url,
-            registry_path=registry_path,
-            repo=config.repo,
-            export=True,
-            cache=False,
-        )
+        download_with_harbor(config, export_dir)
         try:
             export_dir.rename(out)
         except OSError:
