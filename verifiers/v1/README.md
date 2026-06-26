@@ -112,6 +112,22 @@ uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docke
 uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id codex           # the codex CLI agent
 ```
 
+### NeMo Gym
+
+The built-in `nemo_gym` taskset defaults to NeMo Gym's own
+`example_single_tool_call` quickstart. It loads the example JSONL as ordinary typed tasks;
+the selected Verifiers harness owns the agent loop, while NeMo Gym's packaged resource
+server executes the declared tools. Model and tool messages use the normal Verifiers trace.
+There is no NeMo-specific harness or program.
+
+```bash
+uv run --with nemo-gym==0.3.0 eval nemo_gym -n 1 -r 1 -c 1
+```
+
+The taskset does not interpret the example's weather behavior. It forwards declared calls
+to the corresponding NeMo Gym resource server through one generic `nemo_gym_call` tool.
+The standard Verifiers harness drives the model/tool loop and captures the trace.
+
 ### Swappable runtime
 
 Where code runs, behind one `Runtime` contract — the same contract backs the harness
