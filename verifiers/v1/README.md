@@ -255,10 +255,6 @@ uv run eval harbor --taskset.dataset general-agent@2026-06-25 \
   --taskset.registry-url https://raw.githubusercontent.com/PrimeIntellect-ai/research-environments/REF_OR_SHA/registry.json
 ```
 
-When using `--taskset.repo`, `--taskset.registry-path` is repo-relative; without
-`--taskset.repo`, it is a local path. `--taskset.repo` and `--taskset.registry-url`
-are mutually exclusive.
-
 ## Backwards compatibility
 
 The v0 framework is untouched — the classic `verifiers` API and its entrypoints (`vf-eval`,
