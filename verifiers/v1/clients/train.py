@@ -177,14 +177,6 @@ def _has_multimodal_content(messages) -> bool:
     return False
 
 
-def _chat_template_kwargs_key(
-    chat_template_kwargs: Mapping[str, Any] | None,
-) -> str | None:
-    if not chat_template_kwargs:
-        return None
-    return json.dumps(chat_template_kwargs, sort_keys=True, separators=(",", ":"))
-
-
 class TrainClient(Client):
     """Renders prompts to token ids and calls a vLLM `/inference/v1/generate` engine."""
 
@@ -200,7 +192,6 @@ class TrainClient(Client):
         self.config = config
         self.renderer_model_name = renderer_model_name
         self._pool = None
-        self._pool_key: tuple[str, int, str | None, str | None] | None = None
 
     def _renderer_pool(
         self,
@@ -209,9 +200,6 @@ class TrainClient(Client):
         chat_template_kwargs: Mapping[str, Any] | None = None,
     ):
         renderer_model = self.renderer_model_name or model
-        cfg_key = self.config.model_dump_json() if self.config is not None else None
-        kwargs_key = _chat_template_kwargs_key(chat_template_kwargs)
-        pool_key = (renderer_model, self.pool_size, cfg_key, kwargs_key)
         if self._pool is None:
             from renderers import create_renderer_pool
 
@@ -222,13 +210,6 @@ class TrainClient(Client):
                 renderer_model,
                 self.config,
                 **pool_kwargs,
-            )
-            self._pool_key = pool_key
-        elif self._pool_key != pool_key:
-            raise ValueError(
-                "TrainClient renderer pool was already created with different "
-                "renderer construction inputs. chat_template_kwargs must stay "
-                "constant across a training run."
             )
         return self._pool
 
