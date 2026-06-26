@@ -34,6 +34,7 @@ class BashEditHarnessConfig(HarnessConfig):
 
 class BashEditHarness(Harness[BashEditHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
+    SUPPORTS_MCP = True
     SUPPORTS_USER_SIM = True
     SUPPORTS_MESSAGE_PROMPT = True
 
