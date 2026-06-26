@@ -65,26 +65,23 @@ class EnvServer:
         # and served as a (re)shuffled permutation that loops over epochs; an INFINITE one is
         # streamed straight off its generator (which owns its own order). Pull is sequential and
         # tasks are echoed back by value, so no random-access index/cache is needed.
-        tasks = self.env.taskset.load_tasks()
+        tasks = iter(self.env.taskset.load_tasks())  # a list is iterable too
+        try:
+            first = next(tasks)  # peek: non-empty + representative task
+        except StopIteration:
+            raise ValueError("taskset load_tasks() produced no tasks") from None
+        self._first_task = first  # representative task for `serving()` + the task type
+        self._task_type = type(first)
         if self.env.taskset.INFINITE:
-            self._iter: Iterator | None = iter(tasks)
-            try:
-                first = next(self._iter)  # peek for non-empty + a representative task
-            except StopIteration:
-                raise ValueError("taskset load_tasks() yielded no tasks") from None
+            self._iter: Iterator | None = tasks  # forward-only stream
             self._tasks: list = []
-            self._pending = first  # served on the first pull, so no task is skipped
+            self._pending = first  # the peeked task, served on the opening pull
             self.num_tasks: int | None = None
         else:
             self._iter = None
-            self._tasks = list(tasks)
-            if not self._tasks:
-                raise ValueError("taskset load_tasks() returned no tasks")
+            self._tasks = [first, *tasks]  # materialized for indexed access
             self._pending = None
-            first = self._tasks[0]
             self.num_tasks = len(self._tasks)
-        self._first_task = first  # representative task for `serving()` + the task type
-        self._task_type = type(first)
         self._init_scheduler(self.num_tasks, config.shuffle)
         self.requires_group_scoring = bool(
             discover_decorated(self.env.taskset, "group_reward")
