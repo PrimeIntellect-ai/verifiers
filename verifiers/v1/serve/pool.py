@@ -44,11 +44,6 @@ logger = logging.getLogger(__name__)
 _HEALTH = msgpack.packb(HealthResponse().model_dump(mode="json"), use_bin_type=True)
 
 
-def on_sigterm(*_) -> None:
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    raise KeyboardInterrupt
-
-
 def _arm_teardown(death_pipe=None) -> None:
     """Arm a spawned process (serve_env broker/single server, or pool worker) for clean
     teardown: it inherits no signal handlers, so by default SIGTERM kills it abruptly, skipping
@@ -57,6 +52,11 @@ def _arm_teardown(death_pipe=None) -> None:
     - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (serve_env swallows it);
     - with `death_pipe`, self-SIGTERM when the parent dies (pipe EOF, even on its SIGKILL) so no
       child is orphaned (main -> serve_env and broker -> worker are both armed this way)."""
+
+    def on_sigterm(*_) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise KeyboardInterrupt
+
     signal.signal(signal.SIGTERM, on_sigterm)
     if death_pipe is None:
         return
