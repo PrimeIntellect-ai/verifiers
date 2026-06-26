@@ -63,10 +63,8 @@ def test_build_module_command_install_adds_workspace_env_path(
     ]
 
 
-def test_build_module_command_eval_rewrites_relative_env_dir_path(
-    tmp_path: Path, monkeypatch
-):
-    workspace, env_dir = _make_workspace(tmp_path)
+def test_build_module_command_eval_forwards_native_args(tmp_path: Path, monkeypatch):
+    _workspace, env_dir = _make_workspace(tmp_path)
     plugin = prime_plugin.PrimeCLIPlugin()
 
     monkeypatch.chdir(env_dir)
@@ -74,7 +72,7 @@ def test_build_module_command_eval_rewrites_relative_env_dir_path(
 
     command = plugin.build_module_command(
         plugin.eval_module,
-        ["my-env", "--env-dir-path", "./environments"],
+        ["my-env", "--sampling.temperature", "0.2"],
     )
 
     assert command == [
@@ -82,8 +80,8 @@ def test_build_module_command_eval_rewrites_relative_env_dir_path(
         "-m",
         plugin.eval_module,
         "my-env",
-        "--env-dir-path",
-        str((workspace / "environments").resolve()),
+        "--sampling.temperature",
+        "0.2",
     ]
 
 

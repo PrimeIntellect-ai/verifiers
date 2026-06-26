@@ -44,7 +44,7 @@ def _resolve_workspace_python(cwd: Path | None = None) -> str:
     workspace_root = _find_workspace_root(workspace)
     workspace_for_probe = workspace_root or workspace
     workspace_str = str(workspace_for_probe)
-    module = "verifiers.cli.commands.eval"
+    module = "verifiers.v1.cli.eval.main"
 
     def _usable(candidate: Path) -> bool:
         return candidate.exists() and _python_can_import_module(
@@ -139,10 +139,10 @@ class PrimeCLIPlugin:
     """Declarative command surface consumed by prime-cli."""
 
     api_version: int = PRIME_PLUGIN_API_VERSION
-    eval_module: str = "verifiers.cli.commands.eval"
+    eval_module: str = "verifiers.v1.cli.eval.main"
     gepa_module: str = "verifiers.cli.commands.gepa"
     install_module: str = "verifiers.cli.commands.install"
-    init_module: str = "verifiers.cli.commands.init"
+    init_module: str = "verifiers.v1.cli.init"
     setup_module: str = "verifiers.cli.commands.setup"
     build_module: str = "verifiers.cli.commands.build"
 
@@ -166,7 +166,7 @@ class PrimeCLIPlugin:
                 fallback_value=workspace_env_dir,
                 cwd=cwd,
             )
-        elif module_name in (self.eval_module, self.gepa_module):
+        elif module_name == self.gepa_module:
             normalized_args = _normalize_or_append_dir_option(
                 normalized_args,
                 long_flag="--env-dir-path",

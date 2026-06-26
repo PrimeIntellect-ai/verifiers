@@ -1,5 +1,1 @@
-"""The eval command and its public, versioned process contract."""
-
-from verifiers.v1.cli.eval.resolver import resolve_eval
-
-__all__ = ["resolve_eval"]
+"""The eval command: `uv run eval` — the entry (`main`), the rollout `runner`, and `resume`."""

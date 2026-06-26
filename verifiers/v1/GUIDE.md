@@ -680,12 +680,6 @@ trace per line, appended as each rollout finishes — durable mid-run), and `eva
 <output-dir>`** re-runs only the missing/errored rollouts of a previous run (it reloads that run's
 `config.toml`, so it takes no other args).
 
-### Process protocol
-
-Process hosts should first inspect `eval --protocol-version`, then call `eval resolve --format
-json <args>`. The response contains the resolved `run_id`; pass it back as `eval run <args>
---uuid <run_id>` so resolution and execution refer to the same run.
-
 ## `validate`
 
 Run each task's `validate` hook — a model-free check that the ground truth holds (the gold patch

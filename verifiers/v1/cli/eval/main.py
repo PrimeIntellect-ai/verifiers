@@ -11,83 +11,60 @@ pydantic-config help — narrowed to whatever `--taskset.id` / `--harness.id` ar
 """
 
 import asyncio
-import json
 import logging
 import signal
 import sys
 
-from pydantic_config import ConfigFileError, cli
+from pydantic_config import cli
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.eval.resolver import resolve_eval
+from verifiers.v1.cli.eval.resume import load_resume_config, split_resume
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.cli.output import output_path, write_config
-from verifiers.v1.cli.resolve import narrow_config, with_positional_taskset
+from verifiers.v1.cli.resolve import (
+    extract_id,
+    narrow_config,
+    references_config_file,
+    with_positional_taskset,
+)
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger("verifiers.v1.cli.eval")
 
 USAGE = (
-    "usage: eval run [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
-    "       eval run --resume <output-dir>\n"
-    "       eval resolve --format json <eval options>\n"
-    "       eval --protocol-version"
+    "usage: eval [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
+    "       eval --resume <output-dir>"
 )
-RESOLVE_USAGE = "usage: eval resolve --format json <eval options>"
-VERSIONS = {"protocol_version": 1, "trace_schema_version": 1}
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Dispatch the versioned process operations without mutating ``sys.argv``."""
-    args = list(sys.argv[1:] if argv is None else argv)
-
-    if args == ["--protocol-version"]:
-        print(json.dumps({**VERSIONS, "operations": ["run", "resolve"]}, indent=2))
-        return
-
-    if args[:1] == ["resolve"]:
-        if any(arg in ("-h", "--help") for arg in args[1:]):
-            print(RESOLVE_USAGE)
-            return
-        if args[1:3] != ["--format", "json"]:
-            raise SystemExit(RESOLVE_USAGE)
-        try:
-            config = resolve_eval(args[3:], prog="eval resolve")
-        except (ConfigFileError, ValueError) as exc:
-            raise SystemExit(f"{RESOLVE_USAGE}\n{exc}") from exc
-        print(
-            json.dumps(
-                {
-                    "operation": "resolve",
-                    **VERSIONS,
-                    "run_id": config.uuid,
-                    "output_dir": str(output_path(config)),
-                    "resume": config.resume is not None,
-                    "config": config.model_dump(mode="json"),
-                },
-                indent=2,
-            )
-        )
-        return
-
-    explicit_run = args[:1] == ["run"]
-    if explicit_run:
-        args = args[1:]
-    prog = "eval run" if explicit_run else "eval"
-    args = with_positional_taskset(args)
+    """Parse the eval config once, then run it in this process."""
+    args = with_positional_taskset(list(sys.argv[1:] if argv is None else argv))
     if not args or any(arg in ("-h", "--help") for arg in args):
         print(USAGE)
         # `prog` is supported by cli(), but is missing from its overload declarations.
         cli(  # type: ignore[no-matching-overload]
-            narrow_config(EvalConfig, args), args=args or ["--help"], prog=prog
+            narrow_config(EvalConfig, args), args=args or ["--help"], prog="eval"
         )
         return
 
-    try:
-        config = resolve_eval(args, prog=prog)
-    except (ConfigFileError, ValueError) as exc:
-        raise SystemExit(f"{USAGE}\n{exc}") from exc
+    resume_dir, rest = split_resume(args)
+    if resume_dir is not None:
+        if rest:
+            raise SystemExit(f"{USAGE}\n--resume takes no other arguments")
+        config = load_resume_config(resume_dir)
+    else:
+        if (
+            not extract_id(args, "taskset")
+            and not any(arg == "--id" or arg.startswith("--id=") for arg in args)
+            and not references_config_file(args)
+        ):
+            raise SystemExit(USAGE)
+        # `prog` is supported by cli(), but is missing from its overload declarations.
+        config = cli(  # type: ignore[no-matching-overload]
+            narrow_config(EvalConfig, args), args=args, prog="eval"
+        )
 
     if config.dry_run:
         setup_logging("DEBUG" if config.verbose else "INFO")
