@@ -225,11 +225,10 @@ class EnvServerPool:
                                 rollout_slots = max(1, request.n)
                         elif method == b"sample":
                             rollout_slots = 0
-                        # Each worker is its own `EnvServer` with its own task cursor, so `sample`
-                        # must hit ONE worker or the pool would hand out duplicate task sequences
-                        # (every worker shares the fixed shuffle seed). Pin it to worker 0, the
-                        # cursor owner (the pool is upscale-only, so worker 0 is stable). The task
-                        # rides on `run_rollout`/`run_group`, so those stay load-balanced.
+                        # Each worker is an independent `EnvServer` serving the same task order, so
+                        # `sample` must hit one cursor — else workers hand out the same tasks. Pin it
+                        # to worker 0 (stable: the pool is upscale-only); rollouts carry the task, so
+                        # they stay load-balanced.
                         worker = (
                             self.workers[0]
                             if method == b"sample"
