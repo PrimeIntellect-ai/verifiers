@@ -165,12 +165,20 @@ def dataset_dir(config: HarborConfig) -> Path:
         export_dir = Path(temp) / "export"
         command = download_command(config, export_dir)
         try:
-            subprocess.run(command, check=True)
+            subprocess.run(command, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as exc:
-            raise RuntimeError(
+            message = (
                 f"Harbor download failed for {config.dataset!r} with exit code "
                 f"{exc.returncode}"
-            ) from exc
+            )
+            outputs = [
+                output.strip()
+                for output in (exc.stdout, exc.stderr)
+                if isinstance(output, str) and output.strip()
+            ]
+            if output := "\n".join(outputs):
+                message = f"{message}:\n{output}"
+            raise RuntimeError(message) from exc
         try:
             export_dir.rename(out)
         except OSError:
