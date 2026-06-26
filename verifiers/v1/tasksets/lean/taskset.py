@@ -116,9 +116,15 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
         resources = TaskResources(cpu=4, memory=4, disk=10)
         tasks: list[LeanTask] = []
         for index, row in enumerate(raw):
+            # Skip degenerate rows with no statement: there's nothing to prove, and
+            # an empty statement collapses the pinned signature to just ``:= by``,
+            # which every proof contains — so the reward-hacking guard would pass on
+            # a rewritten trivial theorem. Drop them rather than ship a free-reward task.
+            formal_statement = row[ds.statement_column]
+            if not isinstance(formal_statement, str) or not formal_statement.strip():
+                continue
             # Unset columns are None, and row.get(None) is None, so the `or`
             # fallbacks cover both an unset column and an empty value.
-            formal_statement = row[ds.statement_column]
             header = row.get(ds.header_column) or ""
             imports = row.get(ds.imports_column) or "import Mathlib"
             gold = row.get(ds.proof_column) or ""
