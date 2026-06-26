@@ -212,13 +212,14 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
         if trace.has_error:
             return 0.0
 
-        try:
-            current = (await runtime.read(self.config.proof_file_path)).decode(
-                "utf-8", "replace"
-            )
-        except Exception:
-            trace.info["compile_output"] = "proof file unreadable (missing?)"
-            return 0.0
+        # Read the final proof back. A read failure here is genuinely exceptional
+        # (setup planted the file; the agent edits it in-sandbox), so let it
+        # propagate as a scoring error rather than swallow an infra/sandbox failure
+        # into a false-negative 0. (The prime runtime collapses every read error
+        # into SandboxError, so there's no file-not-found type to narrow to.)
+        current = (await runtime.read(self.config.proof_file_path)).decode(
+            "utf-8", "replace"
+        )
 
         expected_sig = task.protected_signature or expected_protected_signature(
             task.formal_statement
