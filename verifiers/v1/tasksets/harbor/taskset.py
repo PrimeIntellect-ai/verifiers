@@ -29,7 +29,7 @@ import tomllib
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
@@ -70,26 +70,6 @@ class HarborConfig(TasksetConfig):
     instead of rejecting it. The Dockerfile is NOT built, so the task scores against the
     harness image rather than its declared environment — only correct when that image already
     has what the task needs (e.g. you've pointed the runtime at the right image)."""
-
-    @model_validator(mode="after")
-    def validate_registry_selectors(self) -> "HarborConfig":
-        if self.repo is not None and self.registry_url is not None:
-            raise ValueError("repo and registry_url are mutually exclusive")
-        if (
-            self.repo is None
-            and self.registry_path is not None
-            and self.registry_url is not None
-        ):
-            raise ValueError(
-                "registry_path is local unless repo is set; do not combine local "
-                "registry_path with registry_url"
-            )
-        if self.repo is not None and "/" in self.dataset.partition("@")[0]:
-            raise ValueError(
-                "repo selects a legacy registry, so dataset must be a bare name "
-                "(for example, 'general-agent@2026-06-25')"
-            )
-        return self
 
 
 class Author(StrictBaseModel):
@@ -157,7 +137,12 @@ def download_command(config: HarborConfig, output_dir: Path) -> list[str]:
     if config.repo is not None:
         command.extend(["--repo", config.repo])
     if config.registry_path is not None:
-        command.extend(["--registry-path", str(config.registry_path)])
+        registry_path = (
+            config.registry_path
+            if config.repo is not None
+            else config.registry_path.expanduser()
+        )
+        command.extend(["--registry-path", str(registry_path)])
     if config.registry_url is not None:
         command.extend(["--registry-url", config.registry_url])
     return command
