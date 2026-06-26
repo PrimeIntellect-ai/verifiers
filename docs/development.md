@@ -244,10 +244,11 @@ uv run pytest tests/test_file.py::test_name -vvs --pdb
 ### Creating a New Environment Module
 
 ```bash
-# Initialize a v0 environment stub
+# Initialize a v1 taskset package
 prime env init my-environment
 
-# Test your environment
+# Install and test your environment
+prime env install my-environment
 prime eval run my-environment -m openai/gpt-4.1-mini -n 5
 ```
 
@@ -304,7 +305,8 @@ uv run ruff format --check verifiers tests  # Verify Python formatting
 uv run ty check verifiers             # Type check (matches CI Ty target)
 
 # Environment tools
-prime env init new-env                       # Create v0 environment stub
+prime env init new-env                       # Create a v1 taskset package
+prime env install new-env                    # Install the local package
 prime eval run new-env -m openai/gpt-4.1-mini -n 5  # Test environment
 prime eval view                              # Browse evals in the tree browser
 ```
@@ -318,7 +320,7 @@ prime eval view                              # Browse evals in the tree browser
 | `prime env install` | Install environment module |
 | `prime lab setup` | Set up training workspace |
 | `prime eval view` | Terminal UI for browsing evals and rollout details |
-| `prime rl run` | Launch Hosted Training |
+| `prime train` | Launch Hosted Training |
 
 ### Project Guidelines
 

@@ -5,19 +5,19 @@ reflection_model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
 # reflection_model = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
 
 [[env]]
-env_id = "primeintellect/wiki-search"
+id = "primeintellect/wiki-search"
 
 # [[env]]
-# env_id = "primeintellect/reverse-text"
+# id = "primeintellect/reverse-text"
 
 # [[env]]
-# env_id = "primeintellect/wordle"
+# id = "primeintellect/wordle"
 
 # [[env]]
-# env_id = "primeintellect/dspy-flights"
+# id = "primeintellect/dspy-flights"
 
 # [[env]]
-# env_id = "primeintellect/opencode-harbor"
+# id = "primeintellect/opencode-harbor"
 
 [gepa]
 max_calls = 500
@@ -28,5 +28,3 @@ max_concurrent = 32
 
 [sampling]
 max_tokens = 2048
-
-# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

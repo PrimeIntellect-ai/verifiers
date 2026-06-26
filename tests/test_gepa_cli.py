@@ -1,15 +1,16 @@
-import argparse
+import tomllib
 from pathlib import Path
 
 from datasets import Dataset
+from pydantic import ValidationError
 import pytest
 
 from verifiers import EnvGroup, Rubric, SingleTurnEnv
+from verifiers.gepa.config import GEPAConfig, GEPAEnvConfig, GEPAOptimizationConfig
 from verifiers.scripts.gepa import (
-    _load_gepa_dataset,
     _gepa_extra_headers_from_group,
-    load_gepa_toml_config,
-    resolve_gepa_config_args,
+    _load_gepa_dataset,
+    main,
 )
 from verifiers.types import EndpointConfig
 
@@ -36,7 +37,7 @@ def test_gepa_extra_headers_from_group_requires_consistent_variants():
 
 
 def test_gepa_extra_headers_from_group_returns_first_row_dict():
-    h = _gepa_extra_headers_from_group(
+    headers = _gepa_extra_headers_from_group(
         [
             EndpointConfig(
                 api_key_var="K",
@@ -53,188 +54,114 @@ def test_gepa_extra_headers_from_group_returns_first_row_dict():
         ],
         "my-alias",
     )
-    assert h == {"X-A": "x"}
+
+    assert headers == {"X-A": "x"}
 
 
-def test_load_gepa_toml_config_reads_env_table(tmp_path: Path):
-    config_path = tmp_path / "gepa.toml"
-    config_path.write_text(
-        "\n".join(
-            [
-                'model = "openai/gpt-4.1-mini"',
-                'endpoints_path = "../endpoints.toml"',
-                "",
-                "[env]",
-                'env_id = "primeintellect/wiki-search"',
-                'env_args = { split = "train" }',
-                "extra_env_kwargs = {}",
-                "",
-                "[gepa]",
-                "max_calls = 123",
-                "num_train = 7",
-                "max_concurrent = 9",
-                "",
-                "[sampling]",
-                "max_tokens = 1024",
-                "temperature = 0.7",
-                "",
-            ]
-        )
+def test_gepa_config_normalizes_direct_environment():
+    config = GEPAConfig(
+        id="primeintellect/wiki-search",
+        args={"split": "train"},
     )
 
-    loaded = load_gepa_toml_config(config_path)
-
-    assert loaded["env_id"] == "primeintellect/wiki-search"
-    assert loaded["envs"] == [
-        {
-            "env_id": "primeintellect/wiki-search",
-            "env_args": {"split": "train"},
-            "extra_env_kwargs": {},
-        }
-    ]
-    assert loaded["env_args"] == {"split": "train"}
-    assert loaded["extra_env_kwargs"] == {}
-    assert loaded["max_calls"] == 123
-    assert loaded["num_train"] == 7
-    assert loaded["max_concurrent"] == 9
-    assert loaded["sampling_args"] == {"max_tokens": 1024, "temperature": 0.7}
-    assert loaded["endpoints_path"] == str((tmp_path / "../endpoints.toml").resolve())
-
-
-def test_load_gepa_toml_config_reads_env_array(tmp_path: Path):
-    config_path = tmp_path / "gepa.toml"
-    config_path.write_text(
-        "\n".join(
-            [
-                "[[env]]",
-                'env_id = "primeintellect/wiki-search"',
-                "",
-                "[[env]]",
-                'env_id = "primeintellect/wordle"',
-                'env_args = { split = "train" }',
-                "",
-            ]
-        )
-    )
-
-    loaded = load_gepa_toml_config(config_path)
-
-    assert loaded["env_id"] == "wiki-search+wordle"
-    assert loaded["envs"] == [
-        {
-            "env_id": "primeintellect/wiki-search",
-            "env_args": {},
-            "extra_env_kwargs": {},
-        },
-        {
-            "env_id": "primeintellect/wordle",
-            "env_args": {"split": "train"},
-            "extra_env_kwargs": {},
-        },
+    assert config.environment_label == "primeintellect/wiki-search"
+    assert config.environments == [
+        GEPAEnvConfig(id="primeintellect/wiki-search", args={"split": "train"})
     ]
 
 
-def test_load_gepa_toml_config_accepts_execution_table_with_warning(tmp_path: Path):
-    config_path = tmp_path / "gepa.toml"
-    config_path.write_text(
-        "\n".join(
-            [
-                "[env]",
-                'env_id = "primeintellect/wiki-search"',
-                "",
-                "[execution]",
-                "max_concurrent = 9",
-                "sampling_args = { max_tokens = 1024 }",
-                "",
-            ]
-        )
+def test_gepa_config_normalizes_environment_group():
+    config = GEPAConfig(
+        env=[
+            GEPAEnvConfig(id="primeintellect/wiki-search"),
+            GEPAEnvConfig(id="primeintellect/wordle", args={"split": "train"}),
+        ],
+        gepa=GEPAOptimizationConfig(max_calls=123, num_train=7),
+        sampling={"max_tokens": 1024},
     )
 
-    loaded = load_gepa_toml_config(config_path)
+    assert config.environment_label == "wiki-search+wordle"
+    assert [item.id for item in config.environments] == [
+        "primeintellect/wiki-search",
+        "primeintellect/wordle",
+    ]
+    assert config.gepa.max_calls == 123
+    assert config.gepa.num_train == 7
+    assert config.sampling == {"max_tokens": 1024}
 
-    assert loaded["max_concurrent"] == 9
-    assert loaded["sampling_args"] == {"max_tokens": 1024}
-    assert "[execution]" in loaded["_warnings"][0]
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {},
+        {
+            "id": "primeintellect/wiki-search",
+            "env": [{"id": "primeintellect/wordle"}],
+        },
+    ],
+)
+def test_gepa_config_requires_exactly_one_environment_source(raw):
+    with pytest.raises(ValidationError, match="exactly one"):
+        GEPAConfig.model_validate(raw)
 
 
-def test_load_gepa_toml_config_rejects_execution_conflicts(tmp_path: Path):
-    config_path = tmp_path / "gepa.toml"
-    config_path.write_text(
-        "\n".join(
-            [
-                "[env]",
-                'env_id = "primeintellect/wiki-search"',
-                "",
-                "[gepa]",
-                "max_concurrent = 8",
-                "",
-                "[execution]",
-                "max_concurrent = 9",
-                "",
-            ]
+def test_gepa_config_rejects_removed_compatibility_tables():
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        GEPAConfig.model_validate(
+            {
+                "id": "primeintellect/wiki-search",
+                "execution": {"max_concurrent": 9},
+            }
         )
-    )
-
-    with pytest.raises(ValueError, match="both \\[gepa\\] and \\[execution\\]"):
-        load_gepa_toml_config(config_path)
-
-
-def test_load_gepa_toml_config_requires_env_table(tmp_path: Path):
-    config_path = tmp_path / "gepa.toml"
-    config_path.write_text('model = "openai/gpt-4.1-mini"\n')
-
-    with pytest.raises(
-        ValueError, match="must contain an \\[env\\] or \\[\\[env\\]\\]"
-    ):
-        load_gepa_toml_config(config_path)
 
 
 def test_repo_gepa_example_configs_are_valid():
     config_paths = sorted(Path("configs/gepa").glob("*.toml"))
     assert config_paths
     for config_path in config_paths:
-        loaded = load_gepa_toml_config(config_path)
-        assert loaded["envs"], f"{config_path} should contain at least one [[env]]"
+        with config_path.open("rb") as handle:
+            config = GEPAConfig.model_validate(tomllib.load(handle))
+        assert config.environments
 
 
-def test_resolve_gepa_config_args_supports_plain_env_id():
-    args = argparse.Namespace(env_id_or_config="primeintellect/wordle")
-
-    resolved = resolve_gepa_config_args(args)
-
-    assert resolved.env_id == "primeintellect/wordle"
-
-
-def test_resolve_gepa_config_args_reads_toml_and_save_results(tmp_path: Path):
-    config_path = tmp_path / "gepa.toml"
-    config_path.write_text(
-        "\n".join(
-            [
-                'model = "openai/gpt-4.1-mini"',
-                "save_results = false",
-                "",
-                "[env]",
-                'env_id = "primeintellect/wiki-search"',
-                "env_args = {}",
-                "extra_env_kwargs = {}",
-                "",
-                "[gepa]",
-                "max_calls = 321",
-                "",
-            ]
-        )
+def test_gepa_main_parses_direct_environment(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("verifiers.scripts.gepa.load_endpoints", lambda _: {})
+    monkeypatch.setattr(
+        "verifiers.scripts.gepa.run_gepa_optimization",
+        lambda **kwargs: captured.update(kwargs),
     )
 
-    args = argparse.Namespace(
-        env_id_or_config=str(config_path),
-        no_save=False,
+    main(["primeintellect/wiki-search", "--gepa.max-calls", "123"])
+
+    assert captured["env_id"] == "primeintellect/wiki-search"
+    assert captured["env_configs"][0].id == "primeintellect/wiki-search"
+    assert captured["max_metric_calls"] == 123
+
+
+def test_gepa_main_reads_typed_toml(monkeypatch, tmp_path: Path):
+    path = tmp_path / "gepa.toml"
+    path.write_text(
+        'model = "openai/gpt-4.1-mini"\n'
+        "save_results = false\n"
+        "[[env]]\n"
+        'id = "primeintellect/wiki-search"\n'
+        "[gepa]\n"
+        "max_calls = 321\n",
+        encoding="utf-8",
+    )
+    captured = {}
+    monkeypatch.setattr("verifiers.scripts.gepa.load_endpoints", lambda _: {})
+    monkeypatch.setattr(
+        "verifiers.scripts.gepa.run_gepa_optimization",
+        lambda **kwargs: captured.update(kwargs),
     )
 
-    resolved = resolve_gepa_config_args(args)
+    main([str(path)])
 
-    assert resolved.env_id == "primeintellect/wiki-search"
-    assert resolved.max_calls == 321
-    assert resolved.no_save is True
+    assert captured["max_metric_calls"] == 321
+    assert captured["save_results"] is False
+    assert captured["run_dir"] is None
 
 
 def test_load_gepa_dataset_balances_multiple_envs_by_env():

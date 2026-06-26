@@ -6,6 +6,7 @@ model = "Qwen/Qwen3.5-4B"
 
 num_examples = 20
 rollouts_per_example = 1
+[sampling_args]
 max_tokens = 1024
 
 [[eval]]
@@ -23,4 +24,4 @@ env_id = "primeintellect/reverse-text"
 # [[eval]]
 # env_id = "primeintellect/opencode-harbor"
 
-# Hosted Training docs: https://docs.primeintellect.ai/hosted-training
+# Hosted evaluations docs: https://docs.primeintellect.ai/tutorials-environments/hosted-evaluations

@@ -27,12 +27,10 @@ def _names(name: str) -> tuple[str, str, str, str]:
     """`(dash, pkg, stem, prefix)` derived from a raw name: the hyphenated id, the importable
     package (underscores), the `_v1`-less stem (for tool prefixes), and the CamelCase class
     prefix (e.g. `my-task-v1` -> `my-task-v1`, `my_task_v1`, `my_task`, `MyTask`)."""
-    dash = name.strip().strip("/").replace("_", "-").lower()
+    dash = name.replace("_", "-").lower()
     pkg = dash.replace("-", "_")
     stem = pkg[:-3] if pkg.endswith("_v1") else pkg
     prefix = "".join(part[:1].upper() + part[1:] for part in stem.split("_") if part)
-    if not prefix or not prefix[0].isalpha():
-        prefix = f"Env{prefix}"
     return dash, pkg, stem, prefix
 
 
@@ -244,7 +242,8 @@ uv run eval {dash} -n 3    # evaluate a few tasks with the default harness
 
 {layout_block}
 
-Tune knobs from the CLI: `--taskset.num-tasks 10`, `--model <id>`, `-n`/`-r`/`-t`/`-T`.
+Tune knobs from the CLI: `--taskset.<field>`, `--model <id>`, `--num-tasks`, and
+`--num-rollouts`. Run `eval --help` for every typed option.
 """
 
 
@@ -312,7 +311,7 @@ def main(argv: list[str] | None = None) -> None:
             )
         from verifiers.scripts.init import init_environment
 
-        env_dir = init_environment(config.name, config.path, multi_file=True)
+        env_dir = init_environment(config.name, config.path)
         print(f"scaffolded v0 environment in {env_dir}")
         return
     scaffold(config)

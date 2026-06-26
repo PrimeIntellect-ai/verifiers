@@ -1,14 +1,15 @@
 import json
 import logging
 import os
+import re
 from collections.abc import Mapping
 from typing import Any
-from pathlib import Path
 
 import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
+from prime_sandboxes import Config as PrimeConfig
 
 from verifiers.types import (
     ClientConfig,
@@ -50,16 +51,29 @@ def resolve_client_configs(config: ClientConfig) -> list[ClientConfig]:
 
 
 def load_prime_config() -> dict:
-    try:
-        config_file = Path.home() / ".prime" / "config.json"
-        if config_file.exists():
-            data = json.loads(config_file.read_text())
-            if isinstance(data, dict):
-                return data
-            logger.warning("Invalid prime config: expected dict")
-    except (RuntimeError, json.JSONDecodeError, OSError) as e:
-        logger.warning(f"Failed to load prime config: {e}")
-    return {}
+    """Read Prime's shared SDK config with environment overrides applied."""
+    config = PrimeConfig()
+    context = os.getenv("PRIME_CONTEXT")
+    if context == "production":
+        config.config.update(
+            base_url=config.DEFAULT_BASE_URL,
+            team_id=None,
+            inference_url="https://api.pinference.ai/api/v1",
+        )
+    elif context:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", context):
+            raise ValueError(f"Invalid PRIME_CONTEXT: {context!r}")
+        context_path = config.config_dir / "environments" / f"{context}.json"
+        if context_path.is_file():
+            config.config.update(json.loads(context_path.read_text()))
+    return {
+        **config.config,
+        "api_key": config.api_key,
+        "team_id": config.team_id,
+        "base_url": config.base_url,
+        "inference_url": os.getenv("PRIME_INFERENCE_URL")
+        or config.config.get("inference_url"),
+    }
 
 
 def _build_headers_and_api_key(

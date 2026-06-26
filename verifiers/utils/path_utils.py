@@ -187,4 +187,4 @@ def get_gepa_results_path(
         ./outputs/gepa/{env_id}--{model}/{uuid8}/
     """
     base_path = _get_outputs_base_path(env_id, env_dir_path, output_dir)
-    return get_results_path(env_id, model, base_path, subdir="gepa")
+    return get_results_path(env_id.replace("/", "--"), model, base_path, subdir="gepa")

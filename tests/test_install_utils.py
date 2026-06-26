@@ -1,14 +1,15 @@
 import sys
-from unittest.mock import MagicMock, patch
+import tarfile
+from unittest.mock import patch
 
 import pytest
 
 from verifiers.utils.install_utils import (
-    check_hub_env_installed,
+    install_from_hub,
     is_hub_env,
-    is_installed,
     normalize_package_name,
     parse_env_id,
+    safe_extract,
 )
 
 
@@ -79,84 +80,76 @@ class TestIsHubEnv:
         assert is_hub_env("/path/to/gsm8k") is False
 
 
-class TestIsInstalled:
+class TestInstallFromHub:
     @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_installed_no_version_check(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="Name: gsm8k\nVersion: 1.0.0\n"
-        )
-        assert is_installed("gsm8k") is True
+    @patch("verifiers.utils.install_utils.fetch_hub_environment")
+    def test_public_index_uses_targeted_uv_install(self, mock_fetch, mock_run):
+        mock_fetch.return_value = {
+            "simple_index_url": "https://hub.example/simple",
+            "url_dependencies": ["dep @ https://example.test/dep.whl"],
+        }
+
+        module = install_from_hub("owner/my-env@1.2.3", prerelease=True)
+
+        assert module == "my_env"
         mock_run.assert_called_once_with(
-            ["uv", "pip", "show", "--python", sys.executable, "gsm8k"],
-            capture_output=True,
-            text=True,
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "-P",
+                "my_env",
+                "my_env==1.2.3",
+                "dep @ https://example.test/dep.whl",
+                "--extra-index-url",
+                "https://hub.example/simple",
+                "--exclude-newer-package",
+                "my_env=false",
+                "--prerelease=allow",
+            ],
+            check=True,
         )
 
     @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_not_installed(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1, stdout="")
-        assert is_installed("gsm8k") is False
-
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_installed_version_matches(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="Name: gsm8k\nVersion: 1.0.0\n"
+    @patch("verifiers.utils.install_utils.build_environment_wheel")
+    @patch("verifiers.utils.install_utils.download_environment_source")
+    @patch("verifiers.utils.install_utils.fetch_hub_environment")
+    def test_private_source_is_downloaded_and_built(
+        self, mock_fetch, mock_download, mock_build, mock_run, tmp_path, monkeypatch
+    ):
+        content_hash = "a" * 64
+        mock_fetch.return_value = {
+            "visibility": "PRIVATE",
+            "package_url": "https://hub.example/private.tar.gz",
+            "latest_version": {"content_hash": content_hash},
+        }
+        wheel = tmp_path / "my_env-1.0-py3-none-any.whl"
+        wheel.write_bytes(b"wheel")
+        mock_download.side_effect = (
+            lambda details, destination, api_key=None, base_url=None: destination
         )
-        assert is_installed("gsm8k", version="1.0.0") is True
+        mock_build.return_value = wheel
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_installed_version_mismatch(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="Name: gsm8k\nVersion: 1.0.0\n"
-        )
-        assert is_installed("gsm8k", version="2.0.0") is False
+        module = install_from_hub("owner/my-env")
 
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_latest_version_skips_check(self, mock_run):
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="Name: gsm8k\nVersion: 1.0.0\n"
-        )
-        assert is_installed("gsm8k", version="latest") is True
-
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_normalizes_package_name(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="")
-        is_installed("my-package")
-        mock_run.assert_called_once_with(
-            ["uv", "pip", "show", "--python", sys.executable, "my_package"],
-            capture_output=True,
-            text=True,
-        )
-
-    @patch("verifiers.utils.install_utils.subprocess.run")
-    def test_exception_returns_false(self, mock_run):
-        mock_run.side_effect = Exception("subprocess error")
-        assert is_installed("gsm8k") is False
+        assert module == "my_env"
+        mock_download.assert_called_once()
+        mock_build.assert_called_once()
+        assert mock_run.call_args.args[0][-1] == str(wheel)
 
 
-class TestCheckHubEnvInstalled:
-    @patch("verifiers.utils.install_utils.is_installed")
-    def test_local_env_returns_true(self, mock_is_installed):
-        result = check_hub_env_installed("gsm8k")
-        assert result is True
-        mock_is_installed.assert_not_called()
+def test_safe_extract_rejects_parent_traversal(tmp_path):
+    archive = tmp_path / "unsafe.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        member = tarfile.TarInfo("../evil.txt")
+        member.size = 0
+        tar.addfile(member)
 
-    @patch("verifiers.utils.install_utils.is_installed")
-    def test_hub_env_installed(self, mock_is_installed):
-        mock_is_installed.return_value = True
-        result = check_hub_env_installed("primeintellect/gsm8k")
-        assert result is True
-        mock_is_installed.assert_called_once_with("gsm8k", None)
-
-    @patch("verifiers.utils.install_utils.is_installed")
-    def test_hub_env_not_installed(self, mock_is_installed):
-        mock_is_installed.return_value = False
-        result = check_hub_env_installed("primeintellect/gsm8k")
-        assert result is False
-
-    @patch("verifiers.utils.install_utils.is_installed")
-    def test_hub_env_with_version(self, mock_is_installed):
-        mock_is_installed.return_value = True
-        result = check_hub_env_installed("primeintellect/gsm8k@1.0.0")
-        assert result is True
-        mock_is_installed.assert_called_once_with("gsm8k", "1.0.0")
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    with tarfile.open(archive, "r:gz") as tar:
+        with pytest.raises(ValueError, match="unsafe path"):
+            safe_extract(tar, destination)

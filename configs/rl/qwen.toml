@@ -1,3 +1,5 @@
+type = "lora"
+
 # Qwen3.5 dense models. Uncomment exactly one model.
 # model = "Qwen/Qwen3.5-0.8B"
 # model = "Qwen/Qwen3.5-2B"

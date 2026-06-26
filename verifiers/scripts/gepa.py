@@ -1,29 +1,26 @@
-"""
-GEPA prompt optimization CLI.
+"""Typed CLI for V0 GEPA prompt optimization."""
 
-Aligned with the legacy V0 evaluator for consistency.
-"""
-
-import argparse
 from collections.abc import Mapping
 import json
 import logging
 import os
 from pathlib import Path
+import sys
 from typing import Any, cast
 
 from gepa.api import optimize
+from pydantic_config import cli
 
 import verifiers as vf
 from verifiers import setup_logging
 from verifiers.clients import resolve_client
 from verifiers.envs.env_group import ENV_GROUP_INFO_KEY
 from verifiers.gepa.adapter import VerifiersGEPAAdapter, make_reflection_lm
+from verifiers.gepa.config import GEPAConfig, GEPAEnvConfig
 from verifiers.gepa.display import GEPADisplay
 from verifiers.gepa.gepa_utils import save_gepa_results
 from verifiers.types import ClientConfig, EndpointConfig
 from verifiers.utils.eval_utils import load_endpoints
-from verifiers.utils.import_utils import load_toml
 from verifiers.utils.path_utils import get_gepa_results_path
 
 logger = logging.getLogger(__name__)
@@ -44,498 +41,124 @@ def _gepa_extra_headers_from_group(
 
 DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
-DEFAULT_ENDPOINTS_PATH = "./configs/endpoints.toml"
-DEFAULT_ENV_DIR_PATH = "./environments"
-DEFAULT_NUM_TRAIN = 100
-DEFAULT_NUM_VAL = 50
-DEFAULT_MAX_METRIC_CALLS = 500
-DEFAULT_MINIBATCH_SIZE = 3
+USAGE = "usage: vf-gepa <env-id> [options] | vf-gepa @ config.toml"
 
 
-def _ensure_table(value: object, field_name: str) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise ValueError(f"'{field_name}' must be a TOML table.")
-    return cast(dict[str, Any], value)
-
-
-def _load_env_configs(raw_config: dict[str, Any], path: Path) -> list[dict[str, Any]]:
-    raw_env = raw_config.get("env")
-    if isinstance(raw_env, dict):
-        raw_envs = [raw_env]
-    elif isinstance(raw_env, list):
-        raw_envs = raw_env
-    else:
-        raise ValueError(f"Config file must contain an [env] or [[env]] table: {path}")
-
-    if not raw_envs:
-        raise ValueError(f"Config file must contain at least one env table: {path}")
-
-    env_configs = []
-    for idx, env_table in enumerate(raw_envs):
-        if not isinstance(env_table, dict):
-            raise ValueError(f"Each [[env]] entry must be a TOML table: {path}")
-        env_id = env_table.get("env_id")
-        if not isinstance(env_id, str) or not env_id:
-            raise ValueError(
-                f"env entry {idx} must contain a non-empty env_id string: {path}"
-            )
-        env_configs.append(
-            {
-                "env_id": env_id,
-                "env_args": _ensure_table(
-                    env_table.get("env_args", {}), "env.env_args"
-                ),
-                "extra_env_kwargs": _ensure_table(
-                    env_table.get("extra_env_kwargs", {}),
-                    "env.extra_env_kwargs",
-                ),
-            }
-        )
-    return env_configs
-
-
-def _env_group_label(env_configs: list[dict[str, Any]]) -> str:
-    if len(env_configs) == 1:
-        return cast(str, env_configs[0]["env_id"])
-    names = [str(config["env_id"]).rstrip("/").split("/")[-1] for config in env_configs]
-    return "+".join(names)
-
-
-def _apply_execution_compat(
-    config: dict[str, Any],
-    execution_table: dict[str, Any],
-    warnings: list[str],
-) -> None:
-    if not execution_table:
+def main(argv: list[str] | None = None) -> None:
+    argv = list(sys.argv[1:]) if argv is None else list(argv)
+    if argv and not argv[0].startswith(("-", "@")):
+        target = argv.pop(0)
+        argv = (
+            ["@", target] if Path(target).suffix == ".toml" else ["--id", target]
+        ) + argv
+    if not argv or any(arg in ("-h", "--help") for arg in argv):
+        print(USAGE)
+        cli(GEPAConfig, args=argv or ["--help"])
         return
 
-    warnings.append(
-        "[execution] in GEPA TOML configs is deprecated and undocumented. "
-        "Move max_concurrent and seed under [gepa], and move sampling_args values "
-        "under [sampling]."
-    )
+    config = cli(GEPAConfig, args=argv)
+    setup_logging("DEBUG" if config.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
+    env_configs = config.environments
+    env_id = config.environment_label
 
-    for key in ("max_concurrent", "seed"):
-        if key not in execution_table:
-            continue
-        if key in config:
-            raise ValueError(
-                f"GEPA TOML config sets {key!r} in both [gepa] and [execution]."
-            )
-        config[key] = execution_table[key]
-
-    if "sampling_args" in execution_table:
-        if "sampling_args" in config:
-            raise ValueError(
-                "GEPA TOML config sets sampling parameters in both [sampling] "
-                "and [execution].sampling_args."
-            )
-        config["sampling_args"] = _ensure_table(
-            execution_table["sampling_args"], "execution.sampling_args"
+    endpoints = load_endpoints(str(config.endpoints_path))
+    main_extra_headers: dict[str, str] = {}
+    if config.model in endpoints:
+        endpoint_group = endpoints[config.model]
+        endpoint = endpoint_group[0]
+        main_extra_headers = _gepa_extra_headers_from_group(
+            endpoint_group, config.model
         )
 
+        endpoint_keys = {entry.api_key_var for entry in endpoint_group}
+        if config.api_key_var is None and len(endpoint_keys) > 1:
+            raise ValueError(
+                f"Endpoint alias {config.model!r} maps to multiple API key variables; "
+                "set --api-key-var."
+            )
+        api_key_var = config.api_key_var or endpoint.api_key_var
 
-def load_gepa_toml_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        raise FileNotFoundError(f"TOML config file not found: {path}")
-
-    with path.open("rb") as f:
-        raw_config = load_toml(f)
-
-    if not isinstance(raw_config, dict):
-        raise ValueError(f"Expected top-level TOML table in {path}")
-
-    env_configs = _load_env_configs(raw_config, path)
-    warnings: list[str] = []
-
-    config: dict[str, Any] = {
-        "env_id": _env_group_label(env_configs),
-        "envs": env_configs,
-    }
-    if len(env_configs) == 1:
-        config["env_args"] = env_configs[0]["env_args"]
-        config["extra_env_kwargs"] = env_configs[0]["extra_env_kwargs"]
-
-    for key in (
-        "model",
-        "reflection_model",
-        "endpoints_path",
-        "api_key_var",
-        "api_base_url",
-        "env_dir_path",
-        "run_dir",
-        "save_results",
-        "verbose",
-        "tui",
-    ):
-        if key in raw_config:
-            config[key] = raw_config[key]
-
-    gepa_table = _ensure_table(raw_config.get("gepa", {}), "gepa")
-    for key in (
-        "max_calls",
-        "minibatch_size",
-        "perfect_score",
-        "state_columns",
-        "num_train",
-        "num_val",
-        "max_concurrent",
-        "seed",
-    ):
-        if key in gepa_table:
-            config[key] = gepa_table[key]
-
-    sampling_table = _ensure_table(raw_config.get("sampling", {}), "sampling")
-    if sampling_table:
-        config["sampling_args"] = sampling_table
-
-    execution_table = _ensure_table(raw_config.get("execution", {}), "execution")
-    _apply_execution_compat(config, execution_table, warnings)
-    if warnings:
-        config["_warnings"] = warnings
-
-    # Resolve config-relative paths for consistency with V0 evals.
-    endpoints_path = config.get("endpoints_path")
-    if isinstance(endpoints_path, str):
-        endpoints_path_obj = Path(endpoints_path)
-        if not endpoints_path_obj.is_absolute():
-            config["endpoints_path"] = str((path.parent / endpoints_path_obj).resolve())
-
-    run_dir = config.get("run_dir")
-    if isinstance(run_dir, str):
-        run_dir_obj = Path(run_dir)
-        if not run_dir_obj.is_absolute():
-            config["run_dir"] = str((path.parent / run_dir_obj).resolve())
-
-    return config
-
-
-def resolve_gepa_config_args(args: argparse.Namespace) -> argparse.Namespace:
-    raw = args.env_id_or_config
-    config_path = Path(raw)
-    if config_path.suffix == ".toml":
-        config = load_gepa_toml_config(config_path)
-    else:
-        args.env_id = raw
-        return args
-
-    for key in (
-        "env_id",
-        "envs",
-        "env_args",
-        "extra_env_kwargs",
-        "model",
-        "reflection_model",
-        "endpoints_path",
-        "api_key_var",
-        "api_base_url",
-        "env_dir_path",
-        "run_dir",
-        "verbose",
-        "tui",
-        "max_calls",
-        "minibatch_size",
-        "perfect_score",
-        "state_columns",
-        "num_train",
-        "num_val",
-        "max_concurrent",
-        "sampling_args",
-        "seed",
-    ):
-        if key in config:
-            setattr(args, key, config[key])
-
-    if "save_results" in config:
-        save_results = config["save_results"]
-        if not isinstance(save_results, bool):
-            raise ValueError("'save_results' must be a boolean.")
-        args.no_save = not save_results
-    args.config_warnings = config.get("_warnings", [])
-
-    return args
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Run GEPA prompt optimization")
-
-    # Environment (aligned with V0 eval config)
-    parser.add_argument(
-        "env_id_or_config",
-        type=str,
-        help="Environment module name or path to TOML config file.",
-    )
-    parser.add_argument(
-        "--env-args",
-        "-a",
-        type=json.loads,
-        default={},
-        help='Environment module arguments as JSON object (e.g., \'{"key": "value"}\')',
-    )
-    parser.add_argument(
-        "--env-dir-path",
-        "-p",
-        type=str,
-        default=DEFAULT_ENV_DIR_PATH,
-        help="Path to environments directory",
-    )
-    parser.add_argument(
-        "--extra-env-kwargs",
-        "-x",
-        type=json.loads,
-        default={},
-        help="Extra environment kwargs as JSON object. Passed to environment constructor.",
-    )
-
-    # Model configuration (aligned with V0 eval)
-    parser.add_argument(
-        "--model",
-        "-m",
-        type=str,
-        default="openai/gpt-4.1-mini",
-        help="Model for evaluation rollouts",
-    )
-    parser.add_argument(
-        "--reflection-model",
-        "-M",
-        type=str,
-        default=None,
-        help="Model for reflection/teacher LLM (defaults to --model)",
-    )
-    parser.add_argument(
-        "--endpoints-path",
-        "-e",
-        type=str,
-        default=DEFAULT_ENDPOINTS_PATH,
-        help="Path to API endpoints TOML registry",
-    )
-    parser.add_argument("--api-key-var", "-k", type=str, default=None)
-    parser.add_argument("--api-base-url", "-b", type=str, default=None)
-
-    # GEPA optimization (the key params)
-    parser.add_argument(
-        "--max-calls",
-        "-B",
-        type=int,
-        default=DEFAULT_MAX_METRIC_CALLS,
-        help="Maximum metric calls (evaluation budget)",
-    )
-    parser.add_argument(
-        "--minibatch-size",
-        type=int,
-        default=DEFAULT_MINIBATCH_SIZE,
-        help="Minibatch size for reflection",
-    )
-    parser.add_argument(
-        "--perfect-score",
-        type=float,
-        default=None,
-        help="If set, dont reflect on minibatches with this score",
-    )
-    parser.add_argument(
-        "--state-columns",
-        type=str,
-        nargs="*",
-        default=[],
-        help="Additional state columns to copy to reflection dataset",
-    )
-
-    # Dataset sizes
-    parser.add_argument(
-        "--num-train",
-        "-n",
-        type=int,
-        default=DEFAULT_NUM_TRAIN,
-        help="Training examples",
-    )
-    parser.add_argument(
-        "--num-val", "-N", type=int, default=DEFAULT_NUM_VAL, help="Validation examples"
-    )
-
-    # Execution (aligned with V0 eval)
-    parser.add_argument("--max-concurrent", "-c", type=int, default=32)
-    parser.add_argument("--sampling-args", "-S", type=json.loads, default=None)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--verbose", "-v", action="store_true")
-
-    # Output
-    parser.add_argument(
-        "--run-dir", "-o", type=str, default=None, help="Override output directory"
-    )
-    parser.add_argument("--no-save", action="store_true", help="Disable saving results")
-    parser.add_argument(
-        "--tui",
-        "-u",
-        action="store_true",
-        default=False,
-        help="Use alternate screen mode (TUI) for display",
-    )
-
-    args = parser.parse_args()
-    try:
-        args = resolve_gepa_config_args(args)
-    except (FileNotFoundError, ValueError) as e:
-        raise SystemExit(str(e)) from e
-
-    setup_logging("DEBUG" if args.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
-    for warning in getattr(args, "config_warnings", []):
-        logger.warning(warning)
-
-    env_configs = getattr(args, "envs", None)
-    if env_configs is None:
-        env_configs = [
-            {
-                "env_id": args.env_id,
-                "env_args": args.env_args,
-                "extra_env_kwargs": args.extra_env_kwargs,
-            }
-        ]
-
-    # Load endpoints and resolve model config
-    endpoints = load_endpoints(args.endpoints_path)
-    api_key_override = args.api_key_var is not None
-    api_base_url_override = args.api_base_url is not None
-
-    main_extra_headers: dict[str, str] = {}
-    if args.model in endpoints:
-        endpoint_group = endpoints[args.model]
-        endpoint = endpoint_group[0]
-        main_extra_headers = _gepa_extra_headers_from_group(endpoint_group, args.model)
-
-        if api_key_override:
-            api_key_var = args.api_key_var
-        else:
-            endpoint_keys = {entry.api_key_var for entry in endpoint_group}
-            if len(endpoint_keys) > 1:
-                raise ValueError(
-                    f"Endpoint alias '{args.model}' maps to multiple API key vars {sorted(endpoint_keys)}, "
-                    "which is not yet supported by GEPA config. Please set --api-key-var explicitly."
-                )
-            api_key_var = endpoint.api_key_var
-
-        if api_base_url_override:
-            api_base_url = args.api_base_url
-        else:
-            endpoint_urls = {entry.base_url for entry in endpoint_group}
-            if len(endpoint_urls) > 1:
-                raise ValueError(
-                    f"Endpoint alias '{args.model}' maps to multiple URLs {sorted(endpoint_urls)} and GEPA currently requires a single --api-base-url."
-                )
-            api_base_url = endpoint.base_url
+        endpoint_urls = {entry.base_url for entry in endpoint_group}
+        if config.api_base_url is None and len(endpoint_urls) > 1:
+            raise ValueError(
+                f"Endpoint alias {config.model!r} maps to multiple URLs; set --api-base-url."
+            )
+        api_base_url = config.api_base_url or endpoint.base_url
 
         endpoint_models = {entry.model for entry in endpoint_group}
         if len(endpoint_models) > 1:
             raise ValueError(
-                f"Endpoint alias '{args.model}' maps to multiple model ids {sorted(endpoint_models)}, "
-                "which is not yet supported by GEPA config."
+                f"Endpoint alias {config.model!r} maps to multiple model ids: "
+                f"{sorted(endpoint_models)}"
             )
         model = endpoint.model
     else:
-        api_key_var = args.api_key_var if api_key_override else DEFAULT_API_KEY_VAR
-        api_base_url = (
-            args.api_base_url if api_base_url_override else DEFAULT_API_BASE_URL
-        )
-        model = args.model
+        api_key_var = config.api_key_var or DEFAULT_API_KEY_VAR
+        api_base_url = config.api_base_url or DEFAULT_API_BASE_URL
+        model = config.model
 
-    reflection_extra_headers: dict[str, str] = main_extra_headers
-    # Resolve reflection model and its client config
-    if args.reflection_model and args.reflection_model in endpoints:
-        reflection_endpoint_group = endpoints[args.reflection_model]
-        reflection_endpoint = reflection_endpoint_group[0]
+    reflection_extra_headers = main_extra_headers
+    if config.reflection_model and config.reflection_model in endpoints:
+        endpoint_group = endpoints[config.reflection_model]
+        endpoint = endpoint_group[0]
         reflection_extra_headers = _gepa_extra_headers_from_group(
-            reflection_endpoint_group, args.reflection_model
+            endpoint_group, config.reflection_model
         )
-
-        reflection_endpoint_models = {
-            entry.model for entry in reflection_endpoint_group
-        }
-        if len(reflection_endpoint_models) > 1:
+        endpoint_models = {entry.model for entry in endpoint_group}
+        endpoint_keys = {entry.api_key_var for entry in endpoint_group}
+        endpoint_urls = {entry.base_url for entry in endpoint_group}
+        if len(endpoint_models) > 1 or len(endpoint_keys) > 1 or len(endpoint_urls) > 1:
             raise ValueError(
-                f"Endpoint alias '{args.reflection_model}' maps to multiple model ids {sorted(reflection_endpoint_models)}, "
-                "which is not yet supported by GEPA reflection config."
+                f"Reflection endpoint alias {config.reflection_model!r} must resolve to "
+                "one model, API key variable, and URL."
             )
-        reflection_endpoint_keys = {
-            entry.api_key_var for entry in reflection_endpoint_group
-        }
-        if len(reflection_endpoint_keys) > 1:
-            raise ValueError(
-                f"Endpoint alias '{args.reflection_model}' maps to multiple API key vars {sorted(reflection_endpoint_keys)}, "
-                "which is not yet supported by GEPA reflection config."
-            )
-        reflection_endpoint_urls = {
-            entry.base_url for entry in reflection_endpoint_group
-        }
-        if len(reflection_endpoint_urls) > 1:
-            raise ValueError(
-                f"Endpoint alias '{args.reflection_model}' maps to multiple URLs {sorted(reflection_endpoint_urls)} and GEPA currently requires a single --api-base-url."
-            )
-
-        reflection_model = reflection_endpoint.model
-        reflection_api_key_var = reflection_endpoint.api_key_var
-        reflection_api_base_url = reflection_endpoint.base_url
-    elif args.reflection_model:
-        # Reflection model specified but not in endpoints - use defaults
-        reflection_model = args.reflection_model
+        reflection_model = endpoint.model
+        reflection_api_key_var = endpoint.api_key_var
+        reflection_api_base_url = endpoint.base_url
+    else:
+        reflection_model = config.reflection_model or model
         reflection_api_key_var = api_key_var
         reflection_api_base_url = api_base_url
-        reflection_extra_headers = main_extra_headers
-    else:
-        # No reflection model specified - use main model config
-        reflection_model = model
-        reflection_api_key_var = api_key_var
-        reflection_api_base_url = api_base_url
-        reflection_extra_headers = main_extra_headers
 
-    # Generate run_dir in the environment folder, like V0 evals.
-    save_results = not args.no_save
-    if args.run_dir:
-        run_dir = Path(args.run_dir)
-    elif save_results:
-        run_dir = get_gepa_results_path(args.env_id, model, args.env_dir_path)
-    else:
-        run_dir = None
-
-    # Run optimization
-    client_config = ClientConfig(
-        api_key_var=api_key_var,
-        api_base_url=api_base_url,
-        extra_headers=main_extra_headers,
-    )
-    reflection_client_config = ClientConfig(
-        api_key_var=reflection_api_key_var,
-        api_base_url=reflection_api_base_url,
-        extra_headers=reflection_extra_headers,
-    )
+    run_dir = config.run_dir
+    if run_dir is None and config.save_results:
+        run_dir = get_gepa_results_path(env_id, model, str(config.env_dir_path))
 
     run_gepa_optimization(
-        env_id=args.env_id,
+        env_id=env_id,
         env_configs=env_configs,
         model=model,
         reflection_model=reflection_model,
-        client_config=client_config,
-        reflection_client_config=reflection_client_config,
-        max_metric_calls=args.max_calls,
-        minibatch_size=args.minibatch_size,
-        perfect_score=args.perfect_score,
-        state_columns=args.state_columns,
-        num_train=args.num_train,
-        num_val=args.num_val,
-        max_concurrent=args.max_concurrent,
-        sampling_args=args.sampling_args or {},
-        seed=args.seed,
+        client_config=ClientConfig(
+            api_key_var=api_key_var,
+            api_base_url=api_base_url,
+            extra_headers=main_extra_headers,
+        ),
+        reflection_client_config=ClientConfig(
+            api_key_var=reflection_api_key_var,
+            api_base_url=reflection_api_base_url,
+            extra_headers=reflection_extra_headers,
+        ),
+        max_metric_calls=config.gepa.max_calls,
+        minibatch_size=config.gepa.minibatch_size,
+        perfect_score=config.gepa.perfect_score,
+        state_columns=config.gepa.state_columns,
+        num_train=config.gepa.num_train,
+        num_val=config.gepa.num_val,
+        max_concurrent=config.gepa.max_concurrent,
+        sampling_args=config.sampling,
+        seed=config.gepa.seed,
         run_dir=run_dir,
-        save_results=save_results,
-        tui_mode=args.tui,
+        save_results=config.save_results,
+        tui_mode=config.tui,
     )
 
 
-def _unique_env_names(env_configs: list[dict[str, Any]]) -> list[str]:
+def _unique_env_names(env_configs: list[GEPAEnvConfig]) -> list[str]:
     seen: dict[str, int] = {}
     names = []
     for config in env_configs:
-        base = str(config["env_id"])
+        base = config.id
         count = seen.get(base, 0) + 1
         seen[base] = count
         names.append(base if count == 1 else f"{base}:{count}")
@@ -543,16 +166,16 @@ def _unique_env_names(env_configs: list[dict[str, Any]]) -> list[str]:
 
 
 def _load_gepa_environment(
-    env_configs: list[dict[str, Any]],
+    env_configs: list[GEPAEnvConfig],
 ) -> tuple[vf.Environment, list[vf.Environment], list[str]]:
     envs = []
     for config in env_configs:
-        env_id = config["env_id"]
-        env_args = config["env_args"]
+        env_id = config.id
+        env_args = config.args
         logger.debug(f"Loading environment: {env_id}")
         env = vf.load_environment(env_id=env_id, **env_args)
 
-        extra_env_kwargs = config["extra_env_kwargs"]
+        extra_env_kwargs = config.extra_env_kwargs
         if extra_env_kwargs:
             logger.info(
                 f"Setting extra environment kwargs for {env_id}: {extra_env_kwargs}"
@@ -675,7 +298,7 @@ def _load_gepa_dataset(
 
 def run_gepa_optimization(
     env_id: str,
-    env_configs: list[dict[str, Any]],
+    env_configs: list[GEPAEnvConfig],
     model: str,
     reflection_model: str,
     client_config: ClientConfig,
@@ -810,8 +433,8 @@ def run_gepa_optimization(
         if run_dir and save_results:
             run_config = {
                 "env_id": env_id,
-                "envs": env_configs,
-                "env_args": env_configs[0]["env_args"] if len(env_configs) == 1 else {},
+                "envs": [config.model_dump(mode="json") for config in env_configs],
+                "env_args": env_configs[0].args if len(env_configs) == 1 else {},
                 "model": model,
                 "reflection_model": reflection_model,
                 "num_train": num_train,
