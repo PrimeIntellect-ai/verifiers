@@ -1,10 +1,11 @@
-"""The env server: load a taskset once, run rollouts on request by task index.
+"""The env server: load a taskset once, run rollouts on request by pulling tasks.
 
 A ZMQ ROUTER front end (msgpack frames) over a v1 `Environment`. The server
 owns the environment — taskset, harness, runtime — and is the only process that ever
-loads it. A caller (e.g. the orchestrator) stays env-agnostic: it asks `info` for
-the task count + whether group scoring is needed, then `run_rollout` / `run_group`
-by task index. Per request the server resolves a `Client` from the request's
+loads it, including task scheduling (shuffle + epoch). A caller (e.g. the orchestrator)
+stays env-agnostic: it asks `info` for the task count (None if infinite) + whether group
+scoring is needed, then pulls via `run_rollout` / `run_group` (no task index — the server
+hands out the next task). Per request the server resolves a `Client` from the request's
 `client` config (cached, so a renderer's tokenizer is built once), wraps it in a
 `RolloutContext`, and runs `env.episode(task, ctx, n).run()`, returning each
 `Trace` as a JSON dict (with its computed `branches`).
@@ -19,6 +20,8 @@ the structure leaves room to add a pool later. Health is just another request ty
 import asyncio
 import contextlib
 import logging
+import random
+from collections.abc import Iterator
 
 import msgpack
 import zmq
@@ -39,6 +42,8 @@ from verifiers.v1.serve.types import (
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    SampleRequest,
+    SampleResponse,
 )
 from verifiers.v1.types import SamplingConfig
 
@@ -49,13 +54,49 @@ class EnvServer:
     """Serve one v1 environment over ZMQ. The only process that loads the env."""
 
     def __init__(
-        self, config: EnvConfig, address: str = "tcp://127.0.0.1:5000"
+        self,
+        config: EnvConfig,
+        address: str = "tcp://127.0.0.1:5000",
+        idx: int = 0,
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
-        # Load tasks once; the index range is fixed for the server's lifetime.
-        self.tasks = self.env.taskset.load_tasks()
+        # Task order: a `ShuffleConfig` shuffles a finite taskset (reshuffled per epoch) and seeds an
+        # INFINITE one's generation. Each pool worker offsets the seed by its index (when shuffling)
+        # so workers diverge; the mutation lands on `config.taskset.shuffle`, which the taskset reads
+        # back via `self.config.shuffle.seed`.
+        shuffle = config.taskset.shuffle
+        self._shuffle = shuffle is not None
+        # INFINITE generators stream forward (the broker's cursor can't index them), so offset the
+        # seed per worker to diverge. FINITE workers share the seed: the broker hands each `sample` a
+        # global index, so every worker's permutation must agree.
+        if self._shuffle and self.env.taskset.INFINITE:
+            shuffle.seed += idx
+        self._seed = shuffle.seed if self._shuffle else 0
+        # The server owns task scheduling: callers pull (`run_rollout`/`run_group` carry no task
+        # index), and the server hands out the next task. A finite taskset is materialized + counted
+        # and served as a (re)shuffled permutation that loops over epochs; an INFINITE one is
+        # streamed straight off its generator (which owns its own order). Pull is sequential and
+        # tasks are echoed back by value, so no random-access index/cache is needed.
+        tasks = iter(self.env.taskset.load_tasks())  # a list is iterable too
+        try:
+            first = next(tasks)  # peek: non-empty + representative task
+        except StopIteration:
+            raise ValueError("taskset load_tasks() produced no tasks") from None
+        self._first_task = first  # representative task for `serving()` + the task type
+        self._task_type = type(first)
+        if self.env.taskset.INFINITE:
+            self._iter: Iterator | None = tasks  # forward-only stream
+            self._tasks: list = []
+            self._pending = first  # the peeked task, served on the opening pull
+            self.num_tasks: int | None = None
+        else:
+            self._iter = None
+            self._tasks = [first, *tasks]  # materialized for indexed access
+            self._pending = None
+            self.num_tasks = len(self._tasks)
+        self._init_scheduler(self.num_tasks)
         self.requires_group_scoring = bool(
             discover_decorated(self.env.taskset, "group_reward")
         )
@@ -116,18 +157,67 @@ class EnvServer:
         interception pool), entered for the server's lifetime so they're reused across
         requests; episodes built inside it inherit them (see `Environment.serving`). The
         legacy v0 bridge overrides this (it runs its own rollouts, with no v1 serving)."""
-        return self.env.serving(self.tasks)
+        # Shared tool servers are task-agnostic, but `Environment.serving` builds them from a
+        # task, so hand it a representative one (the taskset is guaranteed non-empty).
+        return self.env.serving([self._first_task])
+
+    def _init_scheduler(self, count: int | None) -> None:
+        """Set up the finite-taskset cursor: `count` tasks (None = infinite → streamed, no
+        scheduler). Reads `self._shuffle`/`self._seed` (set in `__init__`). Shared by the native
+        server and the v0 bridge (always a finite dataset)."""
+        self._count = count
+        self._cursor = (
+            0  # fallback cursor for a lone server; a pool's broker supplies the index
+        )
+        self._order: list[int] | None = None  # cached epoch permutation
+        self._order_epoch = -1
+
+    def _index_at(self, index: int) -> int:
+        """Map a global cursor index to a task index via the epoch's (re)shuffled permutation
+        (reshuffled each epoch from `self._seed`; the `seed-epoch` string seed keeps epochs
+        distinct). All workers share the seed for a finite taskset, so they agree on the permutation
+        for any index — which is what lets the broker hand `sample` to any worker. Synchronous, so
+        concurrent rollouts on one event loop can't interleave the cached order. Used by
+        native-finite (`_next_task`) and the v0 bridge."""
+        epoch, pos = divmod(index, self._count)
+        if epoch != self._order_epoch:  # (re)build + cache this epoch's permutation
+            self._order = list(range(self._count))
+            if self._shuffle:
+                random.Random(f"{self._seed}-{epoch}").shuffle(self._order)
+            self._order_epoch = epoch
+        return self._order[pos]
+
+    def _next_task(self, index: int | None):
+        """The task to serve. A finite taskset is indexed by the global cursor `index` (the pool's
+        broker supplies it; a lone server falls back to its own cursor); an infinite one is streamed
+        off its generator (the peeked first, then `next`), ignoring `index`."""
+        if self._count is None:  # infinite: forward stream
+            if self._pending is not None:
+                task, self._pending = self._pending, None
+                return task
+            return next(self._iter)
+        if index is None:
+            index = self._cursor
+            self._cursor += 1
+        return self._tasks[self._index_at(index)]
+
+    def _sample(self, req: SampleRequest) -> SampleResponse:
+        # The broker stamps a global cursor index (a pool) so workers stay coherent without pinning;
+        # a lone server uses its own cursor. The caller echoes the task back to run_rollout/run_group.
+        return SampleResponse.model_construct(task=self._next_task(req.index))
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=1)
+        task = self._task_type.model_validate(req.task.model_dump())
+        episode = self.env.episode(task, ctx, n=1)
         traces = await episode.run()
         # Trust the concrete trace; serialize it once before client-side re-typing.
         return RunRolloutResponse.model_construct(trace=traces[0])
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=req.n)
+        task = self._task_type.model_validate(req.task.model_dump())
+        episode = self.env.episode(task, ctx, n=req.n)
         traces = await episode.run()
         # Avoid a dump-and-validate copy for every trusted trace in the group.
         return RunGroupResponse.model_construct(traces=traces)
@@ -142,9 +232,11 @@ class EnvServer:
                 response: BaseResponse = HealthResponse()
             elif route == "info":
                 response = InfoResponse(
-                    num_tasks=len(self.tasks),
+                    num_tasks=self.num_tasks,
                     requires_group_scoring=self.requires_group_scoring,
                 )
+            elif route == "sample":
+                response = self._sample(SampleRequest.model_validate(raw))
             elif route == "run_rollout":
                 response = await self._run_rollout(
                     RunRolloutRequest.model_validate(raw)
@@ -175,10 +267,10 @@ class EnvServer:
 
     async def run(self) -> None:
         logger.info(
-            "EnvServer up: taskset=%s address=%s tasks=%d group_scoring=%s",
+            "EnvServer up: taskset=%s address=%s tasks=%s group_scoring=%s",
             self.taskset_id,
             self.address,
-            len(self.tasks),
+            self.num_tasks if self.num_tasks is not None else "lazy",
             self.requires_group_scoring,
         )
         poller = zmq.asyncio.Poller()

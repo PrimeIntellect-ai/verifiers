@@ -39,8 +39,6 @@ class EvalConfig(EnvServerConfig):
         ),
     )
     """Rollouts per task. A taskset with `@group_reward`s requires >=2)."""
-    shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
-    """Shuffle tasks before taking the first `num_tasks`."""
     max_concurrent: int | None = Field(
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )

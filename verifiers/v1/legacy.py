@@ -28,8 +28,11 @@ from verifiers.v1.serve.types import (
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    SampleRequest,
+    SampleResponse,
 )
 from verifiers.v1.task import WireTask
+from verifiers.v1.taskset import ShuffleConfig
 from verifiers.v1 import graph
 from verifiers.v1.trace import Error, TimeSpan, Timing, Trace
 from verifiers.v1.types import (
@@ -288,11 +291,17 @@ class LegacyEnvServer(EnvServer):
         env_args: dict | None = None,
         address: str = "tcp://127.0.0.1:5000",
         extra_env_kwargs: dict | None = None,
+        shuffle: ShuffleConfig | None = None,
+        idx: int = 0,
     ) -> None:
         from verifiers import load_environment
         from verifiers.v1.utils.install import ensure_installed, env_name
 
         self.address = address
+        # Same task-order policy as the native server: a `ShuffleConfig` shuffles the (finite) v0
+        # dataset, reshuffled per epoch and offset by the pool worker index so workers diverge.
+        self._shuffle = shuffle is not None
+        self._seed = (shuffle.seed + idx) if self._shuffle else 0
         # Install from the env hub on demand for an `org/name[@version]` id, then load the
         # v0 env by its module name (a local id is already importable).
         module = ensure_installed(env_id)
@@ -306,7 +315,14 @@ class LegacyEnvServer(EnvServer):
             self.dataset = self.env.get_dataset()
         except ValueError:
             self.dataset = self.env.get_eval_dataset()
-        self.tasks = self.dataset  # `len(self.tasks)` drives the `info` response
+        self.num_tasks = len(
+            self.dataset
+        )  # v0 datasets are finite; drives the `info` response
+        if not self.num_tasks:  # mirror the native server's empty-taskset rejection
+            raise ValueError("v0 dataset is empty (no train or eval split)")
+        # The bridge owns scheduling too: callers pull, the server hands out the next dataset
+        # row (shuffled + epoch-looped for a finite v0 dataset).
+        self._init_scheduler(self.num_tasks)
         self.requires_group_scoring = self.env.requires_group_rollouts
         self._clients: dict[tuple[str, str], Any] = {}
 
@@ -376,25 +392,36 @@ class LegacyEnvServer(EnvServer):
             state_columns=["trajectory"],
         )
 
-    async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
-        out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
-        return RunRolloutResponse(
-            trace=rollout_output_to_trace(out, req.task_idx).model_dump()
+    def _sample(self, req: SampleRequest) -> SampleResponse:
+        # The bridge holds the dataset, so the task only needs to carry its index — the caller
+        # echoes it back to `run_rollout`, which re-fetches the row by `idx`. (`prompt` is a
+        # required Task field, so set it explicitly to None.) The broker stamps a global cursor
+        # index in a pool; a lone server falls back to its own cursor.
+        index = req.index
+        if index is None:
+            index = self._cursor
+            self._cursor += 1
+        return SampleResponse.model_construct(
+            task=WireTask(idx=self._index_at(index), prompt=None)
         )
 
+    async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
+        idx = req.task.idx
+        out = await self._run_v0(idx, req.client, req.model, req.sampling)
+        return RunRolloutResponse(trace=rollout_output_to_trace(out, idx).model_dump())
+
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
+        idx = req.task.idx
         client = self._v0_client(req.client, req.model)
         # run_group scores the rollouts together so group/preference reward funcs apply.
         outs = await self.env.run_group(
-            group_inputs=[dict(self.dataset[req.task_idx]) for _ in range(req.n)],
+            group_inputs=[dict(self.dataset[idx]) for _ in range(req.n)],
             client=client,
             model=req.model,
             sampling_args=req.sampling.model_dump(exclude_none=True),
             state_columns=["trajectory"],
         )
-        traces = [
-            rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs
-        ]
+        traces = [rollout_output_to_trace(out, idx).model_dump() for out in outs]
         return RunGroupResponse(traces=traces)
 
 
@@ -454,8 +481,8 @@ async def run_legacy_eval(config) -> list[Trace]:
         env.set_kwargs(**config.extra_env_kwargs)
     dataset = env.get_eval_dataset()  # the eval split (falls back to train when unset)
     idxs = list(range(len(dataset)))
-    if config.shuffle:
-        random.Random(0).shuffle(idxs)  # fixed seed: same sample every run
+    if config.taskset.shuffle is not None:
+        random.Random(config.taskset.shuffle.seed).shuffle(idxs)
     if config.num_tasks is not None:
         idxs = idxs[: config.num_tasks]
 

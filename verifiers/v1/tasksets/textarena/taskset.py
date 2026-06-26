@@ -18,6 +18,7 @@ needed and any single-player TextArena game fits.
 import copy
 import json
 import random
+from collections.abc import Iterator
 from typing import Literal
 
 import verifiers.v1 as vf
@@ -134,11 +135,13 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig, TextArenaState
     async def game_over(self, trace: vf.Trace) -> bool:
         return trace.state.game_over
 
-    def load_tasks(self) -> list[TextArenaTask]:
+    def load_tasks(self) -> Iterator[TextArenaTask]:
         # One task per RNG seed; the simulator re-seeds to reproduce the same episode. Games
         # that embed the per-episode setup in the prompt (WordLadder's start/target,
         # WordSearch's grid) need the prompt built under each seed; games whose prompt
-        # is seed-invariant (Wordle, Hangman) build it once.
+        # is seed-invariant (Wordle, Hangman) build it once. Yielded lazily so an eval on a
+        # subset only builds (deepcopy + reset) the episodes it actually runs, not all
+        # `num_tasks` of them.
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
         template = ta.make(env_id=self.config.game)
@@ -151,16 +154,14 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig, TextArenaState
 
         first = observation(0)
         seed_specific = observation(1) != first
-        return [
-            TextArenaTask(
+        for i in range(self.config.num_tasks):
+            yield TextArenaTask(
                 idx=i,
                 name=f"{self.config.game}#{i}",
                 prompt=observation(i) if seed_specific else first,
                 system_prompt=SYSTEM_PROMPT,
                 info={"game": self.config.game, "seed": i},
             )
-            for i in range(self.config.num_tasks)
-        ]
 
     def user(self, task: TextArenaTask) -> vf.User:
         return TextArenaUser(self.config.user)

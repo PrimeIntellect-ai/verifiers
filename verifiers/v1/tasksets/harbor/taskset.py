@@ -24,6 +24,7 @@ import os
 import tarfile
 import tempfile
 import tomllib
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
@@ -311,7 +312,7 @@ def make_tar(directory: Path) -> bytes:
 
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
-    def load_tasks(self) -> list[HarborTask]:
+    def load_tasks(self) -> Iterator[HarborTask]:
         root = dataset_dir(self.config.dataset)
         task_dirs = [
             toml_path.parent
@@ -323,10 +324,8 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         ]
         if not task_dirs:
             raise ValueError(f"no harbor tasks found in {root}")
-        return [
-            parse_task(task_dir, idx, self.config)
-            for idx, task_dir in enumerate(task_dirs)
-        ]
+        for idx, task_dir in enumerate(task_dirs):
+            yield parse_task(task_dir, idx, self.config)
 
     @reward(weight=1.0)
     async def solved(self, task: HarborTask, trace: Trace, runtime: Runtime) -> float:

@@ -31,6 +31,8 @@ from verifiers.v1.serve.types import (
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
+    SampleRequest,
+    SampleResponse,
 )
 from verifiers.v1.task import WireTask
 from verifiers.v1.trace import Trace
@@ -136,33 +138,39 @@ class EnvClient:
         )
 
     async def info(self) -> InfoResponse:
-        """Return the taskset `num_tasks` + `requires_group_scoring`."""
+        """Return the taskset `num_tasks` (None when the taskset is unbounded) + `requires_group_scoring`."""
         return await self._request(InfoRequest(), InfoResponse)
 
+    async def sample(self) -> WireTask:
+        """Pull the next task (the server owns the cursor + shuffle/epoch). Echo it back to
+        `run_rollout` to run rollouts of it — lets the caller bound concurrency per rollout while
+        a group still shares one task."""
+        response = await self._request(SampleRequest(), SampleResponse)
+        return response.task
+
     async def run_rollout(
-        self, task_idx: int, client: ClientConfig, model: str, sampling: SamplingConfig
+        self, task: WireTask, client: ClientConfig, model: str, sampling: SamplingConfig
     ) -> Trace[WireTask]:
-        """Run one rollout for `task_idx`; return a typed `Trace[WireTask]`."""
+        """Run one rollout of `task` (as returned by `sample()`); return a typed `Trace[WireTask]`."""
         response = await self._request(
-            RunRolloutRequest(
-                task_idx=task_idx, client=client, model=model, sampling=sampling
-            ),
+            RunRolloutRequest(task=task, client=client, model=model, sampling=sampling),
             RunRolloutResponse,
         )
         return response.trace
 
     async def run_group(
         self,
-        task_idx: int,
+        task: WireTask,
         n: int,
         client: ClientConfig,
         model: str,
         sampling: SamplingConfig,
     ) -> list[Trace[WireTask]]:
-        """Run `n` rollouts for `task_idx` as a scored group; return typed `Trace[WireTask]`s."""
+        """Run `n` rollouts of `task` (from `sample()`) as a scored group; return typed
+        `Trace[WireTask]`s (all of one task). For group-scored envs, which run + score together."""
         response = await self._request(
             RunGroupRequest(
-                task_idx=task_idx, n=n, client=client, model=model, sampling=sampling
+                task=task, n=n, client=client, model=model, sampling=sampling
             ),
             RunGroupResponse,
         )

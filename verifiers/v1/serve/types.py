@@ -2,11 +2,11 @@
 
 from typing import ClassVar
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, SerializeAsAny
 
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.task import WireTask
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import WireTrace
 from verifiers.v1.types import SamplingConfig
 
 
@@ -36,34 +36,49 @@ class InfoRequest(BaseRequest):
 
 
 class InfoResponse(BaseResponse):
-    num_tasks: int = 0
-    """Number of tasks in the taskset — the index range the caller samples from."""
+    num_tasks: int | None = None
+    """How many distinct tasks the taskset has — the caller pulls (it doesn't address by index),
+    and uses this to bound a finite eval (pull `num_tasks`, never wrapping). `None` only when the
+    taskset is `INFINITE` (the server streams a never-ending order); the caller then bounds the
+    run with `--num-tasks`. A finite taskset (list or finite generator) is materialized and reports
+    its count; training pulls past it (the server loops, reshuffling each epoch)."""
     requires_group_scoring: bool = False
     """Whether the taskset defines `@group_reward`s (caller must use `run_group`)."""
 
 
+class SampleRequest(BaseRequest):
+    method: ClassVar[str] = "sample"
+    index: int | None = None
+    """Global cursor index, stamped by the pool broker so workers stay coherent without pinning
+    `sample` to one worker. `None` for a lone server, which uses its own cursor."""
+
+
+class SampleResponse(BaseResponse):
+    task: SerializeAsAny[WireTask] | None = None
+    """The next task the server pulls (cursor + shuffle/epoch live on the server). The caller
+    echoes it back to `run_rollout` to run rollouts of it — it never addresses tasks by index.
+    `SerializeAsAny` so a concrete taskset `Task` dumps its own fields, not the base schema."""
+
+
 class RunRolloutRequest(BaseRequest):
     method: ClassVar[str] = "run_rollout"
-    task_idx: int
+    task: WireTask
     client: ClientConfig
     model: str
     sampling: SamplingConfig
 
 
 class RunRolloutResponse(BaseResponse):
-    trace: Trace[WireTask] | None = None
-    """A typed `Trace` with a non-strict `WireTask` (taskset-specific task fields ride in
-    `model_extra`), so the server needn't assume the caller imports the taskset. A caller
-    that *does* import it upgrades via `Trace[task_type(taskset_id)].model_validate(...)`."""
-
-    @field_serializer("trace")
-    def _ser_trace(self, trace: "Trace[WireTask] | None") -> dict | None:
-        return trace.model_dump() if trace is not None else None
+    trace: SerializeAsAny[WireTrace] | None = None
+    """A non-strict `WireTrace` (taskset-specific task fields ride in `model_extra`), so the server
+    needn't assume the caller imports the taskset; a caller that does upgrades via
+    `Trace[task_type(taskset_id)].model_validate(...)`. `SerializeAsAny` dumps the concrete trace's
+    own fields, not the base schema."""
 
 
 class RunGroupRequest(BaseRequest):
     method: ClassVar[str] = "run_group"
-    task_idx: int
+    task: WireTask
     n: int
     client: ClientConfig
     model: str
@@ -71,9 +86,5 @@ class RunGroupRequest(BaseRequest):
 
 
 class RunGroupResponse(BaseResponse):
-    traces: list[Trace[WireTask]] | None = None
-    """Typed `Trace`s with non-strict `WireTask`, like `RunRolloutResponse.trace`."""
-
-    @field_serializer("traces")
-    def _ser_traces(self, traces: "list[Trace[WireTask]] | None") -> list[dict] | None:
-        return [t.model_dump() for t in traces] if traces is not None else None
+    traces: list[SerializeAsAny[WireTrace]] | None = None
+    """`WireTrace`s, like `RunRolloutResponse.trace`."""

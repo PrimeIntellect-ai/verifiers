@@ -16,7 +16,10 @@ For a heterogeneous taskset (different verification per task), have a single
 """
 
 import asyncio
-from collections.abc import Mapping
+import itertools
+import logging
+import random
+from collections.abc import Iterable, Mapping
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic_config import BaseConfig
@@ -31,6 +34,16 @@ from verifiers.v1.state import StateT
 from verifiers.v1.task import TaskT
 from verifiers.v1.trace import Trace
 
+logger = logging.getLogger(__name__)
+
+
+class ShuffleConfig(BaseConfig):
+    """Set on `TasksetConfig.shuffle` to shuffle a finite taskset (reshuffled each epoch); also the
+    seed an INFINITE taskset's generator reads via `self.config.shuffle.seed`. `None` serves in load
+    order (deterministic)."""
+
+    seed: int = 0
+
 
 class TasksetConfig(BaseConfig):
     """Base taskset config. Subclass to add task-generation knobs."""
@@ -39,6 +52,11 @@ class TasksetConfig(BaseConfig):
     """The taskset id, which selects this taskset: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
     `EnvId`). Set via `--taskset.id`."""
+
+    shuffle: ShuffleConfig | None = None
+    """Task-order policy (default `None` = serve in load order, deterministic — what eval wants). A
+    `ShuffleConfig` shuffles a finite taskset (reshuffled each epoch) and seeds an INFINITE
+    taskset's generation."""
 
     @property
     def name(self) -> str:
@@ -60,11 +78,53 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     Environment refuses the subprocess runtime — for tasksets whose work only makes sense
     inside a per-task image (e.g. a SWE repo sandbox)."""
 
+    INFINITE: ClassVar[bool] = False
+    """Whether `load_tasks` may not terminate (an infinite generator). When True a run must cap it
+    with `num_tasks`, and `load_tasks` should seed its RNG from `self.config.shuffle.seed` (may be
+    None; the env-server offsets it per worker so a pool draws divergent streams). Finite shuffling
+    (`ShuffleConfig`) doesn't apply — the generator owns its order."""
+
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
-    def load_tasks(self) -> list[TaskT]:
+    def load_tasks(self) -> Iterable[TaskT]:
+        """Produce this taskset's tasks. Return a list for a fixed dataset, or a generator
+        (yield tasks) for a lazily-built or infinite one — a run draws only the tasks it
+        needs from it (see `select_tasks`), so an "infinite" taskset never materializes more
+        than the `--num-tasks` it's evaluated on (declare `INFINITE` if it never terminates).
+        Runs once at load, not per rollout."""
         raise NotImplementedError
+
+    def select_tasks(self, num_tasks: int | None = None) -> list[TaskT]:
+        """Materialize the tasks a run will use, pulling only as many from `load_tasks` as needed —
+        a lazy (generator) taskset never builds tasks the run won't touch. Order follows
+        `config.shuffle` (a `ShuffleConfig` shuffles with its seed; `None` keeps load order). Without
+        shuffling only the first `num_tasks` are drawn lazily; shuffling materializes everything to
+        sample. An `INFINITE` taskset must pass `num_tasks` (refused otherwise rather than hanging on
+        a non-terminating `load_tasks`); finite shuffling on it is ignored with a warning."""
+        shuffle = self.config.shuffle is not None
+        if self.INFINITE:
+            if shuffle:
+                logger.warning(
+                    "taskset %s is INFINITE, so finite shuffling — which must materialize every "
+                    "task to sample from — would never terminate; ignoring it. The generator owns "
+                    "its order; the first num_tasks tasks are already a sample.",
+                    type(self).__name__,
+                )
+                shuffle = False
+            if num_tasks is None:
+                raise ValueError(
+                    f"taskset {type(self).__name__} is INFINITE, so it must be drawn with a "
+                    "cap; pass --num-tasks to bound how many tasks are taken."
+                )
+        tasks = self.load_tasks()
+        if shuffle:
+            tasks = list(tasks)
+            random.Random(self.config.shuffle.seed).shuffle(tasks)
+            return tasks if num_tasks is None else tasks[:num_tasks]
+        if num_tasks is not None:
+            return list(itertools.islice(tasks, num_tasks))
+        return list(tasks)
 
     def tools(self, task: TaskT) -> list[Toolset]:
         """Tool servers exposing this task's tools to the model — `vf.Toolset`s (classes with

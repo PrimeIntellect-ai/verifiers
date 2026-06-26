@@ -64,7 +64,7 @@ class ElasticPoolConfig(BaseConfig):
 
     type: Literal["elastic"] = "elastic"
     max_workers: int | None = None
-    """Upper bound on workers (None = unbounded)."""
+    """Upper bound on workers (None = infinite)."""
     multiplex: int = Field(128, ge=1)
     """Rollouts per worker for the scale-up trigger: add a worker once in-flight rollouts
     reach 90% of `workers * multiplex`."""

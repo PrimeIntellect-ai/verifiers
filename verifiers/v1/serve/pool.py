@@ -70,7 +70,13 @@ def _arm_teardown(death_pipe=None) -> None:
 
 
 def _worker_entry(
-    *, server_kwargs: dict, address: str, death_pipe, legacy: bool, log_setup=None
+    *,
+    server_kwargs: dict,
+    address: str,
+    death_pipe,
+    legacy: bool,
+    log_setup=None,
+    idx: int = 0,
 ) -> None:
     """Spawned worker: an ordinary EnvServer/LegacyEnvServer bound to `address` (ipc).
     A native config arrives as a dict (`config_data`): the eval/serve CLI's narrowed
@@ -87,7 +93,7 @@ def _worker_entry(
             "config": EnvConfig.model_validate(server_kwargs["config_data"])
         }
     cls = LegacyEnvServer if legacy else EnvServer
-    cls.run_server(address=address, **server_kwargs)
+    cls.run_server(address=address, idx=idx, **server_kwargs)
 
 
 class EnvServerPool:
@@ -115,6 +121,9 @@ class EnvServerPool:
         self.multiplex = multiplex
         self.elastic = elastic
         self.legacy = legacy
+        # Global task cursor, stamped onto each `sample` so workers stay coherent (a finite taskset's
+        # permutation agrees across workers) without pinning sample to one worker.
+        self._sample_cursor = 0
         self.log_setup = log_setup
         self.session = uuid.uuid4().hex[:12]
         self.workers: list[dict] = []
@@ -145,6 +154,7 @@ class EnvServerPool:
                 death_pipe=child_conn,
                 legacy=self.legacy,
                 log_setup=self.log_setup,
+                idx=i,  # diverge each worker's shuffle/generation stream
             ),
             daemon=False,
         )
@@ -220,6 +230,9 @@ class EnvServerPool:
                         )
                     else:
                         # Pool capacity is measured in rollouts; one group request carries n.
+                        # `sample` is not a rollout (0 slots) — instead it advances the global cursor,
+                        # stamped onto the request so any worker serves the right task (a finite
+                        # taskset's permutation agrees across workers). All methods load-balance.
                         rollout_slots = 1
                         if method == b"run_group":
                             with contextlib.suppress(Exception):
@@ -227,6 +240,10 @@ class EnvServerPool:
                                     msgpack.unpackb(payload, raw=False)
                                 )
                                 rollout_slots = max(1, request.n)
+                        elif method == b"sample":
+                            rollout_slots = 0
+                            payload = msgpack.packb({"index": self._sample_cursor})
+                            self._sample_cursor += 1
                         worker = min(self.workers, key=lambda w: w["active"])
                         worker["active"] += rollout_slots
                         pending[request_id] = {
