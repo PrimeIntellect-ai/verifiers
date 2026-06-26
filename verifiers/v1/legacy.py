@@ -318,6 +318,8 @@ class LegacyEnvServer(EnvServer):
         self.num_tasks = len(
             self.dataset
         )  # v0 datasets are finite; drives the `info` response
+        if not self.num_tasks:  # mirror the native server's empty-taskset rejection
+            raise ValueError("v0 dataset is empty (no train or eval split)")
         # The bridge owns scheduling too: callers pull, the server hands out the next dataset
         # row (shuffled + epoch-looped for a finite v0 dataset).
         self._init_scheduler(self.num_tasks)
