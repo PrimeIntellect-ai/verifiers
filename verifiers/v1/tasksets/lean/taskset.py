@@ -20,7 +20,7 @@ import shlex
 
 from verifiers.v1.decorators import reward
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import Task, TaskResources, TaskTimeout
+from verifiers.v1.task import Task, TaskResources
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.tasksets.lean.scoring import (
     build_starter_file,
@@ -52,14 +52,12 @@ class LeanTask(Task):
 
 
 class LeanConfig(TasksetConfig):
-    # ── dataset selection ────────────────────────────────────────────────────
-    dataset_name: str = ""
-    """HuggingFace dataset id. Required — a per-dataset package sets this default."""
+    # ── dataset ───────────────────────────────────────────────────────────────
+    dataset_name: str
+    """HuggingFace dataset id (required; each per-dataset package sets it)."""
     dataset_split: str = "train"
     dataset_subset: str | None = None
-    statement_column: str | None = None
-    """Column holding the formal statement; None auto-detects
-    ``formal_statement`` / ``statement`` / ``theorem``."""
+    statement_column: str = "formal_statement"
     header_column: str | None = None
     imports_column: str | None = None
     name_column: str | None = None
@@ -71,17 +69,8 @@ class LeanConfig(TasksetConfig):
     lean_project_path: str = LEAN_PROJECT_PATH
     proof_file_path: str = PROOF_FILE_PATH
     compile_timeout: int = 300
-    """Per-compile ``timeout`` wrapper (seconds). Cold-start Mathlib loading on a
-    fresh sandbox eats most of a 120s budget, so 300 leaves headroom."""
-    setup_timeout: int = 300
+    """Per-compile ``timeout`` wrapper (seconds), bounding each ``lake env lean``."""
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
-    sandbox_cpu_cores: float = 4
-    sandbox_memory_gb: float = 4
-    sandbox_disk_size_gb: float = 10
-    # ── dataset loading ───────────────────────────────────────────────────────
-    ds_num_proc: int | None = 8
-    ds_keep_in_memory: bool = True
-    max_examples: int = -1
 
 
 class LeanTaskset(Taskset[LeanTask, LeanConfig]):
@@ -93,36 +82,18 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
         from datasets import load_dataset
 
         config = self.config
-        if not config.dataset_name:
-            raise ValueError(
-                "LeanConfig.dataset_name is empty. Set --taskset.dataset-name, or use a "
-                "per-dataset package (e.g. lean-deepseek-prover-v1) that sets it."
-            )
         raw = load_dataset(
             config.dataset_name,
             config.dataset_subset,
             split=config.dataset_split,
-            keep_in_memory=config.ds_keep_in_memory,
-            num_proc=config.ds_num_proc,
+            keep_in_memory=True,
+            num_proc=8,
         )
 
-        stmt_col = config.statement_column or next(
-            (
-                c
-                for c in ("formal_statement", "statement", "theorem")
-                if c in raw.column_names
-            ),
-            None,
-        )
-        if stmt_col is None:
-            raise ValueError(
-                f"No formal-statement column in {config.dataset_name!r}; set --taskset.statement-column "
-                f"(columns={raw.column_names})."
-            )
         # Fail loud on a misconfigured column name — otherwise a typo is silently
         # treated as a missing/empty field (e.g. a wrong proof_column makes every
-        # gold check vacuously fail), or an explicit statement_column typo raises a
-        # raw KeyError on the first row instead of this clear error.
+        # gold check vacuously fail), or a statement_column typo raises a raw
+        # KeyError on the first row instead of this clear error.
         for label, col in (
             ("statement_column", config.statement_column),
             ("header_column", config.header_column),
@@ -135,23 +106,10 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                     f"{label}={col!r} not found in {config.dataset_name!r}; columns={raw.column_names}"
                 )
 
-        resources = TaskResources(
-            cpu=config.sandbox_cpu_cores,
-            memory=config.sandbox_memory_gb,
-            disk=config.sandbox_disk_size_gb,
-        )
-        # Cap the scoring stage so a slow/hung compile can't wedge the run; the
-        # reward wraps ``lake`` in ``timeout`` too — this is the outer backstop.
-        timeout = TaskTimeout(
-            setup=config.setup_timeout, scoring=config.compile_timeout + 120
-        )
-
-        limit = config.max_examples if config.max_examples >= 0 else len(raw)
+        resources = TaskResources(cpu=4, memory=4, disk=10)
         tasks: list[LeanTask] = []
         for index, row in enumerate(raw):
-            if index >= limit:
-                break
-            formal_statement = row[stmt_col]
+            formal_statement = row[config.statement_column]
             header = (
                 row.get(config.header_column) if config.header_column else ""
             ) or ""
@@ -169,7 +127,6 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                     image=config.docker_image,
                     workdir=config.lean_project_path,
                     resources=resources,
-                    timeout=timeout,
                     formal_statement=formal_statement,
                     header=header,
                     imports=imports,

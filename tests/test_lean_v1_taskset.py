@@ -16,11 +16,13 @@ def test_needs_container():
     assert LeanTaskset.NEEDS_CONTAINER is True
 
 
-def test_empty_dataset_raises():
+def test_dataset_name_required():
     import pytest
 
-    with pytest.raises(ValueError, match="dataset_name is empty"):
-        LeanTaskset(LeanConfig()).load_tasks()
+    # dataset_name has no default — pydantic rejects an unset one at construction
+    # (ValidationError is a ValueError subclass).
+    with pytest.raises(ValueError):
+        LeanConfig()
 
 
 def test_validate_true_without_gold():
