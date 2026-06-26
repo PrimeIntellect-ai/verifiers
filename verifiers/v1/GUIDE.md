@@ -571,7 +571,7 @@ load instead of mis-running:
 
 | flag | default | gates |
 | --- | --- | --- |
-| `SUPPORTS_MCP` | `True` | exposes the task's MCP tools to the model (set `False` for a harness with no MCP client) |
+| `SUPPORTS_MCP` | `False` | exposes the task's MCP tools to the model (opt in: set `True` for a harness with an MCP client) |
 | `SUPPORTS_USER_SIM` | `False` | drives a task's user simulator (multi-turn user injection) |
 | `SUPPORTS_MESSAGE_PROMPT` | `False` | accepts a `Messages`-list `task.prompt` (e.g. image-bearing) |
 | `APPENDS_SYSTEM_PROMPT` | `False` | emits `task.system_prompt` as a real system message (else it's folded into the user prompt with a warning) |
