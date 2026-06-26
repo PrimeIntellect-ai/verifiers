@@ -388,7 +388,9 @@ class LegacyEnvServer(EnvServer):
         # The bridge holds the dataset, so the task only needs to carry its index — the caller
         # echoes it back to `run_rollout`, which re-fetches the row by `idx`. (`prompt` is a
         # required Task field, so set it explicitly to None.)
-        return SampleResponse.model_construct(task=WireTask(idx=self._next_index(), prompt=None))
+        return SampleResponse.model_construct(
+            task=WireTask(idx=self._next_index(), prompt=None)
+        )
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         idx = req.task.idx
