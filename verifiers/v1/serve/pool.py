@@ -52,7 +52,16 @@ def _arm_teardown(death_pipe=None) -> None:
     - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (serve_env swallows it);
     - with `death_pipe`, self-SIGTERM when the parent dies (pipe EOF, even on its SIGKILL) so no
       child is orphaned (main -> serve_env and broker -> worker are both armed this way)."""
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+    def _on_sigterm(*_) -> None:
+        # One-shot: _shutdown both closes the death-pipe (EOF -> self-SIGTERM) and calls
+        # terminate(), so two SIGTERMs land. Disarm before raising so the second can't re-raise
+        # KeyboardInterrupt mid-cleanup (e.g. inside zmq ctx.term, which re-checks signals),
+        # which would escape as a spurious traceback even though shutdown is succeeding.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
     if death_pipe is None:
         return
 
