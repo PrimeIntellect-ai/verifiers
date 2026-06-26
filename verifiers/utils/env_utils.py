@@ -64,12 +64,10 @@ def load_environment(env_id: str, **env_args) -> Environment:
 
 
 def env_module_name(env_id: str) -> str:
-    from verifiers.v1.utils.install import env_module
+    from verifiers.v1.types import env_module
 
     return env_module(env_id)
 
 
 def import_env_module(env_id: str) -> ModuleType:
-    from verifiers.v1.utils.install import ensure_installed
-
-    return importlib.import_module(ensure_installed(env_id))
+    return importlib.import_module(env_module_name(env_id))

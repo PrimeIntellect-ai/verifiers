@@ -107,9 +107,10 @@ To publish the environment to the [Environments Hub](https://app.primeintellect.
 prime env push my-env # equivalent to --path ./environments/my_env
 ```
 
-To run an evaluation directly from the Environments Hub, do:
+To install an environment from the Environments Hub and then evaluate the local package, do:
 ```bash
-prime eval run --id primeintellect/math-python
+prime env install primeintellect/math-python
+prime eval run --id math_python
 ```
 
 ## Documentation

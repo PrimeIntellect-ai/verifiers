@@ -71,4 +71,4 @@ class GEPAConfig(BaseModel):
     def environment_label(self) -> str:
         if self.id:
             return self.id
-        return "+".join(env.id.rstrip("/").rsplit("/", 1)[-1] for env in self.env)
+        return "+".join(env.id for env in self.env)

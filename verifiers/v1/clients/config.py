@@ -1,10 +1,10 @@
 """Client configs: describe an OpenAI-compatible endpoint and resolve it to a Client.
 
 A `BaseClientConfig` is an OpenAI-compatible endpoint (base_url + API-key env var
-+ extra headers) that `resolve_client` turns into a `Client`. The default Prime
-endpoint, API key, and team fall back to the active Prime CLI config, so direct
-`uv run eval` calls behave like `prime eval`. Both the eval entrypoint (its model
-client) and in-env LLM calls (e.g. a judge reward) build clients from these.
++ extra headers) that `resolve_client` turns into a `Client`. Prime's wrapper
+materializes its selected account as environment variables; direct Verifiers users
+supply those variables explicitly. Both the eval entrypoint (its model client)
+and in-env LLM calls (e.g. a judge reward) build clients from these.
 `ClientConfig` is the CLI-selectable discriminated union (eval | train).
 """
 
@@ -17,7 +17,6 @@ from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 from renderers import RendererConfig
 
-from verifiers.utils.client_utils import load_prime_config
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.eval import EvalClient
 from verifiers.v1.clients.train import TrainClient
@@ -39,11 +38,8 @@ class BaseClientConfig(BaseConfig):
     def apply_prime_config(self) -> "BaseClientConfig":
         if self.api_key_var != "PRIME_API_KEY":
             return self
-        prime_config = load_prime_config()
         prime_base_url = (
-            os.environ.get("PRIME_INFERENCE_URL")
-            or prime_config.get("inference_url")
-            or DEFAULT_PRIME_INFERENCE_URL
+            os.environ.get("PRIME_INFERENCE_URL") or DEFAULT_PRIME_INFERENCE_URL
         )
         if "base_url" not in self.model_fields_set:
             self.base_url = prime_base_url
@@ -52,7 +48,7 @@ class BaseClientConfig(BaseConfig):
             f".{PRIME_INFERENCE_HOST}"
         ):
             return self
-        team_id = os.environ.get("PRIME_TEAM_ID") or prime_config.get("team_id")
+        team_id = os.environ.get("PRIME_TEAM_ID")
         if team_id:
             self.headers.setdefault(PRIME_TEAM_ID_HEADER, team_id)
         return self
@@ -90,13 +86,6 @@ ClientConfig = Annotated[
 
 def resolve_client(config: BaseClientConfig) -> Client:
     api_key = os.environ.get(config.api_key_var)
-    host = urlparse(config.base_url).hostname or ""
-    if (
-        not api_key
-        and config.api_key_var == "PRIME_API_KEY"
-        and (host == PRIME_INFERENCE_HOST or host.endswith(f".{PRIME_INFERENCE_HOST}"))
-    ):
-        api_key = load_prime_config().get("api_key")
     api_key = api_key or "EMPTY"
     if isinstance(config, TrainClientConfig):
         # The renderer calls a vLLM `/inference/v1/generate` engine through the OpenAI SDK.

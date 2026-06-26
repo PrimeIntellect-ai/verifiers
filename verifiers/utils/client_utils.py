@@ -1,7 +1,5 @@
-import json
 import logging
 import os
-import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -9,8 +7,6 @@ import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
-from prime_sandboxes import Config as PrimeConfig
-
 from verifiers.types import (
     ClientConfig,
     EndpointClientConfig,
@@ -50,32 +46,6 @@ def resolve_client_configs(config: ClientConfig) -> list[ClientConfig]:
     return [resolve_client_config(config)]
 
 
-def load_prime_config() -> dict:
-    """Read Prime's shared SDK config with environment overrides applied."""
-    config = PrimeConfig()
-    context = os.getenv("PRIME_CONTEXT")
-    if context == "production":
-        config.config.update(
-            base_url=config.DEFAULT_BASE_URL,
-            team_id=None,
-            inference_url="https://api.pinference.ai/api/v1",
-        )
-    elif context:
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", context):
-            raise ValueError(f"Invalid PRIME_CONTEXT: {context!r}")
-        context_path = config.config_dir / "environments" / f"{context}.json"
-        if context_path.is_file():
-            config.config.update(json.loads(context_path.read_text()))
-    return {
-        **config.config,
-        "api_key": config.api_key,
-        "team_id": config.team_id,
-        "base_url": config.base_url,
-        "inference_url": os.getenv("PRIME_INFERENCE_URL")
-        or config.config.get("inference_url"),
-    }
-
-
 def _build_headers_and_api_key(
     config: ClientConfig,
 ) -> tuple[dict[str, str], str | None]:
@@ -83,10 +53,7 @@ def _build_headers_and_api_key(
     api_key = os.getenv(config.api_key_var)
 
     if config.api_key_var == "PRIME_API_KEY":
-        prime_config = load_prime_config()
-        if not api_key:
-            api_key = prime_config.get("api_key", "")
-        team_id = os.getenv("PRIME_TEAM_ID") or prime_config.get("team_id")
+        team_id = os.getenv("PRIME_TEAM_ID")
         if team_id:
             headers["X-Prime-Team-ID"] = team_id
 

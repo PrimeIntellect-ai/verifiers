@@ -4,10 +4,10 @@ A plugin (taskset or harness) is a module that exports its `Taskset` / `Harness`
 `__all__` — vf walks the exported names and finds the single subclass of the base. An id (an
 `EnvId`) resolves to that module: a built-in id (`default`, `rlm`, `harbor`, `textarena`)
 resolves to its namespaced module under the group package (`verifiers.v1.harnesses.rlm`,
-`verifiers.v1.tasksets.harbor`, ...); any other id names a flat module — a local package
-(hyphens → underscores), or an `org/name[@version]` package installed on demand from the
-Environments Hub. Built-ins ship with verifiers under `verifiers/v1/{harnesses,tasksets}`;
-custom ones live under `environments/`, on `sys.path`, or on the hub.
+`verifiers.v1.tasksets.harbor`, ...); any other id names a locally importable flat module
+(hyphens → underscores). Built-ins ship with verifiers under
+`verifiers/v1/{harnesses,tasksets}`; custom ones live under `environments/`, on `sys.path`,
+or in an installed package.
 
 The taskset/harness class carries its types as generic args — `Taskset[TaskT, ConfigT]`,
 `Harness[ConfigT]` — which the CLI reads to narrow the plugin's config for `--taskset.*` /
@@ -23,9 +23,9 @@ from typing import Callable, get_args, get_origin
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.utils.install import ensure_installed
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.types import env_module
 
 
 def narrow_plugin_field(
@@ -50,10 +50,9 @@ def narrow_plugin_field(
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     """Import a plugin by id. A built-in id resolves to its namespaced module under the
-    `group` package (`verifiers.v1.harnesses` / `verifiers.v1.tasksets`); a hub
-    `org/name[@version]` id is installed on demand; any other is a local package
-    (hyphens → underscores)."""
-    module = ensure_installed(plugin_id)
+    `group` package (`verifiers.v1.harnesses` / `verifiers.v1.tasksets`); any other is a
+    locally importable package (hyphens → underscores)."""
+    module = env_module(plugin_id)
     namespaced = f"{group}.{module}"
     target = namespaced if importlib.util.find_spec(namespaced) else module
     try:
@@ -62,8 +61,8 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
         raise ModuleNotFoundError(
             f"{kind} {plugin_id!r} not found (tried to import {target!r}). A {kind} is a "
             f"package exporting its {kind.capitalize()} subclass via `__all__` — the built-in "
-            f"ones ship with verifiers in the `{group}` package, installed from "
-            f"the Environments Hub (`org/name`), or authored yourself."
+            f"ones ship with verifiers in the `{group}` package, or install your own "
+            f"package before running Verifiers."
         ) from e
 
 

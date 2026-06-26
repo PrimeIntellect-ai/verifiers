@@ -9,26 +9,26 @@ through the `eval` entrypoint.
 A v1 evaluation combines a taskset plugin with a harness:
 
 ```bash
-prime eval run owner/my-taskset \
+prime env install owner/my-taskset
+prime eval run my_taskset \
   --harness.id default \
   --model openai/gpt-4.1-mini \
   --num-tasks 10 \
   --num-rollouts 2
 ```
 
-The positional value is the taskset id. It can be an importable local package or an
-`owner/name[@version]` Hub reference. Hub packages, including private packages available to
-the current Prime account, are installed on demand. Install local packages explicitly:
+The positional value is a locally importable taskset package. Prime owns Hub acquisition,
+including private access and version selection; Verifiers only imports the resulting package:
 
 ```bash
-prime env install my-taskset
-prime eval run my-taskset --harness.id default
+prime env install owner/my-taskset@1.2.3
+prime eval run my_taskset --harness.id default
 ```
 
 Use `--dry-run true` to resolve and print the typed configuration without running rollouts:
 
 ```bash
-prime eval run owner/my-taskset --harness.id default --dry-run true
+prime eval run my_taskset --harness.id default --dry-run true
 ```
 
 Run `prime eval run --help` for the complete typed surface. Important groups include:
@@ -46,15 +46,16 @@ Run `prime eval run --help` for the complete typed surface. Important groups inc
 V0 remains available through the explicit `--id` bridge:
 
 ```bash
+prime env install owner/my-v0-env
 prime eval run \
-  --id owner/my-v0-env \
+  --id my_v0_env \
   --args '{"split":"test"}' \
   --model openai/gpt-4.1-mini \
   --num-tasks 20
 ```
 
 `--args` is passed to `load_environment()`. `--extra-env-kwargs` is applied after loading.
-V0 Hub references use the same authenticated acquisition path as v1 plugins.
+V0 packages use the same Prime-owned installation step as v1 plugins.
 
 ## Configuration files
 
@@ -68,7 +69,7 @@ num_rollouts = 2
 max_concurrent = 32
 
 [taskset]
-id = "primeintellect/math-python"
+id = "math_python"
 
 [harness]
 id = "default"
@@ -88,7 +89,7 @@ execution.
 V0 uses the same file format with a top-level `id` and optional `args`:
 
 ```toml
-id = "owner/my-v0-env"
+id = "my_v0_env"
 model = "openai/gpt-4.1-mini"
 num_tasks = 20
 
@@ -102,15 +103,15 @@ The built-in harness can run locally, in Docker, in a Prime sandbox, or in Modal
 runtime with its discriminator and then set its typed fields:
 
 ```bash
-prime eval run owner/my-taskset \
+prime eval run my_taskset \
   --harness.runtime.type prime \
   --harness.runtime.cpu 2 \
   --harness.runtime.memory 4
 ```
 
-Prime runtime authentication comes from the active Prime CLI context. The Prime wrapper
-materializes that context for the Verifiers child process, including API, team, user, and
-inference settings.
+The Prime wrapper materializes its selected account for the Verifiers child process as
+explicit API, team, user, and inference environment variables. Direct Verifiers invocations
+must provide those variables themselves.
 
 ## Output and resume
 

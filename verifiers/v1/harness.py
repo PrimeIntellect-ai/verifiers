@@ -18,7 +18,6 @@ from pydantic_config import BaseConfig
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import HarnessError, boundary
-from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import (
     ProgramResult,
     Runtime,
@@ -27,7 +26,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import EnvId, Messages
+from verifiers.v1.types import EnvId, Messages, env_name
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +38,7 @@ class HarnessConfig(BaseConfig):
     pinned on the subclass."""
 
     id: EnvId = "default"
-    """The harness id, which selects this harness: a local package, or an
-    `org/name[@version]` package installed on demand from the Environments Hub (see
-    `EnvId`). Set via `--harness.id`."""
+    """The locally importable package selected by `--harness.id`."""
     runtime: RuntimeConfig = SubprocessConfig()
     """Where the harness runs (subprocess / docker / prime). Subprocess by default — a local
     process on the host; a taskset that needs a container (its own image, or NEEDS_CONTAINER)
@@ -55,7 +52,7 @@ class HarnessConfig(BaseConfig):
 
     @property
     def name(self) -> str:
-        """The harness's package name (the id with any org / version stripped)."""
+        """The harness's local package name."""
         return env_name(self.id)
 
 

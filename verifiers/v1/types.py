@@ -269,16 +269,20 @@ Sampling = SamplingConfig
 
 
 def _validate_env_id(env_id: str) -> str:
-    """Validate the id's shape — a hub id must be a well-formed ``org/name[@version]``; a
-    local id is any module name. Returns it unchanged (the value stays a plain ``str``)."""
-    from verifiers.utils.install_utils import is_hub_env, parse_env_id
-
-    if is_hub_env(env_id):
-        parse_env_id(env_id)  # raises ValueError on a malformed org/name[@version]
+    if "/" in env_id or "@" in env_id:
+        raise ValueError("environment id must name a locally importable package")
     return env_id
 
 
 EnvId = Annotated[str, AfterValidator(_validate_env_id)]
-"""A taskset / harness / environment id — ``name``, ``org/name``, or ``org/name@version``. A
-plain validated ``str``; derive its package/module name with `env_name` / `env_module`
-(`verifiers.v1.utils.install`)."""
+"""A locally importable taskset, harness, or V0 environment package id."""
+
+
+def env_name(env_id: str) -> str:
+    """The local package id used for display and output paths."""
+    return env_id
+
+
+def env_module(env_id: str) -> str:
+    """Normalize a local package id to its importable module name."""
+    return _validate_env_id(env_id).replace("-", "_").lower()

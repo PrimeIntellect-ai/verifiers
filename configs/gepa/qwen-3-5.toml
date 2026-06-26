@@ -9,19 +9,19 @@ reflection_model = "Qwen/Qwen3.5-4B"
 # reflection_model = "Qwen/Qwen3.5-9B"
 
 [[env]]
-id = "primeintellect/wiki-search"
+id = "wiki_search"
 
 # [[env]]
-# id = "primeintellect/reverse-text"
+# id = "reverse_text"
 
 # [[env]]
-# id = "primeintellect/wordle"
+# id = "wordle"
 
 # [[env]]
-# id = "primeintellect/dspy-flights"
+# id = "dspy_flights"
 
 # [[env]]
-# id = "primeintellect/opencode-harbor"
+# id = "opencode_harbor"
 
 [gepa]
 max_calls = 500

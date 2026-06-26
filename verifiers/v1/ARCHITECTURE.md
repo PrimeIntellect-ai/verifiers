@@ -237,9 +237,8 @@ from a native v1 one; both are an `EnvClient` away.
 
 ## Plugins & ids
 
-Tasksets and harnesses are packages resolved by `id` (`ids.py`, `loaders.py`). An `EnvId` is
-`name` (a local, importable package), `org/name`, or `org/name@version`; `ensure_installed`
-installs the latter two from the Environments Hub on demand. A plugin module exports its
+Tasksets and harnesses are locally importable packages resolved by `id` (`types.py`,
+`loaders.py`). Package acquisition happens before Verifiers starts. A plugin module exports its
 `Taskset` / `Harness` subclass via `__all__`; `load_taskset` / `load_harness` import the module,
 find that single subclass, and instantiate it, while `narrow_plugin_field` validates a generic
 config dict into the plugin's concrete config type (read off the class's `Taskset[TaskT,

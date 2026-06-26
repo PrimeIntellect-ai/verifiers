@@ -92,7 +92,7 @@ def output_path(config: EvalConfig) -> Path:
     if config.output_dir is not None:
         return config.output_dir
     if config.is_legacy:
-        from verifiers.v1.utils.install import env_name
+        from verifiers.v1.types import env_name
 
         assert config.id is not None
         name = f"{env_name(config.id)}--{config.model.replace('/', '--')}--legacy"

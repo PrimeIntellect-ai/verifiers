@@ -776,9 +776,14 @@ prime env install my-env                    # from ./environments/my_env
 prime env install my-env -p /path/to/environments   # custom path
 ```
 
-This runs `uv pip install -e`. Bare local ids must already be importable; Hub references,
-including private references available to the current Prime account, are acquired
-automatically by eval, validate, serve, and GEPA.
+This runs `uv pip install -e`. Hub packages use the same explicit Prime-owned step:
+
+```bash
+prime env install owner/my-env@1.2.3
+prime eval run my_env
+```
+
+Eval, validate, serve, and GEPA only accept locally importable package ids.
 
 ## Environment Groups
 

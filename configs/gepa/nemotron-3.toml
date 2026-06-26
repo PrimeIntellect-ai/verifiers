@@ -5,19 +5,19 @@ reflection_model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
 # reflection_model = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
 
 [[env]]
-id = "primeintellect/wiki-search"
+id = "wiki_search"
 
 # [[env]]
-# id = "primeintellect/reverse-text"
+# id = "reverse_text"
 
 # [[env]]
-# id = "primeintellect/wordle"
+# id = "wordle"
 
 # [[env]]
-# id = "primeintellect/dspy-flights"
+# id = "dspy_flights"
 
 # [[env]]
-# id = "primeintellect/opencode-harbor"
+# id = "opencode_harbor"
 
 [gepa]
 max_calls = 500

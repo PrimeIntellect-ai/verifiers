@@ -111,7 +111,7 @@ Our [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) trainer is a pro
 
 The Prime CLI does not install or wrap self-managed `prime-rl`. Follow the
 [prime-rl documentation](https://docs.primeintellect.ai/prime-rl) for installation,
-configuration, and launch commands. Use `prime train <config.toml>` for Prime-hosted runs.
+configuration, and launch commands. Use `prime train run <config.toml>` for Prime-hosted runs.
 
 ## Prompt Optimization with `prime gepa run`
 
@@ -121,10 +121,12 @@ configuration, and launch commands. Use `prime train <config.toml>` for Prime-ho
 
 Basic usage mirrors `prime eval run`:
 ```bash
-prime gepa run wiki-search --model google/gemini-3-flash-preview
+prime env install primeintellect/wiki-search
+prime gepa run wiki_search --model google/gemini-3-flash-preview
 ```
 
-This will optimize the system prompt for the `wiki-search` environment using the specified model for both evaluation rollouts and reflection. Results are saved to `environments/wiki-search/outputs/gepa/`.
+Prime installs the Hub package; GEPA then optimizes the locally importable `wiki_search`
+environment using the specified model for both evaluation rollouts and reflection.
 
 Key options:
 - `--model`: Model for evaluation rollouts

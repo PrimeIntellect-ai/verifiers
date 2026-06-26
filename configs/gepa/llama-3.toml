@@ -5,19 +5,19 @@ reflection_model = "meta-llama/Llama-3.2-1B-Instruct"
 # reflection_model = "meta-llama/Llama-3.2-3B-Instruct"
 
 [[env]]
-id = "primeintellect/reverse-text"
+id = "reverse_text"
 
 # [[env]]
-# id = "primeintellect/wordle"
+# id = "wordle"
 
 # [[env]]
-# id = "primeintellect/wiki-search"
+# id = "wiki_search"
 
 # [[env]]
-# id = "primeintellect/dspy-flights"
+# id = "dspy_flights"
 
 # [[env]]
-# id = "primeintellect/opencode-harbor"
+# id = "opencode_harbor"
 
 [gepa]
 max_calls = 500

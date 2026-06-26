@@ -21,7 +21,7 @@ tighter type contract. `import verifiers.v1 as vf`.
   plain classes + decorators (`@vf.reward` / `@vf.metric` / ...).
 - **Training-ready traces** — exact token ids + logprobs straight from an agentic rollout
   (renderer client); one training sample per branch, recovered for compaction / subagents.
-- **Hub-native + v0-compatible** — ids install on demand from the Environments Hub, and
+- **Package-local + v0-compatible** — plugins are ordinary installed Python packages, and
   classic v0 envs run through the same CLIs via a bridge.
 
 ## Install

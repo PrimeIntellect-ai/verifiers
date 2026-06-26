@@ -58,32 +58,32 @@ def test_gepa_extra_headers_from_group_returns_first_row_dict():
     assert headers == {"X-A": "x"}
 
 
-def test_gepa_config_normalizes_direct_environment():
+def test_gepa_config_accepts_direct_environment():
     config = GEPAConfig(
-        id="primeintellect/wiki-search",
+        id="wiki_search",
         args={"split": "train"},
     )
 
-    assert config.environment_label == "primeintellect/wiki-search"
+    assert config.environment_label == "wiki_search"
     assert config.environments == [
-        GEPAEnvConfig(id="primeintellect/wiki-search", args={"split": "train"})
+        GEPAEnvConfig(id="wiki_search", args={"split": "train"})
     ]
 
 
-def test_gepa_config_normalizes_environment_group():
+def test_gepa_config_accepts_environment_group():
     config = GEPAConfig(
         env=[
-            GEPAEnvConfig(id="primeintellect/wiki-search"),
-            GEPAEnvConfig(id="primeintellect/wordle", args={"split": "train"}),
+            GEPAEnvConfig(id="wiki_search"),
+            GEPAEnvConfig(id="wordle", args={"split": "train"}),
         ],
         gepa=GEPAOptimizationConfig(max_calls=123, num_train=7),
         sampling={"max_tokens": 1024},
     )
 
-    assert config.environment_label == "wiki-search+wordle"
+    assert config.environment_label == "wiki_search+wordle"
     assert [item.id for item in config.environments] == [
-        "primeintellect/wiki-search",
-        "primeintellect/wordle",
+        "wiki_search",
+        "wordle",
     ]
     assert config.gepa.max_calls == 123
     assert config.gepa.num_train == 7
@@ -95,8 +95,8 @@ def test_gepa_config_normalizes_environment_group():
     [
         {},
         {
-            "id": "primeintellect/wiki-search",
-            "env": [{"id": "primeintellect/wordle"}],
+            "id": "wiki_search",
+            "env": [{"id": "wordle"}],
         },
     ],
 )
@@ -109,7 +109,7 @@ def test_gepa_config_rejects_removed_compatibility_tables():
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         GEPAConfig.model_validate(
             {
-                "id": "primeintellect/wiki-search",
+                "id": "wiki_search",
                 "execution": {"max_concurrent": 9},
             }
         )
@@ -132,10 +132,10 @@ def test_gepa_main_parses_direct_environment(monkeypatch):
         lambda **kwargs: captured.update(kwargs),
     )
 
-    main(["primeintellect/wiki-search", "--gepa.max-calls", "123"])
+    main(["wiki_search", "--gepa.max-calls", "123"])
 
-    assert captured["env_id"] == "primeintellect/wiki-search"
-    assert captured["env_configs"][0].id == "primeintellect/wiki-search"
+    assert captured["env_id"] == "wiki_search"
+    assert captured["env_configs"][0].id == "wiki_search"
     assert captured["max_metric_calls"] == 123
 
 
@@ -145,7 +145,7 @@ def test_gepa_main_reads_typed_toml(monkeypatch, tmp_path: Path):
         'model = "openai/gpt-4.1-mini"\n'
         "save_results = false\n"
         "[[env]]\n"
-        'id = "primeintellect/wiki-search"\n'
+        'id = "wiki_search"\n'
         "[gepa]\n"
         "max_calls = 321\n",
         encoding="utf-8",
