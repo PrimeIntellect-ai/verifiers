@@ -34,7 +34,6 @@ from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import EnvConfig, Environment
-from verifiers.v1.taskset import SHUFFLE_SEED
 from verifiers.v1.serve.types import (
     BaseResponse,
     HealthResponse,
@@ -58,18 +57,20 @@ class EnvServer:
         self,
         config: EnvConfig,
         address: str = "tcp://127.0.0.1:5000",
-        seed_offset: int = 0,
+        idx: int = 0,
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
-        # Task order: a `ShuffleConfig` shuffles a finite taskset (reshuffled per epoch) and seeds
-        # an INFINITE one's generation. Each pool worker offsets the seed by its index (when
-        # shuffling) so workers draw divergent streams; `taskset.seed` carries it to `load_tasks`.
+        # Task order: a `ShuffleConfig` shuffles a finite taskset (reshuffled per epoch) and seeds an
+        # INFINITE one's generation. Each pool worker offsets the seed by its index (when shuffling)
+        # so workers diverge; the mutation lands on `config.taskset.shuffle`, which the taskset reads
+        # back via `self.config.shuffle.seed`.
         shuffle = config.taskset.shuffle
         self._shuffle = shuffle is not None
-        self._seed = (shuffle.seed + seed_offset) if self._shuffle else SHUFFLE_SEED
-        self.env.taskset.seed = self._seed
+        if self._shuffle:
+            shuffle.seed += idx
+        self._seed = shuffle.seed if self._shuffle else 0
         # The server owns task scheduling: callers pull (`run_rollout`/`run_group` carry no task
         # index), and the server hands out the next task. A finite taskset is materialized + counted
         # and served as a (re)shuffled permutation that loops over epochs; an INFINITE one is

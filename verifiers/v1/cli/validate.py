@@ -30,7 +30,7 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.configs.validate import ValidateConfig
 from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import make_runtime
-from verifiers.v1.taskset import Taskset, select_tasks
+from verifiers.v1.taskset import Taskset
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     """Run each task's `validate` hook with bounded concurrency, showing progress live. Returns
     the result rows in memory — nothing is persisted."""
     taskset = vf.load_taskset(config.taskset)
-    tasks = select_tasks(taskset, config.num_tasks)
+    tasks = taskset.select_tasks(config.num_tasks)
     if isinstance(config.runtime, vf.SubprocessConfig) and (
         taskset.NEEDS_CONTAINER or any(t.image for t in tasks)
     ):

@@ -32,7 +32,7 @@ from verifiers.v1.serve.types import (
     SampleResponse,
 )
 from verifiers.v1.task import WireTask
-from verifiers.v1.taskset import SHUFFLE_SEED, ShuffleConfig
+from verifiers.v1.taskset import ShuffleConfig
 from verifiers.v1 import graph
 from verifiers.v1.trace import Error, TimeSpan, Timing, Trace
 from verifiers.v1.types import (
@@ -292,7 +292,7 @@ class LegacyEnvServer(EnvServer):
         address: str = "tcp://127.0.0.1:5000",
         extra_env_kwargs: dict | None = None,
         shuffle: ShuffleConfig | None = None,
-        seed_offset: int = 0,
+        idx: int = 0,
     ) -> None:
         from verifiers import load_environment
         from verifiers.v1.utils.install import ensure_installed, env_name
@@ -301,7 +301,7 @@ class LegacyEnvServer(EnvServer):
         # Same task-order policy as the native server: a `ShuffleConfig` shuffles the (finite) v0
         # dataset, reshuffled per epoch and offset by the pool worker index so workers diverge.
         self._shuffle = shuffle is not None
-        self._seed = (shuffle.seed + seed_offset) if self._shuffle else SHUFFLE_SEED
+        self._seed = (shuffle.seed + idx) if self._shuffle else 0
         # Install from the env hub on demand for an `org/name[@version]` id, then load the
         # v0 env by its module name (a local id is already importable).
         module = ensure_installed(env_id)

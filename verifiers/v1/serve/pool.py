@@ -71,7 +71,7 @@ def _worker_entry(
     death_pipe,
     legacy: bool,
     log_setup=None,
-    seed_offset: int = 0,
+    idx: int = 0,
 ) -> None:
     """Spawned worker: an ordinary EnvServer/LegacyEnvServer bound to `address` (ipc).
     A native config arrives as a dict (`config_data`): the eval/serve CLI's narrowed
@@ -88,7 +88,7 @@ def _worker_entry(
             "config": EnvConfig.model_validate(server_kwargs["config_data"])
         }
     cls = LegacyEnvServer if legacy else EnvServer
-    cls.run_server(address=address, seed_offset=seed_offset, **server_kwargs)
+    cls.run_server(address=address, idx=idx, **server_kwargs)
 
 
 class EnvServerPool:
@@ -154,7 +154,7 @@ class EnvServerPool:
                 death_pipe=child_conn,
                 legacy=self.legacy,
                 log_setup=self.log_setup,
-                seed_offset=i,  # diverge each worker's shuffle/generation stream
+                idx=i,  # diverge each worker's shuffle/generation stream
             ),
             daemon=False,
         )

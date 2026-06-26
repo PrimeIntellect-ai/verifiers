@@ -6,7 +6,7 @@ from pydantic import BaseModel, SerializeAsAny
 
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.task import WireTask
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import WireTrace
 from verifiers.v1.types import SamplingConfig
 
 
@@ -60,26 +60,22 @@ class SampleResponse(BaseResponse):
 class RunRolloutRequest(BaseRequest):
     method: ClassVar[str] = "run_rollout"
     task: WireTask
-    """The task to run, as returned by `sample()`. Echoed back so the server runs this exact
-    task — the caller never addresses the dataset by index."""
     client: ClientConfig
     model: str
     sampling: SamplingConfig
 
 
 class RunRolloutResponse(BaseResponse):
-    trace: SerializeAsAny[Trace[WireTask]] | None = None
-    """A typed `Trace` with a non-strict `WireTask` (taskset-specific task fields ride in
-    `model_extra`), so the server needn't assume the caller imports the taskset. A caller
-    that *does* import it upgrades via `Trace[task_type(taskset_id)].model_validate(...)`.
-    `SerializeAsAny` so the concrete trace dumps its own fields, not the base schema."""
+    trace: SerializeAsAny[WireTrace] | None = None
+    """A non-strict `WireTrace` (taskset-specific task fields ride in `model_extra`), so the server
+    needn't assume the caller imports the taskset; a caller that does upgrades via
+    `Trace[task_type(taskset_id)].model_validate(...)`. `SerializeAsAny` dumps the concrete trace's
+    own fields, not the base schema."""
 
 
 class RunGroupRequest(BaseRequest):
     method: ClassVar[str] = "run_group"
     task: WireTask
-    """The task to run the group of, as returned by `sample()`. Echoed back so `sample()` stays
-    the only place the cursor advances."""
     n: int
     client: ClientConfig
     model: str
@@ -87,5 +83,5 @@ class RunGroupRequest(BaseRequest):
 
 
 class RunGroupResponse(BaseResponse):
-    traces: list[SerializeAsAny[Trace[WireTask]]] | None = None
-    """Typed `Trace`s with non-strict `WireTask`, like `RunRolloutResponse.trace`."""
+    traces: list[SerializeAsAny[WireTrace]] | None = None
+    """`WireTrace`s, like `RunRolloutResponse.trace`."""
