@@ -241,6 +241,24 @@ each in its own declared, pullable container image — e.g. Terminal-Bench 2:
 uv run eval harbor --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm
 ```
 
+Harbor registry selectors pass through as taskset config. For the
+`research-environments` registry:
+
+```bash
+uv run eval harbor --taskset.dataset general-agent@2026-06-25 \
+  --taskset.repo PrimeIntellect-ai/research-environments@REF_OR_SHA
+
+uv run eval harbor --taskset.dataset general-agent@2026-06-25 \
+  --taskset.registry-path ./registry.json
+
+uv run eval harbor --taskset.dataset general-agent@2026-06-25 \
+  --taskset.registry-url https://raw.githubusercontent.com/PrimeIntellect-ai/research-environments/REF_OR_SHA/registry.json
+```
+
+When using `--taskset.repo`, `--taskset.registry-path` is repo-relative; without
+`--taskset.repo`, it is a local path. `--taskset.repo` and `--taskset.registry-url`
+are mutually exclusive.
+
 ## Backwards compatibility
 
 The v0 framework is untouched — the classic `verifiers` API and its entrypoints (`vf-eval`,
