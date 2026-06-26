@@ -215,6 +215,7 @@ class EnvServerPool:
                         )
                     else:
                         # Pool capacity is measured in rollouts; one group request carries n.
+                        # `sample` is not a rollout (0 slots).
                         rollout_slots = 1
                         if method == b"run_group":
                             with contextlib.suppress(Exception):
@@ -222,7 +223,18 @@ class EnvServerPool:
                                     msgpack.unpackb(payload, raw=False)
                                 )
                                 rollout_slots = max(1, request.n)
-                        worker = min(self.workers, key=lambda w: w["active"])
+                        elif method == b"sample":
+                            rollout_slots = 0
+                        # Each worker is its own `EnvServer` with its own task cursor, so `sample`
+                        # must hit ONE worker or the pool would hand out duplicate task sequences
+                        # (every worker shares the fixed shuffle seed). Pin it to worker 0, the
+                        # cursor owner (the pool is upscale-only, so worker 0 is stable). The task
+                        # rides on `run_rollout`/`run_group`, so those stay load-balanced.
+                        worker = (
+                            self.workers[0]
+                            if method == b"sample"
+                            else min(self.workers, key=lambda w: w["active"])
+                        )
                         worker["active"] += rollout_slots
                         pending[request_id] = {
                             "client_id": client_id,
