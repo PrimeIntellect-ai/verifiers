@@ -1,7 +1,7 @@
 """harbor: run a Harbor (Terminal-Bench) dataset.
 
 `dataset` is a Harbor Hub package id (e.g. "org/name" or "org/name@ref"),
-downloaded through the installed Harbor CLI and cached on first use. Each task
+downloaded through the installed Harbor library and cached on first use. Each task
 dir ships task.toml + instruction.md (+ tests/, solution/, environment/).
 Defaults to the registry `harbor/hello-world` dataset.
 
@@ -20,9 +20,6 @@ no environment at all also runs on that image, unless `require_image`.
 
 import hashlib
 import io
-import shutil
-import subprocess
-import sys
 import tarfile
 import tempfile
 import tomllib
@@ -30,6 +27,14 @@ from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field
+
+try:
+    from harbor.cli.download import download_command
+except ImportError as e:
+    raise ImportError(
+        "Harbor tasksets require Harbor. Install it with: "
+        "`uv sync --python 3.12 --extra harbor`"
+    ) from e
 
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
@@ -40,7 +45,6 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"
-HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 
 
 class HarborConfig(TasksetConfig):
@@ -92,18 +96,6 @@ class HarborTask(Task):
     """Host path to the task dir; used to stage tests/ to verify, not serialized."""
 
 
-def harbor_cli() -> str:
-    """Return the Harbor CLI installed in the active Python environment."""
-    scripts_dir = Path(sys.executable).parent
-    harbor_bin = shutil.which("harbor", path=str(scripts_dir))
-    if harbor_bin is None:
-        raise RuntimeError(
-            "Harbor tasksets require the Harbor CLI from the `harbor` extra. "
-            f"Install it with: `{HARBOR_INSTALL_HINT}`"
-        )
-    return harbor_bin
-
-
 def cache_dir(config: HarborConfig) -> Path:
     selector_parts = [config.dataset]
     if config.repo is not None:
@@ -125,60 +117,33 @@ def cache_dir(config: HarborConfig) -> Path:
     return CACHE / name
 
 
-def download_command(config: HarborConfig, output_dir: Path) -> list[str]:
-    command = [
-        harbor_cli(),
-        "download",
-        config.dataset,
-        "--export",
-        "-o",
-        str(output_dir),
-    ]
-    if config.repo is not None:
-        command.extend(["--repo", config.repo])
-    if config.registry_path is not None:
-        registry_path = (
-            config.registry_path
-            if config.repo is not None
-            else config.registry_path.expanduser()
-        )
-        command.extend(["--registry-path", str(registry_path)])
-    if config.registry_url is not None:
-        command.extend(["--registry-url", config.registry_url])
-    return command
-
-
 def dataset_dir(config: HarborConfig) -> Path:
     """Download a Harbor task or dataset package, cached on first use.
 
     Harbor Hub refs are tags, integer revisions, or ``sha256:`` digests. Legacy registry
-    refs are selected through Harbor's CLI selectors (`repo`, `registry_path`,
-    `registry_url`).
+    refs are selected through `repo`, `registry_path`, or `registry_url`.
     """
     out = cache_dir(config)
     if out.is_dir():
         return out
 
     CACHE.mkdir(parents=True, exist_ok=True)
-    # Publish only a complete CLI export to the cache.
+    # Publish only a complete Harbor export to the cache.
     with tempfile.TemporaryDirectory(dir=CACHE) as temp:
         export_dir = Path(temp) / "export"
-        command = download_command(config, export_dir)
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as exc:
-            message = (
-                f"Harbor download failed for {config.dataset!r} with exit code "
-                f"{exc.returncode}"
-            )
-            outputs = [
-                output.strip()
-                for output in (exc.stdout, exc.stderr)
-                if isinstance(output, str) and output.strip()
-            ]
-            if output := "\n".join(outputs):
-                message = f"{message}:\n{output}"
-            raise RuntimeError(message) from exc
+        registry_path = config.registry_path
+        if registry_path is not None and config.repo is None:
+            registry_path = registry_path.expanduser()
+        download_command(
+            name=config.dataset,
+            output_dir=export_dir,
+            overwrite=False,
+            registry_url=config.registry_url,
+            registry_path=registry_path,
+            repo=config.repo,
+            export=True,
+            cache=False,
+        )
         try:
             export_dir.rename(out)
         except OSError:
