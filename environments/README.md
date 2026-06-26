@@ -24,6 +24,7 @@ This folder contains installable example environments that showcase common usage
 - **wordle**: Game-style interaction via `TextArenaEnv`; multiple rewards (correctness, partial credit, few-turn bonus) and XML formatting.
 - **wordle_v1**: Wordle on the reusable v1 `TextArenaTaskset`, with Wordle-specific prompt, feedback, and rewards kept in the environment package.
 - **openenv_echo**: OpenEnv MCP integration example using upstream `echo_env`.
+- **openenv_echo_v1**: Thin v1 config over the reusable OpenEnv image taskset, pinned to the official Echo image.
 - **openenv_textarena**: OpenEnv gym integration example using upstream `textarena_env` (default `Wordle-v0`).
 
 ### Tool use
@@ -91,7 +92,7 @@ This folder contains installable example environments that showcase common usage
 - **ToolEnv with real tools**: `wiki_search`, `math_python`
 - **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
 - **GymEnv integration**: `gem_wordle`
-- **OpenEnv integration (gym + MCP)**: `openenv_textarena`, `openenv_echo`
+- **OpenEnv integration (gym + MCP)**: `openenv_textarena`, `openenv_echo`, `openenv_echo_v1`
 - **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
 - **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
 - **Taskset/Harness v1**: use this pattern for new environments that need reusable tasksets, reusable harnesses, framework programs, endpoint interception, or sandboxed Python/command programs. Examples include `dspy_rlm`, `openai_agents_env`, `langchain_deep_agents_wikispeedia`, `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, `opencode_harbor`, `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, and `wordle-v1`.
