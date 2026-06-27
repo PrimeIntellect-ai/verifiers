@@ -5,7 +5,6 @@ import verifiers.v1 as vf
 from verifiers.v1 import graph
 from verifiers.v1.clients.train import (
     TrainClient,
-    _generate_with_image_ref_retry,
 )
 from verifiers.v1.dialects import ChatDialect
 from verifiers.v1.types import TurnTokens
@@ -187,74 +186,7 @@ async def test_train_client_bridges_multimodal_prompt_with_previous_sidecar(
     assert bridged_mm.mm_hashes == previous_mm.mm_hashes
     assert bridged_mm.mm_placeholders["image"][0].length == 2
     assert captured["generate_kwargs"]["multi_modal_data"] is bridged_mm
-    assert captured["generate_kwargs"]["materialize_all_image_refs"] is False
 
 
-@pytest.mark.asyncio
-async def test_generate_retries_missing_mm_cache_by_materializing_image_refs(
-    monkeypatch,
-):
-    import renderers.client as renderer_client
-
-    calls = []
-
-    class MissingCache(Exception):
-        body = {"error": {"type": "missing_mm_cache_item"}}
-
-    async def fake_generate(**kwargs):
-        calls.append(kwargs["materialize_all_image_refs"])
-        if len(calls) == 1:
-            raise MissingCache()
-        return {"ok": True}
-
-    monkeypatch.setattr(renderer_client, "generate", fake_generate)
-    mm = MultiModalData(
-        mm_hashes={"image": ["a" * 16]},
-        mm_placeholders={"image": [PlaceholderRange(offset=0, length=1)]},
-        mm_items={"image": [_qwen_item([1, 1, 1])]},
-    )
-
-    result = await _generate_with_image_ref_retry(
-        client=object(),
-        renderer=object(),
-        messages=[],
-        model="m",
-        multi_modal_data=mm,
-    )
-
-    assert result == {"ok": True}
-    assert calls == [False, True]
 
 
-@pytest.mark.asyncio
-async def test_generate_does_not_retry_missing_cache_for_raw_image_refs(
-    monkeypatch,
-):
-    import renderers.client as renderer_client
-
-    calls = []
-
-    class MissingCache(Exception):
-        body = {"error": {"type": "missing_mm_cache_item"}}
-
-    async def fake_generate(**kwargs):
-        calls.append(kwargs["materialize_all_image_refs"])
-        raise MissingCache()
-
-    monkeypatch.setattr(renderer_client, "generate", fake_generate)
-    mm = MultiModalData(
-        mm_hashes={"image": ["a" * 16]},
-        mm_placeholders={"image": [PlaceholderRange(offset=0, length=1)]},
-        mm_items={"image": [_qwen_item([1, 1, 1], raw_image_id="a.png")]},
-    )
-
-    with pytest.raises(MissingCache):
-        await _generate_with_image_ref_retry(
-            client=object(),
-            renderer=object(),
-            messages=[],
-            model="m",
-            multi_modal_data=mm,
-        )
-
-    assert calls == [False]

@@ -174,87 +174,14 @@ def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     return all(role == "tool" for role in roles)
 
 
-_RETRYABLE_MM_ERROR_TYPES = frozenset({"missing_mm_cache_item"})
 
 
-def _json_error_type(value: Any) -> str | None:
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (TypeError, ValueError):
-            return None
-    if not isinstance(value, Mapping):
-        return None
-    error_type = value.get("error_type")
-    return error_type if isinstance(error_type, str) else None
 
 
-def _retryable_mm_error_type(exc: Exception) -> str | None:
-    candidates: list[Any] = []
-    body = getattr(exc, "body", None)
-    if body is not None:
-        candidates.append(body)
-    response = getattr(exc, "response", None)
-    if response is not None:
-        try:
-            candidates.append(response.json())
-        except Exception:
-            text = getattr(response, "text", None)
-            if text is not None:
-                candidates.append(text)
-
-    for payload in candidates:
-        if not isinstance(payload, Mapping):
-            error_type = _json_error_type(payload)
-            if error_type in _RETRYABLE_MM_ERROR_TYPES:
-                return error_type
-            continue
-        error = payload.get("error")
-        if isinstance(error, Mapping):
-            error_type = error.get("type")
-            if error_type in _RETRYABLE_MM_ERROR_TYPES:
-                return cast(str, error_type)
-            error_type = _json_error_type(error.get("message"))
-            if error_type in _RETRYABLE_MM_ERROR_TYPES:
-                return error_type
-        error_type = _json_error_type(payload)
-        if error_type in _RETRYABLE_MM_ERROR_TYPES:
-            return error_type
-    return None
 
 
-def _has_descriptor_only_images(mm_data: MultiModalData | None) -> bool:
-    """True when a prompt carries prior image descriptors without raw refs."""
-    if mm_data is None or mm_data.is_empty():
-        return False
-    for item in mm_data.mm_items.get("image") or []:
-        if isinstance(item, Mapping) and not item.get("raw_image_id"):
-            return True
-    return False
 
 
-async def _generate_with_image_ref_retry(**kwargs: Any) -> dict[str, Any]:
-    """Retry a missing-cache MM request by materializing all image refs once.
-
-    The normal bridge path sends descriptor-only entries for prior images and
-    refs only for newly introduced images. If vLLM says its MM cache no longer
-    has a prior item, retry by asking the renderer to rebuild refs for every
-    image from the file-backed messages. This does not send processor outputs;
-    it only sends raw image refs again.
-    """
-    has_descriptor_only = _has_descriptor_only_images(kwargs.get("multi_modal_data"))
-    try:
-        from renderers.client import generate
-
-        return await generate(materialize_all_image_refs=False, **kwargs)
-    except Exception as exc:
-        if not has_descriptor_only or _retryable_mm_error_type(exc) is None:
-            raise
-        logger.warning(
-            "vLLM MM cache miss; retrying with all image refs materialized: %r",
-            exc,
-        )
-        return await generate(materialize_all_image_refs=True, **kwargs)
 
 
 class TrainClient(Client):
@@ -382,7 +309,9 @@ class TrainClient(Client):
             wire_messages = [message_to_wire(m) for m in prompt]
 
         try:
-            result = await _generate_with_image_ref_retry(
+            from renderers.client import generate
+
+            result = await generate(
                 client=self.openai,
                 renderer=renderer,
                 messages=wire_messages,
