@@ -343,7 +343,14 @@ class EnvRouter:
         self.request_to_worker[request_id] = worker_id
 
     async def forward_cancel(self, request_id: bytes, client_id: bytes) -> None:
-        """Forward a cancel signal to the worker owning this request."""
+        """Forward a cancel to the owning worker and drop the request's bookkeeping.
+
+        A cancelled request is terminal — the worker stops and no response will
+        arrive — so its ``request_to_worker`` / ``active_requests`` entries must be
+        cleared here. ``complete_request`` (the only other cleaner) runs solely on
+        the response path, which never fires for a request cancelled before it
+        responds; without this, both dicts leak on every such cancel.
+        """
         worker_id = self.request_to_worker.get(request_id)
         if worker_id is not None:
             worker = self.workers.get(worker_id)
@@ -352,6 +359,9 @@ class EnvRouter:
                     await worker.socket.send_multipart([client_id, request_id, b""])
                 except zmq.ZMQError:
                     pass
+        # Idempotent pop of both dicts; a late in-flight response that also calls
+        # complete_request is harmless (pop with default).
+        self.complete_request(request_id)
 
     def complete_request(self, request_id: bytes) -> ActiveRequestInfo | None:
         """Update bookkeeping after a response is received. Returns the info or None."""
