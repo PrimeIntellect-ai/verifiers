@@ -28,6 +28,7 @@ class BashHarnessConfig(HarnessConfig):
 
 class BashHarness(Harness[BashHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
+    SUPPORTS_MCP = True
     SUPPORTS_USER_SIM = True
     SUPPORTS_MESSAGE_PROMPT = True
 

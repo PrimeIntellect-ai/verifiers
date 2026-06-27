@@ -13,11 +13,14 @@ import time
 import traceback
 import uuid
 from collections.abc import Mapping
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import numpy as np
 from pydantic import Field, PrivateAttr
 from renderers.base import MultiModalData
+
+if TYPE_CHECKING:
+    from verifiers.v1.judge import JudgeResponse
 
 from verifiers.v1 import graph
 from verifiers.v1.errors import ProviderError
@@ -204,6 +207,22 @@ class Branch(StrictBaseModel):
         usage = self.usage
         return usage.completion_tokens if usage else 0
 
+    @property
+    def input_len(self) -> int:
+        """Best-available input-context size: the token-id `prompt_len`, falling back to
+        provider-reported `num_prompt_tokens` when the endpoint returns no token ids (so it isn't
+        reported as 0). For display/metrics — use `prompt_len` when you need the strict token-id
+        count (e.g. token-cap enforcement)."""
+        return self.prompt_len or self.num_prompt_tokens
+
+    @property
+    def output_len(self) -> int:
+        """Best-available completion size: the token-id `completion_len`, falling back to
+        provider-reported `num_completion_tokens` when the endpoint returns no token ids (so it
+        isn't reported as 0). For display/metrics — use `completion_len` when you need the strict
+        token-id count (e.g. training, token-cap enforcement)."""
+        return self.completion_len or self.num_completion_tokens
+
 
 _NODE_DUMP_EXCLUDE: dict = {
     "nodes": {"__all__": {"multi_modal_data", "routed_experts"}}
@@ -245,6 +264,13 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     scratch (counters, game progress, end-of-trajectory flags) — excluded from every dump (`model_dump`
     / `to_record`), unlike `info` which persists. Type it via `Taskset[Task, Config, MyState]`; defaults
     to the base `State`."""
+
+    extra_usage: list[Usage] = Field(default_factory=list)
+    """Token usage from model calls that aren't part of the message graph — LLM judges and other
+    auxiliary scoring calls (see `verifiers.v1.judge`). Kept separate from `usage` (the agent's own
+    spend) and off the graph, so branch/turn counts and the trainer's token math (`total_tokens`,
+    `branches`) see only sampled nodes; consumers that want a grand total add the two (e.g. the eval
+    dashboard shows the agent's usage and `+judge` separately)."""
 
     is_completed: bool = False
     stop_condition: str | None = None
@@ -383,6 +409,14 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         e.g. an harness's depth/calls/tokens). Each key warns on override as above."""
         for name, value in values.items():
             self.record_metric(name, value)
+
+    def record_judge(self, response: "JudgeResponse") -> None:
+        """Persist a judge call (`Judge.evaluate` / `Judge.complete` is pure): append the typed
+        response to `info["judge"]` for debugging and fold its tokens + cost into `extra_usage`
+        (→ `usage`)."""
+        self.info.setdefault("judge", []).append(response.model_dump())
+        if response.usage is not None:
+            self.extra_usage.append(response.usage)
 
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
         """Record a `@reward`/`@group_reward` contribution under `name` (weight

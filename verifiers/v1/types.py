@@ -161,26 +161,46 @@ class Usage(StrictBaseModel):
     cost: float | None = None
 
     @classmethod
+    def from_openai(cls, usage: Any | None) -> "Usage | None":
+        """Build from an OpenAI chat-completion `usage` object (the `.usage` on a
+        `ChatCompletion`), or `None` when the provider reported none. Splits cache-read tokens
+        out of `prompt_tokens` and carries the reasoning subset + provider-reported `cost`."""
+        if usage is None:
+            return None
+        prompt_details = getattr(usage, "prompt_tokens_details", None)
+        cached = prompt_details.cached_tokens if prompt_details else None
+        completion_details = getattr(usage, "completion_tokens_details", None)
+        reasoning = completion_details.reasoning_tokens if completion_details else None
+        return cls(
+            prompt_tokens=usage.prompt_tokens - (cached or 0),
+            completion_tokens=usage.completion_tokens,
+            cached_input_tokens=cached,
+            reasoning_tokens=reasoning,
+            cost=getattr(usage, "cost", None),
+        )
+
+    @classmethod
     def aggregate(cls, usages: Iterable["Usage"]) -> "Usage | None":
         """Sum per-response usage while preserving whether cache usage was reported."""
         values = list(usages)
         if not values:
             return None
+        # For the optional fields (cached / reasoning / cost), sum the responses that report them
+        # and yield None only when *no* response does — so one response omitting a field (e.g. a
+        # judge whose provider doesn't report reasoning or cost) doesn't null out the whole total.
         cached = [
-            usage.cached_input_tokens
-            for usage in values
-            if usage.cached_input_tokens is not None
+            u.cached_input_tokens for u in values if u.cached_input_tokens is not None
         ]
-        reasoning = [usage.reasoning_tokens for usage in values]
-        costs = [usage.cost for usage in values]
+        reasoning = [
+            u.reasoning_tokens for u in values if u.reasoning_tokens is not None
+        ]
+        costs = [u.cost for u in values if u.cost is not None]
         return cls(
             prompt_tokens=sum(usage.prompt_tokens for usage in values),
             completion_tokens=sum(usage.completion_tokens for usage in values),
             cached_input_tokens=sum(cached) if cached else None,
-            reasoning_tokens=sum(reasoning)
-            if all(v is not None for v in reasoning)
-            else None,
-            cost=sum(costs) if all(v is not None for v in costs) else None,
+            reasoning_tokens=sum(reasoning) if reasoning else None,
+            cost=sum(costs) if costs else None,
         )
 
     @property

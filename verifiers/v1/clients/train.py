@@ -12,13 +12,13 @@ import asyncio
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
 from renderers import RenderedTokens
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import RendererConfig
-from renderers.base import MultiModalData, is_multimodal
+from renderers.base import is_multimodal
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
@@ -174,16 +174,6 @@ def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     return all(role == "tool" for role in roles)
 
 
-
-
-
-
-
-
-
-
-
-
 class TrainClient(Client):
     """Renders prompts to token ids and calls a vLLM `/inference/v1/generate` engine."""
 
@@ -200,12 +190,23 @@ class TrainClient(Client):
         self.renderer_model_name = renderer_model_name
         self._pool = None
 
-    def _renderer_pool(self, model: str):
+    def _renderer_pool(
+        self,
+        model: str,
+        *,
+        chat_template_kwargs: Mapping[str, Any] | None = None,
+    ):
+        renderer_model = self.renderer_model_name or model
         if self._pool is None:
             from renderers import create_renderer_pool
 
+            pool_kwargs: dict[str, Any] = {"size": self.pool_size}
+            if chat_template_kwargs:
+                pool_kwargs["chat_template_kwargs"] = chat_template_kwargs
             self._pool = create_renderer_pool(
-                self.renderer_model_name or model, self.config, size=self.pool_size
+                renderer_model,
+                self.config,
+                **pool_kwargs,
             )
         return self._pool
 
@@ -260,8 +261,7 @@ class TrainClient(Client):
             tools = parse_tools(body.get("tools"))
         else:
             prompt, tools = dialect.parse_request(body)
-        renderer = self._renderer_pool(model)
-        from renderers.client import _maybe_offload
+        from renderers.client import _maybe_offload, generate
 
         wire_tools = [tool_to_wire(t) for t in tools] if tools else None
         wire_messages = (
@@ -270,7 +270,16 @@ class TrainClient(Client):
         prompt_ids: list[int] | None = None
         multi_modal_data = None
         prompt_attribution: RenderedTokens | None = None
-        sampling_params = sampling_args.model_dump(exclude_none=True)
+        raw_sampling = sampling_args.model_dump(exclude_none=True)
+        sampling_params: dict[str, Any] = dict(
+            raw_sampling.pop("extra_body", None) or {}
+        )
+        chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
+        sampling_params.update(raw_sampling)
+        renderer = self._renderer_pool(
+            model,
+            chat_template_kwargs=chat_template_kwargs,
+        )
         bridged_turn: PendingTurn | None = None
 
         # Only build the (O(context)) previous-turn token ids once the cheap guards pass: a
@@ -309,8 +318,6 @@ class TrainClient(Client):
             wire_messages = [message_to_wire(m) for m in prompt]
 
         try:
-            from renderers.client import generate
-
             result = await generate(
                 client=self.openai,
                 renderer=renderer,

@@ -478,6 +478,11 @@ class InterceptionServer:
         ready = asyncio.Event()
         producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
         parser_error: Exception | None = None
+        # SSE events from the turn-ending one onward (the terminal event and any trailing
+        # `[DONE]`), withheld until the turn is committed: a client that ends its turn on the
+        # terminal event (e.g. codex on `response.completed`) would otherwise reach scoring
+        # with the turn still unrecorded.
+        deferred: list[bytes] = []
         try:
             await resp.prepare(request)
             while True:
@@ -493,11 +498,20 @@ class InterceptionServer:
                 if chunk is None:
                     await producer
                     break
+                if deferred or dialect.is_terminal_event(chunk):
+                    if parser_error is None:
+                        try:
+                            if on_done is not None and is_sse_done_event(chunk):
+                                on_done()
+                            feed_event(chunk)
+                        except Exception as e:
+                            parser_error = e
+                    # forwarded after the turn is committed, below
+                    deferred.append(chunk)
+                    continue
                 await resp.write(chunk)
                 if parser_error is None:
                     try:
-                        if on_done is not None and is_sse_done_event(chunk):
-                            on_done()
                         feed_event(chunk)
                     except Exception as e:
                         parser_error = e
@@ -517,7 +531,10 @@ class InterceptionServer:
             turn.commit(parser.finish())
             logger.debug("intercept stream turn: id=%s", session.trace.id)
         finally:
+            # Release the withheld events only now — after the commit — then close.
             with contextlib.suppress(ConnectionResetError):
+                for event in deferred:
+                    await resp.write(event)
                 await resp.write_eof()
         return resp
 
