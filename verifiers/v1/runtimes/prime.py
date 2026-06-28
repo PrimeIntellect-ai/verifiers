@@ -120,6 +120,8 @@ class PrimeRuntime(Runtime):
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        from prime_sandboxes import SandboxFileNotFoundError
+
         try:
             # Poll directly so the rollout stage owns the execution timeout; the SDK helper
             # otherwise imposes its own 15-minute limit.
@@ -131,20 +133,35 @@ class PrimeRuntime(Runtime):
             )
             delay = 0.1
             while True:
-                result = await self._client.get_background_job(self._sandbox_id, job)
-                if result.completed:
-                    break
+                # Poll the (tiny) exit file directly. get_background_job would instead read the
+                # stdout/stderr logs inline, which 413 once they pass the gateway read-file size
+                # limit (e.g. a verbose test runner emitting tens of MB).
+                try:
+                    exit_content = (
+                        await self._client.read_file(self._sandbox_id, job.exit_file)
+                    ).content.strip()
+                except SandboxFileNotFoundError:
+                    exit_content = ""
+                if exit_content:
+                    try:
+                        exit_code = int(exit_content)
+                        break
+                    except ValueError:
+                        pass  # exit file mid-write — keep polling
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 3)
+            # Download the logs (no read-file size limit) rather than reading them inline.
+            stdout = (await self._download_bytes(job.stdout_log_file)).decode(
+                "utf-8", "replace"
+            )
+            stderr = (await self._download_bytes(job.stderr_log_file)).decode(
+                "utf-8", "replace"
+            )
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime exec failed: {e}") from e
-        return ProgramResult(
-            exit_code=result.exit_code or 0,
-            stdout=result.stdout or "",
-            stderr=result.stderr or "",
-        )
+        return ProgramResult(exit_code=exit_code, stdout=stdout, stderr=stderr)
 
     async def expose(self, port: int) -> str | None:
         # Publish a server hosted IN the sandbox via the SDK's native port exposure → a public
@@ -175,21 +192,22 @@ class PrimeRuntime(Runtime):
                 f"prime background launch failed: {result.stderr.strip()}"
             )
 
-    async def read(self, path: str) -> bytes:
-        # Avoid background-job log limits and base64 overhead by downloading binary data directly.
+    async def _download_bytes(self, path: str) -> bytes:
+        # Avoid the gateway read-file size limit and base64 overhead by downloading directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
+        with tempfile.TemporaryDirectory() as directory:
+            download = Path(directory) / "download"
+            await self._client.download_file(self._sandbox_id, path, str(download))
+            return await asyncio.to_thread(download.read_bytes)
+
+    async def read(self, path: str) -> bytes:
         target = (
             path
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
         try:
-            with tempfile.TemporaryDirectory() as directory:
-                download = Path(directory) / "download"
-                await self._client.download_file(
-                    self._sandbox_id, target, str(download)
-                )
-                return await asyncio.to_thread(download.read_bytes)
+            return await self._download_bytes(target)
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
