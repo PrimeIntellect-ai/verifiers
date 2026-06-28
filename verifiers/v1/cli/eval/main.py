@@ -26,6 +26,7 @@ from verifiers.v1.cli.resolve import (
     references_config_file,
     with_positional_taskset,
 )
+from verifiers.v1.cli.eval.prune import prune_results, split_prune
 from verifiers.v1.cli.eval.resume import load_resume_config, split_resume
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.configs.eval import EvalConfig
@@ -34,7 +35,9 @@ logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
-    "       uv run eval --resume <output-dir>   (re-run a previous run's missing/errored rollouts)"
+    "       uv run eval --resume <output-dir>   (re-run a previous run's missing/errored rollouts)\n"
+    "       uv run eval --prune <output-dir> [--prune-include/--prune-exclude <csv>]   (drop errored rows from results.jsonl)\n"
+    "       uv run eval --resume <output-dir> --prune [--prune-include/--prune-exclude <csv>]   (prune errored rows, then resume)"
 )
 
 
@@ -48,14 +51,43 @@ def main(argv: list[str] | None = None) -> None:
             narrow_config(EvalConfig, argv)
         )  # full option help, narrowed to the given ids
         return
+    # `--prune` and `--resume` are standalone pre-parse paths (not the normal taskset/harness
+    # config parse) and compose: `--prune` alone cleans errored rows and stops; `--resume` alone
+    # re-runs owed rollouts; `--resume --prune` prunes first, then resumes the same dir.
     resume_dir, rest = split_resume(argv)
-    # re-run a previous run's missing/errored rollouts, in place
-    if resume_dir is not None:
+    prune, prune_dir, prune_include, prune_exclude, rest = split_prune(rest)
+    if (prune_include or prune_exclude) and not prune:
+        raise SystemExit(f"{USAGE}\n--prune-include/--prune-exclude require --prune")
+    if prune or resume_dir is not None:
         if rest:
             raise SystemExit(
-                f"{USAGE}\n--resume re-runs a saved config verbatim and takes no other arguments"
+                f"{USAGE}\n--resume/--prune run a saved config verbatim and take no other "
+                "arguments (besides each other and --prune-include/--prune-exclude)"
             )
-        config = load_resume_config(resume_dir)
+        prune_target = prune_dir or resume_dir
+        if prune and prune_target is None:
+            raise SystemExit(
+                f"{USAGE}\n--prune needs an output dir, or combine it with --resume <dir>"
+            )
+        if (
+            prune
+            and prune_dir is not None
+            and resume_dir is not None
+            and prune_dir.resolve() != resume_dir.resolve()
+        ):
+            raise SystemExit(
+                f"{USAGE}\n--prune and --resume must target the same output dir"
+            )
+        if resume_dir is not None:
+            # Load + reject a legacy (v0) resume *before* pruning, so `--resume <legacy> --prune`
+            # fails without first rewriting results.jsonl on disk.
+            config = load_resume_config(resume_dir)
+            if config.is_legacy:
+                raise SystemExit("--resume is not supported for legacy (v0) evals")
+        if prune:  # drop errored rows (after the legacy guard, so nothing is rewritten on error)
+            prune_results(prune_target, prune_include, prune_exclude)
+        if resume_dir is None:  # prune-only: nothing more to do
+            return
     else:
         legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
         if (
@@ -74,8 +106,6 @@ def main(argv: list[str] | None = None) -> None:
             setup_logging("DEBUG" if config.verbose else "INFO")
             logger.info("wrote config to %s", write_config(config, output_path(config)))
             return
-    if config.is_legacy and config.resume is not None:
-        raise SystemExit("--resume is not supported for legacy (v0) evals")
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
     # (the path prime-rl trains through). The `--rich` dashboard reads live in-process Rollout
     # state, so it's in-process only (`server + rich` is rejected at config validation). Legacy
