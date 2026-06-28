@@ -191,11 +191,6 @@ class Runtime(ABC):
                         ["sh", "-c", f"mv -f {shlex.quote(tmp)} {shlex.quote(path)}"],
                         {},
                     )
-                    # --no-config: ignore any uv config (uv.toml / pyproject [tool.uv]) discovered
-                    # in the runtime's cwd or HOME. Task images/repos can pin `required-version`
-                    # (e.g. `~=0.9.0`), which the freshly installed latest uv would otherwise violate,
-                    # failing the resolve. Our PEP 723 scripts declare deps inline, so discovered
-                    # project config is irrelevant to staging them.
                     command = (
                         f"{_ENSURE_UV}; uv sync --script {shlex.quote(path)} -q --no-config "
                         f"&& uv python find --script {shlex.quote(path)} --no-config"
