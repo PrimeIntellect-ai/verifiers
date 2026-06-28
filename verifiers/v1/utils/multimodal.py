@@ -1,9 +1,4 @@
-"""Multimodal ingress helpers for v1 training.
-
-The env worker stores raw images as run assets before messages enter the trace.
-Messages then carry cheap ``file://`` refs, and the renderer/vLLM path decides
-which refs must be sent to inference.
-"""
+"""Multimodal ingress helpers for v1 training."""
 
 from __future__ import annotations
 
@@ -34,6 +29,20 @@ def _offload_image_url(url: object, image_dir: Path | None) -> tuple[str, int] |
     return offload_image_to_run_assets(url, image_dir=image_dir)
 
 
+def _image_storage_mode(storage: str | None) -> str:
+    if storage is not None:
+        mode = storage
+    else:
+        from renderers.mm_store import image_storage_mode
+
+        mode = image_storage_mode()
+    if mode not in ("offload", "inline"):
+        raise ValueError(
+            f"multimodal image storage must be 'offload' or 'inline', got {mode!r}"
+        )
+    return mode
+
+
 def _image_source_url(source: Any) -> object:
     if isinstance(source, dict):
         return source.get("url")
@@ -56,57 +65,86 @@ def _require_file_image_url(source: Any) -> None:
         )
 
 
-def _rewrite_image_source(source: Any, image_dir: Path | None) -> ImageOffloadStats:
+def _require_inline_image_url(source: Any) -> None:
+    url = _image_source_url(source)
+    if not isinstance(url, str):
+        raise RuntimeError(
+            "v1 inline multimodal training requires image_url.url strings"
+        )
+    if url.startswith("file://"):
+        return
+    if url.startswith("data:image/") and ";base64," in url:
+        return
+    raise RuntimeError(
+        "v1 inline multimodal training requires image_url entries to be "
+        "data:image/...;base64,... or file:// refs"
+    )
+
+
+def _prepare_image_source(
+    source: Any, *, storage: str, image_dir: Path | None
+) -> ImageOffloadStats:
     stats = ImageOffloadStats()
 
-    result = _offload_image_url(_image_source_url(source), image_dir)
-    if result is not None:
-        new_url, nbytes = result
-        _set_image_source_url(source, new_url)
-        stats.images_rewritten += 1
-        stats.bytes_written += nbytes
-    _require_file_image_url(source)
+    if storage == "offload":
+        result = _offload_image_url(_image_source_url(source), image_dir)
+        if result is not None:
+            new_url, nbytes = result
+            _set_image_source_url(source, new_url)
+            stats.images_rewritten += 1
+            stats.bytes_written += nbytes
+        _require_file_image_url(source)
+    else:
+        _require_inline_image_url(source)
     return stats
 
 
-def offload_images_inplace(
-    value: Any, *, image_dir: Path | None = None
+def prepare_images_inplace(
+    value: Any, *, storage: str | None = None, image_dir: Path | None = None
 ) -> ImageOffloadStats:
-    """Rewrite base64 image URLs reachable from ``value`` to run-asset refs.
+    """Prepare image URLs reachable from ``value`` according to the storage mode.
 
     Handles OpenAI wire dicts/lists and the pydantic v1 message/content-part
-    models used by the trace. Non-image values and already-file-backed URLs are
-    left untouched.
+    models used by the trace.
     """
+    mode = _image_storage_mode(storage)
     stats = ImageOffloadStats()
 
     if isinstance(value, dict):
         if value.get("type") == "image_url":
             source = value.get("image_url")
             if source is not None:
-                stats.add(_rewrite_image_source(source, image_dir))
+                stats.add(
+                    _prepare_image_source(source, storage=mode, image_dir=image_dir)
+                )
         for child in value.values():
-            stats.add(offload_images_inplace(child, image_dir=image_dir))
+            stats.add(prepare_images_inplace(child, storage=mode, image_dir=image_dir))
         return stats
 
     if isinstance(value, list):
         for child in value:
-            stats.add(offload_images_inplace(child, image_dir=image_dir))
+            stats.add(prepare_images_inplace(child, storage=mode, image_dir=image_dir))
         return stats
 
     if isinstance(value, tuple):
         for child in value:
-            stats.add(offload_images_inplace(child, image_dir=image_dir))
+            stats.add(prepare_images_inplace(child, storage=mode, image_dir=image_dir))
         return stats
 
     if getattr(value, "type", None) == "image_url":
         source = getattr(value, "image_url", None)
         if source is not None:
-            stats.add(_rewrite_image_source(source, image_dir))
+            stats.add(_prepare_image_source(source, storage=mode, image_dir=image_dir))
         return stats
 
     content = getattr(value, "content", None)
     if isinstance(content, (list, tuple)):
-        stats.add(offload_images_inplace(content, image_dir=image_dir))
+        stats.add(prepare_images_inplace(content, storage=mode, image_dir=image_dir))
 
     return stats
+
+
+def offload_images_inplace(
+    value: Any, *, image_dir: Path | None = None
+) -> ImageOffloadStats:
+    return prepare_images_inplace(value, storage="offload", image_dir=image_dir)

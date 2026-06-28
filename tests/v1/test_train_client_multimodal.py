@@ -84,6 +84,44 @@ def test_offload_images_inplace_rejects_non_file_image_urls(monkeypatch):
         multimodal.offload_images_inplace(body)
 
 
+def test_prepare_images_inplace_inline_preserves_data_urls():
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": DATA_URL}},
+                ],
+            }
+        ]
+    }
+
+    stats = multimodal.prepare_images_inplace(body, storage="inline")
+
+    assert stats.images_rewritten == 0
+    assert stats.bytes_written == 0
+    assert body["messages"][0]["content"][0]["image_url"]["url"] == DATA_URL
+
+
+def test_prepare_images_inplace_inline_rejects_remote_urls():
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "https://example.com/image.png"},
+                    }
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(RuntimeError, match="data:image"):
+        multimodal.prepare_images_inplace(body, storage="inline")
+
+
 @pytest.mark.asyncio
 async def test_train_client_bridges_multimodal_prompt_with_previous_sidecar(
     monkeypatch,
@@ -186,7 +224,3 @@ async def test_train_client_bridges_multimodal_prompt_with_previous_sidecar(
     assert bridged_mm.mm_hashes == previous_mm.mm_hashes
     assert bridged_mm.mm_placeholders["image"][0].length == 2
     assert captured["generate_kwargs"]["multi_modal_data"] is bridged_mm
-
-
-
-

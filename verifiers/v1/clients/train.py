@@ -35,7 +35,7 @@ from verifiers.v1.types import (
     TurnTokens,
     Usage,
 )
-from verifiers.v1.utils.multimodal import offload_images_inplace
+from verifiers.v1.utils.multimodal import prepare_images_inplace
 
 
 logger = logging.getLogger(__name__)
@@ -212,7 +212,7 @@ class TrainClient(Client):
 
     async def prepare_request_body(self, dialect: Dialect, body: dict) -> dict:
         if isinstance(dialect, ChatDialect):
-            stats = await asyncio.to_thread(offload_images_inplace, body)
+            stats = await asyncio.to_thread(prepare_images_inplace, body)
             if stats.images_rewritten:
                 logger.info(
                     "offloaded %d image(s) to run assets (%.1f MiB)",
@@ -223,7 +223,7 @@ class TrainClient(Client):
 
     async def prepare_messages(self, dialect: Dialect, messages: list) -> list:
         if isinstance(dialect, ChatDialect):
-            stats = await asyncio.to_thread(offload_images_inplace, messages)
+            stats = await asyncio.to_thread(prepare_images_inplace, messages)
             if stats.images_rewritten:
                 logger.info(
                     "offloaded %d simulator image(s) to run assets (%.1f MiB)",
