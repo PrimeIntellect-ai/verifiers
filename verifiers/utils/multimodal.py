@@ -1,15 +1,22 @@
-"""Multimodal ingress helpers for v1 training."""
+"""Multimodal ingress helpers for renderer-backed training."""
 
 from __future__ import annotations
 
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 
 def _offload_image_url(url: object, image_dir: Path | None) -> str | None:
     try:
-        from renderers.mm_store import offload_image_to_run_assets
-    except ImportError as exc:  # pragma: no cover - dependency-version guard
+        offload_image_to_run_assets = getattr(
+            import_module("renderers.mm_store"),
+            "offload_image_to_run_assets",
+        )
+    except (
+        ImportError,
+        AttributeError,
+    ) as exc:  # pragma: no cover - dependency-version guard
         raise RuntimeError(
             "Multimodal training requires a renderers version with raw image "
             "asset offload support."
@@ -35,7 +42,7 @@ def _require_file_image_url(source: Any) -> None:
     url = _image_source_url(source)
     if not isinstance(url, str) or not url.startswith("file://"):
         raise RuntimeError(
-            "v1 multimodal training requires image_url entries to be offloaded "
+            "multimodal training requires image_url entries to be offloaded "
             "to file:// run image assets"
         )
 
@@ -50,8 +57,8 @@ def _prepare_image_source(source: Any, *, image_dir: Path | None) -> None:
 def prepare_images_inplace(value: Any, *, image_dir: Path | None = None) -> None:
     """Offload image URLs reachable from ``value`` to run image assets.
 
-    Handles OpenAI wire dicts/lists and the pydantic v1 message/content-part
-    models used by the trace.
+    Handles OpenAI wire dicts/lists and the pydantic v0/v1 message/content-part
+    models used by trajectories and traces.
     """
     if isinstance(value, dict):
         if value.get("type") == "image_url":

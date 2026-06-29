@@ -34,7 +34,7 @@ from verifiers.v1.types import (
     TurnTokens,
     Usage,
 )
-from verifiers.v1.utils.multimodal import prepare_images_inplace
+from verifiers.utils.multimodal import prepare_images_inplace
 
 
 def tool_to_wire(tool: Tool) -> dict:
