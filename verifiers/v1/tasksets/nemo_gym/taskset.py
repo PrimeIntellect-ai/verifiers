@@ -13,7 +13,7 @@ from verifiers.v1.mcp import Toolset, ToolsetConfig
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 
-DEFAULT_RESOURCE_SERVER = "example_single_tool_call"
+DEFAULT_ENV = "example_single_tool_call"
 
 
 class NeMoGymTask(Task):
@@ -21,14 +21,12 @@ class NeMoGymTask(Task):
 
 
 class NeMoGymConfig(TasksetConfig):
-    resource_server: str = DEFAULT_RESOURCE_SERVER
-    config_name: str | None = None
+    nemo_env: str = DEFAULT_ENV
     data_name: str = "example.jsonl"
 
 
 class _NeMoGymToolsConfig(ToolsetConfig):
-    resource_server: str
-    config_name: str | None = None
+    nemo_env: str
 
 
 class _NeMoGymTools(Toolset[_NeMoGymToolsConfig]):
@@ -37,27 +35,23 @@ class _NeMoGymTools(Toolset[_NeMoGymToolsConfig]):
     TOOL_PREFIX = "nemo_gym"
 
     async def setup(self) -> None:
-        nemo_gym = importlib.import_module("nemo_gym")
-        SimpleResourcesServer = importlib.import_module(
-            "nemo_gym.base_resources_server"
-        ).SimpleResourcesServer
-        BaseServerConfig = importlib.import_module(
-            "nemo_gym.config_types"
-        ).BaseServerConfig
-        global_config = importlib.import_module("nemo_gym.global_config")
-        GlobalConfigDictParser = global_config.GlobalConfigDictParser
-        GlobalConfigDictParserConfig = global_config.GlobalConfigDictParserConfig
-        ServerClient = importlib.import_module("nemo_gym.server_utils").ServerClient
-        OmegaConf = importlib.import_module("omegaconf").OmegaConf
+        from nemo_gym import PARENT_DIR
+        from nemo_gym.base_resources_server import SimpleResourcesServer
+        from nemo_gym.config_types import BaseServerConfig
+        from nemo_gym.global_config import (
+            GlobalConfigDictParser,
+            GlobalConfigDictParserConfig,
+        )
+        from nemo_gym.server_utils import ServerClient
+        from omegaconf import OmegaConf
 
-        root = Path(nemo_gym.PARENT_DIR)
-        config_name = self.config.config_name or self.config.resource_server
+        root = Path(PARENT_DIR)
         path = (
             root
             / "resources_servers"
-            / self.config.resource_server
+            / self.config.nemo_env
             / "configs"
-            / f"{config_name}.yaml"
+            / f"{self.config.nemo_env}.yaml"
         )
         parser = GlobalConfigDictParser()
         config = parser.parse_no_environment(
@@ -73,7 +67,7 @@ class _NeMoGymTools(Toolset[_NeMoGymToolsConfig]):
         )
         entrypoint = Path(resource.get_inner_run_server_config().entrypoint).stem
         module = importlib.import_module(
-            f"resources_servers.{self.config.resource_server}.{entrypoint}"
+            f"resources_servers.{self.config.nemo_env}.{entrypoint}"
         )
         server_cls: Any = next(
             value
@@ -123,16 +117,16 @@ class _NeMoGymTools(Toolset[_NeMoGymToolsConfig]):
 class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
     def load_tasks(self) -> list[NeMoGymTask]:
         try:
-            nemo_gym = importlib.import_module("nemo_gym")
+            from nemo_gym import PARENT_DIR
         except ImportError as exc:
             raise ImportError(
                 "Run this taskset with `uv run --with nemo-gym==0.3.0 eval nemo_gym`."
             ) from exc
 
         path = (
-            Path(nemo_gym.PARENT_DIR)
+            Path(PARENT_DIR)
             / "resources_servers"
-            / self.config.resource_server
+            / self.config.nemo_env
             / "data"
             / self.config.data_name
         )
@@ -141,7 +135,7 @@ class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
         return [
             NeMoGymTask(
                 idx=idx,
-                name=f"{self.config.resource_server}:{idx}",
+                name=f"{self.config.nemo_env}:{idx}",
                 prompt=dialect.parse_request(row["responses_create_params"])[0],
                 system_prompt=(
                     "Call `nemo_gym_call` with the matching tool name and arguments. "
@@ -156,14 +150,7 @@ class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
     def tools(self, task: NeMoGymTask) -> list[Toolset]:
         if not task.nemo_gym_row["responses_create_params"].get("tools"):
             return []
-        return [
-            _NeMoGymTools(
-                _NeMoGymToolsConfig(
-                    resource_server=self.config.resource_server,
-                    config_name=self.config.config_name,
-                )
-            )
-        ]
+        return [_NeMoGymTools(_NeMoGymToolsConfig(nemo_env=self.config.nemo_env))]
 
 
 if __name__ == "__main__":

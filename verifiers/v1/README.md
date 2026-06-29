@@ -82,6 +82,7 @@ Taskset examples (the `*_v1` packages under `environments/`):
 | `wiki-search-v1` | a **shared** tool server (built once for the eval) + an LLM judge |
 | `deepwiki-v1` | an **existing remote** tool server, by URL |
 | `wordle-v1` | configuring the vendored `textarena` integration |
+| `nemo-gym-workplace-v1` | configuring the built-in `nemo_gym` taskset for a harder packaged NeMo Gym example |
 
 Harness examples (under `environments/`):
 
@@ -122,14 +123,15 @@ There is no NeMo-specific harness or program.
 
 ```bash
 uv run --with nemo-gym==0.3.0 eval nemo_gym -n 1 -r 1 -c 1
-uv run --with nemo-gym==0.3.0 eval nemo_gym -n 1 -r 1 -c 1 \
-  --taskset.resource-server workplace_assistant
+uv run --with-editable . --with-editable environments/nemo_gym_workplace_v1 \
+  --with nemo-gym==0.3.0 eval nemo-gym-workplace-v1 -n 1 -r 1 -c 1
 ```
 
-The taskset does not interpret the example behavior. It loads rows from the configured
-`resource_server`, uses `config_name` only when the server's YAML has a different name,
-and forwards declared calls through one generic `nemo_gym_call` tool. The standard
-Verifiers harness drives the model/tool loop and captures the trace.
+The taskset does not interpret the example's weather behavior. It forwards declared calls
+to the corresponding NeMo Gym resource server through one generic `nemo_gym_call` tool.
+The standard Verifiers harness drives the model/tool loop and captures the trace. The
+`nemo-gym-workplace-v1` example pins only the taskset config to NeMo Gym's harder
+`workplace_assistant` resource server.
 
 ### Swappable runtime
 
