@@ -9,7 +9,7 @@ import tomllib
 INSTALL_TIMEOUT = 600  # 10 minutes for venv creation + package install
 IMPORT_TIMEOUT = 120  # 2 minutes for importing a package
 LOAD_TIMEOUT = 300  # 5 minutes for loading an environment (may download datasets)
-EVAL_TIMEOUT = 600  # 10 minutes for running vf-eval with -n 1 -r 1
+EVAL_TIMEOUT = 600  # 10 minutes for running eval with -n 1 -r 1
 
 SKIPPED_ENVS = [
     # Requires fix for completion dataset setup
@@ -47,7 +47,7 @@ def get_environments() -> list[Path]:
     # Filter out skipped environments
     all_envs = [env for env in all_envs if env.name not in SKIPPED_ENVS]
 
-    # These are v0 smoke tests (vf.load_environment + vf-eval). The v1 plugins (the `_v1`
+    # These are v0 smoke tests (vf.load_environment + eval --id). The v1 plugins (the `_v1`
     # tasksets + the `compact` harness) are id-referenced and covered by tests/v1/test_envs.py.
     all_envs = [
         env
@@ -170,17 +170,26 @@ def help_test_can_load_env(tmp_venv_dir: Path, env_dir: Path):
 
 
 def help_test_can_eval_env(tmp_venv_dir: Path, env_dir: Path):
-    """Test that the environment can be run via vf-eval."""
+    """Test that the environment can be run through the V0 bridge."""
     if os.getenv("PRIME_API_KEY"):
-        model_flags = "-m openai/gpt-4.1-mini -b https://api.pinference.ai/api/v1 -k PRIME_API_KEY"
+        model_flags = (
+            "-m openai/gpt-4.1-mini "
+            "--client.base-url https://api.pinference.ai/api/v1 "
+            "--client.api-key-var PRIME_API_KEY"
+        )
     elif os.getenv("OPENAI_API_KEY"):
-        model_flags = "-m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY"
+        model_flags = (
+            "-m gpt-4.1-mini "
+            "--client.base-url https://api.openai.com/v1 "
+            "--client.api-key-var OPENAI_API_KEY"
+        )
     else:
-        pytest.skip("Skipping vf-eval smoke test because no API key is configured")
+        pytest.skip("Skipping eval smoke test because no API key is configured")
 
     eval_cmd = (
         f"cd {tmp_venv_dir} && source .venv/bin/activate && "
-        f"uv run vf-eval {env_dir.name} {model_flags} -n 1 -r 1 -t 512"
+        f"uv run eval --id {env_dir.name} {model_flags} -n 1 -r 1 "
+        "--sampling.max-tokens 512"
     )
     try:
         process = subprocess.run(

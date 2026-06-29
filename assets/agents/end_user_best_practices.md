@@ -15,10 +15,10 @@ Use this guidance in projects created via `prime lab setup`.
 - NEVER initialize environment source code manually; ALWAYS create new environments with `prime env init`.
 - NEVER write freeform environment READMEs manually; ALWAYS start from the `prime env init` generated `README.md` template and fill in its sections.
 - Keep each environment self-contained under `environments/<env_name>/` with `pyproject.toml`, implementation, and README so each abstraction has a dedicated home and the workspace stays maintainable.
-- Follow environment best practices strictly (for example `load_environment(...)`, `vf.ensure_keys(...)`, and the documented environment class patterns) to avoid brittle or messy implementations.
+- Follow the generated v1 taskset/harness structure, or the explicit V0 `load_environment(...)` structure when `--v0` was requested.
 - Use the Prime CLI for all environment lifecycle operations (`prime env init` -> `prime env install` -> `prime eval run` -> `prime env push`) rather than ad hoc scripts.
-- Treat `prime eval run` as the default eval path. It already saves results automatically; do not add `--skip-upload` or other opt-out deviations unless the user explicitly requests them, so logs and results stay available in the private Evaluations tab and via `prime eval view`.
-- For new reusable taskset/harness work, use the v1 `vf.Env` / `vf.Taskset` / `vf.Harness` format and the BYO Harness docs rather than older experimental patterns. Keep task settings under `[env.taskset]`, harness settings under `[env.harness]`, and use packaged `tasksets` / `harnesses` implementations when they match the upstream format.
+- Treat `prime eval run` as the local eval path and `prime eval push` as the explicit publication step. Do not invent additional manifests beside the native `config.toml` and `results.jsonl` artifacts.
+- For new reusable work, use the v1 `vf.Taskset` / `vf.Harness` format and BYO Harness docs. Keep task settings on the taskset config and runtime or agent settings on the harness config.
 - NEVER begin environment development before `prime lab setup` has been run; if work starts outside that structure, recommend adjusting course into a proper lab workspace before continuing.
 - Use `prime env push --path ./environments/<env_name>` only after local eval behavior is verified.
 - Treat the `prime lab setup` structure as the idiomatic workspace for complex environment workflows: agents can mediate most platform complexity while users learn patterns progressively as needed.

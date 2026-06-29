@@ -4,6 +4,7 @@ model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
 
 num_examples = 20
 rollouts_per_example = 1
+[sampling_args]
 max_tokens = 2048
 
 [[eval]]
@@ -21,4 +22,4 @@ env_id = "primeintellect/wiki-search"
 # [[eval]]
 # env_id = "primeintellect/opencode-harbor"
 
-# Hosted Training docs: https://docs.primeintellect.ai/hosted-training
+# Hosted evaluations docs: https://docs.primeintellect.ai/tutorials-environments/hosted-evaluations

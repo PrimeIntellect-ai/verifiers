@@ -3,8 +3,8 @@
 A `BaseClientConfig` is an OpenAI-compatible endpoint (base_url + API-key env var
 + extra headers) that `resolve_client` turns into a `Client`. The default Prime
 endpoint, API key, and team fall back to the active Prime CLI config, so direct
-`uv run eval` calls behave like `prime eval`. Both the eval entrypoint (its model
-client) and in-env LLM calls (e.g. a judge reward) build clients from these.
+`uv run eval` calls behave like `prime eval`. Both the eval entrypoint (its model client)
+and in-env LLM calls (e.g. a judge reward) build clients from these.
 `ClientConfig` is the CLI-selectable discriminated union (eval | train).
 """
 

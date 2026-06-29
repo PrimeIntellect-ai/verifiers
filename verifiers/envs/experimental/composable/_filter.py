@@ -8,7 +8,7 @@ post-processed row shape (e.g. ``{"question", "info", "answer", ...}``).
 
 Security note: the string is passed to ``eval()`` with a restricted
 ``__builtins__`` dict, but it is still ``eval()`` of user input. It is
-intended for local ``vf-eval`` invocations, not for running untrusted
+intended for local V0 evaluation invocations, not for running untrusted
 inputs.
 """
 

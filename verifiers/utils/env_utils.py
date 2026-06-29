@@ -64,7 +64,9 @@ def load_environment(env_id: str, **env_args) -> Environment:
 
 
 def env_module_name(env_id: str) -> str:
-    return env_id.replace("-", "_").split("/")[-1]
+    from verifiers.v1.types import env_module
+
+    return env_module(env_id)
 
 
 def import_env_module(env_id: str) -> ModuleType:

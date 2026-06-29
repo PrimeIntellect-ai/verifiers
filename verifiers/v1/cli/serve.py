@@ -22,7 +22,7 @@ from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.env import pool_serve_kwargs
 from verifiers.v1.serve import serve_env
 
-USAGE = "usage: uv run serve [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
+USAGE = "usage: serve [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -30,8 +30,11 @@ def main(argv: list[str] | None = None) -> None:
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
-        sys.argv = [sys.argv[0], "--help"]
-        cli(narrow_config(ServeConfig, argv))
+        cli(
+            narrow_config(ServeConfig, argv),
+            args=argv or ["--help"],
+            prog="serve",
+        )
         return
     legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
     if (
@@ -44,8 +47,7 @@ def main(argv: list[str] | None = None) -> None:
         )  # need a --taskset.id (v1), a legacy --id (v0), or @ file.toml
 
     config_type = narrow_config(ServeConfig, argv)
-    sys.argv = [sys.argv[0], *argv]
-    config = cli(config_type)
+    config = cli(config_type, args=argv, prog="serve")
     if config.dry_run:
         print(config.model_dump_json(indent=2, exclude_none=True))
         return
@@ -72,3 +74,7 @@ def main(argv: list[str] | None = None) -> None:
         log_setup=partial(setup_logging, level),
         **server_kwargs,
     )
+
+
+if __name__ == "__main__":
+    main()

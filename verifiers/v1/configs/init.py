@@ -14,7 +14,7 @@ class InitConfig(BaseConfig):
     `init my-task-v1`); the package dir, ids, and class names are derived from it. The
     `--add-*` flags add optional pieces (tool server, user simulator, custom harness)."""
 
-    name: str = ""
+    name: str = Field(default="", pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")
     """The new environment id, e.g. `my-task-v1` (positional: `init my-task-v1`)."""
     path: str = Field("./environments", validation_alias=AliasChoices("path", "p"))
     """Parent directory the package is created in (default `./environments`)."""

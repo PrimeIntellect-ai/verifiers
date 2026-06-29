@@ -5,19 +5,19 @@ reflection_model = "meta-llama/Llama-3.2-1B-Instruct"
 # reflection_model = "meta-llama/Llama-3.2-3B-Instruct"
 
 [[env]]
-env_id = "primeintellect/reverse-text"
+id = "reverse_text"
 
 # [[env]]
-# env_id = "primeintellect/wordle"
+# id = "wordle"
 
 # [[env]]
-# env_id = "primeintellect/wiki-search"
+# id = "wiki_search"
 
 # [[env]]
-# env_id = "primeintellect/dspy-flights"
+# id = "dspy_flights"
 
 # [[env]]
-# env_id = "primeintellect/opencode-harbor"
+# id = "opencode_harbor"
 
 [gepa]
 max_calls = 500
@@ -28,5 +28,3 @@ max_concurrent = 32
 
 [sampling]
 max_tokens = 1024
-
-# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

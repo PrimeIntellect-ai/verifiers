@@ -123,9 +123,8 @@ class EnvConfig(BaseConfig):
     # unset) to opt in; native v1 envs leave these untouched. Mirrors prime-rl's EnvConfig
     # so it inherits these (a v0 env is driven the same way in eval and the env server).
     id: EnvId | None = None
-    """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
-    hub on demand), loaded via `verifiers.load_environment` and run through the legacy
-    bridge. Set this *instead of* `taskset` to run a v0 environment."""
+    """Classic (v0) local package id, loaded via `verifiers.load_environment` and run
+    through the legacy bridge. Set this *instead of* `taskset` to run a v0 environment."""
     args: dict = {}
     """Construction kwargs forwarded to `load_environment(id, **args)`."""
     extra_env_kwargs: dict = {}

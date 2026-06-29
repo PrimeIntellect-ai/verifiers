@@ -6,7 +6,7 @@ This file mirrors the "Environments" documentation page.
 
 ---
 
-This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template. For reusable taskset/harness environments, see [BYO Harness](byo-harness.md).
+This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template.
 
 ## Table of Contents
 
@@ -34,7 +34,6 @@ This guide walks through building environments in Verifiers, from simple single-
   - [Cleanup and Teardown](#cleanup-and-teardown)
   - [Signaling Early Termination](#signaling-early-termination)
 - [Developing Environments](#developing-environments)
-  - [v1 Env Shape](#v1-env-shape)
   - [pyproject.toml](#pyprojecttoml)
   - [Managing Dependencies](#managing-dependencies)
   - [Installation](#installation)
@@ -678,191 +677,67 @@ This bypasses the normal model response loop and immediately terminates the roll
 
 ## Developing Environments
 
-Environments are packaged as installable Python projects. We recommend developing environments in a workspace with `environments/` and `configs/` folders. The `prime lab setup` command initializes this structure:
+Environments are installable Python projects. `prime lab setup` creates a workspace with
+`environments/` and `configs/` directories:
 
 ```bash
 prime lab setup
 ```
 
-The `prime env init` command initializes a new environment project:
+The default scaffold uses the v1 taskset/harness API:
 
 ```bash
-prime env init my-env       # v0 stub
-prime env init my-env --v1  # v1 Taskset/Harness template
+prime env init my-env
+prime env init my-agent --add-tool --add-user --add-harness
 ```
 
-This creates the following structure:
+It creates a package that exports taskset and optional harness classes:
 
 ```
 environments/my_env/
-├── my_env.py          # environment implementation
-├── pyproject.toml     # package metadata and dependencies
-└── README.md          # documentation template
+├── my_env/
+│   ├── __init__.py
+│   └── taskset.py
+├── pyproject.toml
+└── README.md
 ```
 
-### v1 Env Shape
+See [Bring Your Own Harness](byo-harness.md) for the v1 authoring model. The dataset,
+rubric, and `load_environment()` APIs elsewhere in this page describe V0. Scaffold that
+surface explicitly:
 
-The v1 template teaches the standard object layout: one taskset class, one
-typed `load_taskset(config: MyTasksetConfig)` child factory, and a tiny
-`load_environment(config: vf.EnvConfig)` root loader that delegates through
-`vf.load_taskset(config=config.taskset)` and
-`vf.load_harness(config=config.harness)`. The child factory annotation defines
-the taskset config type for TOML, CLI, eval, GEPA, RL, and Hosted Training.
-
-After `prime env init my-env --v1`, edit the generated taskset class:
-
-1. Add task settings to `TasksetConfig`.
-2. Return task records from `load_tasks(split=...)`.
-3. Return task-owned tools from `load_toolsets` when needed.
-4. Add lifecycle, metric, reward, and advantage methods with `@vf.*`.
-
-Add a harness config, harness class, and `load_harness(config:
-MyHarnessConfig)` when the environment owns reusable rollout behavior.
-Otherwise the generated root loader uses the base harness.
-
-`EnvConfig` is the lightweight envelope for the two child configs. Put
-environment knobs on `TasksetConfig` or `HarnessConfig`.
-
-The taskset-only shape is:
-
-```python
-import verifiers as vf
-
-
-class MyTasksetConfig(vf.TasksetConfig):
-    system_prompt: vf.SystemPrompt = "Answer exactly."
-
-
-class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        """Return serializable task records as a list, generator, or Dataset."""
-        if split == "eval":
-            return []
-        return [
-            {
-                "prompt": [{"role": "user", "content": "Reverse abc."}],
-                "answer": "cba",
-                "max_turns": 1,
-            }
-        ]
-
-    @vf.reward(weight=1.0)
-    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
-        messages = vf.get_messages(state.get("completion") or [], role="assistant")
-        if not messages:
-            return 0.0
-        response = str(messages[-1].content or "").strip()
-        return float(response == task["answer"])
-
-
-def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    return MyTaskset(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
+```bash
+prime env init my-v0-env --v0
 ```
 
-With a reusable harness, keep the same explicit object boundary:
-
-```python
-class MyHarnessConfig(vf.HarnessConfig):
-    max_turns: int = 20
-
-
-class MyHarness(vf.Harness[MyHarnessConfig]):
-    """Reusable execution behavior for this environment."""
-
-
-def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    return MyTaskset(config=config)
-
-
-def load_harness(config: MyHarnessConfig) -> MyHarness:
-    return MyHarness(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
-```
-
-Keep v1 dependencies behind the owning taskset or harness. Do not pass
-already-instantiated resource objects through environment loaders. Bindings are
-allowed wherever the owning taskset, toolset, user, program, or harness wires
-callables. `objects` entries should be loader specs: prefer serializable import
-paths in config, and use factory callables directly only for Python-only
-construction when the dependency cannot be serialized. Required Taskset and
-Toolset factory parameters must be supplied through bindings.
-
-Judge-style rewards should read endpoint details from the rollout state:
-
-```python
-@vf.reward(weight=1.0)
-async def judge_reward(task, state) -> float:
-    endpoint = state.get_endpoint_config(api="chat")
-    client = state.get_client(api="chat")
-    model = str(task.get("judge_model") or endpoint.model)
-    ...
-```
-
-Expose at most `judge_model: str | None = None` on the taskset config. Do not
-add judge endpoint URL/API-key fields or read `os.environ` inside reward/update
-handlers.
-
-For reusable tasksets and harnesses, [BYO Harness](byo-harness.md) is the
-canonical v1 implementation guide. It covers ownership, configs, task controls,
-system prompts, users, toolsets, programs, sandboxes, artifacts, nested
-harnesses, package adapters, and TOML/CLI overrides.
+The V0 scaffold is a single module beside its `pyproject.toml`. OpenEnv projects also keep
+their `proj/` directory there so `.build.json` is packaged beside the loader.
 
 ### pyproject.toml
 
-The `pyproject.toml` defines package metadata, dependencies, and evaluation defaults:
+Both generations use ordinary package metadata:
 
 ```toml
 [project]
 name = "my-env"
 description = "My custom environment"
-tags = ["single-turn", "math", "train", "eval"]
 version = "0.1.0"
-requires-python = ">=3.10"
-dependencies = [
-    "verifiers>=0.1.8",
-]
+requires-python = ">=3.11"
+dependencies = ["verifiers"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[tool.hatch.build]
-include = ["my_env.py", "pyproject.toml"]
-
-[tool.verifiers.eval]
-num_examples = 20
-rollouts_per_example = 5
 ```
-
-Key `pyproject.toml` sections:
-
-- **`[project]`** — Package name (used by `prime env install` and `prime eval run`), description, version, and dependencies. The `tags` field is optional metadata for categorizing environments.
-- **`[build-system]`** — Hatchling is used as the build backend for the Environments Hub.
-- **`[tool.hatch.build]`** — Lists files to include in the package. Always include `pyproject.toml` alongside your environment file to ensure that environment metadata is available when the environment is installed. Add any additional source files here.
-- **`[tool.verifiers.eval]`** — Default parameters for `prime eval run` when flags aren't provided.
 
 ### Managing Dependencies
 
-All packages your environment needs must be declared in the `dependencies` array. Always include `verifiers` with a minimum version. If your environment uses additional libraries, add them here—they will be installed automatically when the environment is installed:
+Declare every runtime dependency in the project. Hub installation uses this metadata for
+public wheels and for private source builds:
 
 ```toml
 dependencies = [
-    "verifiers>=0.1.8",
+    "verifiers",
     "chromadb",
     "nltk>=3.9.2",
 ]
@@ -870,7 +745,8 @@ dependencies = [
 
 ### Required API Keys
 
-Environments that require external API keys (e.g., for judge models or external services) should validate them early in `load_environment()` using `vf.ensure_keys()`:
+V0 environments that require external API keys should validate them early in
+`load_environment()` using `vf.ensure_keys()`:
 
 ```python
 import verifiers as vf
@@ -881,10 +757,11 @@ def load_environment(api_key_var: str = "OPENAI_API_KEY") -> vf.Environment:
     ...
 ```
 
-This raises `MissingKeyError` with a clear message listing all missing keys and instructions for setting them:
+This raises `MissingKeyError` with a clear list of missing keys. V1 tasksets and harnesses
+should declare or validate secrets at the component that owns the external service.
 
 - **Environments Hub**: Add secrets (or link global secrets) on the environment's **Secrets** tab
-- **Hosted Training**: Set `env_file` in your config (e.g., `env_file = ["secrets.env"]`)
+- **Hosted Training**: Set `env_files` in your config (e.g., `env_files = ["secrets.env"]`)
 - **Local**: Export in your shell (e.g., `export OPENAI_API_KEY=...`)
 
 Document required variables in your README under a "Required Environment Variables" section.
@@ -898,7 +775,14 @@ prime env install my-env                    # from ./environments/my_env
 prime env install my-env -p /path/to/environments   # custom path
 ```
 
-This runs `uv pip install -e` for local environments when you want an explicit editable install for non-eval tooling. Evaluations do not require this separate step because environment resolution happens inside `prime eval run`.
+This runs `uv pip install -e`. Hub packages use the same explicit Prime-owned step:
+
+```bash
+prime env install owner/my-env@1.2.3
+prime eval run my_env
+```
+
+Eval, validate, serve, and GEPA only accept locally importable package ids.
 
 ## Environment Groups
 
@@ -1000,10 +884,12 @@ unregister_executor("my-env-client")
 self.my_executor.shutdown()
 ```
 
-In practice, you rarely need to call `set_concurrency()` yourself. Both `prime eval run` and `prime-rl` automatically compute the right worker count from the concurrency level. If you wish to override the automatic value during evaluation, you can do so with the `--extra-env-kwargs` flag:
+In practice, you rarely need to call `set_concurrency()` yourself. V0 evaluation and
+`prime-rl` compute the worker count from their concurrency settings. For a V0 evaluation,
+override it with `--extra-env-kwargs`:
 
 ```bash
-prime eval run my-env -x '{"concurrency": 256}'
+prime eval run --id my-env --extra-env-kwargs '{"concurrency": 256}'
 ```
 
 ## Integrations and Experimental Environments
@@ -1016,9 +902,8 @@ Supported third-party environment integrations include:
 - **`ReasoningGymEnv`** — wraps [reasoning-gym](https://github.com/open-thought/reasoning-gym) procedural datasets
 - **`BrowserEnv`** — unified browser automation via [Browserbase](https://browserbase.com) with DOM and CUA modes
 - **`OpenEnvEnv`** — wraps OpenEnv gym and MCP contracts using Prime Sandboxes with prebuilt images referenced from `.build.json`
-- **`NeMoGymTaskset` / `NeMoGymHarness`** — packaged v1 taskset/harness adapters for NeMo Gym JSONL rows and rollout collection
 
-These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv, `uv add 'verifiers[nemogym]'` for NeMo Gym). The bundled OpenEnv project under `proj/` owns its server dependencies and must be built with `uv run vf-build <env-id>` before evaluation or training.
+These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv). The bundled OpenEnv project under `proj/` owns its server dependencies; build its image with `prime env build <env-id>` before evaluation or training.
 
 Newer and more experimental environment classes include:
 

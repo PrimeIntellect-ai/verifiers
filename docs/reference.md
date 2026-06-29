@@ -910,47 +910,22 @@ materialized API key.
 
 ---
 
-## Prime CLI Plugin
+## Host CLI Registry
 
-Verifiers exposes a plugin contract consumed by `prime` for command execution.
-
-### PRIME_PLUGIN_API_VERSION
+Verifiers exposes its host-runnable command modules through `verifiers.cli.CLI_MODULES`.
 
 ```python
-PRIME_PLUGIN_API_VERSION = 1
+CLI_MODULES = {
+    "eval": "verifiers.v1.cli.eval.main",
+    "init": "verifiers.v1.cli.init",
+    "validate": "verifiers.v1.cli.validate",
+    "serve": "verifiers.v1.cli.serve",
+    "gepa": "verifiers.scripts.gepa",
+}
 ```
 
-API version for compatibility checks between `prime` and `verifiers`.
-
-### PrimeCLIPlugin
-
-```python
-@dataclass(frozen=True)
-class PrimeCLIPlugin:
-    api_version: int = PRIME_PLUGIN_API_VERSION
-    eval_module: str = "verifiers.cli.commands.eval"
-    gepa_module: str = "verifiers.cli.commands.gepa"
-    install_module: str = "verifiers.cli.commands.install"
-    init_module: str = "verifiers.cli.commands.init"
-    setup_module: str = "verifiers.cli.commands.setup"
-    build_module: str = "verifiers.cli.commands.build"
-
-    def build_module_command(
-        self, module_name: str, args: Sequence[str] | None = None
-    ) -> list[str]:
-        ...
-```
-
-`build_module_command` returns a subprocess command list for `python -m <module> ...`.
-
-### get_plugin
-
-```python
-def get_plugin() -> PrimeCLIPlugin:
-    ...
-```
-
-Returns the plugin instance consumed by `prime`.
+Hosts own interpreter selection and process construction, then invoke the selected module with
+untouched argv.
 
 ---
 

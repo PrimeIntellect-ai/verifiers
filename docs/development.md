@@ -51,8 +51,8 @@ verifiers/
 │   ├── rl/             # Training infrastructure
 │   │   ├── inference/  # vLLM server utilities
 │   │   └── trainer/    # Trainer implementation
-│   ├── cli/            # Prime-facing CLI modules and plugin exports
-│   ├── scripts/        # Compatibility wrappers around verifiers/cli commands
+│   ├── cli/            # V1 CLIs and the host command registry
+│   ├── scripts/        # Legacy V0 eval and GEPA implementations
 │   └── utils/          # Utilities
 ├── environments/       # Installable environment modules
 ├── configs/            # Example training configurations
@@ -60,35 +60,27 @@ verifiers/
 └── docs/               # Documentation
 ```
 
-## Prime CLI Plugin Export
+## Host CLI Export
 
-Verifiers exports a plugin consumed by `prime` so command behavior is sourced from verifiers modules.
+Verifiers exports the modules for commands that external hosts such as `prime` may delegate to.
 
 Entry point:
 
 ```python
-from verifiers.cli.plugins.prime import get_plugin
+from verifiers.cli import CLI_MODULES
 
-plugin = get_plugin()
+eval_module = CLI_MODULES["eval"]
 ```
 
-The plugin exposes:
-
-- `api_version` (current: `1`)
-- command modules:
-  - `eval_module` (`verifiers.cli.commands.eval`)
-  - `gepa_module` (`verifiers.cli.commands.gepa`)
-  - `install_module` (`verifiers.cli.commands.install`)
-  - `init_module` (`verifiers.cli.commands.init`)
-  - `setup_module` (`verifiers.cli.commands.setup`)
-  - `build_module` (`verifiers.cli.commands.build`)
-- `build_module_command(module_name, args)` to construct subprocess invocation for a command module
+The registry contains the native V1 `eval`, `init`, `validate`, and `serve` modules plus the
+legacy GEPA module. Interpreter selection, process construction, path handling, and product
+workflows such as install/build belong to the host.
 
 Contributor guidance:
 
-- Add new prime-facing command logic under `verifiers/cli/commands/`.
-- Export new command modules through `PrimeCLIPlugin` in `verifiers/cli/plugins/prime.py`.
-- Keep `verifiers/scripts/*` as thin compatibility wrappers that call into `verifiers/cli`.
+- Implement native commands under `verifiers/v1/cli/`.
+- Add host-runnable commands to `CLI_MODULES` in `verifiers/cli/__init__.py`.
+- Keep Prime product behavior out of Verifiers command modules.
 
 ## Running Tests
 
@@ -253,10 +245,11 @@ uv run pytest tests/test_file.py::test_name -vvs --pdb
 ### Creating a New Environment Module
 
 ```bash
-# Initialize a v0 environment stub
+# Initialize a v1 taskset package
 prime env init my-environment
 
-# Test your environment
+# Install and test your environment
+prime env install my-environment
 prime eval run my-environment -m openai/gpt-4.1-mini -n 5
 ```
 
@@ -313,7 +306,8 @@ uv run ruff format --check verifiers tests  # Verify Python formatting
 uv run ty check verifiers             # Type check (matches CI Ty target)
 
 # Environment tools
-prime env init new-env                       # Create v0 environment stub
+prime env init new-env                       # Create a v1 taskset package
+prime env install new-env                    # Install the local package
 prime eval run new-env -m openai/gpt-4.1-mini -n 5  # Test environment
 prime eval view                              # Browse evals in the tree browser
 ```
@@ -327,7 +321,7 @@ prime eval view                              # Browse evals in the tree browser
 | `prime env install` | Install environment module |
 | `prime lab setup` | Set up training workspace |
 | `prime eval view` | Terminal UI for browsing evals and rollout details |
-| `prime rl run` | Launch Hosted Training |
+| `prime train` | Launch Hosted Training |
 
 ### Project Guidelines
 

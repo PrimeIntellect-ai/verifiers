@@ -163,20 +163,11 @@ flash-attn = [{ requirement = "torch", match-runtime = true }]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 
 [project.scripts]
-vf-eval = "verifiers.scripts.eval:main"
 eval = "verifiers.v1.cli.eval.main:main"
 validate = "verifiers.v1.cli.validate:main"
 serve = "verifiers.v1.cli.serve:main"
 init = "verifiers.v1.cli.init:main"
 vf-gepa = "verifiers.scripts.gepa:main"
-vf-init = "verifiers.scripts.init:main"
-vf-install = "verifiers.scripts.install:main"
-vf-setup = "verifiers.scripts.setup:main"
-vf-build = "verifiers.scripts.build:main"
-vf-rl = "verifiers.scripts.rl:main"
-vf-train = "verifiers.scripts.train:main"
-vf-tui = "verifiers.scripts.tui:main"
-vf-vllm = "verifiers.scripts.vllm:main"
 
 # hatchling configuration
 [tool.hatch.version]

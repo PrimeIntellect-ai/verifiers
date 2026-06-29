@@ -152,7 +152,7 @@ class TaskSet:
                 concrete tasksets). Rows for which it returns truthy are
                 kept. The string is ``eval()``'d with restricted builtins,
                 but it is still ``eval`` of user input — intended for local
-                ``vf-eval`` runs, not untrusted inputs.
+                local V0 evaluation runs, not untrusted inputs.
         """
         self.name = name
         # Cache the raw expression (not the callable) for reproducibility /

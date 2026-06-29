@@ -1,3 +1,5 @@
+type = "lora"
+
 # Nemotron 3 models. Uncomment exactly one model.
 model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
 # model = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"

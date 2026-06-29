@@ -21,7 +21,7 @@ tighter type contract. `import verifiers.v1 as vf`.
   plain classes + decorators (`@vf.reward` / `@vf.metric` / ...).
 - **Training-ready traces** — exact token ids + logprobs straight from an agentic rollout
   (renderer client); one training sample per branch, recovered for compaction / subagents.
-- **Hub-native + v0-compatible** — ids install on demand from the Environments Hub, and
+- **Package-local + v0-compatible** — plugins are ordinary installed Python packages, and
   classic v0 envs run through the same CLIs via a bridge.
 
 ## Install
@@ -257,11 +257,9 @@ uv run eval harbor --taskset.dataset general-agent@2026-06-25 \
 
 ## Backwards compatibility
 
-The v0 framework is untouched — the classic `verifiers` API and its entrypoints (`vf-eval`,
-...) keep working exactly as before; v1 lives alongside it as `verifiers.v1`. On top of
-that, a v0 `verifiers.load_environment` env runs through the v1 CLIs too, via the legacy
-bridge — its rollouts mapped to v1 `Trace`s. Set `--id` (instead of a `taskset`) on either
-`eval` or `serve`:
+The classic `verifiers` API remains available, and a v0 `verifiers.load_environment` env runs
+through the current CLIs via the legacy bridge, with its rollouts mapped to v1 `Trace`s. Set
+`--id` instead of a taskset on either `eval` or `serve`:
 
 ```bash
 uv run eval --id reverse-text -n 2     # eval a v0 env

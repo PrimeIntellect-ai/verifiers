@@ -15,7 +15,6 @@ v1 stays importable without the v0 package present.
 
 import contextlib
 import logging
-from pathlib import Path
 from typing import Any
 
 import zmq
@@ -290,14 +289,11 @@ class LegacyEnvServer(EnvServer):
         extra_env_kwargs: dict | None = None,
     ) -> None:
         from verifiers import load_environment
-        from verifiers.v1.utils.install import ensure_installed, env_name
+        from verifiers.v1.types import env_name
 
         self.address = address
-        # Install from the env hub on demand for an `org/name[@version]` id, then load the
-        # v0 env by its module name (a local id is already importable).
-        module = ensure_installed(env_id)
         self.taskset_id = env_name(env_id)
-        self.env = load_environment(module, **(env_args or {}))
+        self.env = load_environment(env_id, **(env_args or {}))
         if extra_env_kwargs:  # post-load knobs applied via the v0 env's setters
             self.env.set_kwargs(**extra_env_kwargs)
         # The formatted dataset rows are RolloutInputs (prompt + example_id); index by task_idx.
@@ -418,17 +414,6 @@ def _eval_client(client_config: ClientConfig, model: str):
     )
 
 
-def _legacy_output_dir(config) -> Path:
-    """The legacy run's output dir, mirroring the native `output_path` shape but keyed by
-    the v0 env id (`outputs/<id>--<model>--legacy/<uuid>`); honors `--output-dir`."""
-    from verifiers.v1.utils.install import env_name
-
-    if config.output_dir is not None:
-        return config.output_dir
-    name = f"{env_name(config.id)}--{config.model.replace('/', '--')}--legacy"
-    return Path("outputs") / name / config.uuid
-
-
 async def run_legacy_eval(config) -> list[Trace]:
     """In-process v0 eval used by the `eval` CLI when `config.is_legacy` (a legacy `id` is
     set, no v1 `taskset`).
@@ -444,12 +429,9 @@ async def run_legacy_eval(config) -> list[Trace]:
 
     from verifiers import load_environment
 
-    from verifiers.v1.cli.output import append_trace, save_config
-    from verifiers.v1.utils.install import ensure_installed
+    from verifiers.v1.cli.output import append_trace, output_path, save_config
 
-    # Install from the env hub on demand for an `org/name[@version]` id (a local id is
-    # already importable), then load by module name.
-    env = load_environment(ensure_installed(config.id), **(config.args or {}))
+    env = load_environment(config.id, **(config.args or {}))
     if config.extra_env_kwargs:  # post-load knobs (max_total_completion_tokens, …)
         env.set_kwargs(**config.extra_env_kwargs)
     dataset = env.get_eval_dataset()  # the eval split (falls back to train when unset)
@@ -461,7 +443,7 @@ async def run_legacy_eval(config) -> list[Trace]:
 
     client = _eval_client(config.client, config.model)
     sampling_args = config.sampling.model_dump(exclude_none=True)
-    out_dir = _legacy_output_dir(config)
+    out_dir = output_path(config)
     save_config(config, out_dir)
     logger.info("results: %s", out_dir)
     logger.info(

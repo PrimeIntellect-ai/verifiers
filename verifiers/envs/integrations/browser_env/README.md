@@ -59,7 +59,7 @@ On the [Environments Hub](https://app.primeintellect.ai/dashboard/environments),
 
 If the same name appears as a variable, a linked global secret, and a direct secret, precedence is: variable (lowest), then linked global secret, then direct secret (highest).
 
-Secrets and variables are injected automatically for Environment Actions, hosted evaluations, and hosted training ([Secrets](https://docs.primeintellect.ai/tutorials-environments/secrets))—do not pass secret *values* through `load_environment` arguments (`env_args` / `-a` / TOML `env_args`); use those only for non-secret options (e.g. `mode`, `num_examples`). For hosted CLI runs, `prime eval run ... --hosted --custom-secrets '{"NAME":"value"}'` is for extra per-run secrets only; routine keys should live on the environment in the Hub ([Hosted evaluations](https://docs.primeintellect.ai/tutorials-environments/hosted-evaluations)).
+Secrets and variables are injected automatically for Environment Actions, hosted evaluations, and hosted training ([Secrets](https://docs.primeintellect.ai/tutorials-environments/secrets))—do not pass secret *values* through `load_environment` arguments (`--env-args` / TOML `env_args`); use those only for non-secret options (e.g. `mode`, `num_examples`). For hosted CLI runs, `prime eval submit ... --custom-secrets '{"NAME":"value"}'` is for extra per-run secrets only; routine keys should live on the environment in the Hub ([Hosted evaluations](https://docs.primeintellect.ai/tutorials-environments/hosted-evaluations)).
 
 CLI examples:
 

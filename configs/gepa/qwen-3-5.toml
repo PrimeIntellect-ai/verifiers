@@ -9,19 +9,19 @@ reflection_model = "Qwen/Qwen3.5-4B"
 # reflection_model = "Qwen/Qwen3.5-9B"
 
 [[env]]
-env_id = "primeintellect/wiki-search"
+id = "wiki_search"
 
 # [[env]]
-# env_id = "primeintellect/reverse-text"
+# id = "reverse_text"
 
 # [[env]]
-# env_id = "primeintellect/wordle"
+# id = "wordle"
 
 # [[env]]
-# env_id = "primeintellect/dspy-flights"
+# id = "dspy_flights"
 
 # [[env]]
-# env_id = "primeintellect/opencode-harbor"
+# id = "opencode_harbor"
 
 [gepa]
 max_calls = 500
@@ -32,5 +32,3 @@ max_concurrent = 32
 
 [sampling]
 max_tokens = 1024
-
-# Hosted Training docs: https://docs.primeintellect.ai/hosted-training
