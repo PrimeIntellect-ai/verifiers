@@ -153,6 +153,39 @@ id = "gsm8k-v1"
     assert upload.as_dict()["results"] == upload.results
 
 
+def test_read_upload_data_skips_invalid_v1_trace_rows(tmp_path):
+    (tmp_path / "config.toml").write_text(
+        """
+model = "gpt-4"
+
+[taskset]
+id = "gsm8k-v1"
+""".lstrip()
+    )
+    valid = {
+        "id": "trace-1",
+        "task": {"idx": 7, "prompt": "Question"},
+        "nodes": [{"message": {"role": "user", "content": "Question"}}],
+        "rewards": {"correct": 1.0},
+    }
+    invalid = {
+        "id": "trace-bad",
+        "task": {"idx": 8, "prompt": "Question"},
+        "nodes": [{"message": "not a message"}],
+        "rewards": {"correct": 0.0},
+    }
+    (tmp_path / "results.jsonl").write_text(
+        json.dumps(valid) + "\n" + json.dumps(invalid) + "\n"
+    )
+
+    upload = read_upload_data(tmp_path)
+
+    assert [row["sample_id"] for row in upload.results] == ["trace-1"]
+    assert len(upload.invalid_results) == 1
+    assert upload.invalid_results[0].line == 2
+    assert upload.invalid_results[0].reason.startswith("invalid trace:")
+
+
 def test_read_upload_data_supports_legacy_runs(tmp_path):
     (tmp_path / "metadata.json").write_text(
         json.dumps({"env": "owner/gsm8k", "model": "gpt-4", "avg_reward": 0.75})

@@ -46,8 +46,27 @@ USAGE = "usage: vf-gepa <env-id> [options] | vf-gepa @ config.toml"
 
 def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:]) if argv is None else list(argv)
-    if argv and not argv[0].startswith(("-", "@")):
-        target = argv.pop(0)
+    target_idx = None
+    bool_flags = {
+        "--verbose",
+        "--tui",
+        "--no-tui",
+        "--save-results",
+        "--no-save-results",
+    }
+    for idx, arg in enumerate(argv):
+        if arg.startswith(("-", "@")):
+            continue
+        previous = argv[idx - 1] if idx else ""
+        next_arg = argv[idx + 1] if idx + 1 < len(argv) else ""
+        follows_value = bool(previous and not previous.startswith(("-", "@")))
+        follows_bool = previous in bool_flags
+        followed_by_flag = not next_arg or next_arg.startswith("-")
+        if idx == 0 or (followed_by_flag and (follows_value or follows_bool)):
+            target_idx = idx
+            break
+    if target_idx is not None:
+        target = argv.pop(target_idx)
         argv = (
             ["@", target] if Path(target).suffix == ".toml" else ["--id", target]
         ) + argv

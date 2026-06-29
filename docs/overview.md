@@ -110,7 +110,7 @@ prime env push my-env # equivalent to --path ./environments/my_env
 To install an environment from the Environments Hub and then evaluate the local package, do:
 ```bash
 prime env install primeintellect/math-python
-prime eval run --id math_python
+prime eval run math-python
 ```
 
 ## Documentation

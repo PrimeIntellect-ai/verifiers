@@ -5,5 +5,18 @@ here — it imports the optional `textarena` dependency at module load — but s
 `verifiers.v1.tasksets.textarena`."""
 
 from verifiers.v1.tasksets.harbor import HarborConfig, HarborTaskset
+from verifiers.v1.tasksets.lean import (
+    LeanConfig,
+    LeanDatasetConfig,
+    LeanTask,
+    LeanTaskset,
+)
 
-__all__ = ["HarborConfig", "HarborTaskset"]
+__all__ = [
+    "HarborConfig",
+    "HarborTaskset",
+    "LeanConfig",
+    "LeanDatasetConfig",
+    "LeanTask",
+    "LeanTaskset",
+]

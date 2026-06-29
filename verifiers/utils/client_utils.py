@@ -1,6 +1,8 @@
+import json
 import logging
 import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -46,6 +48,19 @@ def resolve_client_configs(config: ClientConfig) -> list[ClientConfig]:
     return [resolve_client_config(config)]
 
 
+def load_prime_config() -> dict[str, Any]:
+    try:
+        config_file = Path.home() / ".prime" / "config.json"
+        if config_file.exists():
+            data = json.loads(config_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+            logger.warning("Invalid prime config: expected dict")
+    except (RuntimeError, json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        logger.warning("Failed to load prime config: %s", exc)
+    return {}
+
+
 def _build_headers_and_api_key(
     config: ClientConfig,
 ) -> tuple[dict[str, str], str | None]:
@@ -53,7 +68,10 @@ def _build_headers_and_api_key(
     api_key = os.getenv(config.api_key_var)
 
     if config.api_key_var == "PRIME_API_KEY":
-        team_id = os.getenv("PRIME_TEAM_ID")
+        prime_config = load_prime_config()
+        if not api_key:
+            api_key = prime_config.get("api_key")
+        team_id = os.getenv("PRIME_TEAM_ID") or prime_config.get("team_id")
         if team_id:
             headers["X-Prime-Team-ID"] = team_id
 

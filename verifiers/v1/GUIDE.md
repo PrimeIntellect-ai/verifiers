@@ -254,6 +254,60 @@ async def verify(self, task, trace, runtime) -> float:
     return float(r.stdout.strip() == "1.0")
 ```
 
+### Judges
+
+When grading can't be deterministic, `vf.Judge` is a reusable LLM judge: it owns the OpenAI client
+(with the Prime key/team fallback), the call, and usage/cost capture, and leaves the two things that
+differ as hooks — `build_messages` (prompt) and `parse` (verdict). Subclass it, build it once in the
+taskset `__init__`, and call it from a `@reward`:
+
+```python
+import verifiers.v1 as vf
+
+class CorrectnessJudge(vf.Judge[bool]):                 # Judge[ParsedT] — ParsedT is your verdict type
+    prompt = "Question: {question}\nAnswer: {answer}\nResponse: {response}\nCorrect? Reply yes or no."
+
+    def parse(self, response: vf.JudgeResponse[bool]) -> bool:
+        return response.text.strip().lower().startswith("yes")
+
+class MyConfig(vf.TasksetConfig):
+    judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
+
+class MyTaskset(vf.Taskset[MyTask, MyConfig]):
+    def __init__(self, config: MyConfig) -> None:
+        super().__init__(config)
+        self.judge = CorrectnessJudge(config.judge)
+
+    @vf.reward()
+    async def correct(self, task, trace) -> float:
+        result = await self.judge.evaluate(trace=trace, question=task.question, answer=task.answer, response=...)
+        return 1.0 if result.parsed else 0.0
+```
+
+`evaluate(*, trace=None, **fields)` renders the prompt (`build_messages`), calls the model, and
+parses the verdict (`parse`), returning a `JudgeResponse{text, parsed, usage}`. Passing `trace=`
+**records the call onto it** — a typed record appended to `trace.info["judge"]` (for debugging) and
+the call's tokens + cost added to `trace.extra_usage`, kept separate from the agent's `trace.usage`
+and off the message graph (so the trainer's token math is unaffected); the eval dashboard shows the
+agent's usage and `+judge` separately. The record lands even if the judge refuses, returns an empty
+structured output, or `parse` raises (the request was already billed). Omit `trace` for a pure call
+(e.g. in tests).
+
+The two hooks:
+
+| hook | default | override for |
+| --- | --- | --- |
+| `build_messages(**fields) -> str \| Messages` | formats the `prompt` template with the fields into one user message | a system+user / non-template prompt (return a `vf.Messages` list) |
+| `parse(response) -> ParsedT` | the structured object if `schema` is set, else `response.text` | your verdict (`bool`, a grade `str`, a pydantic model, a `list[float]`, …) |
+
+Good to know:
+
+- **Per-task rubric** is just a field — `prompt = "{task.rubric}\n…"` with `evaluate(trace=trace, task=task, …)` (`str.format` does attribute access on a passed-in `task`). For per-task *parsing*, parse in the reward, where the task is in scope.
+- **Structured outputs**: set `schema` to a pydantic model to use OpenAI structured outputs (where the provider supports it — most do); `JudgeResponse.parsed` is then the validated object. For an unsupported model, prompt for JSON and call `Model.model_validate_json(response.text)` in `parse`.
+- **Multiple / dynamic calls per rollout** (e.g. one per table column): call the low-level `complete(messages, *, trace=, schema=, parse=)` directly with `vf.Messages` you build — it records each call when passed `trace`.
+- **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`, Prime auto-config). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.
+- **Errors propagate**: a judge API failure errors the rollout (recorded as a `TasksetError` on the trace); the OpenAI SDK already retries transient 429/5xx/connection errors.
+
 ## Stop conditions
 
 A rollout ends when the harness finishes, a framework budget trips (`--max-turns`, token caps), or
@@ -517,7 +571,7 @@ load instead of mis-running:
 
 | flag | default | gates |
 | --- | --- | --- |
-| `SUPPORTS_MCP` | `True` | exposes the task's MCP tools to the model (set `False` for a harness with no MCP client) |
+| `SUPPORTS_MCP` | `False` | exposes the task's MCP tools to the model (opt in: set `True` for a harness with an MCP client) |
 | `SUPPORTS_USER_SIM` | `False` | drives a task's user simulator (multi-turn user injection) |
 | `SUPPORTS_MESSAGE_PROMPT` | `False` | accepts a `Messages`-list `task.prompt` (e.g. image-bearing) |
 | `APPENDS_SYSTEM_PROMPT` | `False` | emits `task.system_prompt` as a real system message (else it's folded into the user prompt with a warning) |

@@ -20,10 +20,14 @@ from pathlib import Path
 from typing import Any
 
 import tomli_w
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.trace import Trace
+
+
+class _ResultRecord(dict[str, Any]):
+    line: int
 
 
 @dataclass(frozen=True)
@@ -91,7 +95,9 @@ def read_results(path: Path) -> tuple[list[dict[str, Any]], list[InvalidResultLi
                     )
                 )
                 continue
-            results.append(result)
+            record = _ResultRecord(result)
+            record.line = line_number
+            results.append(record)
     return results, invalid
 
 
@@ -105,7 +111,10 @@ def read_artifacts(results_dir: Path) -> EvalRunArtifacts:
     )
 
 
-def convert_results_for_upload(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def convert_results_for_upload(
+    samples: list[dict[str, Any]],
+    invalid_results: list[InvalidResultLine] | None = None,
+) -> list[dict[str, Any]]:
     """Convert v1 traces to the sample schema while preserving legacy results."""
     trace_type = None
     trace_fields = {}
@@ -113,7 +122,7 @@ def convert_results_for_upload(samples: list[dict[str, Any]]) -> list[dict[str, 
     rollout_counts: dict[int, int] = {}
     converted: list[dict[str, Any]] = []
 
-    for sample in samples:
+    for sample_number, sample in enumerate(samples, start=1):
         if not (
             isinstance(sample.get("nodes"), list)
             and isinstance(sample.get("task"), dict)
@@ -139,7 +148,19 @@ def convert_results_for_upload(samples: list[dict[str, Any]]) -> list[dict[str, 
             {key: value for key, value in node.items() if key in node_fields}
             for node in sample["nodes"]
         ]
-        trace = trace_type.model_validate(trace_data)
+        try:
+            trace = trace_type.model_validate(trace_data)
+        except ValidationError as exc:
+            if invalid_results is not None:
+                errors = exc.errors()
+                reason = errors[0]["msg"] if errors else str(exc)
+                invalid_results.append(
+                    InvalidResultLine(
+                        getattr(sample, "line", sample_number),
+                        f"invalid trace: {reason}",
+                    )
+                )
+            continue
         task = trace.task.model_dump(mode="json", exclude_none=True)
         branches = trace.branches
         main_messages = (
@@ -291,7 +312,9 @@ def read_upload_data(results_dir: Path) -> EvalUploadData:
         if not isinstance(env_field, str) or not isinstance(model, str):
             raise ValueError("Missing taskset.id/id or model in config.toml")
 
-        results = convert_results_for_upload(artifacts.results)
+        results = convert_results_for_upload(
+            artifacts.results, artifacts.invalid_results
+        )
         rewards = [
             row["reward"]
             for row in results
@@ -322,7 +345,7 @@ def read_upload_data(results_dir: Path) -> EvalUploadData:
         )
 
     samples, invalid = read_results(results_dir / "results.jsonl")
-    results = convert_results_for_upload(samples)
+    results = convert_results_for_upload(samples, invalid)
     avg_pattern = re.compile(r"^avg_(.+)$")
     metrics = {}
     metadata_copy = {}

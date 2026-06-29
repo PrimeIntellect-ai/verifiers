@@ -83,15 +83,13 @@ def test_renderer_client_uses_renderer_model_name_override():
 
 
 def test_renderer_client_threads_chat_template_kwargs_into_pool():
-    """``sampling_args.extra_body.chat_template_kwargs`` land on the
-    concrete RendererConfig (resolving Auto/None against
-    ``MODEL_RENDERER_MAP`` when needed) and are stripped from the params
-    forwarded to /generate. Covers explicit / Auto / None bases."""
-    from renderers import AutoRendererConfig, Qwen3RendererConfig
+    """``sampling_args.extra_body.chat_template_kwargs`` are routed to
+    renderer pool construction and stripped from /generate sampling params.
+    Renderers owns concrete config resolution/validation."""
+    from renderers import Qwen3RendererConfig
 
     bases = [
         Qwen3RendererConfig(enable_thinking=True),
-        AutoRendererConfig(preserve_all_thinking=True),
         None,
     ]
     for base in bases:
@@ -134,29 +132,16 @@ def test_renderer_client_threads_chat_template_kwargs_into_pool():
                 )
             )
 
-        expected_preserve_all = (
-            base.preserve_all_thinking
-            if isinstance(base, AutoRendererConfig)
-            else False
-        )
         create_pool_mock.assert_called_once_with(
             "Qwen/Qwen3-8B",
-            Qwen3RendererConfig(
-                enable_thinking=False,
-                preserve_all_thinking=expected_preserve_all,
-            ),
+            base,
             size=1,
+            chat_template_kwargs={"enable_thinking": False},
         )
         assert captured["sampling_params"] == {"top_k": 20}
 
 
-def test_renderer_client_auto_resolves_against_renderer_model_name_override():
-    """When ``ClientConfig.renderer_model_name`` overrides the API request
-    model, auto-resolution looks up the OVERRIDE in ``MODEL_RENDERER_MAP``
-    (it's what loads the tokenizer the renderer holds) — not the request
-    model, which may not be in the map at all."""
-    from renderers import Qwen3RendererConfig
-
+def test_renderer_client_forwards_renderer_model_name_with_chat_template_kwargs():
     RendererClient._shared_pools.clear()
 
     client = object.__new__(RendererClient)
@@ -183,7 +168,7 @@ def test_renderer_client_auto_resolves_against_renderer_model_name_override():
         asyncio.run(
             client.get_native_response(
                 prompt=[{"role": "user", "content": "hi"}],
-                model="r8-smoke",  # not in MODEL_RENDERER_MAP
+                model="r8-smoke",
                 sampling_args={
                     "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}
                 },
@@ -191,44 +176,12 @@ def test_renderer_client_auto_resolves_against_renderer_model_name_override():
             )
         )
 
-    # Resolves against renderer_model_name (Qwen/Qwen3-8B → "qwen3") rather
-    # than the request "r8-smoke" (which would fall through to default).
     create_pool_mock.assert_called_once_with(
         "Qwen/Qwen3-8B",
-        Qwen3RendererConfig(enable_thinking=False),
+        None,
         size=1,
+        chat_template_kwargs={"enable_thinking": False},
     )
-
-
-def test_renderer_client_rejects_invalid_chat_template_kwargs():
-    """Unknown / mistyped chat_template_kwargs surface as a pydantic
-    ``ValidationError`` (``extra="forbid"`` on the typed RendererConfig)."""
-    from pydantic import ValidationError
-    from renderers import Qwen3RendererConfig
-
-    RendererClient._shared_pools.clear()
-
-    client = object.__new__(RendererClient)
-    client._renderer = None
-    client._pool_size = 1
-    client._config = vf.ClientConfig(
-        client_type="renderer", renderer_config=Qwen3RendererConfig()
-    )
-    client._client = object()  # type: ignore[attr-defined]
-
-    with pytest.raises(ValidationError, match="enable_thinkng"):
-        asyncio.run(
-            client.get_native_response(
-                prompt=[{"role": "user", "content": "hi"}],
-                model="Qwen/Qwen3-8B",
-                sampling_args={
-                    "extra_body": {
-                        "chat_template_kwargs": {"enable_thinkng": False},  # typo
-                    }
-                },
-                tools=None,
-            )
-        )
 
 
 # Provenance: Eli's review on PR #1068, comment 3150580768.
@@ -675,11 +628,26 @@ _TRUNCATED_ANCHOR_MODELS = [
 
 
 @lru_cache(maxsize=None)
-def _load_tokenizer_and_renderer(model_name: str, renderer_name: str):
+def _load_tokenizer_and_renderer(
+    model_name: str, renderer_name: str, thinking_retention: str | None = None
+):
+    from renderers import AutoRendererConfig
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    renderer = create_renderer(tokenizer, config_from_name(renderer_name))
+    config = config_from_name(renderer_name)
+    if thinking_retention is not None:
+        if config is None and "thinking_retention" in AutoRendererConfig.model_fields:
+            config = AutoRendererConfig(thinking_retention=thinking_retention)
+        elif config is not None and "thinking_retention" in type(config).model_fields:
+            updates = {"thinking_retention": thinking_retention}
+            if (
+                thinking_retention == "all"
+                and "auto_drop_analysis" in type(config).model_fields
+            ):
+                updates["auto_drop_analysis"] = False
+            config = type(config).model_validate({**config.model_dump(), **updates})
+    renderer = create_renderer(tokenizer, config)
     return tokenizer, renderer
 
 
@@ -729,11 +697,14 @@ def _build_truncated_state(tokenizer, renderer):
 async def test_get_incremental_prompt_ids_bridges_over_truncated_step(
     model_id, renderer_id
 ):
-    """The bridge anchors on the truncated step and returns new prompt_ids
-    that start with prev_prompt + prev_completion byte-identically (the
-    extension invariant). This is what keeps interleave_rollout from
-    fragmenting the rollout into two samples."""
-    tokenizer, renderer = _load_tokenizer_and_renderer(model_id, renderer_id)
+    """With full thinking retention, the bridge anchors on the truncated
+    step and returns new prompt_ids that start with prev_prompt +
+    prev_completion byte-identically (the extension invariant)."""
+    tokenizer, renderer = _load_tokenizer_and_renderer(
+        model_id,
+        renderer_id,
+        "all",
+    )
     prev_prompt_ids, prev_completion_ids, state, next_turn_prompt = (
         _build_truncated_state(tokenizer, renderer)
     )

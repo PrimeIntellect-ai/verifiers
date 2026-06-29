@@ -139,6 +139,20 @@ def test_gepa_main_parses_direct_environment(monkeypatch):
     assert captured["max_metric_calls"] == 123
 
 
+def test_gepa_main_parses_direct_environment_after_options(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("verifiers.scripts.gepa.load_endpoints", lambda _: {})
+    monkeypatch.setattr(
+        "verifiers.scripts.gepa.run_gepa_optimization",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    main(["--verbose", "--model", "test-model", "wiki_search"])
+
+    assert captured["env_id"] == "wiki_search"
+    assert captured["model"] == "test-model"
+
+
 def test_gepa_main_reads_typed_toml(monkeypatch, tmp_path: Path):
     path = tmp_path / "gepa.toml"
     path.write_text(
