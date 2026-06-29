@@ -13,8 +13,9 @@ durable as they land rather than only at the end.
 
 import asyncio
 import json
+import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,24 @@ class EvalRunArtifacts:
     config: dict[str, Any]
     results: list[dict[str, Any]]
     invalid_results: list[InvalidResultLine]
+
+
+@dataclass(frozen=True)
+class EvalUploadData:
+    """A normalized eval payload ready for host applications to upload."""
+
+    eval_name: str
+    model_name: str
+    env: str
+    metrics: dict[str, Any]
+    metadata: dict[str, Any]
+    results: list[dict[str, Any]]
+    invalid_results: list[InvalidResultLine]
+
+    def as_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data.pop("invalid_results")
+        return data
 
 
 def read_config(results_dir: Path) -> dict[str, Any]:
@@ -81,6 +100,244 @@ def read_artifacts(results_dir: Path) -> EvalRunArtifacts:
     results, invalid = read_results(results_dir / "results.jsonl")
     return EvalRunArtifacts(
         config=read_config(results_dir),
+        results=results,
+        invalid_results=invalid,
+    )
+
+
+def convert_results_for_upload(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert v1 traces to the sample schema while preserving legacy results."""
+    trace_type = None
+    trace_fields = {}
+    node_fields = {}
+    rollout_counts: dict[int, int] = {}
+    converted: list[dict[str, Any]] = []
+
+    for sample in samples:
+        if not (
+            isinstance(sample.get("nodes"), list)
+            and isinstance(sample.get("task"), dict)
+            and isinstance(sample.get("rewards"), dict)
+        ):
+            legacy_sample = dict(sample)
+            if "id" in legacy_sample and "example_id" not in legacy_sample:
+                legacy_sample["example_id"] = legacy_sample["id"]
+            converted.append(legacy_sample)
+            continue
+
+        if trace_type is None:
+            from verifiers.v1 import WireTrace
+            from verifiers.v1.graph import MessageNode
+
+            trace_type = WireTrace
+            trace_fields = trace_type.model_fields
+            node_fields = MessageNode.model_fields
+        trace_data = {
+            key: value for key, value in sample.items() if key in trace_fields
+        }
+        trace_data["nodes"] = [
+            {key: value for key, value in node.items() if key in node_fields}
+            for node in sample["nodes"]
+        ]
+        trace = trace_type.model_validate(trace_data)
+        task = trace.task.model_dump(mode="json", exclude_none=True)
+        branches = trace.branches
+        main_messages = (
+            [
+                message.model_dump(mode="json", exclude_none=True)
+                for message in branches[-1].messages
+            ]
+            if branches
+            else []
+        )
+        trajectory = [
+            {
+                "messages": [
+                    message.model_dump(mode="json", exclude_none=True)
+                    for message in branch.messages
+                ],
+                "reward": trace.reward,
+                "num_input_tokens": branch.prompt_len or branch.num_prompt_tokens,
+                "num_output_tokens": branch.completion_len
+                or branch.num_completion_tokens,
+            }
+            for branch in branches
+        ]
+        example_id = trace.task.idx
+        rollout_counts[example_id] = rollout_counts.get(example_id, 0) + 1
+        info = dict(trace.info)
+        info.update(
+            {key: value for key, value in sample.items() if key not in trace_fields}
+        )
+
+        converted.append(
+            {
+                "sample_id": trace.id,
+                "example_id": example_id,
+                "rollout_number": rollout_counts[example_id],
+                "task": task,
+                "prompt": [],
+                "completion": main_messages,
+                "answer": task.get("answer"),
+                "reward": trace.reward,
+                "timing": trace.timing.model_dump(mode="json", exclude_none=True),
+                "is_completed": trace.is_completed,
+                "is_truncated": trace.is_truncated,
+                "metrics": trace.metrics,
+                "error": (
+                    trace.error.model_dump(mode="json", exclude_none=True)
+                    if trace.error
+                    else None
+                ),
+                "stop_condition": trace.stop_condition,
+                "trajectory": trajectory,
+                "token_usage": (
+                    trace.usage.model_dump(mode="json", exclude_none=True)
+                    if trace.usage
+                    else None
+                ),
+                "num_steps": trace.num_turns,
+                "info": info or None,
+            }
+        )
+
+    return converted
+
+
+def has_eval_artifacts(directory: Path) -> bool:
+    """Return whether a directory contains native or legacy eval artifacts."""
+    if (directory / "config.toml").is_file():
+        try:
+            read_config(directory)
+        except ValueError:
+            return False
+        return (directory / "results.jsonl").is_file()
+    return (directory / "metadata.json").exists() and (
+        directory / "results.jsonl"
+    ).exists()
+
+
+def resolve_eval_artifact_dir(path: str | Path) -> Path:
+    """Validate and return the evaluation artifact directory."""
+    artifact_path = Path(path)
+
+    if artifact_path.is_file():
+        if artifact_path.name in (
+            "config.toml",
+            "results.jsonl",
+            "eval.log",
+            "metadata.json",
+        ):
+            parent = artifact_path.parent
+            if has_eval_artifacts(parent):
+                return parent
+            if (parent / "config.toml").exists():
+                raise ValueError(
+                    f"Directory '{parent}' is not a complete Verifiers run artifact"
+                )
+            raise ValueError(
+                f"Directory '{parent}' must contain both metadata.json and results.jsonl"
+            )
+        raise ValueError(
+            f"Expected a directory path, but got file: {artifact_path}\n"
+            "Pass a directory containing a native V1 run or metadata.json/results.jsonl"
+        )
+
+    if artifact_path.is_dir():
+        if has_eval_artifacts(artifact_path):
+            return artifact_path
+        if (artifact_path / "config.toml").exists():
+            raise ValueError(
+                f"Directory '{artifact_path}' is not a complete Verifiers run artifact"
+            )
+
+        has_metadata = (artifact_path / "metadata.json").exists()
+        has_results = (artifact_path / "results.jsonl").exists()
+        if has_metadata and not has_results:
+            raise ValueError(f"Directory '{artifact_path}' is missing results.jsonl")
+        if has_results and not has_metadata:
+            raise ValueError(f"Directory '{artifact_path}' is missing metadata.json")
+        raise ValueError(
+            f"Directory '{artifact_path}' is missing both metadata.json and results.jsonl"
+        )
+
+    raise FileNotFoundError(f"Path not found: {artifact_path}")
+
+
+def discover_eval_artifact_dirs(outputs_dir: Path = Path("outputs")) -> list[Path]:
+    """Find native or legacy eval output directories under an outputs root."""
+    if not outputs_dir.exists():
+        return []
+    candidates = {
+        artifact.parent
+        for pattern in ("config.toml", "metadata.json")
+        for artifact in outputs_dir.rglob(pattern)
+    }
+    return sorted(
+        directory for directory in candidates if has_eval_artifacts(directory)
+    )
+
+
+def read_upload_data(results_dir: Path) -> EvalUploadData:
+    """Read native or legacy eval artifacts into a host-uploadable payload."""
+    if (results_dir / "config.toml").is_file():
+        artifacts = read_artifacts(results_dir)
+        config = artifacts.config
+        taskset = config.get("taskset")
+        env_field = (
+            taskset.get("id") if isinstance(taskset, dict) else None
+        ) or config.get("id")
+        model = config.get("model")
+        if not isinstance(env_field, str) or not isinstance(model, str):
+            raise ValueError("Missing taskset.id/id or model in config.toml")
+
+        results = convert_results_for_upload(artifacts.results)
+        rewards = [
+            row["reward"]
+            for row in results
+            if isinstance(row.get("reward"), (int, float))
+        ]
+        return EvalUploadData(
+            eval_name=f"{env_field}-{model}",
+            model_name=model,
+            env=env_field,
+            metrics={"reward": sum(rewards) / len(rewards)} if rewards else {},
+            metadata={
+                "framework": "verifiers",
+                "run_id": results_dir.name,
+                "num_examples": config.get("num_tasks"),
+                "rollouts_per_example": config.get("num_rollouts"),
+                "resolved_config": config,
+            },
+            results=results,
+            invalid_results=artifacts.invalid_results,
+        )
+
+    metadata_path = results_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    env_field = metadata.get("env_id") or metadata.get("env")
+    if not env_field or "model" not in metadata:
+        raise ValueError(
+            f"Missing required 'env_id' or 'model' field in {metadata_path}"
+        )
+
+    samples, invalid = read_results(results_dir / "results.jsonl")
+    results = convert_results_for_upload(samples)
+    avg_pattern = re.compile(r"^avg_(.+)$")
+    metrics = {}
+    metadata_copy = {}
+    for key, value in metadata.items():
+        if match := avg_pattern.match(key):
+            metrics[match.group(1)] = value
+        else:
+            metadata_copy[key] = value
+
+    return EvalUploadData(
+        eval_name=f"{env_field}-{metadata['model']}",
+        model_name=metadata["model"],
+        env=env_field,
+        metrics=metrics,
+        metadata=metadata_copy,
         results=results,
         invalid_results=invalid,
     )
