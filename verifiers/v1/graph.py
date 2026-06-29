@@ -60,9 +60,10 @@ def _decode_ndarray(d: dict) -> np.ndarray:
     return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
-NodeTag = Literal["compaction", "subagent", "failed_tool_call"] | None
-"""Replay resume-point tag for a node: branch provenance (compaction/subagent) or tool failure
-status (failed_tool_call) — the two things the typed graph can't otherwise express. Written by
+NodeTag = Literal["compaction_before", "compaction_after", "subagent"] | None
+"""Replay resume-point tag for a node — branch provenance the typed graph can't otherwise
+express. ``compaction_before``/``compaction_after`` mark the two replay points around a
+compaction (regenerate it vs. continue from it); ``subagent`` marks a subagent fork. Written by
 the harness during generation, read by the replay-buffer resume-point selector. None for an
 ordinary node."""
 
@@ -82,10 +83,14 @@ class MessageNode(StrictBaseModel):
     the model never generated, which role alone can't tell apart from real turns."""
     kind: NodeTag = None
     """Replay resume-point tag, written by the harness during generation: branch provenance
-    (compaction/subagent) or tool failure status (failed_tool_call); None for an ordinary node.
-    Read by the replay-buffer resume-point selector. Tool identity and "is this a tool call"
-    come from the typed message, so they need no tag. A plain str/None, so it rides the wire and
-    the JSON dump automatically (no `_NODE_DUMP_EXCLUDE` entry needed)."""
+    (compaction_before/compaction_after/subagent); None for an ordinary node. Read by the
+    replay-buffer resume-point selector. A plain str/None, so it rides the wire and the JSON
+    dump automatically (no `_NODE_DUMP_EXCLUDE` entry needed)."""
+    snapshot_ref: str | None = None
+    """Durable handle to the sandbox state captured after this node's turn (registry tag /
+    modal snapshot id / object-store key); restore it to resume a replay from here. Written by
+    the per-turn snapshot hook during generation; None when snapshotting was off/unsupported.
+    A plain str/None, so it rides the wire and the JSON dump automatically."""
     token_ids: list[int] = Field(default_factory=list)
     """This message's delta contribution to the cumulative token sequence: its leading
     template scaffold + its own tokens — for an assistant, the generation-prompt scaffold

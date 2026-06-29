@@ -16,7 +16,7 @@ from verifiers.v1.clients import RolloutContext
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
-from compact.annotate import branch_start_nodes, tool_nodes
+from compact.annotate import compaction_after_nodes, compaction_before_nodes
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
@@ -41,12 +41,10 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        tool_log_path = "/tmp/vf_compact_tool_log.json"
         env = {
             "OPENAI_BASE_URL": endpoint,
             "OPENAI_API_KEY": secret,
             "OPENAI_MODEL": ctx.model,
-            "TOOL_LOG": tool_log_path,
         }
         if mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard
@@ -57,13 +55,11 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
         program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
         result = await runtime.run_program([*program, trace.task.prompt], env)
 
-        # Tag replay resume points on the finished graph (Option B: typed MessageNode.kind).
-        # The harness is the only writer; the program was the sensor for tool failures.
-        for nid in branch_start_nodes(trace):  # this harness rewrites context every turn
-            trace.nodes[nid].kind = "compaction"
-        by_id = tool_nodes(trace)
-        for rec in json.loads(await runtime.read(tool_log_path)):
-            nid = by_id.get(rec["tool_call_id"])
-            if nid is not None:
-                trace.nodes[nid].kind = rec["tag"]
+        # Tag compaction resume points on the finished graph (Option B: typed MessageNode.kind).
+        # Two points per compaction: the post-compaction branch start (resume to continue from
+        # the compaction message) and the pre-compaction branch leaf (resume to regenerate it).
+        for nid in compaction_after_nodes(trace):
+            trace.nodes[nid].kind = "compaction_after"
+        for nid in compaction_before_nodes(trace):
+            trace.nodes[nid].kind = "compaction_before"
         return result

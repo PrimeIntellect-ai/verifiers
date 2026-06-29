@@ -1,0 +1,13 @@
+[project]
+name = "replay"
+version = "0.1.0"
+description = "replay — a replay-buffer taskset that resumes old rollouts from compaction points."
+requires-python = ">=3.10"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["replay"]
