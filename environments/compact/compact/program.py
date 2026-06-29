@@ -27,8 +27,13 @@ import os
 import re
 import sys
 from contextlib import AsyncExitStack
+from pathlib import Path
 
 from openai import AsyncOpenAI
+
+# Where to surface per-tool-call failures the trace can't keep (the harness reads this back
+# and tags the matching nodes). The harness sets it; absent when running the program standalone.
+TOOL_LOG = os.environ.get("TOOL_LOG")
 
 SYSTEM = (
     "You solve a task across several turns; your NOTES are your only lasting memory. The "
@@ -103,6 +108,9 @@ async def main() -> None:
     config = json.loads(os.environ.get("MCP_CONFIG", "{}"))
     notes: str | None = None  # the durable memory carried across turns
     tool_output: str | None = None  # the last tool result, kept for exactly one turn
+    tool_log: list[dict] = []  # per-tool-call status the trace drops; surfaced for the harness
+    if TOOL_LOG:
+        Path(TOOL_LOG).write_text("[]")  # ensure the harness always finds the sensor's log
     async with AsyncExitStack() as stack:
         tools, dispatch = (
             await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
@@ -129,13 +137,19 @@ async def main() -> None:
                 results = []
                 for call in message.tool_calls:
                     args = json.loads(call.function.arguments or "{}")
-                    result = (
-                        await call_mcp(dispatch, call.function.name, args)
-                        if call.function.name in dispatch
-                        else f"error: unknown tool {call.function.name!r}"
-                    )
+                    if call.function.name in dispatch:
+                        try:
+                            result, tag = await call_mcp(dispatch, call.function.name, args), None
+                        except Exception as e:  # the failure signal the trace can't keep
+                            result, tag = f"error: {e}", "failed_tool_call"
+                    else:
+                        result, tag = f"error: unknown tool {call.function.name!r}", "failed_tool_call"
+                    if tag:
+                        tool_log.append({"tool_call_id": call.id, "tag": tag})
                     results.append(f"{call.function.name}:\n{result}")
                 tool_output = "\n\n".join(results)
+                if TOOL_LOG:  # the harness reads this back to tag failed-tool-call nodes
+                    Path(TOOL_LOG).write_text(json.dumps(tool_log))
 
 
 if __name__ == "__main__":

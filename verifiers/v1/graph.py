@@ -21,7 +21,7 @@ import binascii
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from pydantic import ConfigDict, Field, field_serializer, field_validator
@@ -60,6 +60,13 @@ def _decode_ndarray(d: dict) -> np.ndarray:
     return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
+NodeTag = Literal["compaction", "subagent", "failed_tool_call"] | None
+"""Replay resume-point tag for a node: branch provenance (compaction/subagent) or tool failure
+status (failed_tool_call) — the two things the typed graph can't otherwise express. Written by
+the harness during generation, read by the replay-buffer resume-point selector. None for an
+ordinary node."""
+
+
 class MessageNode(StrictBaseModel):
     """One message in the graph: a message plus the tokens it adds to the cumulative
     sequence. Concatenating a root→leaf path's nodes reconstructs that branch's full token
@@ -73,6 +80,12 @@ class MessageNode(StrictBaseModel):
     """True iff a model call produced this message (the response passed to `commit`); False for
     every prompt-supplied message — including assistant/tool messages fabricated as context
     the model never generated, which role alone can't tell apart from real turns."""
+    kind: NodeTag = None
+    """Replay resume-point tag, written by the harness during generation: branch provenance
+    (compaction/subagent) or tool failure status (failed_tool_call); None for an ordinary node.
+    Read by the replay-buffer resume-point selector. Tool identity and "is this a tool call"
+    come from the typed message, so they need no tag. A plain str/None, so it rides the wire and
+    the JSON dump automatically (no `_NODE_DUMP_EXCLUDE` entry needed)."""
     token_ids: list[int] = Field(default_factory=list)
     """This message's delta contribution to the cumulative token sequence: its leading
     template scaffold + its own tokens — for an assistant, the generation-prompt scaffold
