@@ -273,19 +273,21 @@ def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
     (completion) token generated across its turns and input is its last turn's prompt — the full
     final context the model saw. A rollout yields one training sample per branch (a linear trace
     is a single branch; compaction and subagents add more), so the totals sum them — matching
-    `Trace.prompt_len` / `Trace.completion_len`. (Output can exceed the final context — reasoning
-    tokens count toward completions but aren't re-fed — so it's not derived by subtraction.)
+    `Trace.num_input_tokens` / `Trace.num_output_tokens`. (Output can exceed the final context —
+    reasoning tokens count toward completions but aren't re-fed — so it's not derived by
+    subtraction.)
 
-    Prefers the token-id counts; falls back to provider-reported usage when the endpoint returns
-    no token ids (e.g. plain OpenAI completions), so the counts aren't shown as 0/0. Returns
-    the branch count from the same derived view so each dashboard tick materializes it once."""
+    Both counts read token ids when present and fall back to provider-reported usage when the
+    endpoint returns no token ids (e.g. plain OpenAI completions), so the counts aren't shown as
+    0/0. Returns the branch count from the same derived view so each dashboard tick materializes
+    it once."""
     usage = trace.usage
     cached = usage.cached_input_tokens if usage else None
     reasoning = usage.reasoning_tokens if usage else None
     branches = trace.branches
     nbranches = len(branches)
-    prompt = sum(b.input_len for b in branches)
-    completion = sum(b.output_len for b in branches)
+    prompt = sum(b.num_input_tokens for b in branches)
+    completion = sum(b.num_output_tokens for b in branches)
     return prompt, completion, cached, reasoning, nbranches
 
 
