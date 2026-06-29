@@ -143,10 +143,10 @@ class MessageNode(StrictBaseModel):
     optional run-image refs), not image processor tensors. `Branch.multi_modal_data` concatenates
     them along the path for the trainer. Old processed-payload sidecars are rejected.
     """
-    usage: Usage | None = Field(default=None, exclude=True)
-    """Provider-reported token usage for this message's response (assistant nodes). Transient
-    (excluded from wire/disk); lets the live dashboard show token counts even when the endpoint
-    returns no token ids (so `token_ids` is empty)."""
+    usage: Usage | None = None
+    """Provider-reported token usage for this message's response (assistant nodes). Preserved on
+    the wire and on disk so dashboards can show token counts and cost even when the endpoint
+    returns no token ids."""
     routed_experts: np.ndarray | None = None
     """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
     top_k]`, the expert ids inference selected for exactly this node's tokens. Attributed from
