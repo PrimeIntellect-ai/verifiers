@@ -84,8 +84,8 @@ def _validate_raw_mm_item(item: Any) -> dict[str, Any]:
             "v1 multimodal sidecars must be raw image descriptors, "
             "not processed multimodal payloads"
         )
-    if not isinstance(item.get("raw_image_id"), str) or not item["raw_image_id"]:
-        raise ValueError("v1 multimodal sidecars require raw_image_id")
+    if not isinstance(item.get("raw_image_uri"), str) or not item["raw_image_uri"]:
+        raise ValueError("v1 multimodal sidecars require raw_image_uri")
     return dict(item)
 
 
