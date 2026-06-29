@@ -231,24 +231,17 @@ def resolve_runtime_config(
 class Environment:
     def __init__(self, config: EnvConfig) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
-        from verifiers.v1.taskset import Taskset
 
         self.config = config
         self.taskset = load_taskset(config.taskset)
         self.harness = load_harness(config.harness)
-        if (
-            not self.harness.SUPPORTS_MCP
-            and type(self.taskset).tools is not Taskset.tools
-        ):
+        if not self.harness.SUPPORTS_MCP and self.taskset.has_tools():
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not support MCP tools, but taskset "
                 f"{self.taskset.config.id!r} exposes tool servers (MCP). Run it with a harness "
                 f"that supports MCP (e.g. --harness.id default), or use a taskset without tools."
             )
-        if (
-            not self.harness.SUPPORTS_USER_SIM
-            and type(self.taskset).user is not Taskset.user
-        ):
+        if not self.harness.SUPPORTS_USER_SIM and self.taskset.has_user():
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not drive a user simulator, but taskset "
                 f"{self.taskset.config.id!r} defines one (Taskset.user). Run it with a harness that "

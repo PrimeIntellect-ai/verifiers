@@ -115,11 +115,14 @@ uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docke
 
 ### OpenEnv
 
-The built-in `OpenEnvTaskset` maps a configured image, prompt, workdir, and resources onto an
-ordinary task. It starts the image's OpenEnv server and exposes its JSON-RPC tools through
-`vf.JSONRPCToolset`; the selected Verifiers harness owns the agent loop, OpenEnv owns tool
-execution, and the ordinary model/tool messages form the trace. It deliberately has no default
-image or OpenEnv-specific harness.
+The built-in `OpenEnvTaskset` maps a configured image, OpenEnv contract, workdir, and resources
+onto an ordinary task. It deliberately has no default image or OpenEnv-specific harness.
+
+- `contract = "mcp"` starts the image's OpenEnv server and exposes its JSON-RPC tools through
+  `vf.JSONRPCToolset`; use any harness with `SUPPORTS_MCP`.
+- `contract = "gym"` starts the same server, resets it over OpenEnv's persistent WebSocket API,
+  renders observations as user turns, and sends assistant JSON actions into `step`; use a harness
+  with `SUPPORTS_USER_SIM`.
 
 `openenv-echo-v1` is the example environment that pins OpenEnv's official Echo image and its
 hello-world prompt:
@@ -131,9 +134,8 @@ uv run --with-editable . --with-editable environments/openenv_echo_v1 \
   eval openenv-echo-v1 -n 1 --harness.runtime.type docker --harness.id rlm
 ```
 
-Use any harness with `SUPPORTS_MCP`. Echo's production MCP contract is intentionally unscored,
-so this smoke test returns a neutral `0.0` reward while retaining the hello-world tool call and
-result in the Verifiers trace.
+Echo's production MCP contract is intentionally unscored, so this smoke test returns a neutral
+`0.0` reward while retaining the hello-world tool call and result in the Verifiers trace.
 
 ### Swappable runtime
 

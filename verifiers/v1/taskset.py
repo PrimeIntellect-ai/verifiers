@@ -72,6 +72,10 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         for an already-running server). Empty by default; override to give a task tools."""
         return []
 
+    def has_tools(self) -> bool:
+        """Whether this configured taskset can expose MCP tools."""
+        return type(self).tools is not Taskset.tools
+
     def user(self, task: TaskT) -> User | None:
         """A user simulator for this task — structurally a tool server (an MCP server
         with a runtime), but driven by the framework, not exposed to the model. After
@@ -79,6 +83,10 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         reply as a user turn. None by default; override to make a task a simulated
         multi-turn conversation (e.g. a TextArena game)."""
         return None
+
+    def has_user(self) -> bool:
+        """Whether this configured taskset can drive the rollout through a user simulator."""
+        return type(self).user is not Taskset.user
 
     async def setup(self, task: TaskT, runtime: Runtime) -> None:
         """Prepare the live runtime for this task, after `runtime.start()` and before the
