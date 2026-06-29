@@ -122,11 +122,14 @@ There is no NeMo-specific harness or program.
 
 ```bash
 uv run --with nemo-gym==0.3.0 eval nemo_gym -n 1 -r 1 -c 1
+uv run --with nemo-gym==0.3.0 eval nemo_gym -n 1 -r 1 -c 1 \
+  --taskset.resource-server workplace_assistant
 ```
 
-The taskset does not interpret the example's weather behavior. It forwards declared calls
-to the corresponding NeMo Gym resource server through one generic `nemo_gym_call` tool.
-The standard Verifiers harness drives the model/tool loop and captures the trace.
+The taskset does not interpret the example behavior. It loads rows from the configured
+`resource_server`, uses `config_name` only when the server's YAML has a different name,
+and forwards declared calls through one generic `nemo_gym_call` tool. The standard
+Verifiers harness drives the model/tool loop and captures the trace.
 
 ### Swappable runtime
 
