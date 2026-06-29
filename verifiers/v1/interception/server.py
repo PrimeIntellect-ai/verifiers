@@ -37,6 +37,7 @@ from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1 import graph
 from verifiers.v1.errors import (
+    InterceptionError,
     OverlongPromptError,
     RolloutError,
     TasksetError,
@@ -262,7 +263,18 @@ class InterceptionServer:
         # alias after parsing so the wire body does not survive model inference.
         request._read_bytes = None
         del raw
-        body = await session.ctx.client.prepare_request_body(dialect, body)
+        try:
+            body = await session.ctx.client.prepare_request_body(dialect, body)
+        except RolloutError as e:
+            return self._fail(session, dialect, e)
+        except Exception as e:
+            return self._fail(
+                session,
+                dialect,
+                InterceptionError(
+                    f"request preparation failed: {type(e).__name__}: {e}"
+                ),
+            )
         logger.debug(
             "intercept %s: id=%s stream=%s",
             request.path,
@@ -289,9 +301,18 @@ class InterceptionServer:
             and session.trace.num_turns == 0
         ):
             if session.opening is None:
-                session.opening = await session.ctx.client.prepare_messages(
-                    dialect, await session.user("")
-                )
+                try:
+                    session.opening = await session.ctx.client.prepare_messages(
+                        dialect, await session.user("")
+                    )
+                except RolloutError as e:
+                    return self._fail(session, dialect, e)
+                except Exception as e:
+                    return self._fail(
+                        session,
+                        dialect,
+                        UserError(f"user simulator failed: {type(e).__name__}: {e}"),
+                    )
             body = dialect.extend(body, None, session.opening)
             prompt = [*prompt, *session.opening]
             # If the simulator ended at the open (its taskset's `@stop` now fires), the loop's
