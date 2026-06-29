@@ -165,22 +165,9 @@ class Branch(StrictBaseModel):
         return merged if merged.shape[0] == total else None
 
     @property
-    def completion_len(self) -> int:
-        """All assistant-generated (model-sampled) tokens across this branch."""
-        return sum(sum(n.mask) for n in self.nodes)
-
-    @property
-    def total_tokens(self) -> int:
+    def num_total_tokens(self) -> int:
         """This branch's full sequence length (final-turn prompt + every completion)."""
         return sum(len(n.token_ids) for n in self.nodes)
-
-    @property
-    def prompt_len(self) -> int:
-        """Input context size: the final-turn prompt = full sequence minus the last completion."""
-        last_completion = next(
-            (sum(n.mask) for n in reversed(self.nodes) if any(n.mask)), 0
-        )
-        return self.total_tokens - last_completion
 
     @property
     def usage(self) -> Usage | None:
@@ -188,36 +175,31 @@ class Branch(StrictBaseModel):
         return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)
 
     @property
-    def num_prompt_tokens(self) -> int:
-        """Final-turn input tokens from provider-reported usage — a fallback for display when
-        the endpoint returns no token ids (so `prompt_len` is 0); 0 if no usage was reported."""
+    def num_input_tokens(self) -> int:
+        """Input-context size: the final-turn prompt (full sequence minus the last completion).
+        Read from token ids when present (training), else from provider-reported usage so eval
+        clients that return no token ids don't report 0."""
+        last_completion = next(
+            (sum(n.mask) for n in reversed(self.nodes) if any(n.mask)), 0
+        )
+        token_len = self.num_total_tokens - last_completion
+        if token_len:
+            return token_len
         last = next(
             (n.usage for n in reversed(self.nodes) if n.usage is not None), None
         )
         return last.input_tokens if last else 0
 
     @property
-    def num_completion_tokens(self) -> int:
-        """All completion tokens across the branch from provider-reported usage — a fallback for
-        display when the endpoint returns no token ids; 0 if no usage was reported."""
+    def num_output_tokens(self) -> int:
+        """All assistant-generated (completion) tokens across this branch (reasoning included, so
+        it can exceed the final context). Read from token ids when present (training), else from
+        provider-reported usage so eval clients that return no token ids don't report 0."""
+        token_len = sum(sum(n.mask) for n in self.nodes)
+        if token_len:
+            return token_len
         usage = self.usage
         return usage.completion_tokens if usage else 0
-
-    @property
-    def input_len(self) -> int:
-        """Best-available input-context size: the token-id `prompt_len`, falling back to
-        provider-reported `num_prompt_tokens` when the endpoint returns no token ids (so it isn't
-        reported as 0). For display/metrics — use `prompt_len` when you need the strict token-id
-        count (e.g. token-cap enforcement)."""
-        return self.prompt_len or self.num_prompt_tokens
-
-    @property
-    def output_len(self) -> int:
-        """Best-available completion size: the token-id `completion_len`, falling back to
-        provider-reported `num_completion_tokens` when the endpoint returns no token ids (so it
-        isn't reported as 0). For display/metrics — use `completion_len` when you need the strict
-        token-id count (e.g. training, token-cap enforcement)."""
-        return self.completion_len or self.num_completion_tokens
 
 
 _NODE_DUMP_EXCLUDE: dict = {
@@ -264,7 +246,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     extra_usage: list[Usage] = Field(default_factory=list)
     """Token usage from model calls that aren't part of the message graph — LLM judges and other
     auxiliary scoring calls (see `verifiers.v1.judge`). Kept separate from `usage` (the agent's own
-    spend) and off the graph, so branch/turn counts and the trainer's token math (`total_tokens`,
+    spend) and off the graph, so branch/turn counts and the trainer's token math (`num_total_tokens`,
     `branches`) see only sampled nodes; consumers that want a grand total add the two (e.g. the eval
     dashboard shows the agent's usage and `+judge` separately)."""
 
@@ -298,22 +280,22 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         return next((n for n in reversed(self.nodes) if n.sampled), None)
 
     @property
-    def prompt_len(self) -> int:
+    def num_input_tokens(self) -> int:
         """Total input context summed over branches (each branch's final-turn prompt) —
         the trajectory yields one training sample per branch, so totals aggregate them."""
-        return sum(branch.prompt_len for branch in self.branches)
+        return sum(branch.num_input_tokens for branch in self.branches)
 
     @property
-    def completion_len(self) -> int:
+    def num_output_tokens(self) -> int:
         """Total assistant-generated (completion) tokens summed over branches — every token
         the model produced (reasoning included), so it can exceed the final context size."""
-        return sum(branch.completion_len for branch in self.branches)
+        return sum(branch.num_output_tokens for branch in self.branches)
 
     @property
-    def total_tokens(self) -> int:
+    def num_total_tokens(self) -> int:
         """Total sequence length summed over branches (each branch's final-turn prompt +
         completion) — used for token batching."""
-        return sum(branch.total_tokens for branch in self.branches)
+        return sum(branch.num_total_tokens for branch in self.branches)
 
     @property
     def usage(self) -> Usage | None:
