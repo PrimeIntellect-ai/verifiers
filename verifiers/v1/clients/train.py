@@ -10,7 +10,6 @@ needs a running vLLM engine.
 
 import asyncio
 import json
-import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -36,9 +35,6 @@ from verifiers.v1.types import (
     Usage,
 )
 from verifiers.v1.utils.multimodal import prepare_images_inplace
-
-
-logger = logging.getLogger(__name__)
 
 
 def tool_to_wire(tool: Tool) -> dict:
@@ -212,24 +208,12 @@ class TrainClient(Client):
 
     async def prepare_request_body(self, dialect: Dialect, body: dict) -> dict:
         if isinstance(dialect, ChatDialect):
-            stats = await asyncio.to_thread(prepare_images_inplace, body)
-            if stats.images_rewritten:
-                logger.info(
-                    "offloaded %d image(s) to run assets (%.1f MiB)",
-                    stats.images_rewritten,
-                    stats.bytes_written / (1024.0 * 1024.0),
-                )
+            await asyncio.to_thread(prepare_images_inplace, body)
         return body
 
     async def prepare_messages(self, dialect: Dialect, messages: list) -> list:
         if isinstance(dialect, ChatDialect):
-            stats = await asyncio.to_thread(prepare_images_inplace, messages)
-            if stats.images_rewritten:
-                logger.info(
-                    "offloaded %d simulator image(s) to run assets (%.1f MiB)",
-                    stats.images_rewritten,
-                    stats.bytes_written / (1024.0 * 1024.0),
-                )
+            await asyncio.to_thread(prepare_images_inplace, messages)
         return messages
 
     async def get_response(

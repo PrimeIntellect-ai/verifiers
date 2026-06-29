@@ -60,28 +60,16 @@ def _decode_ndarray(d: dict) -> np.ndarray:
     return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
-def _contains_array_payload(value: Any) -> bool:
-    if isinstance(value, np.ndarray):
-        return True
-    if isinstance(value, dict):
-        return bool(value.get("__nd__")) or any(
-            _contains_array_payload(v) for v in value.values()
-        )
-    if isinstance(value, (list, tuple)):
-        return any(_contains_array_payload(v) for v in value)
-    return False
+_PROCESSED_MM_KEYS = frozenset({"pixel_values", "image_embeds", "image_features"})
 
 
-_PROCESSED_MM_KEYS = {"pixel_values", "image_embeds", "image_features"}
-
-
-def _contains_processed_payload_key(value: Any) -> bool:
+def _contains_processed_mm_key(value: Any) -> bool:
     if isinstance(value, dict):
         return bool(_PROCESSED_MM_KEYS.intersection(value)) or any(
-            _contains_processed_payload_key(v) for v in value.values()
+            _contains_processed_mm_key(v) for v in value.values()
         )
     if isinstance(value, (list, tuple)):
-        return any(_contains_processed_payload_key(v) for v in value)
+        return any(_contains_processed_mm_key(v) for v in value)
     return False
 
 
@@ -91,12 +79,13 @@ def _validate_raw_mm_item(item: Any) -> dict[str, Any]:
             "v1 multimodal sidecars must be raw image descriptor dicts, "
             f"got {type(item).__name__}"
         )
-    if _contains_processed_payload_key(item):
-        raise TypeError("v1 does not carry processed image payloads")
-    if _contains_array_payload(item):
+    if _contains_processed_mm_key(item):
         raise TypeError(
-            "v1 multimodal sidecars must be raw image descriptors, not arrays"
+            "v1 multimodal sidecars must be raw image descriptors, "
+            "not processed multimodal payloads"
         )
+    if not isinstance(item.get("raw_image_id"), str) or not item["raw_image_id"]:
+        raise ValueError("v1 multimodal sidecars require raw_image_id")
     return dict(item)
 
 
