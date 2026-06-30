@@ -171,7 +171,9 @@ def overrides(config: BaseModel, skip: frozenset[str] = frozenset()) -> list[str
         if field in skip:
             continue
         value = getattr(config, field)
-        if isinstance(value, BaseModel):  # nested config: flatten, descending the dotted skip
+        if isinstance(
+            value, BaseModel
+        ):  # nested config: flatten, descending the dotted skip
             child_skip = frozenset(
                 s[len(field) + 1 :] for s in skip if s.startswith(f"{field}.")
             )
