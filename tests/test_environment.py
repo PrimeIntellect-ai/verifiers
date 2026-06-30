@@ -652,6 +652,12 @@ class TestMaybeRetry:
 
         assert states[0].get("error") is None
         assert env.call_counts[0] == 3
+        assert states[0]["retry"]["attempts"] == 3
+        assert states[0]["retry"]["retry_count"] == 2
+        assert states[0]["retry"]["exhausted"] is False
+        assert [
+            event["error"] for event in states[0]["retry"]["events"]
+        ] == ["InfraError", "InfraError"]
 
     @pytest.mark.asyncio
     async def test_no_retry_after_non_retryable_error(self, mock_client, make_input):
@@ -696,6 +702,33 @@ class TestMaybeRetry:
         assert rollout_outputs[0].get("error") is not None
         error_data = rollout_outputs[0]["error"]
         assert "InfraError" == error_data["error"]
+        retry = rollout_outputs[0]["retry"]
+        assert retry["attempts"] == 3
+        assert retry["retry_count"] == 2
+        assert retry["exhausted"] is True
+        assert retry["events"][-1]["error"] == "InfraError"
+
+    @pytest.mark.asyncio
+    async def test_group_retry_metadata_is_attached_to_each_rollout(
+        self, mock_client, make_input
+    ):
+        """Grouped scoring should expose retry history on every returned state."""
+        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
+        env = RetryCounterEnv(
+            fail_count=1, dataset=dataset, parser=Parser(), rubric=Rubric()
+        )
+
+        inputs = [make_input(example_id=0), make_input(example_id=0)]
+        outputs = await env.generate(
+            inputs, client=mock_client, model="test-model", max_retries=2
+        )
+
+        rollout_outputs = outputs["outputs"]
+        assert len(rollout_outputs) == 2
+        assert env.call_counts[0] == 4
+        assert all(output.get("error") is None for output in rollout_outputs)
+        assert all(output["retry"]["attempts"] == 2 for output in rollout_outputs)
+        assert all(output["retry"]["retry_count"] == 1 for output in rollout_outputs)
 
     @pytest.mark.asyncio
     async def test_retries_serialized_infra_error_subclass(self):
@@ -720,6 +753,36 @@ class TestMaybeRetry:
         result = await maybe_retry(attempt, max_retries=2, initial=0.0, max_wait=0.0)()
         assert calls["n"] == 3  # 1 initial + 2 retries (InfraError is retryable)
         assert result["error"] == serialized  # last result returned after exhaustion
+
+    @pytest.mark.asyncio
+    async def test_group_retry_metadata_uses_retryable_state_index(self):
+        """Retry metadata should point at the state that actually triggered retry."""
+        from verifiers.utils.async_utils import maybe_retry
+
+        calls = {"n": 0}
+
+        async def attempt():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return [
+                    {"error": vf.ToolError("bad tool call")},
+                    {"error": vf.InfraError("worker timed out")},
+                ]
+            return [
+                {"error": None},
+                {"error": None},
+            ]
+
+        result = await maybe_retry(
+            attempt,
+            max_retries=1,
+            initial=0.0,
+            max_wait=0.0,
+        )()
+
+        assert calls["n"] == 2
+        assert result[0]["retry"]["events"][0]["state_index"] == "1"
+        assert result[1]["retry"]["events"][0]["state_index"] == "1"
 
 
 class TestEmptyModelResponseErrors:
