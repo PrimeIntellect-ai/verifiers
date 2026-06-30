@@ -14,7 +14,6 @@ import contextlib
 import time
 
 from pydantic import BaseModel
-from pydantic.fields import FieldInfo
 from rich.console import Console, Group
 from rich.markup import escape
 from rich.progress_bar import ProgressBar
@@ -126,27 +125,14 @@ def _warning(config: EvalConfig) -> Text | None:
 # Field names whose dict *values* may be secrets (tokens / API keys passed as the harness's
 # process env). The override row shows only their KEYS (`env={HF_TOKEN, RLM_FOO}`) so a secret
 # never lands on the live terminal.
-_KEYS_ONLY_FIELDS = frozenset({"env"})
-
-
-def fmt_override(value: object, keys_only: bool = False) -> str:
-    """Render a value as one compact segment: a dict as `{k=v,k=v}` (or `{k,k}` when `keys_only`),
-    a list/tuple as `[a,b]`, anything else as its `str`."""
+def fmt_override(value: object) -> str:
+    """Render a value as one compact segment: a dict as `{k=v,k=v}`, a list/tuple as `[a,b]`,
+    anything else as its `str`."""
     if isinstance(value, dict):
-        if keys_only:
-            return "{" + ",".join(str(k) for k in value) + "}"
         return "{" + ",".join(f"{k}={v}" for k, v in value.items()) + "}"
     if isinstance(value, (list, tuple)):
         return "[" + ",".join(str(v) for v in value) + "]"
     return str(value)
-
-
-def field_default(field: FieldInfo) -> object:
-    """A field's declared default."""
-    if field.default_factory is not None:
-        # All config defaults use the no-arg factory form; the validated-data form isn't used here.
-        return field.default_factory()  # type: ignore[call-arg]
-    return field.default
 
 
 def overrides(
@@ -154,12 +140,14 @@ def overrides(
     default: BaseModel | None = None,
     skip: frozenset[str] = frozenset(),
 ) -> list[str]:
-    """`field=value` segments for the fields the *user* customized, sorted. Diffs values (not
-    `model_fields_set`, which a saved-config round-trip re-marks wholesale) against the enclosing
-    field's declared default — `default` is that reference instance, threaded through recursion so
-    a pinned nested default (e.g. a taskset's `user=UserConfig(colocated=True)`) reads as
-    unchanged. `skip` holds dotted paths, so a nested field hides by full path
-    (`harness.runtime.type`)."""
+    """`field=value` segments for the fields the *user* customized, sorted, diffed against each
+    field's declared default. We compare *values* rather than `model_fields_set` on purpose: a
+    `--resume` run rebuilds its config via `EvalConfig.model_validate(config.toml)`
+    (`cli/eval/resume.py`), and that `config.toml` is dumped with `exclude_none` (every field, not
+    just the set ones), so `model_fields_set` would mark *all* of them as user overrides. `default`
+    is the reference instance, threaded through recursion so a pinned nested default (e.g. a
+    taskset's `user=UserConfig(colocated=True)`) reads as unchanged. `skip` holds dotted paths, so
+    a nested field hides by full path (`harness.runtime.type`)."""
     segments: list[str] = []
     fields = type(config).model_fields
     for field in sorted(fields):
@@ -167,9 +155,10 @@ def overrides(
             continue
         value = getattr(config, field)
         # Baseline to diff against: the field's own declared default, or the parent default's
-        # sub-value when recursing.
+        # sub-value when recursing. `get_default` returns `PydanticUndefined` for a required field
+        # (no default), so a required field always reads as set.
         field_def = (
-            field_default(fields[field])
+            fields[field].get_default(call_default_factory=True)
             if default is None
             else getattr(default, field, None)
         )
@@ -199,10 +188,7 @@ def overrides(
                 )
             )
         elif value != field_def:
-            # A secret-bearing field (e.g. `env`) shows keys only — never its values on-screen.
-            segments.append(
-                f"{field}={fmt_override(value, keys_only=field in _KEYS_ONLY_FIELDS)}"
-            )
+            segments.append(f"{field}={fmt_override(value)}")
     return segments
 
 
