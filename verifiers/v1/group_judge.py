@@ -48,6 +48,7 @@ carries the task's toolchain (the candidates' tests actually run).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 import uuid
@@ -75,7 +76,9 @@ changes did NOT land — it is the untouched base).
 Investigate with the tools: run the pristine tests against each candidate (e.g.
 `cd /judge/rollouts/<i> && <how this repo runs its tests>`), read the diffs and transcripts,
 and watch for regressions, for solutions that don't address the root cause, and for any attempt
-to tamper with or hard-code around the tests.
+to tamper with or hard-code around the tests. The _-prefixed files above are added by this
+harness and are git-excluded, so `git -C /judge/rollouts/<i> diff` shows only that candidate's
+own change.
 
 Then score the candidates RELATIVE TO EACH OTHER — spread your scores and avoid ties; only the
 within-group ordering and spacing matter. Finish by calling submit_scores with one score and one
@@ -186,11 +189,12 @@ class AgenticGroupJudge:
         await runtime.start()
         try:
             order = list(range(n))
-            random.Random(repr(task.idx)).shuffle(order)  # deterministic per task, hides identity
+            random.Random(task.idx).shuffle(order)  # deterministic per task, hides identity
             tests = self.tests_tar(task)
             await runtime.run(["sh", "-c", "mkdir -p /judge/rollouts"], {})
-            for displayed, real in enumerate(order):
-                await self._stage_rollout(runtime, displayed, traces[real], tests)
+            await asyncio.gather(
+                *(self._stage_rollout(runtime, displayed, traces[real], tests) for displayed, real in enumerate(order))
+            )
             displayed_scores = await self._run_agent(runtime, n)
             scores = [0.0] * n
             for displayed, real in enumerate(order):
@@ -210,6 +214,11 @@ class AgenticGroupJudge:
         clone = await runtime.run(["sh", "-c", f"rm -rf {d} && git clone -q {self.repo_path} {d}"], {})
         if clone.exit_code != 0:
             raise RuntimeError(f"judge clone of {self.repo_path} failed: {truncate_output(clone.stderr)}")
+        # Keep the candidate's git state pristine: our scaffolding must not show up when the judge
+        # inspects `git diff`/`git status` for the candidate's real change (or for test tampering).
+        await runtime.run(
+            ["sh", "-c", f"printf '%s\\n' _cand.patch _apply.log _transcript.txt _tests >> {d}/.git/info/exclude"], {}
+        )
         await runtime.write(f"{d}/_cand.patch", info["patch"].encode())
         apply = await runtime.run(["sh", "-c", f"cd {d} && git apply --binary _cand.patch"], {})
         # Don't fail the group if a patch is messy — record the outcome so the judge sees whether
@@ -217,7 +226,9 @@ class AgenticGroupJudge:
         await runtime.write(f"{d}/_apply.log", f"exit={apply.exit_code}\n{apply.stderr}".encode())
         await runtime.write(f"{d}/_transcript.txt", info.get("transcript", "").encode())
         await runtime.write(f"{d}/_tests.tar", tests)
-        await runtime.run(["sh", "-c", f"cd {d} && mkdir -p _tests && tar xf _tests.tar -C _tests"], {})
+        await runtime.run(
+            ["sh", "-c", f"cd {d} && mkdir -p _tests && tar xf _tests.tar -C _tests && rm _tests.tar"], {}
+        )
 
     async def _run_agent(self, runtime: Runtime, n: int) -> list[float]:
         messages: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt.format(n=n, last=n - 1)}]
