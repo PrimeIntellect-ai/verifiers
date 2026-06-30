@@ -49,9 +49,7 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTask, ReverseTextConfig]):
 
     @vf.reward(weight=1.0)
     async def lcs(self, task: ReverseTextTask, trace: vf.Trace) -> float:
-        completion = (
-            trace.assistant_messages[-1].content if trace.assistant_messages else ""
-        )
+        completion = trace.last_reply
         match = _TAG.search(completion or "")
         response = match.group(1).strip() if match else ""
         return SequenceMatcher(None, response, task.answer).ratio()
