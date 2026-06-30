@@ -1,10 +1,10 @@
 """Consumer-side buffer reading + resume-point selection (Option B: ``MessageNode`` fields).
 
 Turns the compaction tags the producing harness stamped on ``MessageNode.kind`` into resume
-points the ReplayTaskset/ReplayHarness sample. ``build_seed`` produces the seed conversation per
-mode; ``snapshot_ref_of`` returns the durable sandbox handle to restore (None until per-turn
-snapshot capture is wired). Only ``get_tag``/``snapshot_ref_of`` differ from Option A — everything
-else (buffer reading, resume-point logic, seed building) is shared.
+points the tasksets/harnesses sample. ``build_seed`` produces the seed conversation per mode;
+``snapshot_ref_of`` returns the durable sandbox handle to restore (None until per-turn snapshot
+capture is wired). Only ``get_tag``/``snapshot_ref_of`` differ from Option A — everything else
+(buffer reading, resume-point logic, seed building) is shared.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from verifiers.v1 import graph
 from verifiers.v1.trace import Trace, WireTrace
 from verifiers.v1.types import Messages, UserMessage
 
-DEFAULT_KINDS = ["recheck", "compaction_after", "compaction_before"]
 DEFAULT_FOLLOWUP = "Check your work. If anything is wrong, fix it and give the corrected final answer."
 
 
