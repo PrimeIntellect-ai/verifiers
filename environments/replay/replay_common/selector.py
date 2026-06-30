@@ -16,7 +16,6 @@ from verifiers.v1 import graph
 from verifiers.v1.trace import Trace, WireTrace
 from verifiers.v1.types import Messages, UserMessage
 
-DEFAULT_KINDS = ["recheck", "compaction_after", "compaction_before"]
 DEFAULT_FOLLOWUP = "Check your work. If anything is wrong, fix it and give the corrected final answer."
 
 
