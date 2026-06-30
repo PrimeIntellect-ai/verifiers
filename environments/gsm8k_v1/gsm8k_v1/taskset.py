@@ -47,9 +47,7 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
     async def correct(
         self, task: GSM8KTask, trace: vf.Trace, runtime: vf.Runtime
     ) -> float:
-        prediction = (
-            trace.assistant_messages[-1].content if trace.assistant_messages else ""
-        )
+        prediction = trace.last_reply
         result = await runtime.run_uv_script(
             VERIFY, args=[task.answer, prediction or ""]
         )
