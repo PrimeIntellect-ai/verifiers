@@ -1,11 +1,11 @@
-"""The built-in bash_edit harness: the `bash` chat loop plus a local `edit` tool.
+"""The built-in default harness: a chat loop with a local `bash` tool and an optional `edit` tool.
 
-Same growing-message-list chat loop as the `bash` harness — a local `bash` tool that runs shell
-commands in the runtime, plus the taskset's MCP tools — with one extra local tool: `edit`, a
-single-occurrence string replacement in a file (ported from the rlm `edit` skill). For agentic
-tasks where targeted file edits are common and a model handles `edit` more reliably than
-hand-built `sed`/heredoc shell. Its uv script (deps: openai, mcp) is prepared during setup, then
-launched as the harness program.
+A growing-message-list chat loop with a local `bash` tool that runs shell commands in the runtime,
+the taskset's MCP tools, and — on by default, gated by the `edit` config flag — a local `edit`
+tool for single-occurrence string replacement in a file (ported from the rlm `edit` skill; a model
+handles it more reliably than hand-built `sed`/heredoc shell). This is the fallback harness when no
+`--harness.id` is given. Its uv script (deps: openai, mcp) is prepared during setup, then launched
+as the harness program. For a pure chat loop with no local tools, use the `null` harness.
 """
 
 import json
@@ -20,19 +20,25 @@ from verifiers.v1.trace import Trace
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 # Frames the model as a coding agent and names its local tools (a pure-text chat loop gets no
-# harness-injected prompt).
-BASH_EDIT_SYSTEM_PROMPT = (
-    "You are a coding agent. You have access to a bash tool for running shell commands and "
-    "an edit tool for single-occurrence string replacement in a file."
+# harness-injected prompt). The edit clause is appended only when the `edit` tool is enabled.
+BASH_SYSTEM_PROMPT = (
+    "You are a coding agent. You have access to a bash tool for running shell commands."
+)
+EDIT_SYSTEM_PROMPT = (
+    "You also have an edit tool for single-occurrence string replacement in a file."
 )
 
 
-class BashEditHarnessConfig(HarnessConfig):
-    """The built-in bash_edit harness. A uv script (deps: openai, mcp), so it runs in any runtime
+class DefaultHarnessConfig(HarnessConfig):
+    """The built-in default harness. A uv script (deps: openai, mcp), so it runs in any runtime
     that has `uv` (the harness bootstraps it) with no other setup."""
 
+    edit: bool = True
+    """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
+    `bash`. On by default; set `--harness.edit false` for a bash-only agent."""
 
-class BashEditHarness(Harness[BashEditHarnessConfig]):
+
+class DefaultHarness(Harness[DefaultHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_USER_SIM = True
@@ -51,9 +57,10 @@ class BashEditHarness(Harness[BashEditHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
-        system_prompt = "\n\n".join(
-            p for p in (BASH_EDIT_SYSTEM_PROMPT, system_prompt) if p
-        )
+        harness_prompt = BASH_SYSTEM_PROMPT
+        if self.config.edit:
+            harness_prompt = f"{BASH_SYSTEM_PROMPT} {EDIT_SYSTEM_PROMPT}"
+        system_prompt = "\n\n".join(p for p in (harness_prompt, system_prompt) if p)
         env = {**self.config.resolved_env}
         args = [
             f"--base-url={endpoint}",
@@ -61,6 +68,8 @@ class BashEditHarness(Harness[BashEditHarnessConfig]):
             f"--model={ctx.model}",
             f"--system-prompt={system_prompt}",
         ]
+        if self.config.edit:
+            args.append("--edit")
         if mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard
             # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).

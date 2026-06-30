@@ -2,17 +2,17 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp"]
 # ///
-"""The bash harness's program: a chat loop with a local `bash` tool (+ optional MCP tools).
+"""The default harness's program: a chat loop with a local `bash` tool (+ optional `edit`, MCP).
 
-A growing-message-list chat loop. It always offers a local `bash` tool that runs shell commands
-in the runtime; when the harness sets MCP_CONFIG (a standard `mcpServers` URL map) it also
-connects to those servers over streamable HTTP, exposes their tools to the model as
-`<server>_<tool>`, and routes those calls to the server. The loop runs until the model answers
-without a tool call.
+A growing-message-list chat loop. It always offers a local `bash` tool that runs shell commands in
+the runtime; with `--edit` it also offers a local `edit` tool that replaces a unique string in a
+file. When the harness sets MCP_CONFIG (a standard `mcpServers` URL map) it also connects to those
+servers over streamable HTTP, exposes their tools to the model as `<server>_<tool>`, and routes
+those calls to the server. The loop runs until the model answers without a tool call.
 
 It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the SDKs — the
 harness bootstraps `uv` in the runtime. The interception endpoint, per-rollout secret, and model
-arrive as argv (not env), so the bash tool's local subprocesses never inherit them.
+arrive as argv (not env), so the local tools' subprocesses never inherit them.
 """
 
 import argparse
@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 from contextlib import AsyncExitStack
+from pathlib import Path
 
 from openai import AsyncOpenAI
 
@@ -39,6 +40,31 @@ BASH_TOOL = {
     },
 }
 
+EDIT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "edit",
+        "description": (
+            "Replace a unique string in a file. old_str must appear exactly once in the file."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path (relative to cwd or absolute).",
+                },
+                "old_str": {
+                    "type": "string",
+                    "description": "Exact string to find (must appear exactly once).",
+                },
+                "new_str": {"type": "string", "description": "Replacement string."},
+            },
+            "required": ["path", "old_str", "new_str"],
+        },
+    },
+}
+
 
 def run_bash(command: str) -> str:
     try:
@@ -48,6 +74,36 @@ def run_bash(command: str) -> str:
         return result.stdout + result.stderr
     except Exception as e:
         return f"error: {e}"
+
+
+def run_edit(path: str, old_str: str, new_str: str) -> str:
+    if not isinstance(path, str) or not path:
+        return "error: 'path' is required"
+    if not isinstance(old_str, str) or not isinstance(new_str, str):
+        return "error: 'old_str' and 'new_str' must be strings"
+    if not old_str:
+        # '' matches everywhere (''.count('') == 1 on an empty file), so it would insert
+        # rather than replace — reject it to keep the "exactly once" contract honest.
+        return "error: 'old_str' must be a non-empty string"
+    filepath = Path(path)
+    if not filepath.is_absolute():
+        filepath = Path.cwd() / filepath
+    if not filepath.exists():
+        return f"error: {path} not found"
+    # Reading/writing can fail on a directory, permissions, or non-text content; return the
+    # error as a tool result instead of letting it abort the chat loop.
+    try:
+        content = filepath.read_text()
+    except Exception as e:
+        return f"error: could not read {path}: {e}"
+    count = content.count(old_str)
+    if count != 1:
+        return f"error: old_str must appear exactly once in {path} (found {count})"
+    try:
+        filepath.write_text(content.replace(old_str, new_str, 1))
+    except Exception as e:
+        return f"error: could not write {path}: {e}"
+    return f"Edited {path}"
 
 
 async def chat(
@@ -126,6 +182,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--prompt", default="")
     parser.add_argument("--mcp-config", default="")
+    parser.add_argument("--edit", action="store_true")
     return parser.parse_args()
 
 
@@ -137,7 +194,10 @@ async def main() -> None:
         mcp_tools, dispatch = (
             await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
         )
-        tools = [BASH_TOOL] + mcp_tools
+        tools = [BASH_TOOL]
+        if args.edit:
+            tools.append(EDIT_TOOL)
+        tools += mcp_tools
         messages = (
             [{"role": "system", "content": args.system_prompt}]
             if args.system_prompt
@@ -175,6 +235,13 @@ async def main() -> None:
                 elif name == "bash":
                     content = await asyncio.to_thread(
                         run_bash, tool_args.get("command", "")
+                    )
+                elif name == "edit":
+                    content = await asyncio.to_thread(
+                        run_edit,
+                        tool_args.get("path"),
+                        tool_args.get("old_str"),
+                        tool_args.get("new_str"),
                     )
                 else:
                     content = f"error: unknown tool {name!r}"

@@ -96,7 +96,8 @@ Harness examples (under `environments/`):
 The program that drives the rollout — same taskset, different driver:
 
 ```bash
-uv run eval gsm8k-v1 -n 1                     # null harness (fallback): bare agent (MCP tools only)
+uv run eval gsm8k-v1 -n 1                     # default harness (fallback): a bash + edit agent
+uv run eval gsm8k-v1 -n 1 --harness.id null   # bare chat loop, no local tools (MCP tools only)
 uv run eval gsm8k-v1 -n 1 --harness.id rlm    # the rlm harness
 uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
 ```
@@ -106,7 +107,7 @@ filesystem, so run it under a containerized runtime: `docker` locally, or a remo
 `modal` sandbox (not the default `subprocess`). 
 
 ```bash
-uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id bash            # bash-only agent
+uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id default         # the bash + edit agent
 uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
 uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
 uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id codex           # the codex CLI agent

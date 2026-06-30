@@ -39,7 +39,7 @@ class HarnessConfig(BaseConfig):
     id is supplied by the caller (`--harness.id` / toml / a taskset's bundled harness), never
     pinned on the subclass."""
 
-    id: EnvId = "null"
+    id: EnvId = "default"
     """The harness id, which selects this harness: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
     `EnvId`). Set via `--harness.id`."""

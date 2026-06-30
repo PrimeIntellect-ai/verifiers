@@ -250,7 +250,7 @@ markers = [
     "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
     "shared: v1 e2e cases with a shared (one-per-eval) tool server",
     "null: v1 e2e cases on the null harness",
-    "bash: v1 e2e cases on the bash harness",
+    "default: v1 e2e cases on the default harness",
     "rlm: v1 e2e cases on the rlm harness",
     "kimi_code: v1 e2e cases on the kimi-code harness",
     "codex: v1 e2e cases on the codex harness",
