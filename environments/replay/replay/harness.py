@@ -69,7 +69,7 @@ class ReplayHarness(DefaultHarness):
         src, point = sample
 
         ref = snapshot_ref_of(src, point["node"])
-        if ref is not None:  # exec/sandbox replay; skeleton refs are None -> skip
+        if ref is not None and point["kind"] != "judge":  # judge needs no sandbox; skeleton refs are None
             await runtime.restore(ref)
 
         # Stash provenance so ReplayTaskset.score can reuse the original verifier.
