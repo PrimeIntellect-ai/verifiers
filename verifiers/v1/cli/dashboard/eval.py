@@ -27,7 +27,12 @@ from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
-from verifiers.v1.utils.format import format_count, format_mean, format_time
+from verifiers.v1.utils.format import (
+    format_count,
+    format_mean,
+    format_override,
+    format_time,
+)
 from verifiers.utils.pricing_utils import format_cost_usd
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
@@ -122,62 +127,43 @@ def _warning(config: EvalConfig) -> Text | None:
     return None
 
 
-def fmt_override(value: object) -> str:
-    """Render a value as one compact segment: a dict as `{k=v,k=v}`, a list/tuple as `[a,b]`,
-    anything else as its `str`."""
-    if isinstance(value, dict):
-        return "{" + ",".join(f"{k}={v}" for k, v in value.items()) + "}"
-    if isinstance(value, (list, tuple)):
-        return "[" + ",".join(str(v) for v in value) + "]"
-    return str(value)
-
-
 def overrides(
     config: BaseModel,
     default: BaseModel | None = None,
     skip: frozenset[str] = frozenset(),
 ) -> list[str]:
     """`field=value` segments for the fields the *user* customized, sorted, diffed against each
-    field's declared default. We compare *values* rather than `model_fields_set` on purpose: a
-    `--resume` run rebuilds its config via `EvalConfig.model_validate(config.toml)`
-    (`cli/eval/resume.py`), and that `config.toml` is dumped with `exclude_none` (every field, not
-    just the set ones), so `model_fields_set` would mark *all* of them as user overrides. `default`
-    is the reference instance, threaded through recursion so a pinned nested default (e.g. a
-    taskset's `user=UserConfig(colocated=True)`) reads as unchanged. `skip` holds dotted paths, so
-    a nested field hides by full path (`harness.runtime.type`)."""
+    field's declared default. Not `model_fields_set`: a `--resume` run reloads its config via
+    `model_validate(config.toml)`, and that toml is dumped with `exclude_none` (every field), so
+    `model_fields_set` would flag them all. `default` is the reference instance, threaded through
+    recursion so a pinned nested default (a taskset's `user=UserConfig(colocated=True)`) reads as
+    unchanged. `skip` holds dotted paths (`harness.runtime.type`)."""
     segments: list[str] = []
     fields = type(config).model_fields
     for field in sorted(fields):
         if field in skip:
             continue
         value = getattr(config, field)
-        # Baseline to diff against: the field's own declared default, or the parent default's
-        # sub-value when recursing. `get_default` returns `PydanticUndefined` for a required field
-        # (no default), so a required field always reads as set.
+        # `get_default` returns `PydanticUndefined` for a required field, so it always reads as set.
         field_def = (
             fields[field].get_default(call_default_factory=True)
             if default is None
             else getattr(default, field, None)
         )
-        if isinstance(
-            value, BaseModel
-        ):  # nested config: flatten, descending the dotted skip
+        if isinstance(value, BaseModel):  # nested config: flatten as `field.<sub>`
             child_skip = frozenset(
                 s[len(field) + 1 :] for s in skip if s.startswith(f"{field}.")
             )
-            # A switched discriminator (the nested class itself changed, e.g. subprocess→docker)
-            # is an override the per-field diff misses — within the new class `type` equals its
-            # own default — so surface it explicitly. `child_skip` lets the harness hide its own
-            # `runtime.type` (the `env` row already shows it).
+            # A switched discriminator (e.g. subprocess→docker) is an override the per-field diff
+            # misses — within the new class `type` equals its own default — so surface it.
             class_changed = type(value) is not type(field_def)
             if (
                 class_changed
                 and "type" not in child_skip
                 and (discriminator := getattr(value, "type", None)) is not None
             ):
-                segments.append(f"{field}.type={fmt_override(discriminator)}")
-            # A switched class is a different shape, so diff its sub-fields against their own
-            # class defaults; otherwise against the default instance.
+                segments.append(f"{field}.type={format_override(discriminator)}")
+            # A switched class is a new shape, so diff against its own defaults, not the instance.
             segments.extend(
                 f"{field}.{seg}"
                 for seg in overrides(
@@ -185,7 +171,7 @@ def overrides(
                 )
             )
         elif value != field_def:
-            segments.append(f"{field}={fmt_override(value)}")
+            segments.append(f"{field}={format_override(value)}")
     return segments
 
 
@@ -202,15 +188,12 @@ def Overview(config: EvalConfig) -> Table:
     )
     model = f"{config.model}  ({sampling})" if sampling else config.model
     grid.add_row("model", f"{model}  via {config.client.base_url}")
-    # Non-default taskset/harness knobs the user set (`id`/`name` are in the `env` row above;
-    # `harness.runtime` is shown here only when its sub-fields were customized — the runtime
-    # `type` already reads in the `env` row). Each row appears only when there's an override.
-    # `escape` the joined cell: an override value (or our `[...]`/`{...}` delimiters) can contain
-    # Rich markup — without it `env={TOKEN=[red]x[/red]}` would be parsed as styling and dropped.
+    # Non-default knobs the user set, one row each when non-empty. `escape` the cell: an override
+    # value (or our `[...]`/`{...}` delimiters) can carry Rich markup that would otherwise be
+    # parsed as styling and dropped. `id` is in the `env` row; harness `runtime.type` too (hidden
+    # here), but only for the harness — a taskset's `user.runtime.type` has no other display.
     if taskset_over := overrides(config.taskset, skip=frozenset({"id"})):
         grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
-    # `runtime.type` is already in the `env` row, so hide it here — but only for the harness's
-    # own runtime (a taskset's `user.runtime.type` has no other display and must still show).
     if harness_over := overrides(
         config.harness, skip=frozenset({"id", "runtime.type"})
     ):
