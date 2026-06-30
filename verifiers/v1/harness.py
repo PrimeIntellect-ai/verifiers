@@ -52,10 +52,10 @@ class HarnessConfig(BaseConfig):
     """Additional environment variables for the harness program. Harness-owned endpoint,
     authentication, and model variables take precedence."""
     forward_env: list[str] = Field(default_factory=list)
-    """Names of environment variables to forward from the orchestrator process into the harness
-    program's runtime (e.g. `["SERPER_API_KEY"]`), for secrets that must not be written into a
-    checked-in config. Resolved from `os.environ` at launch — names absent from the environment
-    are skipped, and an explicit `env` value takes precedence over a forwarded one."""
+    """Names of environment variables to forward into the harness program's runtime, for
+    secrets that must not be written into a checked-in config. Resolved from `os.environ` at
+    launch — names absent from the environment are skipped, and an explicit `env` value takes
+    precedence over a forwarded one."""
     disabled_tools: list[str] | None = None
     """Harness-specific tool names to disable."""
 
