@@ -1,7 +1,12 @@
 import importlib
+import io
+import json
 import logging
+import os
 import subprocess
 import sys
+import tarfile
+import tempfile
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -16,6 +21,36 @@ ENVIRONMENTS_HUB_URL = "https://api.primeintellect.ai/api/v1/environmentshub"
 def _uv_pip_cmd(subcommand: str, *args: str) -> list[str]:
     """Run uv pip against the active Python interpreter for this process."""
     return ["uv", "pip", subcommand, "--python", sys.executable, *args]
+
+
+def load_prime_config() -> dict:
+    """Read `~/.prime/config.json` (the prime CLI's credential store), or {} if absent."""
+    try:
+        config_file = Path.home() / ".prime" / "config.json"
+        if config_file.exists():
+            data = json.loads(config_file.read_text())
+            if isinstance(data, dict):
+                return data
+            logger.warning("Invalid prime config: expected dict")
+    except (RuntimeError, json.JSONDecodeError, OSError) as e:
+        logger.warning(f"Failed to load prime config: {e}")
+    return {}
+
+
+def prime_auth_headers() -> dict[str, str]:
+    """Resolve the prime API credentials the same way the eval client does: `PRIME_API_KEY`
+    (or `~/.prime/config.json`) for the bearer token, `PRIME_TEAM_ID` (or the config) for
+    the team header. The Hub's metadata endpoint 404s an unauthenticated request even for
+    PUBLIC envs the caller can otherwise list, so every Hub request sends these."""
+    prime_config = load_prime_config()
+    headers: dict[str, str] = {}
+    api_key = os.getenv("PRIME_API_KEY") or prime_config.get("api_key", "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    team_id = os.getenv("PRIME_TEAM_ID") or prime_config.get("team_id")
+    if team_id:
+        headers["X-Prime-Team-ID"] = team_id
+    return headers
 
 
 def normalize_package_name(name: str) -> str:
@@ -121,7 +156,7 @@ def install_from_hub(env_id: str) -> bool:
 
     try:
         url = f"{ENVIRONMENTS_HUB_URL}/{owner}/{name}/@{version}"
-        response = requests.get(url, timeout=30)
+        response = requests.get(url, headers=prime_auth_headers(), timeout=30)
         response.raise_for_status()
         data = response.json()
         details = data.get("data", data)
@@ -145,15 +180,14 @@ def install_from_hub(env_id: str) -> bool:
         except Exception:
             wheel_url = None
 
+    # Private envs publish no wheel/index, only a (presigned) source archive — download and
+    # build it locally, the same source-pull-and-build path `prime env install` takes.
     if not simple_index_url and not wheel_url:
-        if details.get("visibility") == "PRIVATE":
-            logger.error(
-                f"Cannot install private environment '{env_id}'. "
-                "Use 'prime env pull' to download and install locally."
-            )
-        else:
+        package_url = details.get("package_url")
+        if not package_url:
             logger.error(f"No installation method available for '{env_id}'")
-        return False
+            return False
+        return _install_from_source_archive(env_id, package_url)
 
     pkg_name = normalize_package_name(name)
 
@@ -178,6 +212,42 @@ def install_from_hub(env_id: str) -> bool:
     logger.debug(f"Command: {' '.join(cmd)}")
 
     result = subprocess.run(cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        logger.error(f"Installation failed: {result.stderr}")
+        return False
+
+    logger.info(f"Successfully installed {env_id}")
+    importlib.invalidate_caches()
+    return True
+
+
+def _install_from_source_archive(env_id: str, package_url: str) -> bool:
+    """Download a source archive (`package_url`) and build+install it with uv.
+
+    Private Hub envs publish no wheel or simple index, only this source tarball. The
+    metadata fetch that yields `package_url` is authenticated, but the URL itself is
+    presigned, so the download needs no further credentials."""
+    logger.info(f"Installing {env_id} from source archive...")
+    try:
+        resp = requests.get(package_url, timeout=120)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        logger.error(f"Failed to download source archive: {e}")
+        return False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "src"
+        with tarfile.open(fileobj=io.BytesIO(resp.content)) as tar:
+            try:
+                tar.extractall(src, filter="data")  # py3.12+: refuse unsafe members
+            except TypeError:
+                tar.extractall(src)
+        result = subprocess.run(
+            [*_uv_pip_cmd("install"), "--upgrade", str(src)],
+            capture_output=True,
+            text=True,
+        )
 
     if result.returncode != 0:
         logger.error(f"Installation failed: {result.stderr}")
