@@ -34,7 +34,7 @@ from openai import (
     RateLimitError,
     UnprocessableEntityError,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 from verifiers.types import ClientConfig
 from verifiers.utils.client_utils import setup_openai_client
@@ -188,6 +188,10 @@ class QuestOpenAIClient:
                 )
             except _QUEST_JUDGE_ERROR_TYPES as exc:
                 _raise_quest_judge_error(exc, model=model)
+            except ValidationError as exc:
+                raise vf.InvalidModelResponseError(
+                    f"QUEST judge returned invalid structured response for {model}: {exc}"
+                ) from exc
             choice = _single_choice(response, context="structured")
             parsed = choice.message.parsed
             if parsed is None:
