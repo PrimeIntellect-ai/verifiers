@@ -185,10 +185,12 @@ def Overview(config: EvalConfig) -> Table:
     # Non-default taskset/harness knobs the user set (`id`/`name` are in the `env` row above;
     # `harness.runtime` is shown here only when its sub-fields were customized — the runtime
     # `type` already reads in the `env` row). Each row appears only when there's an override.
+    # `escape` the joined cell: an override value (or our `[...]`/`{...}` delimiters) can contain
+    # Rich markup — without it `env={TOKEN=[red]x[/red]}` would be parsed as styling and dropped.
     if taskset_over := overrides(config.taskset, skip=frozenset({"id"})):
-        grid.add_row("taskset", "  ·  ".join(taskset_over))
+        grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
     if harness_over := overrides(config.harness, skip=frozenset({"id"})):
-        grid.add_row("harness", "  ·  ".join(harness_over))
+        grid.add_row("harness", escape("  ·  ".join(harness_over)))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
