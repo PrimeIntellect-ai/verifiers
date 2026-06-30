@@ -149,39 +149,56 @@ def field_default(field: FieldInfo) -> object:
     return field.default
 
 
-def overrides(config: BaseModel, skip: frozenset[str] = frozenset()) -> list[str]:
-    """`field=value` segments for the fields whose value differs from the field's default — the
-    knobs in effect, sorted. Comparing values (not `model_fields_set`) stays stable across a
-    saved-config round-trip (`--resume` / `@ file.toml` re-mark every persisted field as set).
-    `skip` holds dotted paths, so a nested field hides by full path (`harness.runtime.type`)."""
+def overrides(
+    config: BaseModel,
+    default: BaseModel | None = None,
+    skip: frozenset[str] = frozenset(),
+) -> list[str]:
+    """`field=value` segments for the fields the *user* customized, sorted. Diffs values (not
+    `model_fields_set`, which a saved-config round-trip re-marks wholesale) against the enclosing
+    field's declared default — `default` is that reference instance, threaded through recursion so
+    a pinned nested default (e.g. a taskset's `user=UserConfig(colocated=True)`) reads as
+    unchanged. `skip` holds dotted paths, so a nested field hides by full path
+    (`harness.runtime.type`)."""
     segments: list[str] = []
     fields = type(config).model_fields
     for field in sorted(fields):
         if field in skip:
             continue
         value = getattr(config, field)
+        # Baseline to diff against: the field's own declared default, or the parent default's
+        # sub-value when recursing.
+        field_def = (
+            field_default(fields[field])
+            if default is None
+            else getattr(default, field, None)
+        )
         if isinstance(
             value, BaseModel
         ):  # nested config: flatten, descending the dotted skip
             child_skip = frozenset(
                 s[len(field) + 1 :] for s in skip if s.startswith(f"{field}.")
             )
-            # A discriminated nested config (e.g. a `runtime`) whose concrete class differs from
-            # the field default's class is itself an override — surface its `type` discriminator.
-            # The per-field comparison below can't: within the new class `type` equals that
-            # class's own default (e.g. a `DockerConfig` always has `type="docker"`), so it never
-            # reads as changed. `runtime.type` lives in `child_skip` only for the harness (the
-            # `env` row already shows it); a taskset's `user.runtime.type` still surfaces here.
+            # A switched discriminator (the nested class itself changed, e.g. subprocess→docker)
+            # is an override the per-field diff misses — within the new class `type` equals its
+            # own default — so surface it explicitly. `child_skip` lets the harness hide its own
+            # `runtime.type` (the `env` row already shows it).
+            class_changed = type(value) is not type(field_def)
             if (
-                type(value) is not type(field_default(fields[field]))
+                class_changed
                 and "type" not in child_skip
                 and (discriminator := getattr(value, "type", None)) is not None
             ):
                 segments.append(f"{field}.type={fmt_override(discriminator)}")
+            # A switched class is a different shape, so diff its sub-fields against their own
+            # class defaults; otherwise against the default instance.
             segments.extend(
-                f"{field}.{seg}" for seg in overrides(value, skip=child_skip)
+                f"{field}.{seg}"
+                for seg in overrides(
+                    value, default=None if class_changed else field_def, skip=child_skip
+                )
             )
-        elif value != field_default(fields[field]):
+        elif value != field_def:
             # A secret-bearing field (e.g. `env`) shows keys only — never its values on-screen.
             segments.append(
                 f"{field}={fmt_override(value, keys_only=field in _KEYS_ONLY_FIELDS)}"
