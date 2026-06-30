@@ -14,6 +14,7 @@ import contextlib
 import time
 
 from pydantic import BaseModel
+from pydantic.fields import FieldInfo
 from rich.console import Console, Group
 from rich.markup import escape
 from rich.progress_bar import ProgressBar
@@ -133,28 +134,37 @@ def fmt_override(value: object) -> str:
     return str(value)
 
 
+def field_default(field: FieldInfo) -> object:
+    """A field's declared default — calling its `default_factory` (so `env`'s default reads as
+    `{}`, not the factory) or its plain `default` (`PydanticUndefined` for a required field,
+    which equals no value, so a required field always reads as set)."""
+    if field.default_factory is not None:
+        # All config defaults use the no-arg factory form; the validated-data form isn't used here.
+        return field.default_factory()  # type: ignore[call-arg]
+    return field.default
+
+
 def overrides(config: BaseModel, skip: frozenset[str] = frozenset()) -> list[str]:
-    """`field=value` segments for the fields the user actually set on a config (pydantic's
-    `model_fields_set` — the discriminator/defaults a user never touched stay hidden, so the
-    row never overwhelms). A nested config (e.g. a non-`subprocess` `runtime`) recurses with
-    its `type` discriminator dropped, flattened as `runtime.<field>=…`. Sorted for a stable
-    order (`model_fields_set` is a set)."""
+    """`field=value` segments for the fields whose value differs from the field's default — the
+    knobs actually in effect, so the row never overwhelms with defaults. Compares against the
+    declared default rather than `model_fields_set`: a config rebuilt from a saved run's
+    `config.toml` (`--resume` / `@ file.toml`) has *every* persisted field marked as set, so
+    `model_fields_set` would show defaults as overrides — the value comparison is stable across
+    that round-trip. A nested config (e.g. a non-`subprocess` `runtime`) recurses with its
+    `type` discriminator dropped, flattened as `runtime.<field>=…`. Sorted for a stable order."""
     segments: list[str] = []
-    for field in sorted(config.model_fields_set):
+    fields = type(config).model_fields
+    for field in sorted(fields):
         if field in skip:
             continue
         value = getattr(config, field)
-        if (
-            value is None
-        ):  # an explicitly-cleared optional reads as a default — nothing to show
-            continue
         if isinstance(
             value, BaseModel
         ):  # nested config: flatten, hiding its `type` discriminator
             segments.extend(
                 f"{field}.{seg}" for seg in overrides(value, skip=frozenset({"type"}))
             )
-        else:
+        elif value != field_default(fields[field]):
             segments.append(f"{field}={fmt_override(value)}")
     return segments
 
