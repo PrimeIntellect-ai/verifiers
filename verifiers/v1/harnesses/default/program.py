@@ -1,18 +1,19 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["openai", "mcp"]
+# dependencies = ["openai", "mcp", "httpx"]
 # ///
-"""The default harness's program: a chat loop with a local `bash` tool (+ optional `edit`, MCP).
+"""The default harness's program: a chat loop with a local `bash` tool (+ optional `edit`, `web_search`, MCP).
 
 A growing-message-list chat loop. It always offers a local `bash` tool that runs shell commands in
 the runtime; with `--edit` it also offers a local `edit` tool that replaces a unique string in a
-file. When the harness sets MCP_CONFIG (a standard `mcpServers` URL map) it also connects to those
-servers over streamable HTTP, exposes their tools to the model as `<server>_<tool>`, and routes
-those calls to the server. The loop runs until the model answers without a tool call.
+file, and with `--web-search` a `web_search` tool (Serper Google search). When the harness sets
+MCP_CONFIG (a standard `mcpServers` URL map) it also connects to those servers over streamable
+HTTP, exposes their tools to the model as `<server>_<tool>`, and routes those calls to the server.
+The loop runs until the model answers without a tool call.
 
-It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the SDKs — the
-harness bootstraps `uv` in the runtime. The interception endpoint, per-rollout secret, and model
-arrive as argv (not env), so the local tools' subprocesses never inherit them.
+It runs as a uv script (deps: openai, mcp, httpx), so the chat + tool plumbing is just the SDKs —
+the harness bootstraps `uv` in the runtime. The interception endpoint, per-rollout secret, model,
+and serper key arrive as argv (not env), so the local tools' subprocesses never inherit them.
 """
 
 import argparse
@@ -23,7 +24,10 @@ import subprocess
 from contextlib import AsyncExitStack
 from pathlib import Path
 
+import httpx
 from openai import AsyncOpenAI
+
+SERPER_URL = "https://google.serper.dev/search"
 
 BASH_TOOL = {
     "type": "function",
@@ -64,6 +68,72 @@ EDIT_TOOL = {
         },
     },
 }
+
+
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the web with Google (via serper.dev). Returns the top organic results as "
+            "title, URL, and snippet. Issue focused queries and call several times to cover "
+            "different angles; use the bash tool (e.g. curl) to read a result page in full."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query."},
+                "num_results": {
+                    "type": "integer",
+                    "description": "Number of results to return (default 5).",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+def run_web_search(query: str, api_key: str, num_results: int = 5) -> str:
+    """Serper Google web search -> formatted organic results (ported from the rlm `search` skill).
+
+    The key arrives as an argument (handed in by the harness over argv, like the interception
+    secret) rather than from the env, so the agent's `bash` subprocesses never inherit it."""
+    if not query:
+        return "error: 'query' is required"
+    if not api_key:
+        return "error: SERPER_API_KEY is not set in the eval environment"
+    # num_results arrives straight from model tool JSON, so it may be a non-int (e.g. "ten");
+    # coerce defensively — `organic[:num_results]` below would otherwise raise on a bad slice.
+    try:
+        num_results = max(1, int(num_results))
+    except (TypeError, ValueError):
+        num_results = 5
+    try:
+        response = httpx.post(
+            SERPER_URL,
+            json={"q": query},
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            timeout=45,
+        )
+        response.raise_for_status()
+        organic = response.json().get("organic") or []
+    except Exception as e:
+        return f"web_search failed ({e}). Try again or rephrase the query."
+    sections = []
+    for i, result in enumerate(organic[:num_results], 1):
+        title = (result.get("title") or "").strip() or "Untitled"
+        lines = [f"Result {i}: {title}"]
+        if link := (result.get("link") or "").strip():
+            lines.append(f"URL: {link}")
+        if snippet := (result.get("snippet") or "").strip():
+            lines.append(f"  - {snippet}")
+        sections.append("\n".join(lines))
+    return (
+        "\n\n---\n\n".join(sections)
+        if sections
+        else f"No results returned for query: {query}"
+    )
 
 
 def run_bash(command: str) -> str:
@@ -183,12 +253,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--edit", action="store_true")
+    parser.add_argument("--web-search", action="store_true")
+    parser.add_argument("--serper-key", default="")
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
-    client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
+    # No client-side retries: re-sending a request whose turn the interception already committed
+    # re-samples it and forks the trace into an extra dead-end branch. A generous timeout lets a
+    # slow turn finish instead of timing out and re-sending; genuine failures surface as error rows.
+    client = AsyncOpenAI(
+        base_url=args.base_url, api_key=args.api_key, timeout=1800.0, max_retries=0
+    )
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
         mcp_tools, dispatch = (
@@ -197,6 +274,8 @@ async def main() -> None:
         tools = [BASH_TOOL]
         if args.edit:
             tools.append(EDIT_TOOL)
+        if args.web_search:
+            tools.append(WEB_SEARCH_TOOL)
         tools += mcp_tools
         messages = (
             [{"role": "system", "content": args.system_prompt}]
@@ -253,6 +332,13 @@ async def main() -> None:
                         tool_args.get("path"),
                         tool_args.get("old_str"),
                         tool_args.get("new_str"),
+                    )
+                elif name == "web_search" and args.web_search:
+                    content = await asyncio.to_thread(
+                        run_web_search,
+                        tool_args.get("query", ""),
+                        args.serper_key,
+                        tool_args.get("num_results", 5),
                     )
                 else:
                     content = f"error: unknown tool {name!r}"
