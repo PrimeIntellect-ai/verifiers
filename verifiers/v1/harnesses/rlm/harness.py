@@ -66,12 +66,14 @@ class RLMHarnessConfig(HarnessConfig):
 
     @model_validator(mode="after")
     def validate_limits(self) -> "RLMHarnessConfig":
-        # Mirror rlm's own validation so a bad value fails fast at config time, not mid-run.
+        # Fail fast at config time, not mid-run. Stricter than rlm itself (it only rejects 0 and
+        # treats any <=0 as "off"): enforce the documented `-1` sentinel so a stray negative
+        # (e.g. -2) is a clear error rather than a silently-accepted alias for "disabled".
         if self.summarize_at_tokens is not None and self.summarize_at_tokens <= 0:
             raise ValueError(
                 "`summarize_at_tokens` must be positive, or None to disable."
             )
-        if self.max_output == 0:
+        if self.max_output != -1 and self.max_output <= 0:
             raise ValueError(
                 "`max_output` must be positive, or -1 to disable truncation."
             )
