@@ -103,7 +103,7 @@ class XMLParser(Parser):
                     if isinstance(msg, dict)
                     else (msg.content or "")
                 )
-                parsed = self.parse(content)
+                parsed = self.parse(content, last=True)
                 if (
                     parsed
                     and hasattr(parsed, self.answer_field)
