@@ -107,9 +107,6 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "RLM_HOME": RLM_HOME,
-            # Always injected so the typed field — not an ambient host var the subprocess runtime
-            # inherits — is the source of truth. rlm reads "" as "off", so a `None` field reliably
-            # *disables* auto-compaction instead of leaking the host value.
             "RLM_SUMMARIZE_AT_TOKENS": (
                 ""
                 if self.config.summarize_at_tokens is None
