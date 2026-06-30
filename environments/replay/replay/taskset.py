@@ -35,7 +35,7 @@ from verifiers.v1.task import Task, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace, WireTrace
 
-from replay.selector import resume_points, seed_messages, snapshot_ref_of
+from replay.selector import build_seed, resume_points, snapshot_ref_of
 
 
 class ReplayTask(Task):
@@ -54,8 +54,13 @@ class ReplayTasksetConfig(TasksetConfig):
     mode: Literal["offline", "online"] = "offline"
     buffer_glob: str = ""
     """Glob of stored-rollout JSONL files, e.g. ``.../rollouts/step_*/train_rollouts.jsonl``."""
-    kinds: list[str] = ["compaction_after", "compaction_before"]
-    """Which resume-point kinds to replay from."""
+    kinds: list[str] = ["recheck", "compaction_after", "compaction_before"]
+    """Which resume-point kinds to replay from (``recheck`` = append a check-your-work turn to
+    the full rollout; ``compaction_*`` = resume around a compaction)."""
+    followup: str = (
+        "Check your work. If anything is wrong, fix it and give the corrected final answer."
+    )
+    """The user turn appended for ``recheck`` points."""
     pool_size: int = 1024
     """Online mode: number of virtual task slots (num_tasks); the harness samples per rollout."""
     inner: SerializeAsAny[TasksetConfig] = TasksetConfig()
@@ -88,7 +93,7 @@ class ReplayTaskset(Taskset[ReplayTask, ReplayTasksetConfig]):
                 tasks.append(
                     ReplayTask(
                         idx=len(tasks),
-                        prompt=seed_messages(src, pt["node"]),
+                        prompt=build_seed(src, pt, self.config.followup),
                         source_trace_id=src.id,
                         resume_node=pt["node"],
                         resume_kind=pt["kind"],

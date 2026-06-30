@@ -28,14 +28,18 @@ from verifiers.v1.harnesses.default.harness import (
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace, WireTrace
 
-from replay.selector import resume_points, seed_messages, snapshot_ref_of
+from replay.selector import build_seed, resume_points, snapshot_ref_of
 
 
 class ReplayHarnessConfig(DefaultHarnessConfig):
     buffer_glob: str = ""
     """Glob of stored-rollout JSONL files to sample from (the live, possibly growing, buffer)."""
-    kinds: list[str] = ["compaction_after", "compaction_before"]
-    """Which resume-point kinds to sample."""
+    kinds: list[str] = ["recheck", "compaction_after", "compaction_before"]
+    """Which resume-point kinds to sample (``recheck`` = append a check-your-work turn)."""
+    followup: str = (
+        "Check your work. If anything is wrong, fix it and give the corrected final answer."
+    )
+    """The user turn appended for ``recheck`` points."""
 
 
 class ReplayHarness(DefaultHarness):
@@ -74,7 +78,7 @@ class ReplayHarness(DefaultHarness):
         }
 
         # Seed the default chat loop with the replay prefix (mirror DefaultHarness.launch).
-        seed = seed_messages(src, point["node"])
+        seed = build_seed(src, point, self.config.followup)
         env = {**self.config.env}
         env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in seed])
         args = [f"--base-url={endpoint}", f"--api-key={secret}", f"--model={ctx.model}"]
