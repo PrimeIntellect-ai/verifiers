@@ -13,6 +13,7 @@ above a rule.
 import contextlib
 import time
 
+from pydantic import BaseModel
 from rich.console import Console, Group
 from rich.markup import escape
 from rich.progress_bar import ProgressBar
@@ -26,7 +27,12 @@ from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
-from verifiers.v1.utils.format import format_count, format_mean, format_time
+from verifiers.v1.utils.format import (
+    format_count,
+    format_mean,
+    format_override,
+    format_time,
+)
 from verifiers.utils.pricing_utils import format_cost_usd
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
@@ -121,6 +127,54 @@ def _warning(config: EvalConfig) -> Text | None:
     return None
 
 
+def overrides(
+    config: BaseModel,
+    default: BaseModel | None = None,
+    skip: frozenset[str] = frozenset(),
+) -> list[str]:
+    """`field=value` segments for the fields the *user* customized, sorted, diffed against each
+    field's declared default. Not `model_fields_set`: a `--resume` run reloads its config via
+    `model_validate(config.toml)`, and that toml is dumped with `exclude_none` (every field), so
+    `model_fields_set` would flag them all. `default` is the reference instance, threaded through
+    recursion so a pinned nested default (a taskset's `user=UserConfig(colocated=True)`) reads as
+    unchanged. `skip` holds dotted paths (`harness.runtime.type`)."""
+    segments: list[str] = []
+    fields = type(config).model_fields
+    for field in sorted(fields):
+        if field in skip:
+            continue
+        value = getattr(config, field)
+        # `get_default` returns `PydanticUndefined` for a required field, so it always reads as set.
+        field_def = (
+            fields[field].get_default(call_default_factory=True)
+            if default is None
+            else getattr(default, field, None)
+        )
+        if isinstance(value, BaseModel):  # nested config: flatten as `field.<sub>`
+            child_skip = frozenset(
+                s[len(field) + 1 :] for s in skip if s.startswith(f"{field}.")
+            )
+            # A switched discriminator (e.g. subprocess→docker) is an override the per-field diff
+            # misses — within the new class `type` equals its own default — so surface it.
+            class_changed = type(value) is not type(field_def)
+            if (
+                class_changed
+                and "type" not in child_skip
+                and (discriminator := getattr(value, "type", None)) is not None
+            ):
+                segments.append(f"{field}.type={format_override(discriminator)}")
+            # A switched class is a new shape, so diff against its own defaults, not the instance.
+            segments.extend(
+                f"{field}.{seg}"
+                for seg in overrides(
+                    value, default=None if class_changed else field_def, skip=child_skip
+                )
+            )
+        elif value != field_def:
+            segments.append(f"{field}={format_override(value)}")
+    return segments
+
+
 def Overview(config: EvalConfig) -> Table:
     sampling = ", ".join(
         f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items()
@@ -134,6 +188,16 @@ def Overview(config: EvalConfig) -> Table:
     )
     model = f"{config.model}  ({sampling})" if sampling else config.model
     grid.add_row("model", f"{model}  via {config.client.base_url}")
+    # Non-default knobs the user set, one row each when non-empty. `escape` the cell: an override
+    # value (or our `[...]`/`{...}` delimiters) can carry Rich markup that would otherwise be
+    # parsed as styling and dropped. `id` is in the `env` row; harness `runtime.type` too (hidden
+    # here), but only for the harness — a taskset's `user.runtime.type` has no other display.
+    if taskset_over := overrides(config.taskset, skip=frozenset({"id"})):
+        grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
+    if harness_over := overrides(
+        config.harness, skip=frozenset({"id", "runtime.type"})
+    ):
+        grid.add_row("harness", escape("  ·  ".join(harness_over)))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
