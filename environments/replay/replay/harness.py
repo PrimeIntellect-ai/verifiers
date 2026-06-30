@@ -28,17 +28,21 @@ from verifiers.v1.harnesses.default.harness import (
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace, WireTrace
 
-from replay.selector import build_seed, resume_points, snapshot_ref_of
+from replay.selector import (
+    DEFAULT_FOLLOWUP,
+    DEFAULT_KINDS,
+    build_seed,
+    resume_points,
+    snapshot_ref_of,
+)
 
 
 class ReplayHarnessConfig(DefaultHarnessConfig):
     buffer_glob: str = ""
     """Glob of stored-rollout JSONL files to sample from (the live, possibly growing, buffer)."""
-    kinds: list[str] = ["recheck", "compaction_after", "compaction_before"]
-    """Which resume-point kinds to sample (``recheck`` = append a check-your-work turn)."""
-    followup: str = (
-        "Check your work. If anything is wrong, fix it and give the corrected final answer."
-    )
+    kinds: list[str] = DEFAULT_KINDS
+    """Which replay kinds to sample (see ReplayTaskset; add ``"judge"`` to opt in)."""
+    followup: str = DEFAULT_FOLLOWUP
     """The user turn appended for ``recheck`` points."""
 
 
