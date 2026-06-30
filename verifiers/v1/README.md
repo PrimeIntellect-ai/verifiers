@@ -96,7 +96,7 @@ Harness examples (under `environments/`):
 The program that drives the rollout — same taskset, different driver:
 
 ```bash
-uv run eval gsm8k-v1 -n 1                     # default: bare agent (MCP tools only)
+uv run eval gsm8k-v1 -n 1                     # null harness (fallback): bare agent (MCP tools only)
 uv run eval gsm8k-v1 -n 1 --harness.id rlm    # the rlm harness
 uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
 ```

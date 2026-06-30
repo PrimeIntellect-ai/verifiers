@@ -249,7 +249,7 @@ markers = [
     "modal: v1 e2e cases touching the modal runtime (local-only setup; excluded in CI)",
     "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
     "shared: v1 e2e cases with a shared (one-per-eval) tool server",
-    "default: v1 e2e cases on the default harness",
+    "null: v1 e2e cases on the null harness",
     "bash: v1 e2e cases on the bash harness",
     "rlm: v1 e2e cases on the rlm harness",
     "kimi_code: v1 e2e cases on the kimi-code harness",

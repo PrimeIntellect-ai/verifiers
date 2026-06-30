@@ -93,11 +93,11 @@ class EnvConfig(BaseConfig):
     time, not by the env — only `taskset` is narrowed per env (to its config type,
     inferred from `load_taskset`). Tool-server placement lives on `taskset.tools`."""
 
-    # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, DefaultHarnessConfig);
+    # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, NullHarnessConfig);
     # without it model_dump() narrows to the base type and drops the subclass fields, so the
     # env-server subconfig the orchestrator writes would lose taskset/harness-specific knobs.
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
-    harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
+    harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="null")
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     max_turns: int | None = None
@@ -243,7 +243,7 @@ class Environment:
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not support MCP tools, but taskset "
                 f"{self.taskset.config.id!r} exposes tool servers (MCP). Run it with a harness "
-                f"that supports MCP (e.g. --harness.id default), or use a taskset without tools."
+                f"that supports MCP (e.g. --harness.id null), or use a taskset without tools."
             )
         if (
             not self.harness.SUPPORTS_USER_SIM
@@ -252,7 +252,7 @@ class Environment:
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not drive a user simulator, but taskset "
                 f"{self.taskset.config.id!r} defines one (Taskset.user). Run it with a harness that "
-                f"supports user simulation (e.g. --harness.id default), or use a taskset without one."
+                f"supports user simulation (e.g. --harness.id null), or use a taskset without one."
             )
         if self.taskset.NEEDS_CONTAINER and isinstance(
             self.harness.config.runtime, SubprocessConfig
@@ -262,7 +262,9 @@ class Environment:
                 "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
                 "use --harness.runtime.type docker or prime."
             )
-        if self.harness.config.id != "default" and isinstance(
+        # Every harness except the tool-less `null` chat loop runs code locally on the subprocess
+        # runtime, so warn there (no warning for `null`, which only talks to remote MCP servers).
+        if self.harness.config.id != "null" and isinstance(
             self.harness.config.runtime, SubprocessConfig
         ):
             logger.warning(

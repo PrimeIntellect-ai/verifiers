@@ -14,4 +14,4 @@ game = "Wordle-v0"
 num_tasks = 50  # pool of seeded episodes to draw the eval's tasks from
 
 [harness]
-id = "default"
+id = "null"

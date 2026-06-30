@@ -552,15 +552,15 @@ Otherwise pick a built-in, selected with `--harness.id`:
 
 | id | what it is |
 | --- | --- |
-| `default` | a tiny OpenAI chat loop (MCP tools only, no tools of its own) |
-| `bash` | the `default` chat loop plus a local `bash` tool, for shell-driving agents |
+| `null` | a tiny OpenAI chat loop (MCP tools only, no tools of its own) — the fallback when no harness is given |
+| `bash` | the `null` chat loop plus a local `bash` tool, for shell-driving agents |
 | `rlm` | the RLM CLI agent |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
 | `mini-swe-agent` | the mini-swe-agent CLI (a minimal SWE agent) |
 | `kimi-code` | the Kimi Code CLI agent |
 
 ```bash
-uv run eval gsm8k-v1 -n 1                    # default harness
+uv run eval gsm8k-v1 -n 1                    # null harness (the fallback when none is given)
 uv run eval gsm8k-v1 -n 1 --harness.id rlm   # same taskset, different driver
 ```
 
@@ -707,7 +707,7 @@ uv run eval gsm8k-v1 -n 5 -r 3 \
 
 | group | flags |
 | --- | --- |
-| selection | `<taskset-id>` / `--taskset.id`, `--harness.id` (`default`), `-m`/`--model` |
+| selection | `<taskset-id>` / `--taskset.id`, `--harness.id` (`null`), `-m`/`--model` |
 | counts | `-n`/`--num-tasks` (all), `-r`/`--num-rollouts` (1; `@group_reward` needs ≥2), `-s`/`--shuffle` |
 | budgets | `--max-turns`, `--max-input-tokens`, `--max-output-tokens`, `--max-total-tokens` (all None) |
 | sampling | `--sampling.temperature`, `--sampling.top-p`, `--sampling.max-tokens`, `--sampling.reasoning-effort` (provider keys pass through) |
@@ -792,7 +792,7 @@ form. In a prime-rl config:
 [[orchestrator.train.env]]
 name    = "gsm8k"
 taskset = { id = "gsm8k-v1", dataset_name = "..." }                 # any v1 taskset id
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "null", runtime = { type = "subprocess" } }
 timeout = { scoring = 10 }                                          # per-stage cap (default: no limit)
 # pool  = { type = "elastic", max_workers = 8, multiplex = 128 }    # env-server pool (default elastic, self-sizing)
 ```
