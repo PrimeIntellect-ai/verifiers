@@ -38,6 +38,7 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        user_url: str | None = None,
     ) -> ProgramResult:
         env = {
             "OPENAI_BASE_URL": endpoint,

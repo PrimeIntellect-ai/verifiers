@@ -478,10 +478,13 @@ async def serve_tools(
 
 @contextlib.asynccontextmanager
 async def connect_user(url: str) -> AsyncIterator[Respond]:
-    """Open an MCP client session to a user server at `url` and yield an async
-    `respond(message)` that calls its `respond` tool, parsing the JSON it returns
-    (`{"messages": [...]}`) into typed `Messages`. End-of-trajectory is signalled out-of-band: the
-    server sets a flag on the shared state (a taskset `@vf.stop` checks it), not in this reply.
+    """HOST-side driver for a user simulator: open an MCP client session to a user server at `url`
+    and yield an async `respond(message)` that calls its `respond` tool, parsing the JSON it returns
+    (`{"messages": [...]}`) into typed `Messages` (an empty list = the simulator is done). For
+    harnesses whose conversation loop runs on the host (a CLI-wrapper harness driving `codex exec
+    resume` / Claude Code stream-json); in-runtime chat-loop programs instead MCP-connect to the same
+    server themselves (see the default harness program). End-of-trajectory is signalled by an empty
+    reply (and a `self.state` flag a taskset `@vf.stop` also checks), not a special return value.
 
     Retries the connect — under high concurrency the colocated user server can be slow to
     accept (or briefly refuse) a connection. A server that stays unreachable raises
@@ -548,14 +551,16 @@ async def serve_user(
     state_port: int | None = None,
     state_secret: str = "",
     state_base: str | None = None,
-) -> AsyncIterator[Respond | None]:
-    """Bring a rollout's user server up (via the shared `serve` launcher, `for_host=True` since
-    the framework drives the user from the HOST) and yield the async `respond` the interception
-    server drives — or `None` when the taskset has no user server. Placement is the user's
-    `config` (colocated in the harness's runtime, or its own); the rollout's `task` is shipped to
-    the server for its `setup`. `state_port`/`state_secret` wire it to the shared-state channel — how
-    the user sim's `respond` reads/writes `self.state` (and ends the trajectory via a flag a taskset
-    `@vf.stop` checks)."""
+) -> AsyncIterator[str | None]:
+    """Bring a rollout's user simulator up as a HARNESS-reachable MCP server (via the shared `serve`
+    launcher, like a tool server — but the harness never shows it to the model) and yield its URL —
+    or `None` when the taskset has no user simulator. The harness drives it itself: it connects and
+    calls the server's `respond` tool for each user turn, injecting the reply into its own
+    conversation (see the default harness program / a CLI wrapper), so the user turn is a regular
+    user message and the message graph stays linear. Placement is the user's `config` (colocated in
+    the harness's runtime, or its own); the rollout's `task` is shipped for its `setup`;
+    `state_port`/`state_secret`/`state_base` wire the shared-state channel — how `respond`
+    reads/writes `self.state` (and ends the trajectory via a flag a taskset `@vf.stop` checks)."""
     if user is None:
         yield None
         return
@@ -563,10 +568,9 @@ async def serve_user(
         user,
         task,
         harness_runtime,
-        for_host=True,
+        for_host=False,
         state_port=state_port,
         state_secret=state_secret,
         state_base=state_base,
     ) as url:
-        async with connect_user(url) as respond:
-            yield respond
+        yield url

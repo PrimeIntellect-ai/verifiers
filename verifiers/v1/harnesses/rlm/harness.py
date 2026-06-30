@@ -85,6 +85,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        user_url: str | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
         env = {

@@ -198,13 +198,20 @@ class Rollout:
                         state_port=state_port,
                         state_secret=secret,
                         state_base=state_base,
-                    ) as session.user,
+                    ) as user_url,
                 ):
-                    if self.task.prompt is None and session.user is None:
+                    # `user_url` is the user simulator's MCP server (harness-reachable), or None.
+                    if self.task.prompt is None and user_url is None:
                         raise TasksetError(
                             "task has no prompt and no user simulator to open the "
                             "conversation; set task.prompt or have Taskset.user return "
                             "a simulator"
+                        )
+                    if user_url is not None and not self.harness.SUPPORTS_USER_SIM:
+                        raise HarnessError(
+                            f"taskset has a user simulator but harness "
+                            f"{self.harness.config.id!r} does not support driving one "
+                            "(set SUPPORTS_USER_SIM and call its `respond` tool in the loop)"
                         )
                     # setup done — the harness is now driving
                     now = time.time()
@@ -219,7 +226,7 @@ class Rollout:
                     try:
                         await asyncio.wait_for(
                             self.harness.run(
-                                ctx, trace, runtime, endpoint, secret, urls
+                                ctx, trace, runtime, endpoint, secret, urls, user_url
                             ),
                             self.harness_timeout,
                         )

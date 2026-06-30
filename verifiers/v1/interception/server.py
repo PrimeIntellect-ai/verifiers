@@ -11,12 +11,15 @@ own secret (the bearer token the harness already sends), and the server routes b
 secret to the right session. So N rollouts need one server (and, behind a remote runtime,
 one tunnel) per pool member rather than one each — see `interception.pool`.
 
-When a rollout sets a user simulator (see `verifiers.v1.mcp.user`), the session also drives it:
-after each model turn it injects the simulator's reply as a user turn and re-prompts the
-model, so a multi-turn exchange plays out within one program request, transparently to the
-harness. When the task carries no prompt (`task.prompt is None`), the simulator also
-opens the conversation: its first turn is seeded before the model is ever called. Tools are
-handled out-of-band (run by the harness).
+A user simulator (see `verifiers.v1.mcp.user`) is not the interception server's concern: it is its
+own MCP server, and a harness that supports it (`Harness.SUPPORTS_USER_SIM`) drives it directly —
+calling its `respond` tool for each user turn and injecting the reply into its own conversation
+(append for a chat loop; `codex exec resume` / stream-json stdin for a CLI). So every user turn
+arrives in the harness's own next model call and is recorded as a regular user message on the
+single branch — model calls here are a pure 1:1 proxy, never an inject-and-re-prompt. Tools are
+likewise handled out-of-band (run by the harness). The simulator ends the trajectory by returning
+no further turns and setting a `self.state` flag a taskset `@stop` checks, caught here over the
+`/state` channel like any other state.
 """
 
 import asyncio
@@ -26,7 +29,6 @@ import logging
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
@@ -40,13 +42,9 @@ from verifiers.v1.errors import (
     OverlongPromptError,
     RolloutError,
     TasksetError,
-    UserError,
 )
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
-
-if TYPE_CHECKING:
-    from verifiers.v1.mcp import Respond
 
 logger = logging.getLogger(__name__)
 
@@ -125,24 +123,16 @@ class RolloutLimits:
 class RolloutSession:
     """One rollout's interception state, served by a (possibly shared) `InterceptionServer`
     and keyed there by its secret. Holds everything a single rollout's chat-completions need:
-    the client/model context, the trace to record turns onto, the framework limits + `@stop`s
-    checked before each turn, and (optionally) a user simulator the rollout sets before the
-    harness runs."""
+    the client/model context, the trace to record turns onto, and the framework limits + `@stop`s
+    checked before each turn. A user simulator is not held here — the harness drives it directly
+    over its own MCP server (see `verifiers.v1.mcp.user`), so the interception server is a pure
+    model proxy that knows nothing about user simulation (the simulator's `@stop` flag still reaches
+    it over the `/state` channel like any other state)."""
 
     ctx: RolloutContext
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
-    user: "Respond | None" = None
-    """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
-    When set, each model turn with no tool call is followed by the simulator's reply,
-    injected as a user turn, and the model is re-prompted — all within one program request,
-    transparently to the harness."""
-    opening: Messages | None = None
-    """Cached opening `respond("")` messages for a no-prompt task. Computed once and re-injected on
-    every request until the first turn lands on the trace — so a retried opening request (e.g. the
-    harness SDK retrying a transient model 502, before any turn is recorded) never calls `respond`
-    twice and advances the simulator's queue past the opening."""
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
@@ -270,138 +260,82 @@ class InterceptionServer:
         )
         # `body` is forwarded to the model 1:1 (the proxy mutates only model + sampling), so no
         # provider field is lost. `prompt` is the dialect's typed parse, kept only to build the
-        # trace (the renderer re-derives its own from the body it's handed). A user simulator
-        # extends both each turn (`dialect.extend` for the wire, `prompt` for the trace).
+        # trace (the renderer re-derives its own from the body it's handed).
         prompt: Messages
         prompt, _ = dialect.parse_request(body)
-        # A task with no prompt has its conversation opened by the user simulator: before the
-        # first model call, seed the simulator's opening user turn(s) into both the wire request
-        # and the trace prompt, so the model answers the user rather than an empty prompt. Guarded
-        # to the opening (`num_turns == 0`), so a later program request (e.g. after a tool call)
-        # never re-seeds. The opening `respond("")` is cached on the session and reused, so a
-        # retried opening request (e.g. the harness SDK retrying a transient model 502, before any
-        # turn is recorded) doesn't advance the simulator's queue and skip the opening turn. The
-        # post-turn loop below then drives the remaining turns as usual.
-        if (
-            session.user is not None
-            and session.trace.task.prompt is None
-            and session.trace.num_turns == 0
-        ):
-            if session.opening is None:
-                session.opening = await session.user("")
-            body = dialect.extend(body, None, session.opening)
-            prompt = [*prompt, *session.opening]
-            # If the simulator ended at the open (its taskset's `@stop` now fires), the loop's
-            # `refused()` below halts the harness before any model call — no special-casing here.
         if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt)
-        headers = request.headers.copy()
-        # A user simulator turns one program request into a multi-turn exchange: after each
-        # model turn the simulator's reply is injected as a user turn and the model is
-        # re-prompted, so a whole game plays out here and only the final assistant message
-        # returns to the (simulator-unaware) program. Without a simulator the loop runs once.
-        completion: dict | None = (
-            None  # the latest turn's response, returned to the program
-        )
-        while True:
-            try:
-                refused = await session.refused()
-            except RolloutError as e:
-                return self._fail(session, dialect, e)
-            except Exception as e:
-                return self._fail(
-                    session,
-                    dialect,
-                    TasksetError(f"@stop failed: {type(e).__name__}: {e}"),
-                )
-            if refused is not None:
-                # Refuse the first model call to halt the harness; once a simulated
-                # conversation is under way, just end it and return the last turn cleanly.
-                if completion is None:
-                    return web.json_response(
-                        dialect.error_body(f"rollout stopped: {refused}"), status=400
-                    )
-                return _completion_response(completion)
-            turn = graph.prepare_turn(session.trace, prompt)
-            session.error = None
-            try:
-                response = await session.ctx.client.get_response(
-                    dialect,
-                    body,
-                    session.ctx.model,
-                    session.ctx.sampling,
-                    headers=headers,
-                    session_id=session.trace.id,
-                    turn=turn,
-                )
-            except OverlongPromptError:
-                # An overlong prompt is a budget limit, not a crash: end the rollout cleanly
-                # as a truncation — return the last turn if there is one, else refuse to halt
-                # the harness (same shape as `refused` above).
-                session.trace.stop("context_length")
-                logger.debug("prompt too long: id=%s", session.trace.id)
-                if completion is None:
-                    return web.json_response(
-                        dialect.error_body("rollout stopped: context_length"),
-                        status=400,
-                    )
-                return _completion_response(completion)
-            except RolloutError as e:
-                # Stash the real cause; the rollout re-raises it after the harness returns. Relay
-                # the provider's status so the harness SDK retries 5xx/429 and not 4xx.
-                session.error = e
-                logger.warning(
-                    "model call failed: id=%s %s: %s",
-                    session.trace.id,
-                    type(e).__name__,
-                    e,
-                )
-                return web.json_response(
-                    dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
-                )
-            except Exception as e:  # surface to the program as an API error
-                logger.warning(
-                    "model call failed: id=%s %s: %s",
-                    session.trace.id,
-                    type(e).__name__,
-                    e,
-                )
-                return web.json_response(dialect.error_body(str(e)), status=502)
-            # `Response.raw` is the wire response handed to the program 1:1 — the provider's
-            # verbatim bytes (proxy) or the client's serialized completion (renderer).
-            completion = response.raw
-            logger.debug(
-                "intercept turn: id=%s tools=%d",
-                session.trace.id,
-                len(response.message.tool_calls or []),
+        # One model call, recorded and returned to the harness 1:1 — no internal multi-turn. A
+        # user simulator (if any) is driven by the harness against its own MCP server (it injects
+        # each user turn into its conversation), so every user turn arrives in the harness's own
+        # next request here and the graph stays linear.
+        try:
+            refused = await session.refused()
+        except RolloutError as e:
+            return self._fail(session, dialect, e)
+        except Exception as e:
+            return self._fail(
+                session, dialect, TasksetError(f"@stop failed: {type(e).__name__}: {e}")
             )
-            turn.commit(response)  # one node per new message;
-            # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
-            # Hand back to the program when the model wants a tool (the program runs it) or
-            # when there's no user simulator to keep the conversation going.
-            if response.message.tool_calls or session.user is None:
-                return _completion_response(completion)
-            try:
-                user_messages = await session.user(response.message.content or "")
-            except RolloutError as e:
-                return self._fail(session, dialect, e)
-            except Exception as e:
-                return self._fail(
-                    session,
-                    dialect,
-                    UserError(f"user simulator failed: {type(e).__name__}: {e}"),
-                )
-            # Inject the model turn + the simulator's user turn(s): into the wire request for the
-            # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
-            # survives) and into the typed prompt for the trace. The simulator ends the trajectory
-            # through its taskset's `@stop` (e.g. a `user_finished` flag it set on `self.state`),
-            # caught by `refused()` at the top of the next iteration — the interception server holds
-            # no opinion about the state's contents.
-            body = dialect.extend(body, completion, user_messages)
-            prompt = [*prompt, response.message, *user_messages]
-            # The simulator changed the payload, so this is a new operation rather than a retry.
-            headers.popall("idempotency-key", None)
-            headers.popall("x-idempotency-key", None)
+        if refused is not None:
+            # A refused turn errors the harness's model call; `Harness.run` treats its exit as a
+            # clean stop (the stop condition is already set on the trace).
+            return web.json_response(
+                dialect.error_body(f"rollout stopped: {refused}"), status=400
+            )
+        turn = graph.prepare_turn(session.trace, prompt)
+        session.error = None
+        try:
+            response = await session.ctx.client.get_response(
+                dialect,
+                body,
+                session.ctx.model,
+                session.ctx.sampling,
+                headers=request.headers,
+                session_id=session.trace.id,
+                turn=turn,
+            )
+        except OverlongPromptError:
+            # An overlong prompt is a budget limit, not a crash: end the rollout cleanly as a
+            # truncation (the harness's resulting exit is a clean stop, like `refused`).
+            session.trace.stop("context_length")
+            logger.debug("prompt too long: id=%s", session.trace.id)
+            return web.json_response(
+                dialect.error_body("rollout stopped: context_length"), status=400
+            )
+        except RolloutError as e:
+            # Stash the real cause; the rollout re-raises it after the harness returns. Relay the
+            # provider's status so the harness SDK retries 5xx/429 and not 4xx.
+            session.error = e
+            logger.warning(
+                "model call failed: id=%s %s: %s",
+                session.trace.id,
+                type(e).__name__,
+                e,
+            )
+            return web.json_response(
+                dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
+            )
+        except Exception as e:  # surface to the program as an API error
+            logger.warning(
+                "model call failed: id=%s %s: %s",
+                session.trace.id,
+                type(e).__name__,
+                e,
+            )
+            return web.json_response(dialect.error_body(str(e)), status=502)
+        # `Response.raw` is the wire response handed to the program 1:1 — the provider's verbatim
+        # bytes (proxy) or the client's serialized completion (renderer).
+        completion = response.raw
+        logger.debug(
+            "intercept turn: id=%s tools=%d",
+            session.trace.id,
+            len(response.message.tool_calls or []),
+        )
+        turn.commit(
+            response
+        )  # one node per new message; branches fall out of the graph walk
+        return _completion_response(completion)
 
     async def _stream(
         self,

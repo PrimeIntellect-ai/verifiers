@@ -123,12 +123,18 @@ class Harness(ABC, Generic[ConfigT]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        user_url: str | None = None,
     ) -> None:
         """Run the harness in `runtime` (via `launch`) and handle its exit; its model calls
         reach the interception server at `endpoint`, and `mcp_urls` are the task's tool
-        servers (name -> URL) to expose to the model."""
+        servers (name -> URL) to expose to the model. `user_url` is the user simulator's MCP server
+        when the task has one and this harness supports driving it (`SUPPORTS_USER_SIM`), else None —
+        a supporting harness calls its `respond` tool for each user turn and injects the reply into
+        its own conversation (so the user turn is recorded as a regular user message)."""
         async with boundary(HarnessError, f"harness {self.config.id!r}"):
-            result = await self.launch(ctx, trace, runtime, endpoint, secret, mcp_urls)
+            result = await self.launch(
+                ctx, trace, runtime, endpoint, secret, mcp_urls, user_url
+            )
         if trace.stop_condition is not None:
             return  # a @stop refused a turn mid-rollout; the harness's exit is expected
         if result.exit_code != 0:
@@ -168,11 +174,15 @@ class Harness(ABC, Generic[ConfigT]):
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
+        user_url: str | None = None,
     ) -> ProgramResult:
         """Run the harness program in `runtime` to completion and return its result. The
         task is `trace.task`; model calls should reach the interception server at
         `endpoint` (bearer token `secret`); `mcp_urls` are the task's tool servers
-        (name -> URL) to wire in. Each harness owns the env its program needs — read
-        `ctx.model` for the model id (the default/compact harnesses set OPENAI_*; rlm sets
-        RLM_* too). UV-script harnesses prepare dependencies in `setup`, then launch the
-        returned argv through `runtime.run_program(...)` here."""
+        (name -> URL) to wire in. `user_url` is the task's user simulator's MCP server (only set for
+        harnesses that set `SUPPORTS_USER_SIM`; None otherwise) — connect to it and call its
+        `respond(message)` tool on each no-tool-call turn, append the returned user `messages` to the
+        conversation, and re-prompt (an empty reply means the simulator is done). Each harness owns
+        the env its program needs — read `ctx.model` for the model id (the default/compact harnesses set
+        OPENAI_*; rlm sets RLM_* too). UV-script harnesses prepare dependencies in `setup`, then
+        launch the returned argv through `runtime.run_program(...)` here."""

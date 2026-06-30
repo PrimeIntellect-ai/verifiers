@@ -17,5 +17,6 @@ include = [
     "echo_tool_v1.py",
     "echo_user_sim_v1.py",
     "tool_response_image_v1.py",
+    "tool_user_sim_v1/**/*.py",
     "pyproject.toml",
 ]

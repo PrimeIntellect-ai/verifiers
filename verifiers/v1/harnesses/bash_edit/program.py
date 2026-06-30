@@ -8,11 +8,17 @@ A growing-message-list chat loop. It always offers a local `bash` tool that runs
 the runtime and a local `edit` tool that replaces a unique string in a file; when the harness sets
 MCP_CONFIG (a standard `mcpServers` URL map) it also connects to those servers over streamable
 HTTP, exposes their tools to the model as `<server>_<tool>`, and routes those calls to the server.
-The loop runs until the model answers without a tool call.
+The loop runs until the model answers without a tool call — unless the task has a user simulator
+(`--user-url`, its own MCP server), in which case a no-tool-call turn is a turn boundary: the
+program calls the simulator's `respond` tool, appends the user message(s) it returns, and
+re-prompts, until it returns no further turns (a no-prompt task is opened the same way). Carrying
+every user turn in the program's own conversation keeps the recorded message graph linear and the
+user turns regular user messages.
 
-It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the SDKs — the
-harness bootstraps `uv` in the runtime. The interception endpoint, per-rollout secret, and model
-arrive as argv (not env), so the local tools' subprocesses never inherit them.
+It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing — including the user
+simulator, which is just another MCP server — is just the SDKs; the harness bootstraps `uv` in the
+runtime. The interception endpoint, per-rollout secret, and model arrive as argv (not env), so the
+local tools' subprocesses never inherit them.
 """
 
 import argparse
@@ -174,6 +180,31 @@ async def call_mcp(dispatch: dict, name: str, arguments: dict) -> str | list[dic
     return mcp_content_to_chat_content(result.content)
 
 
+async def connect_user_sim(stack: AsyncExitStack, url: str):
+    """Connect to the task's user simulator — its own MCP server (a `vf.User`), never shown to the
+    model — and return an async `respond(text)` that calls its `respond` tool, returning the next
+    user message(s) as OpenAI wire dicts (an empty list = the simulator is done)."""
+    from mcp import ClientSession
+    from mcp.client.streamable_http import (
+        create_mcp_http_client,
+        streamable_http_client,
+    )
+
+    http_client = await stack.enter_async_context(create_mcp_http_client())
+    read, write, *_ = await stack.enter_async_context(
+        streamable_http_client(url, http_client=http_client)
+    )
+    session = await stack.enter_async_context(ClientSession(read, write))
+    await session.initialize()
+
+    async def respond(text: str) -> list[dict]:
+        result = await session.call_tool("respond", {"message": text})
+        parts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
+        return json.loads("\n".join(parts))["messages"]
+
+    return respond
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
@@ -182,6 +213,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--prompt", default="")
     parser.add_argument("--mcp-config", default="")
+    parser.add_argument("--user-url", default="")
     return parser.parse_args()
 
 
@@ -189,11 +221,13 @@ async def main() -> None:
     args = parse_args()
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
+    user_url = args.user_url or None
     async with AsyncExitStack() as stack:
         mcp_tools, dispatch = (
             await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
         )
         tools = [BASH_TOOL, EDIT_TOOL] + mcp_tools
+        user_respond = await connect_user_sim(stack, user_url) if user_url else None
         messages = (
             [{"role": "system", "content": args.system_prompt}]
             if args.system_prompt
@@ -202,48 +236,63 @@ async def main() -> None:
         # A Messages prompt (e.g. an image-bearing prompt) arrives pre-built as OpenAI wire dicts
         # via INITIAL_MESSAGES (kept in env: it can be large multimodal content that overflows
         # argv, and it's prompt content, not a credential); otherwise --prompt is the opening
-        # message. Both empty means the task has no prompt — the user simulator seeds the opening.
+        # message. Both empty means the task has no prompt — the user simulator opens it.
         initial = json.loads(os.environ.get("INITIAL_MESSAGES", "[]"))
         if initial:
             messages.extend(initial)
         elif args.prompt:
             messages.append({"role": "user", "content": args.prompt})
+        elif user_respond:
+            opening = await user_respond("")
+            if not opening:
+                return
+            messages.extend(opening)
         while True:
             message = await chat(client, args.model, messages, tools)
             messages.append(message.model_dump(exclude_none=True))
-            if not message.tool_calls:
-                break
-            for call in message.tool_calls:
-                name = call.function.name
-                try:
-                    tool_args = json.loads(call.function.arguments or "{}")
-                except json.JSONDecodeError as e:
+            if message.tool_calls:
+                for call in message.tool_calls:
+                    name = call.function.name
+                    try:
+                        tool_args = json.loads(call.function.arguments or "{}")
+                    except json.JSONDecodeError as e:
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": call.id,
+                                "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
+                            }
+                        )
+                        continue
+                    if name in dispatch:
+                        content = await call_mcp(dispatch, name, tool_args)
+                    elif name == "bash":
+                        content = await asyncio.to_thread(
+                            run_bash, tool_args.get("command", "")
+                        )
+                    elif name == "edit":
+                        content = await asyncio.to_thread(
+                            run_edit,
+                            tool_args.get("path"),
+                            tool_args.get("old_str"),
+                            tool_args.get("new_str"),
+                        )
+                    else:
+                        content = f"error: unknown tool {name!r}"
                     messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call.id,
-                            "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
-                        }
+                        {"role": "tool", "tool_call_id": call.id, "content": content}
                     )
-                    continue
-                if name in dispatch:
-                    content = await call_mcp(dispatch, name, tool_args)
-                elif name == "bash":
-                    content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
-                    )
-                elif name == "edit":
-                    content = await asyncio.to_thread(
-                        run_edit,
-                        tool_args.get("path"),
-                        tool_args.get("old_str"),
-                        tool_args.get("new_str"),
-                    )
-                else:
-                    content = f"error: unknown tool {name!r}"
-                messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": content}
-                )
+                continue
+            # No tool call: a final answer for the current user turn. With a user simulator, ask it
+            # for the next user turn and re-prompt; an empty reply means it's done. Without one, the
+            # conversation is over.
+            if user_respond:
+                reply = await user_respond(message.content or "")
+                if not reply:
+                    break
+                messages.extend(reply)
+                continue
+            break
 
 
 if __name__ == "__main__":
