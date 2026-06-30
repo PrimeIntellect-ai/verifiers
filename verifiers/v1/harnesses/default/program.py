@@ -230,13 +230,24 @@ async def main() -> None:
                         }
                     )
                     continue
+                # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)` calls
+                # below assume a dict, so reject anything else as a tool error rather than crashing.
+                if not isinstance(tool_args, dict):
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object",
+                        }
+                    )
+                    continue
                 if name in dispatch:
                     content = await call_mcp(dispatch, name, tool_args)
                 elif name == "bash":
                     content = await asyncio.to_thread(
                         run_bash, tool_args.get("command", "")
                     )
-                elif name == "edit":
+                elif name == "edit" and args.edit:
                     content = await asyncio.to_thread(
                         run_edit,
                         tool_args.get("path"),

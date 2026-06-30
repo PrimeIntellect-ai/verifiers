@@ -142,6 +142,17 @@ async def main() -> None:
                         }
                     )
                     continue
+                # Valid JSON can still be a non-object (`[]`, `42`, `null`); the MCP dispatch
+                # assumes a dict, so reject anything else as a tool error rather than crashing.
+                if not isinstance(tool_args, dict):
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object",
+                        }
+                    )
+                    continue
                 if name in dispatch:
                     content = await call_mcp(dispatch, name, tool_args)
                 else:

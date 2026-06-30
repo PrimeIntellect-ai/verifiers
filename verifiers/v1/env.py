@@ -262,8 +262,10 @@ class Environment:
                 "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
                 "use --harness.runtime.type docker or prime."
             )
-        # Every harness except the tool-less `null` chat loop runs code locally on the subprocess
-        # runtime, so warn there (no warning for `null`, which only talks to remote MCP servers).
+        # The warning is about the *agent* running arbitrary code on the host: every harness hands
+        # it local execution (bash/edit, or a CLI agent) except the tool-less `null` chat loop,
+        # whose program only relays the model and remote MCP tools — so exempt `null`, warn for the
+        # rest. (`null` still runs its fixed chat-loop program locally, but nothing agent-authored.)
         if self.harness.config.id != "null" and isinstance(
             self.harness.config.runtime, SubprocessConfig
         ):
