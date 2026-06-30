@@ -23,7 +23,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
-        await runtime.prepare_uv_script(source, self.config.env)
+        await runtime.prepare_uv_script(source, self.config.resolved_env)
 
     async def launch(
         self,
@@ -66,9 +66,9 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             f"model.model_kwargs.api_key={secret}",
         ]
         env = {
-            **self.config.env,
+            **self.config.resolved_env,
             "MSWEA_CONFIGURED": "true",
             "MSWEA_SILENT_STARTUP": "true",
         }
-        program = await runtime.prepare_uv_script(source, self.config.env)
+        program = await runtime.prepare_uv_script(source, self.config.resolved_env)
         return await runtime.run_program([*program, *args], env)

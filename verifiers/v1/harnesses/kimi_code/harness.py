@@ -73,7 +73,7 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
     ) -> ProgramResult:
         _, prompt = self.resolve_prompt(trace.task)
         env = {
-            **self.config.env,
+            **self.config.resolved_env,
             "KIMI_CODE_HOME": KIMI_HOME,
             "KIMI_MODEL_NAME": ctx.model,
             "KIMI_MODEL_API_KEY": secret,
