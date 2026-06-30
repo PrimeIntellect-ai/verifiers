@@ -38,6 +38,7 @@ from verifiers.utils.serve_utils import msgpack_encoder
 
 class EnvWorkerStats(BaseModel):
     worker_id: int
+    incarnation: str
     timestamp: float
     active_tasks: int
     lag: EventLoopLagStats = EventLoopLagStats()
@@ -63,6 +64,7 @@ class EnvWorker:
         json_logging: bool = False,
         *,
         worker_id: int,
+        incarnation: str,
         worker_name: str,
         request_address: str,
         response_address: str,
@@ -73,6 +75,7 @@ class EnvWorker:
         self.death_pipe = death_pipe
         self.env_id = env_id
         self.worker_id = worker_id
+        self.incarnation = incarnation
         self.worker_name = worker_name
 
         # setup logging — each worker gets its own log file
@@ -184,7 +187,13 @@ class EnvWorker:
                     ),
                 )
                 await self.response_socket.send_multipart(
-                    [client_id, request_id.encode(), response_bytes]
+                    [
+                        str(self.worker_id).encode(),
+                        self.incarnation.encode(),
+                        client_id,
+                        request_id_bytes,
+                        response_bytes,
+                    ]
                 )
             except Exception:
                 pass
@@ -192,7 +201,6 @@ class EnvWorker:
         try:
             raw = await asyncio.to_thread(msgpack.unpackb, payload_bytes, raw=False)
             request_type = raw.get("request_type")
-            request_id = raw.get("request_id", request_id)
 
             if request_type == "run_rollout":
                 request = await asyncio.to_thread(RunRolloutRequest.model_validate, raw)
@@ -241,7 +249,13 @@ class EnvWorker:
 
         try:
             await self.response_socket.send_multipart(
-                [client_id, request_id.encode(), response_bytes]
+                [
+                    str(self.worker_id).encode(),
+                    self.incarnation.encode(),
+                    client_id,
+                    request_id_bytes,
+                    response_bytes,
+                ]
             )
         except zmq.ZMQError as e:
             self.logger.warning(f"Failed to send response for {request_id[:7]}: {e}")
@@ -253,6 +267,7 @@ class EnvWorker:
 
             stats = EnvWorkerStats(
                 worker_id=self.worker_id,
+                incarnation=self.incarnation,
                 timestamp=time.time(),
                 active_tasks=len(self.active_tasks),
                 lag=EventLoopLagStats.from_monitor(self.lag_monitor),

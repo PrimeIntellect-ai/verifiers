@@ -22,6 +22,7 @@ _HEALTH_RESPONSE = msgpack.packb({"success": True, "error": None}, use_bin_type=
 
 # Sentinel payload used by health-check probes.
 _HEALTH_PING = b"ping"
+_ACK = b"ack"
 
 
 class ZMQEnvServer(EnvServer):
@@ -93,6 +94,8 @@ class ZMQEnvServer(EnvServer):
                                 )
                             except zmq.ZMQError:
                                 pass  # peer disconnected between ping and pong
+                        elif payload == _ACK:
+                            self.router.ack_request(request_id)
                         elif not payload:
                             await self.router.forward_cancel(request_id, client_id)
                         else:
