@@ -150,19 +150,34 @@ def overrides(config: BaseModel, skip: frozenset[str] = frozenset()) -> list[str
     declared default rather than `model_fields_set`: a config rebuilt from a saved run's
     `config.toml` (`--resume` / `@ file.toml`) has *every* persisted field marked as set, so
     `model_fields_set` would show defaults as overrides — the value comparison is stable across
-    that round-trip. A nested config (e.g. a non-`subprocess` `runtime`) recurses with its
-    `type` discriminator dropped, flattened as `runtime.<field>=…`. Sorted for a stable order."""
+    that round-trip. A nested config (e.g. a non-`subprocess` `runtime`) flattens as
+    `runtime.<field>=…`, sorted for a stable order. `skip` holds dotted paths, so a caller can
+    hide a single nested field (e.g. `harness.runtime.type`, already in the `env` row) without
+    hiding the same discriminator on a *different* nested runtime (`taskset.user.runtime.type`)."""
     segments: list[str] = []
     fields = type(config).model_fields
     for field in sorted(fields):
         if field in skip:
             continue
         value = getattr(config, field)
-        if isinstance(
-            value, BaseModel
-        ):  # nested config: flatten, hiding its `type` discriminator
+        if isinstance(value, BaseModel):  # nested config: flatten, descending the dotted skip
+            child_skip = frozenset(
+                s[len(field) + 1 :] for s in skip if s.startswith(f"{field}.")
+            )
+            # A discriminated nested config (e.g. a `runtime`) whose concrete class differs from
+            # the field default's class is itself an override — surface its `type` discriminator.
+            # The per-field comparison below can't: within the new class `type` equals that
+            # class's own default (e.g. a `DockerConfig` always has `type="docker"`), so it never
+            # reads as changed. `runtime.type` lives in `child_skip` only for the harness (the
+            # `env` row already shows it); a taskset's `user.runtime.type` still surfaces here.
+            if (
+                type(value) is not type(field_default(fields[field]))
+                and "type" not in child_skip
+                and (discriminator := getattr(value, "type", None)) is not None
+            ):
+                segments.append(f"{field}.type={fmt_override(discriminator)}")
             segments.extend(
-                f"{field}.{seg}" for seg in overrides(value, skip=frozenset({"type"}))
+                f"{field}.{seg}" for seg in overrides(value, skip=child_skip)
             )
         elif value != field_default(fields[field]):
             segments.append(f"{field}={fmt_override(value)}")
@@ -189,7 +204,11 @@ def Overview(config: EvalConfig) -> Table:
     # Rich markup — without it `env={TOKEN=[red]x[/red]}` would be parsed as styling and dropped.
     if taskset_over := overrides(config.taskset, skip=frozenset({"id"})):
         grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
-    if harness_over := overrides(config.harness, skip=frozenset({"id"})):
+    # `runtime.type` is already in the `env` row, so hide it here — but only for the harness's
+    # own runtime (a taskset's `user.runtime.type` has no other display and must still show).
+    if harness_over := overrides(
+        config.harness, skip=frozenset({"id", "runtime.type"})
+    ):
         grid.add_row("harness", escape("  ·  ".join(harness_over)))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
