@@ -125,17 +125,13 @@ def _warning(config: EvalConfig) -> Text | None:
 
 # Field names whose dict *values* may be secrets (tokens / API keys passed as the harness's
 # process env). The override row shows only their KEYS (`env={HF_TOKEN, RLM_FOO}`) so a secret
-# never lands on the live terminal. (Headers — the other secret-bearing dict — live on
-# `config.client`, which this row doesn't render; redacting the config.toml dump + INFO-level
-# config log that *do* expose both is a separate, broader change.)
+# never lands on the live terminal.
 _KEYS_ONLY_FIELDS = frozenset({"env"})
 
 
 def fmt_override(value: object, keys_only: bool = False) -> str:
-    """Render an overridden value as a single compact segment: a dict as `{k=v,k=v}` (or `{k,k}`
-    when `keys_only`, so a secret-bearing field shows which keys are set, never their values) and
-    a list/tuple as `[a,b]` — the delimiters mark it as a collection, so `env={K}` reads as a
-    dict rather than a bare `env=K`. Anything else renders as its `str`."""
+    """Render a value as one compact segment: a dict as `{k=v,k=v}` (or `{k,k}` when `keys_only`),
+    a list/tuple as `[a,b]`, anything else as its `str`."""
     if isinstance(value, dict):
         if keys_only:
             return "{" + ",".join(str(k) for k in value) + "}"
@@ -146,9 +142,7 @@ def fmt_override(value: object, keys_only: bool = False) -> str:
 
 
 def field_default(field: FieldInfo) -> object:
-    """A field's declared default — calling its `default_factory` (so `env`'s default reads as
-    `{}`, not the factory) or its plain `default` (`PydanticUndefined` for a required field,
-    which equals no value, so a required field always reads as set)."""
+    """A field's declared default."""
     if field.default_factory is not None:
         # All config defaults use the no-arg factory form; the validated-data form isn't used here.
         return field.default_factory()  # type: ignore[call-arg]
@@ -157,14 +151,9 @@ def field_default(field: FieldInfo) -> object:
 
 def overrides(config: BaseModel, skip: frozenset[str] = frozenset()) -> list[str]:
     """`field=value` segments for the fields whose value differs from the field's default — the
-    knobs actually in effect, so the row never overwhelms with defaults. Compares against the
-    declared default rather than `model_fields_set`: a config rebuilt from a saved run's
-    `config.toml` (`--resume` / `@ file.toml`) has *every* persisted field marked as set, so
-    `model_fields_set` would show defaults as overrides — the value comparison is stable across
-    that round-trip. A nested config (e.g. a non-`subprocess` `runtime`) flattens as
-    `runtime.<field>=…`, sorted for a stable order. `skip` holds dotted paths, so a caller can
-    hide a single nested field (e.g. `harness.runtime.type`, already in the `env` row) without
-    hiding the same discriminator on a *different* nested runtime (`taskset.user.runtime.type`)."""
+    knobs in effect, sorted. Comparing values (not `model_fields_set`) stays stable across a
+    saved-config round-trip (`--resume` / `@ file.toml` re-mark every persisted field as set).
+    `skip` holds dotted paths, so a nested field hides by full path (`harness.runtime.type`)."""
     segments: list[str] = []
     fields = type(config).model_fields
     for field in sorted(fields):
