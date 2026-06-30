@@ -13,6 +13,7 @@ above a rule.
 import contextlib
 import time
 
+from pydantic import BaseModel
 from rich.console import Console, Group
 from rich.markup import escape
 from rich.progress_bar import ProgressBar
@@ -121,6 +122,43 @@ def _warning(config: EvalConfig) -> Text | None:
     return None
 
 
+def fmt_override(value: object) -> str:
+    """Render an overridden value as a single compact segment: a dict as `{k=v,k=v}` and a
+    list/tuple as `[a,b]` (the delimiters mark it as a collection, so `env={K=v}` reads as a
+    dict rather than a bare `env=K=v`), anything else as its `str`."""
+    if isinstance(value, dict):
+        return "{" + ",".join(f"{k}={v}" for k, v in value.items()) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(str(v) for v in value) + "]"
+    return str(value)
+
+
+def overrides(config: BaseModel, skip: frozenset[str] = frozenset()) -> list[str]:
+    """`field=value` segments for the fields the user actually set on a config (pydantic's
+    `model_fields_set` — the discriminator/defaults a user never touched stay hidden, so the
+    row never overwhelms). A nested config (e.g. a non-`subprocess` `runtime`) recurses with
+    its `type` discriminator dropped, flattened as `runtime.<field>=…`. Sorted for a stable
+    order (`model_fields_set` is a set)."""
+    segments: list[str] = []
+    for field in sorted(config.model_fields_set):
+        if field in skip:
+            continue
+        value = getattr(config, field)
+        if (
+            value is None
+        ):  # an explicitly-cleared optional reads as a default — nothing to show
+            continue
+        if isinstance(
+            value, BaseModel
+        ):  # nested config: flatten, hiding its `type` discriminator
+            segments.extend(
+                f"{field}.{seg}" for seg in overrides(value, skip=frozenset({"type"}))
+            )
+        else:
+            segments.append(f"{field}={fmt_override(value)}")
+    return segments
+
+
 def Overview(config: EvalConfig) -> Table:
     sampling = ", ".join(
         f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items()
@@ -134,6 +172,13 @@ def Overview(config: EvalConfig) -> Table:
     )
     model = f"{config.model}  ({sampling})" if sampling else config.model
     grid.add_row("model", f"{model}  via {config.client.base_url}")
+    # Non-default taskset/harness knobs the user set (`id`/`name` are in the `env` row above;
+    # `harness.runtime` is shown here only when its sub-fields were customized — the runtime
+    # `type` already reads in the `env` row). Each row appears only when there's an override.
+    if taskset_over := overrides(config.taskset, skip=frozenset({"id"})):
+        grid.add_row("taskset", "  ·  ".join(taskset_over))
+    if harness_over := overrides(config.harness, skip=frozenset({"id"})):
+        grid.add_row("harness", "  ·  ".join(harness_over))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
