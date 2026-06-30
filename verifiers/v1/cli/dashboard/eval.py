@@ -123,11 +123,22 @@ def _warning(config: EvalConfig) -> Text | None:
     return None
 
 
-def fmt_override(value: object) -> str:
-    """Render an overridden value as a single compact segment: a dict as `{k=v,k=v}` and a
-    list/tuple as `[a,b]` (the delimiters mark it as a collection, so `env={K=v}` reads as a
-    dict rather than a bare `env=K=v`), anything else as its `str`."""
+# Field names whose dict *values* may be secrets (tokens / API keys passed as the harness's
+# process env). The override row shows only their KEYS (`env={HF_TOKEN, RLM_FOO}`) so a secret
+# never lands on the live terminal. (Headers — the other secret-bearing dict — live on
+# `config.client`, which this row doesn't render; redacting the config.toml dump + INFO-level
+# config log that *do* expose both is a separate, broader change.)
+_KEYS_ONLY_FIELDS = frozenset({"env"})
+
+
+def fmt_override(value: object, keys_only: bool = False) -> str:
+    """Render an overridden value as a single compact segment: a dict as `{k=v,k=v}` (or `{k,k}`
+    when `keys_only`, so a secret-bearing field shows which keys are set, never their values) and
+    a list/tuple as `[a,b]` — the delimiters mark it as a collection, so `env={K}` reads as a
+    dict rather than a bare `env=K`. Anything else renders as its `str`."""
     if isinstance(value, dict):
+        if keys_only:
+            return "{" + ",".join(str(k) for k in value) + "}"
         return "{" + ",".join(f"{k}={v}" for k, v in value.items()) + "}"
     if isinstance(value, (list, tuple)):
         return "[" + ",".join(str(v) for v in value) + "]"
@@ -180,7 +191,10 @@ def overrides(config: BaseModel, skip: frozenset[str] = frozenset()) -> list[str
                 f"{field}.{seg}" for seg in overrides(value, skip=child_skip)
             )
         elif value != field_default(fields[field]):
-            segments.append(f"{field}={fmt_override(value)}")
+            # A secret-bearing field (e.g. `env`) shows keys only — never its values on-screen.
+            segments.append(
+                f"{field}={fmt_override(value, keys_only=field in _KEYS_ONLY_FIELDS)}"
+            )
     return segments
 
 
