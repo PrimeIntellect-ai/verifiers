@@ -137,16 +137,20 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             "RLM_EXEC_TIMEOUT": str(self.config.exec_timeout),
             "RLM_SDK_MAX_RETRIES": str(self.config.sdk_max_retries),
             "RLM_ALLOW_GIT": "1" if self.config.allow_git else "0",
+            # Optional knobs: always injected so the typed field — not an ambient host var the
+            # subprocess runtime inherits — is the source of truth. rlm reads "" as "off", so a
+            # `None` field reliably *disables* the feature instead of leaking the host value.
+            "RLM_SUMMARIZE_AT_TOKENS": (
+                ""
+                if self.config.summarize_at_tokens is None
+                else str(self.config.summarize_at_tokens)
+            ),
+            "RLM_SYSTEM_PROMPT_PATH": self.config.system_prompt_path or "",
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
         if self.config.skills:
             env["RLM_SKILLS"] = ",".join(self.config.skills)
-        # Optional knobs (None = leave rlm at its own default): inject only when set.
-        if self.config.summarize_at_tokens is not None:
-            env["RLM_SUMMARIZE_AT_TOKENS"] = str(self.config.summarize_at_tokens)
-        if self.config.system_prompt_path is not None:
-            env["RLM_SYSTEM_PROMPT_PATH"] = self.config.system_prompt_path
         if mcp_urls:
             env["RLM_MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
