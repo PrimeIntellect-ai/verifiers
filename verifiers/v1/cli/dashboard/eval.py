@@ -122,9 +122,6 @@ def _warning(config: EvalConfig) -> Text | None:
     return None
 
 
-# Field names whose dict *values* may be secrets (tokens / API keys passed as the harness's
-# process env). The override row shows only their KEYS (`env={HF_TOKEN, RLM_FOO}`) so a secret
-# never lands on the live terminal.
 def fmt_override(value: object) -> str:
     """Render a value as one compact segment: a dict as `{k=v,k=v}`, a list/tuple as `[a,b]`,
     anything else as its `str`."""
