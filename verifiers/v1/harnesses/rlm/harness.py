@@ -85,7 +85,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
         ensure = shlex.quote(f"[ -x {RLM_BIN} ] || ({install})")
         guarded = f"mkdir -p {RLM_DIR} && flock {RLM_DIR}/install.lock sh -c {ensure}"
-        env = {**self.config.env, "RLM_HOME": RLM_HOME}
+        env = {**self.config.resolved_env, "RLM_HOME": RLM_HOME}
         result = await runtime.run(["sh", "-c", guarded], env)
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
@@ -101,7 +101,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
         env = {
-            **self.config.env,
+            **self.config.resolved_env,
             "RLM_BASE_URL": endpoint,
             "RLM_API_KEY": secret,
             "RLM_MODEL": ctx.model,

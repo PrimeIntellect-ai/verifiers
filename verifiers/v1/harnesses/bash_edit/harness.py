@@ -39,7 +39,7 @@ class BashEditHarness(Harness[BashEditHarnessConfig]):
     SUPPORTS_MESSAGE_PROMPT = True
 
     async def setup(self, runtime: Runtime) -> None:
-        await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
+        await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
 
     async def launch(
         self,
@@ -54,7 +54,7 @@ class BashEditHarness(Harness[BashEditHarnessConfig]):
         system_prompt = "\n\n".join(
             p for p in (BASH_EDIT_SYSTEM_PROMPT, system_prompt) if p
         )
-        env = {**self.config.env}
+        env = {**self.config.resolved_env}
         args = [
             f"--base-url={endpoint}",
             f"--api-key={secret}",
@@ -81,5 +81,7 @@ class BashEditHarness(Harness[BashEditHarnessConfig]):
             args.append(f"--prompt={prompt}")
         elif prompt is not None:
             env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in prompt])
-        program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
+        program = await runtime.prepare_uv_script(
+            PROGRAM_SOURCE, self.config.resolved_env
+        )
         return await runtime.run_program([*program, *args], env)
