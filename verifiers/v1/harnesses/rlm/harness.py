@@ -1,8 +1,8 @@
 """The rlm harness: installs the rlm CLI into the runtime and runs the binary.
 
 `RLMHarnessConfig` carries both how to install rlm (repo/branch/token/path) and its
-runtime knobs (`max_depth`, `skills`, token/output/timeout limits, …), which rlm reads
-from `RLM_*` env vars.
+runtime knobs (`max_depth`, `skills`, `summarize_at_tokens`), which rlm reads from `RLM_*`
+env vars. The base `HarnessConfig.env` still passes any other `RLM_*` var through verbatim.
 
 A task's MCP tool servers are passed to rlm via `RLM_MCP_CONFIG` (a standard `mcpServers`
 URL map); rlm exposes each tool as a pre-imported IPython skill the agent calls
@@ -47,35 +47,13 @@ class RLMHarnessConfig(HarnessConfig):
     summarize_at_tokens: int | None = None
     """Auto-compaction threshold (RLM_SUMMARIZE_AT_TOKENS): compact the context once it grows
     past this many tokens. `None` disables auto-compaction; otherwise must be positive."""
-    max_tokens: int = 0
-    """Total token budget for the run (RLM_MAX_TOKENS). `0` (or negative) means unlimited."""
-    max_output: int = -1
-    """Model-output truncation in chars (RLM_MAX_OUTPUT). `-1` disables truncation; otherwise
-    must be positive."""
-    max_tool_output_chars: int = -1
-    """Tool-output cap in chars (RLM_MAX_TOOL_OUTPUT_CHARS). `-1` means no cap."""
-    exec_timeout: int = 300
-    """Per-cell IPython execution timeout in seconds (RLM_EXEC_TIMEOUT)."""
-    sdk_max_retries: int = 5
-    """OpenAI SDK `max_retries` for model calls (RLM_SDK_MAX_RETRIES)."""
-    allow_git: bool = False
-    """Allow rlm to run git commands (RLM_ALLOW_GIT); off by default."""
-    system_prompt_path: str | None = None
-    """Path *inside the runtime* to a file whose contents replace the system prompt
-    (RLM_SYSTEM_PROMPT_PATH). `None` keeps rlm's default system prompt."""
 
     @model_validator(mode="after")
     def validate_limits(self) -> "RLMHarnessConfig":
-        # Fail fast at config time, not mid-run. Stricter than rlm itself (it only rejects 0 and
-        # treats any <=0 as "off"): enforce the documented `-1` sentinel so a stray negative
-        # (e.g. -2) is a clear error rather than a silently-accepted alias for "disabled".
+        # Fail fast at config time, not mid-run.
         if self.summarize_at_tokens is not None and self.summarize_at_tokens <= 0:
             raise ValueError(
                 "`summarize_at_tokens` must be positive, or None to disable."
-            )
-        if self.max_output != -1 and self.max_output <= 0:
-            raise ValueError(
-                "`max_output` must be positive, or -1 to disable truncation."
             )
         return self
 
@@ -129,23 +107,14 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "RLM_HOME": RLM_HOME,
-            # Run-limit knobs: always injected at their typed value (which defaults to rlm's own
-            # default), so the typed field — not an ambient/`env` var — is the source of truth.
-            "RLM_MAX_TOKENS": str(self.config.max_tokens),
-            "RLM_MAX_OUTPUT": str(self.config.max_output),
-            "RLM_MAX_TOOL_OUTPUT_CHARS": str(self.config.max_tool_output_chars),
-            "RLM_EXEC_TIMEOUT": str(self.config.exec_timeout),
-            "RLM_SDK_MAX_RETRIES": str(self.config.sdk_max_retries),
-            "RLM_ALLOW_GIT": "1" if self.config.allow_git else "0",
-            # Optional knobs: always injected so the typed field — not an ambient host var the
-            # subprocess runtime inherits — is the source of truth. rlm reads "" as "off", so a
-            # `None` field reliably *disables* the feature instead of leaking the host value.
+            # Always injected so the typed field — not an ambient host var the subprocess runtime
+            # inherits — is the source of truth. rlm reads "" as "off", so a `None` field reliably
+            # *disables* auto-compaction instead of leaking the host value.
             "RLM_SUMMARIZE_AT_TOKENS": (
                 ""
                 if self.config.summarize_at_tokens is None
                 else str(self.config.summarize_at_tokens)
             ),
-            "RLM_SYSTEM_PROMPT_PATH": self.config.system_prompt_path or "",
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
