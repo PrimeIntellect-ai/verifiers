@@ -148,6 +148,7 @@ class StatefulToolEnv(vf.ToolEnv):
             except Exception as e:
                 if self._should_stop_for_error(e):
                     raise vf.ToolParseError from e
+                self._record_tool_call_outcome(state, "error")
                 tool_messages.append(
                     ToolMessage(
                         role="tool",
@@ -162,10 +163,12 @@ class StatefulToolEnv(vf.ToolEnv):
             )
             try:
                 tool_message = await self.call_tool(tool_name, tool_args, tool_call_id)
+                self._record_tool_call_outcome(state, "ok")
                 tool_messages.append(tool_message)
             except Exception as e:
                 if self._should_stop_for_error(e):
                     raise vf.ToolCallError from e
+                self._record_tool_call_outcome(state, "error")
                 tool_messages.append(
                     ToolMessage(
                         role="tool",

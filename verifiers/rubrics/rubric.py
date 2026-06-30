@@ -320,6 +320,26 @@ class Rubric:
         """
         reward_funcs = [func for func in self.funcs if not self._is_group_func(func)]
         group_reward_funcs = self._get_group_reward_funcs()
+        if state.get("masked"):
+            reward_scores = []
+            for func, weight in zip(
+                reward_funcs, self._get_individual_reward_weights()
+            ):
+                if weight == 0.0:
+                    reward_scores.append(
+                        await self._call_individual_reward_func(
+                            func=func,
+                            state=state,
+                        )
+                    )
+                else:
+                    reward_scores.append(0.0)
+            state["reward"] = 0.0
+            state["metrics"] = {
+                func.__name__: reward
+                for func, reward in zip(reward_funcs, reward_scores)
+            }
+            return
         assert len(reward_funcs) > 0 and len(group_reward_funcs) == 0, (
             "Rubric.score_rollout requires at least one individual-level reward function and no group-level reward functions"
         )
@@ -401,6 +421,12 @@ class Rubric:
                     aggregated_rewards[i] += score_value * weight
                     aggregated_metrics[func_name][i] = score_value
 
+        for i, state in enumerate(states):
+            if state.get("masked"):
+                aggregated_rewards[i] = 0.0
+                for func, weight in zip(self.funcs, self.weights):
+                    if weight != 0.0 and func.__name__ in aggregated_metrics:
+                        aggregated_metrics[func.__name__][i] = 0.0
         avg_reward = sum(aggregated_rewards) / num_states
         for i, state in enumerate(states):
             state["reward"] = aggregated_rewards[i]

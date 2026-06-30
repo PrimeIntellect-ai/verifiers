@@ -1,5 +1,5 @@
 import json
-from typing import Callable, cast
+from typing import Callable, Literal, cast
 
 import verifiers as vf
 from verifiers.types import AssistantMessage, Messages, ToolCall, ToolMessage
@@ -8,6 +8,8 @@ from verifiers.utils.tool_utils import (
     convert_func_to_tool_def,
     is_valid_tool_content_parts,
 )
+
+ToolCallOutcome = Literal["ok", "error"]
 
 
 class ToolMonitorRubric(vf.Rubric):
@@ -78,12 +80,14 @@ class ToolEnv(vf.MultiTurnEnv):
         max_turns: int = 10,
         error_formatter: Callable[[Exception], str] = lambda e: f"{e}",
         stop_errors: list[type[Exception]] | None = None,
+        mask_all_failed_tool_calls: bool = False,
         **kwargs,
     ):
         self.tools = tools or []
         self.max_turns = max_turns
         self.error_formatter = error_formatter
         self.stop_errors: list[type[Exception]] = stop_errors or []
+        self.mask_all_failed_tool_calls = mask_all_failed_tool_calls
         self.tool_defs = [convert_func_to_tool_def(tool) for tool in self.tools]
         self.tool_map = {
             getattr(tool, "__name__", tool.__class__.__name__): tool
@@ -94,11 +98,41 @@ class ToolEnv(vf.MultiTurnEnv):
         self.tool_monitor_rubric = ToolMonitorRubric(
             tool_names=list(self.tool_map.keys())
         )
+        if self.mask_all_failed_tool_calls:
+            self.tool_monitor_rubric.add_metric(self.void_turn_rollouts)
         self.add_rubric(self.tool_monitor_rubric)
 
     def _should_stop_for_error(self, err: Exception) -> bool:
         """Check if error is in stop_errors."""
         return any(isinstance(err, err_type) for err_type in self.stop_errors)
+
+    def _tool_call_outcomes(self, state: vf.State) -> list[ToolCallOutcome]:
+        outcomes = state.setdefault("tool_call_outcomes", [])
+        return cast(list[ToolCallOutcome], outcomes)
+
+    def _record_tool_call_outcome(
+        self, state: vf.State, outcome: ToolCallOutcome
+    ) -> None:
+        self._tool_call_outcomes(state).append(outcome)
+
+    def _should_mask(self, state: vf.State) -> bool:
+        outcomes = state.get("tool_call_outcomes") or []
+        return (
+            self.mask_all_failed_tool_calls
+            and len(outcomes) > 0
+            and all(outcome == "error" for outcome in outcomes)
+        )
+
+    def _apply_tool_call_mask(self, state: vf.State) -> None:
+        if self.mask_all_failed_tool_calls:
+            state["masked"] = self._should_mask(state)
+
+    async def void_turn_rollouts(self, state: vf.State) -> float:
+        return 1.0 if state.get("masked") else 0.0
+
+    async def _finalize_rollout(self, state: vf.State) -> None:
+        self._apply_tool_call_mask(state)
+        await super()._finalize_rollout(state)
 
     def add_tool(self, tool: Callable):
         self.tools.append(tool)
@@ -156,6 +190,7 @@ class ToolEnv(vf.MultiTurnEnv):
             except Exception as e:
                 if self._should_stop_for_error(e):
                     raise vf.ToolParseError from e
+                self._record_tool_call_outcome(state, "error")
                 tool_messages.append(
                     ToolMessage(
                         role="tool",
@@ -167,10 +202,12 @@ class ToolEnv(vf.MultiTurnEnv):
 
             try:
                 tool_message = await self.call_tool(tool_name, tool_args, tool_call_id)
+                self._record_tool_call_outcome(state, "ok")
                 tool_messages.append(tool_message)
             except Exception as e:
                 if self._should_stop_for_error(e):
                     raise vf.ToolCallError from e
+                self._record_tool_call_outcome(state, "error")
                 tool_messages.append(
                     ToolMessage(
                         role="tool",
