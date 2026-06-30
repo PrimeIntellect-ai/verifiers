@@ -347,6 +347,9 @@ class Rubric:
                             if not self._is_group_func(func)
                         ],
                     )
+                    # Skip zero-weight terms (metrics) so a non-finite metric
+                    # score cannot poison the reward via 0.0 * nan = nan.
+                    if weight != 0.0
                 ]
             ),
         )
