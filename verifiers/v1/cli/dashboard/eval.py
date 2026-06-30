@@ -12,6 +12,7 @@ above a rule.
 
 import contextlib
 import time
+from typing import TYPE_CHECKING
 
 from rich.console import Console, Group
 from rich.markup import escape
@@ -28,6 +29,9 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
 from verifiers.v1.utils.format import format_count, format_mean, format_time
 from verifiers.utils.pricing_utils import format_cost_usd
+
+if TYPE_CHECKING:
+    from verifiers.v1.cli.eval.resume import Baseline
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
@@ -142,15 +146,23 @@ def Overview(config: EvalConfig) -> Table:
 
 
 def Progress(
-    rollouts: list[Rollout], start: float, page: tuple[int, int] | None = None
+    rollouts: list[Rollout],
+    start: float,
+    page: tuple[int, int] | None = None,
+    baseline: "Baseline | None" = None,
 ) -> Group:
     done = [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
+    # On resume, `baseline` carries the kept on-disk rollouts (all non-errored), so the counter,
+    # reward, and err cover the whole run rather than only this session's resumed rollouts.
+    base_n = baseline.n if baseline else 0
+    base_reward = baseline.reward_sum if baseline else 0.0
+    completed = base_n + len(done)
     # Headline reward = mean over non-errored; when any errored, `format_mean` appends the
     # global avg (errored count as 0) in parens. `err` is the share that errored.
-    reward = format_mean(done, lambda t: t.reward)
-    err = f"{sum(t.has_error for t in done) / len(done):.2f}" if done else "—"
+    reward = format_mean(done, lambda t: t.reward, base_sum=base_reward, base_n=base_n)
+    err = f"{sum(t.has_error for t in done) / completed:.2f}" if completed else "—"
     stats = (
-        f"{len(done)}/{len(rollouts)} · {format_time(time.time() - start)} · "
+        f"{completed}/{base_n + len(rollouts)} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
     )
     if page is not None:  # rollouts overflow the screen — show which page is on screen
@@ -159,14 +171,14 @@ def Progress(
     row.add_column(ratio=1)  # bar stretches to fill the width left of the stats
     row.add_column(justify="right", no_wrap=True)
     row.add_row(
-        ProgressBar(total=len(rollouts) or 1, completed=len(done)),
+        ProgressBar(total=(base_n + len(rollouts)) or 1, completed=completed),
         Text(stats),
     )
-    breakdown = _breakdown(done)
+    breakdown = _breakdown(done, baseline)
     return Group(row, breakdown) if breakdown is not None else Group(row)
 
 
-def _breakdown(done: list[Trace]) -> Table | None:
+def _breakdown(done: list[Trace], baseline: "Baseline | None" = None) -> Table | None:
     """The per-component view under the headline (summed) reward: a `rewards` row of each named
     `@reward` contribution and a `metrics` row of each `@metric`, then a `usage` row (tokens and
     cost summed over completed rollouts) and a `time` row (each phase averaged over the rollouts
@@ -180,20 +192,29 @@ def _breakdown(done: list[Trace]) -> Table | None:
     grid.add_column()
     # rewards/metrics are error-corrected means — skip when every rollout errored (no clean mean to
     # show); usage/time below still cover errored rollouts (their resources were spent regardless).
-    has_clean = any(not t.has_error for t in done)
+    # On resume, the kept on-disk rollouts (`baseline`) seed the reward/metric means so they cover
+    # the whole run; usage/time stay session-scoped (kept rows weren't recomputed).
+    base_n = baseline.n if baseline else 0
+    has_clean = base_n > 0 or any(not t.has_error for t in done)
     score_rows = (("rewards", "rewards"), ("metrics", "metrics")) if has_clean else ()
     for label, source in score_rows:
-        # every key seen across traces, first-seen order (a trace records only the functions
-        # that ran for it, so keys can vary)
-        names: list[str] = []
+        base_sums = baseline.comp_sum.get(source, {}) if baseline else {}
+        # every key seen across the kept rows and this session's traces, first-seen order (a
+        # trace records only the functions that ran for it, so keys can vary)
+        names: list[str] = list(base_sums)
         for trace in done:
             names.extend(n for n in getattr(trace, source) if n not in names)
         if not names:
             continue
-        segments = [
-            f"{name} {format_mean(done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0))}"
-            for name in names
-        ]
+        segments = []
+        for name in names:
+            mean = format_mean(
+                done,
+                lambda t, n=name, s=source: getattr(t, s).get(n, 0.0),
+                base_sum=base_sums.get(name, 0.0),
+                base_n=base_n,
+            )
+            segments.append(f"{name} {mean}")
         grid.add_row(label, "  ·  ".join(segments))
 
     # Resource use over every completed rollout (errored ones still spent tokens/time): tokens and
@@ -426,17 +447,27 @@ def _paginate(
     return pages[index], index, len(pages)
 
 
-def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
+def _render(
+    rollouts: list[Rollout],
+    config: EvalConfig,
+    start: float,
+    baseline: "Baseline | None" = None,
+) -> Group:
     now = time.time()
     warning = _warning(config)
     # `{warning}\n\n{overview}` — the caution sits at the very top, blank line, then the overview.
     header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
     # Measure the fixed top (header + progress + rule) so the rollout rows fill the rest of the
     # screen; page through them on a timer when they'd overflow (rich would otherwise truncate).
-    top = Group(header, Progress(rollouts, start), Rule(style="dim"))
+    top = Group(header, Progress(rollouts, start, baseline=baseline), Rule(style="dim"))
     rows_per_page = max(1, _CONSOLE.size.height - len(_CONSOLE.render_lines(top)) - 1)
     page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, now)
-    progress = Progress(rollouts, start, page=(index + 1, count) if count > 1 else None)
+    progress = Progress(
+        rollouts,
+        start,
+        page=(index + 1, count) if count > 1 else None,
+        baseline=baseline,
+    )
     return Group(
         header,
         progress,
@@ -446,7 +477,13 @@ def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
 
 
 @contextlib.asynccontextmanager
-async def dashboard(rollouts: list[Rollout], config: EvalConfig, start: float):
-    """Refresh the live eval view until the `with` block exits, then a final frame."""
-    async with live_view(lambda: _render(rollouts, config, start)):
+async def dashboard(
+    rollouts: list[Rollout],
+    config: EvalConfig,
+    start: float,
+    baseline: "Baseline | None" = None,
+):
+    """Refresh the live eval view until the `with` block exits, then a final frame. On resume,
+    `baseline` carries the kept on-disk rollouts so the counter and reward cover the whole run."""
+    async with live_view(lambda: _render(rollouts, config, start, baseline)):
         yield

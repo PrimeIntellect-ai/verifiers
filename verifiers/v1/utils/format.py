@@ -35,18 +35,29 @@ def format_count(n: int) -> str:
 
 
 def format_mean(
-    traces: list[Trace], value: Callable[[Trace], float], digits: int = 2
+    traces: list[Trace],
+    value: Callable[[Trace], float],
+    digits: int = 2,
+    *,
+    base_sum: float = 0.0,
+    base_n: int = 0,
 ) -> str:
     """Mean of `value` over completed `traces`: the mean over the non-errored ones
     (error-corrected). When some errored, also append the global mean — over *all* completed,
     an errored trace's value counting as 0 — in parens, so both the error-corrected and the raw
-    mean are visible. "—" when nothing has completed (or all errored)."""
-    if not traces:
-        return "—"
+    mean are visible. "—" when nothing has completed (or all errored).
+
+    `base_sum`/`base_n` seed the mean with already-counted, non-errored rows that aren't in
+    `traces` — a resume's kept on-disk rollouts — so the displayed mean covers the whole run.
+    They count toward both the error-corrected and the global mean (kept rows never errored)."""
     clean = [t for t in traces if not t.has_error]
-    if not clean:
+    clean_n = base_n + len(clean)
+    if clean_n == 0:
         return "—"
-    mean = f"{sum(value(t) for t in clean) / len(clean):.{digits}f}"
-    if len(clean) < len(traces):  # some errored → show the raw global avg alongside
-        mean += f" ({sum(value(t) for t in traces) / len(traces):.{digits}f})"
+    mean = f"{(base_sum + sum(value(t) for t in clean)) / clean_n:.{digits}f}"
+    if (
+        base_n + len(traces) > clean_n
+    ):  # some errored → show the raw global avg alongside
+        all_sum = base_sum + sum(value(t) for t in traces)
+        mean += f" ({all_sum / (base_n + len(traces)):.{digits}f})"
     return mean

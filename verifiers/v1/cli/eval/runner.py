@@ -41,9 +41,10 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # run only the owed rollouts. One lock serializes worker-thread appends from concurrent
     # rollouts while keeping large trace serialization off the event loop.
     owed: dict[str, int] | None = None
+    baseline: resume.Baseline | None = None
     if config.resume is not None:
         group = bool(discover_decorated(env.taskset, "group_reward"))
-        keep, owed = resume.plan(
+        keep, owed, baseline = resume.plan(
             out, [t.idx for t in tasks], config.num_rollouts, group
         )
         if not owed:  # already complete - report it and exit successfully
@@ -84,7 +85,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
         ]
         rollouts = [rollout for episode in episodes for rollout in episode.rollouts]
         display = (
-            dashboard(rollouts, config, start)
+            dashboard(rollouts, config, start, baseline=baseline)
             if config.rich
             else contextlib.nullcontext()
         )
@@ -157,7 +158,9 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             idxs = idxs[: config.num_tasks]
         out = output_path(config)
         if config.resume is not None:
-            keep, owed = resume.plan(
+            # No rich dashboard in server mode (rejected at config validation), so the scoring
+            # baseline it would seed is unused here.
+            keep, owed, _baseline = resume.plan(
                 out, idxs, config.num_rollouts, info.requires_group_scoring
             )
             if not owed:  # already complete - report it and exit successfully
