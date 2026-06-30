@@ -7,7 +7,7 @@ seed building, snapshot restore, and scoring.
 
 Sourcing (``config.mode``):
 - ``offline`` — ``load_tasks`` materializes one task per resume point of this taskset's ``KIND``;
-  the bundled harness sees a non-empty ``task.prompt`` and just runs the default chat loop.
+  the bundled harness seeds the chat loop from the task's prompt.
 - ``online`` — ``load_tasks`` returns ``pool_size`` virtual slots and the harness samples a
   ``KIND`` resume point from the *live* buffer per rollout.
 
@@ -28,16 +28,14 @@ from pydantic import SerializeAsAny
 
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects.chat import message_to_wire
-from verifiers.v1.harnesses.default.harness import (
-    PROGRAM_SOURCE,
-    DefaultHarness,
-    DefaultHarnessConfig,
-)
+from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harnesses.default.harness import PROGRAM_SOURCE
 from verifiers.v1.loaders import load_taskset
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import Task, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace, WireTrace
+from verifiers.v1.types import Messages
 
 from replay_common.selector import (
     DEFAULT_FOLLOWUP,
@@ -73,7 +71,7 @@ class ReplayConfig(TasksetConfig):
     """The ORIGINAL env's taskset (the verifier to reuse). Empty id => no inner scoring."""
 
 
-class ReplayHarnessConfig(DefaultHarnessConfig):
+class ReplayHarnessConfig(HarnessConfig):
     buffer_glob: str = ""
     """Online mode: the live buffer to sample from."""
     followup: str = DEFAULT_FOLLOWUP
@@ -148,13 +146,17 @@ class BaseReplayTaskset(Taskset[ReplayTask, ReplayConfig]):
             trace.task = replay_task
 
 
-class BaseReplayHarness(DefaultHarness):
-    """Bundled with each taskset (auto-selected via ``default_harness_id``). Offline: a materialized
-    ``task.prompt`` is present, so defer to the default chat loop. Online: sample a ``KIND`` resume
-    point from the live buffer and seed the loop with it."""
+class BaseReplayHarness(Harness[ReplayHarnessConfig]):
+    """Seeds the default chat-loop program (``PROGRAM_SOURCE``) from a replay prefix. Offline: the
+    task already carries the materialized seed. Online: sample a ``KIND`` resume point from the
+    live buffer. Concrete subclasses set ``KIND``."""
 
     KIND: ClassVar[str] = ""
     SUPPORTS_MESSAGE_PROMPT = True
+    SUPPORTS_MCP = True
+
+    async def setup(self, runtime: Runtime) -> None:
+        await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
 
     async def launch(
         self,
@@ -165,28 +167,9 @@ class BaseReplayHarness(DefaultHarness):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        if trace.task.prompt is not None:  # offline: materialized seed -> default behavior
-            return await super().launch(ctx, trace, runtime, endpoint, secret, mcp_urls)
-
-        rng = random.Random(trace.id)
-        sample = self._sample(rng)
-        if sample is None:  # buffer empty (warmup) / no matching points yet
-            trace.stop("replay_buffer_empty")
+        seed = await self._resolve_seed(trace, runtime)
+        if seed is None:  # warmup: live buffer empty / no matching points yet
             return ProgramResult(exit_code=0, stdout="", stderr="")
-        src, point = sample
-
-        ref = snapshot_ref_of(src, point["node"])
-        if ref is not None and self.KIND != "judge":  # judge needs no sandbox; skeleton refs are None
-            await runtime.restore(ref)
-
-        trace.info["replay"] = {
-            "source_id": src.id,
-            "resume_node": point["node"],
-            "kind": point["kind"],
-            "original_task": src.task.model_dump(),
-            "original_reward": src.reward,
-        }
-        seed = build_seed(src, point, self.config.followup)
         env = {**self.config.env}
         env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in seed])
         args = [f"--base-url={endpoint}", f"--api-key={secret}", f"--model={ctx.model}"]
@@ -197,6 +180,27 @@ class BaseReplayHarness(DefaultHarness):
             )
         program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
         return await runtime.run_program([*program, *args], env)
+
+    async def _resolve_seed(self, trace: Trace, runtime: Runtime) -> Messages | None:
+        if trace.task.prompt is not None:  # offline: task carries the materialized seed
+            return list(trace.task.prompt)
+        # online: sample a KIND resume point from the live buffer
+        sample = self._sample(random.Random(trace.id))
+        if sample is None:
+            trace.stop("replay_buffer_empty")
+            return None
+        src, point = sample
+        ref = snapshot_ref_of(src, point["node"])
+        if ref is not None and self.KIND != "judge":  # judge needs no sandbox; skeleton refs None
+            await runtime.restore(ref)
+        trace.info["replay"] = {
+            "source_id": src.id,
+            "resume_node": point["node"],
+            "kind": point["kind"],
+            "original_task": src.task.model_dump(),
+            "original_reward": src.reward,
+        }
+        return build_seed(src, point, self.config.followup)
 
     def _sample(self, rng: random.Random) -> tuple[Trace, dict] | None:
         """Scan the live buffer in random order; return the first (trace, ``KIND`` point) found."""

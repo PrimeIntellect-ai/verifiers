@@ -55,11 +55,11 @@ def resume_points(trace: Trace, *, kinds: set[str]) -> list[dict]:
     """Resume points whose ``kind`` is in ``kinds``. ``compaction_before``/``compaction_after``
     come from the harness tags; ``recheck`` and ``judge`` are the structural final-answer leaf
     (re-roll vs. judge-the-attempt). Each: ``node`` id and ``kind``."""
-    points: list[dict] = [
-        {"node": nid, "kind": get_tag(trace, nid)}
-        for nid in range(len(trace.nodes))
-        if get_tag(trace, nid) in kinds
-    ]
+    points: list[dict] = []
+    for nid in range(len(trace.nodes)):
+        tag = get_tag(trace, nid)
+        if tag in kinds:
+            points.append({"node": nid, "kind": tag})
     leaves = graph.leaves(trace)
     if leaves:
         final = max(leaves)  # the rollout's final-answer leaf
