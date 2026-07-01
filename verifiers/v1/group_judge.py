@@ -188,8 +188,8 @@ class AgenticGroupJudge:
         n = len(traces)
         name = f"group-judge-{uuid.uuid4().hex}"  # unique: groups are scored concurrently
         runtime = make_runtime(resolve_runtime_config(self.runtime_config, task), name=name)
-        await runtime.start()
         try:
+            await runtime.start()  # inside try: stop() (idempotent) still runs if start half-provisions
             order = list(range(n))
             random.Random(task.idx).shuffle(order)  # deterministic per task, hides identity
             tests = self.tests_tar(task)
