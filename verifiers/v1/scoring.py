@@ -136,6 +136,10 @@ def parse_pytest_outcomes(output: str | None) -> dict[str, str]:
         if outcome not in PYTEST_OUTCOMES:
             continue
 
+        # SKIPPED short-summary rows use "[N] file.py:line: reason", not a node id.
+        if test_id.startswith("["):
+            continue
+
         # FAILED/ERROR summary lines append " - <reason>"; passing node ids do not.
         if outcome in ("FAILED", "ERROR") and " - " in test_id:
             node_id = test_id.rsplit(" - ", 1)[0]
