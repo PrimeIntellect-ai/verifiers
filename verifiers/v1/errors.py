@@ -67,6 +67,11 @@ class TasksetError(RolloutError):
     """Taskset-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`/`@group_reward`."""
 
 
+class JudgeError(RolloutError):
+    """A judge agent run failed: its model name is unknown, its harness crashed, or it produced
+    no (or an invalid) verdict. Fails the rollout — a missing verdict is never a 0 reward."""
+
+
 class InterceptionError(RolloutError):
     """The host interception server (model calls + `/state` + `/task` channels) couldn't be reached."""
 

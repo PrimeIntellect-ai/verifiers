@@ -19,7 +19,7 @@ from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import HarnessConfig
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelEndpointConfig, RolloutContext, resolve_client
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.types import EnvId
@@ -117,6 +117,12 @@ class EnvConfig(BaseConfig):
     """Rollouts that share one interception server (and, behind a remote runtime, one
     tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
     key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
+    models: dict[str, ModelEndpointConfig] = Field(default_factory=dict)
+    """The env's named model table: logical name -> endpoint + model + sampling. Agent
+    specs (a taskset's judges) reference entries by name (`AgentSpec.model`), so a
+    taskset says WHAT model quality it needs ("grader") and the run config says WHERE
+    that resolves — endpoints and keys never live in taskset code. "policy" is reserved
+    (the rollout's own model context) and needs no entry."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
@@ -292,6 +298,21 @@ class Environment:
         """Eval-level serving resources, live only inside `serving()`: shared tool servers
         ({name: url}) and the interception pool. `episode()` injects them into every rollout
         so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
+        if "policy" in config.models:
+            raise ValueError(
+                "the model-table name 'policy' is reserved for the rollout's own model; "
+                "remove the `models.policy` entry"
+            )
+        self.models: dict[str, RolloutContext] = {
+            name: RolloutContext(
+                model=entry.model,
+                client=resolve_client(entry),
+                sampling=entry.sampling,
+            )
+            for name, entry in config.models.items()
+        }
+        """The resolved model table for agent runs (judges): one shared client per entry,
+        built once for the env's lifetime. `episode()` injects it into every rollout."""
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
         """Resolve the runtime config for a task off the harness's runtime (see
@@ -360,6 +381,7 @@ class Environment:
                 limits=self.limits,
                 shared_urls=self._shared_urls,
                 interception=self._interception,
+                models=self.models,
             )
             for _ in range(n)
         ]

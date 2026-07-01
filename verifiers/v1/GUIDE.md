@@ -308,6 +308,63 @@ Good to know:
 - **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`, Prime auto-config). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.
 - **Errors propagate**: a judge API failure errors the rollout (recorded as a `TasksetError` on the trace); the OpenAI SDK already retries transient 429/5xx/connection errors.
 
+### Agentic judges
+
+When one templated call isn't enough judgement — the grade needs to *inspect the world* (re-run
+tests, read files the agent wrote) or *work through* a long trace — declare the judge as an **agent
+run**: a harness + model the framework executes in the SCORING stage, while the rollout's runtime is
+still live. Override `Taskset.judges(task)` to return `vf.JudgeSpec`s; map the verdict to a number
+in a `@reward` that declares `verdicts`:
+
+```python
+from pydantic import BaseModel
+
+class PatchVerdict(BaseModel):
+    passed: bool
+    reasoning: str
+
+class MyTaskset(vf.Taskset[MyTask, MyConfig]):
+    def judges(self, task: MyTask) -> list[vf.JudgeSpec]:
+        return [vf.JudgeSpec(
+            name="patch_quality",
+            prompt=f"The agent was asked to fix: {task.issue}. Inspect the repo state and "
+                   "run the tests to decide whether the fix is real and minimal.",
+            verdict=PatchVerdict,
+            model="grader",                          # a model-table name (see below)
+            budget=vf.AgentBudget(max_turns=15),
+        )]
+
+    @vf.reward
+    async def solved(self, verdicts) -> float:
+        return float(verdicts["patch_quality"].passed)
+```
+
+How it executes:
+
+- **Placement**: `placement="rollout"` (default) provisions the judge's harness into the rollout's
+  live runtime — the world the policy actually mutated — only after the policy finished, so the
+  policy can never observe or tamper with it. Pass a `RuntimeConfig` instead for a fresh runtime: a
+  clean-room container for verification, or a plain subprocess for trace-only judging.
+- **I/O contract is files**, so any harness can judge (including off-the-shelf coding agents): the
+  framework materializes `task.json` / `transcript.md` / `trace.json` under a per-run
+  `/tmp/vf-agent/<id>/` directory (never the rollout's workdir — that's the world being judged),
+  appends the contract + the verdict's JSON schema to the prompt, and reads back `verdict.json`.
+  A missing or invalid verdict raises `JudgeError` and **fails the rollout** — never a silent 0.
+- **Models are logical names**: `model="policy"` (default) is the rollout's own model;
+  any other name resolves against the env's model table (`--models.grader.base-url …`,
+  `--models.grader.model …` — a `vf.ModelEndpointConfig` per entry). Tasksets say what quality of
+  judge they need; run config says where that resolves. Endpoints never live in taskset code.
+- **Recorded with provenance**: each run lands on `trace.agents` as a `vf.AgentRun{name, role,
+  model, trainable, trace, verdict}` — the judge's own full conversation is as inspectable as the
+  policy's, its spend folds into `trace.extra_usage`, and `trainable=False` keeps judge tokens out
+  of training data by construction.
+- **Budgets are enforced**, not advisory: `AgentBudget` caps turns/tokens via the same interception
+  mechanism that bounds the policy, and the whole SCORING stage (judges + rewards) runs under the
+  env's `scoring` timeout.
+
+`vf.Judge` (above) stays the right tool for one-call grading; `JudgeSpec` is for judges that need
+turns, tools, or the runtime.
+
 ## Stop conditions
 
 A rollout ends when the harness finishes, a framework budget trips (`--max-turns`, token caps), or

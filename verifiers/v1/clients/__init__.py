@@ -5,6 +5,7 @@ from verifiers.v1.clients.config import (
     BaseClientConfig,
     ClientConfig,
     EvalClientConfig,
+    ModelEndpointConfig,
     TrainClientConfig,
     resolve_client,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "BaseClientConfig",
     "ClientConfig",
     "EvalClientConfig",
+    "ModelEndpointConfig",
     "TrainClientConfig",
     "resolve_client",
     "EvalClient",
