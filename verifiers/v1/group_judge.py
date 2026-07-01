@@ -39,9 +39,11 @@ task's pristine test suite — then call `score` from `@group_reward`. The shape
                 return await self.judge.score(traces, task)
 
 The scores returned by ``@group_reward`` are summed (× weight) into each ``trace.reward``; in
-prime-rl those become the group's rewards and GRPO baselines them. Any failure — the judge
-times out, returns the wrong count, a snapshot is missing — propagates, which marks the group
-errored and (in prime-rl) drops it. The judge model/endpoint is a ``JudgeConfig`` (its own
+prime-rl those become the group's rewards and GRPO baselines them. A hard failure — the judge
+never submits valid scores within ``max_turns``, the sandbox/clone fails, or a rollout's snapshot
+is missing — propagates, marking the group errored (dropped in prime-rl); recoverable tool/format
+mistakes (bad JSON, wrong count, a missing file) are fed back for the judge to retry. The judge
+model/endpoint is a ``JudgeConfig`` (its own
 endpoint, not the policy); the judge sandbox is a ``RuntimeConfig`` resolved per task so it
 carries the task's toolchain (the candidates' tests actually run).
 """
@@ -195,10 +197,11 @@ class AgenticGroupJudge:
             await asyncio.gather(
                 *(self._stage_rollout(runtime, displayed, traces[real], tests) for displayed, real in enumerate(order))
             )
-            displayed_scores = await self._run_agent(runtime, n)
+            displayed_scores, displayed_rationale = await self._run_agent(runtime, n)
             scores = [0.0] * n
             for displayed, real in enumerate(order):
                 scores[real] = displayed_scores[displayed]
+                traces[real].info["judge_rationale"] = displayed_rationale[displayed]  # audit trail
             return scores
         finally:
             await runtime.stop()
@@ -230,7 +233,10 @@ class AgenticGroupJudge:
             ["sh", "-c", f"cd {d} && mkdir -p _tests && tar xf _tests.tar -C _tests && rm _tests.tar"], {}
         )
 
-    async def _run_agent(self, runtime: Runtime, n: int) -> list[float]:
+    async def _run_agent(self, runtime: Runtime, n: int) -> tuple[list[float], list[str]]:
+        """Drive the judge tool-loop until it submits valid scores. Recoverable tool/format
+        mistakes are fed back for the judge to retry; running out of turns raises (group dropped).
+        Returns (scores, rationale), both length ``n`` in displayed order."""
         messages: list[dict[str, Any]] = [{"role": "system", "content": self.system_prompt.format(n=n, last=n - 1)}]
         sampling = self.config.sampling.model_dump(exclude_none=True)
         for _ in range(self.max_turns):
@@ -243,20 +249,45 @@ class AgenticGroupJudge:
                 messages.append({"role": "user", "content": "Use the tools to investigate, then call submit_scores."})
                 continue
             for call in message.tool_calls:
-                args = json.loads(call.function.arguments or "{}")
-                if call.function.name == "submit_scores":
-                    scores = args.get("scores")
-                    if not isinstance(scores, list) or len(scores) != n:
-                        raise RuntimeError(f"submit_scores expected {n} scores, got {scores!r}")
-                    return [float(s) for s in scores]
-                result = await self._dispatch(runtime, call.function.name, args)
-                messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
-        raise RuntimeError(f"judge did not submit scores within {self.max_turns} turns")
+                verdict, feedback = await self._handle_call(runtime, call, n)
+                if verdict is not None:
+                    return verdict
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": feedback})
+        raise RuntimeError(f"judge did not submit valid scores within {self.max_turns} turns")
+
+    async def _handle_call(
+        self, runtime: Runtime, call: Any, n: int
+    ) -> tuple[tuple[list[float], list[str]] | None, str]:
+        """Run one tool call. A non-None first element is the final (scores, rationale) from
+        submit_scores; otherwise the string is the tool message fed back to the judge. Tool and
+        format errors return feedback (retryable) rather than raising, so a single fumble doesn't
+        drop the whole group."""
+        try:
+            args = json.loads(call.function.arguments or "{}")
+        except json.JSONDecodeError as e:
+            return None, f"invalid JSON arguments: {e}"
+        if call.function.name == "submit_scores":
+            scores = args.get("scores")
+            if not isinstance(scores, list) or len(scores) != n:
+                return None, f"submit_scores needs exactly {n} scores (one per rollout); got {scores!r}"
+            try:
+                scores = [float(s) for s in scores]
+            except (TypeError, ValueError):
+                return None, "scores must be numbers; investigate and resubmit"
+            rationale = [str(r) for r in (args.get("rationale") or [])]
+            rationale = rationale[:n] + [""] * (n - len(rationale))
+            return (scores, rationale), ""
+        return None, await self._dispatch(runtime, call.function.name, args)
 
     async def _dispatch(self, runtime: Runtime, name: str, args: dict[str, Any]) -> str:
         if name == "run_command":
             res = await runtime.run(["sh", "-c", str(args.get("command", ""))], {})
             return truncate_output(f"exit={res.exit_code}\n{res.stdout}{res.stderr}")
         if name == "read_file":
-            return truncate_output((await runtime.read(str(args.get("path", "")))).decode(errors="replace"))
-        raise RuntimeError(f"unknown judge tool {name!r}")
+            path = str(args.get("path", ""))
+            try:
+                data = await runtime.read(path)
+            except Exception as e:  # a judge probing a bad path shouldn't drop the group
+                return f"error reading {path}: {e}"
+            return truncate_output(data.decode(errors="replace"))
+        return f"unknown tool {name!r}"
