@@ -2,11 +2,11 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp", "httpx"]
 # ///
-"""The default harness's program: a chat loop with a local `bash` tool (+ optional `edit`, `web_search`, MCP).
+"""The default harness's program: a chat loop with a local `bash` tool (+ optional `edit`, `search`, MCP).
 
 A growing-message-list chat loop. It always offers a local `bash` tool that runs shell commands in
 the runtime; with `--edit` it also offers a local `edit` tool that replaces a unique string in a
-file, and with `--web-search` a `web_search` tool (Serper Google search). When the harness sets
+file, and with `--search` a `search` tool (Serper Google search). When the harness sets
 MCP_CONFIG (a standard `mcpServers` URL map) it also connects to those servers over streamable
 HTTP, exposes their tools to the model as `<server>_<tool>`, and routes those calls to the server.
 The loop runs until the model answers without a tool call.
@@ -70,14 +70,14 @@ EDIT_TOOL = {
 }
 
 
-WEB_SEARCH_TOOL = {
+SEARCH_TOOL = {
     "type": "function",
     "function": {
-        "name": "web_search",
+        "name": "search",
         "description": (
-            "Search the web with Google (via serper.dev). Returns the top organic results as "
-            "title, URL, and snippet. Issue focused queries and call several times to cover "
-            "different angles; use the bash tool (e.g. curl) to read a result page in full."
+            "Run a web search via Serper (Google) and return the top organic results as title, "
+            "URL, and snippet. Issue focused queries and call it several times to cover different "
+            "angles; use the bash tool (e.g. curl) to read a result page in full."
         ),
         "parameters": {
             "type": "object",
@@ -94,23 +94,41 @@ WEB_SEARCH_TOOL = {
 }
 
 
-def run_web_search(query: str, api_key: str, num_results: int = 5) -> str:
-    """Serper Google web search -> formatted organic results (ported from the rlm `search` skill).
+def format_results(results, query: str) -> str:
+    """Format Serper organic results as title/URL/snippet blocks (verbatim from the rlm skill)."""
+    sections = []
+    for i, result in enumerate(results, 1):
+        title = (result.get("title") or "").strip() or "Untitled"
+        lines = [f"Result {i}: {title}"]
+        link = (result.get("link") or "").strip()
+        if link:
+            lines.append(f"URL: {link}")
+        snippet = (result.get("snippet") or "").strip()
+        if snippet:
+            lines.append(f"  - {snippet}")
+        sections.append("\n".join(lines))
+    if not sections:
+        return f"No results returned for query: {query}"
+    return "\n\n---\n\n".join(sections)
 
-    The key arrives as an argument (handed in by the harness over argv, like the interception
-    secret) rather than from the env, so the agent's `bash` subprocesses never inherit it."""
-    if not query:
-        return "error: 'query' is required"
+
+def run_search(query: str, api_key: str, num_results: int = 5) -> str:
+    """Serper Google web search -> formatted organic results.
+
+    A faithful port of the rlm `search` skill (rlm-harness `src/rlm/skills/search.py`): same
+    Serper request and `format_results` output. Two deliberate differences from rlm: the key
+    arrives as an argument (handed in by the harness over argv, like the interception secret)
+    instead of from `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it; and the
+    call is wrapped so a bad query or malformed payload becomes a tool error rather than a dead
+    rollout — rlm leans on the IPython kernel to catch that, but this chat loop must catch it here."""
     if not api_key:
-        return "error: SERPER_API_KEY is not set in the eval environment"
-    # num_results arrives straight from model tool JSON, so it may be a non-int (e.g. "ten");
-    # coerce defensively — `organic[:num_results]` below would otherwise raise on a bad slice.
+        return "Error: no Serper API key (SERPER_API_KEY was not set in the eval environment)"
+    # num_results comes straight from model tool JSON, so it may be a non-int (e.g. "ten"); coerce
+    # defensively — `organic[:num_results]` would otherwise raise on a bad slice.
     try:
         num_results = max(1, int(num_results))
     except (TypeError, ValueError):
         num_results = 5
-    # Wrap the request AND the response parsing/formatting: a malformed payload (non-list
-    # `organic`, non-dict items) should surface as a tool error, not crash the chat loop.
     try:
         response = httpx.post(
             SERPER_URL,
@@ -120,22 +138,9 @@ def run_web_search(query: str, api_key: str, num_results: int = 5) -> str:
         )
         response.raise_for_status()
         organic = response.json().get("organic") or []
-        sections = []
-        for i, result in enumerate(organic[:num_results], 1):
-            title = (result.get("title") or "").strip() or "Untitled"
-            lines = [f"Result {i}: {title}"]
-            if link := (result.get("link") or "").strip():
-                lines.append(f"URL: {link}")
-            if snippet := (result.get("snippet") or "").strip():
-                lines.append(f"  - {snippet}")
-            sections.append("\n".join(lines))
+        return format_results(organic[:num_results], query)
     except Exception as e:
-        return f"web_search failed ({e}). Try again or rephrase the query."
-    return (
-        "\n\n---\n\n".join(sections)
-        if sections
-        else f"No results returned for query: {query}"
-    )
+        return f"search failed ({e}). Try again or rephrase the query."
 
 
 def run_bash(command: str) -> str:
@@ -255,7 +260,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--edit", action="store_true")
-    parser.add_argument("--web-search", action="store_true")
+    parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
     return parser.parse_args()
 
@@ -276,8 +281,8 @@ async def main() -> None:
         tools = [BASH_TOOL]
         if args.edit:
             tools.append(EDIT_TOOL)
-        if args.web_search:
-            tools.append(WEB_SEARCH_TOOL)
+        if args.search:
+            tools.append(SEARCH_TOOL)
         tools += mcp_tools
         messages = (
             [{"role": "system", "content": args.system_prompt}]
@@ -335,9 +340,9 @@ async def main() -> None:
                         tool_args.get("old_str"),
                         tool_args.get("new_str"),
                     )
-                elif name == "web_search" and args.web_search:
+                elif name == "search" and args.search:
                     content = await asyncio.to_thread(
-                        run_web_search,
+                        run_search,
                         tool_args.get("query", ""),
                         args.serper_key,
                         tool_args.get("num_results", 5),
