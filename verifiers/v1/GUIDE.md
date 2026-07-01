@@ -231,6 +231,7 @@ A reward reads the finished trajectory off `trace`. The most useful members, by 
 | `trace.usage` | `Usage \| None` | provider-reported token usage |
 | `trace.timing` | `Timing` | per-stage durations |
 | `trace.id` | `str` | unique rollout id |
+| `trace.group_id` | `str` | id shared by a task's group; the join key for grouping traces in `results.jsonl` |
 
 `trace.reward` / `trace.rewards` / `trace.metrics` are scoring *outputs*, filled in during the
 scoring pass — don't read them from inside a `@reward`/`@metric`; a `@group_reward` reads metrics
