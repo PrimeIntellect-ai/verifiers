@@ -109,6 +109,8 @@ def run_web_search(query: str, api_key: str, num_results: int = 5) -> str:
         num_results = max(1, int(num_results))
     except (TypeError, ValueError):
         num_results = 5
+    # Wrap the request AND the response parsing/formatting: a malformed payload (non-list
+    # `organic`, non-dict items) should surface as a tool error, not crash the chat loop.
     try:
         response = httpx.post(
             SERPER_URL,
@@ -118,17 +120,17 @@ def run_web_search(query: str, api_key: str, num_results: int = 5) -> str:
         )
         response.raise_for_status()
         organic = response.json().get("organic") or []
+        sections = []
+        for i, result in enumerate(organic[:num_results], 1):
+            title = (result.get("title") or "").strip() or "Untitled"
+            lines = [f"Result {i}: {title}"]
+            if link := (result.get("link") or "").strip():
+                lines.append(f"URL: {link}")
+            if snippet := (result.get("snippet") or "").strip():
+                lines.append(f"  - {snippet}")
+            sections.append("\n".join(lines))
     except Exception as e:
         return f"web_search failed ({e}). Try again or rephrase the query."
-    sections = []
-    for i, result in enumerate(organic[:num_results], 1):
-        title = (result.get("title") or "").strip() or "Untitled"
-        lines = [f"Result {i}: {title}"]
-        if link := (result.get("link") or "").strip():
-            lines.append(f"URL: {link}")
-        if snippet := (result.get("snippet") or "").strip():
-            lines.append(f"  - {snippet}")
-        sections.append("\n".join(lines))
     return (
         "\n\n---\n\n".join(sections)
         if sections
