@@ -2,52 +2,25 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp"]
 # ///
-"""The bash harness's program: a chat loop with a local `bash` tool (+ optional MCP tools).
+"""The null harness's program: a chat loop with the taskset's MCP tools (and none of its own).
 
-A growing-message-list chat loop. It always offers a local `bash` tool that runs shell commands
-in the runtime; when the harness sets MCP_CONFIG (a standard `mcpServers` URL map) it also
-connects to those servers over streamable HTTP, exposes their tools to the model as
+A growing-message-list chat loop. When the harness sets MCP_CONFIG (a standard `mcpServers` URL
+map) it connects to those servers over streamable HTTP, exposes their tools to the model as
 `<server>_<tool>`, and routes those calls to the server. The loop runs until the model answers
-without a tool call.
+without a tool call (immediately, when no tools are offered).
 
-It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the SDKs — the
-harness bootstraps `uv` in the runtime. The interception endpoint, per-rollout secret, and model
-arrive as argv (not env), so the bash tool's local subprocesses never inherit them.
+It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the
+SDKs — the harness bootstraps `uv` in the runtime. The interception endpoint, per-rollout
+secret, and model arrive as argv (not env), so nothing the program spawns inherits them.
 """
 
 import argparse
 import asyncio
 import json
 import os
-import subprocess
 from contextlib import AsyncExitStack
 
 from openai import AsyncOpenAI
-
-BASH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "bash",
-        "description": "Run a bash command and return its combined stdout and stderr.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "The bash command to run."}
-            },
-            "required": ["command"],
-        },
-    },
-}
-
-
-def run_bash(command: str) -> str:
-    try:
-        result = subprocess.run(
-            ["bash", "-c", command], capture_output=True, text=True, timeout=3600
-        )
-        return result.stdout + result.stderr
-    except Exception as e:
-        return f"error: {e}"
 
 
 async def chat(
@@ -134,10 +107,9 @@ async def main() -> None:
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
-        mcp_tools, dispatch = (
+        tools, dispatch = (
             await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
         )
-        tools = [BASH_TOOL] + mcp_tools
         messages = (
             [{"role": "system", "content": args.system_prompt}]
             if args.system_prompt
@@ -170,12 +142,19 @@ async def main() -> None:
                         }
                     )
                     continue
+                # Valid JSON can still be a non-object (`[]`, `42`, `null`); the MCP dispatch
+                # assumes a dict, so reject anything else as a tool error rather than crashing.
+                if not isinstance(tool_args, dict):
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object",
+                        }
+                    )
+                    continue
                 if name in dispatch:
                     content = await call_mcp(dispatch, name, tool_args)
-                elif name == "bash":
-                    content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
-                    )
                 else:
                     content = f"error: unknown tool {name!r}"
                 messages.append(

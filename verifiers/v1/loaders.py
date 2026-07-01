@@ -130,8 +130,9 @@ def harness_class(harness_id: str) -> type[Harness]:
 def default_harness_id(taskset_id: str) -> str:
     """The harness id to use when none is given. A taskset that bundles its own harness — its
     module also exports a `Harness` subclass via `__all__`, so the taskset id doubles as the
-    harness id — runs with that harness by default; otherwise the shared `default` harness. An
-    explicit `--harness.id` / toml id always takes precedence (this only supplies the fallback)."""
+    harness id — runs with that harness by default; otherwise the shared `default` harness (a
+    bash + edit agent). An explicit `--harness.id` / toml id always takes precedence (this only
+    supplies the fallback); for a tool-less chat loop, pass `--harness.id null`."""
     if not taskset_id:
         return "default"
     try:

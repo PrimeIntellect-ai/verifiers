@@ -115,9 +115,9 @@ def _aligned(rows: list[list[str]]) -> list[str]:
 
 
 def _warning(config: EvalConfig) -> Text | None:
-    """A local-runtime caution for a code-running harness (none for the tool-less `default`),
+    """A local-runtime caution for a code-running harness (none for the tool-less `null`),
     shown above the overview rather than as a row in it."""
-    if config.harness.id != "default" and config.harness.runtime.type == "subprocess":
+    if config.harness.id != "null" and config.harness.runtime.type == "subprocess":
         return Text(
             "warning  Runs on the local system; local files and settings may affect this "
             "evaluation. Use subprocess only for debugging, or use docker or prime for an "
@@ -254,10 +254,12 @@ def _breakdown(done: list[Trace]) -> Table | None:
             names.extend(n for n in getattr(trace, source) if n not in names)
         if not names:
             continue
-        segments = [
-            f"{name} {format_mean(done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0))}"
-            for name in names
-        ]
+        segments = []
+        for name in names:
+            mean = format_mean(
+                done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0)
+            )
+            segments.append(f"{name} {mean}")
         grid.add_row(label, "  ·  ".join(segments))
 
     # Resource use over every completed rollout (errored ones still spent tokens/time): tokens and

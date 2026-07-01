@@ -552,15 +552,16 @@ Otherwise pick a built-in, selected with `--harness.id`:
 
 | id | what it is |
 | --- | --- |
-| `default` | a tiny OpenAI chat loop (MCP tools only, no tools of its own) |
-| `bash` | the `default` chat loop plus a local `bash` tool, for shell-driving agents |
+| `default` | a `bash` + `edit` coding agent (the `edit` tool is on by default — `--harness.edit false` for bash-only) — the fallback when no harness is given |
+| `null` | a tiny OpenAI chat loop (MCP tools only, no tools of its own) |
 | `rlm` | the RLM CLI agent |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
 | `mini-swe-agent` | the mini-swe-agent CLI (a minimal SWE agent) |
 | `kimi-code` | the Kimi Code CLI agent |
 
 ```bash
-uv run eval gsm8k-v1 -n 1                    # default harness
+uv run eval gsm8k-v1 -n 1                    # default harness (bash + edit; the fallback)
+uv run eval gsm8k-v1 -n 1 --harness.id null  # bare chat loop, no local tools
 uv run eval gsm8k-v1 -n 1 --harness.id rlm   # same taskset, different driver
 ```
 
@@ -792,7 +793,7 @@ form. In a prime-rl config:
 [[orchestrator.train.env]]
 name    = "gsm8k"
 taskset = { id = "gsm8k-v1", dataset_name = "..." }                 # any v1 taskset id
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "null", runtime = { type = "subprocess" } }
 timeout = { scoring = 10 }                                          # per-stage cap (default: no limit)
 # pool  = { type = "elastic", max_workers = 8, multiplex = 128 }    # env-server pool (default elastic, self-sizing)
 ```
