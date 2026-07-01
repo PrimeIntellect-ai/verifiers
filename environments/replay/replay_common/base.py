@@ -184,8 +184,12 @@ class BaseReplayHarness(Harness[ReplayHarnessConfig]):
     async def _resolve_seed(self, trace: Trace, runtime: Runtime) -> Messages | None:
         if trace.task.prompt is not None:  # offline: task carries the materialized seed
             return list(trace.task.prompt)
-        # online: sample a KIND resume point from the live buffer
-        sample = self._sample(random.Random(trace.id))
+        # online: sample a KIND resume point from the live buffer. Seed the RNG with the task
+        # index (shared across a GRPO group), NOT the rollout id, so every rollout of a group
+        # replays the SAME source+point — N diverse continuations of one point, which is what the
+        # group-relative baseline needs. Freshness still comes from the buffer growing: glob picks
+        # up new files, which shifts each index's draw over time.
+        sample = self._sample(random.Random(trace.task.idx))
         if sample is None:
             trace.stop("replay_buffer_empty")
             return None
