@@ -15,6 +15,7 @@ even if `run()` crashes.
 import asyncio
 import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
 from enum import StrEnum
 
@@ -76,8 +77,12 @@ class Rollout:
         limits: RolloutLimits | None = None,
         shared_urls: dict[str, str] | None = None,
         interception: InterceptionPool | None = None,
+        group_id: str | None = None,
     ) -> None:
         self.task = task
+        self.group_id = group_id or uuid.uuid4().hex
+        """Id of the group (episode) this rollout belongs to; shared with its siblings when
+        `Environment.episode` passes one in, else its own (a lone rollout is a group of one)."""
         self.taskset = taskset
         self.harness = harness
         self.ctx = ctx
@@ -137,7 +142,11 @@ class Rollout:
         the runtime is live, then tears the runtime down in a `finally`. Reuses the
         eval-level shared tool servers / interception pool injected at construction (see
         `self.shared_urls` / `self.interception`)."""
-        trace: Trace = Trace(task=self.task, state=state_cls(type(self.taskset))())
+        trace: Trace = Trace(
+            task=self.task,
+            group_id=self.group_id,
+            state=state_cls(type(self.taskset))(),
+        )
         self.trace = trace  # expose for the --rich dashboard
         trace.timing.setup.start = time.time()
         self.runtime = make_runtime(

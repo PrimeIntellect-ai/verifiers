@@ -101,18 +101,6 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
 
-    def summarize_threshold(self, task_idx: int) -> str:
-        """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by task index, so
-        a task's rollouts share one threshold). Always set — "" when disabled — so the typed field,
-        not a host var the subprocess runtime would inherit, wins."""
-        value = self.config.summarize_at_tokens
-        if value is None:
-            return ""
-        if isinstance(value, tuple):
-            lo, hi = value
-            return str(random.Random(task_idx).randint(lo, hi))
-        return str(value)
-
     async def launch(
         self,
         ctx: RolloutContext,
@@ -123,6 +111,11 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
+        if isinstance(self.config.summarize_at_tokens, tuple):
+            lo, hi = self.config.summarize_at_tokens
+            summarize_at_tokens = random.Random(trace.group_id).randint(lo, hi)
+        else:
+            summarize_at_tokens = self.config.summarize_at_tokens or ""
         env = {
             **self.config.resolved_env,
             "RLM_BASE_URL": endpoint,
@@ -130,7 +123,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "RLM_HOME": RLM_HOME,
-            "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(trace.task.idx),
+            "RLM_SUMMARIZE_AT_TOKENS": str(summarize_at_tokens),
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt

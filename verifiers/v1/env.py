@@ -13,6 +13,7 @@ compare a task's rollouts.
 
 import contextlib
 import logging
+import uuid
 from typing import Annotated, Literal
 
 from pydantic import Field, SerializeAsAny, model_validator
@@ -346,6 +347,8 @@ class Environment:
             else task.timeout.scoring
         )
         retries = self.config.retries
+        # One id per episode, shared across its rollouts (the group).
+        group_id = uuid.uuid4().hex
         rollouts = [
             Rollout(
                 task=task,
@@ -360,6 +363,7 @@ class Environment:
                 limits=self.limits,
                 shared_urls=self._shared_urls,
                 interception=self._interception,
+                group_id=group_id,
             )
             for _ in range(n)
         ]
