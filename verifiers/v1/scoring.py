@@ -57,9 +57,21 @@ def parse_judge_choice(
     text = content.rsplit("</think>", 1)[-1].strip()
     text = extract_boxed_answer(text, strict=True).strip() or text
 
+    text_upper = text.upper()
     choices_by_upper = {choice.upper(): choice for choice in choices}
     allowed = "|".join(re.escape(choice) for choice in choices_by_upper)
-    matches = re.findall(rf"(?<!\w)({allowed})(?!\w)", text.upper())
+    choice_re = rf"(?<!\w)({allowed})(?!\w)"
+    verdict_re = (
+        r"(?:^|\n)\s*(?:FINAL\s+JUDGMENT|FINAL\s+ANSWER|FINAL\s+VERDICT|"
+        r"JUDGMENT|VERDICT|ANSWER)\s*(?:IS\s*)?[:\-]?\s*"
+    )
+
+    verdict = re.search(verdict_re, text_upper)
+    if verdict:
+        match = re.search(choice_re, text_upper[verdict.end() :])
+        return choices_by_upper.get(match.group(1)) if match else None
+
+    matches = re.findall(choice_re, text_upper)
     return choices_by_upper.get(matches[-1]) if matches else None
 
 
@@ -144,8 +156,11 @@ def parse_pytest_outcomes(output: str | None) -> dict[str, str]:
 
         # These summary rows append " - <reason>"; passing node ids do not.
         if outcome in ("FAILED", "ERROR", "XFAIL", "XPASS") and " - " in test_id:
-            node_id = test_id.rsplit(" - ", 1)[0]
-            if node_id.count("[") == node_id.count("]"):
-                test_id = node_id
+            parts = test_id.split(" - ")
+            for index in range(1, len(parts)):
+                node_id = " - ".join(parts[:index])
+                if node_id.count("[") == node_id.count("]"):
+                    test_id = node_id
+                    break
         outcomes[test_id.rstrip()] = outcome
     return outcomes
