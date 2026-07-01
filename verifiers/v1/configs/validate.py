@@ -8,11 +8,15 @@ sampling — and it's fire-and-forget: nothing is written to disk, so there's no
 resume / dry-run.
 """
 
+from typing import Literal
+
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.runtimes import DockerConfig, RuntimeConfig
 from verifiers.v1.taskset import TasksetConfig
+
+ValidateMode = Literal["apply-answer", "noop", "both"]
 
 
 class ValidateConfig(BaseConfig):
@@ -31,6 +35,9 @@ class ValidateConfig(BaseConfig):
     """Max wall-clock for the taskset's `setup` hook per task (None = no limit)."""
     validate_timeout: float | None = None
     """Max wall-clock for the taskset's `validate` hook per task (None = no limit)."""
+    mode: ValidateMode = "apply-answer"
+    """Validation mode: `apply-answer` runs setup + validate, `noop` runs setup only, and
+    `both` runs both modes in independent runtimes."""
     num_tasks: int | None = Field(
         None,
         validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),

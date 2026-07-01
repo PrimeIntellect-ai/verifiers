@@ -10,6 +10,7 @@
   - [Rubric Classes](#rubric-classes)
 - [Client Classes](#client-classes)
 - [Configuration Types](#configuration-types)
+- [V1 Console Scripts](#v1-console-scripts)
 - [Prime CLI Plugin](#prime-cli-plugin)
 - [Decorators](#decorators)
 - [Utility Functions](#utility-functions)
@@ -577,7 +578,7 @@ class SandboxDebugEnv(SandboxMixin, MultiTurnEnv):
     ): ...
 ```
 
-No-agent debugger for sandbox-backed `SandboxTaskSet` instances. It creates the task sandbox, optionally runs task setup, runs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs tests and scores the result. `SWEDebugEnv` remains as a deprecated wrapper for older callers.
+Deprecated no-agent debugger for sandbox-backed `SandboxTaskSet` instances. It creates the task sandbox, optionally runs task setup, runs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs tests and scores the result. For v1 tasksets, prefer the native `uv run debug ...` CLI; `SWEDebugEnv` remains as a deprecated compatibility wrapper for older callers.
 
 #### EnvGroup
 
@@ -907,6 +908,36 @@ Endpoints = dict[str, list[EndpointConfig]]
 materialized API key.
 
 `Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
+
+---
+
+## V1 Console Scripts
+
+The v1 taskset/harness runtime exposes repo-local console scripts through
+`pyproject.toml`. Run them as `uv run <command>` from a checkout or an
+environment where `verifiers` is installed.
+
+| Command | Description |
+|---------|-------------|
+| `eval <taskset-id>` | Run and score model rollouts for a v1 taskset. |
+| `validate <taskset-id>` | Run setup plus the taskset `validate` hook without a model. |
+| `debug <taskset-id>` | Run setup plus one explicit shell command or uploaded host script and save traces. |
+| `init <name>` | Scaffold a v1 environment package. |
+| `serve` | Serve a v1 environment over the framework protocol. |
+
+`validate` supports `--mode apply-answer` (default), `--mode noop` (setup
+only), and `--mode both` (independent apply-answer and noop runs with nested
+subresults). `debug` requires exactly one of `--command` or `--script-path` and
+persists command/script diagnostics under `trace.info["debug"]` in
+`results.jsonl`.
+
+```bash
+uv run validate swebench-v1 -n 1 --runtime.type prime --mode both
+uv run debug swebench-v1 -n 1 --runtime.type prime --command 'pwd; git status --short'
+```
+
+See [the v1 CLI reference](../verifiers/v1/GUIDE.md#cli-reference) for the
+full flag tables and TOML examples.
 
 ---
 

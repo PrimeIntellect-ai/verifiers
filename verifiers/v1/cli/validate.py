@@ -1,10 +1,9 @@
 """The validate entrypoint: `uv run validate <taskset-id> [--runtime.type subprocess] [options]`.
 
 Registered as the `validate` console script — the model-free sibling of `eval`. Where `eval`
-runs a model rollout per task, `validate` runs each task's `validate` hook: a per-task check
-that the ground truth holds (a SWE row's gold patch makes its tests pass, gsm8k's verifier
-accepts the gold answer), in a runtime with the taskset's `setup` already applied. Each task
-is provisioned, set up, validated, and torn down independently with bounded concurrency.
+runs a model rollout per task, `validate` can either run each task's `validate` hook, run
+setup only, or run both modes in independent runtimes. Each task is provisioned, set up,
+checked, and torn down independently with bounded concurrency.
 
 Fire-and-forget: progress is shown live (the `--rich` dashboard, or per-task log lines) and
 nothing is written to disk.
@@ -17,12 +16,12 @@ import random
 import signal
 import sys
 import time
+from typing import Any
 
 from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
-from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.cli.resolve import (
     extract_id,
     references_config_file,
@@ -32,12 +31,13 @@ from verifiers.v1.configs.validate import ValidateConfig
 from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run validate [<taskset-id>] [--runtime.type subprocess] [options] [@ file.toml]\n"
-    "       runs each task's `validate` hook (per-task validation, no model)"
+    "       runs setup-only, apply-answer, or both validation modes (no model)"
 )
 
 
@@ -56,6 +56,9 @@ def _narrow(argv: list[str]) -> type[ValidateConfig]:
     )
 
 
+ResultRow = dict[str, Any]
+
+
 def _classify(valid: bool, exc: BaseException | None) -> str:
     """The outcome reason: `valid` (passed), `invalid` (returned False), `timeout` (a stage
     timed out), or `error` (raised) — the error's message carries the detail."""
@@ -68,13 +71,29 @@ def _classify(valid: bool, exc: BaseException | None) -> str:
     return "invalid"
 
 
-async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> dict:
-    """Validate one task: provision its runtime, run `setup` then `validate` (each under its
-    stage timeout), tear the runtime down, and return the result row. A raised error is
-    captured onto the row (one bad task is data, not a crash) — never re-raised."""
+def _row(
+    task, mode: str, valid: bool, exc: BaseException | None, start: float
+) -> ResultRow:
+    return {
+        "index": task.idx,
+        "name": task.name,
+        "mode": mode,
+        "valid": bool(valid),
+        "reason": _classify(valid, exc),
+        "elapsed": round(time.time() - start, 2),
+        "error": str(exc) if exc is not None else None,
+        "error_type": type(exc).__name__ if exc is not None else None,
+    }
+
+
+async def _run_apply_answer(
+    taskset: Taskset, task, config: ValidateConfig
+) -> ResultRow:
+    """Provision one runtime, run setup + validate, tear it down, and return a row."""
     start = time.time()
     runtime = make_runtime(
-        resolve_runtime_config(config.runtime, task), name=f"validate-{task.idx}"
+        resolve_runtime_config(config.runtime, task),
+        name=f"validate-apply-answer-{task.idx}",
     )
     setup_timeout = (
         config.setup_timeout if config.setup_timeout is not None else task.timeout.setup
@@ -93,15 +112,91 @@ async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> dict
             await runtime.stop()
         except Exception:
             logger.warning("runtime teardown failed (task %s)", task.idx, exc_info=True)
+    return _row(task, "apply-answer", valid, exc, start)
+
+
+async def _run_noop(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
+    """Provision one runtime, run setup only, tear it down, and return a row."""
+    start = time.time()
+    runtime = make_runtime(
+        resolve_runtime_config(config.runtime, task), name=f"validate-noop-{task.idx}"
+    )
+    setup_timeout = (
+        config.setup_timeout if config.setup_timeout is not None else task.timeout.setup
+    )
+    valid, exc = False, None
+    try:
+        await runtime.start()
+        await asyncio.wait_for(taskset.setup(task, runtime), setup_timeout)
+        valid = True
+    except Exception as e:
+        exc = e
+    finally:
+        try:
+            await runtime.stop()
+        except Exception:
+            logger.warning("runtime teardown failed (task %s)", task.idx, exc_info=True)
+    return _row(task, "noop", valid, exc, start)
+
+
+def _both_reason(apply_answer: ResultRow, noop: ResultRow) -> str:
+    reasons = {str(apply_answer["reason"]), str(noop["reason"])}
+    if apply_answer["valid"] and noop["valid"]:
+        return "valid"
+    if "error" in reasons:
+        return "error"
+    if "timeout" in reasons:
+        return "timeout"
+    return "invalid"
+
+
+def _both_error(
+    apply_answer: ResultRow, noop: ResultRow
+) -> tuple[str | None, str | None]:
+    failed = [
+        ("apply_answer", apply_answer),
+        ("noop", noop),
+    ]
+    parts = [
+        f"{name}: {row['error'] or row['reason']}"
+        for name, row in failed
+        if not row["valid"]
+    ]
+    error_types = {
+        str(row["error_type"])
+        for _, row in failed
+        if not row["valid"] and row["error_type"]
+    }
+    return ("; ".join(parts) or None, "+".join(sorted(error_types)) or None)
+
+
+async def _run_both(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
+    """Run apply-answer and noop as independent high-level validations."""
+    start = time.time()
+    apply_answer = await _run_apply_answer(taskset, task, config)
+    noop = await _run_noop(taskset, task, config)
+    valid = bool(apply_answer["valid"] and noop["valid"])
+    error, error_type = _both_error(apply_answer, noop)
     return {
         "index": task.idx,
         "name": task.name,
-        "valid": bool(valid),
-        "reason": _classify(valid, exc),
+        "mode": "both",
+        "valid": valid,
+        "reason": _both_reason(apply_answer, noop),
         "elapsed": round(time.time() - start, 2),
-        "error": str(exc) if exc is not None else None,
-        "error_type": type(exc).__name__ if exc is not None else None,
+        "error": error,
+        "error_type": error_type,
+        "apply_answer": apply_answer,
+        "noop": noop,
     }
+
+
+async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
+    if config.mode == "apply-answer":
+        return await _run_apply_answer(taskset, task, config)
+    if config.mode == "noop":
+        return await _run_noop(taskset, task, config)
+    return await _run_both(taskset, task, config)
 
 
 async def run_validate(config: ValidateConfig) -> list[dict]:
@@ -120,10 +215,11 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
             "taskset needs a container runtime to validate - pass --runtime.type docker (or prime)"
         )
     logger.info(
-        "validating %d task(s) from %s on the %s runtime",
+        "validating %d task(s) from %s on the %s runtime (mode=%s)",
         len(tasks),
         config.name,
         config.runtime.type,
+        config.mode,
     )
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
