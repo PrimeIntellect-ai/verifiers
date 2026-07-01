@@ -21,6 +21,7 @@ from verifiers.utils.client_utils import load_prime_config
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.eval import EvalClient
 from verifiers.v1.clients.train import TrainClient
+from verifiers.v1.types import SamplingConfig
 
 DEFAULT_PRIME_INFERENCE_URL = "https://api.pinference.ai/api/v1"
 PRIME_INFERENCE_HOST = "pinference.ai"
@@ -56,6 +57,18 @@ class BaseClientConfig(BaseConfig):
         if team_id:
             self.headers.setdefault(PRIME_TEAM_ID_HEADER, team_id)
         return self
+
+
+class ModelEndpointConfig(BaseClientConfig):
+    """A named model endpoint for the env's model table (`EnvConfig.models`): an
+    OpenAI-compatible endpoint plus the model it serves and its default sampling.
+    Agent specs (judges) reference table entries by name (`AgentSpec.model`), so
+    endpoints and keys live in run config — never in taskset code."""
+
+    model: str
+    """The model id sent to the endpoint."""
+    sampling: SamplingConfig = Field(default_factory=SamplingConfig)
+    """Default sampling for runs against this entry (an `AgentSpec.sampling` overrides)."""
 
 
 class EvalClientConfig(BaseClientConfig):
