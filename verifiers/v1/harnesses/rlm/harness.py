@@ -1,7 +1,8 @@
 """The rlm harness: installs the rlm CLI into the runtime and runs the binary.
 
 `RLMHarnessConfig` carries both how to install rlm (repo/branch/token/path) and its
-runtime knobs (`max_depth`, `skills`), which rlm reads from `RLM_*` env vars.
+runtime knobs (`max_depth`, `skills`, `summarize_at_tokens`), which rlm reads from `RLM_*`
+env vars. The base `HarnessConfig.env` still passes any other `RLM_*` var through verbatim.
 
 A task's MCP tool servers are passed to rlm via `RLM_MCP_CONFIG` (a standard `mcpServers`
 URL map); rlm exposes each tool as a pre-imported IPython skill the agent calls
@@ -10,6 +11,7 @@ programmatically (`await tools_<name>(...)`), rather than via a native MCP clien
 
 import json
 import logging
+import random
 import shlex
 from typing import Literal
 
@@ -43,6 +45,28 @@ class RLMHarnessConfig(HarnessConfig):
     skills: list[BuiltinSkill] = []
     """Built-in rlm skills to enable (RLM_SKILLS), e.g. `["edit"]`; empty enables none.
     The tool set is fixed (ipython); only built-in skills are selectable."""
+    summarize_at_tokens: int | tuple[int, int] | None = None
+    """Auto-compaction threshold (RLM_SUMMARIZE_AT_TOKENS): compact the context once it grows
+    past this many tokens. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group
+    threshold (seeded by the task index, so a task's rollouts share one draw and tasks vary).
+    `None` disables auto-compaction; ints must be positive."""
+
+    @model_validator(mode="after")
+    def validate_limits(self) -> "RLMHarnessConfig":
+        value = self.summarize_at_tokens
+        if isinstance(value, tuple):
+            lo, hi = value
+            if lo <= 0 or hi <= 0:
+                raise ValueError("`summarize_at_tokens` range bounds must be positive.")
+            if lo > hi:
+                raise ValueError(
+                    "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
+                )
+        elif value is not None and value <= 0:
+            raise ValueError(
+                "`summarize_at_tokens` must be positive, or None to disable."
+            )
+        return self
 
     @model_validator(mode="after")
     def reject_disabled_tools(self) -> "RLMHarnessConfig":
@@ -77,6 +101,18 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         if result.exit_code != 0:
             raise RuntimeError(f"rlm install failed: {result.stderr.strip()[-500:]}")
 
+    def summarize_threshold(self, task_idx: int) -> str:
+        """The `RLM_SUMMARIZE_AT_TOKENS` value: a range draws per-group (seeded by task index, so
+        a task's rollouts share one threshold). Always set — "" when disabled — so the typed field,
+        not a host var the subprocess runtime would inherit, wins."""
+        value = self.config.summarize_at_tokens
+        if value is None:
+            return ""
+        if isinstance(value, tuple):
+            lo, hi = value
+            return str(random.Random(task_idx).randint(lo, hi))
+        return str(value)
+
     async def launch(
         self,
         ctx: RolloutContext,
@@ -94,6 +130,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "RLM_HOME": RLM_HOME,
+            "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(trace.task.idx),
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt
