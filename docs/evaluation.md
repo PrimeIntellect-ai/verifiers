@@ -5,6 +5,7 @@ This section explains how to run evaluations with Verifiers environments. See [E
 ## Table of Contents
 - [Basic Usage](#basic-usage)
 - [Hosted Evaluations](#hosted-evaluations)
+- [V1 Taskset Validation and Debugging](#v1-taskset-validation-and-debugging)
 - [Command Reference](#command-reference)
   - [Environment Selection](#environment-selection)
   - [Model Configuration](#model-configuration)
@@ -48,6 +49,31 @@ prime eval run configs/eval/benchmark-hosted.toml --hosted
 ```
 
 For the full hosted workflow and hosted-only flags such as `--follow`, `--timeout-minutes`, `--allow-sandbox-access`, and `--custom-secrets`, see the official [Hosted Evaluations](https://docs.primeintellect.ai/tutorials-environments/hosted-evaluations) guide.
+
+## V1 Taskset Validation and Debugging
+
+Native v1 tasksets also ship model-free developer CLIs. Use `uv run validate`
+to run a taskset's setup and validation hook without sampling a model, and use
+`--mode noop` to check setup only. `--mode both` runs `apply-answer` and `noop`
+as independent validations and reports one aggregate result.
+
+```bash
+uv run validate gsm8k-v1 -n 5 --runtime.type subprocess
+uv run validate swebench-v1 -n 1 --runtime.type prime --mode both
+```
+
+Use `uv run debug` to start each selected task runtime, call the taskset setup
+hook, run one explicit shell action, and save `config.toml` plus `results.jsonl`.
+The debug CLI accepts either an inline command or a host script path and records
+the command/script diagnostics in `trace.info["debug"]`.
+
+```bash
+uv run debug swebench-v1 -n 1 --runtime.type prime --command 'pwd; git status --short'
+uv run debug swebench-v1 -n 1 --runtime.type prime --script-path ./inspect.sh
+```
+
+See [the v1 CLI reference](../verifiers/v1/GUIDE.md#cli-reference) for the
+full `eval`, `validate`, `debug`, and `init` command surface.
 
 ## Command Reference
 

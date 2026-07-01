@@ -2,7 +2,7 @@
 
 import shlex
 import time
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 from warnings import warn
 
 import verifiers as vf
@@ -39,6 +39,8 @@ class SandboxDebugEnv(SandboxMixin, vf.MultiTurnEnv):
     - exit: optionally run task tests and score them
     """
 
+    emit_deprecation_warning: ClassVar[bool] = True
+
     def __init__(
         self,
         taskset: SandboxTaskSet,
@@ -60,11 +62,12 @@ class SandboxDebugEnv(SandboxMixin, vf.MultiTurnEnv):
         output_tail_chars: int = 2000,
         **sandbox_kwargs: Any,
     ):
-        warn(
-            "SandboxDebugEnv is deprecated; use the native v1 `debug` CLI for v1 tasksets.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        if self.emit_deprecation_warning:
+            warn(
+                "SandboxDebugEnv is deprecated; use the native v1 `debug` CLI for v1 tasksets.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         if debug_step not in ("none", "gold_patch", "command", "script"):
             raise ValueError(f"Unsupported debug_step: {debug_step!r}")
         if debug_step == "command" and not debug_command:
