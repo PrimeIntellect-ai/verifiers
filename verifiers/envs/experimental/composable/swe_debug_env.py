@@ -11,7 +11,8 @@ class SWEDebugRubric(SandboxDebugRubric):
 
     def __init__(self, **kwargs: Any):
         warn(
-            "SWEDebugRubric is deprecated; use SandboxDebugRubric.",
+            "SWEDebugRubric is deprecated with the composable debug envs; use the "
+            "native v1 `debug` CLI for v1 tasksets.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -23,7 +24,7 @@ class SWEDebugEnv(SandboxDebugEnv):
 
     def __init__(self, *args: Any, **kwargs: Any):
         warn(
-            "SWEDebugEnv is deprecated; use SandboxDebugEnv.",
+            "SWEDebugEnv is deprecated; use the native v1 `debug` CLI for v1 tasksets.",
             DeprecationWarning,
             stacklevel=2,
         )

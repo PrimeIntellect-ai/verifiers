@@ -681,8 +681,9 @@ pass `docker` / `prime` / `modal`.
 
 # CLI reference
 
-Three commands, all `uv run <cmd>`: **`eval`** (run + score a model), **`validate`** (model-free
-gold check), **`init`** (scaffold). They share a resolution layer:
+Four commands, all `uv run <cmd>`: **`eval`** (run + score a model), **`validate`**
+(model-free setup/gold checks), **`debug`** (setup + one shell action), **`init`**
+(scaffold). They share a resolution layer:
 
 - **Positional id** — a leading bare token is the taskset id: `eval gsm8k-v1` == `eval --taskset.id
   gsm8k-v1` (for `init` it's the env name).
@@ -739,16 +740,20 @@ trace per line, appended as each rollout finishes — durable mid-run), and `eva
 
 Run each task's `validate` hook — a model-free check that the ground truth holds (the gold patch
 makes the tests pass, the verifier accepts the gold answer) — in a runtime with the taskset's
-`setup` applied. No model, no harness.
+`setup` applied. No model, no harness. Use `--mode noop` to run setup only, or `--mode both`
+to run `apply-answer` and `noop` in independent runtimes and report one aggregate row.
 
 ```bash
 uv run validate gsm8k-v1 -n 20 --runtime.type subprocess
+uv run validate swebench-v1 -n 1 --runtime.type prime --mode noop
+uv run validate swebench-v1 -n 1 --runtime.type prime --mode both
 ```
 
 | flag | default | meaning |
 | --- | --- | --- |
 | `<taskset-id>` / `--taskset.id` | — | taskset to validate |
 | `--runtime.type` | `docker` | runtime for `setup` + `validate` (a gold check often needs the task's container) |
+| `--mode` | `apply-answer` | `apply-answer`, `noop`, or `both` |
 | `--setup-timeout` / `--validate-timeout` | None | per-hook wall-clock caps |
 | `-n`/`--num-tasks`, `-s`/`--shuffle`, `-c`/`--max-concurrent` (128) | | task selection + concurrency |
 | `-v`/`--verbose`, `--no-rich` | | logging / disable the dashboard |
@@ -758,6 +763,29 @@ captured as a result row (one bad task is data, not a crash) with reason `valid`
 `timeout` / `error`. **Fire-and-forget — nothing is written to disk**; results show live. Note the
 default runtime is **docker** (unlike eval's subprocess), and a subprocess runtime against a
 `NEEDS_CONTAINER` / image-bearing taskset aborts with a clear error.
+
+## `debug`
+
+Set up each selected task, run one explicit shell action, and save the trace. This is for
+inspecting task state without a model: it does not apply gold patches, call `validate`, run
+`finalize`, or score rewards.
+
+```bash
+uv run debug swebench-v1 -n 1 --runtime.type prime --command 'pwd; git status --short | head'
+uv run debug swebench-v1 -n 1 --runtime.type prime --script-path ./inspect.sh
+```
+
+| flag | default | meaning |
+| --- | --- | --- |
+| `<taskset-id>` / `--taskset.id` | — | taskset to debug |
+| `--command` / `--script-path` | — | exactly one inline command or host script to upload and execute |
+| `--runtime.type` | `docker` | runtime for setup + the debug action |
+| `--setup-timeout` / `--timeout` | None | setup and action wall-clock caps |
+| `-n`/`--num-tasks`, `-s`/`--shuffle`, `-c`/`--max-concurrent` (128) | | task selection + concurrency |
+| `-o`/`--output-dir` | fresh debug run dir | where `config.toml` and `results.jsonl` are written |
+
+Each saved trace has command/script metadata, exit status, elapsed time, timeout/error fields,
+and stdout/stderr tails under `trace.info["debug"]`.
 
 ## `init`
 

@@ -577,7 +577,7 @@ class SandboxDebugEnv(SandboxMixin, MultiTurnEnv):
     ): ...
 ```
 
-No-agent debugger for sandbox-backed `SandboxTaskSet` instances. It creates the task sandbox, optionally runs task setup, runs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs tests and scores the result. `SWEDebugEnv` remains as a deprecated wrapper for older callers.
+Deprecated no-agent debugger for sandbox-backed `SandboxTaskSet` instances. It creates the task sandbox, optionally runs task setup, runs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs tests and scores the result. For v1 tasksets, prefer the native `uv run debug ...` CLI; `SWEDebugEnv` remains as a deprecated compatibility wrapper for older callers.
 
 #### EnvGroup
 
