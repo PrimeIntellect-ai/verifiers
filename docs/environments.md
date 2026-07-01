@@ -264,7 +264,6 @@ In some cases, it is useful for reward functions to operate at the group level, 
 async def diversity_bonus(completions) -> list[float]:
     """Reward unique responses within a group."""
     responses = [c[-1]["content"] for c in completions]
-    unique = set(responses)
     # Higher reward if this response is unique
     return [0.2 if responses.count(r) == 1 else 0.0 for r in responses]
 
