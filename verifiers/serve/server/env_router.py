@@ -158,6 +158,14 @@ class EnvRouter:
             for rid, info in handle.active_requests.items()
         }
 
+    @property
+    def stats(self) -> EnvRouterStats:
+        """Current router and worker stats snapshot."""
+        return EnvRouterStats(
+            lag=EventLoopLagStats.from_monitor(self.lag_monitor),
+            workers={wid: w.stats for wid, w in sorted(self.workers.items())},
+        )
+
     def get_worker_name(self, worker_id: int) -> str:
         """Get the name of an env worker."""
         return f"{self.env_id}-{worker_id}"
@@ -396,11 +404,7 @@ class EnvRouter:
 
     def log_stats(self) -> None:
         """Log server lag + per-worker stats."""
-        stats = EnvRouterStats(
-            lag=EventLoopLagStats.from_monitor(self.lag_monitor),
-            workers={wid: w.stats for wid, w in sorted(self.workers.items())},
-        )
-        self.logger.info(stats)
+        self.logger.info(self.stats)
 
     async def close(self) -> None:
         """Close all router resources."""

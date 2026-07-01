@@ -1039,6 +1039,7 @@ class EvalConfig(BaseModel):
     extra_env_kwargs: dict = {}
     max_retries: int = 3
     disable_env_server: bool = False
+    metrics_port: int | None = None
     # logging
     verbose: bool = False
     disable_tui: bool = False

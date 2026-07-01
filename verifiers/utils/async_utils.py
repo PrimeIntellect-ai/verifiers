@@ -107,6 +107,7 @@ class EventLoopLagStats(BaseModel):
     mean: float = 0.0
     median: float = 0.0
     p90: float = 0.0
+    p95: float = 0.0
     p99: float = 0.0
     max: float = 0.0
     n: int = 0
@@ -119,7 +120,8 @@ class EventLoopLagStats(BaseModel):
         return (
             f"min={print_time(self.min)} mean={print_time(self.mean)} "
             f"median={print_time(self.median)} p90={print_time(self.p90)} "
-            f"p99={print_time(self.p99)} max={print_time(self.max)} (n={self.n})"
+            f"p95={print_time(self.p95)} p99={print_time(self.p99)} "
+            f"max={print_time(self.max)} (n={self.n})"
         )
 
     @classmethod
@@ -134,6 +136,7 @@ class EventLoopLagStats(BaseModel):
             mean=float(arr.mean()),
             median=float(np.median(arr)),
             p90=float(np.percentile(arr, 90)),
+            p95=float(np.percentile(arr, 95)),
             p99=float(np.percentile(arr, 99)),
             max=float(arr.max()),
             n=n,
