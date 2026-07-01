@@ -87,14 +87,17 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         if self.config.edit:
             args.append("--edit")
         if self.config.search:
-            # Resolve the key from the harness env (--harness.env / forward_env) or the host, and
-            # keep it OUT of the program env: it's handed to the program over argv (--serper-key), so
-            # popping it here stops the agent's `bash` subprocesses from also inheriting it via
-            # $SERPER_API_KEY / /proc/self/environ. Only when search is enabled — otherwise env is
-            # left untouched, so a key forwarded for the agent's own bash-side use survives.
-            serper_key = env.pop("SERPER_API_KEY", None) or os.environ.get(
-                "SERPER_API_KEY"
-            )
+            # Resolve the key and keep it OUT of the program env: it's handed to the program over
+            # argv (--serper-key), so popping it here stops the agent's `bash` subprocesses from
+            # inheriting it via $SERPER_API_KEY / /proc/self/environ. Prefer a key set in the harness
+            # env (--harness.env / forward_env); fall back to the host env only when the key is
+            # *absent* (None), not present-but-empty — a rollout setting SERPER_API_KEY="" is
+            # deliberately masking the host secret, so honor that (the check below then fails loudly
+            # rather than leaking the host key). The pop is scoped to search=true, so an unrelated
+            # key forwarded for the agent's own bash-side use is left untouched.
+            serper_key = env.pop("SERPER_API_KEY", None)
+            if serper_key is None:
+                serper_key = os.environ.get("SERPER_API_KEY")
             if not serper_key:
                 raise ValueError(
                     "default search=true requires SERPER_API_KEY in the eval environment "
