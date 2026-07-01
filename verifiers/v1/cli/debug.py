@@ -8,6 +8,7 @@ import shlex
 import signal
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,7 @@ from verifiers.v1.configs.debug import DebugConfig
 from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
 from verifiers.v1.taskset import Taskset
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -90,7 +91,7 @@ def result_info(
 
 
 def error_info(
-    error: Exception,
+    error: BaseException,
     start: float,
     timeout: float | None,
     stage: str,
@@ -102,6 +103,9 @@ def error_info(
             else f"{stage} timed out"
         )
         reason = "timeout"
+    elif isinstance(error, asyncio.CancelledError):
+        message = f"{stage} cancelled"
+        reason = "cancelled"
     else:
         message = str(error)
         reason = "error"
@@ -115,6 +119,43 @@ def error_info(
         "stdout_tail": "",
         "stderr_tail": "",
     }
+
+
+def capture_trace_error(trace: Trace, error: BaseException) -> None:
+    if isinstance(error, Exception):
+        trace.capture_error(error)
+        return
+    trace.errors.append(
+        Error(
+            type=type(error).__name__,
+            message=str(error),
+            traceback=traceback.format_exc(),
+        )
+    )
+    trace.stop("error")
+
+
+def record_debug_error(
+    trace: Trace,
+    debug: dict[str, Any],
+    runtime: Runtime,
+    error: BaseException,
+    setup_timeout: float | None,
+    action_timeout: float | None,
+) -> None:
+    if not trace.timing.setup.end:
+        trace.timing.setup.end = time.time()
+    if trace.timing.generation.start and not trace.timing.generation.end:
+        trace.timing.generation.end = time.time()
+    in_action = bool(trace.timing.generation.start)
+    stage = "debug action" if in_action else "setup"
+    timeout = action_timeout if in_action else setup_timeout
+    error_start = (
+        trace.timing.generation.start if in_action else trace.timing.setup.start
+    )
+    debug.update(error_info(error, error_start, timeout, stage))
+    debug.setdefault("runtime", runtime_info(runtime))
+    capture_trace_error(trace, error)
 
 
 async def run_command(
@@ -153,7 +194,7 @@ async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
     }
 
 
-async def debug_task(taskset: Taskset, task, config: DebugConfig) -> Trace:
+async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace, bool]:
     trace = Trace(task=task)
     debug = {
         "task": task_info(task),
@@ -161,6 +202,7 @@ async def debug_task(taskset: Taskset, task, config: DebugConfig) -> Trace:
         "ok": False,
         "reason": "not_run",
     }
+    cancelled = False
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task), name=f"debug-{task.idx}"
     )
@@ -178,28 +220,18 @@ async def debug_task(taskset: Taskset, task, config: DebugConfig) -> Trace:
         debug.update(await run_action(runtime, config))
         trace.timing.generation.end = time.time()
         trace.stop(str(debug["reason"]))
+    except asyncio.CancelledError as e:
+        cancelled = True
+        record_debug_error(trace, debug, runtime, e, setup_timeout, config.timeout)
     except Exception as e:
-        if not trace.timing.setup.end:
-            trace.timing.setup.end = time.time()
-        if trace.timing.generation.start and not trace.timing.generation.end:
-            trace.timing.generation.end = time.time()
-        stage = "debug action" if trace.timing.generation.start else "setup"
-        timeout = config.timeout if stage == "debug action" else setup_timeout
-        error_start = (
-            trace.timing.generation.start
-            if stage == "debug action"
-            else trace.timing.setup.start
-        )
-        debug.update(error_info(e, error_start, timeout, stage))
-        debug.setdefault("runtime", runtime_info(runtime))
-        trace.capture_error(e)
+        record_debug_error(trace, debug, runtime, e, setup_timeout, config.timeout)
     finally:
         trace.info["debug"] = debug
         try:
             await runtime.stop()
         except Exception:
             logger.warning("runtime teardown failed (task %s)", task.idx, exc_info=True)
-    return trace
+    return trace, cancelled
 
 
 async def run_debug(config: DebugConfig) -> list[Trace]:
@@ -231,7 +263,7 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
 
     async def one(task) -> Trace:
         async with sem or contextlib.nullcontext():
-            trace = await debug_task(taskset, task, config)
+            trace, cancelled = await debug_task(taskset, task, config)
         await append_trace(out, trace, write_lock)
         info = trace.info["debug"]
         detail = f" - {info['error']}" if info.get("error") else ""
@@ -242,6 +274,8 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
             info["reason"],
             detail,
         )
+        if cancelled:
+            raise asyncio.CancelledError
         return trace
 
     return await asyncio.gather(*(one(task) for task in tasks))
