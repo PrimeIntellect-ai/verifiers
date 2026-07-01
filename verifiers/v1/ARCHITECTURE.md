@@ -70,12 +70,16 @@ end to end: each surviving context window is just another root→leaf path.
 
 `Trace.to_record()` (`trace.py`) is the JSON record dump (`model_dump(mode="json")`) for
 `results.jsonl` / W&B tables, minus the per-node training tensors (`MessageNode.multi_modal_data`,
-`routed_experts`, via `_NODE_DUMP_EXCLUDE`): those hold raw numpy bytes that can't round-trip JSON
-(the dump raises `UnicodeDecodeError` on real expert ids) and bloat every line. Computed views
+`routed_experts`, via `_NODE_DUMP_EXCLUDE`): routed-expert tensors hold raw numpy bytes that can't
+round-trip JSON (the dump raises `UnicodeDecodeError` on real expert ids), and multimodal
+descriptors are trainer sidecars rather than rollout records. Computed views
 (`reward`, `branches`, `num_turns`, per-span `duration`) are pydantic properties, so they're never
 serialized and recompute on load; `state` is excluded. The tensors still reach the trainer over the
 env-server *wire*, which uses msgpack `model_dump(mode="python")` and carries them as raw `bin` bytes
-(not base64) via the field serializers on `MessageNode` (`graph.py`); only the JSON record strips them.
+(not base64) via the field serializers on `MessageNode` (`graph.py`); only the JSON record strips
+them. Multimodal training uses raw run-image assets: the train client rewrites base64 image parts to
+`file://` refs before tracing, and `MessageNode.multi_modal_data` carries lightweight renderer
+descriptors (hashes, placeholder ranges, image metadata/refs) rather than image processor outputs.
 
 ### Branching: message-level vs renderer-level, and the token invariant
 
@@ -111,9 +115,10 @@ The renderer client avoids the break entirely when it can: instead of re-renderi
 each turn, the train client (`clients/train.py`) calls `renderer.bridge_to_next_turn(...)`, which
 keeps the prior `prompt_ids + completion_ids` **verbatim** and only renders the new tail. Verbatim
 prior ⇒ the stored prefix matches token-for-token ⇒ no fork, one linear branch, invariant intact.
-The token-identity check in `commit` is the backstop for when the bridge can't apply (the renderer
-returns `None`, multimodal, the eval relay): the break still surfaces as honest branches rather than
-silent corruption.
+For multimodal renderers, the train client also passes the reusable prefix's `multi_modal_data` so
+prior image placeholders and descriptors remain aligned. The token-identity check in `commit` is the
+backstop for when the bridge can't apply (the renderer returns `None`, the eval relay): the break
+still surfaces as honest branches rather than silent corruption.
 
 ## Model access — interception, dialects, clients
 
