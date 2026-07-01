@@ -26,6 +26,7 @@ from verifiers.v1.errors import (
     RolloutError,
     TasksetError,
     ToolsetError,
+    UserError,
     boundary,
 )
 from verifiers.v1.interception import (
@@ -125,7 +126,7 @@ class Rollout:
             ):
                 yield endpoint, secret, state_port, state_base
         else:
-            async with InterceptionServer() as server:
+            async with InterceptionServer(host=runtime.interception_host) as server:
                 secret = server.register(session)
                 # a HOST service the harness (in `runtime`) reaches: localhost or a tunnel
                 async with reachable_url(HOST, server.port, consumer=runtime) as url:
@@ -184,6 +185,22 @@ class Rollout:
             ):
                 async with boundary(ToolsetError, "building tool servers"):
                     tool_servers = self.taskset.tools(self.task)
+                    if runtime.interception_only and tool_servers:
+                        raise ValueError(
+                            "Docker network_access=false does not yet support MCP "
+                            "tool servers; use a taskset without tools"
+                        )
+                async with boundary(UserError, "building user simulator"):
+                    user = self.taskset.user(self.task)
+                    if (
+                        runtime.interception_only
+                        and user is not None
+                        and user.config.colocated
+                    ):
+                        raise ValueError(
+                            "Docker network_access=false does not support a colocated "
+                            "user simulator; run the user in its own runtime"
+                        )
                 async with (
                     serve_tools(
                         tool_servers,
@@ -195,7 +212,7 @@ class Rollout:
                         state_base=state_base,
                     ) as urls,
                     serve_user(
-                        self.taskset.user(self.task),
+                        user,
                         self.task,
                         harness_runtime=runtime,
                         state_port=state_port,
@@ -209,6 +226,7 @@ class Rollout:
                             "conversation; set task.prompt or have Taskset.user return "
                             "a simulator"
                         )
+                    endpoint = await runtime.seal_agent_network(endpoint)
                     # setup done — the harness is now driving
                     now = time.time()
                     trace.timing.setup.end = now

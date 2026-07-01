@@ -677,6 +677,30 @@ uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sand
 A taskset that sets `NEEDS_CONTAINER` (or a task with an `image`) refuses the subprocess runtime —
 pass `docker` / `prime` / `modal`.
 
+## Offline Docker agents
+
+Set `network_access = false` to let Docker setup download harness dependencies, then remove direct
+web access before the agent starts while preserving its connection to the interception server:
+
+```toml
+harness = { id = "codex", runtime = { type = "docker", network_access = false } }
+```
+
+This mode targets rootful Docker Engine on Linux and requires the host process to run as root with
+`iptables` and `nsenter`. Setup runs on Docker's bridge with ordinary egress. Before the harness
+starts, the interception server also listens on Docker's host gateway and the runtime enters the
+container's network namespace to install an `OUTPUT` allowlist: loopback remains available, Docker
+DNS is blocked, the interception gateway and port are accepted, and everything else is rejected.
+IPv6 and the container's `NET_ADMIN`/`NET_RAW` capabilities are disabled. The endpoint becomes
+`http://host.docker.internal:<port>/v1`; no public tunnel or relay container is involved. The
+namespace rules disappear with the container, so they do not mutate the host's global firewall.
+
+The restriction remains active through finalization and scoring so a child process left by the
+agent cannot regain network access.
+
+This mode currently supports tasksets without MCP tools. User simulators must run in their own
+runtime rather than `colocated`; both cases fail early with a clear rollout error.
+
 ---
 
 # CLI reference

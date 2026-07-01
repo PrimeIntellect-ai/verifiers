@@ -1,14 +1,7 @@
-"""A pool of shared interception servers, grown on demand, so N concurrent rollouts need
-~N/multiplex servers + tunnels rather than one each.
+"""A pool of shared interception servers, grown on demand.
 
-Behind a remote runtime each rollout's interception endpoint needs a tunnel, and tunnel
-creation is rate-capped per API token — so one-tunnel-per-rollout caps how wide a remote
-eval (or env server) can fan out. Each shared `InterceptionServer` serves up to `multiplex`
-rollouts behind one tunnel (created via a host-side exposer runtime of the harness's runtime
-type). The pool is elastic: `acquire` reuses a server with a free slot, else brings up a new
-one — so it fits both the bounded eval runner and the env server's unbounded request load.
-The harness is unchanged: it authenticates with a per-rollout secret, which is what the
-server routes by.
+Each `InterceptionServer` serves up to `multiplex` rollouts. Remote runtimes share its host tunnel;
+offline Docker agents share its Docker-gateway listener. The pool grows when every server is full.
 """
 
 import asyncio
@@ -17,7 +10,14 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
 from verifiers.v1.interception.server import InterceptionServer, RolloutSession
-from verifiers.v1.runtimes import HOST, RuntimeConfig, reachable_url, runtime_is_local
+from verifiers.v1.runtimes import (
+    HOST,
+    DockerConfig,
+    RuntimeConfig,
+    reachable_url,
+    runtime_is_local,
+)
+from verifiers.v1.runtimes.docker import docker_bridge_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +35,13 @@ class InterceptionPool:
     bringing up a new server when all are at capacity."""
 
     def __init__(self, runtime_config: RuntimeConfig, multiplex: int) -> None:
-        # The harness runtime's topology decides reachability: a remote one needs a host tunnel
-        # to the interception port, a local one is reached at localhost. Read off the runtime
-        # class (no provisioning) — the pool never runs a sandbox.
         self.runtime_type = runtime_config.type
         self.is_local = runtime_is_local(runtime_config)
+        self.offline_docker = (
+            isinstance(runtime_config, DockerConfig)
+            and not runtime_config.network_access
+        )
+        self.interception_host: str | None = None
         self.multiplex = max(1, multiplex)
         self._servers: list[PooledServer] = []
         self._lock = asyncio.Lock()
@@ -59,10 +61,12 @@ class InterceptionPool:
         for entry in self._servers:
             if entry.load < self.multiplex:
                 return entry
-        server = InterceptionServer()
+        if self.offline_docker and self.interception_host is None:
+            self.interception_host = await docker_bridge_gateway()
+        server = InterceptionServer(host=self.interception_host)
         await self._stack.enter_async_context(server)
-        # The interception server is a HOST service the harness reaches: localhost for a local
-        # harness runtime, a tunnel for a remote one. Owned by the pool's stack, torn down with it.
+        # Local harnesses start with loopback (offline Docker rewrites it at seal); provider
+        # sandboxes share a host tunnel. The pool's stack owns both endpoints.
         url = await self._stack.enter_async_context(
             reachable_url(HOST, server.port, consumer_is_local=self.is_local)
         )

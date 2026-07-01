@@ -140,16 +140,19 @@ Behind the endpoint sits one of two clients:
   trainable.
 
 Interception servers are pooled and multiplexed (`interception/pool.py`): one `PooledServer`
-serves up to `multiplex` concurrent rollouts (each with its own secret) behind a single tunnel,
-and the pool brings up more elastically — so thousands of concurrent rollouts don't mean
-thousands of servers or tunnels.
+serves up to `multiplex` concurrent rollouts (each with its own secret) behind one host endpoint,
+and the pool brings up more elastically. Remote runtimes share a tunnel; offline Docker agents
+share a listener on the Docker bridge gateway.
 
 ## Runtimes
 
 A `Runtime` (`runtimes/base.py`) is the single contract for *where* code runs:
 `start`/`stop`/`cleanup`, `run(argv, env)` and `run_background(...)`, `run_uv_script(...)`,
-`read`/`write`, and `expose(port)` (the URL by which the host reaches a port inside the
-runtime — localhost for subprocess, a tunnel for prime/modal). The same contract backs the
+`read`/`write`, `seal_agent_network(endpoint)`, and `expose(port)` (the URL by which the host
+reaches a port inside the runtime — localhost for subprocess, a tunnel for prime/modal).
+`seal_agent_network` is the setup-to-execution boundary: normally a no-op, while an
+interception-only Docker runtime installs an immutable network-namespace `OUTPUT` allowlist that
+leaves only its host interception port reachable. The same contract backs the
 harness, a task's tool servers, and the user simulator, so any of them runs in any backend:
 `subprocess` (local, `/tmp/<name>` workspace, own process group), `docker` (local container),
 `prime` (remote sandbox), `modal` (remote function).

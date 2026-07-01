@@ -105,10 +105,9 @@ def cleanup_at_exit() -> None:
 
 class Runtime(ABC):
     is_local: ClassVar[bool] = True
-    """Whether this runtime shares the host network — a program inside it reaches a host service
-    at localhost (no tunnel) and a service inside it is reachable at localhost. True for
-    subprocess / docker(--network host); remote runtimes (modal/prime) override to False (they
-    need a tunnel each way: `host_endpoint` inward, `expose` outward)."""
+    """Whether this runtime runs locally rather than in a provider sandbox. Local services use
+    loopback by default; interception-only Docker rewrites its endpoint when networking is sealed.
+    Remote runtimes (Modal/Prime) override to False."""
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
@@ -130,6 +129,16 @@ class Runtime(ABC):
     def descriptor(self) -> str | None:
         """A short resolved id for display (None until provisioned). Overridden per
         runtime: subprocess workdir, docker image, prime sandbox id."""
+        return None
+
+    @property
+    def interception_only(self) -> bool:
+        """Whether agent execution is limited to the interception endpoint."""
+        return False
+
+    @property
+    def interception_host(self) -> str | None:
+        """Additional host address on which the interception server must listen."""
         return None
 
     # --- lifecycle ---
@@ -162,6 +171,14 @@ class Runtime(ABC):
         against the rollout's persistent trace would fork a duplicate branch. Provider SDKs may
         still retry individual safe transport operations underneath `run`."""
         return await self.run(argv, env)
+
+    async def seal_agent_network(self, endpoint: str) -> str:
+        """Apply the runtime's agent-execution network policy and return its reachable endpoint.
+
+        Setup has already completed when this is called. Most runtimes keep their existing
+        network and endpoint; Docker's interception-only mode installs its namespace policy.
+        """
+        return endpoint
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
@@ -305,8 +322,7 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
     runtime shares the host network → localhost; a remote one needs a host-side reverse tunnel
     (`prime_tunnel`), torn down on exit. This is the host-side, provider-agnostic counterpart to
     `Runtime.expose` (which publishes a port running *inside* a runtime) — so the runtime only
-    reports `is_local` and callers (interception pool, rollout, tool serving) bridge to the host
-    here, rather than every runtime reimplementing the tunnel."""
+    reports `is_local` and callers bridge to the host here."""
     if is_local:
         yield f"http://127.0.0.1:{port}"
         return

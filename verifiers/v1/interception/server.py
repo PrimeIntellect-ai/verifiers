@@ -1,7 +1,7 @@
 """The interception server: harness chat-completions, caught and proxied.
 
 Every rollout runs an harness program whose OpenAI-style calls are caught here: a small
-localhost server routes each `POST /v1/chat/completions` to our `Client`, records the turn
+host server routes each `POST /v1/chat/completions` to our `Client`, records the turn
 into the trace's message graph, and returns the result in OpenAI shape. We inject
 `OPENAI_BASE_URL`/`OPENAI_API_KEY` so the program's SDK talks to us. Both non-streaming and
 SSE requests are supported.
@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 _STREAM_QUEUE_MAXSIZE = 16
-# The server binds loopback; callers reach it via localhost or a host tunnel (see `reachable_url`).
+# The server binds loopback; offline Docker also binds the Docker bridge gateway.
 _HOST = "127.0.0.1"
 
 
@@ -168,15 +168,16 @@ class RolloutSession:
 
 
 class InterceptionServer:
-    """A localhost server that proxies model calls for one or more rollouts. It serves every
+    """A host server that proxies model calls for one or more rollouts. It serves every
     registered dialect's routes (see `dialects.DIALECTS`), so a request's wire format is resolved
     from the endpoint it arrived on — not declared by the harness. Each rollout `register`s a
     `RolloutSession` and gets back a secret; each request is routed to the session whose secret
     matches its bearer token. A single server can multiplex many rollouts (the basis for
     `interception.pool`); used 1:1 it's just a server with one session."""
 
-    def __init__(self) -> None:
+    def __init__(self, host: str | None = None) -> None:
         self.sessions: dict[str, RolloutSession] = {}
+        self.hosts = (_HOST,) if host in {None, _HOST} else (_HOST, host)
         self.port = 0
         self.runner: web.AppRunner | None = None
 
@@ -221,14 +222,20 @@ class InterceptionServer:
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        site = web.TCPSite(self.runner, _HOST, 0)
+        site = web.TCPSite(self.runner, self.hosts[0], 0)
         await site.start()
         self.port = site._server.sockets[0].getsockname()[1]  # actual ephemeral port
-        logger.info("interception up: url=http://%s:%d", _HOST, self.port)
+        try:
+            for host in self.hosts[1:]:
+                await web.TCPSite(self.runner, host, self.port).start()
+        except BaseException:
+            await self.runner.cleanup()
+            raise
+        logger.info("interception up: hosts=%s port=%d", self.hosts, self.port)
         return self
 
     async def __aexit__(self, *exc) -> None:
-        logger.info("interception down: url=http://%s:%d", _HOST, self.port)
+        logger.info("interception down: hosts=%s port=%d", self.hosts, self.port)
         if self.runner is not None:
             await self.runner.cleanup()
 
