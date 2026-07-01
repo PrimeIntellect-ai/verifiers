@@ -106,6 +106,8 @@ def compare_stdout_results(
 
     actual_tokens = [token for line in actual_lines for token in line.split()]
     expected_tokens = [token for line in expected_lines for token in line.split()]
+    if actual_tokens == expected_tokens:
+        return True
     if len(actual_tokens) != len(expected_tokens) or not actual_tokens:
         return False
 
@@ -140,8 +142,8 @@ def parse_pytest_outcomes(output: str | None) -> dict[str, str]:
         if test_id.startswith("["):
             continue
 
-        # FAILED/ERROR summary lines append " - <reason>"; passing node ids do not.
-        if outcome in ("FAILED", "ERROR") and " - " in test_id:
+        # These summary rows append " - <reason>"; passing node ids do not.
+        if outcome in ("FAILED", "ERROR", "XFAIL", "XPASS") and " - " in test_id:
             node_id = test_id.rsplit(" - ", 1)[0]
             if node_id.count("[") == node_id.count("]"):
                 test_id = node_id
