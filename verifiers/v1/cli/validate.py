@@ -82,9 +82,9 @@ async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> dict
     setup_timeout = (
         config.setup_timeout if config.setup_timeout is not None else task.timeout.setup
     )
-    trace = Trace(task=task, state=state_cls(type(taskset))())
     valid, exc = False, None
     try:
+        trace = Trace(task=task, state=state_cls(type(taskset))())
         await runtime.start()
         await asyncio.wait_for(
             invoke(taskset.setup, {"task": task, "trace": trace, "runtime": runtime}),
