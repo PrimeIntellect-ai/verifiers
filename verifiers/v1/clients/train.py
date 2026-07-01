@@ -191,7 +191,7 @@ class TrainClient(Client):
         self.pool_size = pool_size
         self.config = config
         self.renderer_model_name = renderer_model_name
-        self._pool = None
+        self._pools: dict[tuple[str, str | None], Any] = {}
 
     def _renderer_pool(
         self,
@@ -200,18 +200,24 @@ class TrainClient(Client):
         chat_template_kwargs: Mapping[str, Any] | None = None,
     ):
         renderer_model = self.renderer_model_name or model
-        if self._pool is None:
+        kwargs_key = (
+            json.dumps(chat_template_kwargs, sort_keys=True, separators=(",", ":"))
+            if chat_template_kwargs
+            else None
+        )
+        cache_key = (renderer_model, kwargs_key)
+        if cache_key not in self._pools:
             from renderers import create_renderer_pool
 
             pool_kwargs: dict[str, Any] = {"size": self.pool_size}
             if chat_template_kwargs:
                 pool_kwargs["chat_template_kwargs"] = chat_template_kwargs
-            self._pool = create_renderer_pool(
+            self._pools[cache_key] = create_renderer_pool(
                 renderer_model,
                 self.config,
                 **pool_kwargs,
             )
-        return self._pool
+        return self._pools[cache_key]
 
     async def get_response(
         self,
