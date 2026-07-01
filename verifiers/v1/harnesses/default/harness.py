@@ -1,14 +1,16 @@
-"""The built-in default harness: a chat loop with a local `bash` tool and an optional `edit` tool.
+"""The built-in default harness: a chat loop with a local `bash` tool, plus optional `edit`/`search`.
 
 A growing-message-list chat loop with a local `bash` tool that runs shell commands in the runtime,
-the taskset's MCP tools, and — on by default, gated by the `edit` config flag — a local `edit`
-tool for single-occurrence string replacement in a file (ported from the rlm `edit` skill; a model
-handles it more reliably than hand-built `sed`/heredoc shell). This is the fallback harness when no
-`--harness.id` is given. Its uv script (deps: openai, mcp) is prepared during setup, then launched
-as the harness program. For a pure chat loop with no local tools, use the `null` harness.
+the taskset's MCP tools, and two optional local tools: `edit` (single-occurrence string replacement
+in a file, ported from the rlm `edit` skill; on by default — a model handles it more reliably than
+hand-built `sed`/heredoc shell) and `search` (Google results via serper.dev; off by default, needs
+`SERPER_API_KEY`). This is the fallback harness when no `--harness.id` is given. Its uv script
+(deps: openai, mcp) is prepared during setup, then launched as the harness program. For a pure chat
+loop with no local tools, use the `null` harness.
 """
 
 import json
+import os
 from pathlib import Path
 
 from verifiers.v1.harness import Harness, HarnessConfig
@@ -27,6 +29,11 @@ BASH_SYSTEM_PROMPT = (
 EDIT_SYSTEM_PROMPT = (
     "You also have an edit tool for single-occurrence string replacement in a file."
 )
+# Appended when search is enabled, so the model knows the extra tool exists.
+SEARCH_PROMPT = (
+    "You also have a search tool that returns Google results (title, URL, snippet) for a query; "
+    "use it to research, and use bash (e.g. curl) to read result pages in full when needed."
+)
 
 
 class DefaultHarnessConfig(HarnessConfig):
@@ -36,6 +43,11 @@ class DefaultHarnessConfig(HarnessConfig):
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
     `bash`. On by default; set `--harness.edit false` for a bash-only agent."""
+
+    search: bool = False
+    """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
+    eval environment; the key is handed to the program over argv (like the interception secret) so
+    the agent's `bash` subprocesses don't inherit it."""
 
 
 class DefaultHarness(Harness[DefaultHarnessConfig]):
@@ -57,10 +69,14 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(trace.task)
-        harness_prompt = BASH_SYSTEM_PROMPT
+        fragments = [BASH_SYSTEM_PROMPT]
         if self.config.edit:
-            harness_prompt = f"{BASH_SYSTEM_PROMPT} {EDIT_SYSTEM_PROMPT}"
-        system_prompt = "\n\n".join(p for p in (harness_prompt, system_prompt) if p)
+            fragments.append(EDIT_SYSTEM_PROMPT)
+        if self.config.search:
+            fragments.append(SEARCH_PROMPT)
+        system_prompt = "\n\n".join(
+            p for p in (" ".join(fragments), system_prompt) if p
+        )
         env = {**self.config.resolved_env}
         args = [
             f"--base-url={endpoint}",
@@ -70,6 +86,24 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         ]
         if self.config.edit:
             args.append("--edit")
+        if self.config.search:
+            # Resolve the key and keep it OUT of the program env: it's handed to the program over
+            # argv (--serper-key), so popping it here stops the agent's `bash` subprocesses from
+            # inheriting it via $SERPER_API_KEY / /proc/self/environ. Prefer a key set in the harness
+            # env (--harness.env / forward_env); fall back to the host env only when the key is
+            # *absent* (None), not present-but-empty — a rollout setting SERPER_API_KEY="" is
+            # deliberately masking the host secret, so honor that (the check below then fails loudly
+            # rather than leaking the host key). The pop is scoped to search=true, so an unrelated
+            # key forwarded for the agent's own bash-side use is left untouched.
+            serper_key = env.pop("SERPER_API_KEY", None)
+            if serper_key is None:
+                serper_key = os.environ.get("SERPER_API_KEY")
+            if not serper_key:
+                raise ValueError(
+                    "default search=true requires SERPER_API_KEY in the eval environment "
+                    "(the host env or --harness.env)"
+                )
+            args += ["--search", f"--serper-key={serper_key}"]
         if mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard
             # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).

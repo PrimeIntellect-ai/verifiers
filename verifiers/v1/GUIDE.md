@@ -552,7 +552,7 @@ Otherwise pick a built-in, selected with `--harness.id`:
 
 | id | what it is |
 | --- | --- |
-| `default` | a `bash` + `edit` coding agent (the `edit` tool is on by default — `--harness.edit false` for bash-only) — the fallback when no harness is given |
+| `default` | a `bash` + `edit` coding agent (`edit` on by default — `--harness.edit false` for bash-only; `--harness.search true` adds a serper.dev `search` tool) — the fallback when no harness is given |
 | `null` | a tiny OpenAI chat loop (MCP tools only, no tools of its own) |
 | `rlm` | the RLM CLI agent |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
