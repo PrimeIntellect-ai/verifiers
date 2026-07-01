@@ -35,7 +35,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
                 "(--harness.runtime.type docker|prime|modal)."
             )
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
-        await runtime.prepare_uv_script(source, self.config.env)
+        await runtime.prepare_uv_script(source, self.config.resolved_env)
 
     async def launch(
         self,
@@ -55,7 +55,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             )
         tmux_dir = f"/tmp/vf-terminus-2-{trace.id}"
         env = {
-            **self.config.env,
+            **self.config.resolved_env,
             "TMUX_TMPDIR": tmux_dir,
         }
         args = [
@@ -67,7 +67,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         ]
         try:
             source = PROGRAM_SOURCE.replace("{version}", self.config.version)
-            program = await runtime.prepare_uv_script(source, self.config.env)
+            program = await runtime.prepare_uv_script(source, self.config.resolved_env)
             return await runtime.run_program([*program, *args], env)
         finally:
             # Harbor normally destroys its whole sandbox; this adapter borrows the

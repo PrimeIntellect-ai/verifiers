@@ -75,7 +75,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         _, prompt = self.resolve_prompt(trace.task)
         # codex authenticates to the interception server with the session secret (its provider
         # api key) and posts Responses calls to `{endpoint}/responses`.
-        env = {**self.config.env, KEY_VAR: secret}
+        env = {**self.config.resolved_env, KEY_VAR: secret}
         # Values are Codex feature names such as `shell_tool`; Codex owns validation.
         # https://developers.openai.com/codex/config-reference#features
         tool_config = [

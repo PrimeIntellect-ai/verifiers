@@ -66,7 +66,7 @@ class ReverseTaskset(vf.Taskset[ReverseTask, ReverseConfig]):
 
     @vf.reward()
     async def exact_match(self, task: ReverseTask, trace: vf.Trace) -> float:
-        return float(trace.assistant_messages[-1].content.strip() == task.answer)
+        return float(trace.last_reply == task.answer)
 
 
 __all__ = ["ReverseTaskset"]   # vf resolves the taskset by finding this Taskset subclass
@@ -250,7 +250,7 @@ VERIFY = (Path(__file__).parent / "verify.py").read_text()   # PEP 723 header de
 
 @vf.reward()
 async def verify(self, task, trace, runtime) -> float:
-    r = await runtime.run_uv_script(VERIFY, args=[task.answer, trace.assistant_messages[-1].content])
+    r = await runtime.run_uv_script(VERIFY, args=[task.answer, trace.last_reply])
     return float(r.stdout.strip() == "1.0")
 ```
 
@@ -317,7 +317,7 @@ a taskset `@vf.stop` fires. A stop is an `async (self, trace) -> bool` checked b
 ```python
 @vf.stop
 async def saw_answer(self, trace) -> bool:
-    last = trace.assistant_messages[-1].content or ""
+    last = trace.last_reply
     return "FINAL:" in last
 ```
 
@@ -552,15 +552,16 @@ Otherwise pick a built-in, selected with `--harness.id`:
 
 | id | what it is |
 | --- | --- |
-| `default` | a tiny OpenAI chat loop (MCP tools only, no tools of its own) |
-| `bash` | the `default` chat loop plus a local `bash` tool, for shell-driving agents |
+| `default` | a `bash` + `edit` coding agent (`edit` on by default — `--harness.edit false` for bash-only; `--harness.search true` adds a serper.dev `search` tool) — the fallback when no harness is given |
+| `null` | a tiny OpenAI chat loop (MCP tools only, no tools of its own) |
 | `rlm` | the RLM CLI agent |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
 | `mini-swe-agent` | the mini-swe-agent CLI (a minimal SWE agent) |
 | `kimi-code` | the Kimi Code CLI agent |
 
 ```bash
-uv run eval gsm8k-v1 -n 1                    # default harness
+uv run eval gsm8k-v1 -n 1                    # default harness (bash + edit; the fallback)
+uv run eval gsm8k-v1 -n 1 --harness.id null  # bare chat loop, no local tools
 uv run eval gsm8k-v1 -n 1 --harness.id rlm   # same taskset, different driver
 ```
 
@@ -792,7 +793,7 @@ form. In a prime-rl config:
 [[orchestrator.train.env]]
 name    = "gsm8k"
 taskset = { id = "gsm8k-v1", dataset_name = "..." }                 # any v1 taskset id
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "null", runtime = { type = "subprocess" } }
 timeout = { scoring = 10 }                                          # per-stage cap (default: no limit)
 # pool  = { type = "elastic", max_workers = 8, multiplex = 128 }    # env-server pool (default elastic, self-sizing)
 ```

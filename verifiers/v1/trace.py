@@ -369,6 +369,15 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         ]
 
     @property
+    def last_reply(self) -> str:
+        """The model's final reply as plain text — the last assistant message's
+        `content` (whitespace-stripped), or ``""`` when there are no assistant
+        messages or the last one has no text. Convenience over
+        ``(assistant_messages[-1].content or "").strip()`` for last-turn scoring."""
+        msgs = self.assistant_messages
+        return (msgs[-1].content or "").strip() if msgs else ""
+
+    @property
     def tool_messages(self) -> list[ToolMessage]:
         """The tool results in the latest full context — the main (last) branch's
         conversation. For a linear rollout that's every tool result."""
