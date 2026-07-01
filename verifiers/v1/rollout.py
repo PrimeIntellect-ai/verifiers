@@ -81,8 +81,7 @@ class Rollout:
     ) -> None:
         self.task = task
         self.group_id = group_id or uuid.uuid4().hex
-        """Id of the group (episode) this rollout belongs to; shared with its siblings when
-        `Environment.episode` passes one in, else its own (a lone rollout is a group of one)."""
+        """Id of the group (episode) this rollout belongs to."""
         self.taskset = taskset
         self.harness = harness
         self.ctx = ctx

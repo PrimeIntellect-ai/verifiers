@@ -218,9 +218,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     """Unique id for this rollout, auto-generated per trace."""
     group_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    """Id shared by the rollouts of one `Episode` (a task's group), assigned at group construction
-    (`Environment.episode`) — the join key for grouping traces in `results.jsonl`.
-    A trace built ad hoc (no episode) gets its own unique id."""
+    """Id shared by the rollouts of one `Episode` (a task's group), assigned at group construction."""
     task: TaskT
     """The (immutable) task being solved — fully typed, flows into scoring."""
     nodes: list[MessageNode] = Field(default_factory=list)

@@ -347,8 +347,6 @@ class Environment:
             else task.timeout.scoring
         )
         retries = self.config.retries
-        # One id per episode, shared across its rollouts (the group).
-        group_id = uuid.uuid4().hex
         rollouts = [
             Rollout(
                 task=task,
@@ -363,7 +361,7 @@ class Environment:
                 limits=self.limits,
                 shared_urls=self._shared_urls,
                 interception=self._interception,
-                group_id=group_id,
+                group_id=uuid.uuid4().hex,
             )
             for _ in range(n)
         ]
