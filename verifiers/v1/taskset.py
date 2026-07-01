@@ -15,7 +15,6 @@ For a heterogeneous taskset (different verification per task), have a single
 `@reward` branch on a typed task field.
 """
 
-import asyncio
 from collections.abc import Mapping
 from typing import ClassVar, Generic, TypeVar
 
@@ -30,6 +29,7 @@ from verifiers.v1.mcp import Toolset, User
 from verifiers.v1.state import StateT
 from verifiers.v1.task import TaskT
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.asyncio import gather_cancel_on_error
 
 
 class TasksetConfig(BaseConfig):
@@ -124,7 +124,9 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
             metric_results = (
                 [await invoke(fn, available) for fn in metrics]
                 if len(metrics) < 2
-                else await asyncio.gather(*(invoke(fn, available) for fn in metrics))
+                else await gather_cancel_on_error(
+                    *(invoke(fn, available) for fn in metrics)
+                )
             )
             for fn, result in zip(metrics, metric_results):
                 if isinstance(result, Mapping):
@@ -135,7 +137,9 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
             reward_results = (
                 [await invoke(fn, available) for fn in rewards]
                 if len(rewards) < 2
-                else await asyncio.gather(*(invoke(fn, available) for fn in rewards))
+                else await gather_cancel_on_error(
+                    *(invoke(fn, available) for fn in rewards)
+                )
             )
             for fn, result in zip(rewards, reward_results):
                 weight = getattr(fn, "_vf_weight", 1.0)
@@ -162,7 +166,9 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
             reward_results = (
                 [await invoke(fn, available) for fn in rewards]
                 if len(rewards) < 2
-                else await asyncio.gather(*(invoke(fn, available) for fn in rewards))
+                else await gather_cancel_on_error(
+                    *(invoke(fn, available) for fn in rewards)
+                )
             )
             for fn, scores in zip(rewards, reward_results):
                 weight = getattr(fn, "_vf_weight", 1.0)

@@ -27,6 +27,7 @@ from verifiers.v1.retries import run_with_retry
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.asyncio import gather_cancel_on_error
 from verifiers.v1.utils.memory import trim_memory_periodically
 
 if TYPE_CHECKING:
@@ -68,7 +69,7 @@ class Episode:
             await trim_memory_periodically()
             return trace
 
-        traces = await asyncio.gather(*(run_one(r) for r in self.rollouts))
+        traces = await gather_cancel_on_error(*(run_one(r) for r in self.rollouts))
         if group_scored:
             await self.taskset.score_group(traces)  # cross-rollout @group_rewards
             for rollout in self.rollouts:
