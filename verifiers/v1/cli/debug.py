@@ -185,9 +185,12 @@ async def debug_task(taskset: Taskset, task, config: DebugConfig) -> Trace:
             trace.timing.generation.end = time.time()
         stage = "debug action" if trace.timing.generation.start else "setup"
         timeout = config.timeout if stage == "debug action" else setup_timeout
-        debug.update(
-            error_info(e, trace.timing.generation.start or time.time(), timeout, stage)
+        error_start = (
+            trace.timing.generation.start
+            if stage == "debug action"
+            else trace.timing.setup.start
         )
+        debug.update(error_info(e, error_start, timeout, stage))
         debug.setdefault("runtime", runtime_info(runtime))
         trace.capture_error(e)
     finally:
