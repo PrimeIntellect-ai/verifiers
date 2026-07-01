@@ -37,8 +37,6 @@ def make_tar(directory: str) -> bytes:
 
 
 class SweTask(vf.Task):
-    instruction: str
-    """The change to make (becomes the rollout prompt)."""
     tests_dir: str
     """Host path to the pristine test suite, staged into each candidate's ``_tests/``."""
 
@@ -67,7 +65,6 @@ class SweGroupJudgeTaskset(vf.Taskset[SweTask, JudgedConfig]):
                 name="example",
                 image="ghcr.io/your-org/your-repo:base",  # repo checked out at /repo
                 prompt="Fix parse_config() so it returns {} on an empty file instead of raising.",
-                instruction="Fix parse_config() on empty input.",
                 tests_dir=EXAMPLE_TESTS,
             )
         ]
