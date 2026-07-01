@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+import re
+from collections.abc import Sequence
+from decimal import Decimal, InvalidOperation
+from typing import TYPE_CHECKING
+
+from math_verify import parse, verify
+from math_verify.errors import TimeoutException as MathVerifyTimeout
+
+from verifiers.v1.errors import SandboxError
+
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.trace import Trace
+
+BOXED_START = "\\boxed{"
+ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+PYTEST_OUTCOME_RE = re.compile(
+    r"^(PASSED|FAILED|ERROR|XFAIL|XPASS)\s+(.+?)(?:\s+-\s+.*)?$"
+)
+
+
+def extract_boxed_answer(text: str, strict: bool = False) -> str:
+    start = text.rfind(BOXED_START)
+    if start == -1:
+        return "" if strict else text
+
+    # Regex is the wrong tool for nested braces, so walk the final box by hand.
+    answer_start = start + len(BOXED_START)
+    depth = 1
+    for index, char in enumerate(text[answer_start:], start=answer_start):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        if depth == 0:
+            return text[answer_start:index]
+
+    return ""
+
+
+async def read_answer_file_or_last_reply(
+    runtime: "Runtime",
+    path: str,
+    trace: "Trace",
+) -> str:
+    try:
+        answer = (await runtime.read(path)).decode(errors="replace").strip()
+    except (FileNotFoundError, OSError, SandboxError):
+        answer = ""
+    return answer or trace.last_reply
+
+
+def parse_judge_choice(
+    content: str | None,
+    choices: Sequence[str] = ("A", "B", "C"),
+) -> str | None:
+    text = (content or "").rsplit("</think>", 1)[-1].strip()
+    text = extract_boxed_answer(text, strict=True).strip() or text
+
+    choices_by_upper = {choice.upper(): choice for choice in choices}
+    allowed = "|".join(re.escape(choice) for choice in choices_by_upper)
+    match = re.search(rf"(?<![A-Z])({allowed})(?![A-Z])", text.upper())
+    return choices_by_upper.get(match.group(1)) if match else None
+
+
+def verify_boxed_math_answer(
+    response: str | None,
+    answer: str,
+    *,
+    timeout_seconds: int = 5,
+) -> float:
+    if not response or ("<think>" in response and "</think>" not in response):
+        return 0.0
+
+    prediction_text = response.rsplit("</think>", 1)[-1]
+    prediction = extract_boxed_answer(prediction_text, strict=True).strip()
+    gold = (extract_boxed_answer(answer, strict=True) or answer).strip()
+    if not prediction or not gold:
+        return 0.0
+
+    # math-verify expects both sides as boxed math expressions.
+    try:
+        parsed_gold = parse(f"\\boxed{{{gold}}}", parsing_timeout=timeout_seconds)
+        parsed_prediction = parse(
+            f"\\boxed{{{prediction}}}",
+            parsing_timeout=timeout_seconds,
+        )
+        return float(
+            verify(
+                parsed_gold,
+                parsed_prediction,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+    except (Exception, MathVerifyTimeout):
+        return 0.0
+
+
+def compare_stdout_results(
+    exec_stdout: str,
+    expected: str,
+    *,
+    tolerance: float = 1e-3,
+) -> bool:
+    if exec_stdout.strip() == expected.strip():
+        return True
+
+    actual_lines = [line.strip() for line in exec_stdout.splitlines() if line.strip()]
+    expected_lines = [line.strip() for line in expected.splitlines() if line.strip()]
+    if actual_lines == expected_lines:
+        return True
+
+    actual_tokens = [token for line in actual_lines for token in line.split()]
+    expected_tokens = [token for line in expected_lines for token in line.split()]
+    if len(actual_tokens) != len(expected_tokens) or not actual_tokens:
+        return False
+
+    # Code datasets often allow tiny floating-point drift in stdout.
+    try:
+        actual_numbers = [Decimal(token) for token in actual_tokens]
+        expected_numbers = [Decimal(token) for token in expected_tokens]
+    except (InvalidOperation, ValueError):
+        return False
+
+    limit = Decimal(str(tolerance))
+    return all(
+        abs(actual - expected) <= limit
+        for actual, expected in zip(actual_numbers, expected_numbers)
+    )
+
+
+def parse_pytest_outcomes(output: str | None) -> dict[str, str]:
+    outcomes: dict[str, str] = {}
+    for line in ANSI_RE.sub("", output or "").splitlines():
+        match = PYTEST_OUTCOME_RE.match(line.strip())
+        if match:
+            outcome, test_id = match.groups()
+            outcomes[test_id.rstrip()] = outcome
+    return outcomes
