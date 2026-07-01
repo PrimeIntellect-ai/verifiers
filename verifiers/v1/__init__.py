@@ -203,6 +203,13 @@ __all__ = [
     "JudgeConfig",
     "JudgeSamplingConfig",
     "JudgeResponse",
+    # scoring
+    "compare_stdout_results",
+    "extract_boxed_answer",
+    "parse_judge_choice",
+    "parse_pytest_outcomes",
+    "read_answer_file_or_last_reply",
+    "verify_boxed_math_answer",
     # mcp
     "Toolset",
     "ToolsetConfig",

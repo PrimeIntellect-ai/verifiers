@@ -16,9 +16,7 @@ if TYPE_CHECKING:
 
 BOXED_START = "\\boxed{"
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-PYTEST_OUTCOME_RE = re.compile(
-    r"^(PASSED|FAILED|ERROR|XFAIL|XPASS)\s+(.+?)(?:\s+-\s+.*)?$"
-)
+PYTEST_OUTCOMES = ("PASSED", "FAILED", "ERROR", "SKIPPED", "XFAIL", "XPASS")
 
 
 def extract_boxed_answer(text: str, strict: bool = False) -> str:
@@ -37,13 +35,11 @@ def extract_boxed_answer(text: str, strict: bool = False) -> str:
         if depth == 0:
             return text[answer_start:index]
 
-    return ""
+    return "" if strict else text
 
 
 async def read_answer_file_or_last_reply(
-    runtime: "Runtime",
-    path: str,
-    trace: "Trace",
+    runtime: "Runtime", path: str, trace: "Trace"
 ) -> str:
     try:
         answer = (await runtime.read(path)).decode(errors="replace").strip()
@@ -53,23 +49,22 @@ async def read_answer_file_or_last_reply(
 
 
 def parse_judge_choice(
-    content: str | None,
-    choices: Sequence[str] = ("A", "B", "C"),
+    content: str | None, choices: Sequence[str] = ("A", "B", "C")
 ) -> str | None:
-    text = (content or "").rsplit("</think>", 1)[-1].strip()
+    if not content or ("<think>" in content and "</think>" not in content):
+        return None
+
+    text = content.rsplit("</think>", 1)[-1].strip()
     text = extract_boxed_answer(text, strict=True).strip() or text
 
     choices_by_upper = {choice.upper(): choice for choice in choices}
     allowed = "|".join(re.escape(choice) for choice in choices_by_upper)
-    match = re.search(rf"(?<![A-Z])({allowed})(?![A-Z])", text.upper())
-    return choices_by_upper.get(match.group(1)) if match else None
+    matches = re.findall(rf"(?<!\w)({allowed})(?!\w)", text.upper())
+    return choices_by_upper.get(matches[-1]) if matches else None
 
 
 def verify_boxed_math_answer(
-    response: str | None,
-    answer: str,
-    *,
-    timeout_seconds: int = 5,
+    response: str | None, answer: str, *, timeout_seconds: int = 5
 ) -> float:
     if not response or ("<think>" in response and "</think>" not in response):
         return 0.0
@@ -99,10 +94,7 @@ def verify_boxed_math_answer(
 
 
 def compare_stdout_results(
-    exec_stdout: str,
-    expected: str,
-    *,
-    tolerance: float = 1e-3,
+    exec_stdout: str, expected: str, *, tolerance: float = 1e-3
 ) -> bool:
     if exec_stdout.strip() == expected.strip():
         return True
@@ -123,6 +115,8 @@ def compare_stdout_results(
         expected_numbers = [Decimal(token) for token in expected_tokens]
     except (InvalidOperation, ValueError):
         return False
+    if not all(number.is_finite() for number in actual_numbers + expected_numbers):
+        return False
 
     limit = Decimal(str(tolerance))
     return all(
@@ -133,9 +127,19 @@ def compare_stdout_results(
 
 def parse_pytest_outcomes(output: str | None) -> dict[str, str]:
     outcomes: dict[str, str] = {}
-    for line in ANSI_RE.sub("", output or "").splitlines():
-        match = PYTEST_OUTCOME_RE.match(line.strip())
-        if match:
-            outcome, test_id = match.groups()
-            outcomes[test_id.rstrip()] = outcome
+    for raw_line in ANSI_RE.sub("", output or "").splitlines():
+        parts = raw_line.strip().split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+
+        outcome, test_id = parts
+        if outcome not in PYTEST_OUTCOMES:
+            continue
+
+        # FAILED/ERROR summary lines append " - <reason>"; passing node ids do not.
+        if outcome in ("FAILED", "ERROR") and " - " in test_id:
+            node_id = test_id.rsplit(" - ", 1)[0]
+            if node_id.count("[") == node_id.count("]"):
+                test_id = node_id
+        outcomes[test_id.rstrip()] = outcome
     return outcomes
