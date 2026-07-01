@@ -375,6 +375,11 @@ class SWETaskset(vf.Taskset[SWETask, SWEConfig]):
         return 1.0 if result.exit_code == 0 else 0.0
 ```
 
+Like the scoring hooks, `setup` declares its inputs *by parameter name* — take any subset of
+`task`, `trace`, `runtime`. The `trace` (and its per-rollout `trace.state`) already exists when
+`setup` runs, so add `trace` to stash per-rollout state that a later `finalize`/`@reward` reads back
+(instead of keying an instance dict by `id(runtime)`).
+
 ## Persisted info
 
 `trace.info` is a free-form, **JSON-serializable** dict for per-rollout artifacts that are neither a
