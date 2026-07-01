@@ -158,6 +158,17 @@ def record_debug_error(
     capture_trace_error(trace, error)
 
 
+def record_action_failure(trace: Trace, debug: dict[str, Any]) -> None:
+    message = debug.get("error") or f"debug action failed: {debug['reason']}"
+    trace.errors.append(
+        Error(
+            type=debug.get("error_type") or "DebugActionError",
+            message=str(message),
+            traceback=None,
+        )
+    )
+
+
 async def run_command(
     runtime: Runtime,
     command: str,
@@ -219,6 +230,8 @@ async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace
         trace.timing.generation.start = time.time()
         debug.update(await run_action(runtime, config))
         trace.timing.generation.end = time.time()
+        if not debug.get("ok"):
+            record_action_failure(trace, debug)
         trace.stop(str(debug["reason"]))
     except asyncio.CancelledError as e:
         cancelled = True
