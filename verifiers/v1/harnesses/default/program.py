@@ -95,7 +95,7 @@ SEARCH_TOOL = {
 
 
 def format_results(results, query: str) -> str:
-    """Format Serper organic results as title/URL/snippet blocks (verbatim from the rlm skill)."""
+    """Format Serper organic results as title/URL/snippet blocks."""
     sections = []
     for i, result in enumerate(results, 1):
         title = (result.get("title") or "").strip() or "Untitled"
@@ -115,12 +115,10 @@ def format_results(results, query: str) -> str:
 def run_search(query: str, api_key: str, num_results: int = 5) -> str:
     """Serper Google web search -> formatted organic results.
 
-    A faithful port of the rlm `search` skill (rlm-harness `src/rlm/skills/search.py`): same
-    Serper request and `format_results` output. Two deliberate differences from rlm: the key
-    arrives as an argument (handed in by the harness over argv, like the interception secret)
-    instead of from `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it; and the
-    call is wrapped so a bad query or malformed payload becomes a tool error rather than a dead
-    rollout — rlm leans on the IPython kernel to catch that, but this chat loop must catch it here."""
+    The key arrives as an argument (handed in by the harness over argv, like the interception
+    secret) instead of from `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it.
+    The whole call is wrapped so a bad query or malformed payload becomes a tool error rather than
+    raising out of the chat loop and killing the rollout."""
     if not api_key:
         return "Error: no Serper API key (SERPER_API_KEY was not set in the eval environment)"
     # num_results comes straight from model tool JSON, so it may be a non-int (e.g. "ten"); coerce

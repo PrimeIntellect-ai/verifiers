@@ -3,9 +3,8 @@
 A growing-message-list chat loop with a local `bash` tool that runs shell commands in the runtime,
 the taskset's MCP tools, and two optional local tools: `edit` (single-occurrence string replacement
 in a file, ported from the rlm `edit` skill; on by default — a model handles it more reliably than
-hand-built `sed`/heredoc shell) and `search` (Google results via serper.dev, ported from the rlm
-`search` skill; off by default, needs `SERPER_API_KEY`). This is the fallback harness when no
-`--harness.id` is given. Its uv script
+hand-built `sed`/heredoc shell) and `search` (Google results via serper.dev; off by default, needs
+`SERPER_API_KEY`). This is the fallback harness when no `--harness.id` is given. Its uv script
 (deps: openai, mcp) is prepared during setup, then launched as the harness program. For a pure chat
 loop with no local tools, use the `null` harness.
 """
@@ -46,9 +45,9 @@ class DefaultHarnessConfig(HarnessConfig):
     `bash`. On by default; set `--harness.edit false` for a bash-only agent."""
 
     search: bool = False
-    """Offer a `search` tool (Google web results via serper.dev, ported from the rlm `search`
-    skill). Requires `SERPER_API_KEY` in the eval environment; the key is handed to the program over
-    argv (like the interception secret) so the agent's `bash` subprocesses don't inherit it."""
+    """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
+    eval environment; the key is handed to the program over argv (like the interception secret) so
+    the agent's `bash` subprocesses don't inherit it."""
 
 
 class DefaultHarness(Harness[DefaultHarnessConfig]):
