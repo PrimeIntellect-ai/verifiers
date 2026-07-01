@@ -20,7 +20,7 @@ from enum import StrEnum
 
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.decorators import discover_decorated
+from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
@@ -165,7 +165,10 @@ class Rollout:
                 boundary(TasksetError, "taskset setup"),
                 asyncio.timeout_at(setup_deadline),
             ):
-                await self.taskset.setup(self.task, runtime)
+                await invoke(
+                    self.taskset.setup,
+                    {"task": self.task, "trace": trace, "runtime": runtime},
+                )
             async with (
                 boundary(HarnessError, "harness setup"),
                 asyncio.timeout_at(setup_deadline),
