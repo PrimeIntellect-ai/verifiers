@@ -258,6 +258,22 @@ class Runtime(ABC):
     async def write(self, path: str, data: bytes) -> None:
         """Write a file into the runtime's workspace, creating parent dirs."""
 
+    # --- snapshot / restore (replay buffer) ---
+
+    async def snapshot(self) -> str | None:
+        """Persist the current sandbox state and return a DURABLE ref (e.g. a registry tag,
+        modal snapshot id, or object-store key). The ref must outlive this runtime instance:
+        it is read back by a *different*, later rollout — possibly on another machine, possibly
+        replaying an offline buffer from a prior run. Override per runtime when the sandbox
+        supports checkpointing. Skeleton: returns None (no snapshot taken)."""
+        return None
+
+    async def restore(self, ref: str) -> None:
+        """Restore the sandbox to a previously snapshotted state before continuing a replay
+        from mid-rollout. Override per runtime. Skeleton: refuse a real ref rather than
+        silently resuming on the wrong state (a None ref is a no-op handled by the caller)."""
+        raise NotImplementedError(f"{self.type}: snapshot/restore not available yet")
+
     # --- networking ---
 
     @property

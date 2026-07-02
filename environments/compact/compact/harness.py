@@ -16,6 +16,8 @@ from verifiers.v1.clients import RolloutContext
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
+from compact.annotate import compaction_after_nodes, compaction_before_nodes
+
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
@@ -51,4 +53,14 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
         program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
-        return await runtime.run_program([*program, trace.task.prompt], env)
+        result = await runtime.run_program([*program, trace.task.prompt], env)
+
+        # Tag compaction resume points on the finished graph (Option A: trace.info side-channel).
+        # Two points per compaction: the post-compaction branch start (resume to continue from
+        # the compaction message) and the pre-compaction branch leaf (resume to regenerate it).
+        node_tags = trace.info.setdefault("node_tags", {})
+        for nid in compaction_after_nodes(trace):
+            node_tags[str(nid)] = "compaction_after"
+        for nid in compaction_before_nodes(trace):
+            node_tags[str(nid)] = "compaction_before"
+        return result
