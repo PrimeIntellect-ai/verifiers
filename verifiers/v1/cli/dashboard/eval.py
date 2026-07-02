@@ -471,26 +471,29 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
 
 class Pager:
     """Which page of overflowing rollout rows is on screen. Auto-advances on a timer until the
-    user takes over with the left/right arrows, after which it stays where they leave it. Page
-    count only grows (rollouts are never removed), so a chosen page stays valid; it's clamped
-    anyway to survive a terminal resize (fewer rows per page → more pages, or vice versa)."""
+    user takes over with the left/right arrows, after which it stays where they leave it. `count`
+    (the page count, set each render by `_paginate`) gates the arrows: they're inert while a single
+    page fits, so a stray press before rollouts overflow can't switch off auto-advance or offset the
+    starting page once paging begins. The chosen page is clamped to `count` (it can shrink on a
+    resize; it otherwise only grows, as rollouts are never removed)."""
 
     def __init__(self) -> None:
         self.page = 0
         self.manual = False
+        self.count = 1
 
     def on_key(self, key: str) -> None:
-        if key in ("left", "right"):
+        if key in ("left", "right") and self.count > 1:
             self.manual = True
             self.page += 1 if key == "right" else -1
 
-    def index(self, count: int, now: float) -> int:
+    def index(self, now: float) -> int:
         # Track the auto page while it drives, so the first arrow continues from what's on screen
-        # rather than jumping back to page 1. Clamp in manual mode (page count can shrink on resize).
+        # rather than jumping back to page 1. Clamp in manual mode (count can shrink on resize).
         if not self.manual:
-            self.page = int(now / _PAGE_SECONDS) % count
+            self.page = int(now / _PAGE_SECONDS) % self.count
         else:
-            self.page = max(0, min(self.page, count - 1))
+            self.page = max(0, min(self.page, self.count - 1))
         return self.page
 
 
@@ -501,6 +504,7 @@ def _paginate(
     selecting the one `pager` points at. Returns (this page's groups, 0-based index, page count) —
     a single page when everything already fits."""
     if sum(len(g) for g in groups) <= rows_per_page:
+        pager.count = 1  # everything fits on one page — arrows stay inert
         return groups, 0, 1
     pages: list[list[list[Rollout]]] = []
     current: list[list[Rollout]] = []
@@ -513,7 +517,8 @@ def _paginate(
         used += len(group)
     if current:
         pages.append(current)
-    index = pager.index(len(pages), now)
+    pager.count = len(pages)
+    index = pager.index(now)
     return pages[index], index, len(pages)
 
 

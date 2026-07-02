@@ -47,27 +47,37 @@ def _key_reader(
     fd = sys.stdin.fileno()
     loop = asyncio.get_running_loop()
     old = termios.tcgetattr(fd)
-    tty.setcbreak(fd)
+    # carries a partial escape across reads — cbreak can split a key's 3 bytes over callbacks
+    buf = bytearray()
 
     def _read() -> None:
         try:
             data = os.read(fd, 32)
         except OSError:
             return
+        if not data:
+            return
+        buf.extend(data)
         fired = False
         i = 0
-        while i < len(data):  # a burst may hold several presses; scan the whole chunk
-            if key := _ARROWS.get(data[i : i + 3]):
+        while i < len(buf):  # a chunk may hold several presses; scan the whole buffer
+            if key := _ARROWS.get(bytes(buf[i : i + 3])):
                 on_key(key)
                 fired = True
                 i += 3
+            elif buf[i] == 0x1B and len(buf) - i < 3:
+                break  # incomplete escape at the tail — hold it for the next read
             else:
                 i += 1
+        del buf[:i]
         if fired:
             refresh()
 
-    loop.add_reader(fd, _read)
+    # setcbreak inside the try so the finally always restores the terminal, even if it (or
+    # add_reader) raises — otherwise stdin could be left in cbreak with echo off after we exit.
     try:
+        tty.setcbreak(fd)
+        loop.add_reader(fd, _read)
         yield
     finally:
         loop.remove_reader(fd)
