@@ -30,6 +30,12 @@ tighter type contract. `import verifiers.v1 as vf`.
 uv sync   # core + the shipped packages + examples
 ```
 
+Harbor's optional Python package and CLI require Python 3.12+:
+
+```bash
+uv sync --python 3.12 --extra harbor
+```
+
 ## Quickstart
 
 ```bash
@@ -100,7 +106,7 @@ filesystem, so run it under a containerized runtime: `docker` locally, or a remo
 `modal` sandbox (not the default `subprocess`).
 
 ```bash
-uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id bash            # bash-only agent
+uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id default         # the bash + edit agent
 uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
 uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
 uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id codex           # the codex CLI agent
@@ -233,6 +239,20 @@ each in its own declared, pullable container image — e.g. Terminal-Bench 2:
 
 ```bash
 uv run eval harbor --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm
+```
+
+Harbor registry selectors pass through as taskset config. For the
+`research-environments` registry:
+
+```bash
+uv run eval harbor --taskset.dataset general-agent@2026-06-25 \
+  --taskset.repo PrimeIntellect-ai/research-environments@REF_OR_SHA
+
+uv run eval harbor --taskset.dataset general-agent@2026-06-25 \
+  --taskset.registry-path ./registry.json
+
+uv run eval harbor --taskset.dataset general-agent@2026-06-25 \
+  --taskset.registry-url https://raw.githubusercontent.com/PrimeIntellect-ai/research-environments/REF_OR_SHA/registry.json
 ```
 
 ## Backwards compatibility

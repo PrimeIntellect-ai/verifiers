@@ -38,6 +38,7 @@ from verifiers.v1.errors import (
     UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.judge import Judge, JudgeConfig, JudgeResponse, JudgeSamplingConfig
 from verifiers.v1.loaders import (
     default_harness_id,
     harness_config_type,
@@ -47,6 +48,14 @@ from verifiers.v1.loaders import (
     load_taskset,
     task_type,
     taskset_config_type,
+)
+from verifiers.v1.scoring import (
+    compare_stdout_results as compare_stdout_results,
+    extract_boxed_answer as extract_boxed_answer,
+    parse_judge_choice as parse_judge_choice,
+    parse_pytest_outcomes as parse_pytest_outcomes,
+    read_answer_file_or_last_reply as read_answer_file_or_last_reply,
+    verify_boxed_math_answer as verify_boxed_math_answer,
 )
 from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
 from verifiers.v1.rollout import Rollout
@@ -189,6 +198,18 @@ __all__ = [
     "taskset_config_type",
     "harness_config_type",
     "default_harness_id",
+    # judge
+    "Judge",
+    "JudgeConfig",
+    "JudgeSamplingConfig",
+    "JudgeResponse",
+    # scoring
+    "compare_stdout_results",
+    "extract_boxed_answer",
+    "parse_judge_choice",
+    "parse_pytest_outcomes",
+    "read_answer_file_or_last_reply",
+    "verify_boxed_math_answer",
     # mcp
     "Toolset",
     "ToolsetConfig",

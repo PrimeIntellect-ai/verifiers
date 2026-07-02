@@ -151,6 +151,14 @@ class Dialect(ABC, Generic[ReqT, RespT]):
         """Whether the request asks for a streamed (SSE) response."""
         return bool(body.get("stream"))
 
+    def is_terminal_event(self, chunk: bytes) -> bool:
+        """Whether this complete SSE event ends the model's turn for the client. The
+        interception server withholds the terminal event (and anything after it) until the
+        turn is recorded, so a client that ends its turn on it can't race ahead to scoring
+        with the turn still uncommitted. Defaults to the `[DONE]` sentinel; a dialect whose
+        client ends on an earlier event (e.g. Responses' `response.completed`) overrides this."""
+        return is_sse_done_event(chunk)
+
     def error_body(self, message: str) -> dict:
         """An error payload in this format's error shape (OpenAI by default)."""
         return {"error": {"message": message, "type": "invalid_request_error"}}

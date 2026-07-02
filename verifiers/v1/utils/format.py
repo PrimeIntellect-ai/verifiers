@@ -34,6 +34,15 @@ def format_count(n: int) -> str:
     return f"{n / 1e6:.1f}M"
 
 
+def format_override(value: object) -> str:
+    """A value as one compact segment: dict `{k=v,k=v}`, list/tuple `[a,b]`, else `str`."""
+    if isinstance(value, dict):
+        return "{" + ",".join(f"{k}={v}" for k, v in value.items()) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(str(v) for v in value) + "]"
+    return str(value)
+
+
 def format_mean(
     traces: list[Trace], value: Callable[[Trace], float], digits: int = 2
 ) -> str:

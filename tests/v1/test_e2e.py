@@ -51,7 +51,7 @@ async def test_user(run_v1, harness_runtime, user_runtime, tmp_path):
         )
     (trace,) = await run_v1(
         "echo-user-sim-v1",
-        harness="default",
+        harness="null",
         harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=6,
@@ -83,7 +83,7 @@ async def test_tool(run_v1, run_v1_server, harness_runtime, tool_runtime, tmp_pa
     run = run_v1_server if tool_runtime.get("shared") else run_v1
     (trace,) = await run(
         "echo-tool-v1",
-        harness="default",
+        harness="null",
         harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=6,
@@ -114,7 +114,7 @@ async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
         )
     (trace,) = await run_v1(
         "counter-tool-v1",
-        harness="default",
+        harness="null",
         harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=8,
@@ -167,7 +167,7 @@ async def test_shared_tool_isolation(
         )
     traces = await run_v1_server(
         "scratchpad-v1",
-        harness="default",
+        harness="null",
         harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         num_tasks=2,  # two distinct words, run concurrently against the one shared server
@@ -195,7 +195,7 @@ async def test_tool_response_image(run_v1, tmp_path):
     """MCP image content from a tool result survives into the v1 trace (needs a vision model)."""
     (trace,) = await run_v1(
         "tool-response-image-v1",
-        harness="default",
+        harness="null",
         harness_overrides={"runtime": {"type": "subprocess"}},
         model="qwen/qwen3-vl-8b-instruct",
         output_dir=tmp_path,
@@ -209,9 +209,9 @@ async def test_tool_response_image(run_v1, tmp_path):
 @pytest.mark.e2e
 async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     """Agentic: write a phrase to a file with the agent's shell, checked in the runtime."""
-    if harness == "default":
+    if harness == "null":
         pytest.skip(
-            "default is a chat loop with no shell — it can't do the file-write task"
+            "null is a chat loop with no shell — it can't do the file-write task"
         )
     (trace,) = await run_v1(
         "echo-agentic-v1",
