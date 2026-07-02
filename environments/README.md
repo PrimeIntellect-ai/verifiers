@@ -61,6 +61,7 @@ This folder contains installable example environments that showcase common usage
   - **hello_group_reward_v1**: Deterministic v1 reference for group updates, metrics, rewards, advantages, and cleanup.
   - **nemo_gym_env**: Minimal v1 example that wraps a packaged NeMo Gym task with `NeMoGymTaskset` and `NeMoGymHarness`.
   - **sft-replay**: Thin v1 replay environment using `ReplayTaskset` and `ReplayHarness` to turn stored transcripts into trajectory steps without model calls.
+  - **shell_guard_v1**: `@vf.intercept` example — rewrites a destructive shell turn into a refusal before the codex harness's shell tool can execute it.
   - **wordle_v1**: TextArena Wordle through the packaged v1 `TextArenaTaskset` boundary.
 
 ### Composition

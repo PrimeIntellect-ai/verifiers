@@ -27,7 +27,12 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel, ConfigDict
 
-from verifiers.v1.dialects.base import Dialect, StreamParser, iter_sse_reverse
+from verifiers.v1.dialects.base import (
+    Dialect,
+    StreamParser,
+    iter_sse_reverse,
+    sse_event,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -257,9 +262,12 @@ class ResponsesStreamParser(StreamParser):
         events = self.terminal_events or self.events
         for event in iter_sse_reverse(b"".join(events)):
             if event.get("type") in FINAL_EVENTS:
-                return response_from_wire(
+                response = response_from_wire(
                     OpenAIResponse.model_validate(event["response"])
                 )
+                # so `@intercept`s see the complete body on streamed turns too
+                response.raw = event["response"]
+                return response
         raise ValueError("Responses stream ended without a terminal event")
 
 
@@ -329,6 +337,68 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
 
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)
+
+    def serialize_response(self, response: Response) -> dict:
+        message = response.message
+        output: list[dict] = []
+        if message.content:
+            output.append(
+                {
+                    "type": "message",
+                    "id": f"msg_{response.id or 'vf-intercept'}",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": message.content,
+                            "annotations": [],
+                        }
+                    ],
+                }
+            )
+        output += [
+            {
+                "type": "function_call",
+                "id": f"fc_{call.id}",
+                "call_id": call.id,
+                "name": call.name,
+                "arguments": call.arguments,
+                "status": "completed",
+            }
+            for call in message.tool_calls or []
+        ]
+        usage = response.usage
+        return {
+            "id": response.id or "vf-intercept",
+            "object": "response",
+            "created_at": response.created,
+            "model": response.model,
+            "status": "completed",
+            "output": output,
+            "usage": {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+            }
+            if usage
+            else None,
+        }
+
+    def serialize_stream(self, raw: dict) -> list[bytes]:
+        opening = {**raw, "status": "in_progress", "output": []}
+        # The terminal event's name mirrors the body's status (completed/incomplete/failed).
+        terminal = f"response.{raw.get('status') or 'completed'}"
+        return [
+            sse_event(
+                {"type": "response.created", "sequence_number": 0, "response": opening},
+                "response.created",
+            ),
+            sse_event(
+                {"type": terminal, "sequence_number": 1, "response": raw},
+                terminal,
+            ),
+        ]
 
     def stream_parser(self) -> StreamParser:
         return ResponsesStreamParser()

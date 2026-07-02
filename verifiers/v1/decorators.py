@@ -83,6 +83,21 @@ def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
 
 
 @overload
+def intercept(func: F, priority: int = 0) -> F: ...
+@overload
+def intercept(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+def intercept(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
+    """Mark an interceptor, run over each completed model turn before it's handed back to the
+    harness. Declares any of `response`/`trace` (injected by name) and returns None to pass the
+    turn through, a `vf.AssistantMessage` to replace the model's message (serialized back to the
+    request's wire format), or a raw wire dict to replace the response body wholesale (re-parsed
+    for the trace). The first non-None return wins; the trace records the rewrite — the model's
+    original turn is only kept where the interceptor stashes it (e.g. `trace.info`)."""
+    decorator = mark("intercept", intercept_priority=priority)
+    return decorator if func is None else decorator(func)
+
+
+@overload
 def metric(func: F, priority: int = 0) -> F: ...
 @overload
 def metric(func: None = None, priority: int = 0) -> Callable[[F], F]: ...

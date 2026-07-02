@@ -182,6 +182,7 @@ The decorators and what each can receive:
 | `@vf.metric` | `task`, `trace`, `runtime` | `priority=0` | `float`, **or a `dict[str, float]`** merged into `trace.metrics` |
 | `@vf.group_reward` | `task`, `traces` | `weight=1.0`, `priority=0` | `list[float]`, one per trace |
 | `@vf.stop` | `trace` | `priority=0` | `bool` |
+| `@vf.intercept` | `response`, `trace` | `priority=0` | `None` / `AssistantMessage` / raw wire `dict` |
 
 Good to know:
 
@@ -323,6 +324,36 @@ async def saw_answer(self, trace) -> bool:
 
 The framework has no built-in "the task is done" signal — multi-turn tasksets end either from the
 trace (above) or from per-rollout state set by a tool / user sim (see [State](#per-rollout-state)).
+
+## Intercepting model turns
+
+A taskset can rewrite a model turn **before the harness sees it** — block a destructive tool call,
+strip a leaked secret, censor a reward hack — with `@vf.intercept`, run by the interception server
+over every completed turn (streamed turns buffer until the interceptors have ruled):
+
+```python
+@vf.intercept
+async def block_destructive(self, response: vf.Response, trace: vf.Trace) -> vf.AssistantMessage | None:
+    if not any("rm -rf" in c.arguments for c in response.message.tool_calls or []):
+        return None                            # pass through, byte-exact
+    trace.info.setdefault("intercepted", []).append(response.message.model_dump())
+    return vf.AssistantMessage(content="That command is blocked by policy.")
+```
+
+Return `None` to pass the turn through untouched, a `vf.AssistantMessage` to replace the model's
+message (the tool call never executes; the framework serializes it back to the request's wire
+format), or a **raw wire dict** (the dialect's native response shape, start from `response.raw`)
+for full control — e.g. keeping Anthropic server-tool or signed-thinking blocks. The first
+interceptor (by `priority`, then name) that returns non-None wins.
+
+The rewrite is what the harness receives **and what the trace records** — from the next turn's
+replayed history the model sees the rewrite as its own words. The original turn survives only
+where the interceptor stashes it (e.g. `trace.info`, for a `@metric`/`@reward` to score, or
+`trace.state` for a `@stop` to end the rollout). Provider-executed (server-side) tools like
+Anthropic's built-in web search run *within* one model call, so an interceptor can't prevent the
+execution — but it sees the evidence (`response.message.provider_state` carries the server-tool
+blocks) and can rewrite what enters the conversation, stop the rollout, or penalize. See
+`environments/shell_guard_v1` for a complete example.
 
 ## Lifecycle hooks
 

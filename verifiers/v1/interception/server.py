@@ -11,6 +11,12 @@ own secret (the bearer token the harness already sends), and the server routes b
 secret to the right session. So N rollouts need one server (and, behind a remote runtime,
 one tunnel) per pool member rather than one each — see `interception.pool`.
 
+The relay is byte-exact by default, but a taskset may rewrite turns at runtime: its
+`@vf.intercept` methods run over each completed model turn before it's handed back (see
+`_intercept`), replacing e.g. a destructive tool call with a refusal the harness — and, via
+the replayed history, the model — sees instead. A streamed turn buffers until the
+interceptors have ruled (see `_stream_buffered`).
+
 When a rollout sets a user simulator (see `verifiers.v1.mcp.user`), the session also drives it:
 after each model turn it injects the simulator's reply as a user turn and re-prompts the
 model, so a multi-turn exchange plays out within one program request, transparently to the
@@ -33,6 +39,8 @@ from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients.client import RelayReply
+from verifiers.v1.decorators import invoke
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1 import graph
@@ -43,7 +51,7 @@ from verifiers.v1.errors import (
     UserError,
 )
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.types import AssistantMessage, Messages, Response
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Respond
@@ -133,6 +141,10 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    intercepts: list[Callable[..., Awaitable[object]]] = field(default_factory=list)
+    """The taskset's `@intercept` methods (see `verifiers.v1.decorators.intercept`), run over
+    each completed model turn before it's handed back to the harness; the first non-None
+    return rewrites the turn (see `InterceptionServer._intercept`)."""
     user: "Respond | None" = None
     """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
@@ -231,6 +243,42 @@ class InterceptionServer:
         logger.info("interception down: url=http://%s:%d", _HOST, self.port)
         if self.runner is not None:
             await self.runner.cleanup()
+
+    async def _intercept(
+        self, session: RolloutSession, dialect: Dialect, response: Response
+    ) -> Response:
+        """Run the taskset's `@intercept`s over a completed model turn (priority order, first
+        rewrite wins). An `AssistantMessage` rewrite is serialized to this dialect's wire shape;
+        a dict rewrite is the wire body wholesale. Either way the wire body is re-parsed and that
+        parse is what the harness receives AND what the trace commits — the committed message
+        must hash-match the next request's replayed history (see `graph.message_hash`) or the
+        prefix walk breaks and duplicates the turn. A rewritten turn carries no sampled tokens
+        (the model's tokens belong to the original, which only survives where the interceptor
+        stashes it, e.g. `trace.info`)."""
+        for intercept in session.intercepts:
+            replacement = await invoke(
+                intercept, {"response": response, "trace": session.trace}
+            )
+            if replacement is None:
+                continue
+            if isinstance(replacement, AssistantMessage):
+                replacement = dialect.serialize_response(
+                    response.model_copy(
+                        update={
+                            "message": replacement,
+                            "finish_reason": "tool_calls"
+                            if replacement.tool_calls
+                            else "stop",
+                        }
+                    )
+                )
+            response = dialect.parse_response(dialect.validate_response(replacement))
+            response.raw = replacement
+            logger.debug(
+                "turn intercepted: id=%s by=%s", session.trace.id, intercept.__name__
+            )
+            return response
+        return response
 
     def _fail(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError
@@ -367,8 +415,20 @@ class InterceptionServer:
                     e,
                 )
                 return web.json_response(dialect.error_body(str(e)), status=502)
+            if session.intercepts:
+                try:
+                    response = await self._intercept(session, dialect, response)
+                except RolloutError as e:
+                    return self._fail(session, dialect, e)
+                except Exception as e:
+                    return self._fail(
+                        session,
+                        dialect,
+                        TasksetError(f"@intercept failed: {type(e).__name__}: {e}"),
+                    )
             # `Response.raw` is the wire response handed to the program 1:1 — the provider's
-            # verbatim bytes (proxy) or the client's serialized completion (renderer).
+            # verbatim bytes (proxy), the client's serialized completion (renderer), or an
+            # `@intercept`'s rewrite.
             completion = response.raw
             logger.debug(
                 "intercept turn: id=%s tools=%d",
@@ -457,6 +517,8 @@ class InterceptionServer:
         except Exception as e:  # surface to the program as an API error
             logger.warning("model call failed: id=%s %s", session.trace.id, e)
             return web.json_response(dialect.error_body(str(e)), status=502)
+        if session.intercepts:
+            return await self._stream_buffered(request, session, dialect, reply, turn)
         resp = web.StreamResponse(
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
         )
@@ -530,6 +592,55 @@ class InterceptionServer:
                 for event in deferred:
                     await resp.write(event)
                 await resp.write_eof()
+        return resp
+
+    async def _stream_buffered(
+        self,
+        request: web.Request,
+        session: RolloutSession,
+        dialect: Dialect,
+        reply: RelayReply,
+        turn: graph.PendingTurn,
+    ) -> web.StreamResponse:
+        """A streamed turn for a session with `@intercept`s: nothing may reach the harness
+        before the interceptors have seen the assembled turn, so buffer the whole stream
+        first (no keepalives — the harness waits on the response headers, exactly like a
+        non-streaming call), then emit the buffered events verbatim (pass-through) or the
+        rewritten body re-serialized as one SSE stream (`dialect.serialize_stream`)."""
+        parser = dialect.stream_parser()
+        events: list[bytes] = []
+        try:
+            async for event in reply.chunks:
+                if parser.on_done is not None and is_sse_done_event(event):
+                    parser.on_done()
+                parser.feed(event)
+                events.append(event)
+        finally:
+            await reply.close()
+        response = parser.finish()
+        try:
+            rewritten = await self._intercept(session, dialect, response)
+        except RolloutError as e:
+            return self._fail(session, dialect, e)
+        except Exception as e:
+            return self._fail(
+                session,
+                dialect,
+                TasksetError(f"@intercept failed: {type(e).__name__}: {e}"),
+            )
+        if rewritten is not response:
+            events = dialect.serialize_stream(rewritten.raw)
+        turn.commit(rewritten)
+        logger.debug("intercept stream turn (buffered): id=%s", session.trace.id)
+        resp = web.StreamResponse(
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        )
+        resp.content_type = reply.content_type.split(";")[0].strip()
+        with contextlib.suppress(ConnectionResetError):
+            await resp.prepare(request)
+            for event in events:
+                await resp.write(event)
+            await resp.write_eof()
         return resp
 
     async def handle_aux(

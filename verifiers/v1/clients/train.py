@@ -19,7 +19,7 @@ from renderers import RendererConfig
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
-from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.dialects.chat import message_to_wire, serialize_completion
 from verifiers.v1.errors import OverlongPromptError, model_error
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import (
@@ -44,53 +44,6 @@ def tool_to_wire(tool: Tool) -> dict:
     if tool.strict is not None:
         function["strict"] = tool.strict
     return {"type": "function", "function": function}
-
-
-def serialize_completion(response: Response, model: str) -> dict:
-    """A vf `Response` -> an OpenAI chat.completion dict the program's SDK expects. The renderer
-    sets this on `Response.raw` (it generates, so has no provider response to relay)."""
-    message: dict = {"role": "assistant", "content": response.message.content}
-    if response.message.reasoning_content is not None:
-        message["reasoning_content"] = response.message.reasoning_content
-    if response.message.tool_calls:
-        message["tool_calls"] = [
-            {
-                "id": c.id,
-                "type": "function",
-                "function": {"name": c.name, "arguments": c.arguments},
-            }
-            for c in response.message.tool_calls
-        ]
-    usage: dict | None = None
-    if response.usage:
-        # Usage is validated earlier in the pipeline; building its wire dict directly saves time.
-        usage = {
-            "completion_tokens": response.usage.completion_tokens,
-            "prompt_tokens": response.usage.input_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
-        if response.usage.reasoning_tokens is not None:
-            usage["completion_tokens_details"] = {
-                "reasoning_tokens": response.usage.reasoning_tokens
-            }
-        if response.usage.cached_input_tokens is not None:
-            usage["prompt_tokens_details"] = {
-                "cached_tokens": response.usage.cached_input_tokens
-            }
-    return {
-        "id": response.id or "vf-intercept",
-        "object": "chat.completion",
-        "created": response.created,
-        "model": response.model or model,
-        "choices": [
-            {
-                "index": 0,
-                "message": message,
-                "finish_reason": response.finish_reason or "stop",
-            }
-        ],
-        "usage": usage,
-    }
 
 
 def response_from_generate(

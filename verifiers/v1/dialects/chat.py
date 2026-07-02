@@ -13,7 +13,7 @@ from typing import Any
 
 from openai.types.chat import ChatCompletion
 
-from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
+from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event, sse_event
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -155,6 +155,43 @@ def message_to_wire(message: Message) -> dict:
     return {"role": message.role, "content": _content_to_wire(message.content)}
 
 
+def serialize_completion(response: Response, model: str) -> dict:
+    """A vf `Response` -> an OpenAI chat.completion dict the program's SDK expects. Set on
+    `Response.raw` by the renderer client (it generates, so has no provider response to relay)
+    and by the interception server for an `@intercept`-rewritten turn."""
+    message = message_to_wire(response.message)
+    usage: dict | None = None
+    if response.usage:
+        # Usage is validated earlier in the pipeline; building its wire dict directly saves time.
+        usage = {
+            "completion_tokens": response.usage.completion_tokens,
+            "prompt_tokens": response.usage.input_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+        if response.usage.reasoning_tokens is not None:
+            usage["completion_tokens_details"] = {
+                "reasoning_tokens": response.usage.reasoning_tokens
+            }
+        if response.usage.cached_input_tokens is not None:
+            usage["prompt_tokens_details"] = {
+                "cached_tokens": response.usage.cached_input_tokens
+            }
+    return {
+        "id": response.id or "vf-intercept",
+        "object": "chat.completion",
+        "created": response.created,
+        "model": response.model or model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": response.finish_reason or "stop",
+            }
+        ],
+        "usage": usage,
+    }
+
+
 def response_from_wire(completion: ChatCompletion) -> Response:
     """An OpenAI chat.completion -> a vf `Response` (the one place raw provider objects cross
     into our typed `Response`). No token ids: training tokens come from the renderer client."""
@@ -260,24 +297,25 @@ class ChatStreamParser(StreamParser):
         if self.reasoning_details:
             self.message["reasoning_details"] = self.reasoning_details
         head = self.head or {}
-        return response_from_wire(
-            ChatCompletion.model_validate(
+        raw = {
+            "id": head.get("id", "vf-intercept"),
+            "object": "chat.completion",
+            "created": head.get("created", int(time.time())),
+            "model": head.get("model", ""),
+            "choices": [
                 {
-                    "id": head.get("id", "vf-intercept"),
-                    "object": "chat.completion",
-                    "created": head.get("created", int(time.time())),
-                    "model": head.get("model", ""),
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": self.message,
-                            "finish_reason": self.finish_reason or "stop",
-                        }
-                    ],
-                    "usage": self.usage,
+                    "index": 0,
+                    "message": self.message,
+                    "finish_reason": self.finish_reason or "stop",
                 }
-            )
+            ],
+            "usage": self.usage,
+        }
+        response = response_from_wire(ChatCompletion.model_validate(raw))
+        response.raw = (
+            raw  # so `@intercept`s see the assembled body on streamed turns too
         )
+        return response
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
@@ -304,6 +342,33 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
+
+    def serialize_response(self, response: Response) -> dict:
+        return serialize_completion(response, response.model)
+
+    def serialize_stream(self, raw: dict) -> list[bytes]:
+        # One chunk carrying the whole message as its delta, then the DONE sentinel.
+        choice = raw["choices"][0]
+        delta = {k: v for k, v in choice["message"].items() if v is not None}
+        if delta.get("tool_calls"):
+            delta["tool_calls"] = [
+                {"index": i, **call} for i, call in enumerate(delta["tool_calls"])
+            ]
+        chunk = {
+            "id": raw.get("id", ""),
+            "object": "chat.completion.chunk",
+            "created": raw.get("created", 0),
+            "model": raw.get("model", ""),
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": delta,
+                    "finish_reason": choice.get("finish_reason"),
+                }
+            ],
+            "usage": raw.get("usage"),
+        }
+        return [sse_event(chunk), b"data: [DONE]\n\n"]
 
     def stream_parser(self) -> StreamParser:
         return ChatStreamParser()
