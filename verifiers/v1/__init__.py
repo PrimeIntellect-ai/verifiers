@@ -15,7 +15,7 @@ from verifiers.v1.clients import (
     RolloutContext,
     resolve_client,
 )
-from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
+from verifiers.v1.decorators import group_reward, intercept, metric, reward, stop, tool
 from verifiers.v1.env import (
     ElasticPoolConfig,
     EnvConfig,
@@ -138,6 +138,7 @@ __all__ = [
     "Error",
     # decorators
     "stop",
+    "intercept",
     "tool",
     "metric",
     "reward",

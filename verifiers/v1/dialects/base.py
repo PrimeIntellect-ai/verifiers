@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterator, Mapping
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel
-from pydantic_core import from_json
+from pydantic_core import from_json, to_json
 
 from verifiers.v1.types import Messages, Response, SamplingConfig, Tool
 
@@ -27,6 +27,13 @@ ReqT = TypeVar("ReqT")
 RespT = TypeVar("RespT", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
+
+
+def sse_event(data: dict, event: str | None = None) -> bytes:
+    """Encode one SSE event; `event` adds the leading `event:` field (Anthropic / Responses
+    style). Used by `serialize_stream` to synthesize a stream for an `@intercept` rewrite."""
+    prefix = f"event: {event}\n".encode() if event else b""
+    return prefix + b"data: " + to_json(data) + b"\n\n"
 
 
 def is_sse_done_event(raw: bytes) -> bool:
@@ -174,6 +181,19 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     def validate_response(self, raw: dict) -> RespT:
         """Validate a native response, normalizing provider-compatible extensions if needed."""
         return self.response_type.model_validate(raw)
+
+    @abstractmethod
+    def serialize_response(self, response: Response) -> dict:
+        """A vf `Response` -> this format's wire response body — how an `@intercept`'s
+        `AssistantMessage` rewrite is handed back to the program. The inverse of
+        `parse_response` for the fields an interceptor can set (content, tool calls);
+        native extras (signed reasoning, server-tool blocks) only survive via
+        `provider_state` — an interceptor that must control them rewrites the raw body."""
+
+    @abstractmethod
+    def serialize_stream(self, raw: dict) -> list[bytes]:
+        """A wire response body -> one complete SSE stream in this format's events, for
+        handing an `@intercept` rewrite back to a program that requested streaming."""
 
     @abstractmethod
     def stream_parser(self) -> StreamParser:

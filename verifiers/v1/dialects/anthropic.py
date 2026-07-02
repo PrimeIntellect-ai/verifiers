@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from anthropic.types import Message as AnthropicMessage
 
-from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
+from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event, sse_event
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -38,7 +38,12 @@ STOP_REASONS = {
     "tool_use": "tool_calls",
     "stop_sequence": "stop",
 }
-THINKING = ("thinking", "redacted_thinking")
+# Block types folded into typed message fields (text -> content, tool_use -> tool_calls).
+# Everything else — thinking, redacted_thinking, server_tool_use, web_search_tool_result, … —
+# rides along in `provider_state`, so signed reasoning and provider-executed (server-tool)
+# turns are visible on the trace. Request- and response-side parses must keep the same blocks:
+# the graph hashes `provider_state` when matching a replayed prompt against committed nodes.
+FOLDED = ("text", "tool_use")
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -74,7 +79,7 @@ def parse_messages(body: dict) -> Messages:
                 if isinstance(content, str)
                 else content or []
             )
-            state = [block for block in blocks if block["type"] in THINKING]
+            state = [block for block in blocks if block["type"] not in FOLDED]
             text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
             reasoning = "".join(
                 b.get("thinking", "") for b in blocks if b.get("type") == "thinking"
@@ -122,7 +127,7 @@ def response_from_wire(message: AnthropicMessage) -> Response:
     message: text -> content, thinking -> reasoning, tool_use -> tool calls)."""
     data = message.model_dump()
     blocks = data.get("content") or []
-    state = [block for block in blocks if block["type"] in THINKING]
+    state = [block for block in blocks if block["type"] not in FOLDED]
     content: list[str] = []
     reasoning: list[str] = []
     calls: list[ToolCall] = []
@@ -239,7 +244,11 @@ class AnthropicStreamParser(StreamParser):
         for index, parts in self.partial_json.items():
             self.blocks[index]["input"] = json.loads("".join(parts) or "{}")
         self.message["content"] = [self.blocks[index] for index in sorted(self.blocks)]
-        return response_from_wire(self.validate_response(self.message))
+        response = response_from_wire(self.validate_response(self.message))
+        response.raw = (
+            self.message
+        )  # so `@intercept`s see the assembled body on streamed turns
+        return response
 
 
 class AnthropicDialect(Dialect[dict, AnthropicMessage]):
@@ -277,6 +286,98 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
 
     def parse_response(self, response: AnthropicMessage) -> Response:
         return response_from_wire(response)
+
+    def serialize_response(self, response: Response) -> dict:
+        message = response.message
+        # provider_state blocks (thinking / server-tool) ride first, matching Anthropic's order.
+        blocks: list[dict] = list(message.provider_state or [])
+        if message.content:
+            blocks.append({"type": "text", "text": message.content})
+        blocks += [
+            {
+                "type": "tool_use",
+                "id": call.id,
+                "name": call.name,
+                "input": json.loads(call.arguments or "{}"),
+            }
+            for call in message.tool_calls or []
+        ]
+        usage = response.usage
+        return {
+            "id": response.id or "vf-intercept",
+            "type": "message",
+            "role": "assistant",
+            "model": response.model,
+            "content": blocks,
+            "stop_reason": "tool_use" if message.tool_calls else "end_turn",
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": usage.input_tokens if usage else 0,
+                "output_tokens": usage.completion_tokens if usage else 0,
+            },
+        }
+
+    def serialize_stream(self, raw: dict) -> list[bytes]:
+        head = {**raw, "content": [], "stop_reason": None, "stop_sequence": None}
+        events = [
+            sse_event({"type": "message_start", "message": head}, "message_start")
+        ]
+        for index, block in enumerate(raw.get("content") or []):
+            kind = block.get("type")
+            # text/tool_use are streamed the canonical way (empty start + one delta) so any
+            # SDK accumulator handles them; other blocks ride whole in their start event.
+            delta: dict | None = None
+            if kind == "text":
+                block, delta = (
+                    {"type": "text", "text": ""},
+                    {"type": "text_delta", "text": block.get("text", "")},
+                )
+            elif kind == "tool_use":
+                block, delta = (
+                    {**block, "input": {}},
+                    {
+                        "type": "input_json_delta",
+                        "partial_json": json.dumps(block.get("input") or {}),
+                    },
+                )
+            events.append(
+                sse_event(
+                    {
+                        "type": "content_block_start",
+                        "index": index,
+                        "content_block": block,
+                    },
+                    "content_block_start",
+                )
+            )
+            if delta is not None:
+                events.append(
+                    sse_event(
+                        {"type": "content_block_delta", "index": index, "delta": delta},
+                        "content_block_delta",
+                    )
+                )
+            events.append(
+                sse_event(
+                    {"type": "content_block_stop", "index": index},
+                    "content_block_stop",
+                )
+            )
+        events.append(
+            sse_event(
+                {
+                    "type": "message_delta",
+                    "delta": {
+                        "stop_reason": raw.get("stop_reason"),
+                        "stop_sequence": raw.get("stop_sequence"),
+                    },
+                    "usage": raw.get("usage") or {},
+                },
+                "message_delta",
+            )
+        )
+        events.append(sse_event({"type": "message_stop"}, "message_stop"))
+        return events
 
     def validate_response(self, raw: dict) -> AnthropicMessage:
         usage = raw.get("usage")

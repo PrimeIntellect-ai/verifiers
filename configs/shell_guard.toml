@@ -1,0 +1,15 @@
+# shell-guard-v1 — @vf.intercept rewrites a destructive `rm -rf .` shell turn into a
+# refusal before the harness runs it. Run with the codex harness, which ships its own
+# shell tool (the taskset registers none); codex is a static musl binary, so it needs a
+# linux container runtime.
+#
+#   uv run eval @ configs/shell_guard.toml --model <small-instruct-model>
+num_tasks = 1
+num_rollouts = 2
+
+[taskset]
+id = "shell-guard-v1"
+
+[harness]
+id = "codex"
+runtime = { type = "docker" }
