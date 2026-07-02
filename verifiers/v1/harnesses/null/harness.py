@@ -70,7 +70,14 @@ class NullHarness(Harness[NullHarnessConfig]):
         if isinstance(prompt, str):
             args.append(f"--prompt={prompt}")
         elif prompt is not None:
-            env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in prompt])
+            blob = json.dumps([message_to_wire(m) for m in prompt])
+            # execve caps a single env string at MAX_ARG_STRLEN (128KiB on Linux); hand a
+            # large seeded conversation over as a workspace file instead.
+            if len(blob) > 100_000:
+                await runtime.write("initial_messages.json", blob.encode())
+                env["INITIAL_MESSAGES_FILE"] = "initial_messages.json"
+            else:
+                env["INITIAL_MESSAGES"] = blob
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )

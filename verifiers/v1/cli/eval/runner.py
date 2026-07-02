@@ -25,10 +25,15 @@ _SHUFFLE_SEED = (
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
-    tasks = env.taskset.load_tasks()
+    all_tasks = env.taskset.load_tasks()
+    tasks = list(all_tasks)
     if config.shuffle:
         random.Random(_SHUFFLE_SEED).shuffle(tasks)
     tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
+    # Lazy tasksets bind task content at request time (Taskset.resolve_task); resolve each
+    # selected task once, mirroring the env server's one-bind-per-episode semantics. The
+    # default resolve returns the identical objects, so eager tasksets are unchanged.
+    tasks = [await env.taskset.resolve_task(task.idx, all_tasks) for task in tasks]
     ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.

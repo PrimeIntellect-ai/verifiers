@@ -289,9 +289,16 @@ async def main() -> None:
         )
         # A Messages prompt (e.g. an image-bearing prompt) arrives pre-built as OpenAI wire dicts
         # via INITIAL_MESSAGES (kept in env: it can be large multimodal content that overflows
-        # argv, and it's prompt content, not a credential); otherwise --prompt is the opening
+        # argv, and it's prompt content, not a credential) — or, when it would overflow the
+        # kernel's per-env-string limit, as a workspace file named by INITIAL_MESSAGES_FILE;
+        # otherwise --prompt is the opening
         # message. Both empty means the task has no prompt — the user simulator seeds the opening.
-        initial = json.loads(os.environ.get("INITIAL_MESSAGES", "[]"))
+        initial_file = os.environ.get("INITIAL_MESSAGES_FILE")
+        if initial_file:
+            with open(initial_file) as f:
+                initial = json.load(f)
+        else:
+            initial = json.loads(os.environ.get("INITIAL_MESSAGES", "[]"))
         if initial:
             messages.extend(initial)
         elif args.prompt:

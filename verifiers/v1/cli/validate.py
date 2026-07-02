@@ -108,11 +108,15 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     """Run each task's `validate` hook with bounded concurrency, showing progress live. Returns
     the result rows in memory — nothing is persisted."""
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.load_tasks()
+    all_tasks = taskset.load_tasks()
+    tasks = list(all_tasks)
     if config.shuffle:
         random.Random(0).shuffle(tasks)
     if config.num_tasks is not None:
         tasks = tasks[: config.num_tasks]
+    # Lazy tasksets bind task content at request time (Taskset.resolve_task); resolve before
+    # validating so hooks see real tasks, not stubs. Eager tasksets are unchanged.
+    tasks = [await taskset.resolve_task(task.idx, all_tasks) for task in tasks]
     if isinstance(config.runtime, vf.SubprocessConfig) and (
         taskset.NEEDS_CONTAINER or any(t.image for t in tasks)
     ):
