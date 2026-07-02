@@ -18,6 +18,7 @@ import time
 from contextlib import asynccontextmanager
 from enum import StrEnum
 
+from verifiers.v1.agent import run_judges
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
@@ -78,11 +79,15 @@ class Rollout:
         limits: RolloutLimits | None = None,
         shared_urls: dict[str, str] | None = None,
         interception: InterceptionPool | None = None,
+        models: dict[str, RolloutContext] | None = None,
     ) -> None:
         self.task = task
         self.taskset = taskset
         self.harness = harness
         self.ctx = ctx
+        self.models = models or {}
+        """The env's named model table ({name: resolved context}) for agent runs (judges);
+        "policy" is implicit — it's `ctx`. Built by the Environment from `EnvConfig.models`."""
         self.runtime_config = runtime_config
         self.setup_timeout = setup_timeout
         self.harness_timeout = harness_timeout
@@ -134,6 +139,28 @@ class Rollout:
                 # a HOST service the harness (in `runtime`) reaches: localhost or a tunnel
                 async with reachable_url(HOST, server.port, consumer=runtime) as url:
                     yield f"{url}/v1", secret, server.port, url
+
+    async def _score(self, trace: Trace, runtime: "Runtime") -> None:
+        """The SCORING stage's body: run the taskset's judge agent runs (recorded onto
+        `trace.agents`, verdicts collected), then taskset + harness scoring concurrently
+        with the verdicts available to `@reward`/`@metric` by name."""
+        async with boundary(TasksetError, "taskset judges"):
+            specs = await invoke(
+                self.taskset.judges,
+                {"task": self.task, "trace": trace, "runtime": runtime},
+            )
+        verdicts = await run_judges(
+            specs,
+            trace,
+            runtime,
+            ctx=self.ctx,
+            models=self.models,
+            interception=self.interception,
+        )
+        await asyncio.gather(
+            self.taskset.score(trace, runtime, verdicts),
+            self.harness.score(trace, runtime),
+        )
 
     async def run(self) -> Trace:
         """Run the rollout and return its trace. Captures expected `RolloutError`s onto
@@ -256,15 +283,13 @@ class Rollout:
             )  # per-rollout scoring; the Episode marks DONE after group scoring
             trace.timing.scoring.start = now
             async with boundary(TasksetError, "scoring"):
-                # Per-rollout scoring: taskset + harness, concurrently, both with the live
-                # runtime. (Cross-rollout `@group_reward`s run later, in the Episode.) Each
+                # Per-rollout scoring, all with the live runtime and all under the one
+                # scoring timeout: the taskset's judge agent runs first (their verdicts
+                # feed the rewards), then taskset + harness scoring concurrently.
+                # (Cross-rollout `@group_reward`s run later, in the Episode.) Each
                 # method types its own failures; only a timeout is attributed here.
                 await asyncio.wait_for(
-                    asyncio.gather(
-                        self.taskset.score(trace, runtime),
-                        self.harness.score(trace, runtime),
-                    ),
-                    self.scoring_timeout,
+                    self._score(trace, runtime), self.scoring_timeout
                 )
             trace.timing.scoring.end = time.time()
         except RolloutError as e:

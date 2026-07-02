@@ -34,6 +34,58 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
 
 
 @pytest.mark.e2e
+async def test_judged(run_v1, harness_runtime, tmp_path):
+    """Echo, rewarded by an agentic judge (`vf.JudgeSpec`): a default-harness agent run
+    provisioned into the rollout's runtime during SCORING, reading the materialized
+    transcript and writing a typed verdict the `@reward` maps to a number. The judge
+    samples from the policy model, so no second endpoint is needed."""
+    (trace,) = await run_v1(
+        "echo-judged-v1",
+        harness="null",
+        harness_overrides={"runtime": {"type": harness_runtime}},
+        output_dir=tmp_path,
+        max_turns=2,
+        # The judge run (its own uv-script prep + a few model turns) happens inside
+        # the scoring stage, so it needs more than the default 60s.
+        scoring_timeout=300,
+    )
+    assert trace.errors == []
+    assert trace.reward == 1.0
+    (run,) = trace.agents
+    assert run.name == "echoed"
+    assert run.role == "judge"
+    assert run.model == "policy"
+    assert run.trainable is False
+    assert run.verdict["echoed"] is True
+    assert run.trace.num_turns >= 1  # the judge itself took real model turns
+    assert trace.extra_usage  # judge spend recorded off the policy's own usage
+
+
+@pytest.mark.e2e
+async def test_reply_judged(run_v1, harness_runtime, tmp_path):
+    """Echo, rewarded by a single-call reply-verdict judge (`null`-harness
+    `vf.JudgeSpec`): one completion whose evidence rides in the prompt (built from the
+    trace via the injectable `judges` hook) and whose reply is validated as the typed
+    verdict — the classic LLM judge as an agent run, against a real model."""
+    (trace,) = await run_v1(
+        "echo-reply-judged-v1",
+        harness="null",
+        harness_overrides={"runtime": {"type": harness_runtime}},
+        output_dir=tmp_path,
+        max_turns=2,
+        scoring_timeout=300,
+    )
+    assert trace.errors == []
+    assert trace.reward == 1.0
+    (run,) = trace.agents
+    assert run.name == "echoed"
+    assert run.role == "judge"
+    assert run.verdict["echoed"] is True
+    assert run.trace.num_turns == 1  # one completion — the reply is the verdict
+    assert trace.extra_usage
+
+
+@pytest.mark.e2e
 async def test_user(run_v1, harness_runtime, user_runtime, tmp_path):
     """Multi-turn, driven by a (container-safe) `vf.User` simulator, across the full matrix of the
     user's runtime (`user_runtime`: colocated in the harness's runtime, or its own runtime) x the

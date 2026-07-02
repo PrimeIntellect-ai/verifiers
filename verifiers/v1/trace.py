@@ -202,8 +202,11 @@ class Branch(StrictBaseModel):
         return usage.completion_tokens if usage else 0
 
 
+_NODE_FIELDS_EXCLUDE = {"__all__": {"multi_modal_data", "routed_experts"}}
 _NODE_DUMP_EXCLUDE: dict = {
-    "nodes": {"__all__": {"multi_modal_data", "routed_experts"}}
+    "nodes": _NODE_FIELDS_EXCLUDE,
+    # An `AgentRun`'s nested trace has the same per-node tensor fields.
+    "agents": {"__all__": {"trace": {"nodes": _NODE_FIELDS_EXCLUDE}}},
 }
 """The per-node fields `Trace.to_record` strips from a JSON dump: the multimodal `mm_kwargs`
 carrier and the router-replay `routed_experts` array. Both hold raw numpy bytes (msgpack `bin`)
@@ -249,6 +252,14 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     spend) and off the graph, so branch/turn counts and the trainer's token math (`num_total_tokens`,
     `branches`) see only sampled nodes; consumers that want a grand total add the two (e.g. the eval
     dashboard shows the agent's usage and `+judge` separately)."""
+
+    agents: list["AgentRun"] = Field(default_factory=list)
+    """Additional agent runs recorded on this rollout — today the SCORE-stage judge runs (see
+    `verifiers.v1.agent`). Each entry carries its provenance (role, resolved model name,
+    `trainable`) and its own full `Trace`, so a judge's conversation is as inspectable as the
+    policy's. This rollout's own conversation (`nodes`) is the policy agent's; folding it into
+    `agents` as `agents["policy"]` is the planned follow-up once consumers select traces by
+    provenance rather than assuming one conversation per rollout."""
 
     is_completed: bool = False
     stop_condition: str | None = None
@@ -456,3 +467,32 @@ WireTrace = Trace[WireTask]
 ride in `task.model_extra` (`WireTask` allows extras); `state` is never serialized so it needs no
 permissive type. The dump is plain pydantic (no derived computed fields), so load it directly:
 `WireTrace.model_validate(json.loads(line))`."""
+
+
+class AgentRun(StrictBaseModel):
+    """One non-policy agent run recorded on a rollout, with its provenance.
+
+    The provenance carrier: `role`/`model` say who acted, `trainable` says whether this
+    run's tokens are training data — the rule a trainer applies is "train on a trace iff
+    its model is the policy and it opted in", so a judge on an external endpoint is
+    never trained on, while a future teammate agent sharing the policy endpoint is.
+    `trace` is the run's own full record (conversation graph, usage, timing, errors)."""
+
+    name: str
+    """Unique name within the rollout (a judge's `JudgeSpec.name`); verdicts key on it."""
+    role: str = "judge"
+    """What this run did: "judge" today; "user"/"teammate" as future runs fold in."""
+    model: str
+    """The resolved model name the run called (a model-table key, or "policy")."""
+    trainable: bool = False
+    """Whether this run's tokens are training data. Framework-stamped: False unless the
+    run sampled from the live policy AND its spec opted in."""
+    trace: WireTrace
+    """The run's own full trace — its task is the synthesized agent task (e.g. the judge
+    instructions), its nodes the run's conversation."""
+    verdict: Any | None = None
+    """The parsed verdict (JSON dump of the `JudgeSpec.verdict` model), recorded for
+    inspection alongside the reward it produced. None for non-judge runs."""
+
+
+Trace.model_rebuild()  # resolve the forward ref to `AgentRun` (defined after `Trace`)

@@ -17,10 +17,11 @@ For a heterogeneous taskset (different verification per task), have a single
 
 import asyncio
 from collections.abc import Mapping
-from typing import ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.agent import JudgeSpec
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import TasksetError, boundary
 from verifiers.v1.types import EnvId
@@ -80,6 +81,22 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         multi-turn conversation (e.g. a TextArena game)."""
         return None
 
+    async def judges(self, task: TaskT) -> list[JudgeSpec]:
+        """Judges for this rollout — agent runs (harness + model, see
+        `verifiers.v1.agent`) the framework executes in the SCORING stage, while the
+        runtime is live, to grade the finished rollout. Each produces a typed verdict
+        that `@reward`/`@metric` functions receive by declaring a `verdicts` parameter
+        (`verdicts[spec.name]` is the parsed `spec.verdict` instance). Empty by
+        default; override to grade with a judge.
+
+        Like rewards, an override declares what it needs by name — any subset of
+        `task`, `trace`, `runtime` — so prompts are written already rendered
+        (f-strings, no template language): the task supplies the criteria, the trace
+        the evidence for reply-verdict judges (e.g. `trace.last_reply`). The trace
+        also enables conditional judging — return `[]` when a programmatic check
+        already settles the grade."""
+        return []
+
     async def setup(self, task: TaskT, trace: Trace, runtime: Runtime) -> None:
         """Prepare the live runtime for this task, after `runtime.start()` and before the
         harness runs. No-op by default; override to run per-task setup in the runtime (e.g.
@@ -110,15 +127,26 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         records the reason (the raised error's message)."""
         return True
 
-    async def score(self, trace: Trace, runtime: Runtime) -> None:
+    async def score(
+        self,
+        trace: Trace,
+        runtime: Runtime,
+        verdicts: Mapping[str, Any] | None = None,
+    ) -> None:
         """Score one rollout: run all `@metric` then `@reward` over its trace,
         concurrently within each phase. Each metric is recorded in `trace.metrics`
         (a number, or a mapping merged in); each reward (weighted — likewise a number or a
         mapping merged in) in `trace.rewards`, which `trace.reward` sums. Signals declare
-        what they need — `task`, `trace`,
-        `runtime` — so a reward is either a pure function of the trace or runs
-        read/write/exec in that (still-live) runtime, e.g. a verifier script."""
-        available = {"task": trace.task, "trace": trace, "runtime": runtime}
+        what they need — `task`, `trace`, `runtime`, `verdicts` (the judge runs' parsed
+        verdicts, keyed by `JudgeSpec.name` — the Rollout runs `judges(task)` before this)
+        — so a reward is either a pure function of the trace, runs read/write/exec in that
+        (still-live) runtime (e.g. a verifier script), or maps a judge's verdict to a number."""
+        available = {
+            "task": trace.task,
+            "trace": trace,
+            "runtime": runtime,
+            "verdicts": dict(verdicts or {}),
+        }
         async with boundary(TasksetError, f"taskset {type(self).__name__} scoring"):
             metrics = discover_decorated(self, "metric")
             metric_results = (

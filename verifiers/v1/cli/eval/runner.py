@@ -94,6 +94,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             )
     traces = [trace for episode_traces in results for trace in episode_traces]
     await client.close()
+    await env.aclose()
     return traces
 
 

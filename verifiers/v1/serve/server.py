@@ -213,6 +213,8 @@ class EnvServer:
                 for client in self._clients.values():
                     with contextlib.suppress(Exception):
                         await client.close()
+                with contextlib.suppress(Exception):
+                    await self.env.aclose()
                 self.frontend.close()
                 self.ctx.term()
                 logger.info("EnvServer down: taskset=%s", self.taskset_id)

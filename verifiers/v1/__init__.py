@@ -8,10 +8,19 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.agent import (
+    AgentBudget,
+    AgentSpec,
+    JudgeSpec,
+    render_transcript,
+    run_agent,
+    run_judges,
+)
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
+    ModelEndpointConfig,
     RolloutContext,
     resolve_client,
 )
@@ -29,6 +38,7 @@ from verifiers.v1.episode import Episode
 from verifiers.v1.errors import (
     HarnessError,
     InterceptionError,
+    JudgeError,
     ProviderError,
     RolloutError,
     SandboxError,
@@ -70,6 +80,7 @@ from verifiers.v1.mcp import (
 )
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
+    AgentRun,
     Branch,
     Error,
     TimeSpan,
@@ -128,6 +139,7 @@ __all__ = [
     "TaskTimeout",
     "Trace",
     "WireTrace",
+    "AgentRun",
     "State",
     "StateT",
     "MessageNode",
@@ -151,12 +163,21 @@ __all__ = [
     "SandboxError",
     "TasksetError",
     "InterceptionError",
+    "JudgeError",
     "TunnelError",
     # clients
     "Client",
     "BaseClientConfig",
     "ClientConfig",
+    "ModelEndpointConfig",
     "resolve_client",
+    # agent runs
+    "AgentSpec",
+    "AgentBudget",
+    "JudgeSpec",
+    "render_transcript",
+    "run_agent",
+    "run_judges",
     # taskset / harness / runtime / environment
     "Taskset",
     "TasksetConfig",
