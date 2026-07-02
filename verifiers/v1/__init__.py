@@ -98,7 +98,7 @@ from verifiers.v1.trace import (
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
-    EnvId,
+    ID,
     ImageUrlContentPart,
     ImageUrlSource,
     Message,
@@ -120,7 +120,7 @@ from verifiers.v1.types import (
 
 __all__ = [
     # types
-    "EnvId",
+    "ID",
     "AssistantMessage",
     "ContentPart",
     "ImageUrlContentPart",

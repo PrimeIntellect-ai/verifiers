@@ -27,7 +27,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import TasksetError, boundary
 from verifiers.v1.judge import Judge, JudgeConfig
-from verifiers.v1.types import EnvId
+from verifiers.v1.types import ID
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.mcp import Toolset, User
@@ -39,10 +39,10 @@ from verifiers.v1.trace import Trace
 class TasksetConfig(BaseConfig):
     """Base taskset config. Subclass to add task-generation knobs."""
 
-    id: EnvId = ""
+    id: ID = ""
     """The taskset id, which selects this taskset: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
-    `EnvId`). Set via `--taskset.id`."""
+    `ID`). Set via `--taskset.id`."""
     # SerializeAsAny: entries are resolved subclasses (e.g. RubricJudgeConfig); without it
     # model_dump() would narrow to the base type and drop the judge-specific fields (same
     # reasoning as EnvConfig's taskset/harness fields).

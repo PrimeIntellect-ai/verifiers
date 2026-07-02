@@ -47,7 +47,7 @@ from typing_extensions import TypeVar
 from verifiers.v1.clients.config import BaseClientConfig, build_async_openai
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.utils.install import env_name
-from verifiers.v1.types import EnvId, Messages, SamplingConfig, StrictBaseModel, Usage
+from verifiers.v1.types import ID, Messages, SamplingConfig, StrictBaseModel, Usage
 
 if TYPE_CHECKING:
     from verifiers.v1.task import Task
@@ -67,10 +67,10 @@ class JudgeConfig(BaseClientConfig):
     auto-config) from `BaseClientConfig`; adds the model and sampling. Subclass to add
     judge-specific fields (see `verifiers.v1.judges.rubric.RubricJudgeConfig`)."""
 
-    id: EnvId = ""
+    id: ID = ""
     """The judge id, which selects a judge plugin for a config-plugged judge (see
     `TasksetConfig.judges`): a built-in (`binary`, `rubric`), a local package, or an
-    `org/name[@version]` package installed on demand from the Environments Hub (see `EnvId`).
+    `org/name[@version]` package installed on demand from the Environments Hub (see `ID`).
     Empty for a judge the taskset builds and calls itself."""
     name: str = ""
     """The reward key this judge's verdict records under when plugged (see `reward_name`);

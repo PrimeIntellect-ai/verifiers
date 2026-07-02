@@ -288,17 +288,17 @@ Sampling = SamplingConfig
 # --- ids ----------------------------------------------------------------------
 
 
-def _validate_env_id(env_id: str) -> str:
+def _validate_id(plugin_id: str) -> str:
     """Validate the id's shape — a hub id must be a well-formed ``org/name[@version]``; a
     local id is any module name. Returns it unchanged (the value stays a plain ``str``)."""
     from verifiers.utils.install_utils import is_hub_env, parse_env_id
 
-    if is_hub_env(env_id):
-        parse_env_id(env_id)  # raises ValueError on a malformed org/name[@version]
-    return env_id
+    if is_hub_env(plugin_id):
+        parse_env_id(plugin_id)  # raises ValueError on a malformed org/name[@version]
+    return plugin_id
 
 
-EnvId = Annotated[str, AfterValidator(_validate_env_id)]
-"""A taskset / harness / environment id — ``name``, ``org/name``, or ``org/name@version``. A
-plain validated ``str``; derive its package/module name with `env_name` / `env_module`
-(`verifiers.v1.utils.install`)."""
+ID = Annotated[str, AfterValidator(_validate_id)]
+"""A plugin id — a taskset / harness / judge / environment: ``name``, ``org/name``, or
+``org/name@version``. A plain validated ``str``; derive its package/module name with
+`env_name` / `env_module` (`verifiers.v1.utils.install`)."""
