@@ -3,7 +3,7 @@
 `verifiers.v1` is designed to produce training-ready traces. The supported native integration is
 `prime-rl`: its orchestrator starts the same v1 environment server used by `uv run eval --server`,
 requests rollout groups by task index, and trains from the returned `vf.Trace` branches.
-The [runtime architecture guide](runtime-architecture.md) shows the orchestrator, environment
+The [architecture guide](architecture.md) shows the orchestrator, environment
 workers, interception server, harness sandboxes, inference engine, and trainer as separate
 process and network boundaries.
 

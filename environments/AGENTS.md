@@ -81,6 +81,7 @@ If your reward is semantic, use a LLM judge.
 
 ```python
 import verifiers.v1 as vf
+from functools import cached_property
 
 class Task(vf.Task):
     answer: str
@@ -103,9 +104,10 @@ class Config(vf.TasksetConfig):
 
 
 class JudgeTraceTaskset(vf.Taskset[Task, Config]):
-    def __init__(self, config: Config) -> None:
-        super().__init__(config)
-        self.judge = CorrectnessJudge(config.judge)
+    # Build the judge lazily from config — no Taskset.__init__ override needed.
+    @cached_property
+    def judge(self) -> CorrectnessJudge:
+        return CorrectnessJudge(self.config.judge)
 
     def load_tasks(self) -> list[Task]:
         return [Task(idx=0, prompt="What is 2+2?", answer="4")]
@@ -122,4 +124,5 @@ class JudgeTraceTaskset(vf.Taskset[Task, Config]):
         return 1.0 if result.parsed else 0.0
 ```
 
-To overwrite the judge model, use `taskset.judge.model` in your config. As it is a proper model, you can also overwrite other parameters, such as `taskset.judge.model.max_tokens` that way.
+To override the judge model, set `taskset.judge.model` in your config (it is a string).
+Sampling knobs live under `taskset.judge.sampling` — e.g. `taskset.judge.sampling.max_tokens`.
