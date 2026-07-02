@@ -67,7 +67,7 @@ class DebugConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_action(self):
-        if bool(self.command) == bool(self.script_path):
+        if (self.command is None) == (self.script_path is None):
             raise ValueError("pass exactly one of `--command` or `--script-path`")
         if self.script_path is not None and not self.script_path.is_file():
             raise ValueError(
