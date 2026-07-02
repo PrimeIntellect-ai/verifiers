@@ -140,8 +140,13 @@ class Rollout:
         """The SCORING stage's body: run the taskset's judge agent runs (recorded onto
         `trace.agents`, verdicts collected), then taskset + harness scoring concurrently
         with the verdicts available to `@reward`/`@metric` by name."""
+        async with boundary(TasksetError, "taskset judges"):
+            specs = await invoke(
+                self.taskset.judges,
+                {"task": self.task, "trace": trace, "runtime": runtime},
+            )
         verdicts = await run_judges(
-            self.taskset.judges(self.task),
+            specs,
             trace,
             runtime,
             ctx=self.ctx,

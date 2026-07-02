@@ -254,7 +254,11 @@ async def verify(self, task, trace, runtime) -> float:
     return float(r.stdout.strip() == "1.0")
 ```
 
-### Judges
+### Judges (`vf.Judge` — superseded)
+
+> Prefer declaring judges as `vf.JudgeSpec` agent runs (next section): the single-call case is a
+> `JudgeSpec` with the `null` harness, and gets the shared model table, enforced budgets, and
+> `trace.agents` provenance for free. `vf.Judge` predates it and is kept for existing tasksets.
 
 When grading can't be deterministic, `vf.Judge` is a reusable LLM judge: it owns the OpenAI client
 (with the Prime key/team fallback), the call, and usage/cost capture, and leaves the two things that
@@ -308,48 +312,70 @@ Good to know:
 - **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`, Prime auto-config). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.
 - **Errors propagate**: a judge API failure errors the rollout (recorded as a `TasksetError` on the trace); the OpenAI SDK already retries transient 429/5xx/connection errors.
 
-### Agentic judges
+### Judge agents (`JudgeSpec`)
 
-When one templated call isn't enough judgement — the grade needs to *inspect the world* (re-run
-tests, read files the agent wrote) or *work through* a long trace — declare the judge as an **agent
-run**: a harness + model the framework executes in the SCORING stage, while the rollout's runtime is
-still live. Override `Taskset.judges(task)` to return `vf.JudgeSpec`s; map the verdict to a number
-in a `@reward` that declares `verdicts`:
+A judge is an **agent run** — a harness + model the framework executes in the SCORING stage, while
+the rollout's runtime is still live. One spec covers the whole spectrum: with the tool-less `null`
+harness it's the classic single-call LLM judge (one completion, the reply is the verdict); with a
+tools harness it's a full agent that *inspects the world* — re-runs tests, reads the files the
+agent wrote. Override `Taskset.judges()` to return `vf.JudgeSpec`s; map the verdict to a number in
+a `@reward` that declares `verdicts`:
 
 ```python
 from pydantic import BaseModel
 
-class PatchVerdict(BaseModel):
-    passed: bool
-    reasoning: str
+class CorrectVerdict(BaseModel):
+    correct: bool
 
 class MyTaskset(vf.Taskset[MyTask, MyConfig]):
-    def judges(self, task: MyTask) -> list[vf.JudgeSpec]:
+    async def judges(self, task: MyTask, trace: vf.Trace) -> list[vf.JudgeSpec]:
+        return [vf.JudgeSpec(
+            name="correct",
+            prompt=f"Question: {task.question}\nGold answer: {task.answer}\n"
+                   f"Response: {trace.last_reply}\nIs the response correct?",
+            verdict=CorrectVerdict,
+            harness={"id": "null"},     # tool-less → one call, the reply is the verdict
+            model="grader",             # a model-table name (see below)
+        )]
+
+    @vf.reward
+    async def correct(self, verdicts) -> float:
+        return float(verdicts["correct"].correct)
+```
+
+Give the judge hands when the grade needs the world — a tools harness (the default) and a budget:
+
+```python
         return [vf.JudgeSpec(
             name="patch_quality",
             prompt=f"The agent was asked to fix: {task.issue}. Inspect the repo state and "
                    "run the tests to decide whether the fix is real and minimal.",
-            verdict=PatchVerdict,
-            model="grader",                          # a model-table name (see below)
+            verdict=PatchVerdict,       # e.g. {passed: bool, reasoning: str}
+            model="grader",
             budget=vf.AgentBudget(max_turns=15),
         )]
-
-    @vf.reward
-    async def solved(self, verdicts) -> float:
-        return float(verdicts["patch_quality"].passed)
 ```
 
 How it executes:
 
+- **The hook is injectable** like rewards: `judges()` declares any subset of `task`, `trace`,
+  `runtime`. The task supplies the criteria; the trace supplies the evidence a reply-verdict judge
+  carries in its prompt (`trace.last_reply`, or `vf.render_transcript(trace)` for the whole
+  conversation) — and enables conditional judging: return `[]` when a programmatic check already
+  settles the grade.
+- **Verdict channel** (`verdict_source`, derived from the harness): a tools judge gets the
+  rollout's records as files — `task.json` / `transcript.md` / `trace.json` under a per-run
+  `/tmp/vf-agent/<id>/` directory (never the rollout's workdir — that's the world being judged) —
+  and writes `verdict.json`; a `null`-harness judge has no tools to read files with, so its
+  evidence lives in the prompt and its final reply is the verdict JSON. Either way the verdict's
+  JSON schema is appended to the prompt and the output validated: missing or invalid raises
+  `JudgeError` and **fails the rollout** — never a silent 0.
 - **Placement**: `placement="rollout"` (default) provisions the judge's harness into the rollout's
   live runtime — the world the policy actually mutated — only after the policy finished, so the
-  policy can never observe or tamper with it. Pass a `RuntimeConfig` instead for a fresh runtime: a
-  clean-room container for verification, or a plain subprocess for trace-only judging.
-- **I/O contract is files**, so any harness can judge (including off-the-shelf coding agents): the
-  framework materializes `task.json` / `transcript.md` / `trace.json` under a per-run
-  `/tmp/vf-agent/<id>/` directory (never the rollout's workdir — that's the world being judged),
-  appends the contract + the verdict's JSON schema to the prompt, and reads back `verdict.json`.
-  A missing or invalid verdict raises `JudgeError` and **fails the rollout** — never a silent 0.
+  policy can never observe or tamper with it. Judges sharing the live runtime run one at a time
+  (one world, no races). Pass a `RuntimeConfig` instead for a fresh runtime — a clean-room
+  container for verification, or a plain subprocess for trace-only judging — which runs
+  concurrently with the rest.
 - **Models are logical names**: `model="policy"` (default) is the rollout's own model;
   any other name resolves against the env's model table (`--models.grader.base-url …`,
   `--models.grader.model …` — a `vf.ModelEndpointConfig` per entry). Tasksets say what quality of
@@ -362,8 +388,8 @@ How it executes:
   mechanism that bounds the policy, and the whole SCORING stage (judges + rewards) runs under the
   env's `scoring` timeout.
 
-`vf.Judge` (above) stays the right tool for one-call grading; `JudgeSpec` is for judges that need
-turns, tools, or the runtime.
+`vf.Judge` (above) predates `JudgeSpec` and is kept for existing tasksets; new tasksets should
+declare judges as specs — the `null`-harness spec above *is* the one-call judge.
 
 ## Stop conditions
 

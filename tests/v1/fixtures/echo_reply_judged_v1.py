@@ -1,12 +1,10 @@
-"""echo-judged: echo, scored by an agentic judge instead of string matching.
+"""echo-reply-judged: echo, graded by a single-call reply-verdict judge.
 
-The judged twin of `echo-v1`: the model echoes a phrase, but the reward comes from a
-`vf.JudgeSpec` agent run — a default-harness agent provisioned into the rollout's
-runtime during SCORING, which reads the materialized transcript, decides whether the
-phrase was echoed, and writes a typed verdict. The `@reward` just maps the verdict to a
-number. The judge samples from the policy model ("policy"), so the e2e run needs no
-second endpoint. A fixture taskset for the v1 e2e suite (id `echo-judged-v1`).
-"""
+The single-call twin of `echo-judged-v1`: the judge is a `null`-harness `vf.JudgeSpec`
+— no tools, so its evidence (the phrase and the model's reply) rides in its prompt,
+built from the trace via the injectable `judges(task, trace)` hook, and its final reply
+is the verdict JSON. The classic one-call LLM judge expressed as an agent run. A
+fixture taskset for the v1 suite (id `echo-reply-judged-v1`)."""
 
 from pydantic import BaseModel
 
@@ -18,8 +16,6 @@ SYSTEM = "Repeat the user's message back to them exactly, with no extra words."
 class EchoVerdict(BaseModel):
     echoed: bool
     """Whether the agent's reply contained the phrase."""
-    evidence: str
-    """The reply line that contains the phrase (or why it's missing)."""
 
 
 class EchoTask(vf.Task):
@@ -27,11 +23,11 @@ class EchoTask(vf.Task):
     """The phrase the model should echo back."""
 
 
-class EchoJudgedConfig(vf.TasksetConfig):
+class EchoReplyJudgedConfig(vf.TasksetConfig):
     phrases: list[str] = ["hello world"]
 
 
-class EchoJudgedTaskset(vf.Taskset[EchoTask, EchoJudgedConfig]):
+class EchoReplyJudgedTaskset(vf.Taskset[EchoTask, EchoReplyJudgedConfig]):
     def load_tasks(self) -> list[EchoTask]:
         return [
             EchoTask(
@@ -50,17 +46,17 @@ class EchoJudgedTaskset(vf.Taskset[EchoTask, EchoJudgedConfig]):
     async def single_turn(self, trace: vf.Trace) -> bool:
         return trace.num_turns >= 1
 
-    async def judges(self, task: EchoTask) -> list[vf.JudgeSpec]:
+    async def judges(self, task: EchoTask, trace: vf.Trace) -> list[vf.JudgeSpec]:
         return [
             vf.JudgeSpec(
                 name="echoed",
                 prompt=(
                     f"An agent was asked to echo the exact phrase {task.answer!r}. "
-                    "Read the transcript and decide whether the agent's reply contains "
-                    "the phrase (ignore case, spacing, and punctuation)."
+                    f"Its reply was: {trace.last_reply!r}. Decide whether the reply "
+                    "contains the phrase (ignore case, spacing, and punctuation)."
                 ),
                 verdict=EchoVerdict,
-                budget=vf.AgentBudget(max_turns=8),
+                harness={"id": "null"},
             )
         ]
 
@@ -69,4 +65,4 @@ class EchoJudgedTaskset(vf.Taskset[EchoTask, EchoJudgedConfig]):
         return float(verdicts["echoed"].echoed)
 
 
-__all__ = ["EchoJudgedTaskset"]
+__all__ = ["EchoReplyJudgedTaskset"]
