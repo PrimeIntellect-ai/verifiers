@@ -9,12 +9,13 @@ scores 1/0. The reference answer is read off the task by field name (`answer_fie
     answer_field = "answer"
 """
 
-from typing import Literal, cast
+from typing import cast
 
 from verifiers.v1.judge import (
     Judge,
     JudgeConfig,
     JudgeResponse,
+    JudgeView,
     judge_question,
     judge_response,
 )
@@ -54,10 +55,9 @@ class BinaryJudgeConfig(JudgeConfig):
     """Task field to fill the prompt's `{question}` (e.g. a dedicated `question` column
     without the prompt's instruction framing); empty = the task's prompt rendered as text
     (`Task.prompt_text`)."""
-    view: Literal["last_reply", "full_trace"] = "last_reply"
-    """How much of the rollout fills `{response}`: the final reply's text, or the whole
-    transcript (`Trace.transcript` — every turn incl. tool calls and results, reasoning
-    excluded)."""
+    view: JudgeView = "last_reply"
+    """How much of the rollout fills `{response}` (see `JudgeView`). Defaults to the final
+    reply — a reference-answer check grades the answer, not the path to it."""
 
 
 class BinaryJudge(Judge[float, BinaryJudgeConfig]):

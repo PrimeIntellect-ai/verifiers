@@ -44,6 +44,7 @@ from verifiers.v1.judge import (
     JudgeResponse,
     Judges,
     JudgeSamplingConfig,
+    JudgeView,
 )
 from verifiers.v1.judges import (
     BinaryJudge,
@@ -223,6 +224,7 @@ __all__ = [
     "Judges",
     "JudgeSamplingConfig",
     "JudgeResponse",
+    "JudgeView",
     "BinaryJudge",
     "BinaryJudgeConfig",
     "RubricJudge",

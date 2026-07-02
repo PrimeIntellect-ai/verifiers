@@ -25,12 +25,13 @@ import json
 import tomllib
 from functools import cached_property
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
 from verifiers.v1.judge import (
     Judge,
     JudgeConfig,
     JudgeResponse,
+    JudgeView,
     judge_question,
     judge_response,
 )
@@ -82,10 +83,10 @@ class RubricJudgeConfig(JudgeConfig):
     question_field: str = ""
     """Task field to fill the prompt's `{question}`; empty = the task's prompt rendered as
     text (`Task.prompt_text`)."""
-    view: Literal["last_reply", "full_trace"] = "last_reply"
-    """How much of the rollout fills `{response}`: the final reply's text, or the whole
-    transcript (`Trace.transcript` — every turn incl. tool calls and results, reasoning
-    excluded)."""
+    view: JudgeView = "full_trace"
+    """How much of the rollout fills `{response}` (see `JudgeView`). Defaults to the whole
+    transcript — rubric criteria typically grade the process (tool use, citations,
+    intermediate steps), not just the final answer."""
 
 
 class RubricJudge(Judge[float, RubricJudgeConfig]):

@@ -361,11 +361,12 @@ Good to know:
   template with `question` = the task field named by `question_field` (e.g. a bare trivia
   question without the prompt's instruction framing), defaulting to `task.prompt_text` (the
   task prompt as plain text — a `Messages` prompt is reduced to its joined text parts, images
-  dropped); and `response` selected by `view`: `last_reply` (default — the final assistant
-  message's text) or `full_trace` (`Trace.transcript` — every turn as `[role]` blocks incl.
-  tool calls and results, reasoning excluded). `binary` adds `answer` (the task field named by
-  `answer_field`); `rubric` makes one call per criterion with that criterion's `text` — all
-  sent as a single user message. Anything beyond that is a custom judge, whose `score`
+  dropped); and `response` selected by `view` (`vf.JudgeView`): `last_reply` (the final
+  assistant message's text) or `full_trace` (`Trace.transcript` — every recorded turn as
+  `[role]` blocks incl. system/tool messages and tool calls, reasoning excluded). `binary`
+  defaults to `last_reply` (grade the answer) and adds `answer` (the task field named by
+  `answer_field`); `rubric` defaults to `full_trace` (grade the process) and makes one call
+  per criterion with that criterion's `text` — all sent as a single user message. Anything beyond that is a custom judge, whose `score`
   receives the full `trace` (and `runtime`) and can build any messages from it.
 - **What lands on the trace:** the verdict goes to `trace.rewards[<reward key>]` with the
   judge's `weight` applied (summed into `trace.reward`); `rubric` also records each raw

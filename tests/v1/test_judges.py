@@ -310,8 +310,14 @@ async def test_view_modes(fake_judge_model):
     assert "SECRET REASONING" not in fake_judge_model[1]
 
 
+def test_view_defaults():
+    # binary grades the final answer; rubric grades the process by default.
+    assert vf.BinaryJudgeConfig().view == "last_reply"
+    assert vf.RubricJudgeConfig(path="x.toml").view == "full_trace"
+
+
 async def test_rubric_view_full_trace(tmp_path, monkeypatch):
-    # The rubric judge shares the view field: criteria are judged against the transcript.
+    # The rubric judge's default view: criteria are judged against the whole transcript.
     prompts: list[str] = []
 
     async def fake_complete(
@@ -324,10 +330,11 @@ async def test_rubric_view_full_trace(tmp_path, monkeypatch):
         return response
 
     monkeypatch.setattr(Judge, "complete", fake_complete)
-    judge = rubric_judge(tmp_path, view="full_trace")
+    judge = rubric_judge(tmp_path)
     trace = full_trace_fixture()
     await judge.score(trace.task, trace)
     assert all("TOOL RESULT" in prompt for prompt in prompts)
+    assert all("SECRET REASONING" not in prompt for prompt in prompts)
 
 
 def test_config_prompt_overrides_class_template():

@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Callable, Generic, cast, get_args
+from typing import TYPE_CHECKING, Any, Callable, Generic, Literal, cast, get_args
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel, SerializeAsAny
@@ -103,6 +103,12 @@ class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
     usage: Usage | None = None
 
 
+JudgeView = Literal["last_reply", "full_trace"]
+"""How much of a rollout a judge grades: the final reply's text, or the whole transcript
+(`Trace.transcript` — every recorded turn incl. system/tool messages, reasoning excluded).
+The type of the built-ins' `view` field; resolve it with `judge_response`."""
+
+
 def judge_question(task: "Task", question_field: str) -> str:
     """The text a judge prompt's `{question}` gets: the task field named by `question_field`
     (raising on a missing field, like `answer_field`), or — when unset — the whole task
@@ -119,7 +125,7 @@ def judge_question(task: "Task", question_field: str) -> str:
     return str(question)
 
 
-def judge_response(trace: "Trace", view: str) -> str:
+def judge_response(trace: "Trace", view: JudgeView) -> str:
     """The text a judge prompt's `{response}` gets, by `view`: the final reply
     (`last_reply`), or the whole transcript minus reasoning (`full_trace`,
     `Trace.transcript`)."""
