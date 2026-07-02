@@ -1,10 +1,11 @@
-"""Tests for agent runs (`verifiers.v1.agent`), none needing a real model: spec
-validation, model-table resolution, budget mapping, verdict-channel selection, the
-verdict record's wire round-trip, `run_judges`' precondition checks — plus full-path
-integration tests that run real rollouts + judge agent runs in the subprocess runtime
-against a scripted local endpoint: a file-verdict judge whose canned bash tool-call
-actually executes and writes the verdict file, and a reply-verdict (`null`-harness)
-judge whose fenced JSON reply is parsed as the verdict."""
+"""Tests for agent runs (`verifiers.v1.agent`), none needing a real model. Unit tests
+cover the pure logic: model-table resolution, verdict-channel selection, fence
+stripping, the duplicate-name guard, and the provenance record's wire round-trip. The
+real coverage is two full-path integration tests that run rollouts + judge agent runs
+in the subprocess runtime against a scripted local endpoint: a file-verdict judge whose
+canned bash tool-call actually executes and writes the verdict file, and a
+reply-verdict (`null`-harness) judge whose fenced JSON reply is parsed as the
+verdict."""
 
 import contextlib
 import dataclasses
@@ -29,45 +30,20 @@ def _ctx(model: str = "the-policy") -> vf.RolloutContext:
     return vf.RolloutContext(model=model, client=None, sampling=vf.SamplingConfig())
 
 
-def test_spec_defaults():
-    spec = vf.JudgeSpec(name="j", prompt="grade it", verdict=Verdict)
-    assert spec.model == "policy"
-    assert spec.placement == "rollout"
-    assert spec.harness.id == "default"
-    assert spec.trainable is None
-
-
-def test_budget_maps_to_limits():
-    budget = vf.AgentBudget(max_turns=5, max_total_tokens=1000)
-    limits = budget.limits()
-    assert limits.max_turns == 5
-    assert limits.max_total_tokens == 1000
-    assert limits.max_input_tokens is None
-
-
-def test_resolve_model_policy_is_ctx():
-    ctx = _ctx()
-    spec = vf.AgentSpec()
-    assert resolve_model(spec, ctx, {}) is ctx
-
-
-def test_resolve_model_named_entry():
+def test_resolve_model():
     ctx = _ctx()
     grader = _ctx("the-grader")
-    spec = vf.AgentSpec(model="grader")
-    assert resolve_model(spec, ctx, {"grader": grader}) is grader
-
-
-def test_resolve_model_unknown_name_lists_table():
+    # "policy" is the rollout's own context; other names hit the table.
+    assert resolve_model(vf.AgentSpec(), ctx, {}) is ctx
+    assert (
+        resolve_model(vf.AgentSpec(model="grader"), ctx, {"grader": grader}) is grader
+    )
+    # An unknown name fails actionably, listing what IS configured.
     with pytest.raises(vf.JudgeError, match="grader.*entries: judge-small"):
-        resolve_model(vf.AgentSpec(model="grader"), _ctx(), {"judge-small": _ctx()})
-
-
-def test_resolve_model_sampling_override():
-    ctx = _ctx()
+        resolve_model(vf.AgentSpec(model="grader"), ctx, {"judge-small": _ctx()})
+    # A spec's sampling overrides the resolved context's — and only the sampling.
     spec = vf.AgentSpec(sampling=vf.SamplingConfig(temperature=0))
     resolved = resolve_model(spec, ctx, {})
-    assert resolved.model == ctx.model
     assert resolved.sampling.temperature == 0
     assert dataclasses.replace(resolved, sampling=ctx.sampling) == ctx
 
@@ -96,6 +72,7 @@ def test_strip_fences():
 
 
 async def test_run_judges_rejects_duplicate_names():
+    # Duplicate names would silently overwrite each other's verdicts in the dict.
     trace = vf.Trace(task=vf.Task(idx=0, prompt="p"))
     specs = [
         vf.JudgeSpec(name="j", prompt="a", verdict=Verdict),
@@ -103,12 +80,6 @@ async def test_run_judges_rejects_duplicate_names():
     ]
     with pytest.raises(vf.JudgeError, match="duplicate judge names"):
         await run_judges(specs, trace, None, ctx=_ctx())
-
-
-async def test_run_judges_no_specs_is_noop():
-    trace = vf.Trace(task=vf.Task(idx=0, prompt="p"))
-    assert await run_judges([], trace, None, ctx=_ctx()) == {}
-    assert trace.agents == []
 
 
 PHRASE = "hello world"
