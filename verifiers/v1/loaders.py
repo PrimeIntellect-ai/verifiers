@@ -11,7 +11,7 @@ custom ones live under `environments/`, on `sys.path`, or on the hub.
 
 The taskset/harness class carries its types as generic args — `Taskset[TaskT, ConfigT]`,
 `Harness[ConfigT]` — which the CLI reads to narrow the plugin's config for `--taskset.*` /
-`--harness.*` flags (`taskset_config_type` / `harness_config_type`) and to type the wire trace
+`--solver.harness.*` flags (`taskset_config_type` / `harness_config_type`) and to type the wire trace
 (`task_type`).
 """
 
@@ -131,8 +131,8 @@ def default_harness_id(taskset_id: str) -> str:
     """The harness id to use when none is given. A taskset that bundles its own harness — its
     module also exports a `Harness` subclass via `__all__`, so the taskset id doubles as the
     harness id — runs with that harness by default; otherwise the shared `default` harness (a
-    bash + edit agent). An explicit `--harness.id` / toml id always takes precedence (this only
-    supplies the fallback); for a tool-less chat loop, pass `--harness.id null`."""
+    bash + edit agent). An explicit `--solver.harness.id` / toml id always takes precedence (this
+    only supplies the fallback); for a tool-less chat loop, pass `--solver.harness.id null`."""
     if not taskset_id:
         return "default"
     try:

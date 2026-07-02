@@ -1,8 +1,8 @@
 """`serve --taskset.id <id> [options]` — serve a taskset's environment over ZMQ.
 
 Mirrors the eval entrypoint (`cli/eval.py`): the taskset and harness are selected by their
-`--taskset.id` / `--harness.id` and narrowed to their config types (via `cli/resolve.py`), so
-the taskset/harness flags stay typed (`--taskset.*`, `--harness.*`). The server then runs
+`--taskset.id` / `--solver.harness.id` and narrowed to their config types (via `cli/resolve.py`), so
+the taskset/harness flags stay typed (`--taskset.*`, `--solver.harness.*`). The server then runs
 rollouts on request by task idx.
 """
 
@@ -22,7 +22,7 @@ from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.env import pool_serve_kwargs
 from verifiers.v1.serve import serve_env
 
-USAGE = "usage: uv run serve [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
+USAGE = "usage: uv run serve [<taskset-id>] [--solver.harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
 
 
 def main(argv: list[str] | None = None) -> None:

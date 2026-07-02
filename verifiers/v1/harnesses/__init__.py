@@ -1,4 +1,4 @@
-"""Built-in harnesses, resolved by id (`--harness.id <id>`) as `verifiers.v1.harnesses.<id>`.
+"""Built-in harnesses, resolved by id (`--solver.harness.id <id>`) as `verifiers.v1.harnesses.<id>`.
 
 Re-exports each harness's class + config off the package."""
 

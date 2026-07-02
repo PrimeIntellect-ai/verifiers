@@ -169,6 +169,11 @@ class EnvConfig(BaseConfig):
         # Narrowed here (not in `AgentSpec._resolve_harness`) because the default
         # depends on the taskset, which only the env knows.
         solver = data.setdefault("solver", {})
+        if isinstance(solver, SolverSpec) and "harness" not in solver.model_fields_set:
+            # A programmatic spec that left `harness` defaulted still gets the
+            # taskset's bundled harness: drop the generic default and re-narrow
+            # through the dict path below.
+            solver = data["solver"] = {**solver.model_dump(), "harness": {}}
         if isinstance(solver, dict):
             narrow_plugin_field(
                 solver,
@@ -423,9 +428,9 @@ class Environment:
     def interception_pool(self) -> InterceptionPool:
         """The shared interception pool for this env's rollouts — one server (+ tunnel
         behind a remote runtime) per `multiplex` rollouts, grown on demand. Built here,
-        where the harness runtime and `multiplex` live; the caller (eval runner / env
+        where the solver's placement and `multiplex` live; the caller (eval runner / env
         server) enters it for the run and tears it down. Pass it to `Episode.run`."""
-        return InterceptionPool(self.harness.config.runtime, self.config.multiplex)
+        return InterceptionPool(self.config.solver.placement, self.config.multiplex)
 
     @contextlib.asynccontextmanager
     async def shared_tools(self, tasks: list[Task]):
@@ -440,6 +445,6 @@ class Environment:
         if not any(server.config.shared for server in servers):
             yield {}
             return
-        harness_is_local = runtime_is_local(self.harness.config.runtime)
+        harness_is_local = runtime_is_local(self.config.solver.placement)
         async with serve_shared(servers, harness_is_local=harness_is_local) as urls:
             yield urls

@@ -142,7 +142,7 @@ def overrides(
     `model_validate(config.toml)`, and that toml is dumped with `exclude_none` (every field), so
     `model_fields_set` would flag them all. `default` is the reference instance, threaded through
     recursion so a pinned nested default (a taskset's `user=UserConfig(colocated=True)`) reads as
-    unchanged. `skip` holds dotted paths (`harness.runtime.type`)."""
+    unchanged. `skip` holds dotted paths (`placement.type`)."""
     segments: list[str] = []
     fields = type(config).model_fields
     for field in sorted(fields):

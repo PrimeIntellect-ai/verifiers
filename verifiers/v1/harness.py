@@ -34,13 +34,13 @@ logger = logging.getLogger(__name__)
 class HarnessConfig(BaseConfig):
     """A harness's config — subclass per harness to add run knobs. Mirrors `TasksetConfig`: the
     base type names the field, the concrete subclass is resolved by id (no closed union) — the
-    id is supplied by the caller (`--harness.id` / toml / a taskset's bundled harness), never
+    id is supplied by the caller (`--solver.harness.id` / toml / a taskset's bundled harness), never
     pinned on the subclass."""
 
     id: EnvId = "default"
     """The harness id, which selects this harness: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
-    `EnvId`). Set via `--harness.id`."""
+    `EnvId`). Set via `--solver.harness.id`."""
     env: dict[str, str] = Field(default_factory=dict)
     """Additional environment variables for the harness program. Harness-owned endpoint,
     authentication, and model variables take precedence."""

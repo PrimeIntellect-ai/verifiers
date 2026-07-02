@@ -25,77 +25,87 @@ _SHUFFLE_SEED = (
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
-    tasks = env.taskset.load_tasks()
-    if config.shuffle:
-        random.Random(_SHUFFLE_SEED).shuffle(tasks)
-    tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
-    ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
-    # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
-    # concurrent rollouts (across episodes), so group rewards still see their whole episode.
-    semaphore = (
-        asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-    )
-    out = output_path(config)
-    # Write config.toml up front, then persist each trace as it completes (so the results are
-    # durable mid-run, not only at the end). On resume, keep the saved config + good traces and
-    # run only the owed rollouts. One lock serializes worker-thread appends from concurrent
-    # rollouts while keeping large trace serialization off the event loop.
-    owed: dict[str, int] | None = None
-    if config.resume is not None:
-        group = bool(discover_decorated(env.taskset, "group_reward"))
-        keep, owed = resume.plan(
-            out, [t.idx for t in tasks], config.num_rollouts, group
+    try:
+        tasks = env.taskset.load_tasks()
+        if config.shuffle:
+            random.Random(_SHUFFLE_SEED).shuffle(tasks)
+        tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
+        ctx = RolloutContext(
+            client=client, model=config.model, sampling=config.sampling
         )
-        if not owed:  # already complete - report it and exit successfully
-            print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
-            raise SystemExit(0)
-        tasks = [task for task in tasks if owed.get(task.idx)]
-        resume.rewrite_results(out, keep)
-        logger.info(
-            "resuming %s: %d task(s), %d rollout(s) owed",
-            out,
-            len(tasks),
-            sum(owed.values()),
+        # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
+        # concurrent rollouts (across episodes), so group rewards still see their whole episode.
+        semaphore = (
+            asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
         )
-    else:
-        save_config(config, out)
-        logger.info(
-            "running %dx%d rollouts on %s",
-            len(tasks),
-            config.num_rollouts,
-            config.model,
-        )
-    start = time.time()
-    logger.info("results: %s", out)
-
-    write_lock = asyncio.Lock()
-
-    async def on_complete(trace: Trace) -> None:
-        await append_trace(out, trace, write_lock)
-
-    # Shared tool servers (if any) come up once here and their URLs flow into every rollout
-    # (non-shared ones start per rollout inside the episodes); the interception pool comes up
-    # here too, so concurrent rollouts share its servers + tunnels rather than one each. Build
-    # episodes inside `serving` so each rollout is wired to those resources at construction.
-    async with env.serving(tasks):
-        episodes = [
-            env.episode(task, ctx, n=owed[task.idx] if owed else config.num_rollouts)
-            for task in tasks
-        ]
-        rollouts = [rollout for episode in episodes for rollout in episode.rollouts]
-        display = (
-            dashboard(rollouts, config, start)
-            if config.rich
-            else contextlib.nullcontext()
-        )
-        async with display:
-            results = await asyncio.gather(
-                *(episode.run(semaphore, on_complete) for episode in episodes)
+        out = output_path(config)
+        # Write config.toml up front, then persist each trace as it completes (so the results are
+        # durable mid-run, not only at the end). On resume, keep the saved config + good traces and
+        # run only the owed rollouts. One lock serializes worker-thread appends from concurrent
+        # rollouts while keeping large trace serialization off the event loop.
+        owed: dict[str, int] | None = None
+        if config.resume is not None:
+            group = bool(discover_decorated(env.taskset, "group_reward"))
+            keep, owed = resume.plan(
+                out, [t.idx for t in tasks], config.num_rollouts, group
             )
-    traces = [trace for episode_traces in results for trace in episode_traces]
-    await client.close()
-    await env.close()
-    return traces
+            if not owed:  # already complete - report it and exit successfully
+                print(
+                    resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts)
+                )
+                raise SystemExit(0)
+            tasks = [task for task in tasks if owed.get(task.idx)]
+            resume.rewrite_results(out, keep)
+            logger.info(
+                "resuming %s: %d task(s), %d rollout(s) owed",
+                out,
+                len(tasks),
+                sum(owed.values()),
+            )
+        else:
+            save_config(config, out)
+            logger.info(
+                "running %dx%d rollouts on %s",
+                len(tasks),
+                config.num_rollouts,
+                config.model,
+            )
+        start = time.time()
+        logger.info("results: %s", out)
+
+        write_lock = asyncio.Lock()
+
+        async def on_complete(trace: Trace) -> None:
+            await append_trace(out, trace, write_lock)
+
+        # Shared tool servers (if any) come up once here and their URLs flow into every rollout
+        # (non-shared ones start per rollout inside the episodes); the interception pool comes up
+        # here too, so concurrent rollouts share its servers + tunnels rather than one each. Build
+        # episodes inside `serving` so each rollout is wired to those resources at construction.
+        async with env.serving(tasks):
+            episodes = [
+                env.episode(
+                    task, ctx, n=owed[task.idx] if owed else config.num_rollouts
+                )
+                for task in tasks
+            ]
+            rollouts = [rollout for episode in episodes for rollout in episode.rollouts]
+            display = (
+                dashboard(rollouts, config, start)
+                if config.rich
+                else contextlib.nullcontext()
+            )
+            async with display:
+                results = await asyncio.gather(
+                    *(episode.run(semaphore, on_complete) for episode in episodes)
+                )
+        traces = [trace for episode_traces in results for trace in episode_traces]
+        return traces
+    finally:
+        # Close on every exit — errors, resume's SystemExit — not just success: the
+        # eval client and the env's model-table clients hold real connections.
+        await client.close()
+        await env.close()
 
 
 async def run_eval_server(config: EvalConfig) -> list[Trace]:

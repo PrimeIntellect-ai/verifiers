@@ -69,6 +69,7 @@ def test_strip_fences():
     assert _strip_fences('{"a": 1}') == '{"a": 1}'
     assert _strip_fences('```json\n{"a": 1}\n```') == '{"a": 1}'
     assert _strip_fences('```\n{"a": 1}\n```') == '{"a": 1}'
+    assert _strip_fences('```json {"a": 1} ```') == '{"a": 1}'  # single-line fence
 
 
 async def test_run_judges_rejects_duplicate_names():

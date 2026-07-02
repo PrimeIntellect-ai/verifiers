@@ -1,13 +1,14 @@
 """The eval entrypoint: `uv run eval --taskset.id <id> [options]`.
 
 Registered as the `eval` console script. Mirrors the `~/prime-rl` pattern (`config =
-cli(Config)`). The taskset and harness are selected by their `--taskset.id` / `--harness.id`
-(the discriminator fields); `cli/resolve.py` narrows each to its config type, so the single
-`prime-pydantic-config` parse keeps their fields typed and overridable via dotted flags
-(e.g. `--harness.runtime.type docker`, `--taskset.*`) / `@ eval.toml`.
+cli(Config)`). The taskset and harness are selected by their `--taskset.id` /
+`--solver.harness.id` (the discriminator fields); `cli/resolve.py` narrows each to its
+config type, so the single `prime-pydantic-config` parse keeps their fields typed and
+overridable via dotted flags (e.g. `--solver.placement.type docker`, `--taskset.*`) /
+`@ eval.toml`.
 
 `-h`/`--help` (or no args) prints the local example tasksets/harnesses plus the full, typed
-pydantic-config help — narrowed to whatever `--taskset.id` / `--harness.id` are given.
+pydantic-config help — narrowed to whatever `--taskset.id` / `--solver.harness.id` are given.
 """
 
 import asyncio
@@ -33,7 +34,7 @@ from verifiers.v1.configs.eval import EvalConfig
 logger = logging.getLogger(__name__)
 
 USAGE = (
-    "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
+    "usage: uv run eval [<taskset-id>] [--solver.harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
     "       uv run eval --resume <output-dir>   (re-run a previous run's missing/errored rollouts)"
 )
 

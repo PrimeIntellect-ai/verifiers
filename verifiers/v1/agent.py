@@ -213,10 +213,8 @@ def _strip_fences(text: str) -> str:
     stripped = text.strip()
     if not stripped.startswith("```"):
         return stripped
-    stripped = stripped.split("\n", 1)[1] if "\n" in stripped else ""
-    if stripped.rstrip().endswith("```"):
-        stripped = stripped.rstrip()[:-3]
-    return stripped.strip()
+    stripped = stripped.removeprefix("```").removeprefix("json").strip()
+    return stripped.removesuffix("```").strip()
 
 
 def _text(content: Any) -> str:
@@ -502,5 +500,14 @@ async def run_judges(
     async def _run_shared() -> list[tuple[str, Any]]:
         return [await _run_one(spec) for spec in shared]
 
-    chunks = await asyncio.gather(_run_shared(), *(_run_one(s) for s in isolated))
+    # `return_exceptions` so one failing judge doesn't leave the others running
+    # detached (a bare gather returns on the first error with its siblings still
+    # in flight, appending to the trace after the rollout moved on): every judge
+    # finishes and is recorded, then the first failure propagates.
+    chunks = await asyncio.gather(
+        _run_shared(), *(_run_one(s) for s in isolated), return_exceptions=True
+    )
+    failures = [c for c in chunks if isinstance(c, BaseException)]
+    if failures:
+        raise failures[0]
     return dict(chunks[0] + list(chunks[1:]))

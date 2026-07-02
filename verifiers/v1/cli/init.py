@@ -222,7 +222,7 @@ def _readme(
         )
     if add_harness:
         layout.append(
-            f"- `{pkg}/harness.py` — a custom harness, selectable with `--harness.id {dash}`."
+            f"- `{pkg}/harness.py` — a custom harness, selectable with `--solver.harness.id {dash}`."
         )
     layout_block = "\n".join(layout)
     return f"""\

@@ -4,7 +4,7 @@ A growing-message-list chat loop with a local `bash` tool that runs shell comman
 the taskset's MCP tools, and two optional local tools: `edit` (single-occurrence string replacement
 in a file, ported from the rlm `edit` skill; on by default — a model handles it more reliably than
 hand-built `sed`/heredoc shell) and `search` (Google results via serper.dev; off by default, needs
-`SERPER_API_KEY`). This is the fallback harness when no `--harness.id` is given. Its uv script
+`SERPER_API_KEY`). This is the fallback harness when no `--solver.harness.id` is given. Its uv script
 (deps: openai, mcp) is prepared during setup, then launched as the harness program. For a pure chat
 loop with no local tools, use the `null` harness.
 """
@@ -42,7 +42,7 @@ class DefaultHarnessConfig(HarnessConfig):
 
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
-    `bash`. On by default; set `--harness.edit false` for a bash-only agent."""
+    `bash`. On by default; set `--solver.harness.edit false` for a bash-only agent."""
 
     search: bool = False
     """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
@@ -90,7 +90,7 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             # Resolve the key and keep it OUT of the program env: it's handed to the program over
             # argv (--serper-key), so popping it here stops the agent's `bash` subprocesses from
             # inheriting it via $SERPER_API_KEY / /proc/self/environ. Prefer a key set in the harness
-            # env (--harness.env / forward_env); fall back to the host env only when the key is
+            # env (--solver.harness.env / forward_env); fall back to the host env only when the key is
             # *absent* (None), not present-but-empty — a rollout setting SERPER_API_KEY="" is
             # deliberately masking the host secret, so honor that (the check below then fails loudly
             # rather than leaking the host key). The pop is scoped to search=true, so an unrelated
@@ -101,7 +101,7 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             if not serper_key:
                 raise ValueError(
                     "default search=true requires SERPER_API_KEY in the eval environment "
-                    "(the host env or --harness.env)"
+                    "(the host env or --solver.harness.env)"
                 )
             args += ["--search", f"--serper-key={serper_key}"]
         if mcp_urls:

@@ -1,10 +1,10 @@
 """Shared CLI resolution: select the taskset + harness by their `id`.
 
 Both entrypoints (`cli/eval.py`, `cli/serve.py`) select their plugins the same way — a `.id`
-per plugin (`--taskset.id`, `--harness.id`), the discriminator. We read those ids from argv
-*before* the typed parse, resolve each to its config type (a package imported by id), and
-narrow the `taskset` / `harness` fields of the base config. So the single `cli()` parse keeps
-both typed and `-h` shows the resolved config types.
+per plugin (`--taskset.id`, `--solver.harness.id`), the discriminator. We read those ids from
+argv *before* the typed parse, resolve each to its config type (a package imported by id), and
+narrow the `taskset` / `solver.harness` fields of the base config. So the single `cli()` parse
+keeps both typed and `-h` shows the resolved config types.
 
 The taskset id has a positional shorthand: a leading bare token is the taskset id
 (`eval gsm8k` == `eval --taskset.id gsm8k`). Narrowing reads ids from the CLI only — a config
@@ -44,24 +44,35 @@ def extract_id(argv: list[str], field: str, default: str = "") -> str:
 
 
 def narrow_config(base: type, argv: list[str]) -> type:
-    """`base` (an `EnvConfig` subclass) with `taskset`/`harness` narrowed to the config types
-    of the ids given on the CLI — so the single `cli()` parse stays typed and `-h` renders
-    them. A field whose id isn't on the CLI is left as the base type for `EnvConfig` to resolve
+    """`base` (an `EnvConfig` subclass) with `taskset`/`solver.harness` narrowed to the
+    config types of the ids given on the CLI — so the single `cli()` parse stays typed
+    (plugin-specific flags like `--solver.harness.edit` parse) and `-h` renders them. A
+    field whose id isn't on the CLI is left as the base type for `EnvConfig` to resolve
     from a `@ file.toml` (never pre-narrowed to a type the config could then contradict).
-    Absent a config file, the harness falls back to the taskset's bundled harness (if it ships
-    one) else `default`, so bare `-h` renders the harness that will actually run."""
+    Absent a config file, the harness falls back to the taskset's bundled harness (if it
+    ships one) else `default`, so bare `-h` renders the harness that will actually run."""
     taskset_id = extract_id(argv, "taskset")
-    harness_id = extract_id(argv, "harness")
+    harness_id = extract_id(argv, "solver.harness")
     if not harness_id and not references_config_file(argv):
         harness_id = vf.default_harness_id(taskset_id)
     annotations: dict[str, type] = {}
     fields: dict[str, object] = {}
-    for field, resolve, ident in (
-        ("taskset", vf.taskset_config_type, taskset_id),
-        ("harness", vf.harness_config_type, harness_id),
-    ):
-        if ident:
-            ftype = resolve(ident)
-            annotations[field] = ftype
-            fields[field] = ftype(id=ident)
+    if taskset_id:
+        taskset_type = vf.taskset_config_type(taskset_id)
+        annotations["taskset"] = taskset_type
+        fields["taskset"] = taskset_type(id=taskset_id)
+    if harness_id:
+        # The harness lives inside the solver spec, so narrowing it means narrowing
+        # `solver` to a subclass whose `harness` field is the resolved config type.
+        harness_type = vf.harness_config_type(harness_id)
+        solver_type = type(
+            vf.SolverSpec.__name__,
+            (vf.SolverSpec,),
+            {
+                "__annotations__": {"harness": harness_type},
+                "harness": harness_type(id=harness_id),
+            },
+        )
+        annotations["solver"] = solver_type
+        fields["solver"] = solver_type(harness=harness_type(id=harness_id))
     return type(base.__name__, (base,), {"__annotations__": annotations, **fields})
