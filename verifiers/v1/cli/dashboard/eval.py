@@ -217,8 +217,8 @@ def Progress(
         f"{len(done)}/{len(rollouts)} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
     )
-    if page is not None:  # rollouts overflow the screen — show which page is on screen
-        stats += f"  (page {page[0]}/{page[1]})"
+    if page is not None:  # overflowing — show which page, and that the arrows page
+        stats += f"  (page {page[0]}/{page[1]} ◄ ►)"
     row = Table.grid(expand=True, padding=(0, 1))
     row.add_column(ratio=1)  # bar stretches to fill the width left of the stats
     row.add_column(justify="right", no_wrap=True)
@@ -469,12 +469,37 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
     return grid
 
 
+class Pager:
+    """Which page of overflowing rollout rows is on screen. Auto-advances on a timer until the
+    user takes over with the left/right arrows, after which it stays where they leave it. Page
+    count only grows (rollouts are never removed), so a chosen page stays valid; it's clamped
+    anyway to survive a terminal resize (fewer rows per page → more pages, or vice versa)."""
+
+    def __init__(self) -> None:
+        self.page = 0
+        self.manual = False
+
+    def on_key(self, key: str) -> None:
+        if key in ("left", "right"):
+            self.manual = True
+            self.page += 1 if key == "right" else -1
+
+    def index(self, count: int, now: float) -> int:
+        # Track the auto page while it drives, so the first arrow continues from what's on screen
+        # rather than jumping back to page 1. Clamp in manual mode (page count can shrink on resize).
+        if not self.manual:
+            self.page = int(now / _PAGE_SECONDS) % count
+        else:
+            self.page = max(0, min(self.page, count - 1))
+        return self.page
+
+
 def _paginate(
-    groups: list[list[Rollout]], rows_per_page: int, now: float
+    groups: list[list[Rollout]], rows_per_page: int, pager: Pager, now: float
 ) -> tuple[list[list[Rollout]], int, int]:
     """Pack groups (a task's rollouts kept together) into pages of at most `rows_per_page` rows,
-    cycling to the next page every `_PAGE_SECONDS`. Returns (this page's groups, 0-based index,
-    page count) — a single page when everything already fits."""
+    selecting the one `pager` points at. Returns (this page's groups, 0-based index, page count) —
+    a single page when everything already fits."""
     if sum(len(g) for g in groups) <= rows_per_page:
         return groups, 0, 1
     pages: list[list[list[Rollout]]] = []
@@ -488,20 +513,23 @@ def _paginate(
         used += len(group)
     if current:
         pages.append(current)
-    index = int(now / _PAGE_SECONDS) % len(pages)
+    index = pager.index(len(pages), now)
     return pages[index], index, len(pages)
 
 
-def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
+def _render(
+    rollouts: list[Rollout], config: EvalConfig, start: float, pager: Pager
+) -> Group:
     now = time.time()
     warning = _warning(config)
     # `{warning}\n\n{overview}` — the caution sits at the very top, blank line, then the overview.
     header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
     # Measure the fixed top (header + progress + rule) so the rollout rows fill the rest of the
-    # screen; page through them on a timer when they'd overflow (rich would otherwise truncate).
+    # screen; page through them (timer, or the left/right arrows) when they'd overflow (rich would
+    # otherwise truncate).
     top = Group(header, Progress(rollouts, start), Rule(style="dim"))
     rows_per_page = max(1, _CONSOLE.size.height - len(_CONSOLE.render_lines(top)) - 1)
-    page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, now)
+    page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, pager, now)
     progress = Progress(rollouts, start, page=(index + 1, count) if count > 1 else None)
     return Group(
         header,
@@ -513,6 +541,10 @@ def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
 
 @contextlib.asynccontextmanager
 async def dashboard(rollouts: list[Rollout], config: EvalConfig, start: float):
-    """Refresh the live eval view until the `with` block exits, then a final frame."""
-    async with live_view(lambda: _render(rollouts, config, start)):
+    """Refresh the live eval view until the `with` block exits, then a final frame. Left/right
+    arrows page through rollout rows when they overflow the screen."""
+    pager = Pager()
+    async with live_view(
+        lambda: _render(rollouts, config, start, pager), on_key=pager.on_key
+    ):
         yield
