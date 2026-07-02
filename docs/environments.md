@@ -59,7 +59,7 @@ If you want to make certain fields configurable for the user, subclass `vf.Tasks
 class AdditionConfig(vf.TasksetConfig):
     num_tasks: int = 100
 
-class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
+class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
     def load_tasks(self) -> list[AdditionTask]:
         return [
             AdditionTask(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i)
