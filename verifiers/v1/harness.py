@@ -7,6 +7,7 @@ runtime and the interception server are owned by the Rollout.
 """
 
 import asyncio
+import json
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -125,6 +126,23 @@ class Harness(ABC, Generic[ConfigT]):
             self.config.id,
         )
         return None, f"{system}\n\n{prompt}"
+
+    async def stage_message_prompt(
+        self, prompt: Messages, env: dict[str, str], runtime: Runtime
+    ) -> None:
+        """Hand a Messages prompt to the harness program as OpenAI wire dicts, via the
+        `INITIAL_MESSAGES` env var — or, when the JSON would overflow the kernel's
+        per-env-string limit (execve caps each string at MAX_ARG_STRLEN, 128KiB on
+        Linux), via a workspace file named by `INITIAL_MESSAGES_FILE`. The program side
+        of this contract is duplicated per harness program (standalone uv scripts)."""
+        from verifiers.v1.dialects.chat import message_to_wire
+
+        blob = json.dumps([message_to_wire(m) for m in prompt])
+        if len(blob) > 100_000:
+            await runtime.write("initial_messages.json", blob.encode())
+            env["INITIAL_MESSAGES_FILE"] = "initial_messages.json"
+        else:
+            env["INITIAL_MESSAGES"] = blob
 
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness in `runtime` before its execution timeout starts."""

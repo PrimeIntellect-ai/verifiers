@@ -15,7 +15,6 @@ from pathlib import Path
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -123,14 +122,7 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         if isinstance(prompt, str):
             args.append(f"--prompt={prompt}")
         elif prompt is not None:
-            blob = json.dumps([message_to_wire(m) for m in prompt])
-            # execve caps a single env string at MAX_ARG_STRLEN (128KiB on Linux); hand a
-            # large seeded conversation over as a workspace file instead.
-            if len(blob) > 100_000:
-                await runtime.write("initial_messages.json", blob.encode())
-                env["INITIAL_MESSAGES_FILE"] = "initial_messages.json"
-            else:
-                env["INITIAL_MESSAGES"] = blob
+            await self.stage_message_prompt(prompt, env, runtime)
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )

@@ -17,7 +17,7 @@ For a heterogeneous taskset (different verification per task), have a single
 
 import asyncio
 from collections.abc import Mapping
-from typing import ClassVar, Generic, TypeVar
+from typing import Generic, TypeVar
 
 from pydantic_config import BaseConfig
 
@@ -55,16 +55,18 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     taskset that doesn't customize state writes just `Taskset[MyTask, MyConfig]`. Subclass: implement
     `load_tasks`, add @reward/@metric."""
 
-    NEEDS_CONTAINER: ClassVar[bool] = False
+    NEEDS_CONTAINER: bool = False
     """Whether this taskset only runs in a container runtime (docker/prime). When True the
     Environment refuses the subprocess runtime — for tasksets whose work only makes sense
-    inside a per-task image (e.g. a SWE repo sandbox)."""
+    inside a per-task image (e.g. a SWE repo sandbox). A plain (not ClassVar) attribute:
+    always read off the instance, so a taskset may set it per instance from its config."""
 
-    REQUIRES_GROUP_ROLLOUTS: ClassVar[bool] = False
+    REQUIRES_GROUP_ROLLOUTS: bool = False
     """Whether all rollouts of a task must arrive as a single `run_group` request even
     without `@group_reward`s — for tasksets whose `resolve_task` binds per-request state
     the whole group must share (e.g. a replay buffer sampling a source rollout per group).
-    The env server advertises it as `requires_group_scoring` in its `info` response."""
+    The env server advertises it as `requires_group_scoring` in its `info` response.
+    Like `NEEDS_CONTAINER`, read off the instance and settable per instance."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
@@ -72,13 +74,13 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     def load_tasks(self) -> list[TaskT]:
         raise NotImplementedError
 
-    async def resolve_task(self, idx: int, tasks: list[TaskT]) -> TaskT:
-        """Bind the task served for `idx` at request time. Default: index the eagerly
-        loaded list (the env server's `load_tasks()` result), so existing tasksets are
-        unchanged. Override to materialize tasks lazily — `load_tasks` may then return
-        lightweight stubs that only fix the index range. Called once per `run_rollout` /
+    async def resolve_task(self, task: TaskT) -> TaskT:
+        """Bind the task actually served for a loaded task at request time. Default:
+        the task itself, so existing tasksets are unchanged. Override to materialize
+        tasks lazily — `load_tasks` may then return lightweight stubs (carrying their
+        `idx`) that only fix the index range. Called once per `run_rollout` /
         `run_group` request, so every rollout of a group binds one resolved task."""
-        return tasks[idx]
+        return task
 
     def tools(self, task: TaskT) -> list[Toolset]:
         """Tool servers exposing this task's tools to the model — `vf.Toolset`s (classes with
