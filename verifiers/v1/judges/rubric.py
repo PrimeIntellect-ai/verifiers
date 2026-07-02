@@ -34,8 +34,8 @@ from verifiers.v1.judge import (
     JudgeView,
     judge_question,
     judge_response,
+    judge_verdict,
 )
-from verifiers.v1.scoring import parse_judge_choice
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID, StrictBaseModel
@@ -95,7 +95,8 @@ class RubricJudge(Judge[float, RubricJudgeConfig]):
     prompt = RUBRIC_PROMPT
 
     def parse(self, response: JudgeResponse[float]) -> float:
-        return float(parse_judge_choice(response.text, ("yes", "no")) == "yes")
+        # An unparseable verdict raises (judge failure -> rollout error, not a silent 0).
+        return float(judge_verdict(response.text, ("yes", "no")) == "yes")
 
     @cached_property
     def criteria(self) -> list[Criterion]:

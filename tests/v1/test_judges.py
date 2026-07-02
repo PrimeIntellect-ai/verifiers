@@ -169,7 +169,9 @@ def test_binary_parse():
     judge = vf.BinaryJudge()
     assert judge.parse(JudgeResponse(text="yes")) == 1.0
     assert judge.parse(JudgeResponse(text="Final answer: NO")) == 0.0
-    assert judge.parse(JudgeResponse(text="gibberish")) == 0.0
+    # an unparseable verdict is a judge failure: raise (-> rollout error), don't score 0
+    with pytest.raises(ValueError, match="no yes/no verdict"):
+        judge.parse(JudgeResponse(text="gibberish"))
 
 
 async def test_binary_score(fake_judge_model):
@@ -373,15 +375,38 @@ def test_binary_choices():
     judge = vf.BinaryJudge(vf.BinaryJudgeConfig(choices=("A", "B")))
     assert judge.parse(JudgeResponse(text="A")) == 1.0
     assert judge.parse(JudgeResponse(text="Final verdict: B")) == 0.0
-    assert judge.parse(JudgeResponse(text="gibberish")) == 0.0
-
-
-def test_binary_strict():
-    # strict=True raises on an unparseable verdict instead of hiding it as a 0.
-    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(strict=True))
-    assert judge.parse(JudgeResponse(text="yes")) == 1.0
-    with pytest.raises(ValueError, match="no yes/no verdict"):
+    with pytest.raises(ValueError, match="no A/B verdict"):
         judge.parse(JudgeResponse(text="gibberish"))
+
+
+async def test_error_attribution(monkeypatch, tmp_path):
+    # The policy: a MODEL failure scores 0.0; a JUDGE failure errors the rollout (raises
+    # out of Taskset.score as a TasksetError) so training skips the sample instead of
+    # punishing the model for a broken judge.
+    async def gibberish_judge(
+        self, messages, *, trace=None, schema=None, parse=None, **s
+    ):
+        response = JudgeResponse(text="as an AI language model I cannot grade this")
+        try:
+            if parse is not None:
+                response.parsed = parse(response)
+            return response
+        finally:
+            if trace is not None:
+                trace.record_judge(response)
+
+    monkeypatch.setattr(Judge, "complete", gibberish_judge)
+    taskset = JudgedTaskset(JudgedConfig.model_validate({"judges": [{"id": "binary"}]}))
+    # model failure: empty reply -> judge skipped, reward 0.0, NO error
+    trace = make_trace(reply="")
+    await taskset.score(trace, runtime=None)
+    assert trace.rewards["binary"] == 0.0
+    # judge failure: unparseable verdict -> the rollout errors, no reward recorded
+    trace = make_trace()
+    with pytest.raises(vf.TasksetError, match="no yes/no verdict"):
+        await taskset.score(trace, runtime=None)
+    assert "binary" not in trace.rewards
+    assert len(trace.info["judge"]) == 1  # the billed call is still recorded
 
 
 async def test_binary_extract_boxed(fake_judge_model):
@@ -394,66 +419,6 @@ async def test_binary_extract_boxed(fake_judge_model):
     )  # only the boxed content
     trace = make_trace(reply="It is Paris.")  # no box -> raw reply
     assert await judge.score(trace.task, trace) == 1.0
-
-
-# --- choice --------------------------------------------------------------------------------
-
-
-@pytest.fixture
-def fake_grader(monkeypatch):
-    """Fake a grade-scale judge: A when the response block mentions Paris, else B."""
-    prompts: list[str] = []
-
-    async def fake_complete(
-        self, messages, *, trace=None, schema=None, parse=None, **s
-    ):
-        prompts.append(messages)
-        response = JudgeResponse(
-            text="A" if "Paris" in messages.split("Response:")[-1] else "B"
-        )
-        if parse is not None:
-            response.parsed = parse(response)
-        if trace is not None:
-            trace.record_judge(response)
-        return response
-
-    monkeypatch.setattr(Judge, "complete", fake_complete)
-    return prompts
-
-
-def grader_config(**kwargs) -> vf.ChoiceJudgeConfig:
-    return vf.ChoiceJudgeConfig(choices={"A": 1.0, "B": 0.25, "C": 0.0}, **kwargs)
-
-
-def test_choice_plugin_resolution():
-    assert judge_class("choice") is vf.ChoiceJudge
-    assert judge_config_type("choice") is vf.ChoiceJudgeConfig
-    cfg = vf.TasksetConfig.model_validate(
-        {"judges": [{"id": "choice", "choices": {"A": 1.0, "B": 0.0}, "default": "B"}]}
-    )
-    assert isinstance(cfg.judges[0], vf.ChoiceJudgeConfig)
-    with pytest.raises(ValueError, match="not one of the choices"):
-        grader_config(default="Z")
-
-
-async def test_choice_score_and_metrics(fake_grader):
-    judge = vf.ChoiceJudge(grader_config())
-    trace = make_trace()
-    assert await judge.score(trace.task, trace) == 1.0  # graded A
-    assert trace.metrics == {"choice/A": 1.0, "choice/B": 0.0, "choice/C": 0.0}
-    assert "- A" in fake_grader[0]  # the labels are listed in the prompt
-
-    trace = make_trace(reply="It is Rome.")
-    assert await judge.score(trace.task, trace) == 0.25  # graded B
-
-
-async def test_choice_default_label(fake_grader):
-    # Empty replies grade as `default` without a judge call; without one they score 0.
-    judge = vf.ChoiceJudge(grader_config(default="C"))
-    trace = make_trace(reply="")
-    assert await judge.score(trace.task, trace) == 0.0
-    assert trace.metrics["choice/C"] == 1.0
-    assert fake_grader == []
 
 
 # --- rubric --------------------------------------------------------------------------------

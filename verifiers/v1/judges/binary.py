@@ -11,8 +11,12 @@ any taskset that carries one — no taskset code:
 
 Grading inputs are config-selectable: `question_field` (what fills `{question}`), `view`
 (final reply vs the whole transcript), `extract` (grade the last `\\boxed{...}` content),
-`choices` (the verdict labels, e.g. `["A", "B"]`), and `strict` (raise on an unparseable
-verdict instead of scoring 0). An empty response scores 0 without a judge call.
+and `choices` (the verdict labels, e.g. `["A", "B"]`).
+
+Error attribution: a *model* failure scores 0 — an empty response short-circuits to 0.0
+without a judge call, a wrong/non-committal reply gets the negative verdict. A *judge*
+failure — an API error or an unparseable verdict — raises instead, erroring the rollout so
+the sample is excluded/retried rather than scored against the model.
 """
 
 from typing import Literal, cast
@@ -24,8 +28,9 @@ from verifiers.v1.judge import (
     JudgeView,
     judge_question,
     judge_response,
+    judge_verdict,
 )
-from verifiers.v1.scoring import extract_boxed_answer, parse_judge_choice
+from verifiers.v1.scoring import extract_boxed_answer
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID
@@ -72,10 +77,8 @@ class BinaryJudgeConfig(JudgeConfig):
     the last `\\boxed{...}` (falling back to the raw response when there is none)."""
     choices: tuple[str, str] = ("yes", "no")
     """The (positive, negative) verdict labels the prompt asks for — e.g. `["A", "B"]` for
-    graders that verdict with letters. The positive label scores 1.0."""
-    strict: bool = False
-    """Raise on an unparseable verdict — recorded as a per-rollout error — instead of
-    scoring 0. A silent 0 can hide a misconfigured judge or model."""
+    graders that verdict with letters. The positive label scores 1.0; a verdict matching
+    neither raises (a judge failure must error the rollout, not score the model 0)."""
 
 
 class BinaryJudge(Judge[float, BinaryJudgeConfig]):
@@ -84,13 +87,9 @@ class BinaryJudge(Judge[float, BinaryJudgeConfig]):
     prompt = BINARY_PROMPT
 
     def parse(self, response: JudgeResponse[float]) -> float:
-        verdict = parse_judge_choice(response.text, self.config.choices)
-        if verdict is None and self.config.strict:
-            raise ValueError(
-                f"judge returned no {'/'.join(self.config.choices)} verdict: "
-                f"{response.text!r}"
-            )
-        return float(verdict == self.config.choices[0])
+        return float(
+            judge_verdict(response.text, self.config.choices) == self.config.choices[0]
+        )
 
     async def score(self, task: Task, trace: Trace) -> float:
         answer = getattr(task, self.config.answer_field, None)

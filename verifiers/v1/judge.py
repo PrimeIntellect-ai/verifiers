@@ -38,7 +38,7 @@ built-ins and `verifiers.v1.loaders` for resolution), attached to any eval via t
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Callable, Generic, Literal, cast, get_args
 
 from openai import AsyncOpenAI
@@ -47,6 +47,7 @@ from typing_extensions import TypeVar
 
 from verifiers.v1.clients.config import BaseClientConfig, build_async_openai
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.scoring import parse_judge_choice
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.types import ID, Messages, SamplingConfig, StrictBaseModel, Usage
 
@@ -130,6 +131,20 @@ def judge_response(trace: "Trace", view: JudgeView) -> str:
     (`last_reply`), or the whole transcript minus reasoning (`full_trace`,
     `Trace.transcript`)."""
     return trace.transcript if view == "full_trace" else trace.last_reply
+
+
+def judge_verdict(text: str, choices: Sequence[str]) -> str:
+    """The verdict label in `text` (via `parse_judge_choice`), raising when none is found.
+
+    This is the error-attribution contract for judge rewards: a *model* failure (empty,
+    wrong, or non-committal reply) scores 0, but a *judge* failure — and an unparseable
+    verdict is one — must not be scored against the model. Raising errors the rollout
+    (recorded on the trace, excluded/retried in training) instead of hiding a broken judge
+    behind silent 0s."""
+    verdict = parse_judge_choice(text, choices)
+    if verdict is None:
+        raise ValueError(f"judge returned no {'/'.join(choices)} verdict: {text!r}")
+    return verdict
 
 
 ConfigT = TypeVar("ConfigT", bound=JudgeConfig, default=JudgeConfig)

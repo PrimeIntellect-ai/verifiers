@@ -7,14 +7,11 @@ local package or an `org/name[@version]` package installed on demand from the En
 Re-exports each judge's class + config off the package."""
 
 from verifiers.v1.judges.binary import BinaryJudge, BinaryJudgeConfig
-from verifiers.v1.judges.choice import ChoiceJudge, ChoiceJudgeConfig
 from verifiers.v1.judges.rubric import Criterion, RubricJudge, RubricJudgeConfig
 
 __all__ = [
     "BinaryJudge",
     "BinaryJudgeConfig",
-    "ChoiceJudge",
-    "ChoiceJudgeConfig",
     "Criterion",
     "RubricJudge",
     "RubricJudgeConfig",

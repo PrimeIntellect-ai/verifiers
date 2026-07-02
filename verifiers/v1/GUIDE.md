@@ -337,12 +337,8 @@ The built-ins (in `verifiers.v1.judges`):
 
 | id | class | grades |
 | --- | --- | --- |
-| `binary` | `vf.BinaryJudge` | the reply against the task's reference answer (`answer_field`; a list = any acceptable answer), 1/0. Knobs: `choices` (verdict labels, e.g. `["A", "B"]`), `extract = "boxed"` (grade the last `\boxed{...}`), `strict` (raise on unparseable verdicts) |
-| `choice` | `vf.ChoiceJudge` | the reply on a configured grade scale (`choices = { A = 1.0, B = 0.0, C = 0.0 }`, à la SimpleQA); rewards the verdict's score, records each label as a `<name>/<label>` metric, `default` buckets unparseable/empty |
+| `binary` | `vf.BinaryJudge` | the reply against the task's reference answer (`answer_field`; a list = any acceptable answer), 1/0. Knobs: `choices` (verdict labels, e.g. `["A", "B"]`), `extract = "boxed"` (grade the last `\boxed{...}`) |
 | `rubric` | `vf.RubricJudge` | each criterion in a `.toml`/`.json` rubric file 1/0; rewards the weighted mean (`Σwv/Σw`), records each verdict as a `<name>/<criterion>` metric |
-
-`binary` and `choice` skip the judge call for an empty response (0 / the `default` label — the
-verdict is foregone, so the call would be wasted spend).
 
 A rubric file lists `[[criteria]]` entries (`name`, `text`, optional `weight`; JSON takes
 `{"criteria": [...]}` or a bare list) — criterion weights come from the file, overridable per name
@@ -372,6 +368,12 @@ Good to know:
   `answer_field`); `rubric` defaults to `full_trace` (grade the process) and makes one call
   per criterion with that criterion's `text` — all sent as a single user message. Anything beyond that is a custom judge, whose `score`
   receives the full `trace` (and `runtime`) and can build any messages from it.
+- **Error attribution:** a *model* failure scores 0 — `binary` short-circuits an empty reply
+  to 0.0 without a judge call, and a wrong or non-committal reply gets the negative verdict. A
+  *judge* failure — an API error, a refusal, an unparseable verdict, a missing/invalid rubric
+  file — **raises** instead: the rollout errors (a `TasksetError` recorded on the trace, the
+  billed judge call still in `trace.info["judge"]`), so training excludes/retries the sample
+  rather than punishing the model for a broken judge. Never silently 0 a judge failure.
 - **What lands on the trace:** the verdict goes to `trace.rewards[<reward key>]` with the
   judge's `weight` applied (summed into `trace.reward`); `rubric` also records each raw
   per-criterion verdict as `trace.metrics["<reward key>/<criterion name>"]` (unweighted). Every
