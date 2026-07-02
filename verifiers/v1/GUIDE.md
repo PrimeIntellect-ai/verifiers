@@ -351,6 +351,28 @@ text = "The response cites at least one specific source."
 weight = 1.0
 ```
 
+Good to know:
+
+- **Judges alone are a full reward signal.** `Taskset.score` runs `@metric`s, then `@reward`s,
+  then the plugged judges — each phase is optional. A taskset with no `@reward` at all and one
+  plugged judge gets `trace.reward` entirely from the judge (wiki-search-v1 is exactly this
+  shape); mixing decorated rewards and judges just sums their weighted contributions.
+- **What the built-ins see:** they are *final-reply* graders. Each call renders the judge's
+  prompt template with `question` = `task.prompt_text` (the task prompt as plain text — a
+  `Messages` prompt is reduced to its joined text parts, images dropped) and `response` =
+  `trace.last_reply` (the last assistant message's text, `""` if none); `binary` adds `answer`
+  (the task field named by `answer_field`), `rubric` makes one call per criterion with that
+  criterion's `text` — all sent as a single user message. They do **not** see tool calls,
+  intermediate turns, or reasoning; a judge that grades the trajectory is a custom judge, whose
+  `score` receives the full `trace` (and `runtime`) and can build any messages from it.
+- **What lands on the trace:** the verdict goes to `trace.rewards[<reward key>]` with the
+  judge's `weight` applied (summed into `trace.reward`); `rubric` also records each raw
+  per-criterion verdict as `trace.metrics["<reward key>/<criterion name>"]` (unweighted). Every
+  judge call additionally appends its `JudgeResponse` — `{text, parsed, usage}` — to
+  `trace.info["judge"]` and its tokens + cost to `trace.extra_usage` (kept separate from the
+  agent's `trace.usage`; the eval dashboard shows it as `+judge`). All of it persists to
+  `results.jsonl`.
+
 Writing your own pluggable judge is the same recipe as any plugin: a package exporting a `Judge`
 subclass via `__all__` that implements `score` — declare any subset of `task` / `trace` / `runtime`
 by parameter name (like a `@reward`) and return a `float` (or a `dict[str, float]`). Declare its
