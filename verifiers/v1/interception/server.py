@@ -216,8 +216,8 @@ class InterceptionServer:
         # GET/PUT their `self.state` here, keyed by the same bearer secret as the model routes.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
-        # A forked shared server (see `verifiers.v1.mcp.multiplex`) fetches its rollout's task here
-        # to run `setup_task` per child — a shared server gets no task via env, keyed by the secret.
+        # A launched tool/user server fetches its rollout's task here to run `setup_task` — the task
+        # is never passed via env, only over this channel, keyed by the same bearer secret.
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
@@ -585,7 +585,7 @@ class InterceptionServer:
         )
 
     async def handle_task_get(self, request: web.Request) -> web.Response:
-        """Hand a forked shared server the rollout's task (class ref + JSON) so its child can run
+        """Hand a launched tool/user server the rollout's task (class ref + JSON) so it can run
         `setup_task` for this rollout — keyed by the same bearer secret as the state channel."""
         session = self._session_for(request)
         if session is None:

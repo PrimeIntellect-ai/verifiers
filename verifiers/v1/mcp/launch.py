@@ -287,23 +287,11 @@ async def serve(
             "is built once for the whole eval and must be task-agnostic — it receives no task. "
             "Drop `shared` to run it per-rollout (with the task), or make its `setup` task-independent."
         )
-    if (
-        shared
-        and not getattr(cfg, "fork", False)
-        and type(server).setup_task is not ServerBase.setup_task
-    ):
+    if shared and type(server).setup_task is not ServerBase.setup_task:
         logger.warning(
             "shared server %r overrides `setup_task`, but `setup_task` is NEVER called for a shared "
             "server (it's built once, task-agnostic) — its per-task logic will not run. Move "
-            "task-agnostic work into `setup`, drop `shared` to run it per-rollout, or set `fork=True` "
-            "(each rollout gets a forked child that runs `setup_task`).",
-            server.server_name,
-        )
-    if shared and getattr(cfg, "fork", False):
-        # `serve_tools` makes the rollout's /state + /task channel reachable from the shared server's
-        # runtime (a host tunnel when it's remote), so any harness/runtime combo works.
-        logger.warning(
-            "shared server %r uses fork-per-rollout isolation, which is EXPERIMENTAL",
+            "task-agnostic work into `setup`, or drop `shared` to run it per-rollout.",
             server.server_name,
         )
     async with contextlib.AsyncExitStack() as stack:
@@ -383,11 +371,11 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
 
 def _shared_url_for_rollout(url: str, state_base: str | None, state_secret: str) -> str:
     """Tag a `shared` server's eval-level URL with this rollout's state-channel coordinates, so the
-    one shared process serves each rollout its OWN `self.state` (and a forked child fetches its task).
-    `state_base` is the interception server's reachable base for THIS rollout, chosen by the caller to
-    be reachable from the shared server's runtime (localhost, or a host tunnel for a remote runtime).
-    The secret is the bearer the harness already holds, so it's no new exposure — but it must not be
-    logged (callers log the untagged base)."""
+    one shared process serves each rollout its OWN `self.state`. `state_base` is the interception
+    server's reachable base for THIS rollout, chosen by the caller to be reachable from the shared
+    server's runtime (localhost, or a host tunnel for a remote runtime). The secret is the bearer the
+    harness already holds, so it's no new exposure — but it must not be logged (callers log the
+    untagged base)."""
     if not state_base:
         return url
     parts = urlsplit(url)
@@ -395,19 +383,6 @@ def _shared_url_for_rollout(url: str, state_base: str | None, state_secret: str)
     query[STATE_URL_PARAM] = f"{state_base.rstrip('/')}/state"
     query[STATE_SECRET_PARAM] = state_secret
     return urlunsplit(parts._replace(query=urlencode(query)))
-
-
-async def reap_forked_child(shared_url: str, secret: str) -> None:
-    """Best-effort: POST `/vf/close` to reap this rollout's forked child on teardown (a `fork` shared
-    server, see `multiplex`); the multiplexer otherwise only reaps a child when it exits."""
-    close_url = (
-        f"{shared_url.rsplit('/mcp', 1)[0]}/vf/close?{STATE_SECRET_PARAM}={secret}"
-    )
-    with contextlib.suppress(Exception):
-        import httpx
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(close_url)
 
 
 @contextlib.asynccontextmanager
@@ -456,11 +431,6 @@ async def serve_tools(
                 # log the untagged base, NOT urls[name] — the per-rollout tag carries the rollout's
                 # bearer secret (`vf_state_secret`), which must not reach a log sink
                 logger.info("tool server '%s' (shared): %s", name, shared_urls[name])
-                if getattr(cfg, "fork", False) and state_secret:
-                    # reap this rollout's forked child when the rollout's tool-serving scope exits
-                    stack.push_async_callback(
-                        reap_forked_child, shared_urls[name], state_secret
-                    )
             else:
                 urls[name] = await stack.enter_async_context(
                     serve(
