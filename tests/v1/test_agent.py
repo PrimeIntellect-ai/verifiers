@@ -165,8 +165,7 @@ async def test_judged_rollout_against_stub(tmp_path):
     validation, verdict→reward mapping, and the provenance record on the trace."""
     config = vf.EnvConfig(
         taskset={"id": "echo-judged-v1"},
-        harness={"id": "null", "runtime": {"type": "subprocess"}},
-        max_turns=2,
+        solver={"harness": {"id": "null"}, "budget": {"max_turns": 2}},
         timeout={"rollout": 300, "scoring": 300},
     )
     env = vf.Environment(config)
@@ -205,8 +204,7 @@ async def test_reply_judged_rollout_against_stub(tmp_path):
     materialized and no tool calls."""
     config = vf.EnvConfig(
         taskset={"id": "echo-reply-judged-v1"},
-        harness={"id": "null", "runtime": {"type": "subprocess"}},
-        max_turns=2,
+        solver={"harness": {"id": "null"}, "budget": {"max_turns": 2}},
         timeout={"rollout": 300, "scoring": 300},
     )
     env = vf.Environment(config)

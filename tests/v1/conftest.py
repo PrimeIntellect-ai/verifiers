@@ -181,23 +181,28 @@ def _eval_config(
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
     (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` / `harness_overrides`
-    are merged onto the `{id: ...}` config (placement, runtime, etc.); `model` overrides the default
-    text model (e.g. a VLM for an image task).
+    are merged onto the `{id: ...}` config; a `runtime` key in `harness_overrides` becomes the
+    solver's `placement`. `model` overrides the default text model (e.g. a VLM for an image task).
 
     `temperature=0` (greedy) makes the run reproducible; `max_tokens` is generous headroom,
     not a target — these trivial tasks finish in a few hundred tokens, so capping tighter only
     risks truncating the reasoning before the answer (which tanks the reward)."""
     taskset_cfg = {"id": taskset, **(taskset_overrides or {})}
     harness_cfg = {"id": harness, **(harness_overrides or {})}
+    # `harness_overrides`' legacy `runtime` key is the solver's placement.
+    solver_cfg = {
+        "harness": harness_cfg,
+        "budget": {"max_turns": max_turns, "max_output_tokens": max_tokens},
+    }
+    if (placement := harness_cfg.pop("runtime", None)) is not None:
+        solver_cfg["placement"] = placement
     _configure_prime_runtimes(taskset_cfg)
-    _configure_prime_runtimes(harness_cfg)
+    _configure_prime_runtimes(solver_cfg)
     return EvalConfig(
         taskset=taskset_cfg,
-        harness=harness_cfg,
+        solver=solver_cfg,
         num_tasks=num_tasks,
         num_rollouts=n,
-        max_turns=max_turns,
-        max_output_tokens=max_tokens,
         sampling={"max_tokens": max_tokens, "temperature": 0},
         timeout={"rollout": rollout_timeout, "scoring": scoring_timeout},
         retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},

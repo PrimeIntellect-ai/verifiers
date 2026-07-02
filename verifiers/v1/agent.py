@@ -51,6 +51,7 @@ from verifiers.v1.runtimes import (
     HOST,
     Runtime,
     RuntimeConfig,
+    SubprocessConfig,
     make_runtime,
     reachable_url,
 )
@@ -95,9 +96,8 @@ class AgentSpec(BaseConfig):
     harness: SerializeAsAny[HarnessConfig] = Field(
         default_factory=lambda: HarnessConfig(id="default")
     )
-    """The harness driving this agent. Its `runtime` field is ignored — placement is
-    `placement`'s job (the harness config type is shared with the policy harness,
-    where `runtime` does place it)."""
+    """The harness driving this agent — the program, not the box; where it runs is
+    `placement`'s job."""
     model: str = "policy"
     """Logical model name: "policy", or a key into the env's model table."""
     sampling: SamplingConfig | None = None
@@ -160,7 +160,23 @@ class JudgeSpec(AgentSpec):
         return "reply" if self.harness.id == "null" else "file"
 
 
-# The I/O contract appended to every judge prompt. Files, not framework APIs, so any
+class SolverSpec(AgentSpec):
+    """The rollout's main agent — the one being evaluated / trained. Same spec family
+    as judges; the solver differs only in role: its `placement` is a concrete
+    `RuntimeConfig` (never `"rollout"`) because the solver's placement is what CREATES
+    the rollout's runtime — the world that `"rollout"`-placed agents (judges) then
+    join. Its `budget` is the rollout's framework caps, enforced by the interception
+    session so they bound any harness. `model` stays `"policy"` (the solver samples
+    the rollout's own model context — the eval `--model`, the trainer's policy) and
+    `sampling` rides that context (`--sampling.*`); both are validated at Environment
+    build."""
+
+    placement: RuntimeConfig = SubprocessConfig()
+    """The runtime the rollout runs in (`--solver.placement.type docker` / prime /
+    modal; subprocess by default), resolved per task against the task's `image` /
+    `resources`."""
+
+
 # harness can judge; the schema is inlined so the judge needs no side channel.
 _JUDGE_CONTRACT = """\
 

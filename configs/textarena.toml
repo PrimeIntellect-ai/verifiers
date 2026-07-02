@@ -6,12 +6,12 @@
 #   uv run eval @ configs/textarena.toml --model <small-instruct-model>
 num_tasks = 5
 num_rollouts = 2
-max_turns = 15
 
 [taskset]
 id = "textarena"
 game = "Wordle-v0"
 num_tasks = 50  # pool of seeded episodes to draw the eval's tasks from
 
-[harness]
-id = "null"
+[solver]
+harness = { id = "null" }
+budget = { max_turns = 15 }

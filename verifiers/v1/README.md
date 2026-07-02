@@ -50,7 +50,7 @@ wall-clock timeouts — are all framework-enforced and apply to any environment:
 
 ```bash
 uv run eval gsm8k-v1 -n 5 -r 3 \
-  --max-turns 8 --max-total-tokens 8192 \
+  --solver.budget.max-turns 8 --solver.budget.max-total-tokens 8192 \
   --retries.rollout.max-retries 3 --retries.rollout.include SandboxError \
   --timeout.setup 120 --timeout.rollout 600 --timeout.finalize 120 --timeout.scoring 120
 ```
@@ -97,9 +97,9 @@ The program that drives the rollout — same taskset, different driver:
 
 ```bash
 uv run eval gsm8k-v1 -n 1                     # default harness (fallback): a bash + edit agent
-uv run eval gsm8k-v1 -n 1 --harness.id null   # bare chat loop, no local tools (MCP tools only)
-uv run eval gsm8k-v1 -n 1 --harness.id rlm    # the rlm harness
-uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
+uv run eval gsm8k-v1 -n 1 --solver.harness.id null   # bare chat loop, no local tools (MCP tools only)
+uv run eval gsm8k-v1 -n 1 --solver.harness.id rlm    # the rlm harness
+uv run eval gsm8k-v1 -n 1 --solver.harness.id codex  # the codex harness
 ```
 
 The same drivers on an agentic terminal task — harbor's `hello-world`. The task acts on a
@@ -107,23 +107,23 @@ filesystem, so run it under a containerized runtime: `docker` locally, or a remo
 `modal` sandbox (not the default `subprocess`). 
 
 ```bash
-uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id default         # the bash + edit agent
-uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id mini-swe-agent  # the mini-swe-agent CLI
-uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id rlm             # the rlm CLI agent
-uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id codex           # the codex CLI agent
+uv run eval harbor -n 1 --taskset.ignore-dockerfile --solver.placement.type docker --solver.harness.id default         # the bash + edit agent
+uv run eval harbor -n 1 --taskset.ignore-dockerfile --solver.placement.type docker --solver.harness.id mini-swe-agent  # the mini-swe-agent CLI
+uv run eval harbor -n 1 --taskset.ignore-dockerfile --solver.placement.type docker --solver.harness.id rlm             # the rlm CLI agent
+uv run eval harbor -n 1 --taskset.ignore-dockerfile --solver.placement.type docker --solver.harness.id codex           # the codex CLI agent
 ```
 
 ### Swappable runtime
 
 Where code runs, behind one `Runtime` contract — the same contract backs the harness
-(`--harness.runtime`), a task's own tool servers (`--taskset.tools.runtime`), and the user
+(`--solver.placement`), a task's own tool servers (`--taskset.tools.runtime`), and the user
 simulator (`--taskset.user.runtime`) — all structurally MCP servers in a runtime:
 
 ```bash
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process (default)
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container (requires local docker)
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sandbox (requires auth)
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox (requires auth)
+uv run eval gsm8k-v1 -n 1 --solver.placement.type subprocess  # local process (default)
+uv run eval gsm8k-v1 -n 1 --solver.placement.type docker      # local container (requires local docker)
+uv run eval gsm8k-v1 -n 1 --solver.placement.type prime       # remote prime sandbox (requires auth)
+uv run eval gsm8k-v1 -n 1 --solver.placement.type modal       # remote modal sandbox (requires auth)
 ```
 
 The framework manages each runtime's full lifecycle — provisioning through
@@ -180,7 +180,7 @@ turn — a fresh `[system, user]` with only its carried-over notes plus the last
 so each turn becomes its own branch:
 
 ```bash
-uv run eval wiki-search-v1 -n 1 --harness.id compact  # fresh prompt each turn → num_branches == turns
+uv run eval wiki-search-v1 -n 1 --solver.harness.id compact  # fresh prompt each turn → num_branches == turns
 ```
 
 ### Clients
@@ -208,8 +208,8 @@ training sample).
 The framework enforces every rollout's resource limits itself — between turns and around each
 stage — so they hold for any harness or task. Three kinds:
 
-**Caps.** A limit on model turns (`--max-turns`) and three on tokens — `--max-input-tokens`,
-`--max-output-tokens`, `--max-total-tokens` (prompt, completion, and the sum), checked between
+**Caps.** A limit on model turns (`--solver.budget.max-turns`) and three on tokens — `--solver.budget.max-input-tokens`,
+`--solver.budget.max-output-tokens`, `--solver.budget.max-total-tokens` (prompt, completion, and the sum), checked between
 turns. Hitting a cap cleanly truncates the rollout (`trace.is_truncated`) instead of erroring.
 
 **Timeouts.** Wall-clock caps that bound each rollout stage independently — `--timeout.setup`,
@@ -222,9 +222,9 @@ call and keeps the rollout's progress) and whole-rollout (default 1). A retry co
 a layer off.
 
 ```bash
-uv run eval gsm8k-v1 -n 1 --max-turns 8                  # cap model turns
-uv run eval gsm8k-v1 -n 1 --max-total-tokens 8192        # cap prompt+completion tokens
-                                                          # (also --max-input-tokens / --max-output-tokens)
+uv run eval gsm8k-v1 -n 1 --solver.budget.max-turns 8                  # cap model turns
+uv run eval gsm8k-v1 -n 1 --solver.budget.max-total-tokens 8192        # cap prompt+completion tokens
+                                                          # (also --solver.budget.max-input-tokens / --solver.budget.max-output-tokens)
 
 uv run eval gsm8k-v1 -n 1 --timeout.rollout 600 --timeout.scoring 120  # per-stage wall-clock caps (s)
 
@@ -239,7 +239,7 @@ benchmark registry). Harbor is the showcase: it pulls tasks straight from the Ha
 each in its own declared, pullable container image — e.g. Terminal-Bench 2:
 
 ```bash
-uv run eval harbor --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --harness.id rlm
+uv run eval harbor --taskset.dataset terminal-bench/terminal-bench-2 -n 10 --solver.harness.id rlm
 ```
 
 Harbor registry selectors pass through as taskset config. For the

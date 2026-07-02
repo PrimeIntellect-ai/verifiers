@@ -7,5 +7,5 @@ num_tasks = 1
 [taskset]
 id = "wiki-search-v1"
 
-[harness]
-id = "compact"
+[solver]
+harness = { id = "compact" }

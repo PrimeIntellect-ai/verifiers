@@ -11,10 +11,10 @@ from verifiers.v1.types import SamplingConfig
 
 
 class EvalConfig(EnvServerConfig):
-    """The eval run plus its environment: inherits the env's fields (`taskset`, `harness`,
-    `max_turns`, token limits, timeouts) and the worker `pool` so they're top-level flags
-    (`--taskset.id`, `--harness.id`, `--harness.runtime.*`, `--pool.*`, …) with no `--env.`
-    prefix, and adds the run knobs (model, sampling, counts, …). Rollouts run in-process by
+    """The eval run plus its environment: inherits the env's fields (`taskset`, `solver`,
+    timeouts) and the worker `pool` so they're top-level flags (`--taskset.id`,
+    `--solver.harness.id`, `--solver.placement.*`, `--solver.budget.*`, `--pool.*`, …) with
+    no `--env.` prefix, and adds the run knobs (model, sampling, counts, …). Rollouts run in-process by
     default; `--server` drives them through the env-server worker pool (sized by `pool`) — the
     path prime-rl trains through. `--rich` adds a live dashboard (in-process only)."""
 

@@ -18,12 +18,12 @@ from typing import Annotated, Literal
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.harness import HarnessConfig
+from verifiers.v1.agent import SolverSpec
 from verifiers.v1.clients import ModelEndpointConfig, RolloutContext, resolve_client
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.types import EnvId
-from verifiers.v1.interception import InterceptionPool, RolloutLimits
+from verifiers.v1.interception import InterceptionPool
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
@@ -88,31 +88,24 @@ def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
 
 
 class EnvConfig(BaseConfig):
-    """The rollout's two peers: the taskset (data + scoring) and the harness (which
-    program drives it, and where it runs — `harness.runtime`). Both are chosen at eval
-    time, not by the env — only `taskset` is narrowed per env (to its config type,
-    inferred from `load_taskset`). Tool-server placement lives on `taskset.tools`."""
+    """The rollout's two peers: the taskset (data + scoring) and the solver (the main
+    agent: the harness that drives it, where it runs — `solver.placement` — and its
+    budget). Both are chosen at eval time, not by the env — only `taskset` is narrowed
+    per env (to its config type, inferred from `load_taskset`). Tool-server placement
+    lives on `taskset.tools`."""
 
-    # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, DefaultHarnessConfig);
-    # without it model_dump() narrows to the base type and drops the subclass fields, so the
-    # env-server subconfig the orchestrator writes would lose taskset/harness-specific knobs.
+    # SerializeAsAny: holds resolved subclasses (e.g. MathConfig); without it model_dump()
+    # narrows to the base type and drops the subclass fields, so the env-server subconfig
+    # the orchestrator writes would lose taskset-specific knobs (`solver.harness` gets the
+    # same treatment inside `AgentSpec`).
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
-    harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
+    solver: SolverSpec = SolverSpec()
+    """The rollout's main agent: harness + placement (the rollout's runtime) + budget
+    (the rollout's framework caps, enforced between turns by the interception session,
+    so they bound any harness) — `--solver.harness.id`, `--solver.placement.type`,
+    `--solver.budget.max-turns`, …. The same spec family as a taskset's judges."""
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
-    max_turns: int | None = None
-    """Max model turns per rollout (None = no limit). Enforced by the framework (the
-    interception server refuses turns past it), so it applies to any harness — turn
-    capping is a framework concern, never an harness or task field."""
-    max_input_tokens: int | None = None
-    """Max input (prompt) tokens per rollout (None = no limit). Caps the trace's
-    `num_input_tokens`; framework-enforced between turns."""
-    max_output_tokens: int | None = None
-    """Max output (completion) tokens per rollout (None = no limit). Caps the trace's
-    `num_output_tokens`; framework-enforced between turns."""
-    max_total_tokens: int | None = None
-    """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
-    trace's `num_total_tokens`; framework-enforced between turns."""
     multiplex: int = Field(32, ge=1)
     """Rollouts that share one interception server (and, behind a remote runtime, one
     tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
@@ -154,8 +147,9 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_plugins(cls, data):
-        """Resolve the generic `taskset` / `harness` to its specific config type by `id`, so
-        env-specific fields validate against the real plugin config (no untyped args dict)."""
+        """Resolve the generic `taskset` / `solver.harness` to its specific config type by
+        `id`, so env-specific fields validate against the real plugin config (no untyped
+        args dict)."""
         from verifiers.v1.loaders import (
             default_harness_id,
             harness_config_type,
@@ -171,10 +165,17 @@ class EnvConfig(BaseConfig):
             else getattr(taskset, "id", None)
         )
         # A taskset that bundles its own harness runs with it by default; an explicit
-        # `--harness.id` / toml id (already on the field) takes precedence.
-        narrow_plugin_field(
-            data, "harness", harness_config_type, default_harness_id(taskset_id or "")
-        )
+        # `--solver.harness.id` / toml id (already on the field) takes precedence.
+        # Narrowed here (not in `AgentSpec._resolve_harness`) because the default
+        # depends on the taskset, which only the env knows.
+        solver = data.setdefault("solver", {})
+        if isinstance(solver, dict):
+            narrow_plugin_field(
+                solver,
+                "harness",
+                harness_config_type,
+                default_harness_id(taskset_id or ""),
+            )
         return data
 
 
@@ -241,7 +242,7 @@ class Environment:
 
         self.config = config
         self.taskset = load_taskset(config.taskset)
-        self.harness = load_harness(config.harness)
+        self.harness = load_harness(config.solver.harness)
         if (
             not self.harness.SUPPORTS_MCP
             and type(self.taskset).tools is not Taskset.tools
@@ -249,7 +250,7 @@ class Environment:
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not support MCP tools, but taskset "
                 f"{self.taskset.config.id!r} exposes tool servers (MCP). Run it with a harness "
-                f"that supports MCP (e.g. --harness.id default), or use a taskset without tools."
+                f"that supports MCP (e.g. --solver.harness.id default), or use a taskset without tools."
             )
         if (
             not self.harness.SUPPORTS_USER_SIM
@@ -258,40 +259,46 @@ class Environment:
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not drive a user simulator, but taskset "
                 f"{self.taskset.config.id!r} defines one (Taskset.user). Run it with a harness that "
-                f"supports user simulation (e.g. --harness.id default), or use a taskset without one."
+                f"supports user simulation (e.g. --solver.harness.id default), or use a taskset without one."
+            )
+        if config.solver.model != "policy":
+            raise ValueError(
+                "solver.model must be 'policy' — the solver samples the rollout's own "
+                "model context (the eval --model, the trainer's policy); solving with "
+                "other models comes with multi-agent slots"
+            )
+        if config.solver.sampling is not None:
+            raise ValueError(
+                "solver.sampling is unused — the solver's sampling rides the rollout "
+                "context (--sampling.*)"
             )
         if self.taskset.NEEDS_CONTAINER and isinstance(
-            self.harness.config.runtime, SubprocessConfig
+            config.solver.placement, SubprocessConfig
         ):
             raise ValueError(
                 f"Taskset {self.taskset.config.id!r} needs a container runtime "
-                "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
-                "use --harness.runtime.type docker or prime."
+                "(NEEDS_CONTAINER), but the solver is placed on the subprocess runtime; "
+                "use --solver.placement.type docker or prime."
             )
         # The warning is about the *agent* running arbitrary code on the host: every harness hands
         # it local execution (bash/edit, or a CLI agent) except the tool-less `null` chat loop,
         # whose program only relays the model and remote MCP tools — so exempt `null`, warn for the
         # rest. (`null` still runs its fixed chat-loop program locally, but nothing agent-authored.)
         if self.harness.config.id != "null" and isinstance(
-            self.harness.config.runtime, SubprocessConfig
+            config.solver.placement, SubprocessConfig
         ):
             logger.warning(
                 "Harness %r is running in the subprocess runtime on the local system. "
                 "Local files and settings may affect the evaluation; use subprocess only "
-                "for debugging. Use --harness.runtime.type docker or prime for an isolated "
-                "run.",
+                "for debugging. Use --solver.placement.type docker or prime for an "
+                "isolated run.",
                 self.harness.config.id,
             )
         self.setup_timeout = config.timeout.setup
         self.harness_timeout = config.timeout.rollout
         self.finalize_timeout = config.timeout.finalize
         self.scoring_timeout = config.timeout.scoring
-        self.limits = RolloutLimits(
-            max_turns=config.max_turns,
-            max_input_tokens=config.max_input_tokens,
-            max_output_tokens=config.max_output_tokens,
-            max_total_tokens=config.max_total_tokens,
-        )
+        self.limits = config.solver.budget.limits()
         self._warned_resources: set[tuple[str, str]] = set()
         self._shared_urls: dict[str, str] = {}
         self._interception: InterceptionPool | None = None
@@ -322,10 +329,10 @@ class Environment:
                 await ctx.client.close()
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
-        """Resolve the runtime config for a task off the harness's runtime (see
+        """Resolve the runtime config for a task off the solver's placement (see
         `resolve_runtime_config`)."""
         return resolve_runtime_config(
-            self.harness.config.runtime, task, self._warned_resources
+            self.config.solver.placement, task, self._warned_resources
         )
 
     def episode(self, task: Task, ctx: RolloutContext, n: int = 1) -> Episode:

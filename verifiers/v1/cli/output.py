@@ -26,7 +26,7 @@ def output_path(config: EvalConfig) -> Path:
     `--output-dir`). The per-run `uuid` leaf means runs never overwrite each other."""
     if config.output_dir is not None:
         return config.output_dir
-    name = f"{config.taskset.name}--{config.model.replace('/', '--')}--{config.harness.name}"
+    name = f"{config.taskset.name}--{config.model.replace('/', '--')}--{config.solver.harness.name}"
     return Path("outputs") / name / config.uuid
 
 

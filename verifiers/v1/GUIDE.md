@@ -34,7 +34,7 @@ uv run eval -h                   # typed help (lists local tasksets + harnesses)
 ```
 
 Everything below has a CLI flag *and* a TOML equivalent (`uv run eval @ config.toml`); the
-flag names are the dotted config path (`--harness.runtime.type docker`). See the
+flag names are the dotted config path (`--solver.placement.type docker`). See the
 [CLI reference](#cli-reference) for the full command surface.
 
 ---
@@ -337,7 +337,7 @@ required field, so a judge cannot skip or invent criteria.
 
 ## Stop conditions
 
-A rollout ends when the harness finishes, a framework budget trips (`--max-turns`, token caps), or
+A rollout ends when the harness finishes, a framework budget trips (`--solver.budget.max-turns`, token caps), or
 a taskset `@vf.stop` fires. A stop is an `async (self, trace) -> bool` checked between turns; its
 **method name becomes the stop reason**:
 
@@ -575,11 +575,11 @@ The `*_v1` tasksets under `environments/` are the reference library — each sho
 
 If you need to customize the rollout logic beyond what the built-in harnesses provide — a loop they
 can't express (context compaction, subagents, a bespoke agent CLI) — author a custom harness.
-Otherwise pick a built-in, selected with `--harness.id`:
+Otherwise pick a built-in, selected with `--solver.harness.id`:
 
 | id | what it is |
 | --- | --- |
-| `default` | a `bash` + `edit` coding agent (`edit` on by default — `--harness.edit false` for bash-only; `--harness.search true` adds a serper.dev `search` tool) — the fallback when no harness is given |
+| `default` | a `bash` + `edit` coding agent (`edit` on by default — `--solver.harness.edit false` for bash-only; `--solver.harness.search true` adds a serper.dev `search` tool) — the fallback when no harness is given |
 | `null` | a tiny OpenAI chat loop (MCP tools only, no tools of its own) |
 | `rlm` | the RLM CLI agent |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
@@ -588,8 +588,8 @@ Otherwise pick a built-in, selected with `--harness.id`:
 
 ```bash
 uv run eval gsm8k-v1 -n 1                    # default harness (bash + edit; the fallback)
-uv run eval gsm8k-v1 -n 1 --harness.id null  # bare chat loop, no local tools
-uv run eval gsm8k-v1 -n 1 --harness.id rlm   # same taskset, different driver
+uv run eval gsm8k-v1 -n 1 --solver.harness.id null  # bare chat loop, no local tools
+uv run eval gsm8k-v1 -n 1 --solver.harness.id rlm   # same taskset, different driver
 ```
 
 ## Capability flags
@@ -606,7 +606,7 @@ load instead of mis-running:
 
 ## Writing one
 
-Define a `HarnessConfig` (any knobs surface as `--harness.*`), subclass `vf.Harness[ConfigT]`,
+Define a `HarnessConfig` (any knobs surface as `--solver.harness.*`), subclass `vf.Harness[ConfigT]`,
 declare the capability flags, and implement `launch`. Export the class via `__all__`.
 
 ```python
@@ -616,7 +616,7 @@ PROGRAM = (Path(__file__).parent / "program.py").read_text()  # a uv script, dep
 
 
 class MyHarnessConfig(vf.HarnessConfig):
-    """Run knobs for this harness (surface as --harness.*)."""
+    """Run knobs for this harness (surface as --solver.harness.*)."""
 
 
 class MyHarness(vf.Harness[MyHarnessConfig]):
@@ -690,15 +690,15 @@ runtime (e.g. read a `meta.json` the binary wrote). A harness can't define rewar
 
 # Runtimes
 
-The same `Runtime` contract backs the harness (`--harness.runtime`), a task's tools
+The same `Runtime` contract backs the harness (`--solver.placement`), a task's tools
 (`--taskset.tools.runtime`), and the user simulator. You choose where code runs; you never write
 one:
 
 ```bash
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type subprocess  # local process (eval default)
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type docker      # local container
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sandbox (requires auth)
-uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox (requires auth)
+uv run eval gsm8k-v1 -n 1 --solver.placement.type subprocess  # local process (eval default)
+uv run eval gsm8k-v1 -n 1 --solver.placement.type docker      # local container
+uv run eval gsm8k-v1 -n 1 --solver.placement.type prime       # remote prime sandbox (requires auth)
+uv run eval gsm8k-v1 -n 1 --solver.placement.type modal       # remote modal sandbox (requires auth)
 ```
 
 A taskset that sets `NEEDS_CONTAINER` (or a task with an `image`) refuses the subprocess runtime —
@@ -715,7 +715,7 @@ gold check), **`init`** (scaffold). They share a resolution layer:
   gsm8k-v1` (for `init` it's the env name).
 - **`@ file.toml`** — load a saved config; extra flags still override (`eval @ config.toml -n 5`).
 - **`-h` / no args** — print help, *narrowed to the chosen taskset/harness* so it shows their real
-  `--taskset.*` / `--harness.*` fields, not the generic base.
+  `--taskset.*` / `--solver.harness.*` fields, not the generic base.
 
 ## `eval`
 
@@ -725,7 +725,7 @@ concurrency, score each trace, and persist everything.
 ```bash
 uv run eval gsm8k-v1 -n 5 -r 3 \
   -m openai/gpt-5-mini \                                            # model
-  --max-turns 8 --max-total-tokens 8192 \                          # per-rollout budgets
+  --solver.budget.max-turns 8 --solver.budget.max-total-tokens 8192 \                          # per-rollout budgets
   --sampling.temperature 0 --sampling.max-tokens 2048 \            # generation knobs
   --timeout.rollout 600 --timeout.scoring 120 \                    # per-stage wall-clock caps (s)
   --retries.rollout.max-retries 3 --retries.rollout.include SandboxError  # retry a whole rollout
@@ -735,14 +735,14 @@ uv run eval gsm8k-v1 -n 5 -r 3 \
 
 | group | flags |
 | --- | --- |
-| selection | `<taskset-id>` / `--taskset.id`, `--harness.id` (`default`), `-m`/`--model` |
+| selection | `<taskset-id>` / `--taskset.id`, `--solver.harness.id` (`default`), `-m`/`--model` |
 | counts | `-n`/`--num-tasks` (all), `-r`/`--num-rollouts` (1; `@group_reward` needs ≥2), `-s`/`--shuffle` |
-| budgets | `--max-turns`, `--max-input-tokens`, `--max-output-tokens`, `--max-total-tokens` (all None) |
+| budgets | `--solver.budget.max-turns`, `--solver.budget.max-input-tokens`, `--solver.budget.max-output-tokens`, `--solver.budget.max-total-tokens` (all None) |
 | sampling | `--sampling.temperature`, `--sampling.top-p`, `--sampling.max-tokens`, `--sampling.reasoning-effort` (provider keys pass through) |
 | timeouts | `--timeout.setup`, `--timeout.rollout`, `--timeout.finalize`, `--timeout.scoring` (None = no limit) |
 | retries | `--retries.rollout.max-retries` (0), `--retries.rollout.include`/`.exclude` (by exception name); per-call model/runtime retries are owned by the harness/runtime SDKs |
 | client | `--client.type` (`eval`\|`train`), `--client.base-url`, `--client.api-key-var` |
-| runtime | `--harness.runtime.type` (`subprocess`), `--harness.env`, `--harness.disabled-tools` |
+| runtime | `--solver.placement.type` (`subprocess`), `--solver.harness.env`, `--solver.harness.disabled-tools` |
 | concurrency | `-c`/`--max-concurrent` (128), `--multiplex` (32), `--pool.type` (`elastic`\|`static`) |
 | output | `-o`/`--output-dir`, `--dry-run`, `--no-rich`, `-v`/`--verbose` |
 
@@ -805,7 +805,7 @@ uv run init legacy-env --v0             # a legacy v0 load_environment package i
 | `-p`/`--path` | parent directory (default `./environments`) |
 | `-T`/`--add-tool` | also scaffold a `vf.Toolset` (`servers/tool.py`), wired into the taskset |
 | `-U`/`--add-user` | also scaffold a `vf.User` simulator (`servers/user.py`) + a typed `State` + `@vf.stop` |
-| `-H`/`--add-harness` | also scaffold a custom `vf.Harness` (`harness.py`), selectable via `--harness.id <name>` |
+| `-H`/`--add-harness` | also scaffold a custom `vf.Harness` (`harness.py`), selectable via `--solver.harness.id <name>` |
 | `--v0` | scaffold a legacy v0 environment instead (can't combine with `--add-*`) |
 | `--force` | overwrite an existing package (default: refuse) |
 
@@ -820,7 +820,7 @@ form. In a prime-rl config:
 [[orchestrator.train.env]]
 name    = "gsm8k"
 taskset = { id = "gsm8k-v1", dataset_name = "..." }                 # any v1 taskset id
-harness = { id = "null", runtime = { type = "subprocess" } }
+solver  = { harness = { id = "null" }, placement = { type = "subprocess" } }
 timeout = { scoring = 10 }                                          # per-stage cap (default: no limit)
 # pool  = { type = "elastic", max_workers = 8, multiplex = 128 }    # env-server pool (default elastic, self-sizing)
 ```

@@ -3,12 +3,12 @@
 #   uv run eval @ configs/alphabet_sort.toml --model <small-instruct-model>
 num_tasks = 5
 num_rollouts = 2
-max_turns = 4
 
 [taskset]
 id = "alphabet-sort-v1"
 min_turns = 2
 max_turns = 2
 
-[harness]
-id = "null"
+[solver]
+harness = { id = "null" }
+budget = { max_turns = 4 }

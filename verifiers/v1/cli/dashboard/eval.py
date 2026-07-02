@@ -72,17 +72,19 @@ def _limits(config: EvalConfig) -> list[str]:
     """Per-rollout caps for the overview (concurrency first, then turns, tokens). An unset cap
     reads as 'no ...' rather than being hidden."""
     toks = []
-    if config.max_input_tokens:
-        toks.append(f"in≤{config.max_input_tokens}")
-    if config.max_output_tokens:
-        toks.append(f"out≤{config.max_output_tokens}")
-    if config.max_total_tokens:
-        toks.append(f"total≤{config.max_total_tokens}")
+    if config.solver.budget.max_input_tokens:
+        toks.append(f"in≤{config.solver.budget.max_input_tokens}")
+    if config.solver.budget.max_output_tokens:
+        toks.append(f"out≤{config.solver.budget.max_output_tokens}")
+    if config.solver.budget.max_total_tokens:
+        toks.append(f"total≤{config.solver.budget.max_total_tokens}")
     return [
         f"≤{config.max_concurrent} concurrent"
         if config.max_concurrent
         else "no concurrency cap",
-        f"{config.max_turns} turns" if config.max_turns else "no turn cap",
+        f"{config.solver.budget.max_turns} turns"
+        if config.solver.budget.max_turns
+        else "no turn cap",
         f"{', '.join(toks)} tokens" if toks else "no token cap",
     ]
 
@@ -117,7 +119,10 @@ def _aligned(rows: list[list[str]]) -> list[str]:
 def _warning(config: EvalConfig) -> Text | None:
     """A local-runtime caution for a code-running harness (none for the tool-less `null`),
     shown above the overview rather than as a row in it."""
-    if config.harness.id != "null" and config.harness.runtime.type == "subprocess":
+    if (
+        config.solver.harness.id != "null"
+        and config.solver.placement.type == "subprocess"
+    ):
         return Text(
             "warning  Runs on the local system; local files and settings may affect this "
             "evaluation. Use subprocess only for debugging, or use docker or prime for an "
@@ -184,19 +189,17 @@ def Overview(config: EvalConfig) -> Table:
     grid.add_column()
     grid.add_row(
         "env",
-        f"{config.taskset.name}  ·  {config.harness.name} harness  ·  {config.harness.runtime.type} runtime",
+        f"{config.taskset.name}  ·  {config.solver.harness.name} harness  ·  {config.solver.placement.type} runtime",
     )
     model = f"{config.model}  ({sampling})" if sampling else config.model
     grid.add_row("model", f"{model}  via {config.client.base_url}")
     # Non-default knobs the user set, one row each when non-empty. `escape` the cell: an override
     # value (or our `[...]`/`{...}` delimiters) can carry Rich markup that would otherwise be
-    # parsed as styling and dropped. `id` is in the `env` row; harness `runtime.type` too (hidden
-    # here), but only for the harness — a taskset's `user.runtime.type` has no other display.
+    # parsed as styling and dropped. `id` is in the `env` row (as is the solver's
+    # `placement.type`); a taskset's `user.runtime.type` has no other display.
     if taskset_over := overrides(config.taskset, skip=frozenset({"id"})):
         grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
-    if harness_over := overrides(
-        config.harness, skip=frozenset({"id", "runtime.type"})
-    ):
+    if harness_over := overrides(config.solver.harness, skip=frozenset({"id"})):
         grid.add_row("harness", escape("  ·  ".join(harness_over)))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
@@ -507,7 +510,7 @@ def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
         header,
         progress,
         Rule(style="dim"),
-        Rows(page_groups, now, config.harness.runtime.type),
+        Rows(page_groups, now, config.solver.placement.type),
     )
 
 

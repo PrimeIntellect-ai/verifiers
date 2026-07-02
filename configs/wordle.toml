@@ -3,11 +3,11 @@
 #   uv run eval @ configs/wordle.toml --model <small-instruct-model>
 num_tasks = 5
 num_rollouts = 2
-max_turns = 8
 
 [taskset]
 id = "wordle-v1"
 num_tasks = 50  # pool of seeded episodes to draw the eval's tasks from
 
-[harness]
-id = "null"
+[solver]
+harness = { id = "null" }
+budget = { max_turns = 8 }

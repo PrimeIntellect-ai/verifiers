@@ -8,6 +8,6 @@ num_tasks = 10
 id = "harbor"
 dataset = "terminal-bench/terminal-bench-2"
 
-[harness]
-id = "default"
-runtime = { type = "docker" }
+[solver]
+harness = { id = "default" }
+placement = { type = "docker" }
