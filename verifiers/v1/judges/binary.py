@@ -54,7 +54,7 @@ Response:
 {response}
 ```
 
-Respond either "yes" or "no" only."""
+Respond either "{positive}" or "{negative}" only."""
 
 
 class BinaryJudgeConfig(JudgeConfig):
@@ -76,9 +76,11 @@ class BinaryJudgeConfig(JudgeConfig):
     """Pre-extraction applied to the response before judging: `boxed` grades the content of
     the last `\\boxed{...}` (falling back to the raw response when there is none)."""
     choices: tuple[str, str] = ("yes", "no")
-    """The (positive, negative) verdict labels the prompt asks for — e.g. `["A", "B"]` for
-    graders that verdict with letters. The positive label scores 1.0; a verdict matching
-    neither raises (a judge failure must error the rollout, not score the model 0)."""
+    """The (positive, negative) verdict labels — e.g. `["A", "B"]` for graders that verdict
+    with letters. Injected into the prompt as `{positive}`/`{negative}`, so the default
+    template asks for whatever labels `parse` expects. The positive label scores 1.0; a
+    verdict matching neither raises (a judge failure must error the rollout, not score the
+    model 0)."""
 
 
 class BinaryJudge(Judge[float, BinaryJudgeConfig]):
@@ -105,11 +107,14 @@ class BinaryJudge(Judge[float, BinaryJudgeConfig]):
             response = extract_boxed_answer(response, strict=True).strip() or response
         if not response.strip():
             return 0.0  # nothing to grade — skip the (foregone) judge call
+        positive, negative = self.config.choices
         result = await self.evaluate(
             trace=trace,
             question=judge_question(task, self.config.question_field),
             answer=answer,
             response=response,
+            positive=positive,
+            negative=negative,
         )
         return cast(float, result.parsed)
 

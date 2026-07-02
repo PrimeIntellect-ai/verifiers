@@ -353,34 +353,23 @@ weight = 1.0
 
 Good to know:
 
-- **Judges alone are a full reward signal.** `Taskset.score` runs `@metric`s, then `@reward`s,
-  then the plugged judges — each phase is optional. A taskset with no `@reward` at all and one
-  plugged judge gets `trace.reward` entirely from the judge (wiki-search-v1 is exactly this
-  shape); mixing decorated rewards and judges just sums their weighted contributions.
-- **What the built-ins see** is config-selectable. Each call renders the judge's prompt
-  template with `question` = the task field named by `question_field` (e.g. a bare trivia
-  question without the prompt's instruction framing), defaulting to `task.prompt_text` (the
-  task prompt as plain text — a `Messages` prompt is reduced to its joined text parts, images
-  dropped); and `response` selected by `view` (`vf.JudgeView`): `last_reply` (the final
-  assistant message's text) or `full_trace` (`Trace.transcript` — every recorded turn as
-  `[role]` blocks incl. system/tool messages and tool calls, reasoning excluded). `binary`
-  defaults to `last_reply` (grade the answer) and adds `answer` (the task field named by
-  `answer_field`); `rubric` defaults to `full_trace` (grade the process) and makes one call
-  per criterion with that criterion's `text` — all sent as a single user message. Anything beyond that is a custom judge, whose `score`
-  receives the full `trace` (and `runtime`) and can build any messages from it.
-- **Error attribution:** a *model* failure scores 0 — `binary` short-circuits an empty reply
-  to 0.0 without a judge call, and a wrong or non-committal reply gets the negative verdict. A
-  *judge* failure — an API error, a refusal, an unparseable verdict, a missing/invalid rubric
-  file — **raises** instead: the rollout errors (a `TasksetError` recorded on the trace, the
-  billed judge call still in `trace.info["judge"]`), so training excludes/retries the sample
-  rather than punishing the model for a broken judge. Never silently 0 a judge failure.
-- **What lands on the trace:** the verdict goes to `trace.rewards[<reward key>]` with the
-  judge's `weight` applied (summed into `trace.reward`); `rubric` also records each raw
-  per-criterion verdict as `trace.metrics["<reward key>/<criterion name>"]` (unweighted). Every
-  judge call additionally appends its `JudgeResponse` — `{text, parsed, usage}` — to
-  `trace.info["judge"]` and its tokens + cost to `trace.extra_usage` (kept separate from the
-  agent's `trace.usage`; the eval dashboard shows it as `+judge`). All of it persists to
-  `results.jsonl`.
+- **Judges alone are a full reward signal.** `score` runs `@metric`s, `@reward`s, then plugged
+  judges — each phase optional. A taskset with no `@reward` and one judge gets `trace.reward`
+  entirely from the judge (wiki-search-v1's shape); mixing them sums weighted contributions.
+- **What the built-ins see** is config-selectable: `{question}` = the task field named by
+  `question_field` (else `task.prompt_text` — the prompt as plain text, `Messages` reduced to
+  text parts); `{response}` = the `view` (`vf.JudgeView`): `last_reply` (binary's default —
+  grade the answer) or `full_trace` (rubric's default — grade the process via
+  `Trace.transcript`, every recorded turn minus reasoning). Anything beyond that is a custom
+  judge: `score` gets the full `trace` (and `runtime`) and builds any messages from it.
+- **Error attribution:** a *model* failure scores 0 (empty replies short-circuit without a
+  judge call; wrong/non-committal replies get the negative verdict). A *judge* failure — API
+  error, refusal, unparseable verdict, bad rubric — **raises**: the rollout errors and training
+  excludes/retries the sample. Never silently 0 a judge failure.
+- **What lands on the trace:** the weighted verdict in `trace.rewards[<reward key>]`; rubric's
+  raw per-criterion verdicts in `trace.metrics`; every call's `JudgeResponse` in
+  `trace.info["judge"]` with its tokens + cost in `trace.extra_usage` (shown as `+judge` in the
+  dashboard). All persisted to `results.jsonl`.
 
 Writing your own pluggable judge is the same recipe as any plugin: a package exporting a `Judge`
 subclass via `__all__` that implements `score` — declare any subset of `task` / `trace` / `runtime`
@@ -394,12 +383,9 @@ class MyJudgeConfig(vf.JudgeConfig):
 class MyJudge(vf.Judge[float, MyJudgeConfig]):
     prompt = "…{question}…{response}… Reply yes or no."
 
-    def parse(self, response: vf.JudgeResponse[float]) -> float:
-        return float(vf.parse_judge_choice(response.text, ("yes", "no")) == "yes")
-
     async def score(self, task: vf.Task, trace: vf.Trace) -> float:
-        result = await self.evaluate(trace=trace, question=task.prompt, response=trace.last_reply)
-        return result.parsed
+        result = await self.evaluate(trace=trace, question=task.prompt_text, response=trace.last_reply)
+        return float(vf.parse_judge_choice(result.text, ("yes", "no")) == "yes")
 
 __all__ = ["MyJudge", "MyJudgeConfig"]
 ```

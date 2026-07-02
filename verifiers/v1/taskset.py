@@ -74,14 +74,29 @@ class TasksetConfig(BaseConfig):
                     "`rubric`, a local package, or a hub `org/name` package)"
                 )
             entries.append(judge_config_type(raw["id"]).model_validate(raw))
-        names = [entry.name or env_name(entry.id) for entry in entries]
+        data["judges"] = entries
+        return data
+
+    @model_validator(mode="after")
+    def _check_judges(self) -> "TasksetConfig":
+        """Validate the resolved `judges` — after the before-hook so class-level *defaults*
+        (which never pass through it, e.g. a taskset config pre-plugging a judge) are held
+        to the same rules: an `id` on every entry, and no two entries sharing a reward key
+        (the second would clobber the first's verdict)."""
+        names = []
+        for entry in self.judges:
+            if not entry.id:
+                raise ValueError(
+                    "each `judges` entry needs an `id` (a judge plugin: `binary`, "
+                    "`rubric`, a local package, or a hub `org/name` package)"
+                )
+            names.append(entry.name or env_name(entry.id))
         if duplicates := {name for name in names if names.count(name) > 1}:
             raise ValueError(
                 f"`judges` entries share a reward key {sorted(duplicates)}; set a "
                 "distinct `name` on each to keep both verdicts"
             )
-        data["judges"] = entries
-        return data
+        return self
 
 
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig)

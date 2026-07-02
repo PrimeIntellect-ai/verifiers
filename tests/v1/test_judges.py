@@ -80,10 +80,7 @@ def test_judge_plugin_resolution():
     assert vf.BinaryJudgeConfig().id == "binary"
     assert vf.RubricJudgeConfig(path="x.toml").id == "rubric"
 
-
-def test_judge_config_cls_defaults():
-    # A judge written without the config generic falls back to the base JudgeConfig; a
-    # parameterized one default-constructs its own config type.
+    # a judge without the config generic falls back to the base JudgeConfig
     class PlainJudge(vf.Judge[bool]):
         prompt = "{x}"
 
@@ -142,6 +139,13 @@ def test_judges_reject_shared_reward_keys():
     )
     assert [judge.name for judge in cfg.judges] == ["strict", "lenient"]
 
+    # class-level DEFAULTS are held to the same rule (they bypass the before-hook)
+    class TwoDefaults(vf.TasksetConfig):
+        judges: vf.Judges = [vf.BinaryJudgeConfig(), vf.BinaryJudgeConfig()]
+
+    with pytest.raises(ValueError, match="share a reward key"):
+        TwoDefaults()
+
 
 def test_reward_name_fallback():
     # name > id's package name > snake-cased class name (code-level judge with neither).
@@ -188,11 +192,8 @@ async def test_binary_score(fake_judge_model):
     trace = make_trace(reply="It is Rome.")
     assert await vf.BinaryJudge().score(trace.task, trace) == 0.0
 
-
-async def test_binary_score_missing_answer_field():
-    trace = make_trace()
     judge = vf.BinaryJudge(vf.BinaryJudgeConfig(answer_field="gold"))
-    with pytest.raises(ValueError, match="no 'gold' field"):
+    with pytest.raises(ValueError, match="no 'gold' field"):  # misconfig raises, not 0
         await judge.score(trace.task, trace)
 
 
@@ -370,13 +371,20 @@ async def test_binary_list_answer(fake_judge_model):
     assert "Paris\nLutetia" in fake_judge_model[0]
 
 
-def test_binary_choices():
-    # Verdict labels are configurable; the positive (first) label scores 1.0.
+async def test_binary_choices(fake_judge_model):
+    # Verdict labels are configurable; the positive (first) label scores 1.0 and the
+    # default prompt asks for the configured labels (not a hardcoded yes/no).
     judge = vf.BinaryJudge(vf.BinaryJudgeConfig(choices=("A", "B")))
     assert judge.parse(JudgeResponse(text="A")) == 1.0
     assert judge.parse(JudgeResponse(text="Final verdict: B")) == 0.0
     with pytest.raises(ValueError, match="no A/B verdict"):
         judge.parse(JudgeResponse(text="gibberish"))
+    trace = make_trace()
+    with pytest.raises(
+        ValueError
+    ):  # the yes-replying fake is now an unparseable verdict
+        await judge.score(trace.task, trace)
+    assert 'Respond either "A" or "B"' in fake_judge_model[0]
 
 
 async def test_error_attribution(monkeypatch, tmp_path):
@@ -463,9 +471,10 @@ def test_rubric_rejects_bad_files(tmp_path):
         _ = rubric_judge(
             tmp_path, weights={"mentions_paris": 0.0, "is_polite": 0.0}
         ).criteria
-    # a negative weight would invert a criterion and break the [0, 1] reward range
-    with pytest.raises(ValueError, match="negative criterion weights"):
-        _ = rubric_judge(tmp_path, weights={"mentions_paris": -1.0}).criteria
+    # negative/NaN/inf weights would invert a criterion or corrupt the weighted mean
+    for weight in (-1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="negative or non-finite"):
+            _ = rubric_judge(tmp_path, weights={"mentions_paris": weight}).criteria
 
 
 async def test_rubric_score(tmp_path, monkeypatch):

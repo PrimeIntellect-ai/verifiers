@@ -22,6 +22,7 @@ with `rubrics/quality.toml` listing the criteria (JSON takes `{"criteria": [...]
 
 import asyncio
 import json
+import math
 import tomllib
 from functools import cached_property
 from pathlib import Path
@@ -77,7 +78,7 @@ class RubricJudgeConfig(JudgeConfig):
     """Pinned to the built-in, so a code-level default entry needs no explicit id."""
     path: Path
     """The rubric file (`.toml` or `.json`) listing the criteria — see the module docstring
-    for the shape."""
+    for the shape. A relative path resolves against the eval's working directory."""
     weights: dict[str, float] = {}
     """Per-criterion weight overrides by criterion name (config wins over the file)."""
     question_field: str = ""
@@ -104,7 +105,7 @@ class RubricJudge(Judge[float, RubricJudgeConfig]):
         config's `weights` overrides applied. Fails loudly on a missing/empty file, duplicate
         criterion names, or an override naming no criterion."""
         path = self.config.path
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         data = tomllib.loads(text) if path.suffix == ".toml" else json.loads(text)
         items = data.get("criteria", []) if isinstance(data, dict) else data
         criteria = [Criterion.model_validate(item) for item in items]
@@ -125,10 +126,11 @@ class RubricJudge(Judge[float, RubricJudgeConfig]):
             )
             for criterion in criteria
         ]
-        if negative := [c.name for c in criteria if c.weight < 0]:
-            # A negative weight would invert a criterion and push the reward out of [0, 1].
+        if bad := [c.name for c in criteria if not 0 <= c.weight < math.inf]:
+            # A negative weight would invert a criterion (pushing the reward out of [0, 1]);
+            # NaN/inf (which json.loads accepts) would corrupt the weighted mean.
             raise ValueError(
-                f"rubric '{path}' has negative criterion weights: {negative}"
+                f"rubric '{path}' has negative or non-finite criterion weights: {bad}"
             )
         if sum(criterion.weight for criterion in criteria) <= 0:
             raise ValueError(f"rubric '{path}' has no positive criterion weight")
