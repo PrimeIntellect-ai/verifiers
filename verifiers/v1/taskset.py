@@ -60,11 +60,25 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     Environment refuses the subprocess runtime — for tasksets whose work only makes sense
     inside a per-task image (e.g. a SWE repo sandbox)."""
 
+    REQUIRES_GROUP_ROLLOUTS: ClassVar[bool] = False
+    """Whether all rollouts of a task must arrive as a single `run_group` request even
+    without `@group_reward`s — for tasksets whose `resolve_task` binds per-request state
+    the whole group must share (e.g. a replay buffer sampling a source rollout per group).
+    The env server advertises it as `requires_group_scoring` in its `info` response."""
+
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
     def load_tasks(self) -> list[TaskT]:
         raise NotImplementedError
+
+    async def resolve_task(self, idx: int, tasks: list[TaskT]) -> TaskT:
+        """Bind the task served for `idx` at request time. Default: index the eagerly
+        loaded list (the env server's `load_tasks()` result), so existing tasksets are
+        unchanged. Override to materialize tasks lazily — `load_tasks` may then return
+        lightweight stubs that only fix the index range. Called once per `run_rollout` /
+        `run_group` request, so every rollout of a group binds one resolved task."""
+        return tasks[idx]
 
     def tools(self, task: TaskT) -> list[Toolset]:
         """Tool servers exposing this task's tools to the model — `vf.Toolset`s (classes with

@@ -56,8 +56,9 @@ class EnvServer:
         self.env = Environment(config)
         # Load tasks once; the index range is fixed for the server's lifetime.
         self.tasks = self.env.taskset.load_tasks()
-        self.requires_group_scoring = bool(
-            discover_decorated(self.env.taskset, "group_reward")
+        self.requires_group_scoring = (
+            bool(discover_decorated(self.env.taskset, "group_reward"))
+            or self.env.taskset.REQUIRES_GROUP_ROLLOUTS
         )
         self._clients: dict[
             tuple[str, str], Client
@@ -120,14 +121,16 @@ class EnvServer:
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=1)
+        task = await self.env.taskset.resolve_task(req.task_idx, self.tasks)
+        episode = self.env.episode(task, ctx, n=1)
         traces = await episode.run()
         # Trust the concrete trace; serialize it once before client-side re-typing.
         return RunRolloutResponse.model_construct(trace=traces[0])
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=req.n)
+        task = await self.env.taskset.resolve_task(req.task_idx, self.tasks)
+        episode = self.env.episode(task, ctx, n=req.n)
         traces = await episode.run()
         # Avoid a dump-and-validate copy for every trusted trace in the group.
         return RunGroupResponse.model_construct(traces=traces)
