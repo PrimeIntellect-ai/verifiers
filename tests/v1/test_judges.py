@@ -123,12 +123,21 @@ def test_rubric_config_requires_path():
 
 
 def test_judges_reject_shared_reward_keys():
-    # Two entries resolving to the same reward key would silently clobber; caught at config
-    # time with a pointer at `name`.
+    # Ids may repeat (same plugin, two configs) — what must be unique is the derived reward
+    # key (`name`, else the id's package name), checked at config time.
     with pytest.raises(ValueError, match="share a reward key"):
         vf.TasksetConfig.model_validate(
             {"judges": [{"id": "binary"}, {"id": "binary"}]}
         )
+    cfg = vf.TasksetConfig.model_validate(
+        {
+            "judges": [
+                {"id": "binary", "name": "strict"},
+                {"id": "binary", "name": "lenient"},
+            ]
+        }
+    )
+    assert [judge.name for judge in cfg.judges] == ["strict", "lenient"]
 
 
 def test_reward_name_fallback():
