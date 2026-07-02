@@ -1,114 +1,236 @@
 ---
 name: train-with-environments
-description: Train models with verifiers environments using hosted RL or prime-rl. Use when asked to configure RL runs, tune key hyperparameters, diagnose instability, set up difficulty filtering, or create practical train and eval loops for new environments.
+description: Configure and diagnose prime-rl training with native verifiers.v1 tasksets, harnesses, runtimes, and trace branches. Use for RL experiment setup, environment-server configuration, group sizing, difficulty filtering, renderer selection, periodic eval, or rollout/training failure diagnosis.
 ---
 
 # Train With Environments
 
 ## Goal
-Run stable RL training loops with environment-aware hyperparameter choices and clear diagnostics.
 
-## Preferred Training Paths
-1. By default, assume users intend to use Hosted Training unless they explicitly ask for self-managed training.
-2. Hosted Training service path from lab setup:
-```bash
-prime lab setup
-```
-3. Self-managed `prime-rl` workflow:
-```bash
-prime lab setup --prime-rl
-```
-4. For self-managed training configs and launch commands, refer to prime-rl directly.
-5. Treat `prime-rl` as a power-user path and assume users are comfortable working with GPU infrastructure and troubleshooting.
-6. Runtime expectation:
-- Hosted Training is intended to be launched from a CPU machine.
-- Local `prime-rl` training requires local GPU access.
+Move a validated v1 environment into `prime-rl` without changing its task, harness, runtime, or
+scoring semantics, and diagnose environment failures separately from training instability.
 
-## Endpoint Shortcuts And Model Family Choice
-1. Encourage users to maintain endpoint aliases in `configs/endpoints.toml` for eval and train loops.
-2. Ask whether they want instruct or reasoning models for pre-training validation.
-3. Instruct go-tos for behavior checks: `gpt-4.1` series, `qwen3` instruct series.
-4. Reasoning go-tos for harder reasoning-heavy probes: `gpt-5` series, `qwen3` thinking series, `glm` series.
+## Supported native path
 
-## First-Run Protocol
-1. Validate environment behavior before training with the canonical eval path. Keep the default save behavior and do not add `--skip-upload` unless the user explicitly requests that deviation:
-```bash
-prime env install my-env
-prime eval run my-env -m openai/gpt-4.1-mini -n 20 -r 3 -s
-```
-2. For v1 Taskset + Harness environments, verify the package exposes `load_taskset(config: MyTasksetConfig)`, optional `load_harness(config: MyHarnessConfig)`, and the canonical `load_environment(config: vf.EnvConfig) -> vf.Env` shim delegating through `vf.load_taskset(config=config.taskset)` and `vf.load_harness(config=config.harness)`; trainers interact with the same environment boundary even when the implementation is BYO Harness internally.
-3. Confirm reward diversity exists at baseline.
-4. Start with conservative run length and inspect samples early.
+The current native v1 training integration is open-source `prime-rl`. It consumes `vf.Trace` over
+the v1 environment-server protocol.
 
-## Publish Gate Before RL
-1. Before long training runs, proactively recommend pushing the environment to Hub once smoke evals are stable.
-2. Ask the user explicitly whether visibility should be `PUBLIC` or `PRIVATE`.
-3. Push with chosen visibility:
-```bash
-prime env push my-env --visibility PUBLIC
-```
-or
-```bash
-prime env push my-env --visibility PRIVATE
-```
-4. For hosted RL and shared workflows, prefer Hub IDs after push (for example `owner/my-env` in config `[[env]].id`).
+Hosted Training's public CLI schema still exposes flat v0 `id`/`args` environments, not typed v1
+`taskset`/`harness` fields. Do not present a native v1 hosted command as supported until that schema
+changes.
 
-## RL TOML Environment Sections
-1. Use the same environment config shape for Hosted Training and `prime-rl`.
-2. Put task-owned v1 config in `[env.taskset]`.
-3. Put harness-owned v1 config in `[env.harness]`.
-4. Keep model, endpoint, sampling, rollout count, and trainer controls outside the environment sections unless configuring a nested or auxiliary harness model.
+## First-run gate
+
+Before configuring RL:
+
+```bash
+uv run validate my-task-v1 -n 20 --runtime.type subprocess
+uv run eval my-task-v1 -m openai/gpt-5-mini -n 20 -r 4 --shuffle
+uv run eval my-task-v1 -m openai/gpt-5-mini -n 20 -r 4 --shuffle \
+  --server --no-rich --pool.type elastic --pool.max-workers 2
+```
+
+Require:
+
+- correct prompt/tool/user traces;
+- intended reward on known successes and failures;
+- mixed reward on the target base model;
+- bounded turn/token/time/resource use;
+- low infrastructure error and truncation rates;
+- successful environment-server path.
+
+Do not start training to discover whether scoring works.
+
+## Native `prime-rl` environment shape
+
 ```toml
-[[env]]
-id = "owner/my-env"
+[orchestrator]
+training_mode = "rl"
+batch_size = 512
+group_size = 16
 
-[env.taskset]
-num_examples = 1000
+[orchestrator.renderer]
+name = "auto"
 
-[env.harness]
+[orchestrator.train.sampling]
+temperature = 1.0
+max_completion_tokens = 2048
+
+[[orchestrator.train.env]]
+name = "my-task-train"
+taskset = { id = "my-task-v1", split = "train" }
+harness = { id = "default", runtime = { type = "subprocess" } }
+timeout = { rollout = 600, scoring = 120 }
 max_turns = 8
+max_total_tokens = 32768
+
+[orchestrator.eval]
+interval = 20
+
+[[orchestrator.eval.env]]
+name = "my-task-test"
+taskset = { id = "my-task-v1", split = "test" }
+harness = { id = "default", runtime = { type = "subprocess" } }
+num_examples = 200
+group_size = 4
 ```
 
-## Hyperparameter Rules Of Thumb
-1. Use `rollouts_per_example` and `batch_size` together.
-2. Treat `batch_size` as total rollout samples per step, not number of groups.
-3. Keep `batch_size` divisible by `rollouts_per_example`.
-4. Quick tests or simpler environments:
-- `rollouts_per_example = 8`
-- `batch_size = 128` (or lower)
-5. More complex or longer-horizon environments:
-- `rollouts_per_example = 16`
-- `batch_size = 512` (common strong starting point)
-6. Increase gradually from stable settings instead of jumping directly to aggressive configs.
+Native env entries inherit the v1 server config. Use:
 
-## Difficulty Filtering
-1. For mostly binary rewards, enable difficulty filtering when reward distributions show many all-easy or all-hard samples:
-- `buffer.online_difficulty_filtering = true`
-2. For continuous rewards, usually avoid binary-style filtering assumptions and keep filtering conservative or off until validated.
-3. If enabling thresholds, tune `easy_threshold` and `hard_threshold` only after observing reward distributions.
+- `taskset` for taskset ID and typed fields;
+- `harness` for harness ID and runtime;
+- root environment fields for framework turn/token limits, stage timeouts, retries, interception
+  multiplexing, and worker pool;
+- `sampling` for an environment-specific override;
+- `ratio` for multi-environment sampling weight;
+- `address` only for an externally managed env server.
 
-## Stability Constraints From Prime-RL
-1. Ensure `max_concurrent >= rollouts_per_example * workers_per_env`.
-2. Monitor off-policy drift when increasing rollout throughput.
-3. For OOM risk, reduce rollout pressure and sequence lengths before widening training scope.
+Never put native v1 fields under `args`. That is the legacy bridge.
 
-## Failure Diagnosis
-1. Flat reward near zero:
-- Task too hard, rubric mismatch, or prompt/tool contract mismatch.
-2. Unstable reward swings:
-- Lower learning rate, increase rollout group size, reduce async aggressiveness.
-3. Slow learning despite stability:
-- Revisit task difficulty and reward shaping before increasing risk knobs.
+## Dry-run and launch
 
-## Non-Negotiable Environment Quality During Training
-1. Use deterministic robust checks or LLM judges for rewards.
-2. Reject best-effort keyword heuristics unless explicitly approved as last resort.
-3. Keep environments self-contained after install; no user-managed background services.
-4. Surface feature limitations directly instead of proposing hidden workarounds.
+From the current `prime-rl` checkout:
+
+```bash
+uv run rl @ /path/to/rl.toml --dry-run
+uv run rl @ /path/to/rl.toml
+```
+
+Use the repository's current install and model-support docs. `prime-rl` requires NVIDIA GPUs. Use
+its `inference` entrypoint rather than plain `vllm serve`; training needs token generation and
+weight-update interfaces supplied by that entrypoint.
+
+## Group and batch sizing
+
+`orchestrator.group_size` is rollouts per task for group-relative advantage; a train environment
+can override it.
+
+- Start at `8` or more; `16` is a common baseline.
+- Larger groups improve the chance of mixed outcomes but increase rollout cost and group latency.
+- If groups are mostly all-zero, fix difficulty, model fit, or environment behavior before
+  increasing optimizer effort.
+- If groups are mostly all-one, increase difficulty or sample a harder task distribution.
+- Choose `batch_size` with whole groups, packing, sequence length, and GPU memory in mind.
+
+A taskset `@vf.group_reward` is scoring, not trainer advantage. The env server automatically keeps
+that task's rollouts together before returning traces.
+
+## Difficulty filtering
+
+Online difficulty filtering can drop exact all-zero and all-one groups. It fits binary rewards.
+For continuous rewards, inspect distributions and use a filter whose thresholds match the signal;
+do not assume equality with `0` and `1` captures easy/hard collapse.
+
+Monitor per environment:
+
+- reward distribution and solve-none/solve-all rate;
+- effective batch size after filtering;
+- errored and truncated rollout rates;
+- completion length and turns;
+- policy staleness/off-policy age;
+- mismatch KL and trainer stability metrics.
+
+## Renderers and branches
+
+Use `[orchestrator.renderer] name = "auto"` unless the model/fine-tune needs an explicit renderer.
+The renderer maintains exact token-prefix identity between turns and puts token IDs, masks, and
+logprobs on trace nodes.
+
+V1 traces may branch because of context compaction, subagents, or token-level renderer divergence.
+Each branch is a training sample. Do not flatten branches into one transcript or reconstruct tokens
+from text.
+
+## Agentic runtimes
+
+Keep eval and training composition identical:
+
+```toml
+[[orchestrator.train.env]]
+taskset = { id = "harbor", dataset = "terminal-bench/terminal-bench-2" }
+harness = { id = "rlm", runtime = { type = "prime", cpu = 4, memory = 8 } }
+timeout = { setup = 600, rollout = 3600, finalize = 600, scoring = 600 }
+pool = { type = "elastic", max_workers = 8, multiplex = 64 }
+```
+
+Verify current field names from the selected taskset/harness help or source; do not copy guessed
+dataset knobs.
+
+For remote runtimes:
+
+- set explicit timeouts and resource limits;
+- use `multiplex` to control interception tunnel count;
+- cap pool workers and sandbox creation rate;
+- ensure tools/user placement is reachable and correctly isolated;
+- make teardown observable before scaling.
+
+## Multi-environment training
+
+Every environment needs a unique `name`. If weighted sampling is used, set `ratio` on all training
+environments:
+
+```toml
+[[orchestrator.train.env]]
+name = "math"
+ratio = 3
+taskset = { id = "gsm8k-v1", split = "train" }
+harness = { id = "default", runtime = { type = "subprocess" } }
+
+[[orchestrator.train.env]]
+name = "tools"
+ratio = 1
+taskset = { id = "wiki-search-v1" }
+harness = { id = "default", runtime = { type = "subprocess" } }
+```
+
+Ratios are relative. Keep environment-specific rewards interpretable; a scalar reward scale mismatch
+can dominate training even when sampling ratios look balanced.
+
+## Failure diagnosis
+
+Classify before changing hyperparameters:
+
+1. **Valid low reward** — model/task difficulty or prompt/tool behavior.
+2. **ProviderError** — inference endpoint, model, capacity, or request dialect.
+3. **HarnessError** — program installation, launch, or nonzero exit.
+4. **ToolsetError/UserError** — server startup, reachability, or call behavior.
+5. **SandboxError/TunnelError** — runtime capacity, lifecycle, filesystem, network, or rate limits.
+6. **TasksetError** — setup/finalize/scoring implementation.
+7. **Trainer instability** — valid branches arrive, then loss/KL/gradient/weight behavior fails.
+
+Retries may help transient provider/sandbox/tunnel failures. They do not fix deterministic taskset
+or harness errors. Learning-rate changes do not fix invalid traces.
+
+## Quality rules
+
+- Never train on an uninspected reward.
+- Keep held-out periodic eval configured from the start.
+- Preserve exact taskset/harness/runtime config between baseline eval and training.
+- Use model-free validation for dataset and verifier regressions.
+- Bound every remote stage.
+- Do not direct harness model calls upstream; they must pass through interception.
+- Do not modify reward semantics merely to create more gradient signal without user approval.
+- Do not publish a package or start a costly run without the user's requested external action and
+  visibility/compute choice.
+
+## Legacy v0
+
+A real v0 environment can still be bridged with a flat entry:
+
+```toml
+[[orchestrator.train.env]]
+id = "legacy-env"
+args = { split = "train" }
+```
+
+Label it legacy. New work should use `taskset` and `harness`.
 
 ## Deliverable
-Return:
-1. Config deltas applied.
-2. Why each delta was chosen.
-3. Observed metrics and failure signatures.
-4. Next tuning step with stop conditions.
+
+Report:
+
+1. Prime-RL version/source and resolved config.
+2. Taskset, harness, runtime, renderer, group, batch, and eval settings.
+3. Pretraining validation/eval evidence.
+4. Expected resource/cost envelope and external dependencies.
+5. Monitoring and stop criteria.
+6. Any environment, rollout, or trainer failures with their correct boundary classification.

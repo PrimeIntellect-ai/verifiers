@@ -1,124 +1,39 @@
 # Overview
 
-Verifiers is our library for creating environments to train and evaluate LLMs.
+Verifiers is a framework for defining tasks, running agents and harnesses, scoring them on set tasks, and using those for evaluations and reinforcement learning.
 
-Environments contain everything required to run and evaluate a model on a particular task:
-- A *dataset* of task inputs
-- A *harness* for the model (tools, sandboxes, context management, etc.)
-- A reward function or *rubric* to score the model's performance
+The following concepts are important when creating or running environments, be it for evals or training:
 
-Environments can be used for training models with reinforcement learning (RL), evaluating capabilities, generating synthetic data, experimenting with agent harnesses, and more. 
+## Environment Hub
 
-Verifiers is tightly integrated with the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), as well as our training framework [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) and our [Hosted Training](https://app.primeintellect.ai/dashboard/training) platform.
+The [Environment Hub] is Prime Intellects collection of (user-created) environments which are installable and ready to use with Verifiers.
 
-## Getting Started
+## Environment
 
-Ensure you have `uv` installed, as well as the `prime` [CLI](https://docs.primeintellect.ai/cli-reference/introduction) tool:
-```bash
-# install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# install the prime CLI
-uv tool install prime
-# log in to the Prime Intellect platform
-prime login
-```
-To set up a new workspace for developing environments, do:
-```bash
-# ~/dev/my-lab
-prime lab setup 
-```
+An environment combines a _taskset_ and a _harness_. Often, it is sufficient to only define a _taskset_ in an environment, as harnesses are meant to be combined with tasksets.
 
-This sets up a Python project if needed (with `uv init`), installs `verifiers` (with `uv add verifiers`), creates the recommended workspace structure, and downloads useful starter files:
-```
-configs/
-├── endpoints.toml      # OpenAI-compatible API endpoint configuration
-├── rl/                 # Example configs for Hosted Training
-├── eval/               # Example multi-environment eval configs
-└── gepa/               # Example configs for prompt optimization
-.prime/
-└── skills/             # Bundled workflow skills for create/browse/review/eval/GEPA/train/brainstorm
-environments/
-└── AGENTS.md           # Documentation for AI coding agents
-AGENTS.md               # Top-level documentation for AI coding agents
-CLAUDE.md               # Claude-specific pointer to AGENTS.md
-```
+## Taskset
 
-Alternatively, add `verifiers` to an existing project:
-```bash
-uv add verifiers && prime lab setup --skip-install
-```
+A taskset is a collection of tasks, i.e., the _what_. A task is a prompt, a set of files, etc. A taskset also defines the scoring mechanism (known as reward).
 
-Optional features are installed with extras:
+## Harness
 
-| Extra | Install | Enables |
-| --- | --- | --- |
-| `modal` | `uv add "verifiers[modal]"` | The v1 Modal sandbox runtime |
-| `notebook` | `uv add "verifiers[notebook]"` | `Environment.generate_sync()` inside Jupyter or another active event loop |
-| `quest` | `uv add "verifiers[quest]"` | QUEST PDF parsing and evaluation |
+A harness is the program the model is run in, e.g. Claude Code, Codex or mini-swe-agent.
 
-Environments built with Verifiers are self-contained Python modules. To initialize a fresh environment template, do:
-```bash
-prime env init my-env # creates a v0 stub in ./environments/my_env
-```
+## Toolset
 
-This will create a new module called `my_env` with a runnable environment
-template.
-```
-environments/my_env/
-├── my_env.py           # Main implementation
-├── pyproject.toml      # Dependencies and metadata
-└── README.md           # Documentation
-```
+A set of tools defined by the environment that are installed as MCP servers into the harnesses that support them.
 
-Environment modules should expose a `load_environment` function which returns an
-environment object. For simple legacy environments, this can still be a direct
-constructor:
-```python
-# my_env.py
-import verifiers as vf
+## Trace
 
-def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
-    dataset = vf.load_example_dataset(dataset_name) # 'question'
-    async def correct_answer(completion, answer) -> float:
-        completion_ans = completion[-1]['content']
-        return 1.0 if completion_ans == answer else 0.0
-    rubric = vf.Rubric(funcs=[correct_answer])
-    env = vf.SingleTurnEnv(dataset=dataset, rubric=rubric)
-    return env
-```
-
-To run a local evaluation with any OpenAI-compatible model, do:
-```bash
-prime eval run my-env -m openai/gpt-5-nano # run and save eval results locally
-```
-Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.toml`.
-
-View local evaluation results in the terminal UI:
-```bash
-prime eval view
-```
-The TUI opens a single run browser (`environment -> model -> run`). Press `Enter` on a run to open rollout details, `b` to go back, `tab` to cycle panes, `e` and `x` to expand or collapse history, `pageup` and `pagedown` to scroll history, and `c` for Copy Mode.
-
-To publish the environment to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), do:
-```bash
-prime env push my-env # equivalent to --path ./environments/my_env
-```
-
-To run an evaluation directly from the Environments Hub, do:
-```bash
-prime eval run primeintellect/math-python
-```
+A trace records the message graph, rewards, metrics, errors, etc. When using Verifiers for training, it stores additional information such as logprobs.
 
 ## Documentation
 
-**[Environments](environments.md)** — Create datasets, rubrics, and custom multi-turn interaction protocols.
-
-**[Evaluation](evaluation.md)** - Evaluate models using your environments.
-
-**[Training](training.md)** — Train models in your environments with reinforcement learning.
-
-**[Development](development.md)** — Contributing to verifiers
-
-**[API Reference](reference.md)** — Understanding the API and data structures
-
-**[FAQs](faqs.md)** - Other frequently asked questions.
+- [Getting started](getting_started.md) - How to install the CLI and the needed skills.
+- [Architecture](architecture.md) — An overview about the architecture and runtime of Verifiers
+- [Environments](environments.md) — How to create environments
+  - [Harbor Environments](harbor.md) — How to Harbor-based environments
+- [Evaluation](evaluations.md) — How to run said environments
+- [Training](training.md) — How to train on the environments
+- [Harnesses](harnesses.md) — How to build custom harnesses

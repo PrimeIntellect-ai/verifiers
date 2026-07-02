@@ -1,119 +1,86 @@
-# Environments
+# Example Environments
 
-This folder contains installable example environments that showcase common usage patterns in Verifiers. Each module exposes a `load_environment(...)` function that returns a ready-to-use `vf.Environment` object.
+This directory contains native v1 taskset/harness packages and legacy v0 compatibility examples.
+Use native packages as templates for new work.
 
-## Quick start
+## Native v1 examples
 
-- **Evaluate**: `prime eval run math-python` (defaults to openai/gpt-4.1-mini, small sample)
+Native packages import `verifiers.v1 as vf` and export one `vf.Taskset` subclass through
+`__all__`. A package may also export a custom `vf.Harness`.
 
-## Common usage patterns and examples
+| Package | Pattern |
+| --- | --- |
+| `reverse_text_v1` | Minimal single-turn taskset and pure trace reward. |
+| `gsm8k_v1` | In-runtime PEP 723 verifier and model-free validation. |
+| `code_golf_v1` | Cross-rollout `@vf.group_reward`. |
+| `alphabet_sort_v1` | Stateful multi-turn `vf.User` simulator. |
+| `glossary_v1` | Custom vf-native MCP `Toolset`. |
+| `wiki_search_v1` | Shared read-only tool server and LLM judge. |
+| `scratchpad_v1` | Shared writable tool server with per-rollout typed state. |
+| `deepwiki_v1` | Existing remote MCP endpoint. |
+| `color_codeword_v1` | Multimodal task prompt. |
+| `wordle_v1` | Thin taskset over the built-in TextArena integration. |
+| `compact` | Custom branching/context-compaction harness. |
 
-### SingleTurnEnv (prompt → single response)
-- **gsm8k**: Classic QA with exact-match reward and optional response-format reward.
-- **reverse_text**: XML formatting with non-binary LCS reward + format reward.
-- **continuation_quality**: Completion-style generation (`message_type="completion"`) judged for prose quality with `JudgeRubric`.
-- **mmmu**: Multimodal inputs (image + text) packed in chat content; single-turn boxed-answer check.
+The repository also ships built-in tasksets and harnesses under `verifiers/v1/tasksets` and
+`verifiers/v1/harnesses`.
 
-### SingleTurnEnv subclass (custom dataset/scoring wrappers)
-- **reasoning_gym_env**: Wraps `reasoning_gym` procedural datasets, converts to HF datasets, and applies task-specific scoring.
+## Run examples
 
-### MultiTurnEnv (custom interaction protocols)
-- **alphabet_sort**: Multi-turn task requiring the model to maintain and update an alphabetically sorted list of names across turns; uses per-turn sequence similarity rewards.
-- **doublecheck**: Simple follow-up turn ("Are you sure?") with math rewards; minimal `is_completed`/`env_response` implementation.
-- **sentence_repeater**: Multi-turn Q/A over a paragraph; rewards compare assistant messages to expected answers.
-- **wordle**: Game-style interaction via `TextArenaEnv`; multiple rewards (correctness, partial credit, few-turn bonus) and XML formatting.
-- **wordle_v1**: Wordle on the reusable v1 `TextArenaTaskset`, with Wordle-specific prompt, feedback, and rewards kept in the environment package.
-- **openenv_echo**: OpenEnv MCP integration example using upstream `echo_env`.
-- **openenv_textarena**: OpenEnv gym integration example using upstream `textarena_env` (default `Wordle-v0`).
+The workspace sync installs checked-in v1 packages. Run them directly:
 
-### Tool use
-- **ToolEnv (native function-calling)**
-  - **tool_test**: Validates parallel tool calls and checks exact tool usage via `ToolRubric` + custom reward.
-  - **wiki_search**: Multi-tool retrieval (search/view/read) with `ToolEnv`; final judgment combined via `RubricGroup` with a `JudgeRubric`.
-
-### Sandboxes
-- **PythonEnv (ipython-style REPL)**
-  - **math_python**: Solve math problems using Python in a sandbox environment.
-
-### GymEnv (external gym environments)
-- **gem_wordle**: Multi-turn Wordle game powered by the GEM framework; models must guess a 5-letter word using `\boxed{}` format.
-
-### Experimental environments
-- **MCPEnv (MCP server integration)**
-  - **mcp_search_env**: Example environment demonstrating `vf.MCPEnv` for Model Context Protocol server integration.
-
-- **RLM (Recursive Language Model)**
-  - **hello_rlm_v1**: v1 packaged `RLM` harness example with endpoint interception and metrics collection.
-
-- **V1 Taskset/Harness**
-  - **dspy_rlm**: DSPy RLM harness on GSM8K through `vf.Env`; DSPy uses the V1 interception endpoint from rollout state.
-  - **openai_agents_env**: OpenAI Agents SDK harness with a calculator tool on GSM8K through `vf.Env`.
-  - **langchain_deep_agents_wikispeedia**: LangChain Deep Agents harness on Wikispeedia navigation, where tool use is load-bearing.
-
-- **HarborEnv / CliAgentEnv (agent sandboxes)**
-  - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
-  - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
-  - **hello_mcp_harbor**: Smallest runnable `HarborEnv` exercising framework-managed MCP server lifecycle (FastMCP `get_secret` server + OpenCode agent).
-
-- **Taskset/Harness v1**
-  - **bfcl_v3**: BFCL v3 function-calling eval using task-local dynamic tool schemas and v1 rewards.
-  - **dspy_flights**: Sandboxed DSPy flight-support `program.fn` entrypoint installed from its package `pyproject.toml` and configured against the v1 interception endpoint.
-  - **hello_group_reward_v1**: Deterministic v1 reference for group updates, metrics, rewards, advantages, and cleanup.
-  - **nemo_gym_env**: Minimal v1 example that wraps a packaged NeMo Gym task with `NeMoGymTaskset` and `NeMoGymHarness`.
-  - **sft-replay**: Thin v1 replay environment using `ReplayTaskset` and `ReplayHarness` to turn stored transcripts into trajectory steps without model calls.
-  - **wordle_v1**: TextArena Wordle through the packaged v1 `TextArenaTaskset` boundary.
-
-### Composition
-- **EnvGroup**
-  - **math_group**: Groups two `SingleTurnEnv` tasks (GSM8K + Math) into one environment with shared interface.
-
-- **Nested harnesses**
-  - **hello_subagent_v1**: Minimal parent/child harness hand-off through a tool.
-  - **nested_harness_v1**: v1 example showing a tool that calls a child `Harness` as its own rollout scope.
-  - **hello_self_judge_v1**: v1 example where a judge harness shares model, endpoint, trajectory, and sandbox evidence from the answer rollout.
-  - **hello_parallel_sandbox_v1**: v1 example where parallel child harnesses share a sandbox-backed tool across update and reward stages.
-
-- **RubricGroup**
-  - **math_python**: `ToolRubric` (tool adherence) + `MathRubric` (answer correctness).
-  - **wiki_search**: Merges judge scoring with the tool-use rubric.
-
-### Judge-based evaluation (LLM-as-judge)
-- **continuation_quality**: Judge rubric extracts `<grade>` and maps A–F to a continuous score.
-- **toxicity_explanation**: Judge rubric returns 0–10 normalized score for both classification correctness and explanation quality.
-- **self_reward**: Pattern for `SingleTurnEnv` with only a `JudgeRubric` over a dataset that supplies `question`/`answer`; intended for online RL where model acts as its own judge.
-
-### Multimodal inputs
-- **mmmu**: Demonstrates passing images via chat `content` items with `{type: "image_url", image_url: {url: ...}}` and standard answer parsing.
-
-## What to look at for each pattern
-- **Minimal SingleTurnEnv**: `reverse_text`, `gsm8k`
-- **JudgeRubric end-to-end**: `continuation_quality`, `toxicity_explanation`, `self_reward`
-- **ToolEnv with real tools**: `wiki_search`, `math_python`
-- **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
-- **GymEnv integration**: `gem_wordle`
-- **OpenEnv integration (gym + MCP)**: `openenv_textarena`, `openenv_echo`
-- **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
-- **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
-- **Taskset/Harness v1**: use this pattern for new environments that need reusable tasksets, reusable harnesses, framework programs, endpoint interception, or sandboxed Python/command programs. Examples include `dspy_rlm`, `openai_agents_env`, `langchain_deep_agents_wikispeedia`, `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, `opencode_harbor`, `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, and `wordle-v1`.
-  - `opencode_harbor` uses the packaged `HarborTaskset` + `OpenCode` boundary from `tasksets` and `harnesses`.
-- **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
-- **Procedural datasets**: `reasoning_gym_env`
-- **Multimodal**: `mmmu`
-
-## Running examples
-All environments export `load_environment(...)`. 
-
-In-line usage:
-```python
-import verifiers as vf
-from openai import AsyncOpenAI
-vf_env = vf.load_environment("reverse-text")
-results = vf_env.evaluate(client=AsyncOpenAI(), model="gpt-4.1-mini", num_examples=25)
-```
-
-CLI usage:
 ```bash
-prime eval run reverse-text -n 50 -r 1
+uv run eval reverse-text-v1 -n 5
+uv run eval @ configs/gsm8k.toml
+uv run validate gsm8k-v1 -n 20 --runtime.type subprocess
 ```
 
-If you are building a new environment, prefer starting from `prime env init` and consult the top-level README and docs for dataset format, rubric design, and environment class specifications.
+Switch harness/runtime independently:
+
+```bash
+uv run eval gsm8k-v1 -n 1 --harness.id rlm
+uv run eval harbor -n 1 --harness.id bash --harness.runtime.type docker
+```
+
+Use `--dry-run` to resolve a config without model calls:
+
+```bash
+uv run eval @ configs/wiki_search.toml --dry-run
+```
+
+## Create another native package
+
+```bash
+uv run init my-task-v1
+uv run init my-agent-v1 -T -U -H
+```
+
+Then install and test the package boundary:
+
+```bash
+uv pip install -e environments/my_task_v1
+uv run validate my-task-v1 -n 5 --runtime.type subprocess
+uv run eval my-task-v1 -n 5 -r 2
+```
+
+For repository package-install coverage:
+
+```bash
+uv run pytest tests/test_envs.py -k my_task_v1 -vv
+```
+
+## Legacy v0 examples
+
+Directories without the `_v1` suffix generally exercise the preserved v0 environment hierarchy:
+`load_environment()`, datasets, rubrics/parsers, and classes such as `SingleTurnEnv`,
+`MultiTurnEnv`, or `ToolEnv`. They remain for compatibility and legacy test coverage.
+
+Run one through the v1 bridge with `--id`:
+
+```bash
+uv run eval --id reverse-text -n 5
+```
+
+Do not copy a legacy example when authoring a native v1 package. See
+[`docs/environments.md`](../docs/environments.md) for the current taskset, toolset, user, harness,
+runtime, and packaging contracts.

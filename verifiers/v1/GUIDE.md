@@ -168,10 +168,10 @@ you name** — declare any subset of `task` / `trace` / `runtime` and you get ex
 async def correct(self, task, trace) -> float: ...
 
 @vf.metric()                           # recorded, not summed — a float or a dict to merge
-async def enthusiasm(self, trace) -> float:
+async def enthusiasm(self, trace) -> float: ...
 
 @vf.group_reward(weight=0.1)           # compares a task's N rollouts — here, a length penalty
-async def brevity(self, traces: list[vf.Trace]) -> list[float]:
+async def brevity(self, traces: list[vf.Trace]) -> list[float]: ...
 ```
 
 The decorators and what each can receive:
@@ -626,8 +626,9 @@ pass `docker` / `prime` / `modal`.
 
 # CLI reference
 
-Three commands, all `uv run <cmd>`: **`eval`** (run + score a model), **`validate`** (model-free
-gold check), **`init`** (scaffold). They share a resolution layer:
+Four commands, all `uv run <cmd>`: **`eval`** (run + score a model), **`validate`** (model-free
+gold check), **`serve`** (expose the environment-server protocol), and **`init`** (scaffold).
+They share a resolution layer:
 
 - **Positional id** — a leading bare token is the taskset id: `eval gsm8k-v1` == `eval --taskset.id
   gsm8k-v1` (for `init` it's the env name).
@@ -642,10 +643,10 @@ concurrency, score each trace, and persist everything.
 
 ```bash
 uv run eval gsm8k-v1 -n 5 -r 3 \
-  -m openai/gpt-5-mini \                                            # model
-  --max-turns 8 --max-total-tokens 8192 \                          # per-rollout budgets
-  --sampling.temperature 0 --sampling.max-tokens 2048 \            # generation knobs
-  --timeout.rollout 600 --timeout.scoring 120 \                    # per-stage wall-clock caps (s)
+  -m openai/gpt-5-mini \
+  --max-turns 8 --max-total-tokens 8192 \
+  --sampling.temperature 0 --sampling.max-tokens 2048 \
+  --timeout.rollout 600 --timeout.scoring 120 \
   --retries.rollout.max-retries 3 --retries.rollout.include SandboxError  # retry a whole rollout
 ```
 
@@ -704,6 +705,19 @@ captured as a result row (one bad task is data, not a crash) with reason `valid`
 default runtime is **docker** (unlike eval's subprocess), and a subprocess runtime against a
 `NEEDS_CONTAINER` / image-bearing taskset aborts with a clear error.
 
+## `serve`
+
+Serve the same taskset/harness composition over the ZMQ rollout protocol used by `prime-rl`:
+
+```bash
+uv run serve gsm8k-v1 --address tcp://127.0.0.1:5000 \
+  --pool.type elastic --pool.max-workers 8
+```
+
+It accepts the eval environment fields (taskset, harness/runtime, budgets, timeouts, retries,
+multiplexing, and worker pool) but no model or sampling; the client supplies those per rollout.
+Direct serving is mainly useful for integration tests or a separately managed environment server.
+
 ## `init`
 
 Scaffold a new v1 environment package under `--path` (default `./environments`), following the
@@ -737,14 +751,14 @@ form. In a prime-rl config:
 ```toml
 [[orchestrator.train.env]]
 name    = "gsm8k"
-taskset = { id = "gsm8k-v1", dataset_name = "..." }                 # any v1 taskset id
+taskset = { id = "gsm8k-v1", split = "train" }                      # any v1 taskset id
 harness = { id = "default", runtime = { type = "subprocess" } }
 timeout = { scoring = 10 }                                          # per-stage cap (default: no limit)
 # pool  = { type = "elastic", max_workers = 8, multiplex = 128 }    # env-server pool (default elastic, self-sizing)
 ```
 
-`[orchestrator.renderer]` is required (set `name = "auto"` or a specific renderer) — the renderer
-tokenizes rollouts into training samples.
+`[orchestrator.renderer]` defaults to `name = "auto"`; set a specific renderer when the model needs
+one. The renderer tokenizes rollouts into training samples.
 
 # Backwards compatibility
 

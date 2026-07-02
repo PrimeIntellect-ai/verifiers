@@ -1,22 +1,22 @@
 # verifiers.v1
 
-The next version of [verifiers](https://github.com/PrimeIntellect-ai/verifiers) —
+The native v1 API for [verifiers](https://github.com/PrimeIntellect-ai/verifiers) —
 **agentic-native, with a composable taskset × harness × runtime core**. A clean-slate,
-heavily-typed rewrite that carries forward the proven high-level abstractions, with a 
+heavily-typed rewrite that carries forward the proven high-level abstractions, with a
 tighter type contract. `import verifiers.v1 as vf`.
 
 ## Highlights
 
 - **Composable taskset × harness** — a taskset (data + scoring) is fully decoupled from the
-  harness (the program driving the rollout); any taskset runs under any harness
+  harness (the program driving the rollout); any taskset runs under any compatible harness
   (`default` / `rlm` / `codex` / your own)
 - **Swappable runtime** — the harness, tools, and user simulators all run behind one
   `Runtime` contract, in `subprocess` / `docker` / `prime` / `modal` / ...
 - **First-class branching rollouts** — a rollout isn't assumed linear: context compaction and
   subagents are native. Each branch (a root→leaf path through the trace graph) is its own
   training sample, so a compacting or multi-agent rollout trains end to end.
-- **Fully typed** — pydantic end-to-end (`Task` / `Trace` / configs); no loose
-  `dict` / `object` / `cast`.
+- **Typed public contracts** — Pydantic end-to-end for tasks, traces, messages, state, and config;
+  free-form mappings are limited to explicit payload boundaries such as `trace.info`.
 - **Minimal & pythonic** — the high-level abstractions without the implementation bulk;
   plain classes + decorators (`@vf.reward` / `@vf.metric` / ...).
 - **Training-ready traces** — exact token ids + logprobs straight from an agentic rollout
@@ -40,7 +40,7 @@ uv run eval -h                   # typed help (+ the local example tasksets/harn
 ```
 
 Everything is typed config, so the advanced knobs — budgets, retries, and
-wall-clock timeouts — are all framework-enforced and apply to any environment: 
+wall-clock timeouts — are all framework-enforced and apply to any environment:
 
 ```bash
 uv run eval gsm8k-v1 -n 5 -r 3 \
@@ -72,7 +72,7 @@ Taskset examples (the `*_v1` packages under `environments/`):
 | `gsm8k-v1` | single-turn + in-runtime scoring |
 | `code-golf-v1` | group rewards (`@group_reward` over a task's N rollouts) |
 | `alphabet-sort-v1` | a multi-turn, stateful task driven by a `vf.User` simulator |
-| `glossary-v1` | a custom **colocated** tool server |
+| `glossary-v1` | a custom tool server in its own host runtime |
 | `wiki-search-v1` | a **shared** tool server (built once for the eval) + an LLM judge |
 | `deepwiki-v1` | an **existing remote** tool server, by URL |
 | `wordle-v1` | configuring the vendored `textarena` integration |
@@ -90,14 +90,14 @@ Harness examples (under `environments/`):
 The program that drives the rollout — same taskset, different driver:
 
 ```bash
-uv run eval gsm8k-v1 -n 1                     # default: bare agent (MCP tools only)
+uv run eval gsm8k-v1 -n 1                     # default: small chat loop with MCP support
 uv run eval gsm8k-v1 -n 1 --harness.id rlm    # the rlm harness
 uv run eval gsm8k-v1 -n 1 --harness.id codex  # the codex harness
 ```
 
 The same drivers on an agentic terminal task — harbor's `hello-world`. The task acts on a
 filesystem, so run it under a containerized runtime: `docker` locally, or a remote `prime` /
-`modal` sandbox (not the default `subprocess`). 
+`modal` sandbox (not the default `subprocess`).
 
 ```bash
 uv run eval harbor -n 1 --taskset.ignore-dockerfile --harness.runtime.type docker --harness.id bash            # bash-only agent
@@ -128,11 +128,11 @@ A taskset may expose task-specific tools beyond the tools shipping natively with
 the harness as MCP servers. Its placement (separate runtime or colocated with
 harness) is configurable on `taskset.tools` and reachability is handled resolved
 automatically. Tools only run under a harness with `SUPPORTS_MCP` (the `default`
-harness has it; `rlm` doesn't) — an incompatible pairing is refused at load. The tool examples
+harness and `rlm` both have it) — an incompatible pairing is refused at load. The tool examples
 each show one placement:
 
 ```bash
-uv run eval glossary-v1 -n 1     # colocated — in the harness's own runtime, localhost (default)
+uv run eval glossary-v1 -n 1     # own host runtime per rollout (default)
 uv run eval wiki-search-v1 -n 1  # shared — one instance built once for the whole eval
 uv run eval deepwiki-v1 -n 1     # an existing remote server, by URL
 ```
@@ -144,8 +144,8 @@ A stateful, multi-turn task can drive the *user* side of the conversation itself
 calling it after each assistant turn for the next user message(s) plus a done flag, then
 re-prompting. The harness never knows — it just sees another user turn — but it must support
 one (`SUPPORTS_USER_SIM`; the `default` harness has it, `rlm` doesn't). Placement is config on
-`taskset.user` — colocated in the harness's runtime by default, or its own via
-`--taskset.user.runtime`:
+`taskset.user` — its own host runtime by default, or colocated with
+`--taskset.user.colocated true`:
 
 ```bash
 uv run eval alphabet-sort-v1 -n 1   # stateful multi-turn — the user sim injects each next turn
@@ -187,8 +187,8 @@ agent or CLI integrates unchanged whatever SDK it's built on .
 Behind that endpoint sit two **clients**, switched with `--client.type`:
 
 ```bash
-uv run eval gsm8k-v1 -n 1                            # eval (default): a 1:1 relay, text in / text out
-uv run eval gsm8k-v1 -n 1 --client.type train \      # train: client-side tokenization via the renderer (requires vllm)
+uv run eval gsm8k-v1 -n 1  # eval (default): a 1:1 relay, text in / text out
+uv run eval gsm8k-v1 -n 1 --client.type train \
   --client.base-url http://localhost:8000/v1
 ```
 
@@ -210,9 +210,9 @@ turns. Hitting a cap cleanly truncates the rollout (`trace.is_truncated`) instea
 default no limit). A `rollout` timeout scores what the harness produced so far (like a turn
 cap); `setup` / `finalize` / `scoring` timeouts error the rollout.
 
-**Retries.** Two granularities — per-call (model + runtime, default 3, reruns just the failed
-call and keeps the rollout's progress) and whole-rollout (default 1). A retry count of 0 turns
-a layer off.
+**Retries.** Provider and runtime SDKs own safe per-call retries. Framework-level whole-rollout
+retry is off by default (`max_retries = 0`) and reruns a fresh trajectory for selected captured
+error types.
 
 ```bash
 uv run eval gsm8k-v1 -n 1 --max-turns 8                  # cap model turns

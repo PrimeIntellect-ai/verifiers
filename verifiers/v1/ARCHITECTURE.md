@@ -1,8 +1,9 @@
 # verifiers.v1 — architecture
 
 How v1 is built and why, for people working *on* the framework. For how to *use* it, see the
-[README](README.md) and the [user guide](GUIDE.md). Names below are real; paths are relative
-to `verifiers/v1/`.
+[README](README.md) and the [user guide](GUIDE.md). For progressive deployment and network
+diagrams, see the [runtime architecture guide](../../docs/runtime-architecture.md). Names below
+are real; paths are relative to `verifiers/v1/`.
 
 ## The shape of it
 

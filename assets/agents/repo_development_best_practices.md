@@ -2,23 +2,12 @@
 
 Use this guidance when contributing to the `verifiers` repository itself.
 
+- Ensure that `uv` is installed, see [uv docs](https://docs.astral.sh/uv/getting-started/installation/) for further information.
 - Always run `uv run pre-commit install` before making any changes.
 - Run the documented contributor checks for touched areas: `uv run ruff check --fix .`, `uv run pytest tests/`, and `uv run pre-commit run --all-files` as needed. (See `docs/development.md`.)
-- Keep changes aligned with documented architecture (`verifiers/`, `environments/`, `configs/`, `tests/`, `docs/`) and update docs when behavior changes. (See `docs/development.md`.)
-- Prefer a single clear path over maintaining parallel approaches by default; if two options exist, preserve both only when there is an explicit long-term reason.
-- Aggressively deprecate/remove inferior paths when they are not part of an intended multi-option contract, especially in repo-internal development workflows.
-- Treat broad dynamic mappings as explicit framework boundaries, not casual public API types. Use a named domain alias or typed Pydantic field for legitimate arbitrary payloads such as task rows, protocol messages, sandbox/program specs, and `objects`/binding-style config; do not expose raw `Mapping[str, object]` in user-facing signatures unless that looseness is the point of the abstraction.
-- If a user request conflicts with repository style, formatting, or API-quality guidelines, push back instead of implementing the literal request. Identify a comparable request or explicit guideline relaxation that preserves clean, maintainable, modular code across the current request and adjacent future use cases; implement that plan, then explain the decision process and tradeoffs directly to the user.
-- Before v0.2.0, breaking backward compatibility inside v1 Taskset/Harness APIs is acceptable and encouraged when it improves the core design. Preserve v0 multi-turn environment compatibility unless the user explicitly asks for a v0 migration.
-- Treat public configuration and docs as part of the API. Keep TOML shapes consistent across eval, GEPA, RL, and Hosted Training; normalize legacy inputs at the ingestion boundary instead of spreading compatibility branches through examples.
-- For v1 Taskset/Harness work, make the taskset own task data, task controls, task tools, user behavior, metrics, rewards, and task-specific configuration. Make the harness own reusable execution mechanisms such as programs, command agents, primary sandboxes, endpoint interception, framework adapters, and execution artifacts. Use the base `vf.Harness` unless the harness really owns such a mechanism.
-- Keep v1 construction explicit: `vf.Env` receives concrete taskset/harness objects, while `load_taskset(config: MyTasksetConfig)` and `load_harness(config: MyHarnessConfig)` define child config types. `EnvConfig` only carries the two child configs; ordinary environment packages use the generated `load_environment(config: vf.EnvConfig)` shim.
-- Put class-owned behavior on the taskset or harness class through config fields, `load_*` methods, `User` subclasses, `Toolset`, and `@vf.*` lifecycle methods. `load_taskset` and `load_harness` provide the typed entrypoints to those classes.
-- Do not override `Taskset.__init__`, `Harness.__init__`, or `User.__init__` in v1 implementations. Put initialization policy in config fields, public load methods, lifecycle handlers, task rows, `Toolset`, `User.get_response`, or utility modules when genuinely shared.
-- Do not add one-off private helper methods or bottom-of-file helper functions to make taskset/harness classes look shorter. Core lifecycle logic should live on the class with standard public method names or `@vf.*` decorators; reusable multi-line plumbing belongs in a named utility module.
-- Environment packages must follow the `prime env init` generated structure. Do not hand-scaffold new environments or replace the generated README section structure with freeform prose; use the CLI template and fill in its sections.
-- When renaming or deleting an environment/module path, update package metadata, README/docs references, tests, build includes, and generated AGENTS output in the same change.
-- For environment changes, validate the install/load/eval path, not just imports. Prefer `prime eval run` for user-visible behavior and `tests/test_envs.py` for package-install coverage when the change affects packaged examples.
-- When fixing a PR review, Bugbot issue, CI failure, or release blocker, inspect the live thread/check/log first and address the exact failure. Do not infer the root cause from stale local context.
-- Before changing dependencies, optional extras, lockfiles, or config fields consumed by `prime-cli`, `prime-rl`, Hosted Training, or public docs, trace the downstream consumer and update the matching docs/skills in the same patch.
-- Keep generated artifacts out of commits. Remove bytecode, coverage files, local eval outputs, and temporary build products unless they are explicitly part of the release artifact.
+- The documentation (in `docs/`, `skills/`, `configs/`) is intentionally kept minimal. Do not touch them unless your changes break with these assumptions.
+- Verifiers has two API surfaces under `verifiers/`: `verifiers/v1`, which is referred to as "v1", while the rest is "legacy". Unless specificially requested, always use and assume v1.
+- Verifiers v1 uses Pydantic objects everywhere, so you should, too, when working in v1. Mimic the style of the existing code.
+- Do not add unit tests to your PRs. v1 has a few end to end tests, which are sufficient. Unit tests clog up the repository. You can, however, write 
+- The repository uses Python 3.11 or older, so you are encouraged to use modern Python function to cut down on lines.
+- Do not add dependencies, optional extras etc. to the main pyproject.toml.

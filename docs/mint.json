@@ -5,12 +5,13 @@
       "group": "Verifiers",
       "pages": [
         "overview",
+        "getting_started",
+        "architecture",
         "environments",
-        "evaluation",
-        "training",
-        "development",
-        "reference",
-        "faqs"
+        "evaluations",
+        "harnesses",
+        "harbor",
+        "training"
       ]
     }
   ]
