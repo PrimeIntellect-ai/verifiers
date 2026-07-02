@@ -50,11 +50,11 @@ def test_resolve_model():
 
 def test_verdict_source_derived_from_harness():
     tools_judge = vf.JudgeSpec(name="j", prompt="p", verdict=Verdict)
-    assert tools_judge.resolved_verdict_source() == "file"
+    assert tools_judge.resolved_verdict_source == "file"
     null_judge = vf.JudgeSpec(
         name="j", prompt="p", verdict=Verdict, harness={"id": "null"}
     )
-    assert null_judge.resolved_verdict_source() == "reply"
+    assert null_judge.resolved_verdict_source == "reply"
     forced = vf.JudgeSpec(
         name="j",
         prompt="p",
@@ -62,7 +62,7 @@ def test_verdict_source_derived_from_harness():
         harness={"id": "null"},
         verdict_source="file",
     )
-    assert forced.resolved_verdict_source() == "file"
+    assert forced.resolved_verdict_source == "file"
 
 
 def test_strip_fences():

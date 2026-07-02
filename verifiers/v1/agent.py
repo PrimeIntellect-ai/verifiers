@@ -153,6 +153,7 @@ class JudgeSpec(AgentSpec):
     harness, `"file"` otherwise. Explicit, not a fallback — a tools judge that fails
     to write the file is an error, never quietly re-parsed from its prose."""
 
+    @property
     def resolved_verdict_source(self) -> Literal["file", "reply"]:
         if self.verdict_source is not None:
             return self.verdict_source
@@ -405,7 +406,7 @@ async def run_judges(
     async def _run_one(spec: JudgeSpec) -> tuple[str, Any]:
         run_dir = f"/tmp/vf-agent/{uuid.uuid4().hex}"
         verdict_path = f"{run_dir}/verdict.json"
-        source = spec.resolved_verdict_source()
+        source = spec.resolved_verdict_source
         schema = json.dumps(spec.verdict.model_json_schema(), indent=2)
         if source == "file":
             contract = _JUDGE_CONTRACT.format(dir=run_dir, schema=schema)

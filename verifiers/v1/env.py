@@ -314,7 +314,7 @@ class Environment:
         """The resolved model table for agent runs (judges): one shared client per entry,
         built once for the env's lifetime. `episode()` injects it into every rollout."""
 
-    async def aclose(self) -> None:
+    async def close(self) -> None:
         """Close the model table's shared clients. The rollout client is the caller's to
         close; runtimes are per-rollout and torn down by each rollout."""
         for ctx in self.models.values():
