@@ -1,5 +1,10 @@
 """A reusable per-task LLM judge for v1 tasksets.
 
+Predates `vf.JudgeSpec` (`verifiers.v1.agent`), which subsumes this: a `JudgeSpec` with the
+`null` harness is the same single-call judge, with the model bound through the env's shared
+model table, its budget enforced, and the run recorded on `trace.agents` with provenance.
+Prefer `JudgeSpec` for new tasksets; this class is kept for existing downstream users.
+
 Most tasksets that can't grade deterministically reach for the same shape: an OpenAI-compatible
 endpoint, a prompt built from `(question, answer, response)`, one chat call, and a verdict parsed
 out of the reply. `Judge` centralizes that — the client construction (incl. the Prime key/team

@@ -1,10 +1,12 @@
 """Tests for agent runs (`verifiers.v1.agent`), none needing a real model: spec
-validation, model-table resolution, budget mapping, the verdict record's wire
-round-trip, `run_judges`' precondition checks — plus one full-path integration test
-(`test_judged_rollout_against_stub`) that runs a real rollout + judge agent run in the
-subprocess runtime against a scripted local endpoint, so the judge's canned bash
-tool-call actually executes and writes the verdict file the framework reads back."""
+validation, model-table resolution, budget mapping, verdict-channel selection, the
+verdict record's wire round-trip, `run_judges`' precondition checks — plus full-path
+integration tests that run real rollouts + judge agent runs in the subprocess runtime
+against a scripted local endpoint: a file-verdict judge whose canned bash tool-call
+actually executes and writes the verdict file, and a reply-verdict (`null`-harness)
+judge whose fenced JSON reply is parsed as the verdict."""
 
+import contextlib
 import dataclasses
 import json
 import re
@@ -15,7 +17,7 @@ from aiohttp import web
 from pydantic import BaseModel
 
 import verifiers.v1 as vf
-from verifiers.v1.agent import resolve_model, run_judges
+from verifiers.v1.agent import _strip_fences, resolve_model, run_judges
 from verifiers.v1.clients import EvalClientConfig
 
 
@@ -70,6 +72,29 @@ def test_resolve_model_sampling_override():
     assert dataclasses.replace(resolved, sampling=ctx.sampling) == ctx
 
 
+def test_verdict_source_derived_from_harness():
+    tools_judge = vf.JudgeSpec(name="j", prompt="p", verdict=Verdict)
+    assert tools_judge.resolved_verdict_source() == "file"
+    null_judge = vf.JudgeSpec(
+        name="j", prompt="p", verdict=Verdict, harness={"id": "null"}
+    )
+    assert null_judge.resolved_verdict_source() == "reply"
+    forced = vf.JudgeSpec(
+        name="j",
+        prompt="p",
+        verdict=Verdict,
+        harness={"id": "null"},
+        verdict_source="file",
+    )
+    assert forced.resolved_verdict_source() == "file"
+
+
+def test_strip_fences():
+    assert _strip_fences('{"a": 1}') == '{"a": 1}'
+    assert _strip_fences('```json\n{"a": 1}\n```') == '{"a": 1}'
+    assert _strip_fences('```\n{"a": 1}\n```') == '{"a": 1}'
+
+
 async def test_run_judges_rejects_duplicate_names():
     trace = vf.Trace(task=vf.Task(idx=0, prompt="p"))
     specs = [
@@ -119,6 +144,30 @@ def _bash_call(command: str) -> list:
     ]
 
 
+@contextlib.asynccontextmanager
+async def _stub_ctx(handler):
+    """Serve `handler` as a local OpenAI-compatible endpoint and yield a
+    `RolloutContext` whose eval client points at it."""
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    client = vf.resolve_client(
+        EvalClientConfig(
+            base_url=f"http://127.0.0.1:{port}/v1", api_key_var="STUB_API_KEY"
+        )
+    )
+    try:
+        yield vf.RolloutContext(
+            model="stub-model", client=client, sampling=vf.SamplingConfig(temperature=0)
+        )
+    finally:
+        await runner.cleanup()
+
+
 async def _stub_model(request: web.Request) -> web.Response:
     """A scripted OpenAI-compatible endpoint. The policy conversation gets the echoed
     phrase; the judge conversation (recognized by the materialized `/tmp/vf-agent/`
@@ -143,33 +192,16 @@ async def test_judged_rollout_against_stub(tmp_path):
     judge-harness provisioning into the live runtime, the judge's own interception
     session, a really-executed tool call writing the verdict, read-back + schema
     validation, verdict→reward mapping, and the provenance record on the trace."""
-    app = web.Application()
-    app.router.add_post("/v1/chat/completions", _stub_model)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
-    await site.start()
-    port = site._server.sockets[0].getsockname()[1]
-    try:
-        config = vf.EnvConfig(
-            taskset={"id": "echo-judged-v1"},
-            harness={"id": "null", "runtime": {"type": "subprocess"}},
-            max_turns=2,
-            timeout={"rollout": 300, "scoring": 300},
-        )
-        env = vf.Environment(config)
-        client = vf.resolve_client(
-            EvalClientConfig(
-                base_url=f"http://127.0.0.1:{port}/v1", api_key_var="STUB_API_KEY"
-            )
-        )
-        ctx = vf.RolloutContext(
-            model="stub-model", client=client, sampling=vf.SamplingConfig(temperature=0)
-        )
+    config = vf.EnvConfig(
+        taskset={"id": "echo-judged-v1"},
+        harness={"id": "null", "runtime": {"type": "subprocess"}},
+        max_turns=2,
+        timeout={"rollout": 300, "scoring": 300},
+    )
+    env = vf.Environment(config)
+    async with _stub_ctx(_stub_model) as ctx:
         (task,) = env.taskset.load_tasks()
         (trace,) = await env.episode(task, ctx, n=1).run()
-    finally:
-        await runner.cleanup()
     assert trace.errors == []
     assert trace.reward == 1.0
     (run,) = trace.agents
@@ -179,6 +211,44 @@ async def test_judged_rollout_against_stub(tmp_path):
     assert run.trainable is False
     assert run.verdict == {"echoed": True, "evidence": PHRASE}
     assert run.trace.num_turns == 2  # the bash tool-call turn + the closing message
+    assert trace.extra_usage  # judge spend recorded off the policy's own usage
+
+
+async def _stub_reply_judged(request: web.Request) -> web.Response:
+    """Scripted endpoint for the reply-verdict path: the judge conversation (recognized
+    by the reply contract's grading text) gets a *fenced* JSON verdict — exercising the
+    fence tolerance — and everything else is the policy conversation."""
+    body = await request.json()
+    text = json.dumps(body["messages"])
+    if "You are grading a completed agent rollout" in text:
+        verdict = json.dumps({"echoed": True})
+        return web.json_response(_completion(content=f"```json\n{verdict}\n```"))
+    return web.json_response(_completion(content=f"Sure: {PHRASE}"))
+
+
+async def test_reply_judged_rollout_against_stub(tmp_path):
+    """The single-call judge path, no real model: a `null`-harness reply-verdict judge
+    over `echo-reply-judged-v1`. Exercises the injectable `judges(task, trace)` hook
+    (the evidence rides in the prompt), the reply contract, fence-stripping + schema
+    validation of the final reply, and the provenance record — with no files
+    materialized and no tool calls."""
+    config = vf.EnvConfig(
+        taskset={"id": "echo-reply-judged-v1"},
+        harness={"id": "null", "runtime": {"type": "subprocess"}},
+        max_turns=2,
+        timeout={"rollout": 300, "scoring": 300},
+    )
+    env = vf.Environment(config)
+    async with _stub_ctx(_stub_reply_judged) as ctx:
+        (task,) = env.taskset.load_tasks()
+        (trace,) = await env.episode(task, ctx, n=1).run()
+    assert trace.errors == []
+    assert trace.reward == 1.0
+    (run,) = trace.agents
+    assert run.name == "echoed"
+    assert run.role == "judge"
+    assert run.verdict == {"echoed": True}
+    assert run.trace.num_turns == 1  # one completion — the reply is the verdict
     assert trace.extra_usage  # judge spend recorded off the policy's own usage
 
 

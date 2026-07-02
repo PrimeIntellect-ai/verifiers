@@ -18,9 +18,11 @@ rollout's trace.
 A judge's I/O contract is files, so any harness — including off-the-shelf coding
 agents — can judge without knowing the framework: inputs are materialized under a
 per-run `/tmp/vf-agent/<id>/` directory (never the rollout's workdir, which is the
-world being judged), and the verdict is a JSON file the framework validates. A missing
-or invalid verdict raises `JudgeError` and fails the rollout — it is never a 0 reward,
-which would silently poison group baselines.
+world being judged), and the verdict is a JSON file the framework validates. Tool-less
+judges (the `null` harness — the classic single-call LLM judge) instead reply with the
+verdict JSON directly (`verdict_source="reply"`), with their evidence carried in the
+prompt. Either way, a missing or invalid verdict raises `JudgeError` and fails the
+rollout — it is never a 0 reward, which would silently poison group baselines.
 """
 
 import asyncio
@@ -123,13 +125,16 @@ class AgentSpec(BaseConfig):
 
 
 class JudgeSpec(AgentSpec):
-    """An agentic judge: an agent run executed in the SCORING stage to grade the
-    finished rollout. The framework materializes the rollout's records into the
-    judge's runtime, appends the I/O contract (file paths + verdict schema) to
-    `prompt`, and validates the verdict it writes back.
+    """A judge: an agent run executed in the SCORING stage to grade the finished
+    rollout — from a single text-grading call (the `null` harness: one completion,
+    the reply is the verdict) to a full agent with tools in the rollout's world.
+    The framework appends the I/O contract (verdict schema, and for file-verdict
+    judges the materialized record paths) to `prompt` and validates the verdict.
 
-    `judges(task)` receives the task, so `prompt` is written already rendered — no
-    template language, just an f-string over the task's fields."""
+    The `judges()` hook receives the task (and can declare `trace`), so `prompt` is
+    written already rendered — no template language, just an f-string. A reply-verdict
+    judge has no tools to read files with: its evidence (the answer being graded, a
+    transcript slice) must be in the prompt itself."""
 
     name: str
     """Unique name within the rollout; the verdict is keyed on it (`verdicts[name]`)
@@ -140,6 +145,18 @@ class JudgeSpec(AgentSpec):
     verdict: type[BaseModel]
     """The verdict's schema. The judge must write JSON matching it; the parsed model
     instance is what `@reward` functions receive as `verdicts[name]`."""
+    verdict_source: Literal["file", "reply"] | None = None
+    """How the verdict comes back: `"file"` — the judge writes `verdict.json` (needs a
+    harness with tools; the rollout's records are materialized as files for it);
+    `"reply"` — the judge's final reply is the verdict JSON (the single-call path).
+    None (default) derives from the harness: `"reply"` for the tool-less `null`
+    harness, `"file"` otherwise. Explicit, not a fallback — a tools judge that fails
+    to write the file is an error, never quietly re-parsed from its prose."""
+
+    def resolved_verdict_source(self) -> Literal["file", "reply"]:
+        if self.verdict_source is not None:
+            return self.verdict_source
+        return "reply" if self.harness.id == "null" else "file"
 
 
 # The I/O contract appended to every judge prompt. Files, not framework APIs, so any
@@ -159,6 +176,30 @@ markdown fences):
 
 {schema}
 """
+
+# The reply-verdict variant: no files — the judge has no tools to read them, so its
+# evidence lives in the prompt above, and its final reply is the verdict itself.
+_JUDGE_REPLY_CONTRACT = """\
+
+---
+You are grading a completed agent rollout against the instructions above; everything \
+you need is in those instructions. Reply with a single JSON object matching this JSON \
+schema (the reply must contain only the JSON object — no prose, no markdown fences):
+
+{schema}
+"""
+
+
+def _strip_fences(text: str) -> str:
+    """The JSON inside a fenced reply (```json ... ```), or the text unchanged. Models
+    add fences despite instructions; the object inside is still the verdict."""
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    stripped = stripped.split("\n", 1)[1] if "\n" in stripped else ""
+    if stripped.rstrip().endswith("```"):
+        stripped = stripped.rstrip()[:-3]
+    return stripped.strip()
 
 
 def _text(content: Any) -> str:
@@ -309,8 +350,19 @@ async def run_agent(
         for path in collect:
             try:
                 collected[path] = await runtime.read(path)
-            except Exception:  # missing file — the caller decides if that's fatal
+            except Exception:
+                # Missing file OR a read failure (dead runtime, transport) — the
+                # runtimes don't distinguish them, so log the cause: the caller's
+                # "no output" error shouldn't hide a broken sandbox.
+                logger.warning(
+                    "agent run %s: reading %r failed", trace.id, path, exc_info=True
+                )
                 collected[path] = None
+    except Exception as e:
+        # The run's own record should say why it died — the raise also fails the
+        # caller, but the caller's trace is not this trace.
+        trace.capture_error(e)
+        raise
     finally:
         trace.is_completed = True
         if owned:
@@ -343,13 +395,30 @@ async def run_judges(
     if len(set(names)) != len(names):
         raise JudgeError(f"duplicate judge names: {names}")
 
+    # One snapshot of the rollout's records, taken before any judge runs, shared by
+    # all of them: judges grade the rollout, not each other's verdicts (which land on
+    # `trace.agents` as each judge finishes).
+    task_json = trace.task.model_dump_json(indent=2).encode()
+    transcript = render_transcript(trace).encode()
+    record = json.dumps(trace.to_record()).encode()
+
     async def _run_one(spec: JudgeSpec) -> tuple[str, Any]:
         run_dir = f"/tmp/vf-agent/{uuid.uuid4().hex}"
         verdict_path = f"{run_dir}/verdict.json"
-        contract = _JUDGE_CONTRACT.format(
-            dir=run_dir,
-            schema=json.dumps(spec.verdict.model_json_schema(), indent=2),
-        )
+        source = spec.resolved_verdict_source()
+        schema = json.dumps(spec.verdict.model_json_schema(), indent=2)
+        if source == "file":
+            contract = _JUDGE_CONTRACT.format(dir=run_dir, schema=schema)
+            files = {
+                f"{run_dir}/task.json": task_json,
+                f"{run_dir}/transcript.md": transcript,
+                f"{run_dir}/trace.json": record,
+            }
+            collect = [verdict_path]
+        else:  # a reply-verdict judge has no tools; its evidence is its prompt
+            contract = _JUDGE_REPLY_CONTRACT.format(schema=schema)
+            files = {}
+            collect = []
         judge_task = WireTask(idx=trace.task.idx, prompt=spec.prompt + contract)
         judge_trace: Trace = Trace(task=judge_task)
         verdict: BaseModel | None = None
@@ -361,21 +430,24 @@ async def run_judges(
                 models=models,
                 rollout_runtime=runtime,
                 interception=interception,
-                files={
-                    f"{run_dir}/task.json": trace.task.model_dump_json(
-                        indent=2
-                    ).encode(),
-                    f"{run_dir}/transcript.md": render_transcript(trace).encode(),
-                    f"{run_dir}/trace.json": json.dumps(trace.to_record()).encode(),
-                },
-                collect=[verdict_path],
+                files=files,
+                collect=collect,
             )
-            raw = collected.get(verdict_path)
-            if raw is None:
-                raise JudgeError(
-                    f"judge {spec.name!r} finished without writing a verdict to "
-                    f"{verdict_path}"
-                )
+            if source == "file":
+                raw: str | bytes | None = collected.get(verdict_path)
+                if raw is None:
+                    raise JudgeError(
+                        f"judge {spec.name!r} finished without writing a verdict to "
+                        f"{verdict_path}"
+                    )
+            else:
+                reply = judge_trace.last_reply
+                if not reply:
+                    raise JudgeError(
+                        f"judge {spec.name!r} finished without a reply to parse as "
+                        "a verdict"
+                    )
+                raw = _strip_fences(reply)
             try:
                 verdict = spec.verdict.model_validate_json(raw)
             except ValidationError as e:
@@ -403,5 +475,15 @@ async def run_judges(
                 )
             )
 
-    results = await asyncio.gather(*(_run_one(spec) for spec in specs))
-    return dict(results)
+    # Judges in the rollout's live runtime run one at a time — they share one world
+    # (and one harness-provisioning path), so concurrency would let them race on files
+    # and observe each other's side effects. Judges with their own runtimes have
+    # nothing to share and run concurrently, alongside that chain.
+    shared = [spec for spec in specs if spec.placement == "rollout"]
+    isolated = [spec for spec in specs if spec.placement != "rollout"]
+
+    async def _run_shared() -> list[tuple[str, Any]]:
+        return [await _run_one(spec) for spec in shared]
+
+    chunks = await asyncio.gather(_run_shared(), *(_run_one(s) for s in isolated))
+    return dict(chunks[0] + list(chunks[1:]))

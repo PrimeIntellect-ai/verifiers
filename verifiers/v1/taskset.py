@@ -81,14 +81,20 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         multi-turn conversation (e.g. a TextArena game)."""
         return None
 
-    def judges(self, task: TaskT) -> list[JudgeSpec]:
-        """Agentic judges for this task — agent runs (harness + model, see
+    async def judges(self, task: TaskT) -> list[JudgeSpec]:
+        """Judges for this rollout — agent runs (harness + model, see
         `verifiers.v1.agent`) the framework executes in the SCORING stage, while the
         runtime is live, to grade the finished rollout. Each produces a typed verdict
         that `@reward`/`@metric` functions receive by declaring a `verdicts` parameter
         (`verdicts[spec.name]` is the parsed `spec.verdict` instance). Empty by
-        default; override to grade with a judge. Receives the task, so prompts are
-        written already rendered — f-strings over task fields, no template language."""
+        default; override to grade with a judge.
+
+        Like rewards, an override declares what it needs by name — any subset of
+        `task`, `trace`, `runtime` — so prompts are written already rendered
+        (f-strings, no template language): the task supplies the criteria, the trace
+        the evidence for reply-verdict judges (e.g. `trace.last_reply`). The trace
+        also enables conditional judging — return `[]` when a programmatic check
+        already settles the grade."""
         return []
 
     async def setup(self, task: TaskT, trace: Trace, runtime: Runtime) -> None:

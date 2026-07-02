@@ -12,6 +12,7 @@ from verifiers.v1.agent import (
     AgentBudget,
     AgentSpec,
     JudgeSpec,
+    render_transcript,
     run_agent,
     run_judges,
 )
@@ -174,6 +175,7 @@ __all__ = [
     "AgentSpec",
     "AgentBudget",
     "JudgeSpec",
+    "render_transcript",
     "run_agent",
     "run_judges",
     # taskset / harness / runtime / environment
