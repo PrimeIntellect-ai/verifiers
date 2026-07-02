@@ -5,11 +5,14 @@ loads questions from a HuggingFace dataset and exposes semantic `search_pages` +
 `view_sections`/`read_section` over the full corpus (chroma index) via a `vf.Toolset`. The
 expensive corpus + index are built in the toolset's `setup` (runs in the server process), and
 the toolset is SHARED — one instance for the whole eval, not rebuilt per rollout. The reward
-asks a judge model whether the harness's answer matches the ground truth.
+comes from a single-call judge agent (`vf.JudgeSpec`, `null` harness): its evidence rides in
+its prompt and its reply is the typed verdict. The judge's endpoint binds through the env
+model table — run with e.g. `--models.judge.model deepseek/deepseek-v4-flash`.
 """
 
+from pydantic import BaseModel
+
 import verifiers.v1 as vf
-from verifiers.v1.dialects import ChatDialect
 
 from wiki_search_v1.servers.wiki import WikiSearchToolset
 
@@ -37,8 +40,8 @@ Response:
 {response}
 ```
 
-Respond either "yes" or "no" only. If a response contains incoherent text, respond \
-with "no" even if the correct answer is also present."""
+If a response contains incoherent text, it is not correct even if the correct answer is \
+also present."""
 
 # The question bank and count are fixed properties of this env, not eval-time
 # knobs (the searchable corpus is built in `WikiSearchToolset.setup`).
@@ -51,13 +54,12 @@ class TriviaTask(vf.Task):
     answer: str
 
 
-class JudgeConfig(vf.BaseClientConfig):
-    # base_url / api_key_var / Prime team-billing are inherited from BaseClientConfig.
-    model: str = "deepseek/deepseek-v4-flash"
+class MatchVerdict(BaseModel):
+    correct: bool
+    """Whether the response matches the ground truth and is coherent."""
 
 
 class WikiSearchConfig(vf.TasksetConfig):
-    judge: JudgeConfig = JudgeConfig()
     # SHARED: the chroma corpus is expensive, so one instance serves the whole eval (its own
     # runtime), reused across rollouts rather than rebuilt per rollout. CLI-tunable, e.g.
     # `--taskset.tools.shared false` or `--taskset.tools.runtime.type docker`.
@@ -82,22 +84,21 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
     def tools(self, task: TriviaTask) -> list[vf.Toolset]:
         return [WikiSearchToolset(self.config.tools)]
 
-    @vf.reward(weight=1.0)
-    async def judged(
-        self, task: TriviaTask, trace: vf.Trace, runtime: vf.Runtime
-    ) -> float:
-        response = trace.last_reply
-        prompt = JUDGE_PROMPT.format(
-            question=task.question, answer=task.answer, response=response or ""
-        )
-        client = vf.resolve_client(self.config.judge)
-        try:
-            verdict = await client.get_response(
-                ChatDialect(),
-                {"messages": [{"role": "user", "content": prompt}]},
-                self.config.judge.model,
-                vf.SamplingConfig(),
+    async def judges(self, task: TriviaTask, trace: vf.Trace) -> list[vf.JudgeSpec]:
+        return [
+            vf.JudgeSpec(
+                name="match",
+                prompt=JUDGE_PROMPT.format(
+                    question=task.question,
+                    answer=task.answer,
+                    response=trace.last_reply or "",
+                ),
+                verdict=MatchVerdict,
+                harness={"id": "null"},
+                model="judge",
             )
-        finally:
-            await client.close()
-        return float("yes" in (verdict.message.content or "").lower())
+        ]
+
+    @vf.reward(weight=1.0)
+    async def judged(self, verdicts) -> float:
+        return float(verdicts["match"].correct)
