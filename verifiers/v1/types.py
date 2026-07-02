@@ -68,6 +68,17 @@ def content_to_parts(content) -> MessageContent:
     return parts
 
 
+def content_text(content: "MessageContent | None") -> str:
+    """The plain text of a message body — a `str` as-is, a parts list joined to its text
+    parts (images dropped), `""` for `None`. The shared text view used by `Task.prompt_text`
+    and `Trace.transcript`."""
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        part.text for part in content or [] if isinstance(part, TextContentPart)
+    )
+
+
 class SystemMessage(StrictBaseModel):
     """A system instruction message."""
 

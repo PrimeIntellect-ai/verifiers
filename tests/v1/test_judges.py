@@ -75,7 +75,10 @@ def test_judge_plugin_resolution():
     assert judge_class("rubric") is vf.RubricJudge
     assert judge_config_type("binary") is vf.BinaryJudgeConfig
     assert judge_config_type("rubric") is vf.RubricJudgeConfig
-    assert isinstance(load_judge(vf.BinaryJudgeConfig(id="binary")), vf.BinaryJudge)
+    assert isinstance(load_judge(vf.BinaryJudgeConfig()), vf.BinaryJudge)
+    # built-ins pin their id, so a code-level default entry needs no explicit id
+    assert vf.BinaryJudgeConfig().id == "binary"
+    assert vf.RubricJudgeConfig(path="x.toml").id == "rubric"
 
 
 def test_judge_config_cls_defaults():
@@ -186,7 +189,7 @@ async def test_binary_score(fake_judge_model):
 
 async def test_binary_score_missing_answer_field():
     trace = make_trace()
-    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(id="binary", answer_field="gold"))
+    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(answer_field="gold"))
     with pytest.raises(ValueError, match="no 'gold' field"):
         await judge.score(trace.task, trace)
 
@@ -213,9 +216,123 @@ async def test_binary_score_messages_prompt(fake_judge_model):
     assert "Capital of France?" in fake_judge_model[0]
 
 
+async def test_binary_question_field(fake_judge_model):
+    # question_field points {question} at a dedicated task field instead of the full prompt.
+    class FieldTask(vf.Task):
+        question: str = ""
+        answer: str = ""
+
+    task = FieldTask(
+        idx=0,
+        prompt="SYSTEM INSTRUCTIONS\n\nQuestion: Capital of France?",
+        question="Capital of France?",
+        answer="Paris",
+    )
+    trace = vf.Trace(
+        task=task,
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
+            MessageNode(
+                parent=0, message=AssistantMessage(content="It is Paris."), sampled=True
+            ),
+        ],
+    )
+    await vf.BinaryJudge(vf.BinaryJudgeConfig(question_field="question")).score(
+        task, trace
+    )
+    assert "Capital of France?" in fake_judge_model[0]
+    assert "SYSTEM INSTRUCTIONS" not in fake_judge_model[0]
+
+    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(question_field="typo"))
+    with pytest.raises(ValueError, match="no 'typo' field"):
+        await judge.score(task, trace)
+
+
+def full_trace_fixture() -> vf.Trace:
+    """A multi-turn trace: user -> assistant (reasoning + tool call) -> tool -> final reply."""
+    from verifiers.v1.types import ToolCall, ToolMessage
+
+    return vf.Trace(
+        task=QATask(idx=0, prompt="Capital of France?", answer="Paris"),
+        nodes=[
+            MessageNode(
+                parent=None,
+                message=UserMessage(content="Capital of France?"),
+                sampled=False,
+            ),
+            MessageNode(
+                parent=0,
+                message=AssistantMessage(
+                    content="Let me look it up.",
+                    reasoning_content="SECRET REASONING",
+                    tool_calls=[
+                        ToolCall(id="1", name="search", arguments='{"q": "france"}')
+                    ],
+                ),
+                sampled=True,
+            ),
+            MessageNode(
+                parent=1,
+                message=ToolMessage(
+                    tool_call_id="1",
+                    name="search",
+                    content="TOOL RESULT: Paris is the capital.",
+                ),
+                sampled=False,
+            ),
+            MessageNode(
+                parent=2, message=AssistantMessage(content="It is Paris."), sampled=True
+            ),
+        ],
+    )
+
+
+def test_transcript():
+    transcript = full_trace_fixture().transcript
+    assert "[user]\nCapital of France?" in transcript
+    assert '[tool_call search({"q": "france"})]' in transcript
+    assert "[tool search]\nTOOL RESULT: Paris is the capital." in transcript
+    assert "It is Paris." in transcript
+    assert "SECRET REASONING" not in transcript  # reasoning is excluded
+
+
+async def test_view_modes(fake_judge_model):
+    # last_reply (default): the judge sees only the final reply.
+    trace = full_trace_fixture()
+    await vf.BinaryJudge().score(trace.task, trace)
+    assert "TOOL RESULT" not in fake_judge_model[0]
+    # full_trace: the whole transcript (minus reasoning) fills {response}.
+    trace = full_trace_fixture()
+    await vf.BinaryJudge(vf.BinaryJudgeConfig(view="full_trace")).score(
+        trace.task, trace
+    )
+    assert "TOOL RESULT: Paris is the capital." in fake_judge_model[1]
+    assert "SECRET REASONING" not in fake_judge_model[1]
+
+
+async def test_rubric_view_full_trace(tmp_path, monkeypatch):
+    # The rubric judge shares the view field: criteria are judged against the transcript.
+    prompts: list[str] = []
+
+    async def fake_complete(
+        self, messages, *, trace=None, schema=None, parse=None, **s
+    ):
+        prompts.append(messages)
+        response = JudgeResponse(text="yes")
+        if parse is not None:
+            response.parsed = parse(response)
+        return response
+
+    monkeypatch.setattr(Judge, "complete", fake_complete)
+    judge = rubric_judge(tmp_path, view="full_trace")
+    trace = full_trace_fixture()
+    await judge.score(trace.task, trace)
+    assert all("TOOL RESULT" in prompt for prompt in prompts)
+
+
 def test_config_prompt_overrides_class_template():
     judge = vf.BinaryJudge(
-        vf.BinaryJudgeConfig(id="binary", prompt="Q:{question} A:{answer} R:{response}")
+        vf.BinaryJudgeConfig(prompt="Q:{question} A:{answer} R:{response}")
     )
     assert judge.build_messages(question="q", answer="a", response="r") == "Q:q A:a R:r"
 
@@ -228,7 +345,7 @@ def rubric_judge(
 ) -> vf.RubricJudge:
     path = tmp_path / f"rubric{suffix}"
     path.write_text(body)
-    return vf.RubricJudge(vf.RubricJudgeConfig(id="rubric", path=str(path), **kwargs))
+    return vf.RubricJudge(vf.RubricJudgeConfig(path=str(path), **kwargs))
 
 
 def test_rubric_criteria_toml_and_json(tmp_path):

@@ -10,7 +10,7 @@ from typing import TypeVar
 
 from pydantic import ConfigDict
 
-from verifiers.v1.types import Messages, StrictBaseModel, TextContentPart
+from verifiers.v1.types import Messages, StrictBaseModel, content_text
 
 
 class TaskResources(StrictBaseModel):
@@ -92,16 +92,7 @@ class Task(StrictBaseModel):
         form, e.g. the built-in judges' prompt templates."""
         if isinstance(self.prompt, str):
             return self.prompt
-        texts: list[str] = []
-        for message in self.prompt or []:
-            if isinstance(message.content, str):
-                texts.append(message.content)
-            elif message.content is not None:
-                texts.extend(
-                    part.text
-                    for part in message.content
-                    if isinstance(part, TextContentPart)
-                )
+        texts = [content_text(message.content) for message in self.prompt or []]
         return "\n\n".join(text for text in texts if text)
 
 

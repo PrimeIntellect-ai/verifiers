@@ -9,12 +9,19 @@ scores 1/0. The reference answer is read off the task by field name (`answer_fie
     answer_field = "answer"
 """
 
-from typing import cast
+from typing import Literal, cast
 
-from verifiers.v1.judge import Judge, JudgeConfig, JudgeResponse
+from verifiers.v1.judge import (
+    Judge,
+    JudgeConfig,
+    JudgeResponse,
+    judge_question,
+    judge_response,
+)
 from verifiers.v1.scoring import parse_judge_choice
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import ID
 
 BINARY_PROMPT = """Given a task, a reference answer, and a response, determine if the response \
 is correct — it must match the reference answer in substance (exact wording may differ).
@@ -38,8 +45,19 @@ Respond either "yes" or "no" only."""
 
 
 class BinaryJudgeConfig(JudgeConfig):
+    id: ID = "binary"
+    """Pinned to the built-in, so a code-level default entry needs no explicit id (a TOML
+    entry's `id` selects the config type before this default is ever seen)."""
     answer_field: str = "answer"
     """The task field holding the reference answer (works for extra/wire fields too)."""
+    question_field: str = ""
+    """Task field to fill the prompt's `{question}` (e.g. a dedicated `question` column
+    without the prompt's instruction framing); empty = the task's prompt rendered as text
+    (`Task.prompt_text`)."""
+    view: Literal["last_reply", "full_trace"] = "last_reply"
+    """How much of the rollout fills `{response}`: the final reply's text, or the whole
+    transcript (`Trace.transcript` — every turn incl. tool calls and results, reasoning
+    excluded)."""
 
 
 class BinaryJudge(Judge[float, BinaryJudgeConfig]):
@@ -59,9 +77,9 @@ class BinaryJudge(Judge[float, BinaryJudgeConfig]):
             )
         result = await self.evaluate(
             trace=trace,
-            question=task.prompt_text,
+            question=judge_question(task, self.config.question_field),
             answer=answer,
-            response=trace.last_reply,
+            response=judge_response(trace, self.config.view),
         )
         return cast(float, result.parsed)
 

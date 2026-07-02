@@ -357,14 +357,16 @@ Good to know:
   then the plugged judges — each phase is optional. A taskset with no `@reward` at all and one
   plugged judge gets `trace.reward` entirely from the judge (wiki-search-v1 is exactly this
   shape); mixing decorated rewards and judges just sums their weighted contributions.
-- **What the built-ins see:** they are *final-reply* graders. Each call renders the judge's
-  prompt template with `question` = `task.prompt_text` (the task prompt as plain text — a
-  `Messages` prompt is reduced to its joined text parts, images dropped) and `response` =
-  `trace.last_reply` (the last assistant message's text, `""` if none); `binary` adds `answer`
-  (the task field named by `answer_field`), `rubric` makes one call per criterion with that
-  criterion's `text` — all sent as a single user message. They do **not** see tool calls,
-  intermediate turns, or reasoning; a judge that grades the trajectory is a custom judge, whose
-  `score` receives the full `trace` (and `runtime`) and can build any messages from it.
+- **What the built-ins see** is config-selectable. Each call renders the judge's prompt
+  template with `question` = the task field named by `question_field` (e.g. a bare trivia
+  question without the prompt's instruction framing), defaulting to `task.prompt_text` (the
+  task prompt as plain text — a `Messages` prompt is reduced to its joined text parts, images
+  dropped); and `response` selected by `view`: `last_reply` (default — the final assistant
+  message's text) or `full_trace` (`Trace.transcript` — every turn as `[role]` blocks incl.
+  tool calls and results, reasoning excluded). `binary` adds `answer` (the task field named by
+  `answer_field`); `rubric` makes one call per criterion with that criterion's `text` — all
+  sent as a single user message. Anything beyond that is a custom judge, whose `score`
+  receives the full `trace` (and `runtime`) and can build any messages from it.
 - **What lands on the trace:** the verdict goes to `trace.rewards[<reward key>]` with the
   judge's `weight` applied (summed into `trace.reward`); `rubric` also records each raw
   per-criterion verdict as `trace.metrics["<reward key>/<criterion name>"]` (unweighted). Every

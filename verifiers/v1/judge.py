@@ -89,7 +89,7 @@ Judges = list[SerializeAsAny[JudgeConfig]]
 """The type of `TasksetConfig.judges` — a list of plugged-judge configs, each resolved by its
 `id`. `SerializeAsAny` keeps the resolved subclasses' fields through `model_dump` (the
 env-server wire). Use it to give a taskset config a default judge:
-`judges: vf.Judges = [vf.BinaryJudgeConfig(id="binary")]`."""
+`judges: vf.Judges = [vf.BinaryJudgeConfig()]` (the built-ins pin their own `id`)."""
 
 
 class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
@@ -101,6 +101,29 @@ class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
     parsed: ParsedT | None = None
     """The verdict the taskset acts on (`parse`'s output, or the structured object for `schema`)."""
     usage: Usage | None = None
+
+
+def judge_question(task: "Task", question_field: str) -> str:
+    """The text a judge prompt's `{question}` gets: the task field named by `question_field`
+    (raising on a missing field, like `answer_field`), or — when unset — the whole task
+    prompt rendered as text (`Task.prompt_text`)."""
+    if not question_field:
+        return task.prompt_text
+    question = getattr(task, question_field, None)
+    if question is None:
+        raise ValueError(
+            f"judge found no {question_field!r} field on the task; point "
+            "`question_field` at the task's question field, or leave it empty for the "
+            "task prompt"
+        )
+    return str(question)
+
+
+def judge_response(trace: "Trace", view: str) -> str:
+    """The text a judge prompt's `{response}` gets, by `view`: the final reply
+    (`last_reply`), or the whole transcript minus reasoning (`full_trace`,
+    `Trace.transcript`)."""
+    return trace.transcript if view == "full_trace" else trace.last_reply
 
 
 ConfigT = TypeVar("ConfigT", bound=JudgeConfig, default=JudgeConfig)

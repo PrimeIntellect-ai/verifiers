@@ -25,13 +25,19 @@ import json
 import tomllib
 from functools import cached_property
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
-from verifiers.v1.judge import Judge, JudgeConfig, JudgeResponse
+from verifiers.v1.judge import (
+    Judge,
+    JudgeConfig,
+    JudgeResponse,
+    judge_question,
+    judge_response,
+)
 from verifiers.v1.scoring import parse_judge_choice
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import StrictBaseModel
+from verifiers.v1.types import ID, StrictBaseModel
 
 RUBRIC_PROMPT = """Given a task, a response, and one grading criterion, determine if the \
 response satisfies the criterion.
@@ -66,11 +72,20 @@ class Criterion(StrictBaseModel):
 
 
 class RubricJudgeConfig(JudgeConfig):
+    id: ID = "rubric"
+    """Pinned to the built-in, so a code-level default entry needs no explicit id."""
     path: Path
     """The rubric file (`.toml` or `.json`) listing the criteria — see the module docstring
     for the shape."""
     weights: dict[str, float] = {}
     """Per-criterion weight overrides by criterion name (config wins over the file)."""
+    question_field: str = ""
+    """Task field to fill the prompt's `{question}`; empty = the task's prompt rendered as
+    text (`Task.prompt_text`)."""
+    view: Literal["last_reply", "full_trace"] = "last_reply"
+    """How much of the rollout fills `{response}`: the final reply's text, or the whole
+    transcript (`Trace.transcript` — every turn incl. tool calls and results, reasoning
+    excluded)."""
 
 
 class RubricJudge(Judge[float, RubricJudgeConfig]):
@@ -114,12 +129,14 @@ class RubricJudge(Judge[float, RubricJudgeConfig]):
 
     async def score(self, task: Task, trace: Trace) -> float:
         criteria = self.criteria
+        question = judge_question(task, self.config.question_field)
+        response = judge_response(trace, self.config.view)
         results = await asyncio.gather(
             *(
                 self.evaluate(
                     trace=trace,
-                    question=task.prompt_text,
-                    response=trace.last_reply,
+                    question=question,
+                    response=response,
                     criterion=criterion.text,
                 )
                 for criterion in criteria
