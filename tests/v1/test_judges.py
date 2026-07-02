@@ -379,6 +379,9 @@ def test_rubric_rejects_bad_files(tmp_path):
         _ = rubric_judge(
             tmp_path, weights={"mentions_paris": 0.0, "is_polite": 0.0}
         ).criteria
+    # a negative weight would invert a criterion and break the [0, 1] reward range
+    with pytest.raises(ValueError, match="negative criterion weights"):
+        _ = rubric_judge(tmp_path, weights={"mentions_paris": -1.0}).criteria
 
 
 async def test_rubric_score(tmp_path, monkeypatch):

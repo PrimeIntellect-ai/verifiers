@@ -123,6 +123,11 @@ class RubricJudge(Judge[float, RubricJudgeConfig]):
             )
             for criterion in criteria
         ]
+        if negative := [c.name for c in criteria if c.weight < 0]:
+            # A negative weight would invert a criterion and push the reward out of [0, 1].
+            raise ValueError(
+                f"rubric '{path}' has negative criterion weights: {negative}"
+            )
         if sum(criterion.weight for criterion in criteria) <= 0:
             raise ValueError(f"rubric '{path}' has no positive criterion weight")
         return criteria
