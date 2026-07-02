@@ -308,6 +308,74 @@ Good to know:
 - **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`, Prime auto-config). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.
 - **Errors propagate**: a judge API failure errors the rollout (recorded as a `TasksetError` on the trace); the OpenAI SDK already retries transient 429/5xx/connection errors.
 
+### Plugged judges
+
+A judge can also be **plugged from config alone** — no taskset code. The base `TasksetConfig` has a
+`judges` list; each entry names a judge plugin by `id` (resolved exactly like a taskset or harness id:
+a built-in, a local package, or a hub `org/name[@version]` package) and is run by `Taskset.score`
+after the taskset's own `@reward`s, recording its verdict into `trace.rewards` under its `name`
+(default: the id) with its `weight`. That makes off-the-shelf grading composable with **any**
+taskset × harness pair straight from the eval TOML:
+
+```toml
+[taskset]
+id = "gsm8k-v1"
+
+[[taskset.judges]]                       # reference-answer yes/no -> 1/0
+id = "binary"
+model = "openai/gpt-5-mini"
+answer_field = "answer"                  # the task field holding the reference answer
+
+[[taskset.judges]]                       # rubric criteria, each scored 1/0
+id = "rubric"
+path = "rubrics/quality.toml"
+weight = 0.5                             # the aggregate's weight in trace.reward
+weights = { cites_sources = 2.0 }        # per-criterion override of the file's weight
+```
+
+The built-ins (in `verifiers.v1.judges`):
+
+| id | class | grades |
+| --- | --- | --- |
+| `binary` | `vf.BinaryJudge` | the final reply against the task's reference answer (`answer_field`), 1/0 |
+| `rubric` | `vf.RubricJudge` | each criterion in a `.toml`/`.json` rubric file 1/0; rewards the weighted mean (`Σwv/Σw`), records each verdict as a `<name>/<criterion>` metric |
+
+A rubric file lists `[[criteria]]` entries (`name`, `text`, optional `weight`; JSON takes
+`{"criteria": [...]}` or a bare list) — criterion weights come from the file, overridable per name
+via the config's `weights`:
+
+```toml
+[[criteria]]
+name = "cites_sources"
+text = "The response cites at least one specific source."
+weight = 1.0
+```
+
+Writing your own pluggable judge is the same recipe as any plugin: a package exporting a `Judge`
+subclass via `__all__` that implements `score` — declare any subset of `task` / `trace` / `runtime`
+by parameter name (like a `@reward`) and return a `float` (or a `dict[str, float]`). Declare its
+config via the second generic param so `--taskset.judges` narrows to it:
+
+```python
+class MyJudgeConfig(vf.JudgeConfig):
+    strictness: int = 3
+
+class MyJudge(vf.Judge[float, MyJudgeConfig]):
+    prompt = "…{question}…{response}… Reply yes or no."
+
+    def parse(self, response: vf.JudgeResponse[float]) -> float:
+        return float(vf.parse_judge_choice(response.text, ("yes", "no")) == "yes")
+
+    async def score(self, task: vf.Task, trace: vf.Trace) -> float:
+        result = await self.evaluate(trace=trace, question=task.prompt, response=trace.last_reply)
+        return result.parsed
+
+__all__ = ["MyJudge", "MyJudgeConfig"]
+```
+
+Every judge's endpoint, model, sampling, prompt template (`prompt`), reward key (`name`), and
+`weight` are config fields, so a plugged judge is fully tunable per eval without touching code.
+
 ## Stop conditions
 
 A rollout ends when the harness finishes, a framework budget trips (`--max-turns`, token caps), or

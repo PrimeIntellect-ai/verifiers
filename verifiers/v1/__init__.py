@@ -39,12 +39,22 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import Judge, JudgeConfig, JudgeResponse, JudgeSamplingConfig
+from verifiers.v1.judges import (
+    BinaryJudge,
+    BinaryJudgeConfig,
+    Criterion,
+    RubricJudge,
+    RubricJudgeConfig,
+)
 from verifiers.v1.loaders import (
     default_harness_id,
     harness_config_type,
     import_harness,
+    import_judge,
     import_taskset,
+    judge_config_type,
     load_harness,
+    load_judge,
     load_taskset,
     task_type,
     taskset_config_type,
@@ -192,17 +202,25 @@ __all__ = [
     # loaders
     "import_taskset",
     "import_harness",
+    "import_judge",
     "load_taskset",
     "load_harness",
+    "load_judge",
     "task_type",
     "taskset_config_type",
     "harness_config_type",
+    "judge_config_type",
     "default_harness_id",
     # judge
     "Judge",
     "JudgeConfig",
     "JudgeSamplingConfig",
     "JudgeResponse",
+    "BinaryJudge",
+    "BinaryJudgeConfig",
+    "RubricJudge",
+    "RubricJudgeConfig",
+    "Criterion",
     # scoring
     "compare_stdout_results",
     "extract_boxed_answer",

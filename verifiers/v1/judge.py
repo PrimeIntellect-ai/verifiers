@@ -28,20 +28,29 @@ the call's tokens + cost added to `trace.extra_usage` (kept separate from the ag
 so judge behaviour and spend are no longer invisible. The record lands even if the judge refuses, an
 empty structured output comes back, or `parse` raises (the request was already billed). Omit `trace`
 for a pure call (e.g. in tests).
+
+A judge can also be *plugged* rather than called from taskset code: a judge with an `id` and a
+`score` implementation is a plugin (like a taskset or harness — see `verifiers.v1.judges` for the
+built-ins and `verifiers.v1.loaders` for resolution), attached to any eval via the base
+`TasksetConfig.judges` and run by `Taskset.score` after the taskset's own `@reward`s.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar, cast
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Callable, Generic, cast, get_args
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel
+from typing_extensions import TypeVar
 
 from verifiers.v1.clients.config import BaseClientConfig, build_async_openai
 from verifiers.v1.dialects.chat import message_to_wire
-from verifiers.v1.types import Messages, SamplingConfig, StrictBaseModel, Usage
+from verifiers.v1.utils.install import env_name
+from verifiers.v1.types import EnvId, Messages, SamplingConfig, StrictBaseModel, Usage
 
 if TYPE_CHECKING:
+    from verifiers.v1.task import Task
     from verifiers.v1.trace import Trace
 
 ParsedT = TypeVar("ParsedT")
@@ -56,10 +65,28 @@ class JudgeSamplingConfig(SamplingConfig):
 class JudgeConfig(BaseClientConfig):
     """An LLM-judge endpoint. Inherits `base_url` / `api_key_var` / `headers` (with the Prime
     auto-config) from `BaseClientConfig`; adds the model and sampling. Subclass to add
-    taskset-specific fields."""
+    judge-specific fields (see `verifiers.v1.judges.rubric.RubricJudgeConfig`)."""
 
+    id: EnvId = ""
+    """The judge id, which selects a judge plugin for a config-plugged judge (see
+    `TasksetConfig.judges`): a built-in (`binary`, `rubric`), a local package, or an
+    `org/name[@version]` package installed on demand from the Environments Hub (see `EnvId`).
+    Empty for a judge the taskset builds and calls itself."""
+    name: str = ""
+    """The reward key this judge's verdict records under when plugged (see `reward_name`);
+    defaults to the id's package name. Set it to disambiguate two plugged judges sharing an id."""
+    weight: float = 1.0
+    """How a plugged judge's verdict weighs into `trace.reward` (like `@vf.reward(weight=...)`)."""
     model: str = "openai/gpt-5-mini"
     sampling: JudgeSamplingConfig = JudgeSamplingConfig()
+    prompt: str | None = None
+    """Prompt-template override for `build_messages` (None = the judge class's own `prompt`),
+    so a plugged judge's prompt is tunable from config alone."""
+
+    @property
+    def reward_name(self) -> str:
+        """The reward key a plugged judge records under: `name`, else the id's package name."""
+        return self.name or env_name(self.id)
 
 
 class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
@@ -73,35 +100,71 @@ class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
     usage: Usage | None = None
 
 
-class Judge(Generic[ParsedT]):
+ConfigT = TypeVar("ConfigT", bound=JudgeConfig, default=JudgeConfig)
+
+
+def judge_config_cls(cls: type) -> type[JudgeConfig]:
+    """The `JudgeConfig` subclass a judge parameterizes — `Judge[ParsedT, MyJudgeConfig]` — read
+    off its generic bases, walking the MRO so a further subclass inherits it. Falls back to the
+    base `JudgeConfig` when none is given (the common case: a code-level judge written without
+    the extra generic param). Mirrors `state_cls` / `taskset_config_type`."""
+    for klass in getattr(cls, "__mro__", [cls]):
+        for base in getattr(klass, "__orig_bases__", ()):
+            for arg in get_args(base):
+                if isinstance(arg, type) and issubclass(arg, JudgeConfig):
+                    return arg
+    return JudgeConfig
+
+
+class Judge(Generic[ParsedT, ConfigT]):
     """A per-task LLM judge over an OpenAI-compatible endpoint.
 
     Override `build_messages` (prompt setup) and `parse` (verdict parsing) — or just set the
     `prompt` template and use the defaults — then call `evaluate(**fields)`. Set `schema` to opt
-    into structured outputs.
+    into structured outputs. Generic over the verdict and (optionally) the config type —
+    `Judge[bool]` for a code-level judge, `Judge[float, MyJudgeConfig]` to also narrow
+    `self.config` (which is how a plugged judge declares its config for `--taskset.judges`
+    narrowing; see `judge_config_cls`). A pluggable judge additionally implements `score`.
     """
 
     prompt: str | None = None
     """Default template for `build_messages`, formatted with the `evaluate` kwargs and sent as a
-    single user message. Override `build_messages` for system+user or non-template prompts."""
+    single user message. Override `build_messages` for system+user or non-template prompts;
+    `config.prompt` overrides it from config."""
     schema: type[BaseModel] | None = None
     """Pydantic schema for OpenAI structured outputs. When set, the call uses
     `response_format=schema` and `JudgeResponse.parsed` is the validated object (provider must
     support structured outputs)."""
 
-    def __init__(self, config: JudgeConfig | None = None) -> None:
-        self.config = config or JudgeConfig()
+    def __init__(self, config: ConfigT | None = None) -> None:
+        self.config = cast(ConfigT, config or judge_config_cls(type(self))())
         self.client: AsyncOpenAI = build_async_openai(self.config)
 
     def build_messages(self, **fields: Any) -> str | Messages:
         """Prompt-setup hook: turn the `evaluate` fields into the messages to send (a single user
         message as a plain `str`, or a `vf.Messages` list). The default formats the `prompt`
-        template with the fields; override it for a system+user / non-template prompt."""
-        if self.prompt is None:
+        template (the config's, else the class's) with the fields; override it for a
+        system+user / non-template prompt."""
+        template = self.config.prompt or self.prompt
+        if template is None:
             raise ValueError(
                 f"{type(self).__name__} has no `prompt`; set it or override build_messages"
             )
-        return self.prompt.format(**fields)
+        return template.format(**fields)
+
+    async def score(self, task: "Task", trace: "Trace") -> float | Mapping[str, float]:
+        """The plugged-judge contract: grade one finished rollout, returning a verdict that
+        `Taskset.score` records into `trace.rewards` under `config.reward_name` with
+        `config.weight` (a mapping records each entry under its own key, like a `@reward`).
+        Like the scoring hooks, an override declares the inputs it needs *by parameter name*
+        and the framework injects them: any subset of `task`, `trace`, `runtime`. Not
+        implemented on the base class — only a judge that implements `score` can be plugged
+        via `TasksetConfig.judges`; code-level judges just call `evaluate` from a `@reward`."""
+        raise NotImplementedError(
+            f"{type(self).__name__} implements no `score`, so it can't be plugged via "
+            "`taskset.judges`; implement `score` (see verifiers.v1.judges for examples) or "
+            "call it from a taskset `@reward` instead."
+        )
 
     def parse(self, response: JudgeResponse[ParsedT]) -> ParsedT:
         """Parsing hook: turn a `JudgeResponse` into the verdict. The default returns the
