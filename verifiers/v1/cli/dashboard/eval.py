@@ -1,13 +1,14 @@
 """The eval `--rich` dashboard: a config overview, a progress bar, and one line per rollout.
 
 Reads each `Rollout.trace`/`phase` every tick — no extra plumbing. Each row carries a bracketed
-phase marker that reads at a glance — `[setup]` (yellow), `[rollout]` (cyan), `[finalize]`
-(magenta), `[scoring]` (blue), `[success]` (green), `[error]` (red) — padded so the brackets
-line up in a column down the left edge. The reward shows only once a rollout is fully scored
-(phase DONE), so it never flips as scoring lands. A task's rollouts are grouped adjacently and joined
-by a left brace (╭│╰), so an episode (a task's n rollouts) reads as a unit. Every started
-rollout stays on screen (finished ones keep their result); the overview + progress sit on top,
-above a rule.
+phase marker that reads at a glance — `[pending]` (dim), `[setup]` (yellow), `[rollout]` (cyan),
+`[finalize]` (magenta), `[scoring]` (blue), `[success]` (green), `[error]` (red) — padded so the
+brackets line up in a column down the left edge. The reward shows only once a rollout is fully
+scored (phase DONE), so it never flips as scoring lands. A task's rollouts are grouped adjacently
+and joined by a left brace (╭│╰), so an episode (a task's n rollouts) reads as a unit. Every
+rollout is on screen from the start: one still queued behind the concurrency cap reads `[pending]`
+(its task is all that's known yet) until it begins, and finished ones keep their result. The
+overview + progress sit on top, above a rule.
 """
 
 import contextlib
@@ -44,6 +45,7 @@ _PAGE_SECONDS = 5.0  # rotate to the next page of rollouts this often when they 
 _LABEL_WIDTH = len("timeouts")
 
 _STYLE = {
+    "pending": "dim",
     "setup": "yellow",
     "running": "cyan",
     "finalize": "magenta",
@@ -52,6 +54,7 @@ _STYLE = {
     "error": "red",
 }
 _MARK_LABEL = {
+    "pending": "pending",
     "setup": "setup",
     "running": "rollout",
     "finalize": "finalize",
@@ -357,17 +360,26 @@ def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
     return prompt, completion, cached, reasoning, nbranches
 
 
+def _started(rollout: Rollout) -> float:
+    # Sort key: when a rollout began (its setup start). A still-pending rollout has no trace
+    # yet, so it sorts last (+inf) — behind everything already in flight, in task order.
+    return (
+        rollout.trace.timing.setup.start if rollout.trace is not None else float("inf")
+    )
+
+
 def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
     # The n rollouts of each task, grouped together (so they sit adjacent); groups ordered by
-    # earliest start, rollouts within a group by start. Finished ones stay (never removed).
+    # earliest start, rollouts within a group by start. Every rollout carries its `task` from
+    # construction, so ones still queued behind the concurrency cap (no trace yet) are grouped
+    # and shown too — as `[pending]`. Finished ones stay (never removed).
     by_task: dict[int, list[Rollout]] = {}
     for rollout in rollouts:
-        if rollout.trace is not None:
-            by_task.setdefault(rollout.trace.task.idx, []).append(rollout)
+        by_task.setdefault(rollout.task.idx, []).append(rollout)
     groups = list(by_task.values())
     for group in groups:
-        group.sort(key=lambda r: r.trace.timing.setup.start)
-    groups.sort(key=lambda g: g[0].trace.timing.setup.start)
+        group.sort(key=_started)
+    groups.sort(key=lambda g: _started(g[0]))
     return groups
 
 
@@ -385,6 +397,21 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
     for group in groups:
         for i, rollout in enumerate(group):
             t = rollout.trace
+            task = rollout.task
+            label = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
+            if (
+                t is None
+            ):  # queued behind the concurrency cap — only its task is known yet
+                rows.append(
+                    (
+                        _brace(i, len(group)),
+                        "pending",
+                        [f"task {label}", *[""] * 7],
+                        "",
+                        "",
+                    )
+                )
+                continue
             if rollout.phase == Phase.DONE:  # fully scored — reward is final
                 state = "error" if t.has_error else "success"
                 result = t.error.type if t.has_error else f"reward={t.reward:.2f}"
@@ -398,7 +425,6 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                         stop = f"{stop} (truncated)".strip()
             else:
                 state, result, stop = rollout.phase, "", ""
-            label = f"name={t.task.name[:32]}" if t.task.name else f"idx={t.task.idx}"
             descriptor = (
                 rollout.runtime.descriptor if rollout.runtime is not None else None
             )
