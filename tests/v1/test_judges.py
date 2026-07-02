@@ -104,10 +104,7 @@ def test_taskset_config_narrows_judges(tmp_path):
     )
     binary, rubric_cfg = cfg.judges
     assert isinstance(binary, vf.BinaryJudgeConfig) and binary.answer_field == "gold"
-    assert (
-        isinstance(rubric_cfg, vf.RubricJudgeConfig)
-        and rubric_cfg.reward_name == "quality"
-    )
+    assert isinstance(rubric_cfg, vf.RubricJudgeConfig) and rubric_cfg.name == "quality"
     assert cfg.model_dump()["judges"][0]["answer_field"] == "gold"
     # a round-trip through the dump re-narrows to the same types
     again = vf.TasksetConfig.model_validate(cfg.model_dump())
@@ -120,8 +117,32 @@ def test_judges_entry_requires_id():
 
 
 def test_rubric_config_requires_path():
-    with pytest.raises(ValueError, match="`path`"):
+    # `path` is a required Path field: a plugged rubric judge without one fails at config time.
+    with pytest.raises(ValueError, match="path"):
         vf.TasksetConfig.model_validate({"judges": [{"id": "rubric"}]})
+
+
+def test_judges_reject_shared_reward_keys():
+    # Two entries resolving to the same reward key would silently clobber; caught at config
+    # time with a pointer at `name`.
+    with pytest.raises(ValueError, match="share a reward key"):
+        vf.TasksetConfig.model_validate(
+            {"judges": [{"id": "binary"}, {"id": "binary"}]}
+        )
+
+
+def test_reward_name_fallback():
+    # name > id's package name > snake-cased class name (code-level judge with neither).
+    class MyQualityJudge(vf.Judge[float]):
+        prompt = "{x}"
+
+    assert vf.BinaryJudge().reward_name == "binary"  # class-name fallback (no id set)
+    assert (
+        vf.BinaryJudge(vf.BinaryJudgeConfig(id="org/my-judge@1.0.0")).reward_name
+        == "my-judge"
+    )
+    assert vf.BinaryJudge(vf.BinaryJudgeConfig(name="gold")).reward_name == "gold"
+    assert MyQualityJudge().reward_name == "my_quality"
 
 
 async def test_base_judge_score_raises():
@@ -159,6 +180,28 @@ async def test_binary_score_missing_answer_field():
     judge = vf.BinaryJudge(vf.BinaryJudgeConfig(id="binary", answer_field="gold"))
     with pytest.raises(ValueError, match="no 'gold' field"):
         await judge.score(trace.task, trace)
+
+
+async def test_binary_score_messages_prompt(fake_judge_model):
+    # A Messages-form prompt still reaches the judge as text (via Task.prompt_text).
+    from verifiers.v1.types import TextContentPart, UserMessage as UM
+
+    task = QATask(
+        idx=0,
+        prompt=[UM(content=[TextContentPart(text="Capital of France?")])],
+        answer="Paris",
+    )
+    trace = vf.Trace(
+        task=task,
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
+            MessageNode(
+                parent=0, message=AssistantMessage(content="It is Paris."), sampled=True
+            ),
+        ],
+    )
+    assert await vf.BinaryJudge().score(task, trace) == 1.0
+    assert "Capital of France?" in fake_judge_model[0]
 
 
 def test_config_prompt_overrides_class_template():
@@ -205,6 +248,11 @@ def test_rubric_rejects_bad_files(tmp_path):
         _ = rubric_judge(tmp_path, duplicate).criteria
     with pytest.raises(ValueError, match="name no criterion"):
         _ = rubric_judge(tmp_path, weights={"typo": 2.0}).criteria
+    # all-zero weights fail while loading the rubric — before any judge call is paid for
+    with pytest.raises(ValueError, match="no positive criterion weight"):
+        _ = rubric_judge(
+            tmp_path, weights={"mentions_paris": 0.0, "is_polite": 0.0}
+        ).criteria
 
 
 async def test_rubric_score(tmp_path, monkeypatch):

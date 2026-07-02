@@ -314,8 +314,9 @@ A judge can also be **plugged from config alone** — no taskset code. The base 
 `judges` list; each entry names a judge plugin by `id` (resolved exactly like a taskset or harness id:
 a built-in, a local package, or a hub `org/name[@version]` package) and is run by `Taskset.score`
 after the taskset's own `@reward`s, recording its verdict into `trace.rewards` under its `name`
-(default: the id) with its `weight`. That makes off-the-shelf grading composable with **any**
-taskset × harness pair straight from the eval TOML:
+(default: the id's package name; entries that would share a reward key are rejected at config
+time — set a distinct `name` on each) with its `weight`. That makes off-the-shelf grading
+composable with **any** taskset × harness pair straight from the eval TOML:
 
 ```toml
 [taskset]

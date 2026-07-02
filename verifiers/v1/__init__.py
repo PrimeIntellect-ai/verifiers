@@ -38,7 +38,13 @@ from verifiers.v1.errors import (
     UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.judge import Judge, JudgeConfig, JudgeResponse, JudgeSamplingConfig
+from verifiers.v1.judge import (
+    Judge,
+    JudgeConfig,
+    JudgeResponse,
+    Judges,
+    JudgeSamplingConfig,
+)
 from verifiers.v1.judges import (
     BinaryJudge,
     BinaryJudgeConfig,
@@ -214,6 +220,7 @@ __all__ = [
     # judge
     "Judge",
     "JudgeConfig",
+    "Judges",
     "JudgeSamplingConfig",
     "JudgeResponse",
     "BinaryJudge",

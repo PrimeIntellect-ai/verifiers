@@ -59,7 +59,7 @@ class BinaryJudge(Judge[float, BinaryJudgeConfig]):
             )
         result = await self.evaluate(
             trace=trace,
-            question=task.prompt if isinstance(task.prompt, str) else "",
+            question=task.prompt_text,
             answer=answer,
             response=trace.last_reply,
         )

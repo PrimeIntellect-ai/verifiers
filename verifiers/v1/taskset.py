@@ -21,12 +21,12 @@ from collections.abc import Mapping
 from functools import cached_property
 from typing import ClassVar, Generic, TypeVar
 
-from pydantic import SerializeAsAny, model_validator
+from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import TasksetError, boundary
-from verifiers.v1.judge import Judge, JudgeConfig
+from verifiers.v1.judge import Judge, Judges
 from verifiers.v1.types import ID
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import Runtime
@@ -43,10 +43,7 @@ class TasksetConfig(BaseConfig):
     """The taskset id, which selects this taskset: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
     `ID`). Set via `--taskset.id`."""
-    # SerializeAsAny: entries are resolved subclasses (e.g. RubricJudgeConfig); without it
-    # model_dump() would narrow to the base type and drop the judge-specific fields (same
-    # reasoning as EnvConfig's taskset/harness fields).
-    judges: list[SerializeAsAny[JudgeConfig]] = []
+    judges: Judges = []
     """Config-plugged judges, each resolved by `id` — a built-in (`binary`, `rubric`), a local
     package, or a hub `org/name[@version]` package exporting a `Judge` subclass — and run by
     `score` after the taskset's own `@reward`s: grading plugged into any taskset/harness pair
@@ -77,6 +74,12 @@ class TasksetConfig(BaseConfig):
                     "`rubric`, a local package, or a hub `org/name` package)"
                 )
             entries.append(judge_config_type(raw["id"]).model_validate(raw))
+        names = [entry.name or env_name(entry.id) for entry in entries]
+        if duplicates := {name for name in names if names.count(name) > 1}:
+            raise ValueError(
+                f"`judges` entries share a reward key {sorted(duplicates)}; set a "
+                "distinct `name` on each to keep both verdicts"
+            )
         data["judges"] = entries
         return data
 
@@ -201,9 +204,7 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
                     for name, value in result.items():
                         trace.record_reward(name, value, judge.config.weight)
                 else:
-                    trace.record_reward(
-                        judge.config.reward_name, result, judge.config.weight
-                    )
+                    trace.record_reward(judge.reward_name, result, judge.config.weight)
 
     async def score_group(self, traces: list[Trace]) -> None:
         """Score a group of rollouts of one task: run every `@group_reward` over all

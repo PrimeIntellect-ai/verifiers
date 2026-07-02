@@ -27,8 +27,6 @@ from functools import cached_property
 from pathlib import Path
 from typing import cast
 
-from pydantic import model_validator
-
 from verifiers.v1.judge import Judge, JudgeConfig, JudgeResponse
 from verifiers.v1.scoring import parse_judge_choice
 from verifiers.v1.task import Task
@@ -68,17 +66,11 @@ class Criterion(StrictBaseModel):
 
 
 class RubricJudgeConfig(JudgeConfig):
-    path: str = ""
+    path: Path
     """The rubric file (`.toml` or `.json`) listing the criteria — see the module docstring
-    for the shape. Required."""
+    for the shape."""
     weights: dict[str, float] = {}
     """Per-criterion weight overrides by criterion name (config wins over the file)."""
-
-    @model_validator(mode="after")
-    def require_path(self) -> "RubricJudgeConfig":
-        if not self.path:
-            raise ValueError("rubric judge needs a `path` to a .toml/.json rubric file")
-        return self
 
 
 class RubricJudge(Judge[float, RubricJudgeConfig]):
@@ -94,26 +86,21 @@ class RubricJudge(Judge[float, RubricJudgeConfig]):
         """The rubric, parsed once from `config.path` (TOML by suffix, else JSON) with the
         config's `weights` overrides applied. Fails loudly on a missing/empty file, duplicate
         criterion names, or an override naming no criterion."""
-        text = Path(self.config.path).read_text()
-        data = (
-            tomllib.loads(text)
-            if self.config.path.endswith(".toml")
-            else json.loads(text)
-        )
+        path = self.config.path
+        text = path.read_text()
+        data = tomllib.loads(text) if path.suffix == ".toml" else json.loads(text)
         items = data.get("criteria", []) if isinstance(data, dict) else data
         criteria = [Criterion.model_validate(item) for item in items]
         if not criteria:
-            raise ValueError(f"rubric file {self.config.path!r} lists no criteria")
+            raise ValueError(f"rubric file '{path}' lists no criteria")
         names = [criterion.name for criterion in criteria]
         if len(set(names)) != len(names):
-            raise ValueError(
-                f"rubric file {self.config.path!r} has duplicate criterion names"
-            )
+            raise ValueError(f"rubric file '{path}' has duplicate criterion names")
         if unknown := set(self.config.weights) - set(names):
             raise ValueError(
-                f"`weights` overrides name no criterion in {self.config.path!r}: {sorted(unknown)}"
+                f"`weights` overrides name no criterion in '{path}': {sorted(unknown)}"
             )
-        return [
+        criteria = [
             criterion.model_copy(
                 update={
                     "weight": self.config.weights.get(criterion.name, criterion.weight)
@@ -121,29 +108,28 @@ class RubricJudge(Judge[float, RubricJudgeConfig]):
             )
             for criterion in criteria
         ]
+        if sum(criterion.weight for criterion in criteria) <= 0:
+            raise ValueError(f"rubric '{path}' has no positive criterion weight")
+        return criteria
 
     async def score(self, task: Task, trace: Trace) -> float:
-        question = task.prompt if isinstance(task.prompt, str) else ""
+        criteria = self.criteria
         results = await asyncio.gather(
             *(
                 self.evaluate(
                     trace=trace,
-                    question=question,
+                    question=task.prompt_text,
                     response=trace.last_reply,
                     criterion=criterion.text,
                 )
-                for criterion in self.criteria
+                for criterion in criteria
             )
         )
         verdicts = [cast(float, result.parsed) for result in results]
-        for criterion, verdict in zip(self.criteria, verdicts):
-            trace.record_metric(f"{self.config.reward_name}/{criterion.name}", verdict)
-        total = sum(criterion.weight for criterion in self.criteria)
-        if total <= 0:
-            raise ValueError(
-                f"rubric {self.config.path!r} has no positive criterion weight"
-            )
-        return sum(c.weight * v for c, v in zip(self.criteria, verdicts)) / total
+        for criterion, verdict in zip(criteria, verdicts):
+            trace.record_metric(f"{self.reward_name}/{criterion.name}", verdict)
+        total = sum(criterion.weight for criterion in criteria)
+        return sum(c.weight * v for c, v in zip(criteria, verdicts)) / total
 
 
 __all__ = ["Criterion", "RubricJudge", "RubricJudgeConfig"]

@@ -37,11 +37,12 @@ built-ins and `verifiers.v1.loaders` for resolution), attached to any eval via t
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable, Generic, cast, get_args
 
 from openai import AsyncOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, SerializeAsAny
 from typing_extensions import TypeVar
 
 from verifiers.v1.clients.config import BaseClientConfig, build_async_openai
@@ -73,7 +74,7 @@ class JudgeConfig(BaseClientConfig):
     `org/name[@version]` package installed on demand from the Environments Hub (see `ID`).
     Empty for a judge the taskset builds and calls itself."""
     name: str = ""
-    """The reward key this judge's verdict records under when plugged (see `reward_name`);
+    """The reward key this judge's verdict records under when plugged (see `Judge.reward_name`);
     defaults to the id's package name. Set it to disambiguate two plugged judges sharing an id."""
     weight: float = 1.0
     """How a plugged judge's verdict weighs into `trace.reward` (like `@vf.reward(weight=...)`)."""
@@ -83,10 +84,12 @@ class JudgeConfig(BaseClientConfig):
     """Prompt-template override for `build_messages` (None = the judge class's own `prompt`),
     so a plugged judge's prompt is tunable from config alone."""
 
-    @property
-    def reward_name(self) -> str:
-        """The reward key a plugged judge records under: `name`, else the id's package name."""
-        return self.name or env_name(self.id)
+
+Judges = list[SerializeAsAny[JudgeConfig]]
+"""The type of `TasksetConfig.judges` — a list of plugged-judge configs, each resolved by its
+`id`. `SerializeAsAny` keeps the resolved subclasses' fields through `model_dump` (the
+env-server wire). Use it to give a taskset config a default judge:
+`judges: vf.Judges = [vf.BinaryJudgeConfig(id="binary")]`."""
 
 
 class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
@@ -139,6 +142,16 @@ class Judge(Generic[ParsedT, ConfigT]):
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = cast(ConfigT, config or judge_config_cls(type(self))())
         self.client: AsyncOpenAI = build_async_openai(self.config)
+
+    @property
+    def reward_name(self) -> str:
+        """The reward key this judge records under (and the built-in rubric judge's metric
+        prefix): the config `name`, else the id's package name, else the snake-cased class
+        name (a code-level judge with neither)."""
+        fallback = re.sub(
+            r"(?<!^)(?=[A-Z])", "_", type(self).__name__.removesuffix("Judge")
+        ).lower()
+        return self.config.name or env_name(self.config.id) or fallback or "judge"
 
     def build_messages(self, **fields: Any) -> str | Messages:
         """Prompt-setup hook: turn the `evaluate` fields into the messages to send (a single user
