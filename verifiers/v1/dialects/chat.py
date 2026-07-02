@@ -159,18 +159,7 @@ def serialize_completion(response: Response, model: str) -> dict:
     """A vf `Response` -> an OpenAI chat.completion dict the program's SDK expects. Set on
     `Response.raw` by the renderer client (it generates, so has no provider response to relay)
     and by the interception server for an `@intercept`-rewritten turn."""
-    message: dict = {"role": "assistant", "content": response.message.content}
-    if response.message.reasoning_content is not None:
-        message["reasoning_content"] = response.message.reasoning_content
-    if response.message.tool_calls:
-        message["tool_calls"] = [
-            {
-                "id": c.id,
-                "type": "function",
-                "function": {"name": c.name, "arguments": c.arguments},
-            }
-            for c in response.message.tool_calls
-        ]
+    message = message_to_wire(response.message)
     usage: dict | None = None
     if response.usage:
         # Usage is validated earlier in the pipeline; building its wire dict directly saves time.

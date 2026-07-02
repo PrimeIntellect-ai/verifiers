@@ -5421,6 +5421,12 @@ wheels = [
 name = "shell-guard-v1"
 version = "0.1.0"
 source = { editable = "environments/shell_guard_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "shellingham"

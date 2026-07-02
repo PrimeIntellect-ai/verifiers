@@ -387,14 +387,16 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
 
     def serialize_stream(self, raw: dict) -> list[bytes]:
         opening = {**raw, "status": "in_progress", "output": []}
+        # The terminal event's name mirrors the body's status (completed/incomplete/failed).
+        terminal = f"response.{raw.get('status') or 'completed'}"
         return [
             sse_event(
                 {"type": "response.created", "sequence_number": 0, "response": opening},
                 "response.created",
             ),
             sse_event(
-                {"type": "response.completed", "sequence_number": 1, "response": raw},
-                "response.completed",
+                {"type": terminal, "sequence_number": 1, "response": raw},
+                terminal,
             ),
         ]
 

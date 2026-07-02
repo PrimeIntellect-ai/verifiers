@@ -3,7 +3,7 @@ name = "shell-guard-v1"
 version = "0.1.0"
 description = "shell-guard-v1 — a task that tempts the model into `rm -rf .`; its @vf.intercept rewrites the destructive turn into a refusal before the codex harness's shell tool can execute it."
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["verifiers"]
 
 [build-system]
 requires = ["hatchling"]

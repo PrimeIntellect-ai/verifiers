@@ -248,12 +248,13 @@ class InterceptionServer:
         self, session: RolloutSession, dialect: Dialect, response: Response
     ) -> Response:
         """Run the taskset's `@intercept`s over a completed model turn (priority order, first
-        rewrite wins). An `AssistantMessage` replaces the model's message and is serialized back
-        to this dialect's wire shape; a dict replaces the wire body wholesale and is re-parsed.
-        Either way the returned response is what the harness receives AND what the trace commits
-        — the next turn's prompt must match the graph — so a rewritten turn carries no sampled
-        tokens (the model's tokens belong to the original, which only survives where the
-        interceptor stashes it, e.g. `trace.info`)."""
+        rewrite wins). An `AssistantMessage` rewrite is serialized to this dialect's wire shape;
+        a dict rewrite is the wire body wholesale. Either way the wire body is re-parsed and that
+        parse is what the harness receives AND what the trace commits — the committed message
+        must hash-match the next request's replayed history (see `graph.message_hash`) or the
+        prefix walk breaks and duplicates the turn. A rewritten turn carries no sampled tokens
+        (the model's tokens belong to the original, which only survives where the interceptor
+        stashes it, e.g. `trace.info`)."""
         for intercept in session.intercepts:
             replacement = await invoke(
                 intercept, {"response": response, "trace": session.trace}
@@ -261,21 +262,18 @@ class InterceptionServer:
             if replacement is None:
                 continue
             if isinstance(replacement, AssistantMessage):
-                response = response.model_copy(
-                    update={
-                        "message": replacement,
-                        "finish_reason": "tool_calls"
-                        if replacement.tool_calls
-                        else "stop",
-                        "tokens": None,
-                    }
+                replacement = dialect.serialize_response(
+                    response.model_copy(
+                        update={
+                            "message": replacement,
+                            "finish_reason": "tool_calls"
+                            if replacement.tool_calls
+                            else "stop",
+                        }
+                    )
                 )
-                response.raw = dialect.serialize_response(response)
-            else:
-                response = dialect.parse_response(
-                    dialect.validate_response(replacement)
-                )
-                response.raw = replacement
+            response = dialect.parse_response(dialect.validate_response(replacement))
+            response.raw = replacement
             logger.debug(
                 "turn intercepted: id=%s by=%s", session.trace.id, intercept.__name__
             )
