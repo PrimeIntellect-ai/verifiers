@@ -344,6 +344,118 @@ def test_config_prompt_overrides_class_template():
     assert judge.build_messages(question="q", answer="a", response="r") == "Q:q A:a R:r"
 
 
+# --- binary input/verdict knobs ------------------------------------------------------------
+
+
+async def test_binary_empty_response_short_circuits(fake_judge_model):
+    # An empty reply scores 0 without paying for the (foregone) judge call.
+    trace = make_trace(reply="")
+    assert await vf.BinaryJudge().score(trace.task, trace) == 0.0
+    assert fake_judge_model == []
+    assert "judge" not in trace.info
+
+
+async def test_binary_list_answer(fake_judge_model):
+    # A list-valued answer field is judged as multiple acceptable answers, one per line.
+    class MultiTask(vf.Task):
+        aliases: list[str] = []
+
+    task = MultiTask(idx=0, prompt="q?", aliases=["Paris", "Lutetia"])
+    trace = make_trace()
+    await vf.BinaryJudge(vf.BinaryJudgeConfig(answer_field="aliases")).score(
+        task, trace
+    )
+    assert "Paris\nLutetia" in fake_judge_model[0]
+
+
+def test_binary_choices():
+    # Verdict labels are configurable; the positive (first) label scores 1.0.
+    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(choices=("A", "B")))
+    assert judge.parse(JudgeResponse(text="A")) == 1.0
+    assert judge.parse(JudgeResponse(text="Final verdict: B")) == 0.0
+    assert judge.parse(JudgeResponse(text="gibberish")) == 0.0
+
+
+def test_binary_strict():
+    # strict=True raises on an unparseable verdict instead of hiding it as a 0.
+    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(strict=True))
+    assert judge.parse(JudgeResponse(text="yes")) == 1.0
+    with pytest.raises(ValueError, match="no yes/no verdict"):
+        judge.parse(JudgeResponse(text="gibberish"))
+
+
+async def test_binary_extract_boxed(fake_judge_model):
+    # extract="boxed" grades the last \boxed{...} content, falling back to the raw reply.
+    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(extract="boxed"))
+    trace = make_trace(reply="Reasoning about Rome... \\boxed{Paris}")
+    assert await judge.score(trace.task, trace) == 1.0
+    assert (
+        "Rome" not in fake_judge_model[0].split("Response:")[-1]
+    )  # only the boxed content
+    trace = make_trace(reply="It is Paris.")  # no box -> raw reply
+    assert await judge.score(trace.task, trace) == 1.0
+
+
+# --- choice --------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_grader(monkeypatch):
+    """Fake a grade-scale judge: A when the response block mentions Paris, else B."""
+    prompts: list[str] = []
+
+    async def fake_complete(
+        self, messages, *, trace=None, schema=None, parse=None, **s
+    ):
+        prompts.append(messages)
+        response = JudgeResponse(
+            text="A" if "Paris" in messages.split("Response:")[-1] else "B"
+        )
+        if parse is not None:
+            response.parsed = parse(response)
+        if trace is not None:
+            trace.record_judge(response)
+        return response
+
+    monkeypatch.setattr(Judge, "complete", fake_complete)
+    return prompts
+
+
+def grader_config(**kwargs) -> vf.ChoiceJudgeConfig:
+    return vf.ChoiceJudgeConfig(choices={"A": 1.0, "B": 0.25, "C": 0.0}, **kwargs)
+
+
+def test_choice_plugin_resolution():
+    assert judge_class("choice") is vf.ChoiceJudge
+    assert judge_config_type("choice") is vf.ChoiceJudgeConfig
+    cfg = vf.TasksetConfig.model_validate(
+        {"judges": [{"id": "choice", "choices": {"A": 1.0, "B": 0.0}, "default": "B"}]}
+    )
+    assert isinstance(cfg.judges[0], vf.ChoiceJudgeConfig)
+    with pytest.raises(ValueError, match="not one of the choices"):
+        grader_config(default="Z")
+
+
+async def test_choice_score_and_metrics(fake_grader):
+    judge = vf.ChoiceJudge(grader_config())
+    trace = make_trace()
+    assert await judge.score(trace.task, trace) == 1.0  # graded A
+    assert trace.metrics == {"choice/A": 1.0, "choice/B": 0.0, "choice/C": 0.0}
+    assert "- A" in fake_grader[0]  # the labels are listed in the prompt
+
+    trace = make_trace(reply="It is Rome.")
+    assert await judge.score(trace.task, trace) == 0.25  # graded B
+
+
+async def test_choice_default_label(fake_grader):
+    # Empty replies grade as `default` without a judge call; without one they score 0.
+    judge = vf.ChoiceJudge(grader_config(default="C"))
+    trace = make_trace(reply="")
+    assert await judge.score(trace.task, trace) == 0.0
+    assert trace.metrics["choice/C"] == 1.0
+    assert fake_grader == []
+
+
 # --- rubric --------------------------------------------------------------------------------
 
 
