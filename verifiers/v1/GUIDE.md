@@ -18,7 +18,8 @@ config. You'll likely work with them in different proportions:
 - **Runtime** — *where* the harness (and the taskset's tools / user simulator) executes:
   `subprocess` / `docker` / `prime` / `modal`. **You never write one** — runtimes ship with the
   framework behind one `Runtime` contract and compose with any taskset/harness; you just choose
-  where code runs.
+  where code runs. A *runtime* is the box; a spec's *placement* says which box — the solver's
+  placement creates the rollout's runtime, and a judge's `"rollout"` placement joins it.
 
 The output of a rollout is a `Trace` — the full record of the agent's trajectory: every
 message plus all the metadata captured along the way (token ids, logprobs, tool calls,
