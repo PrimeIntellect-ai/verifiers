@@ -6,7 +6,7 @@ scores 1/0. The reference answer is read off the task by field name (`answer_fie
 
     [[env.taskset.judges]]
     id = "binary"
-    model = "openai/gpt-5-mini"
+    answer_field = "answer"
 """
 
 from typing import cast

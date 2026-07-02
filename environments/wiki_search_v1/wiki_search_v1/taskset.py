@@ -55,11 +55,7 @@ class WikiSearchConfig(vf.TasksetConfig):
     # The built-in binary judge, plugged by default with this env's prompt (which also
     # requires coherence). Fully eval-tunable: `--taskset.judges.0.model ...`, or replaced
     # wholesale from the TOML's `[[taskset.judges]]`.
-    judges: vf.Judges = [
-        vf.BinaryJudgeConfig(
-            id="binary", model="deepseek/deepseek-v4-flash", prompt=JUDGE_PROMPT
-        )
-    ]
+    judges: vf.Judges = [vf.BinaryJudgeConfig(id="binary", prompt=JUDGE_PROMPT)]
     # SHARED: the chroma corpus is expensive, so one instance serves the whole eval (its own
     # runtime), reused across rollouts rather than rebuilt per rollout. CLI-tunable, e.g.
     # `--taskset.tools.shared false` or `--taskset.tools.runtime.type docker`.

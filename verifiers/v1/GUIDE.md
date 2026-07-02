@@ -271,7 +271,7 @@ class CorrectnessJudge(vf.Judge[bool]):                 # Judge[ParsedT] — Par
         return response.text.strip().lower().startswith("yes")
 
 class MyConfig(vf.TasksetConfig):
-    judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
+    judge: vf.JudgeConfig = vf.JudgeConfig()  # deepseek/deepseek-v4-flash by default
 
 class MyTaskset(vf.Taskset[MyTask, MyConfig]):
     def __init__(self, config: MyConfig) -> None:
@@ -324,7 +324,6 @@ id = "gsm8k-v1"
 
 [[taskset.judges]]                       # reference-answer yes/no -> 1/0
 id = "binary"
-model = "openai/gpt-5-mini"
 answer_field = "answer"                  # the task field holding the reference answer
 
 [[taskset.judges]]                       # rubric criteria, each scored 1/0

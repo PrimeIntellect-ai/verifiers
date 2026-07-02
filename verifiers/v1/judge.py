@@ -78,7 +78,7 @@ class JudgeConfig(BaseClientConfig):
     defaults to the id's package name. Set it to disambiguate two plugged judges sharing an id."""
     weight: float = 1.0
     """How a plugged judge's verdict weighs into `trace.reward` (like `@vf.reward(weight=...)`)."""
-    model: str = "openai/gpt-5-mini"
+    model: str = "deepseek/deepseek-v4-flash"
     sampling: JudgeSamplingConfig = JudgeSamplingConfig()
     prompt: str | None = None
     """Prompt-template override for `build_messages` (None = the judge class's own `prompt`),
