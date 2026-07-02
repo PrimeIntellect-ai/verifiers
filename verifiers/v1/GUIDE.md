@@ -511,19 +511,17 @@ the default is the cheapest correct thing; the rest trade setup cost for isolati
 | **own runtime** *(default)* | *(nothing; `runtime = {type = "docker"\|"prime"}` for a sandbox)* | own runtime per rollout — `subprocess` on the host (default), or a `docker`/`prime` sandbox over a tunnel | full per-rollout isolation; a sandbox also isolates untrusted code / deps / network | pays `setup` every rollout (a sandbox adds spin-up + env install) |
 | **colocated** | `colocated = true` | inside the harness's runtime, one per rollout (no tunnel) | no extra runtime/tunnel; can touch the harness's filesystem | couples to the harness; `setup` per rollout |
 | **shared** | `shared = true` | one instance for the whole eval | `setup` once; writable per-rollout if state lives in `self.state` | state outside `self.state` corrupts across rollouts; `setup_task` skipped |
-| **shared + fork** | `shared = true, fork = true` | warm parent + forked child per rollout (copy-on-write) | `setup` once **and** isolates arbitrary in-process/on-disk state; runs `setup_task` per child | a process per concurrent rollout; Linux only |
 | **remote** *(tools only)* | `url = "https://…"` | connects to an already-running MCP endpoint | zero hosting; use a public/third-party server | no isolation, state, or lifecycle control |
 
-`shared` (and `fork`) work on any runtime — the framework makes the rollout's `/state` channel
-reachable from the shared server (localhost, or a host tunnel when remote). Keep big shared data
-off the Python heap (numpy / mmap / an on-disk index) so fork's copy-on-write actually saves
-memory.
+`shared` works on any runtime — the framework makes the rollout's `/state` channel reachable from the
+shared server (localhost, or a host tunnel when remote). Keep big shared data off the Python heap
+(numpy / mmap / an on-disk index) so one instance scales across rollouts.
 
 **Choosing per-rollout state:** read-only resource → `shared`; state that fits a `State` model →
 `shared` + `self.state` (no extra process, the scalable default); state that can't (module globals,
-on-disk scratch, a stateful C library) → `shared + fork` or a per-rollout placement that pays
-`setup` each time; cheap `setup` → just use the default. **User simulators** support only the
-per-rollout placements (own runtime or `colocated`); `shared` / `fork` / `url` are tools-only.
+on-disk scratch, a stateful C library) → a per-rollout placement (own runtime or `colocated`) that
+pays `setup` each time; cheap `setup` → just use the default. **User simulators** support only the
+per-rollout placements (own runtime or `colocated`); `shared` / `url` are tools-only.
 
 ## Learn from the examples
 
