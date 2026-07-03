@@ -104,14 +104,6 @@ __all__ = [
     "update",
     "ensure_keys",
     "MissingKeyError",
-    "get_model",
-    "get_model_and_tokenizer",
-    "RLConfig",
-    "RLTrainer",
-    "GRPOTrainer",
-    "GRPOConfig",
-    "grpo_defaults",
-    "lora_defaults",
 ]
 
 _LAZY_IMPORTS = {
@@ -137,14 +129,6 @@ _LAZY_IMPORTS = {
     "EnvGroup": "verifiers.envs.env_group:EnvGroup",
     "JudgeRubric": "verifiers.rubrics.judge_rubric:JudgeRubric",
     "load_environment": "verifiers.utils.env_utils:load_environment",
-    "get_model": "verifiers_rl.rl.trainer.utils:get_model",
-    "get_model_and_tokenizer": "verifiers_rl.rl.trainer.utils:get_model_and_tokenizer",
-    "RLConfig": "verifiers_rl.rl.trainer:RLConfig",
-    "RLTrainer": "verifiers_rl.rl.trainer:RLTrainer",
-    "GRPOTrainer": "verifiers_rl.rl.trainer:GRPOTrainer",
-    "GRPOConfig": "verifiers_rl.rl.trainer:GRPOConfig",
-    "grpo_defaults": "verifiers_rl.rl.trainer:grpo_defaults",
-    "lora_defaults": "verifiers_rl.rl.trainer:lora_defaults",
     "MathRubric": "verifiers.rubrics.math_rubric:MathRubric",
     "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
@@ -166,20 +150,6 @@ def __getattr__(name: str):
     except KeyError:
         raise AttributeError(f"module 'verifiers' has no attribute '{name}'")
     except ModuleNotFoundError as e:
-        rl_names = {
-            "get_model",
-            "get_model_and_tokenizer",
-            "RLConfig",
-            "RLTrainer",
-            "GRPOTrainer",
-            "GRPOConfig",
-            "grpo_defaults",
-            "lora_defaults",
-        }
-        if name in rl_names:
-            raise AttributeError(
-                f"To use verifiers.{name}, install as `verifiers-rl`."
-            ) from e
         if name == "RendererClient":
             raise
         raise AttributeError(
@@ -188,8 +158,6 @@ def __getattr__(name: str):
 
 
 if TYPE_CHECKING:
-    from typing import Any
-
     from .clients.anthropic_messages_client import AnthropicMessagesClient  # noqa: F401
     from .clients.client import Client  # noqa: F401
     from .clients.openai_chat_completions_client import (  # noqa: F401
@@ -217,13 +185,3 @@ if TYPE_CHECKING:
     from .rubrics.judge_rubric import JudgeRubric  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
     from .utils.env_utils import load_environment  # noqa: F401
-
-    # Optional verifiers-rl exports. Keep type-checking clean when extra is absent.
-    RLConfig: Any
-    RLTrainer: Any
-    GRPOTrainer: Any
-    GRPOConfig: Any
-    grpo_defaults: Any
-    lora_defaults: Any
-    get_model: Any
-    get_model_and_tokenizer: Any
