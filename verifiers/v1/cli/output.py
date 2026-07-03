@@ -19,6 +19,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.aio import run_shielded
 
 
 def output_path(config: EvalConfig) -> Path:
@@ -65,10 +66,6 @@ async def append_trace(results_dir: Path, trace: Trace, lock: asyncio.Lock) -> N
         async with lock:
             await asyncio.to_thread(write_trace, results_dir, trace)
 
-    # Shield lock acquisition and the worker so finalized traces survive cancellation.
-    persist_task = asyncio.create_task(persist())
-    try:
-        await asyncio.shield(persist_task)
-    except asyncio.CancelledError:
-        await persist_task
-        raise
+    # Run lock acquisition and the worker to completion even under cancellation, so
+    # finalized traces are never lost mid-write (`run_shielded` re-raises the cancellation).
+    await run_shielded(persist())

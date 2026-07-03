@@ -189,10 +189,10 @@ class ModalRuntime(Runtime):
             with contextlib.suppress(Exception):
                 sandbox.terminate()
 
-    async def stop(self) -> None:
+    async def teardown(self) -> None:
         # Best-effort, idempotent teardown on the normal path: terminate the sandbox (the costly
-        # resource) via the async API. Runs from the rollout's `finally`, so it fires on success,
-        # error, and cancellation; `_sandbox` is nulled as the idempotency guard (atexit no-ops).
+        # resource) via the async API. Runs via `stop`, shielded from cancellation, so it fires on
+        # success, error, and Ctrl-C; `_sandbox` is nulled as the idempotency guard (atexit no-ops).
         sandbox, self._sandbox = self._sandbox, None
         if sandbox is None:
             return
