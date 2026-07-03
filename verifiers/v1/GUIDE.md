@@ -271,7 +271,7 @@ class CorrectnessJudge(vf.Judge[bool]):                 # Judge[ParsedT] — Par
         return response.text.strip().lower().startswith("yes")
 
 class MyConfig(vf.TasksetConfig):
-    judge: vf.JudgeConfig = vf.JudgeConfig()  # deepseek/deepseek-v4-flash by default
+    judge: vf.JudgeConfig = vf.JudgeConfig()
 
 class MyTaskset(vf.Taskset[MyTask, MyConfig]):
     def __init__(self, config: MyConfig) -> None:

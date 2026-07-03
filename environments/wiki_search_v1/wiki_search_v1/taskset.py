@@ -48,8 +48,6 @@ NUM_QUESTIONS = 20
 
 class TriviaTask(vf.Task):
     question: str
-    """The bare trivia question — what the judge grades against (`question_field`), without
-    the prompt's tool instructions."""
     answer: str
 
 
