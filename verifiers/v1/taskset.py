@@ -44,7 +44,7 @@ class TasksetConfig(BaseConfig):
     `org/name[@version]` package installed on demand from the Environments Hub (see
     `ID`). Set via `--taskset.id`."""
     judges: Judges = []
-    """Config-plugged judges, each resolved by `id` — a built-in (`binary`, `rubric`), a local
+    """Config-plugged judges, each resolved by `id` — a built-in (`reference`, `rubric`), a local
     package, or a hub `org/name[@version]` package exporting a `Judge` subclass — and run by
     `score` after the taskset's own `@reward`s: grading plugged into any taskset/harness pair
     from the eval config alone, no taskset code. Each entry records its verdict in
@@ -70,7 +70,7 @@ class TasksetConfig(BaseConfig):
             raw = entry.model_dump() if isinstance(entry, BaseConfig) else dict(entry)
             if not raw.get("id"):
                 raise ValueError(
-                    "each `judges` entry needs an `id` (a judge plugin: `binary`, "
+                    "each `judges` entry needs an `id` (a judge plugin: `reference`, "
                     "`rubric`, a local package, or a hub `org/name` package)"
                 )
             entries.append(judge_config_type(raw["id"]).model_validate(raw))
@@ -87,7 +87,7 @@ class TasksetConfig(BaseConfig):
         for entry in self.judges:
             if not entry.id:
                 raise ValueError(
-                    "each `judges` entry needs an `id` (a judge plugin: `binary`, "
+                    "each `judges` entry needs an `id` (a judge plugin: `reference`, "
                     "`rubric`, a local package, or a hub `org/name` package)"
                 )
             names.append(entry.name or env_name(entry.id))

@@ -1,4 +1,4 @@
-"""binary — an off-the-shelf reference-answer judge, plugged from config alone.
+"""reference — an off-the-shelf reference-answer judge, plugged from config alone.
 
 Asks the judge model whether the rollout's reply matches the task's reference answer and
 scores 1/0. The reference answer is read off the task by field name (`answer_field`, default
@@ -6,7 +6,7 @@ scores 1/0. The reference answer is read off the task by field name (`answer_fie
 any taskset that carries one — no taskset code:
 
     [[env.taskset.judges]]
-    id = "binary"
+    id = "reference"
     answer_field = "answer"
 
 Grading inputs are config-selectable: `question_field` (what fills `{question}`), `view`
@@ -37,13 +37,13 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID
 
 # A sibling text file so it doubles as a starting point for a config `prompt_file`.
-BINARY_PROMPT = (Path(__file__).resolve().parent / "binary.txt").read_text(
+REFERENCE_PROMPT = (Path(__file__).resolve().parent / "reference.txt").read_text(
     encoding="utf-8"
 )
 
 
-class BinaryJudgeConfig(JudgeConfig):
-    id: ID = "binary"
+class ReferenceJudgeConfig(JudgeConfig):
+    id: ID = "reference"
     """Pinned to the built-in, so a code-level default entry needs no explicit id (a TOML
     entry's `id` selects the config type before this default is ever seen)."""
     answer_field: str = "answer"
@@ -65,7 +65,7 @@ class BinaryJudgeConfig(JudgeConfig):
     model 0)."""
 
     @model_validator(mode="after")
-    def check_choices(self) -> "BinaryJudgeConfig":
+    def check_choices(self) -> "ReferenceJudgeConfig":
         # Duplicate labels would score every parsable verdict as the positive one; labels
         # are matched case-insensitively (`parse_judge_choice`), so distinctness is too.
         if not all(self.choices) or self.choices[0].upper() == self.choices[1].upper():
@@ -75,10 +75,10 @@ class BinaryJudgeConfig(JudgeConfig):
         return self
 
 
-class BinaryJudge(Judge[float, BinaryJudgeConfig]):
+class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
     """Scores the reply 1/0 against the task's reference answer."""
 
-    prompt = BINARY_PROMPT
+    prompt = REFERENCE_PROMPT
 
     def parse(self, response: JudgeResponse[float]) -> float:
         return float(
@@ -89,7 +89,7 @@ class BinaryJudge(Judge[float, BinaryJudgeConfig]):
         answer = getattr(task, self.config.answer_field, None)
         if answer is None:
             raise ValueError(
-                f"binary judge found no {self.config.answer_field!r} field on the task; "
+                f"reference judge found no {self.config.answer_field!r} field on the task; "
                 "point `answer_field` at the task's reference-answer field"
             )
         if isinstance(answer, (list, tuple)):
@@ -109,4 +109,4 @@ class BinaryJudge(Judge[float, BinaryJudgeConfig]):
         return cast(float, result.parsed)
 
 
-__all__ = ["BinaryJudge", "BinaryJudgeConfig"]
+__all__ = ["ReferenceJudge", "ReferenceJudgeConfig"]

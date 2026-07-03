@@ -72,7 +72,7 @@ class JudgeConfig(BaseClientConfig):
 
     id: ID = ""
     """The judge id, which selects a judge plugin for a config-plugged judge (see
-    `TasksetConfig.judges`): a built-in (`binary`, `rubric`), a local package, or an
+    `TasksetConfig.judges`): a built-in (`reference`, `rubric`), a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see `ID`).
     Empty for a judge the taskset builds and calls itself."""
     name: str = ""
@@ -102,7 +102,7 @@ Judges = list[SerializeAsAny[JudgeConfig]]
 """The type of `TasksetConfig.judges` — a list of plugged-judge configs, each resolved by its
 `id`. `SerializeAsAny` keeps the resolved subclasses' fields through `model_dump` (the
 env-server wire). Use it to give a taskset config a default judge:
-`judges: vf.Judges = [vf.BinaryJudgeConfig()]` (the built-ins pin their own `id`)."""
+`judges: vf.Judges = [vf.ReferenceJudgeConfig()]` (the built-ins pin their own `id`)."""
 
 
 class JudgeResponse(StrictBaseModel, Generic[ParsedT]):

@@ -6,12 +6,12 @@ or harness plugin — see `verifiers.v1.loaders`): the built-ins ship here, any 
 local package or an `org/name[@version]` package installed on demand from the Environments Hub.
 Re-exports each judge's class + config off the package."""
 
-from verifiers.v1.judges.binary import BinaryJudge, BinaryJudgeConfig
+from verifiers.v1.judges.reference import ReferenceJudge, ReferenceJudgeConfig
 from verifiers.v1.judges.rubric import Criterion, RubricJudge, RubricJudgeConfig
 
 __all__ = [
-    "BinaryJudge",
-    "BinaryJudgeConfig",
+    "ReferenceJudge",
+    "ReferenceJudgeConfig",
     "Criterion",
     "RubricJudge",
     "RubricJudgeConfig",

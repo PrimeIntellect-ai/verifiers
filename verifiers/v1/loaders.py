@@ -3,8 +3,8 @@
 A plugin (taskset, harness, or judge) is a module that exports its `Taskset` / `Harness` /
 `Judge` subclass via `__all__` — vf walks the exported names and finds the single subclass of
 the base. An id (an `ID`) resolves to that module: a built-in id (`default`, `rlm`,
-`harbor`, `binary`, ...) resolves to its namespaced module under the group package
-(`verifiers.v1.harnesses.rlm`, `verifiers.v1.tasksets.harbor`, `verifiers.v1.judges.binary`,
+`harbor`, `reference`, ...) resolves to its namespaced module under the group package
+(`verifiers.v1.harnesses.rlm`, `verifiers.v1.tasksets.harbor`, `verifiers.v1.judges.reference`,
 ...); any other id names a flat module — a local package (hyphens → underscores), or an
 `org/name[@version]` package installed on demand from the Environments Hub. Built-ins ship
 with verifiers under `verifiers/v1/{harnesses,tasksets,judges}`; custom ones live under

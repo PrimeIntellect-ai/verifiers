@@ -5,7 +5,7 @@ loads questions from a HuggingFace dataset and exposes semantic `search_pages` +
 `view_sections`/`read_section` over the full corpus (chroma index) via a `vf.Toolset`. The
 expensive corpus + index are built in the toolset's `setup` (runs in the server process), and
 the toolset is SHARED — one instance for the whole eval, not rebuilt per rollout. Grading is
-the plugged built-in `binary` judge (a default `judges` entry, overridable per eval) with a
+the plugged built-in `reference` judge (a default `judges` entry, overridable per eval) with a
 prompt that also requires coherence.
 """
 
@@ -52,11 +52,11 @@ class TriviaTask(vf.Task):
 
 
 class WikiSearchConfig(vf.TasksetConfig):
-    # The built-in binary judge, plugged by default with this env's prompt (which also
+    # The built-in reference judge, plugged by default with this env's prompt (which also
     # requires coherence). Fully eval-tunable: `--taskset.judges.0.model ...`, or replaced
     # wholesale from the TOML's `[[taskset.judges]]`.
     judges: vf.Judges = [
-        vf.BinaryJudgeConfig(prompt=JUDGE_PROMPT, question_field="question")
+        vf.ReferenceJudgeConfig(prompt=JUDGE_PROMPT, question_field="question")
     ]
     # SHARED: the chroma corpus is expensive, so one instance serves the whole eval (its own
     # runtime), reused across rollouts rather than rebuilt per rollout. CLI-tunable, e.g.

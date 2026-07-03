@@ -323,7 +323,7 @@ composable with **any** taskset × harness pair straight from the eval TOML:
 id = "gsm8k-v1"
 
 [[taskset.judges]]                       # reference-answer yes/no -> 1/0
-id = "binary"
+id = "reference"
 answer_field = "answer"                  # the task field holding the reference answer
 
 [[taskset.judges]]                       # rubric criteria, each scored 1/0
@@ -337,7 +337,7 @@ The built-ins (in `verifiers.v1.judges`):
 
 | id | class | grades |
 | --- | --- | --- |
-| `binary` | `vf.BinaryJudge` | the reply against the task's reference answer (`answer_field`; a list = any acceptable answer), 1/0. Knobs: `choices` (verdict labels, e.g. `["A", "B"]`) |
+| `reference` | `vf.ReferenceJudge` | the reply against the task's reference answer (`answer_field`; a list = any acceptable answer), 1/0. Knobs: `choices` (verdict labels, e.g. `["A", "B"]`) |
 | `rubric` | `vf.RubricJudge` | every criterion of a `.toml`/`.json` rubric file 1/0 in one structured-output call; rewards the weighted mean (`Σwv/Σw`), records each verdict as a `<name>/<criterion>` metric |
 
 A rubric file lists `[[criteria]]` entries (`name`, `text`, optional `weight`; JSON takes
@@ -358,7 +358,7 @@ Good to know:
   entirely from the judge (wiki-search-v1's shape); mixing them sums weighted contributions.
 - **What the built-ins see** is config-selectable: `{question}` = the task field named by
   `question_field` (else `task.prompt_text` — the prompt as plain text, `Messages` reduced to
-  text parts); `{response}` = the `view` (`vf.JudgeView`): `last_reply` (binary's default —
+  text parts); `{response}` = the `view` (`vf.JudgeView`): `last_reply` (reference's default —
   grade the answer) or `full_trace` (rubric's default — grade the process via
   `Trace.transcript`, every recorded turn minus reasoning). Anything beyond that is a custom
   judge: `score` gets the full `trace` (and `runtime`) and builds any messages from it.
@@ -394,7 +394,7 @@ Every judge's endpoint, model, sampling, prompt template (`prompt` inline, or `p
 pointing at a text file with the same `{field}` placeholders), reward key (`name`), and
 `weight` are config fields, so a pluggable judge is fully tunable per eval without touching code.
 The built-ins' default prompts ship as text files next to their modules
-(`verifiers/v1/judges/binary.txt`, `rubric.txt`) — copy one as a `prompt_file` starting point.
+(`verifiers/v1/judges/reference.txt`, `rubric.txt`) — copy one as a `prompt_file` starting point.
 
 ## Stop conditions
 

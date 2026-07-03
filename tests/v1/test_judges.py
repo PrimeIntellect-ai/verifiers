@@ -1,5 +1,5 @@
 """Pluggable judges: plugin resolution, base-`TasksetConfig.judges` narrowing, the built-in
-`binary` / `rubric` judges, and `Taskset.score` running plugged judges after the decorated
+`reference` / `rubric` judges, and `Taskset.score` running plugged judges after the decorated
 rewards. Judge model calls are faked at `Judge.complete` — no network."""
 
 import json
@@ -83,13 +83,13 @@ def fake_judge_model(monkeypatch):
 
 
 def test_judge_plugin_resolution():
-    assert judge_class("binary") is vf.BinaryJudge
+    assert judge_class("reference") is vf.ReferenceJudge
     assert judge_class("rubric") is vf.RubricJudge
-    assert judge_config_type("binary") is vf.BinaryJudgeConfig
+    assert judge_config_type("reference") is vf.ReferenceJudgeConfig
     assert judge_config_type("rubric") is vf.RubricJudgeConfig
-    assert isinstance(load_judge(vf.BinaryJudgeConfig()), vf.BinaryJudge)
+    assert isinstance(load_judge(vf.ReferenceJudgeConfig()), vf.ReferenceJudge)
     # built-ins pin their id, so a code-level default entry needs no explicit id
-    assert vf.BinaryJudgeConfig().id == "binary"
+    assert vf.ReferenceJudgeConfig().id == "reference"
     assert vf.RubricJudgeConfig(path="x.toml").id == "rubric"
 
     # a judge without the config generic falls back to the base JudgeConfig
@@ -97,7 +97,7 @@ def test_judge_plugin_resolution():
         prompt = "{x}"
 
     assert type(PlainJudge().config) is vf.JudgeConfig
-    assert type(vf.BinaryJudge().config) is vf.BinaryJudgeConfig
+    assert type(vf.ReferenceJudge().config) is vf.ReferenceJudgeConfig
 
 
 def test_taskset_config_narrows_judges(tmp_path):
@@ -109,18 +109,21 @@ def test_taskset_config_narrows_judges(tmp_path):
     cfg = vf.TasksetConfig.model_validate(
         {
             "judges": [
-                {"id": "binary", "answer_field": "gold", "weight": 0.5},
+                {"id": "reference", "answer_field": "gold", "weight": 0.5},
                 {"id": "rubric", "path": str(rubric), "name": "quality"},
             ]
         }
     )
-    binary, rubric_cfg = cfg.judges
-    assert isinstance(binary, vf.BinaryJudgeConfig) and binary.answer_field == "gold"
+    reference, rubric_cfg = cfg.judges
+    assert (
+        isinstance(reference, vf.ReferenceJudgeConfig)
+        and reference.answer_field == "gold"
+    )
     assert isinstance(rubric_cfg, vf.RubricJudgeConfig) and rubric_cfg.name == "quality"
     assert cfg.model_dump()["judges"][0]["answer_field"] == "gold"
     # a round-trip through the dump re-narrows to the same types
     again = vf.TasksetConfig.model_validate(cfg.model_dump())
-    assert isinstance(again.judges[0], vf.BinaryJudgeConfig)
+    assert isinstance(again.judges[0], vf.ReferenceJudgeConfig)
 
 
 def test_judges_entry_requires_id():
@@ -139,13 +142,13 @@ def test_judges_reject_shared_reward_keys():
     # key (`name`, else the id's package name), checked at config time.
     with pytest.raises(ValueError, match="share a reward key"):
         vf.TasksetConfig.model_validate(
-            {"judges": [{"id": "binary"}, {"id": "binary"}]}
+            {"judges": [{"id": "reference"}, {"id": "reference"}]}
         )
     cfg = vf.TasksetConfig.model_validate(
         {
             "judges": [
-                {"id": "binary", "name": "strict"},
-                {"id": "binary", "name": "lenient"},
+                {"id": "reference", "name": "strict"},
+                {"id": "reference", "name": "lenient"},
             ]
         }
     )
@@ -153,7 +156,7 @@ def test_judges_reject_shared_reward_keys():
 
     # class-level DEFAULTS are held to the same rule (they bypass the before-hook)
     class TwoDefaults(vf.TasksetConfig):
-        judges: vf.Judges = [vf.BinaryJudgeConfig(), vf.BinaryJudgeConfig()]
+        judges: vf.Judges = [vf.ReferenceJudgeConfig(), vf.ReferenceJudgeConfig()]
 
     with pytest.raises(ValueError, match="share a reward key"):
         TwoDefaults()
@@ -164,12 +167,14 @@ def test_reward_name_fallback():
     class MyQualityJudge(vf.Judge[float]):
         prompt = "{x}"
 
-    assert vf.BinaryJudge().reward_name == "binary"  # class-name fallback (no id set)
     assert (
-        vf.BinaryJudge(vf.BinaryJudgeConfig(id="org/my-judge@1.0.0")).reward_name
+        vf.ReferenceJudge().reward_name == "reference"
+    )  # class-name fallback (no id set)
+    assert (
+        vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="org/my-judge@1.0.0")).reward_name
         == "my-judge"
     )
-    assert vf.BinaryJudge(vf.BinaryJudgeConfig(name="gold")).reward_name == "gold"
+    assert vf.ReferenceJudge(vf.ReferenceJudgeConfig(name="gold")).reward_name == "gold"
     assert MyQualityJudge().reward_name == "my_quality"
 
 
@@ -178,11 +183,11 @@ async def test_base_judge_score_raises():
         await vf.Judge().score(task=QATask(idx=0, prompt="q"), trace=make_trace())
 
 
-# --- binary --------------------------------------------------------------------------------
+# --- reference --------------------------------------------------------------------------------
 
 
-def test_binary_parse():
-    judge = vf.BinaryJudge()
+def test_reference_parse():
+    judge = vf.ReferenceJudge()
     assert judge.parse(JudgeResponse(text="yes")) == 1.0
     assert judge.parse(JudgeResponse(text="Final answer: NO")) == 0.0
     # an unparseable verdict is a judge failure: raise (-> rollout error), don't score 0
@@ -190,9 +195,9 @@ def test_binary_parse():
         judge.parse(JudgeResponse(text="gibberish"))
 
 
-async def test_binary_score(fake_judge_model):
+async def test_reference_score(fake_judge_model):
     trace = make_trace()
-    verdict = await vf.BinaryJudge(vf.BinaryJudgeConfig(id="binary")).score(
+    verdict = await vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="reference")).score(
         trace.task, trace
     )
     assert verdict == 1.0
@@ -202,14 +207,14 @@ async def test_binary_score(fake_judge_model):
     assert len(trace.info["judge"]) == 1  # the call is recorded onto the trace
 
     trace = make_trace(reply="It is Rome.")
-    assert await vf.BinaryJudge().score(trace.task, trace) == 0.0
+    assert await vf.ReferenceJudge().score(trace.task, trace) == 0.0
 
-    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(answer_field="gold"))
+    judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(answer_field="gold"))
     with pytest.raises(ValueError, match="no 'gold' field"):  # misconfig raises, not 0
         await judge.score(trace.task, trace)
 
 
-async def test_binary_score_messages_prompt(fake_judge_model):
+async def test_reference_score_messages_prompt(fake_judge_model):
     # A Messages-form prompt still reaches the judge as text (via Task.prompt_text).
     from verifiers.v1.types import TextContentPart, UserMessage as UM
 
@@ -227,11 +232,11 @@ async def test_binary_score_messages_prompt(fake_judge_model):
             ),
         ],
     )
-    assert await vf.BinaryJudge().score(task, trace) == 1.0
+    assert await vf.ReferenceJudge().score(task, trace) == 1.0
     assert "Capital of France?" in fake_judge_model[0]
 
 
-async def test_binary_question_field(fake_judge_model):
+async def test_reference_question_field(fake_judge_model):
     # question_field points {question} at a dedicated task field instead of the full prompt.
     class FieldTask(vf.Task):
         question: str = ""
@@ -252,13 +257,13 @@ async def test_binary_question_field(fake_judge_model):
             ),
         ],
     )
-    await vf.BinaryJudge(vf.BinaryJudgeConfig(question_field="question")).score(
+    await vf.ReferenceJudge(vf.ReferenceJudgeConfig(question_field="question")).score(
         task, trace
     )
     assert "Capital of France?" in fake_judge_model[0]
     assert "SYSTEM INSTRUCTIONS" not in fake_judge_model[0]
 
-    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(question_field="typo"))
+    judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(question_field="typo"))
     with pytest.raises(ValueError, match="no 'typo' field"):
         await judge.score(task, trace)
 
@@ -314,11 +319,11 @@ def test_transcript():
 async def test_view_modes(fake_judge_model):
     # last_reply (default): the judge sees only the final reply.
     trace = full_trace_fixture()
-    await vf.BinaryJudge().score(trace.task, trace)
+    await vf.ReferenceJudge().score(trace.task, trace)
     assert "TOOL RESULT" not in fake_judge_model[0]
     # full_trace: the whole transcript (minus reasoning) fills {response}.
     trace = full_trace_fixture()
-    await vf.BinaryJudge(vf.BinaryJudgeConfig(view="full_trace")).score(
+    await vf.ReferenceJudge(vf.ReferenceJudgeConfig(view="full_trace")).score(
         trace.task, trace
     )
     assert "TOOL RESULT: Paris is the capital." in fake_judge_model[1]
@@ -326,8 +331,8 @@ async def test_view_modes(fake_judge_model):
 
 
 def test_view_defaults():
-    # binary grades the final answer; rubric grades the process by default.
-    assert vf.BinaryJudgeConfig().view == "last_reply"
+    # reference grades the final answer; rubric grades the process by default.
+    assert vf.ReferenceJudgeConfig().view == "last_reply"
     assert vf.RubricJudgeConfig(path="x.toml").view == "full_trace"
 
 
@@ -341,8 +346,8 @@ async def test_rubric_view_full_trace(tmp_path, fake_judge_model):
 
 
 async def test_config_prompt_overrides_class_template(fake_judge_model):
-    judge = vf.BinaryJudge(
-        vf.BinaryJudgeConfig(prompt="Q:{question} A:{answer} R:{response}")
+    judge = vf.ReferenceJudge(
+        vf.ReferenceJudgeConfig(prompt="Q:{question} A:{answer} R:{response}")
     )
     assert judge.build_messages(question="q", answer="a", response="r") == "Q:q A:a R:r"
     # A template needn't use every evaluate field: score also passes {positive}/{negative},
@@ -357,45 +362,45 @@ async def test_prompt_file(tmp_path, fake_judge_model):
     file = tmp_path / "judge.txt"
     file.write_text("Q:{question} A:{answer} R:{response}")
     trace = make_trace()
-    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(prompt_file=file))
+    judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt_file=file))
     assert await judge.score(trace.task, trace) == 1.0
     assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
     # a bad path fails at judge construction, not mid-eval at score time
     with pytest.raises(FileNotFoundError):
-        vf.BinaryJudge(vf.BinaryJudgeConfig(prompt_file=tmp_path / "missing.txt"))
+        vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt_file=tmp_path / "missing.txt"))
     # inline and file prompts are mutually exclusive
     with pytest.raises(ValueError, match="not both"):
-        vf.BinaryJudgeConfig(prompt="inline", prompt_file=file)
+        vf.ReferenceJudgeConfig(prompt="inline", prompt_file=file)
 
 
-# --- binary input/verdict knobs ------------------------------------------------------------
+# --- reference input/verdict knobs ------------------------------------------------------------
 
 
-async def test_binary_empty_response_short_circuits(fake_judge_model):
+async def test_reference_empty_response_short_circuits(fake_judge_model):
     # An empty reply scores 0 without paying for the (foregone) judge call.
     trace = make_trace(reply="")
-    assert await vf.BinaryJudge().score(trace.task, trace) == 0.0
+    assert await vf.ReferenceJudge().score(trace.task, trace) == 0.0
     assert fake_judge_model == []
     assert "judge" not in trace.info
 
 
-async def test_binary_list_answer(fake_judge_model):
+async def test_reference_list_answer(fake_judge_model):
     # A list-valued answer field is judged as multiple acceptable answers, one per line.
     class MultiTask(vf.Task):
         aliases: list[str] = []
 
     task = MultiTask(idx=0, prompt="q?", aliases=["Paris", "Lutetia"])
     trace = make_trace()
-    await vf.BinaryJudge(vf.BinaryJudgeConfig(answer_field="aliases")).score(
+    await vf.ReferenceJudge(vf.ReferenceJudgeConfig(answer_field="aliases")).score(
         task, trace
     )
     assert "Paris\nLutetia" in fake_judge_model[0]
 
 
-async def test_binary_choices(fake_judge_model):
+async def test_reference_choices(fake_judge_model):
     # Verdict labels are configurable; the positive (first) label scores 1.0 and the
     # default prompt asks for the configured labels (not a hardcoded yes/no).
-    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(choices=("A", "B")))
+    judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(choices=("A", "B")))
     assert judge.parse(JudgeResponse(text="A")) == 1.0
     assert judge.parse(JudgeResponse(text="Final verdict: B")) == 0.0
     with pytest.raises(ValueError, match="no A/B verdict"):
@@ -409,7 +414,7 @@ async def test_binary_choices(fake_judge_model):
     # degenerate labels are a config error (duplicates would score every verdict 1.0)
     for choices in (("yes", "yes"), ("A", "a"), ("", "no")):
         with pytest.raises(ValueError, match="two distinct, non-empty"):
-            vf.BinaryJudgeConfig(choices=choices)
+            vf.ReferenceJudgeConfig(choices=choices)
 
 
 async def test_error_attribution(monkeypatch, tmp_path):
@@ -429,16 +434,18 @@ async def test_error_attribution(monkeypatch, tmp_path):
                 trace.record_judge(response)
 
     monkeypatch.setattr(Judge, "complete", gibberish_judge)
-    taskset = JudgedTaskset(JudgedConfig.model_validate({"judges": [{"id": "binary"}]}))
+    taskset = JudgedTaskset(
+        JudgedConfig.model_validate({"judges": [{"id": "reference"}]})
+    )
     # model failure: empty reply -> judge skipped, reward 0.0, NO error
     trace = make_trace(reply="")
     await taskset.score(trace, runtime=None)
-    assert trace.rewards["binary"] == 0.0
+    assert trace.rewards["reference"] == 0.0
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
     trace = make_trace()
     with pytest.raises(vf.TasksetError, match="no yes/no verdict"):
         await taskset.score(trace, runtime=None)
-    assert "binary" not in trace.rewards
+    assert "reference" not in trace.rewards
     assert len(trace.info["judge"]) == 1  # the billed call is still recorded
 
 
@@ -538,7 +545,7 @@ async def test_taskset_score_runs_plugged_judges(tmp_path, fake_judge_model):
     cfg = JudgedConfig.model_validate(
         {
             "judges": [
-                {"id": "binary", "weight": 0.5},
+                {"id": "reference", "weight": 0.5},
                 {"id": "rubric", "path": str(rubric), "name": "quality"},
             ]
         }
@@ -547,7 +554,9 @@ async def test_taskset_score_runs_plugged_judges(tmp_path, fake_judge_model):
     trace = make_trace()
     await taskset.score(trace, runtime=None)
     assert trace.rewards["own"] == 0.25  # decorated rewards still run
-    assert trace.rewards["binary"] == 0.5  # 1.0 * weight 0.5, under the id-derived name
+    assert (
+        trace.rewards["reference"] == 0.5
+    )  # 1.0 * weight 0.5, under the id-derived name
     assert trace.rewards["quality"] == 0.75  # the rubric's aggregate, under its `name`
     assert (
         len(trace.info["judge"]) == 2
