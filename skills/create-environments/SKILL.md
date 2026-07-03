@@ -159,7 +159,6 @@ Tools can be placed in various ways. Think about what the tool is and how expens
 - per-rollout for cheap setup MCPs;
 - colocated for shared harness filesystem;
 - shared for expensive read-only setup or writable state entirely in `self.state` (e.g. big databases);
-- shared+fork for mutable process/filesystem state;
 - remote URL for an existing MCP service.
 
 ## User simulation
