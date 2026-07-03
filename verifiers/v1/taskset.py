@@ -80,10 +80,16 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         multi-turn conversation (e.g. a TextArena game)."""
         return None
 
-    async def setup(self, task: TaskT, runtime: Runtime) -> None:
+    async def setup(self, task: TaskT, trace: Trace, runtime: Runtime) -> None:
         """Prepare the live runtime for this task, after `runtime.start()` and before the
         harness runs. No-op by default; override to run per-task setup in the runtime (e.g.
-        a SWE row checking out its base commit). Errors propagate and fail the rollout."""
+        a SWE row checking out its base commit). Errors propagate and fail the rollout.
+
+        Like the scoring hooks, `setup` declares the inputs it needs *by parameter name* and
+        the framework injects them: any subset of `task`, `trace`, `runtime`. The trace (and
+        its per-rollout `trace.state`) already exists when `setup` runs, so an override may
+        stash per-rollout state there — e.g. `setup(self, task, trace, runtime)` or the
+        legacy `setup(self, task, runtime)` both work."""
         return None
 
     async def finalize(self, task: TaskT, trace: Trace, runtime: Runtime) -> None:

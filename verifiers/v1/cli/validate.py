@@ -29,9 +29,12 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.validate import ValidateConfig
+from verifiers.v1.decorators import invoke
 from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import make_runtime
+from verifiers.v1.state import state_cls
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.trace import Trace
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -101,8 +104,12 @@ async def _run_apply_answer(
     )
     valid, exc = False, None
     try:
+        trace = Trace(task=task, state=state_cls(type(taskset))())
         await runtime.start()
-        await asyncio.wait_for(taskset.setup(task, runtime), setup_timeout)
+        await asyncio.wait_for(
+            invoke(taskset.setup, {"task": task, "trace": trace, "runtime": runtime}),
+            setup_timeout,
+        )
         valid = await asyncio.wait_for(
             taskset.validate(task, runtime), config.validate_timeout
         )
@@ -128,8 +135,12 @@ async def _run_noop(taskset: Taskset, task, config: ValidateConfig) -> ResultRow
     )
     valid, exc = False, None
     try:
+        trace = Trace(task=task, state=state_cls(type(taskset))())
         await runtime.start()
-        await asyncio.wait_for(taskset.setup(task, runtime), setup_timeout)
+        await asyncio.wait_for(
+            invoke(taskset.setup, {"task": task, "trace": trace, "runtime": runtime}),
+            setup_timeout,
+        )
         valid = True
     except Exception as e:
         exc = e

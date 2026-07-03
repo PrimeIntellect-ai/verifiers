@@ -23,8 +23,10 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.debug import DebugConfig
+from verifiers.v1.decorators import invoke
 from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
+from verifiers.v1.state import state_cls
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.logging import setup_logging
@@ -207,7 +209,7 @@ async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
 
 
 async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace, bool]:
-    trace = Trace(task=task)
+    trace = Trace(task=task, state=state_cls(type(taskset))())
     debug = {
         "task": task_info(task),
         "action": "command" if config.command is not None else "script",
@@ -226,7 +228,10 @@ async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace
         trace.timing.setup.start = time.time()
         await runtime.start()
         debug["runtime"] = runtime_info(runtime)
-        await asyncio.wait_for(taskset.setup(task, runtime), setup_timeout)
+        await asyncio.wait_for(
+            invoke(taskset.setup, {"task": task, "trace": trace, "runtime": runtime}),
+            setup_timeout,
+        )
         trace.timing.setup.end = time.time()
 
         trace.timing.generation.start = time.time()

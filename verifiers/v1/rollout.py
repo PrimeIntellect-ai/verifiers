@@ -20,7 +20,7 @@ from enum import StrEnum
 
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.decorators import discover_decorated
+from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
@@ -51,9 +51,11 @@ logger = logging.getLogger(__name__)
 
 
 class Phase(StrEnum):
-    """A rollout's lifecycle phase (for display): provisioning, the harness driving,
-    post-run finalize, per-rollout + group scoring, then fully scored."""
+    """A rollout's lifecycle phase (for display): queued behind the concurrency cap,
+    provisioning, the harness driving, post-run finalize, per-rollout + group scoring,
+    then fully scored."""
 
+    PENDING = "pending"
     SETUP = "setup"
     RUNNING = "running"
     FINALIZE = "finalize"
@@ -93,9 +95,11 @@ class Rollout:
         `Environment.serving` context — so a rollout always has them and no runner has to thread
         them in."""
         self.interception = interception
-        self.phase = Phase.SETUP
-        """Lifecycle phase for display (see `Phase`); advanced through the rollout, and
-        set to DONE by the Episode once group scoring has run."""
+        self.phase = Phase.PENDING
+        """Lifecycle phase for display (see `Phase`); starts PENDING (queued behind the
+        concurrency cap) so the --rich dashboard can list it before it begins, advances to
+        SETUP the moment `run()` starts, and is set to DONE by the Episode once group
+        scoring has run."""
         self.runtime: Runtime | None = None
         """The runtime, set the moment `run()` creates it (so it's always tearable-down
         even if setup crashes) and torn down in `run()`'s `finally`; the --rich dashboard
@@ -139,6 +143,7 @@ class Rollout:
         `self.shared_urls` / `self.interception`)."""
         trace: Trace = Trace(task=self.task, state=state_cls(type(self.taskset))())
         self.trace = trace  # expose for the --rich dashboard
+        self.phase = Phase.SETUP  # leaving the queue: provisioning starts now
         trace.timing.setup.start = time.time()
         self.runtime = make_runtime(
             self.runtime_config, name=trace.id
@@ -165,7 +170,10 @@ class Rollout:
                 boundary(TasksetError, "taskset setup"),
                 asyncio.timeout_at(setup_deadline),
             ):
-                await self.taskset.setup(self.task, runtime)
+                await invoke(
+                    self.taskset.setup,
+                    {"task": self.task, "trace": trace, "runtime": runtime},
+                )
             async with (
                 boundary(HarnessError, "harness setup"),
                 asyncio.timeout_at(setup_deadline),
