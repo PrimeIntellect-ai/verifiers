@@ -165,7 +165,12 @@ class EnvConfig(BaseConfig):
         )
         # A classic (v0) env given as the taskset id (positional, `--taskset.id`, or toml)
         # auto-routes through the legacy bridge instead of failing taskset resolution.
-        if taskset_id and not data.get("id") and is_legacy_env(taskset_id):
+        # A redundant explicit `--id` naming the same env converts too.
+        if (
+            taskset_id
+            and data.get("id") in (None, taskset_id)
+            and is_legacy_env(taskset_id)
+        ):
             data["id"] = taskset_id
             data["taskset"] = {}
         narrow_plugin_field(data, "taskset", taskset_config_type)

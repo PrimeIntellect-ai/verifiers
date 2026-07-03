@@ -79,7 +79,9 @@ def read_results(path: Path) -> tuple[list[dict[str, Any]], list[InvalidResultLi
     """Read JSONL results while reporting incomplete or invalid records to the caller."""
     results: list[dict[str, Any]] = []
     invalid: list[InvalidResultLine] = []
-    with path.open(encoding="utf-8") as handle:
+    # errors="replace": a torn multibyte write corrupts one line, not the whole read —
+    # the mangled line then fails json.loads and is reported as invalid
+    with path.open(encoding="utf-8", errors="replace") as handle:
         for line_number, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
@@ -171,13 +173,20 @@ def convert_results_for_upload(
             if branches
             else []
         )
+        # v0-style split: prompt = messages before the first assistant turn
+        first_assistant = next(
+            (i for i, m in enumerate(main_messages) if m.get("role") == "assistant"),
+            len(main_messages),
+        )
+        # the trace reward belongs to the completed (final) branch; earlier branches
+        # carry no per-step reward, matching v0 samples
         trajectory = [
             {
                 "messages": [
                     message.model_dump(mode="json", exclude_none=True)
                     for message in branch.messages
                 ],
-                "reward": trace.reward,
+                "reward": trace.reward if branch is branches[-1] else None,
                 "num_input_tokens": branch.prompt_len or branch.num_prompt_tokens,
                 "num_output_tokens": branch.completion_len
                 or branch.num_completion_tokens,
@@ -197,8 +206,8 @@ def convert_results_for_upload(
                 "example_id": example_id,
                 "rollout_number": rollout_counts[example_id],
                 "task": task,
-                "prompt": [],
-                "completion": main_messages,
+                "prompt": main_messages[:first_assistant],
+                "completion": main_messages[first_assistant:],
                 "answer": task.get("answer"),
                 "reward": trace.reward,
                 "timing": trace.timing.model_dump(mode="json", exclude_none=True),
