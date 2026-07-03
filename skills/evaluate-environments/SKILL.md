@@ -28,7 +28,7 @@ prime eval run <MY_ENV> --dry-run
 2. Run model-free gold validation when the taskset implements it:
 
 ```bash
-prime validate <MY_ENV> --runtime.type subprocess
+prime eval validate <MY_ENV> --runtime.type subprocess
 ```
 
 3. Do a small run to see whether it works correctly:
