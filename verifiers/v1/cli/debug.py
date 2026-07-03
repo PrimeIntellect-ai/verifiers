@@ -247,6 +247,10 @@ async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace
         trace.info["debug"] = debug
         try:
             await runtime.stop()
+        except asyncio.CancelledError:
+            # a task cancellation delivered mid-stop would abort before the caller can
+            # persist the trace — absorb it here; the caller re-raises after appending
+            cancelled = True
         except Exception:
             logger.warning("runtime teardown failed (task %s)", task.idx, exc_info=True)
     return trace, cancelled
