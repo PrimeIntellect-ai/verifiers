@@ -245,3 +245,9 @@ find that single subclass, and instantiate it, while `narrow_plugin_field` valid
 config dict into the plugin's concrete config type (read off the class's `Taskset[TaskT,
 ConfigT]` / `Harness[ConfigT]` generic) — so the typed CLI/TOML surfaces each plugin's own
 fields without the core knowing them ahead of time.
+
+Built-in plugins live under `verifiers.v1.tasksets` and `verifiers.v1.harnesses`, but external
+packages do not need to use those namespaces. A private package can expose a flat module whose
+normalized name matches its id (`prime-agent-headless-v1` → `prime_agent_headless_v1`) and the
+loader will import it directly after the namespaced lookup misses. This lets research teams share
+private harness packages without moving private implementation code into public Verifiers.

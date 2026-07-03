@@ -48,6 +48,19 @@ def narrow_plugin_field(
         data[field] = resolve(ident).model_validate({**raw, "id": ident})
 
 
+def _has_module(import_name: str) -> bool:
+    """Whether `import_name` can be imported without importing it.
+
+    `find_spec("verifiers.v1.harnesses.foo")` can raise `ModuleNotFoundError` when a
+    parent package is absent in a lean install. Treat that as a missing candidate so private
+    flat plugin packages can still be imported by normalized module name.
+    """
+    try:
+        return importlib.util.find_spec(import_name) is not None
+    except ModuleNotFoundError:
+        return False
+
+
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     """Import a plugin by id. A built-in id resolves to its namespaced module under the
     `group` package (`verifiers.v1.harnesses` / `verifiers.v1.tasksets`); a hub
@@ -55,16 +68,23 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     (hyphens → underscores)."""
     module = ensure_installed(plugin_id)
     namespaced = f"{group}.{module}"
-    target = namespaced if importlib.util.find_spec(namespaced) else module
-    try:
-        return importlib.import_module(target)
-    except ModuleNotFoundError as e:
-        raise ModuleNotFoundError(
-            f"{kind} {plugin_id!r} not found (tried to import {target!r}). A {kind} is a "
-            f"package exporting its {kind.capitalize()} subclass via `__all__` — the built-in "
-            f"ones ship with verifiers in the `{group}` package, installed from "
-            f"the Environments Hub (`org/name`), or authored yourself."
-        ) from e
+    targets = [namespaced] if _has_module(namespaced) else [module]
+    if module not in targets:
+        targets.append(module)
+    for target in targets:
+        try:
+            return importlib.import_module(target)
+        except ModuleNotFoundError as e:
+            if e.name != target:
+                raise
+    tried = ", ".join(repr(target) for target in targets)
+    raise ModuleNotFoundError(
+        f"{kind} {plugin_id!r} not found (normalized module {module!r}; tried imports: "
+        f"{tried}). A {kind} is a package exporting its {kind.capitalize()} subclass via "
+        f"`__all__` — the built-in ones ship with verifiers in the `{group}` package, "
+        f"installed from the Environments Hub (`org/name`), installed from a private package "
+        f"(for example with `uv --with '<package> @ git+ssh://...'`), or authored yourself."
+    )
 
 
 def _plugin_class(module: ModuleType, base: type, kind: str) -> type:
