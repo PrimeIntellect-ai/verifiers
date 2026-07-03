@@ -28,7 +28,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import EnvId, Messages
+from verifiers.v1.types import ID, Messages
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +39,10 @@ class HarnessConfig(BaseConfig):
     id is supplied by the caller (`--harness.id` / toml / a taskset's bundled harness), never
     pinned on the subclass."""
 
-    id: EnvId = "default"
+    id: ID = "default"
     """The harness id, which selects this harness: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
-    `EnvId`). Set via `--harness.id`."""
+    `ID`). Set via `--harness.id`."""
     runtime: RuntimeConfig = SubprocessConfig()
     """Where the harness runs (subprocess / docker / prime). Subprocess by default — a local
     process on the host; a taskset that needs a container (its own image, or NEEDS_CONTAINER)
