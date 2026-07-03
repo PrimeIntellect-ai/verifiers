@@ -791,7 +791,7 @@ state, or output field. Metrics from all environments are tracked together.
 
 ## Performance
 
-Verifiers runs rollouts concurrently on a single `asyncio` event loop. Any synchronous operation in environment code blocks **all** concurrent rollouts for its duration. At scale this adds up quickly — a 10ms sync call in at 2,000 concurrent rollouts serializes into 20 seconds of wall-clock blocking where no other rollout can make progress. The most impactful optimization is eliminating sync operations on the hot path rollout execution code, i.e. any method that runs _for each rollout_ (e.g. `setup_state`, `env_response`, or reward functions).
+Verifiers runs rollouts concurrently on a single `asyncio` event loop. Any synchronous operation in environment code blocks **all** concurrent rollouts for its duration. At scale this adds up quickly — a 10ms sync call at 2,000 concurrent rollouts serializes into 20 seconds of wall-clock blocking where no other rollout can make progress. The most impactful optimization is eliminating sync operations on the hot path rollout execution code, i.e. any method that runs _for each rollout_ (e.g. `setup_state`, `env_response`, or reward functions).
 
 ### Avoiding Sync Operations
 
