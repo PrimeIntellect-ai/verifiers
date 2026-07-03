@@ -14,20 +14,6 @@ Run reliable environment evaluations and produce actionable summaries, not raw l
 3. Standard `prime eval run` runs save results automatically, keeping them available in the user's private Evaluations tab and locally in `prime eval view`.
 4. For Prime Inference models with available pricing, eval output and saved metadata include estimated total-run USD cost automatically; no extra flags or API-key handling are needed.
 
-## Native V1 Model-Free Checks
-1. For native v1 tasksets, use `uv run validate` before or alongside model smoke tests when the task setup, gold answer, or verifier contract is the risk.
-2. Use `--mode apply-answer` for the normal setup plus `taskset.validate()` path, `--mode noop` for setup-only checks, and `--mode both` to run those paths independently:
-```bash
-uv run validate my-task-v1 -n 1 --runtime.type subprocess --mode both
-```
-3. Use `uv run debug` when you need to inspect a prepared task runtime without sampling a model. Provide exactly one inline command or host script path:
-```bash
-uv run debug my-task-v1 -n 1 --runtime.type docker --command 'pwd; ls -la'
-uv run debug my-task-v1 -n 1 --runtime.type docker --script-path ./inspect.sh
-```
-4. Read `debug` results from the saved `results.jsonl`; command/script metadata, exit status, elapsed time, timeout/error details, and stdout/stderr tails live under `trace.info["debug"]`.
-5. These checks complement `prime eval run`; they do not replace model rollouts when the user asks to measure model behavior or benchmark performance.
-
 ## Core Loop
 1. Run a smoke evaluation first (do not require pre-install):
 ```bash
