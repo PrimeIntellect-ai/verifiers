@@ -15,7 +15,6 @@ from pathlib import Path
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -123,7 +122,7 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         if isinstance(prompt, str):
             args.append(f"--prompt={prompt}")
         elif prompt is not None:
-            env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in prompt])
+            await self.stage_message_prompt(prompt, env, runtime)
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )

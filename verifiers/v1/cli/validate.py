@@ -120,6 +120,9 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
         random.Random(0).shuffle(tasks)
     if config.num_tasks is not None:
         tasks = tasks[: config.num_tasks]
+    # Lazy tasksets bind task content at request time (Taskset.resolve_task); resolve before
+    # validating so hooks see real tasks, not stubs. Eager tasksets are unchanged.
+    tasks = [await taskset.resolve_task(task) for task in tasks]
     if isinstance(config.runtime, vf.SubprocessConfig) and (
         taskset.NEEDS_CONTAINER or any(t.image for t in tasks)
     ):
