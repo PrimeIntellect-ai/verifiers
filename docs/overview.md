@@ -26,7 +26,7 @@ A set of tools defined by the environment that are installed as MCP servers into
 
 ## Trace
 
-A trace records the message graph, rewards, metrics, errors, etc. When using Verifiers for training, it stores additional information such as tokens and logprobs, built incrementally using renderers.
+A trace records the message graph, rewards, metrics, errors, etc. When using Verifiers for training with [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl), it stores additional information such as tokens and logprobs, built incrementally using [renderers](https://github.com/PrimeIntellect-ai/renderers)).
 
 ## Documentation
 
@@ -35,5 +35,4 @@ A trace records the message graph, rewards, metrics, errors, etc. When using Ver
 - [Environments](environments.md) — How to create environments
   - [Harbor Environments](harbor.md) — How to Harbor-based environments
 - [Evaluation](evaluations.md) — How to run said environments
-- [Training](training.md) — How to train on the environments
 - [Harnesses](harnesses.md) — How to build custom harnesses

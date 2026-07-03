@@ -16,6 +16,8 @@ There are optional flags:
 
 However, for most environments, building a taskset should be enough.
 
+> For a production-scale catalog of benchmark environments, see the companion [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) repository.
+
 ## A minimal environment
 
 ```python

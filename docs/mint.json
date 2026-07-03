@@ -10,8 +10,7 @@
         "environments",
         "evaluations",
         "harnesses",
-        "harbor",
-        "training"
+        "harbor"
       ]
     }
   ]
