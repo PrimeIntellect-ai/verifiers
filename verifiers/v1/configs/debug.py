@@ -26,8 +26,6 @@ class DebugConfig(BaseConfig):
         None, validation_alias=AliasChoices("script_path", "script")
     )
     """Host script to upload and execute after setup."""
-    remote_script_path: str = "/tmp/vf-debug-script.sh"
-    """Runtime path used for the uploaded host script."""
     setup_timeout: float | None = None
     """Max wall-clock for the taskset's `setup` hook per task (None = no limit)."""
     timeout: float | None = None

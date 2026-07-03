@@ -33,6 +33,9 @@ from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
 
+REMOTE_SCRIPT_PATH = "/tmp/vf-debug-script.sh"
+"""Runtime path the uploaded host script is written to and executed from."""
+
 USAGE = (
     "usage: uv run debug [<taskset-id>] (--command <cmd> | --script-path <path>) "
     "[--runtime.type subprocess] [options] [@ file.toml]\n"
@@ -196,13 +199,13 @@ async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
             **(await run_command(runtime, config.command, config)),
         }
     assert config.script_path is not None
-    remote_path = config.remote_script_path
-    await runtime.write(remote_path, config.script_path.read_bytes())
-    command = f"chmod +x {shlex.quote(remote_path)} && {shlex.quote(remote_path)}"
+    await runtime.write(REMOTE_SCRIPT_PATH, config.script_path.read_bytes())
+    quoted = shlex.quote(REMOTE_SCRIPT_PATH)
+    command = f"chmod +x {quoted} && {quoted}"
     return {
         "action": "script",
         "script_path": str(config.script_path),
-        "remote_script_path": remote_path,
+        "remote_script_path": REMOTE_SCRIPT_PATH,
         "command": command,
         **(await run_command(runtime, command, config)),
     }
