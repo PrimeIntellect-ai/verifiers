@@ -76,6 +76,28 @@ class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
 ```
 Common usages for `vf.TasksetConfig` are settings like splits (e.g., train/test), difficulty settings, judge model names, etc.
 
+## Adding Tools
+
+Some environments require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`).
+Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
+
+You can create them like this (remember the bootstrapping with `prime env init MY_ENV -T`):
+```python
+DATABASE = None
+
+class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
+    TOOL_PREFIX = "search"
+
+    @vf.tool
+    async def query(self, text: str) -> list[str]:
+        """Search the task corpus."""
+        return DATABASE.search(text)
+
+# User-configurable knobs
+class SearchConfig(vf.TasksetConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+```
+
 ## Using Judges
 
 If your reward is semantic, use a LLM judge.
