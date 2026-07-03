@@ -308,7 +308,7 @@ Good to know:
 - **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`, Prime auto-config). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.
 - **Errors propagate**: a judge API failure errors the rollout (recorded as a `TasksetError` on the trace); the OpenAI SDK already retries transient 429/5xx/connection errors.
 
-### Plugged judges
+### Pluggable judges
 
 A judge can also be **plugged from config alone** — no taskset code. The base `TasksetConfig` has a
 `judges` list; each entry names a judge plugin by `id` (resolved exactly like a taskset or harness id:
@@ -353,7 +353,7 @@ weight = 1.0
 
 Good to know:
 
-- **Judges alone are a full reward signal.** `score` runs `@metric`s, `@reward`s, then plugged
+- **Judges alone are a full reward signal.** `score` runs `@metric`s, `@reward`s, then pluggable
   judges — each phase optional. A taskset with no `@reward` and one judge gets `trace.reward`
   entirely from the judge (wiki-search-v1's shape); mixing them sums weighted contributions.
 - **What the built-ins see** is config-selectable: `{question}` = the task field named by
@@ -392,7 +392,7 @@ __all__ = ["MyJudge", "MyJudgeConfig"]
 
 Every judge's endpoint, model, sampling, prompt template (`prompt` inline, or `prompt_file`
 pointing at a text file with the same `{field}` placeholders), reward key (`name`), and
-`weight` are config fields, so a plugged judge is fully tunable per eval without touching code.
+`weight` are config fields, so a pluggable judge is fully tunable per eval without touching code.
 The built-ins' default prompts ship as text files next to their modules
 (`verifiers/v1/judges/binary.txt`, `rubric.txt`) — copy one as a `prompt_file` starting point.
 
