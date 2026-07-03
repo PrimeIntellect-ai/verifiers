@@ -783,7 +783,7 @@ uv run debug swebench-v1 -n 1 --runtime.type prime --script-path ./inspect.sh
 | `-o`/`--output-dir` | fresh debug run dir | where `config.toml` and `results.jsonl` are written |
 
 Each saved trace has command/script metadata, exit status, elapsed time, timeout/error fields,
-and stdout/stderr tails under `trace.info["debug"]`.
+and the full stdout/stderr under `trace.info["debug"]`.
 
 ## `init`
 

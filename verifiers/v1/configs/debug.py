@@ -30,8 +30,6 @@ class DebugConfig(BaseConfig):
     timeout: CheckTimeoutConfig = CheckTimeoutConfig()
     """Per-task stage timeouts: `--timeout.setup` for the `setup` hook, `--timeout.total`
     for the debug command/script."""
-    output_tail_chars: int = 2000
-    """How many trailing stdout/stderr characters to persist in `trace.info["debug"]`."""
     num_tasks: int | None = Field(
         None,
         validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),
@@ -71,6 +69,4 @@ class DebugConfig(BaseConfig):
             raise ValueError(
                 f"script_path does not exist or is not a file: {self.script_path}"
             )
-        if self.output_tail_chars < 0:
-            raise ValueError("output_tail_chars must be non-negative")
         return self

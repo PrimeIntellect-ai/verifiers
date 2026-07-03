@@ -62,12 +62,6 @@ def output_path(config: DebugConfig) -> Path:
     return Path("outputs") / f"{config.taskset.name}--debug" / config.uuid
 
 
-def tail(text: str, chars: int) -> str:
-    if not text or chars == 0:
-        return ""
-    return text[-chars:]
-
-
 def task_info(task) -> dict[str, Any]:
     return {"idx": task.idx, "name": task.name, "workdir": task.workdir}
 
@@ -80,19 +74,15 @@ def runtime_info(runtime: Runtime) -> dict[str, Any]:
     }
 
 
-def result_info(
-    result: ProgramResult,
-    start: float,
-    output_tail_chars: int,
-) -> dict[str, Any]:
+def result_info(result: ProgramResult, start: float) -> dict[str, Any]:
     ok = result.exit_code == 0
     return {
         "ok": ok,
         "reason": "pass" if ok else "nonzero_exit",
         "exit_code": result.exit_code,
         "elapsed": round(time.time() - start, 2),
-        "stdout_tail": tail(result.stdout or "", output_tail_chars),
-        "stderr_tail": tail(result.stderr or "", output_tail_chars),
+        "stdout": result.stdout or "",
+        "stderr": result.stderr or "",
     }
 
 
@@ -122,8 +112,8 @@ def error_info(
         "elapsed": round(time.time() - start, 2),
         "error": message,
         "error_type": type(error).__name__,
-        "stdout_tail": "",
-        "stderr_tail": "",
+        "stdout": "",
+        "stderr": "",
     }
 
 
@@ -188,7 +178,7 @@ async def run_command(
         )
     except Exception as e:
         return error_info(e, start, config.timeout.total, "debug action")
-    return result_info(result, start, config.output_tail_chars)
+    return result_info(result, start)
 
 
 async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
