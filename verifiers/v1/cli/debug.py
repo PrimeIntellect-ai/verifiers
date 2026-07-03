@@ -11,6 +11,7 @@ import time
 import traceback
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic_config import cli
 
@@ -215,7 +216,8 @@ async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace
     }
     cancelled = False
     runtime = make_runtime(
-        resolve_runtime_config(config.runtime, task), name=f"debug-{task.idx}"
+        resolve_runtime_config(config.runtime, task),
+        name=f"debug-{task.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
         config.setup_timeout if config.setup_timeout is not None else task.timeout.setup

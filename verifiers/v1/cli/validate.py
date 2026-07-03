@@ -17,6 +17,7 @@ import signal
 import sys
 import time
 from typing import Any
+from uuid import uuid4
 
 from pydantic_config import cli
 
@@ -93,7 +94,7 @@ async def _run_apply_answer(
     start = time.time()
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
-        name=f"validate-apply-answer-{task.idx}",
+        name=f"validate-apply-answer-{task.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
         config.setup_timeout if config.setup_timeout is not None else task.timeout.setup
@@ -119,7 +120,8 @@ async def _run_noop(taskset: Taskset, task, config: ValidateConfig) -> ResultRow
     """Provision one runtime, run setup only, tear it down, and return a row."""
     start = time.time()
     runtime = make_runtime(
-        resolve_runtime_config(config.runtime, task), name=f"validate-noop-{task.idx}"
+        resolve_runtime_config(config.runtime, task),
+        name=f"validate-noop-{task.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
         config.setup_timeout if config.setup_timeout is not None else task.timeout.setup
