@@ -26,7 +26,7 @@ A set of tools defined by the environment that are installed as MCP servers into
 
 ## Trace
 
-A trace records the message graph, rewards, metrics, errors, etc. When using Verifiers for training, it stores additional information such as logprobs.
+A trace records the message graph, rewards, metrics, errors, etc. When using Verifiers for training, it stores additional information such as tokens and logprobs, built incrementally using renderers.
 
 ## Documentation
 
