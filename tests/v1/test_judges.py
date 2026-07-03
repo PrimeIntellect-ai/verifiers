@@ -352,6 +352,22 @@ async def test_config_prompt_overrides_class_template(fake_judge_model):
     assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
 
 
+async def test_prompt_file(tmp_path, fake_judge_model):
+    # The prompt template can come from a file; the same {field} placeholders work.
+    file = tmp_path / "judge.txt"
+    file.write_text("Q:{question} A:{answer} R:{response}")
+    trace = make_trace()
+    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(prompt_file=file))
+    assert await judge.score(trace.task, trace) == 1.0
+    assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
+    # a bad path fails at judge construction, not mid-eval at score time
+    with pytest.raises(FileNotFoundError):
+        vf.BinaryJudge(vf.BinaryJudgeConfig(prompt_file=tmp_path / "missing.txt"))
+    # inline and file prompts are mutually exclusive
+    with pytest.raises(ValueError, match="not both"):
+        vf.BinaryJudgeConfig(prompt="inline", prompt_file=file)
+
+
 # --- binary input/verdict knobs ------------------------------------------------------------
 
 

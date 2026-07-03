@@ -390,7 +390,8 @@ class MyJudge(vf.Judge[float, MyJudgeConfig]):
 __all__ = ["MyJudge", "MyJudgeConfig"]
 ```
 
-Every judge's endpoint, model, sampling, prompt template (`prompt`), reward key (`name`), and
+Every judge's endpoint, model, sampling, prompt template (`prompt` inline, or `prompt_file`
+pointing at a text file with the same `{field}` placeholders), reward key (`name`), and
 `weight` are config fields, so a plugged judge is fully tunable per eval without touching code.
 
 ## Stop conditions

@@ -39,10 +39,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Generic, Literal, cast, get_args
 
 from openai import AsyncOpenAI
-from pydantic import BaseModel, SerializeAsAny
+from pydantic import BaseModel, SerializeAsAny, model_validator
 from typing_extensions import TypeVar
 
 from verifiers.v1.clients.config import BaseClientConfig, build_async_openai
@@ -84,6 +85,17 @@ class JudgeConfig(BaseClientConfig):
     prompt: str | None = None
     """Prompt-template override for `build_messages` (None = the judge class's own `prompt`),
     so a plugged judge's prompt is tunable from config alone."""
+    prompt_file: Path | None = None
+    """Load the `prompt` template from a text file instead of inlining it (mutually exclusive
+    with `prompt`; the same `{field}` placeholders work). Read once at judge construction, so
+    a bad path fails the eval up front. A relative path resolves against the process working
+    directory (like `RubricJudgeConfig.path`)."""
+
+    @model_validator(mode="after")
+    def check_prompt_source(self) -> "JudgeConfig":
+        if self.prompt is not None and self.prompt_file is not None:
+            raise ValueError("set `prompt` or `prompt_file`, not both")
+        return self
 
 
 Judges = list[SerializeAsAny[JudgeConfig]]
@@ -177,7 +189,7 @@ class Judge(Generic[ParsedT, ConfigT]):
     prompt: str | None = None
     """Default template for `build_messages`, formatted with the `evaluate` kwargs and sent as a
     single user message. Override `build_messages` for system+user or non-template prompts;
-    `config.prompt` overrides it from config."""
+    `config.prompt` (inline) or `config.prompt_file` (a text file) overrides it from config."""
     schema: type[BaseModel] | None = None
     """Pydantic schema for OpenAI structured outputs. When set, the call uses
     `response_format=schema` and `JudgeResponse.parsed` is the validated object (provider must
@@ -186,6 +198,10 @@ class Judge(Generic[ParsedT, ConfigT]):
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = cast(ConfigT, config or judge_config_cls(type(self))())
         self.client: AsyncOpenAI = build_async_openai(self.config)
+        if self.config.prompt_file is not None:
+            # Read eagerly so a bad path fails at construction, not mid-eval; shadows the
+            # class `prompt` for this instance (`config.prompt` is None — they're exclusive).
+            self.prompt = self.config.prompt_file.read_text(encoding="utf-8")
 
     @property
     def reward_name(self) -> str:
