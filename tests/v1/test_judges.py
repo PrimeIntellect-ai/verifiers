@@ -3,6 +3,7 @@
 rewards. Judge model calls are faked at `Judge.complete` — no network."""
 
 import json
+import re
 
 import pytest
 
@@ -46,17 +47,28 @@ def make_trace(reply: str = "It is Paris.") -> vf.Trace:
 
 @pytest.fixture
 def fake_judge_model(monkeypatch):
-    """Fake the judge's model call: reply "yes" iff "Paris" appears in the response block of
-    the rendered prompt, recording each prompt for assertions."""
+    """Fake the judge's model call, recording each prompt for assertions. Text calls reply
+    "yes" iff "Paris" appears in the response block of the rendered prompt; structured
+    (`schema`) calls verdict each `- name: text` criteria line "yes" iff it mentions Paris."""
     prompts: list[str] = []
 
     async def fake_complete(
         self, messages, *, trace=None, schema=None, parse=None, **sampling
     ):
         prompts.append(messages)
-        response = JudgeResponse(
-            text="yes" if "Paris" in messages.split("Response:")[-1] else "no"
-        )
+        if schema is not None:
+            verdicts = [
+                {"name": name, "verdict": "yes" if "Paris" in text else "no"}
+                for name, text in re.findall(r"^- ([^:]+): (.+)$", messages, re.M)
+            ]
+            response = JudgeResponse(
+                text=json.dumps(verdicts),
+                parsed=schema.model_validate({"verdicts": verdicts}),
+            )
+        else:
+            response = JudgeResponse(
+                text="yes" if "Paris" in messages.split("Response:")[-1] else "no"
+            )
         if parse is not None:
             response.parsed = parse(response)
         if trace is not None:
@@ -319,25 +331,13 @@ def test_view_defaults():
     assert vf.RubricJudgeConfig(path="x.toml").view == "full_trace"
 
 
-async def test_rubric_view_full_trace(tmp_path, monkeypatch):
+async def test_rubric_view_full_trace(tmp_path, fake_judge_model):
     # The rubric judge's default view: criteria are judged against the whole transcript.
-    prompts: list[str] = []
-
-    async def fake_complete(
-        self, messages, *, trace=None, schema=None, parse=None, **s
-    ):
-        prompts.append(messages)
-        response = JudgeResponse(text="yes")
-        if parse is not None:
-            response.parsed = parse(response)
-        return response
-
-    monkeypatch.setattr(Judge, "complete", fake_complete)
     judge = rubric_judge(tmp_path)
     trace = full_trace_fixture()
     await judge.score(trace.task, trace)
-    assert all("TOOL RESULT" in prompt for prompt in prompts)
-    assert all("SECRET REASONING" not in prompt for prompt in prompts)
+    assert all("TOOL RESULT" in prompt for prompt in fake_judge_model)
+    assert all("SECRET REASONING" not in prompt for prompt in fake_judge_model)
 
 
 async def test_config_prompt_overrides_class_template(fake_judge_model):
@@ -490,26 +490,28 @@ def test_rubric_rejects_bad_files(tmp_path):
             _ = rubric_judge(tmp_path, weights={"mentions_paris": weight}).criteria
 
 
-async def test_rubric_score(tmp_path, monkeypatch):
-    # verdicts: mentions_paris=1 (w=3), is_polite=0 (w=1) -> weighted mean 0.75; each verdict
-    # lands as a `<name>/<criterion>` metric and every call is recorded onto the trace.
-    async def fake_complete(
-        self, messages, *, trace=None, schema=None, parse=None, **sampling
-    ):
-        text = "yes" if "Paris" in messages.split("Criterion:")[-1] else "no"
-        response = JudgeResponse(text=text)
-        if parse is not None:
-            response.parsed = parse(response)
-        if trace is not None:
-            trace.record_judge(response)
-        return response
-
-    monkeypatch.setattr(Judge, "complete", fake_complete)
+async def test_rubric_score(tmp_path, fake_judge_model):
+    # verdicts: mentions_paris=1 (w=3), is_polite=0 (w=1) -> weighted mean 0.75, from ONE
+    # structured judge call; each verdict lands as a `<name>/<criterion>` metric.
     judge = rubric_judge(tmp_path)
     trace = make_trace()
     assert await judge.score(trace.task, trace) == 0.75
     assert trace.metrics == {"rubric/mentions_paris": 1.0, "rubric/is_polite": 0.0}
-    assert len(trace.info["judge"]) == 2
+    assert len(trace.info["judge"]) == 1  # one call for the whole rubric
+
+
+async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch):
+    # A reply that doesn't verdict exactly the rubric's criteria is a judge failure: raise
+    # (-> rollout error), don't guess or silently score 0.
+    async def wrong_names(self, messages, *, trace=None, schema=None, parse=None, **s):
+        verdicts = {"verdicts": [{"name": "typo", "verdict": "yes"}]}
+        return JudgeResponse(text="", parsed=schema.model_validate(verdicts))
+
+    monkeypatch.setattr(Judge, "complete", wrong_names)
+    judge = rubric_judge(tmp_path)
+    trace = make_trace()
+    with pytest.raises(ValueError, match="expected the rubric"):
+        await judge.score(trace.task, trace)
 
 
 # --- Taskset.score integration -------------------------------------------------------------
@@ -542,13 +544,12 @@ async def test_taskset_score_runs_plugged_judges(tmp_path, fake_judge_model):
     taskset = JudgedTaskset(cfg)
     trace = make_trace()
     await taskset.score(trace, runtime=None)
-    # the fake replies "yes" to everything mentioning Paris after "Response:" — for the rubric
-    # template the criterion block follows the response block, so both criteria come back with
-    # the response's Paris in scope; what matters here is placement and weighting, not verdicts.
     assert trace.rewards["own"] == 0.25  # decorated rewards still run
     assert trace.rewards["binary"] == 0.5  # 1.0 * weight 0.5, under the id-derived name
-    assert "quality" in trace.rewards  # the rubric's aggregate, under its `name`
-    assert len(trace.info["judge"]) == 3  # every judge call recorded
+    assert trace.rewards["quality"] == 0.75  # the rubric's aggregate, under its `name`
+    assert (
+        len(trace.info["judge"]) == 2
+    )  # every judge call recorded (rubric = one call)
 
 
 async def test_taskset_without_judges_scores_as_before():

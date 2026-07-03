@@ -1,7 +1,7 @@
 """rubric — an off-the-shelf rubric judge, plugged from config alone.
 
 Reads a rubric — a list of yes/no criteria — from a JSON or TOML file and asks the judge model
-each criterion against the rollout's final reply, scoring each 1/0. The reward is the weighted
+to grade all criteria in one structured-output call, scoring each 1/0. The reward is the weighted
 mean of the verdicts (`sum(w*v) / sum(w)`, so it stays in [0, 1]); each verdict is also recorded
 as a `<name>/<criterion>` metric. Criterion weights come from the rubric file and are overridable
 from config (`weights`); the aggregate weighs into `trace.reward` via the judge's `weight`:
@@ -20,22 +20,19 @@ with `rubrics/quality.toml` listing the criteria (JSON takes `{"criteria": [...]
     weight = 1.0
 """
 
-import asyncio
 import json
 import math
 import tomllib
 from functools import cached_property
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from verifiers.v1.judge import (
     Judge,
     JudgeConfig,
-    JudgeResponse,
     JudgeView,
     judge_question,
     judge_response,
-    judge_verdict,
 )
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
@@ -75,14 +72,25 @@ class RubricJudgeConfig(JudgeConfig):
     intermediate steps), not just the final answer."""
 
 
-class RubricJudge(Judge[float, RubricJudgeConfig]):
-    """Scores the final reply 1/0 per rubric criterion; rewards their weighted mean."""
+class CriterionVerdict(StrictBaseModel):
+    """One criterion's verdict in the judge's reply, matched back to the rubric by `name`."""
+
+    name: str
+    verdict: Literal["yes", "no"]
+
+
+class RubricVerdicts(StrictBaseModel):
+    """The judge's structured reply: one verdict per rubric criterion."""
+
+    verdicts: list[CriterionVerdict]
+
+
+class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
+    """Scores every rubric criterion 1/0 in one structured judge call; rewards their
+    weighted mean."""
 
     prompt = RUBRIC_PROMPT
-
-    def parse(self, response: JudgeResponse[float]) -> float:
-        # An unparseable verdict raises (judge failure -> rollout error, not a silent 0).
-        return float(judge_verdict(response.text, ("yes", "no")) == "yes")
+    schema = RubricVerdicts
 
     @cached_property
     def criteria(self) -> list[Criterion]:
@@ -123,24 +131,33 @@ class RubricJudge(Judge[float, RubricJudgeConfig]):
 
     async def score(self, task: Task, trace: Trace) -> float:
         criteria = self.criteria
-        question = judge_question(task, self.config.question_field)
-        response = judge_response(trace, self.config.view)
-        results = await asyncio.gather(
-            *(
-                self.evaluate(
-                    trace=trace,
-                    question=question,
-                    response=response,
-                    criterion=criterion.text,
-                )
-                for criterion in criteria
-            )
+        result = await self.evaluate(
+            trace=trace,
+            question=judge_question(task, self.config.question_field),
+            response=judge_response(trace, self.config.view),
+            criteria="\n".join(f"- {c.name}: {c.text}" for c in criteria),
         )
-        verdicts = [cast(float, result.parsed) for result in results]
-        for criterion, verdict in zip(criteria, verdicts):
-            trace.record_metric(f"{self.reward_name}/{criterion.name}", verdict)
+        verdicts = cast(RubricVerdicts, result.parsed).verdicts
+        # Exactly one verdict per criterion, matched by name — anything else is a judge
+        # failure and must error the rollout, not score the model (see `judge_verdict`).
+        if sorted(v.name for v in verdicts) != sorted(c.name for c in criteria):
+            raise ValueError(
+                f"judge verdicts name {sorted(v.name for v in verdicts)}, expected the "
+                f"rubric's {sorted(c.name for c in criteria)}"
+            )
+        by_name = {v.name: float(v.verdict == "yes") for v in verdicts}
+        for criterion in criteria:
+            trace.record_metric(
+                f"{self.reward_name}/{criterion.name}", by_name[criterion.name]
+            )
         total = sum(criterion.weight for criterion in criteria)
-        return sum(c.weight * v for c, v in zip(criteria, verdicts)) / total
+        return sum(c.weight * by_name[c.name] for c in criteria) / total
 
 
-__all__ = ["Criterion", "RubricJudge", "RubricJudgeConfig"]
+__all__ = [
+    "Criterion",
+    "CriterionVerdict",
+    "RubricJudge",
+    "RubricJudgeConfig",
+    "RubricVerdicts",
+]
