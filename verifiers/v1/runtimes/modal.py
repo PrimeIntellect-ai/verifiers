@@ -192,8 +192,11 @@ class ModalRuntime(Runtime):
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown on the normal path: terminate the sandbox (the costly
         # resource) via the async API. Runs via `stop`, shielded from cancellation, so it fires on
-        # success, error, and Ctrl-C; `_sandbox` is nulled as the idempotency guard (atexit no-ops).
-        sandbox, self._sandbox = self._sandbox, None
+        # success, error, and Ctrl-C. `_sandbox` — the atexit backstop's key — is consumed only
+        # after the terminate attempt: if loop death (second Ctrl-C) truncates the await, the
+        # CancelledError propagates before the null and the backstop can still terminate. (A
+        # concurrent second terminate is a no-op on Modal's side.)
+        sandbox = self._sandbox
         if sandbox is None:
             return
         try:
@@ -202,3 +205,4 @@ class ModalRuntime(Runtime):
             logger.warning(
                 "modal: failed to terminate sandbox %s: %s", self._sandbox_id, e
             )
+        self._sandbox = None

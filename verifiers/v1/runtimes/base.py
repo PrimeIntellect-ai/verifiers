@@ -153,7 +153,9 @@ class Runtime(ABC):
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown
         that must be async (e.g. a remote API call); `stop` shields it from cancellation.
-        Best-effort and idempotent, like `cleanup`."""
+        Best-effort and idempotent, like `cleanup`. An override must not consume state
+        `cleanup` keys off before its first await: if the event loop dies mid-teardown
+        (second Ctrl-C), the atexit backstop must still find the resource."""
         await asyncio.to_thread(self.cleanup)
 
     def cleanup(self) -> None:
