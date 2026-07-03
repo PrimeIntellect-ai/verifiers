@@ -141,6 +141,24 @@ def default_harness_id(taskset_id: str) -> str:
     return taskset_id
 
 
+def is_legacy_env(env_id: str) -> bool:
+    """Whether `env_id` resolves to a classic (v0) environment — an importable module
+    exporting `load_environment` and no v1 `Taskset` — so callers can route it through
+    the legacy bridge automatically. An unresolvable id returns False so taskset
+    resolution raises its informative error instead."""
+    try:
+        module = import_taskset(env_id)
+    except ModuleNotFoundError:
+        return False
+    names = getattr(module, "__all__", None) or ()
+    exports_taskset = any(
+        isinstance(obj := getattr(module, name, None), type)
+        and issubclass(obj, Taskset)
+        for name in names
+    )
+    return not exports_taskset and callable(getattr(module, "load_environment", None))
+
+
 def load_taskset(config: TasksetConfig) -> Taskset:
     """Build the taskset for a config by dispatching on its `id` (the taskset id)."""
     return taskset_class(config.id)(config)

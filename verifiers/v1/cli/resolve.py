@@ -51,6 +51,10 @@ def narrow_config(base: type, argv: list[str]) -> type:
     Absent a config file, the harness falls back to the taskset's bundled harness (if it ships
     one) else `default`, so bare `-h` renders the harness that will actually run."""
     taskset_id = extract_id(argv, "taskset")
+    if taskset_id and vf.is_legacy_env(taskset_id):
+        # A classic (v0) env: there is no taskset config type to narrow to — leave the
+        # field on the base type and let `EnvConfig` convert it to the legacy `id`.
+        taskset_id = ""
     harness_id = extract_id(argv, "harness")
     if not harness_id and not references_config_file(argv):
         harness_id = vf.default_harness_id(taskset_id)

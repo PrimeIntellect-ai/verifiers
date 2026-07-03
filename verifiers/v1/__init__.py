@@ -44,6 +44,7 @@ from verifiers.v1.loaders import (
     harness_config_type,
     import_harness,
     import_taskset,
+    is_legacy_env,
     load_harness,
     load_taskset,
     task_type,
@@ -190,6 +191,7 @@ __all__ = [
     "taskset_config_type",
     "harness_config_type",
     "default_harness_id",
+    "is_legacy_env",
     # judge
     "Judge",
     "JudgeConfig",

@@ -33,8 +33,9 @@ from verifiers.v1.utils.logging import setup_logging
 logger = logging.getLogger("verifiers.v1.cli.eval")
 
 USAGE = (
-    "usage: eval [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
-    "       eval --resume <output-dir>"
+    "usage: eval [<taskset-or-env-id>] [--harness.id <id>] [options] [@ file.toml]\n"
+    "       eval --resume <output-dir>\n"
+    "       legacy (v0) envs are auto-detected and run via the bridge (--id <env-id> forces it)"
 )
 
 

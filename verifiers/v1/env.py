@@ -152,10 +152,22 @@ class EnvConfig(BaseConfig):
         from verifiers.v1.loaders import (
             default_harness_id,
             harness_config_type,
+            is_legacy_env,
             narrow_plugin_field,
             taskset_config_type,
         )
 
+        taskset = data.get("taskset")
+        taskset_id = (
+            taskset.get("id")
+            if isinstance(taskset, dict)
+            else getattr(taskset, "id", None)
+        )
+        # A classic (v0) env given as the taskset id (positional, `--taskset.id`, or toml)
+        # auto-routes through the legacy bridge instead of failing taskset resolution.
+        if taskset_id and not data.get("id") and is_legacy_env(taskset_id):
+            data["id"] = taskset_id
+            data["taskset"] = {}
         narrow_plugin_field(data, "taskset", taskset_config_type)
         taskset = data.get("taskset")
         taskset_id = (
