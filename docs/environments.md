@@ -91,6 +91,11 @@ class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
 # User-configurable knobs
 class SearchConfig(vf.TasksetConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig()
+
+class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
+    # Launch the tools during setup
+    def tools(self, task: vf.Task) -> list[vf.Toolset]:
+        return [SearchToolset(self.config.tools)]
 ```
 
 ## Using Judges

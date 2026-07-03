@@ -53,7 +53,7 @@ Qualified Hub IDs install on demand.
 When the user is ready to test an environment, run a small scale evaluation first to valide that the package runs without problems:
 
 ```bash
-prime eval owner/name -m deepseek/deepseek-v4-flash -n 3 -r 1
+prime eval run owner/name -m deepseek/deepseek-v4-flash -n 3 -r 1
 ```
 
 Use the runtime the package actually requires. While `subprocess` is useful for small runs, you should use `docker` or `prime` when scaling up or when the environment actually requires separated rollouts, e.g. when the environment is about coding.
@@ -64,6 +64,6 @@ Return:
 
 1. Ranked shortlist with one-line rationale.
 2. A compact comparison of task, reward, overall goal of the environment.
-3. Exact `uv run eval` commands to run the environment.
+3. Exact `prime eval run` commands to run the environment.
 4. For each environment, state which harnesses might be supported: A custom one, CLI-based harnesses such as Codex or the general / default harness.
 5. Recommended starting environments and why.

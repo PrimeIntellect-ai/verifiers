@@ -379,11 +379,10 @@ Per-task wall-clock timeout overrides (seconds), one per rollout stage. Each mer
 |---|---|---|---|
 | `colocated` | `bool` | `False` | Run inside the harness's OWN runtime (reached in-sandbox, no tunnel). In a sandbox this uploads + installs the env package + `verifiers` (a per-rollout cost). Mutually exclusive with `shared`. |
 | `shared` | `bool` | `False` | One instance for the whole eval, in its own `runtime` (pays an expensive `setup` once). Each rollout still reads/writes its OWN `self.state`. Mutually exclusive with `colocated`. |
-| `fork` | `bool` | `False` | For a `shared` server: fork a child per rollout (copy-on-write), isolating module globals / mutated in-memory objects / relative-path on-disk writes. Requires `shared`; Linux/fork only; not for CUDA/GPU state or background threads. |
 | `runtime` | `RuntimeConfig` | `SubprocessConfig()` | The server's own runtime, used unless `colocated`. Host/subprocess by default (always reachable from any harness). See [Runtime configs](#runtime-configs). |
 | `url` | `str \| None` | `None` | An already-running streamable-HTTP MCP endpoint to connect to instead of launching a server. When set, placement is ignored and the toolset needs no `@vf.tool` methods. |
 
-Validators: `colocated` + `shared` mutually exclusive; `fork` requires `shared`.
+Validators: `colocated` + `shared` mutually exclusive.
 
 ---
 

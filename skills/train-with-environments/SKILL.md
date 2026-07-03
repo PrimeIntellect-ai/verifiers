@@ -24,9 +24,9 @@ changes.
 Before configuring RL:
 
 ```bash
-uv run validate my-task-v1 -n 20 --runtime.type subprocess
-uv run eval my-task-v1 -m openai/gpt-5-mini -n 20 -r 4 --shuffle
-uv run eval my-task-v1 -m openai/gpt-5-mini -n 20 -r 4 --shuffle \
+prime validate my-task-v1 -n 20 --runtime.type subprocess
+prime eval run my-task-v1 -m openai/gpt-5-mini -n 20 -r 4 --shuffle
+prime eval run my-task-v1 -m openai/gpt-5-mini -n 20 -r 4 --shuffle \
   --server --no-rich --pool.type elastic --pool.max-workers 2
 ```
 

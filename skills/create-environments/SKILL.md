@@ -27,7 +27,7 @@ Often times, the user does not want nor need a custom reusable harness, as Verif
 
 ## Re-use existing abstractions first
 
-For some common tasks, there are existing, pre-built tasksets in the `verifiers.v1.taskset` folder. These come with batteries included and should always be preferred. The most notable inclusion is the `HarborTaskset`, which allow the creation of Harbor-based tasksets within a few LoC (also see docs/harbor.md).
+For some common tasks, there are existing, pre-built tasksets in the `verifiers.v1.tasksets` folder. These come with batteries included and should always be preferred. The most notable inclusion is the `HarborTaskset`, which allow the creation of Harbor-based tasksets within a few LoC (also see docs/harbor.md).
 
 ## Define the needed values first
 
@@ -153,6 +153,14 @@ Expose the tool to the config:
 ```python
 class SearchConfig(vf.TasksetConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
+```
+
+`Taskset.tools()` returns `[]` by default, so the toolset is never launched unless you wire it. Return it from the hook:
+
+```python
+class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
+    def tools(self, task: vf.Task) -> list[vf.Toolset]:
+        return [SearchToolset(self.config.tools)]
 ```
 
 Tools can be placed in various ways. Think about what the tool is and how expensive its setup is:

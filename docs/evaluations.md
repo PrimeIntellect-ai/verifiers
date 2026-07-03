@@ -3,7 +3,7 @@
 To evaluate any environment, use the `eval` entrypoint:
 
 ```bash
-prime eval primeintellect/terminal-bench-2
+prime eval run primeintellect/terminal-bench-2
 ```
 
 You can also use `.toml` files for configuration:
@@ -22,7 +22,7 @@ id = "codex"
 version = "0.116.0"
 ```
 
-Validate the config by using `prime eval @ config.toml --dry-run`. To run the evaluation, use `prime eval @ config.toml` to run it locally or `prime eval @ config.toml --hosted` to use [hosted evaluations](https://docs.primeintellect.ai/tutorials-environments/hosted-evaluations).
+Validate the config by using `prime eval run @ config.toml --dry-run`. To run the evaluation, use `prime eval run @ config.toml` to run it locally or `prime eval run @ config.toml --hosted` to use [hosted evaluations](https://docs.primeintellect.ai/tutorials-environments/hosted-evaluations).
 
 Use dotted arguments to set values using the CLI, e.g. `--sampling.temperature 0.5`. CLI arguments overwrite toml arguments when both are present.
 
