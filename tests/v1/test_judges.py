@@ -340,11 +340,16 @@ async def test_rubric_view_full_trace(tmp_path, monkeypatch):
     assert all("SECRET REASONING" not in prompt for prompt in prompts)
 
 
-def test_config_prompt_overrides_class_template():
+async def test_config_prompt_overrides_class_template(fake_judge_model):
     judge = vf.BinaryJudge(
         vf.BinaryJudgeConfig(prompt="Q:{question} A:{answer} R:{response}")
     )
     assert judge.build_messages(question="q", answer="a", response="r") == "Q:q A:a R:r"
+    # A template needn't use every evaluate field: score also passes {positive}/{negative},
+    # which str.format ignores when the (custom) prompt doesn't reference them.
+    trace = make_trace()
+    assert await judge.score(trace.task, trace) == 1.0
+    assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
 
 
 # --- binary input/verdict knobs ------------------------------------------------------------
