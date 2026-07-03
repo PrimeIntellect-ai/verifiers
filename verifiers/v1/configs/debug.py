@@ -6,6 +6,7 @@ from uuid import uuid4
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
+from verifiers.v1.configs.validate import CheckTimeoutConfig
 from verifiers.v1.runtimes import DockerConfig, RuntimeConfig
 from verifiers.v1.taskset import TasksetConfig
 
@@ -26,10 +27,9 @@ class DebugConfig(BaseConfig):
         None, validation_alias=AliasChoices("script_path", "script")
     )
     """Host script to upload and execute after setup."""
-    setup_timeout: float | None = None
-    """Max wall-clock for the taskset's `setup` hook per task (None = no limit)."""
-    timeout: float | None = None
-    """Max wall-clock for the debug command/script per task (None = no limit)."""
+    timeout: CheckTimeoutConfig = CheckTimeoutConfig()
+    """Per-task stage timeouts: `--timeout.setup` for the `setup` hook, `--timeout.total`
+    for the debug command/script."""
     output_tail_chars: int = 2000
     """How many trailing stdout/stderr characters to persist in `trace.info["debug"]`."""
     num_tasks: int | None = Field(

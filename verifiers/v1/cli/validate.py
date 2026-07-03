@@ -100,7 +100,7 @@ async def _run_apply_answer(
         name=f"validate-apply-answer-{task.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
-        config.setup_timeout if config.setup_timeout is not None else task.timeout.setup
+        config.timeout.setup if config.timeout.setup is not None else task.timeout.setup
     )
     valid, exc = False, None
     try:
@@ -111,7 +111,7 @@ async def _run_apply_answer(
             setup_timeout,
         )
         valid = await asyncio.wait_for(
-            taskset.validate(task, runtime), config.validate_timeout
+            taskset.validate(task, runtime), config.timeout.total
         )
     except Exception as e:
         exc = e
@@ -131,7 +131,7 @@ async def _run_noop(taskset: Taskset, task, config: ValidateConfig) -> ResultRow
         name=f"validate-noop-{task.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
-        config.setup_timeout if config.setup_timeout is not None else task.timeout.setup
+        config.timeout.setup if config.timeout.setup is not None else task.timeout.setup
     )
     valid, exc = False, None
     try:

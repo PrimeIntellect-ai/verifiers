@@ -184,10 +184,10 @@ async def run_command(
     try:
         result = await asyncio.wait_for(
             runtime.run(["sh", "-lc", command], {}),
-            config.timeout,
+            config.timeout.total,
         )
     except Exception as e:
-        return error_info(e, start, config.timeout, "debug action")
+        return error_info(e, start, config.timeout.total, "debug action")
     return result_info(result, start, config.output_tail_chars)
 
 
@@ -225,7 +225,7 @@ async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace
         name=f"debug-{task.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
-        config.setup_timeout if config.setup_timeout is not None else task.timeout.setup
+        config.timeout.setup if config.timeout.setup is not None else task.timeout.setup
     )
     try:
         trace.timing.setup.start = time.time()
@@ -245,9 +245,13 @@ async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace
         trace.stop(str(debug["reason"]))
     except asyncio.CancelledError as e:
         cancelled = True
-        record_debug_error(trace, debug, runtime, e, setup_timeout, config.timeout)
+        record_debug_error(
+            trace, debug, runtime, e, setup_timeout, config.timeout.total
+        )
     except Exception as e:
-        record_debug_error(trace, debug, runtime, e, setup_timeout, config.timeout)
+        record_debug_error(
+            trace, debug, runtime, e, setup_timeout, config.timeout.total
+        )
     finally:
         trace.info["debug"] = debug
         try:

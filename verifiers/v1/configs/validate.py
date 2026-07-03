@@ -19,6 +19,17 @@ from verifiers.v1.taskset import TasksetConfig
 ValidateMode = Literal["apply-answer", "noop", "both"]
 
 
+class CheckTimeoutConfig(BaseConfig):
+    """Per-task wall-clock timeouts for the model-free check CLIs (validate/debug), in
+    seconds (None = no limit). The nested shape mirrors eval's `--timeout.*` flags."""
+
+    setup: float | None = None
+    """Max wall-clock for the taskset's `setup` hook per task."""
+    total: float | None = None
+    """Max wall-clock for the check itself per task — the `validate` hook, or the debug
+    command/script."""
+
+
 class ValidateConfig(BaseConfig):
     """A taskset plus how to validate it. The taskset is selected by `--taskset.id` (with a
     bare positional shorthand, `validate gsm8k-v1`); its fields stay typed and overridable
@@ -31,10 +42,9 @@ class ValidateConfig(BaseConfig):
     (subprocess), a gold check often needs the task's declared container; a SWE task overrides
     the image per task. Use `--runtime.type subprocess` for a check that needs no container —
     one that only reads task data or runs a uv-script verifier (e.g. gsm8k)."""
-    setup_timeout: float | None = None
-    """Max wall-clock for the taskset's `setup` hook per task (None = no limit)."""
-    validate_timeout: float | None = None
-    """Max wall-clock for the taskset's `validate` hook per task (None = no limit)."""
+    timeout: CheckTimeoutConfig = CheckTimeoutConfig()
+    """Per-task stage timeouts: `--timeout.setup` for the `setup` hook, `--timeout.total`
+    for the `validate` hook."""
     mode: ValidateMode = "apply-answer"
     """Validation mode: `apply-answer` runs setup + validate, `noop` runs setup only, and
     `both` runs both modes in independent runtimes."""

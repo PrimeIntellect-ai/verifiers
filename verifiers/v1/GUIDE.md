@@ -752,7 +752,7 @@ uv run validate swebench-v1 -n 1 --runtime.type prime --mode both
 | `<taskset-id>` / `--taskset.id` | — | taskset to validate |
 | `--runtime.type` | `docker` | runtime for `setup` + `validate` (a gold check often needs the task's container) |
 | `--mode` | `apply-answer` | `apply-answer`, `noop`, or `both` |
-| `--setup-timeout` / `--validate-timeout` | None | per-hook wall-clock caps |
+| `--timeout.setup` / `--timeout.total` | None | per-task wall-clock caps for `setup` and the `validate` hook |
 | `-n`/`--num-tasks`, `-s`/`--shuffle`, `-c`/`--max-concurrent` (128) | | task selection + concurrency |
 | `-v`/`--verbose`, `--no-rich` | | logging / disable the dashboard |
 
@@ -778,7 +778,7 @@ uv run debug swebench-v1 -n 1 --runtime.type prime --script-path ./inspect.sh
 | `<taskset-id>` / `--taskset.id` | — | taskset to debug |
 | `--command` / `--script-path` | — | exactly one inline command or host script to upload and execute |
 | `--runtime.type` | `docker` | runtime for setup + the debug action |
-| `--setup-timeout` / `--timeout` | None | setup and action wall-clock caps |
+| `--timeout.setup` / `--timeout.total` | None | per-task wall-clock caps for `setup` and the debug action |
 | `-n`/`--num-tasks`, `-s`/`--shuffle`, `-c`/`--max-concurrent` (128) | | task selection + concurrency |
 | `-o`/`--output-dir` | fresh debug run dir | where `config.toml` and `results.jsonl` are written |
 
