@@ -41,25 +41,10 @@ from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID, StrictBaseModel
 
-RUBRIC_PROMPT = """Given a task, a response, and one grading criterion, determine if the \
-response satisfies the criterion.
-
-Task:
-```
-{question}
-```
-
-Response:
-```
-{response}
-```
-
-Criterion:
-```
-{criterion}
-```
-
-Respond either "yes" or "no" only."""
+# A sibling text file so it doubles as a starting point for a config `prompt_file`.
+RUBRIC_PROMPT = (Path(__file__).resolve().parent / "rubric.txt").read_text(
+    encoding="utf-8"
+)
 
 
 class Criterion(StrictBaseModel):

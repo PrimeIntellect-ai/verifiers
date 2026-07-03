@@ -393,6 +393,8 @@ __all__ = ["MyJudge", "MyJudgeConfig"]
 Every judge's endpoint, model, sampling, prompt template (`prompt` inline, or `prompt_file`
 pointing at a text file with the same `{field}` placeholders), reward key (`name`), and
 `weight` are config fields, so a plugged judge is fully tunable per eval without touching code.
+The built-ins' default prompts ship as text files next to their modules
+(`verifiers/v1/judges/binary.txt`, `rubric.txt`) — copy one as a `prompt_file` starting point.
 
 ## Stop conditions
 

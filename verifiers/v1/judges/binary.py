@@ -18,6 +18,7 @@ failure — an API error or an unparseable verdict — raises instead, erroring 
 the sample is excluded/retried rather than scored against the model.
 """
 
+from pathlib import Path
 from typing import cast
 
 from pydantic import model_validator
@@ -35,26 +36,10 @@ from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID
 
-BINARY_PROMPT = """Given a task, a reference answer, and a response, determine if the response \
-is correct — it must match the reference answer (any one of them, when several are listed) in \
-substance (exact wording may differ).
-
-Task:
-```
-{question}
-```
-
-Reference answer:
-```
-{answer}
-```
-
-Response:
-```
-{response}
-```
-
-Respond either "{positive}" or "{negative}" only."""
+# A sibling text file so it doubles as a starting point for a config `prompt_file`.
+BINARY_PROMPT = (Path(__file__).resolve().parent / "binary.txt").read_text(
+    encoding="utf-8"
+)
 
 
 class BinaryJudgeConfig(JudgeConfig):

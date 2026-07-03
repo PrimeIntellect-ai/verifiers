@@ -1,0 +1,18 @@
+Given a task, a response, and one grading criterion, determine if the response satisfies the criterion.
+
+Task:
+```
+{question}
+```
+
+Response:
+```
+{response}
+```
+
+Criterion:
+```
+{criterion}
+```
+
+Respond either "yes" or "no" only.
