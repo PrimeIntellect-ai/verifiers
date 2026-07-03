@@ -9,6 +9,7 @@ import signal
 import sys
 import time
 import traceback
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -162,17 +163,13 @@ def record_action_failure(trace: Trace, debug: dict[str, Any]) -> None:
     )
 
 
-async def run_command(
-    runtime: Runtime,
-    command: str,
-    config: DebugConfig,
+async def run_timed(
+    action: Awaitable[ProgramResult], config: DebugConfig
 ) -> dict[str, Any]:
+    """Run the whole debug action under one `--timeout.total` budget."""
     start = time.time()
     try:
-        result = await asyncio.wait_for(
-            runtime.run(["sh", "-lc", command], {}),
-            config.timeout.total,
-        )
+        result = await asyncio.wait_for(action, config.timeout.total)
     except Exception as e:
         return error_info(e, start, config.timeout.total, "debug action")
     return result_info(result, start)
@@ -183,22 +180,26 @@ async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
         return {
             "action": "command",
             "command": config.command,
-            **(await run_command(runtime, config.command, config)),
+            **(await run_timed(runtime.run(["sh", "-lc", config.command], {}), config)),
         }
     assert config.script_path is not None
     # /tmp keyed by the (run-unique) runtime name: outside the task workdir so the script
     # doesn't show up in the repo state being inspected, and never shared between runs on
     # the subprocess runtime, where an absolute path is a host path.
     remote_path = f"/tmp/{runtime.name}-script.sh"
-    await runtime.write(remote_path, config.script_path.read_bytes())
     quoted = shlex.quote(remote_path)
     command = f"chmod +x {quoted} && {quoted}"
+
+    async def upload_and_run() -> ProgramResult:
+        await runtime.write(remote_path, config.script_path.read_bytes())
+        return await runtime.run(["sh", "-lc", command], {})
+
     return {
         "action": "script",
         "script_path": str(config.script_path),
         "remote_script_path": remote_path,
         "command": command,
-        **(await run_command(runtime, command, config)),
+        **(await run_timed(upload_and_run(), config)),
     }
 
 
