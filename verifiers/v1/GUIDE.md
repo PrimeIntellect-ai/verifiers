@@ -738,20 +738,20 @@ trace per line, appended as each rollout finishes — durable mid-run), and `eva
 
 Run each task's `validate` hook — a model-free check that the ground truth holds (the gold patch
 makes the tests pass, the verifier accepts the gold answer) — in a runtime with the taskset's
-`setup` applied. No model, no harness. Use `--mode noop` to run setup only, or `--mode both`
+`setup` applied. No model, no harness. Use `--mode noop` to run setup only, or `--mode all`
 to run `apply-answer` and `noop` in independent runtimes and report one aggregate row.
 
 ```bash
 uv run validate gsm8k-v1 -n 20 --runtime.type subprocess
 uv run validate swebench-v1 -n 1 --runtime.type prime --mode noop
-uv run validate swebench-v1 -n 1 --runtime.type prime --mode both
+uv run validate swebench-v1 -n 1 --runtime.type prime --mode all
 ```
 
 | flag | default | meaning |
 | --- | --- | --- |
 | `<taskset-id>` / `--taskset.id` | — | taskset to validate |
 | `--runtime.type` | `docker` | runtime for `setup` + `validate` (a gold check often needs the task's container) |
-| `--mode` | `apply-answer` | `apply-answer`, `noop`, or `both` |
+| `--mode` | `apply-answer` | `apply-answer`, `noop`, or `all` |
 | `--timeout.setup` / `--timeout.total` | None | per-task wall-clock caps for `setup` and the `validate` hook |
 | `-n`/`--num-tasks`, `-s`/`--shuffle`, `-c`/`--max-concurrent` (128) | | task selection + concurrency |
 | `-v`/`--verbose`, `--no-rich` | | logging / disable the dashboard |

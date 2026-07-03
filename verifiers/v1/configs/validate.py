@@ -16,7 +16,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.runtimes import DockerConfig, RuntimeConfig
 from verifiers.v1.taskset import TasksetConfig
 
-ValidateMode = Literal["apply-answer", "noop", "both"]
+ValidateMode = Literal["apply-answer", "noop", "all"]
 
 
 class CheckTimeoutConfig(BaseConfig):
@@ -47,7 +47,7 @@ class ValidateConfig(BaseConfig):
     for the `validate` hook."""
     mode: ValidateMode = "apply-answer"
     """Validation mode: `apply-answer` runs setup + validate, `noop` runs setup only, and
-    `both` runs both modes in independent runtimes."""
+    `all` runs every mode in independent runtimes and reports one aggregate row."""
     num_tasks: int | None = Field(
         None,
         validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),

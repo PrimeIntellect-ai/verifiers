@@ -2,7 +2,7 @@
 
 Registered as the `validate` console script — the model-free sibling of `eval`. Where `eval`
 runs a model rollout per task, `validate` can either run each task's `validate` hook, run
-setup only, or run both modes in independent runtimes. Each task is provisioned, set up,
+setup only, or run all modes in independent runtimes. Each task is provisioned, set up,
 checked, and torn down independently with bounded concurrency.
 
 Fire-and-forget: progress is shown live (the `--rich` dashboard, or per-task log lines) and
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run validate [<taskset-id>] [--runtime.type subprocess] [options] [@ file.toml]\n"
-    "       runs setup-only, apply-answer, or both validation modes (no model)"
+    "       runs setup-only, apply-answer, or all validation modes (no model)"
 )
 
 
@@ -152,10 +152,10 @@ async def _run_noop(taskset: Taskset, task, config: ValidateConfig) -> ResultRow
     return _row(task, "noop", valid, exc, start)
 
 
-def _both_reason(apply_answer: ResultRow, noop: ResultRow) -> str:
-    reasons = {str(apply_answer["reason"]), str(noop["reason"])}
-    if apply_answer["valid"] and noop["valid"]:
+def _all_reason(rows: list[ResultRow]) -> str:
+    if all(row["valid"] for row in rows):
         return "valid"
+    reasons = {str(row["reason"]) for row in rows}
     if "error" in reasons:
         return "error"
     if "timeout" in reasons:
@@ -163,39 +163,26 @@ def _both_reason(apply_answer: ResultRow, noop: ResultRow) -> str:
     return "invalid"
 
 
-def _both_error(
-    apply_answer: ResultRow, noop: ResultRow
-) -> tuple[str | None, str | None]:
-    failed = [
-        ("apply_answer", apply_answer),
-        ("noop", noop),
-    ]
-    parts = [
-        f"{name}: {row['error'] or row['reason']}"
-        for name, row in failed
-        if not row["valid"]
-    ]
-    error_types = {
-        str(row["error_type"])
-        for _, row in failed
-        if not row["valid"] and row["error_type"]
-    }
+def _all_error(rows: list[ResultRow]) -> tuple[str | None, str | None]:
+    failed = [row for row in rows if not row["valid"]]
+    parts = [f"{row['mode']}: {row['error'] or row['reason']}" for row in failed]
+    error_types = {str(row["error_type"]) for row in failed if row["error_type"]}
     return ("; ".join(parts) or None, "+".join(sorted(error_types)) or None)
 
 
-async def _run_both(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
-    """Run apply-answer and noop as independent high-level validations."""
+async def _run_all(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
+    """Run every mode (apply-answer, noop) as independent high-level validations."""
     start = time.time()
     apply_answer = await _run_apply_answer(taskset, task, config)
     noop = await _run_noop(taskset, task, config)
-    valid = bool(apply_answer["valid"] and noop["valid"])
-    error, error_type = _both_error(apply_answer, noop)
+    rows = [apply_answer, noop]
+    error, error_type = _all_error(rows)
     return {
         "index": task.idx,
         "name": task.name,
-        "mode": "both",
-        "valid": valid,
-        "reason": _both_reason(apply_answer, noop),
+        "mode": "all",
+        "valid": all(row["valid"] for row in rows),
+        "reason": _all_reason(rows),
         "elapsed": round(time.time() - start, 2),
         "error": error,
         "error_type": error_type,
@@ -209,7 +196,7 @@ async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> Resu
         return await _run_apply_answer(taskset, task, config)
     if config.mode == "noop":
         return await _run_noop(taskset, task, config)
-    return await _run_both(taskset, task, config)
+    return await _run_all(taskset, task, config)
 
 
 async def run_validate(config: ValidateConfig) -> list[dict]:
