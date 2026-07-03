@@ -41,6 +41,9 @@ class MyHarness(Harness[MyHarnessConfig]):
         # The model (interception) endpoint is in endpoint
         # mcp_urls are the URLs of the tools from the toolset (if registered)
 
+        # Resolve the task's prompt (and system prompt) for this harness
+        _, prompt = self.resolve_prompt(trace.task)
+
         # Example: Use the harness, but overwrite the endpoint to use the interception server and the custom model name
         ENVIRONMENT_VARS = {
             **self.config.env,
