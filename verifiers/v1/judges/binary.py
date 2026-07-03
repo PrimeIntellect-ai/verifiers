@@ -10,8 +10,7 @@ any taskset that carries one — no taskset code:
     answer_field = "answer"
 
 Grading inputs are config-selectable: `question_field` (what fills `{question}`), `view`
-(final reply vs the whole transcript), `extract` (grade the last `\\boxed{...}` content),
-and `choices` (the verdict labels, e.g. `["A", "B"]`).
+(final reply vs the whole transcript), and `choices` (the verdict labels, e.g. `["A", "B"]`).
 
 Error attribution: a *model* failure scores 0 — an empty response short-circuits to 0.0
 without a judge call, a wrong/non-committal reply gets the negative verdict. A *judge*
@@ -19,7 +18,9 @@ failure — an API error or an unparseable verdict — raises instead, erroring 
 the sample is excluded/retried rather than scored against the model.
 """
 
-from typing import Literal, cast
+from typing import cast
+
+from pydantic import model_validator
 
 from verifiers.v1.judge import (
     Judge,
@@ -30,7 +31,6 @@ from verifiers.v1.judge import (
     judge_response,
     judge_verdict,
 )
-from verifiers.v1.scoring import extract_boxed_answer
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID
@@ -72,15 +72,22 @@ class BinaryJudgeConfig(JudgeConfig):
     view: JudgeView = "last_reply"
     """How much of the rollout fills `{response}` (see `JudgeView`). Defaults to the final
     reply — a reference-answer check grades the answer, not the path to it."""
-    extract: Literal["none", "boxed"] = "none"
-    """Pre-extraction applied to the response before judging: `boxed` grades the content of
-    the last `\\boxed{...}` (falling back to the raw response when there is none)."""
     choices: tuple[str, str] = ("yes", "no")
     """The (positive, negative) verdict labels — e.g. `["A", "B"]` for graders that verdict
     with letters. Injected into the prompt as `{positive}`/`{negative}`, so the default
     template asks for whatever labels `parse` expects. The positive label scores 1.0; a
     verdict matching neither raises (a judge failure must error the rollout, not score the
     model 0)."""
+
+    @model_validator(mode="after")
+    def check_choices(self) -> "BinaryJudgeConfig":
+        # Duplicate labels would score every parsable verdict as the positive one; labels
+        # are matched case-insensitively (`parse_judge_choice`), so distinctness is too.
+        if not all(self.choices) or self.choices[0].upper() == self.choices[1].upper():
+            raise ValueError(
+                f"`choices` needs two distinct, non-empty verdict labels, got {self.choices!r}"
+            )
+        return self
 
 
 class BinaryJudge(Judge[float, BinaryJudgeConfig]):
@@ -103,8 +110,6 @@ class BinaryJudge(Judge[float, BinaryJudgeConfig]):
         if isinstance(answer, (list, tuple)):
             answer = "\n".join(str(item) for item in answer)
         response = judge_response(trace, self.config.view)
-        if self.config.extract == "boxed":
-            response = extract_boxed_answer(response, strict=True).strip() or response
         if not response.strip():
             return 0.0  # nothing to grade — skip the (foregone) judge call
         positive, negative = self.config.choices

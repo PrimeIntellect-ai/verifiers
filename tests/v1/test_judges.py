@@ -385,6 +385,10 @@ async def test_binary_choices(fake_judge_model):
     ):  # the yes-replying fake is now an unparseable verdict
         await judge.score(trace.task, trace)
     assert 'Respond either "A" or "B"' in fake_judge_model[0]
+    # degenerate labels are a config error (duplicates would score every verdict 1.0)
+    for choices in (("yes", "yes"), ("A", "a"), ("", "no")):
+        with pytest.raises(ValueError, match="two distinct, non-empty"):
+            vf.BinaryJudgeConfig(choices=choices)
 
 
 async def test_error_attribution(monkeypatch, tmp_path):
@@ -415,18 +419,6 @@ async def test_error_attribution(monkeypatch, tmp_path):
         await taskset.score(trace, runtime=None)
     assert "binary" not in trace.rewards
     assert len(trace.info["judge"]) == 1  # the billed call is still recorded
-
-
-async def test_binary_extract_boxed(fake_judge_model):
-    # extract="boxed" grades the last \boxed{...} content, falling back to the raw reply.
-    judge = vf.BinaryJudge(vf.BinaryJudgeConfig(extract="boxed"))
-    trace = make_trace(reply="Reasoning about Rome... \\boxed{Paris}")
-    assert await judge.score(trace.task, trace) == 1.0
-    assert (
-        "Rome" not in fake_judge_model[0].split("Response:")[-1]
-    )  # only the boxed content
-    trace = make_trace(reply="It is Paris.")  # no box -> raw reply
-    assert await judge.score(trace.task, trace) == 1.0
 
 
 # --- rubric --------------------------------------------------------------------------------

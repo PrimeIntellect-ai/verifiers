@@ -337,7 +337,7 @@ The built-ins (in `verifiers.v1.judges`):
 
 | id | class | grades |
 | --- | --- | --- |
-| `binary` | `vf.BinaryJudge` | the reply against the task's reference answer (`answer_field`; a list = any acceptable answer), 1/0. Knobs: `choices` (verdict labels, e.g. `["A", "B"]`), `extract = "boxed"` (grade the last `\boxed{...}`) |
+| `binary` | `vf.BinaryJudge` | the reply against the task's reference answer (`answer_field`; a list = any acceptable answer), 1/0. Knobs: `choices` (verdict labels, e.g. `["A", "B"]`) |
 | `rubric` | `vf.RubricJudge` | each criterion in a `.toml`/`.json` rubric file 1/0; rewards the weighted mean (`Σwv/Σw`), records each verdict as a `<name>/<criterion>` metric |
 
 A rubric file lists `[[criteria]]` entries (`name`, `text`, optional `weight`; JSON takes
