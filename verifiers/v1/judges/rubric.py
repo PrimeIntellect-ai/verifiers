@@ -99,7 +99,9 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         criterion names, or an override naming no criterion."""
         path = self.config.path
         text = path.read_text(encoding="utf-8")
-        data = tomllib.loads(text) if path.suffix == ".toml" else json.loads(text)
+        data = (
+            tomllib.loads(text) if path.suffix.lower() == ".toml" else json.loads(text)
+        )
         items = data.get("criteria", []) if isinstance(data, dict) else data
         criteria = [Criterion.model_validate(item) for item in items]
         if not criteria:

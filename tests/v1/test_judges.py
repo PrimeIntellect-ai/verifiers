@@ -464,6 +464,8 @@ def test_rubric_criteria_toml_and_json(tmp_path):
         == toml
     )
     assert rubric_judge(tmp_path, json.dumps(items), ".json").criteria == toml
+    # the suffix check is case-insensitive: QUALITY.TOML is TOML, not JSON
+    assert rubric_judge(tmp_path, suffix=".TOML").criteria == toml
 
 
 def test_rubric_config_weight_overrides_file(tmp_path):
