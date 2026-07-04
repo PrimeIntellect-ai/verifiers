@@ -209,41 +209,65 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     assert trace.reward == 1.0
 
 
-@pytest.mark.prime
-async def test_cancelled_stop_still_deletes_sandbox(caplog, monkeypatch):
-    """The cancellation guard, end-to-end on a real sandbox: a Ctrl-C landing while
-    `stop()` is in flight must not truncate teardown (leaking the paid sandbox), must
-    report the drain, and must still propagate the cancellation afterwards. This is the
-    trip-wire for the `run_shielded` shield inside `Runtime.stop` — it fails with the
-    sandbox left RUNNING if the shield is removed or reordered."""
+@pytest.mark.parametrize(
+    "runtime_type",
+    [
+        pytest.param("subprocess", id="cancel-guard-subprocess"),
+        pytest.param("docker", marks=pytest.mark.docker, id="cancel-guard-docker"),
+        pytest.param("prime", marks=pytest.mark.prime, id="cancel-guard-prime"),
+    ],
+)
+async def test_cancelled_stop_still_frees_runtime(runtime_type, caplog, monkeypatch):
+    """The cancellation guard, end-to-end on a real resource: a Ctrl-C landing while
+    `stop()` is in flight must not truncate teardown (leaking the workdir / container /
+    paid sandbox), must report the drain, and must still propagate the cancellation
+    afterwards. This is the trip-wire for the `run_shielded` shield inside
+    `Runtime.stop` — the gate below holds teardown open so the cancel deterministically
+    lands before the real cleanup starts, so an unshielded `stop()` genuinely leaks and
+    fails the leak check. subprocess/docker run in CI; prime is the local full-realism
+    variant (a real API DELETE observed server-side)."""
     import asyncio
     import contextlib
     import logging
+    import os
+    import subprocess
     import time
+    from pathlib import Path
+    from uuid import uuid4
 
-    from prime_sandboxes import SandboxClient
-    from prime_sandboxes.core import APIClient
+    from verifiers.v1.runtimes import make_runtime
+    from verifiers.v1.runtimes.docker import DockerConfig
+    from verifiers.v1.runtimes.prime import PrimeConfig
+    from verifiers.v1.runtimes.subprocess import SubprocessConfig
 
-    from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
+    if runtime_type == "prime" and not os.environ.get("PRIME_API_KEY"):
+        pytest.skip("needs PRIME_API_KEY")
 
-    class GatedPrime(PrimeRuntime):
-        """Real runtime; teardown holds a window open so the cancel lands mid-stop,
-        before the DELETE goes out."""
+    config = {
+        "subprocess": lambda: SubprocessConfig(),
+        "docker": lambda: DockerConfig(),
+        "prime": lambda: PrimeConfig(labels=["vf-ci"]),
+    }[runtime_type]()
+    name = f"cancel-guard-{uuid4().hex[:8]}"
+    runtime = make_runtime(config, name=name)
 
-        def __init__(self, *args, **kwargs) -> None:
-            super().__init__(*args, **kwargs)
-            self.teardown_entered = asyncio.Event()
+    # Gate the real teardown: signal entry, hold the window open, then run it. The
+    # `finished` flag is the provider-agnostic trip — without the shield the cancel
+    # kills the sleep and the real teardown never runs.
+    entered, finished = asyncio.Event(), asyncio.Event()
+    real_teardown = runtime.teardown
 
-        async def teardown(self) -> None:
-            self.teardown_entered.set()
-            await asyncio.sleep(0.2)
-            await super().teardown()
+    async def gated_teardown() -> None:
+        entered.set()
+        await asyncio.sleep(0.2)
+        await real_teardown()
+        finished.set()
 
+    monkeypatch.setattr(runtime, "teardown", gated_teardown)
     monkeypatch.setattr(logging.getLogger("verifiers"), "propagate", True)
-    runtime = GatedPrime(PrimeConfig(labels=["vf-ci"]), name="cancel-guard-e2e")
+
     await runtime.start()
-    sandbox_id = runtime.descriptor
-    assert sandbox_id is not None
+    descriptor = runtime.descriptor
     try:
 
         async def owner() -> None:
@@ -253,26 +277,41 @@ async def test_cancelled_stop_still_deletes_sandbox(caplog, monkeypatch):
                 await runtime.stop()
 
         task = asyncio.create_task(owner())
-        await runtime.teardown_entered.wait()
+        await entered.wait()
         with caplog.at_level(logging.WARNING, logger="verifiers.v1.runtimes.base"):
             task.cancel()  # Ctrl-C while stop() is in flight
             with pytest.raises(asyncio.CancelledError):
                 await task
-        assert task.cancelled()  # cancellation still propagated after teardown
+        assert finished.is_set()  # teardown ran to completion despite the cancel
+        assert task.cancelled()  # and the cancellation still propagated after it
         assert any("Ctrl-C again" in r.getMessage() for r in caplog.records)
 
-        # Server-side truth, checked in-process (at exit the atexit backstop would mask
-        # the result): the DELETE ran to completion despite the cancellation.
-        client = SandboxClient(APIClient())
-        deadline = time.time() + 30
-        while (
-            status := await asyncio.to_thread(lambda: client.get(sandbox_id).status)
-        ) != "TERMINATED" and time.time() < deadline:
-            await asyncio.sleep(2)
-        assert status == "TERMINATED", (
-            f"sandbox {sandbox_id} leaked after a cancelled teardown (status={status})"
-        )
+        # Provider-side truth, checked in-process (at exit the atexit backstop would
+        # mask the result): the resource is actually gone.
+        if runtime_type == "subprocess":
+            assert not Path(f"/tmp/{name}").exists(), "workdir leaked"
+        elif runtime_type == "docker":
+            leaked = subprocess.run(
+                ["docker", "ps", "-aq", "--filter", f"name={name}"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            ).stdout.strip()
+            assert not leaked, f"container {name} leaked after a cancelled teardown"
+        else:
+            from prime_sandboxes import SandboxClient
+            from prime_sandboxes.core import APIClient
+
+            client = SandboxClient(APIClient())
+            deadline = time.time() + 30
+            while (
+                status := await asyncio.to_thread(lambda: client.get(descriptor).status)
+            ) != "TERMINATED" and time.time() < deadline:
+                await asyncio.sleep(2)
+            assert status == "TERMINATED", (
+                f"sandbox {descriptor} leaked after a cancelled teardown ({status})"
+            )
     finally:
-        # A failing run must not keep paying for the sandbox (delete of a terminated one 404s).
+        # A failing run must not keep the resource around (cleanup is idempotent).
         with contextlib.suppress(Exception):
-            SandboxClient(APIClient()).delete(sandbox_id)
+            runtime.cleanup()
