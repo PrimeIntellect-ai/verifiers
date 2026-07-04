@@ -4,11 +4,11 @@ Reads a run's saved rollout files (``<output>/rollouts/step_*/train_rollouts.jso
 one ``Trace.to_record()`` line each — the prime-rl orchestrator's rollout output) as a
 buffer and serves tasks derived from them. Like ``harbor`` or ``textarena``, this is a
 base for thin subclass packages: a derivation subclasses `ReplayTaskset` (binding its
-narrowed config in the generic, so the loader picks it up) and implements two hooks —
-
-- ``record_anchors(nodes, children, roots, tree)``: the resume points one saved rollout
-  offers (each becomes one task; ``None`` anchors at the rollout's final state).
-- ``build_prompt(record, anchor)``: the seeded conversation for one anchor.
+narrowed config in the generic, so the loader picks it up) and implements
+``build_prompt(record, anchor)`` — the seeded conversation for one anchor. Derivations
+that resume mid-rollout also override ``record_anchors`` (the resume points one saved
+rollout offers, each becoming one task; the default is one task per rollout, anchored
+at its final state).
 
 Everything else is shared: the lazy buffer (tasks bind per request from (file, offset)
 handles — saved lines average ~1MB), online semantics over a growing run dir, scoring/
@@ -150,9 +150,10 @@ class ReplayTaskset(Taskset[ReplayTask, ConfigT, State]):
         self, record: dict, children: dict[int, list[int]], roots: list[int], tree: set[int]
     ) -> list[int | None]:
         """The resume points one saved rollout offers this derivation — each becomes one
-        task. Return node indices (see `surgery` for enumerators), `[None]` to anchor at
-        the rollout's final state, or `[]` when the rollout offers nothing."""
-        raise NotImplementedError
+        task. Default: one task per rollout, anchored at its final state (`None`).
+        Override for mid-rollout derivations: return node indices (see `surgery` for
+        enumerators), or `[]` when the rollout offers nothing."""
+        return [None]
 
     def build_prompt(self, record: dict, anchor: int | None) -> str | list[dict]:
         """The seeded conversation for one (source record, anchor) pair."""
