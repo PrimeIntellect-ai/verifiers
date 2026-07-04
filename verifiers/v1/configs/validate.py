@@ -8,15 +8,11 @@ sampling — and it's fire-and-forget: nothing is written to disk, so there's no
 resume / dry-run.
 """
 
-from typing import Literal
-
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.runtimes import DockerConfig, RuntimeConfig
 from verifiers.v1.taskset import TasksetConfig
-
-ValidateMode = Literal["apply-answer", "noop", "all"]
 
 
 class CheckTimeoutConfig(BaseConfig):
@@ -45,9 +41,12 @@ class ValidateConfig(BaseConfig):
     timeout: CheckTimeoutConfig = CheckTimeoutConfig()
     """Per-task stage timeouts: `--timeout.setup` for the `setup` hook, `--timeout.total`
     for the `validate` hook."""
-    mode: ValidateMode = "apply-answer"
-    """Validation mode: `apply-answer` runs setup + validate, `noop` runs setup only, and
-    `all` runs every mode in independent runtimes and reports one aggregate row."""
+    only_setup: bool = False
+    """Run only the setup check per task (the `setup` hook, no gold check). By default
+    every check — setup-only and gold — runs in independent runtimes per task, reported
+    as one aggregate row."""
+    only_gold: bool = False
+    """Run only the gold check per task (`setup` + the `validate` hook)."""
     num_tasks: int | None = Field(
         None,
         validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),
@@ -67,6 +66,12 @@ class ValidateConfig(BaseConfig):
     @property
     def name(self) -> str:
         return self.taskset.name
+
+    @model_validator(mode="after")
+    def _validate_only(self):
+        if self.only_setup and self.only_gold:
+            raise ValueError("pass at most one of `--only-setup` or `--only-gold`")
+        return self
 
     @model_validator(mode="before")
     @classmethod
