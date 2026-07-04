@@ -207,3 +207,72 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     assert trace.errors == []
     assert trace.num_turns >= 1  # ran a command, then finished
     assert trace.reward == 1.0
+
+
+@pytest.mark.prime
+async def test_cancelled_stop_still_deletes_sandbox(caplog, monkeypatch):
+    """The cancellation guard, end-to-end on a real sandbox: a Ctrl-C landing while
+    `stop()` is in flight must not truncate teardown (leaking the paid sandbox), must
+    report the drain, and must still propagate the cancellation afterwards. This is the
+    trip-wire for the `run_shielded` shield inside `Runtime.stop` — it fails with the
+    sandbox left RUNNING if the shield is removed or reordered."""
+    import asyncio
+    import contextlib
+    import logging
+    import time
+
+    from prime_sandboxes import SandboxClient
+    from prime_sandboxes.core import APIClient
+
+    from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
+
+    class GatedPrime(PrimeRuntime):
+        """Real runtime; teardown holds a window open so the cancel lands mid-stop,
+        before the DELETE goes out."""
+
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.teardown_entered = asyncio.Event()
+
+        async def teardown(self) -> None:
+            self.teardown_entered.set()
+            await asyncio.sleep(0.2)
+            await super().teardown()
+
+    monkeypatch.setattr(logging.getLogger("verifiers"), "propagate", True)
+    runtime = GatedPrime(PrimeConfig(labels=["vf-ci"]), name="cancel-guard-e2e")
+    await runtime.start()
+    sandbox_id = runtime.descriptor
+    assert sandbox_id is not None
+    try:
+
+        async def owner() -> None:
+            try:
+                pass  # the rollout body finished; teardown is on the happy path
+            finally:
+                await runtime.stop()
+
+        task = asyncio.create_task(owner())
+        await runtime.teardown_entered.wait()
+        with caplog.at_level(logging.WARNING, logger="verifiers.v1.runtimes.base"):
+            task.cancel()  # Ctrl-C while stop() is in flight
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert task.cancelled()  # cancellation still propagated after teardown
+        assert any("Ctrl-C again" in r.getMessage() for r in caplog.records)
+
+        # Server-side truth, checked in-process (at exit the atexit backstop would mask
+        # the result): the DELETE ran to completion despite the cancellation.
+        client = SandboxClient(APIClient())
+        deadline = time.time() + 30
+        while (
+            status := await asyncio.to_thread(lambda: client.get(sandbox_id).status)
+        ) != "TERMINATED" and time.time() < deadline:
+            await asyncio.sleep(2)
+        assert status == "TERMINATED", (
+            f"sandbox {sandbox_id} leaked after a cancelled teardown (status={status})"
+        )
+    finally:
+        # A failing run must not keep paying for the sandbox (delete of a terminated one 404s).
+        with contextlib.suppress(Exception):
+            SandboxClient(APIClient()).delete(sandbox_id)
