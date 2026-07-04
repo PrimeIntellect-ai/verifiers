@@ -22,13 +22,13 @@
 Run an evaluation with default settings (example):
 
 ```bash
-prime eval run self-reward -a '{"dataset_name": "your/dataset", "model_name": "Qwen/Qwen3-0.6B"}'
+prime eval self-reward -a '{"dataset_name": "your/dataset", "model_name": "Qwen/Qwen3-0.6B"}'
 ```
 
 Configure model and sampling:
 
 ```bash
-prime eval run self-reward \
+prime eval self-reward \
   -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
   -a '{"dataset_name": "your/dataset", "judge_model": "Qwen/Qwen3-0.6B", "base_url": "http://0.0.0.0:8000/v1", "api_key_var": "JUDGE_API_KEY"}'

@@ -22,13 +22,13 @@
 Run an evaluation with default settings:
 
 ```bash
-prime eval run math-group
+prime eval math-group
 ```
 
 Configure model and sampling:
 
 ```bash
-prime eval run math-group \
+prime eval math-group \
   -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7
 ```
@@ -50,5 +50,5 @@ This loader does not expose custom arguments.
 
 <!-- Do not edit below this line. Content is auto-generated. -->
 <!-- vf:begin:reports -->
-<p>No reports found. Run <code>prime eval run vf-math-group -a '{"key": "value"}'</code> to generate one.</p>
+<p>No reports found. Run <code>prime eval vf-math-group -a '{"key": "value"}'</code> to generate one.</p>
 <!-- vf:end:reports -->

@@ -45,7 +45,7 @@ Stagehand needs its own LLM to understand the DOM and translate natural language
 ## Usage
 
 ```bash
-prime eval run browser-dom-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
+prime eval browser-dom-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
 ```
 
 ## Environment Arguments

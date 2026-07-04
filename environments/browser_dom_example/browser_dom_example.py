@@ -8,7 +8,7 @@ DOM mode uses Stagehand to translate natural language commands into
 browser actions like clicking, typing, and navigating.
 
 Usage:
-    prime eval run browser-dom-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
+    prime eval browser-dom-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
 """
 
 import verifiers as vf

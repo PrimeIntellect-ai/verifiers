@@ -14,10 +14,16 @@ import asyncio
 import logging
 import signal
 import sys
+import tomllib
+from pathlib import Path
 
 from pydantic_config import cli
 
 import verifiers.v1 as vf
+from verifiers.v1.cli.eval.compat import (
+    convert_transitional_config,
+    is_transitional_config,
+)
 from verifiers.v1.cli.eval.resume import load_resume_config, split_resume
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.cli.output import output_path, write_config
@@ -39,9 +45,39 @@ USAGE = (
 )
 
 
+def _convert_transitional_args(args: list[str]) -> list[str]:
+    """Rewrite a transitional (v0-dialect) `@` config into a runnable v1 config file.
+
+    The ingestion boundary for old eval TOMLs (`env_id` / `[[eval]]`): they convert
+    here once instead of growing compatibility branches downstream. Ids must already
+    be locally importable — hosts (prime) install hub refs before handing files over."""
+    for i, arg in enumerate(args):
+        if arg == "@" and i + 1 < len(args):
+            slot, path = i + 1, args[i + 1]
+        elif arg.startswith("@") and len(arg) > 1:
+            slot, path = i, arg[1:]
+        else:
+            continue
+        config_path = Path(path)
+        if not config_path.is_file():
+            continue
+        raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        if not is_transitional_config(raw):
+            continue
+        converted, warnings = convert_transitional_config(config_path)
+        for warning in warnings:
+            print(f"warning: {warning}", file=sys.stderr)
+        print(f"converted v0 eval config {config_path} -> {converted}", file=sys.stderr)
+        rewritten = list(args)
+        rewritten[slot] = str(converted) if arg == "@" else f"@{converted}"
+        return rewritten
+    return args
+
+
 def main(argv: list[str] | None = None) -> None:
     """Parse the eval config once, then run it in this process."""
     args = with_positional_taskset(list(sys.argv[1:] if argv is None else argv))
+    args = _convert_transitional_args(args)
     if not args or any(arg in ("-h", "--help") for arg in args):
         print(USAGE)
         # `prog` is supported by cli(), but is missing from its overload declarations.

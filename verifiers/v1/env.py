@@ -173,13 +173,8 @@ class EnvConfig(BaseConfig):
         ):
             data["id"] = taskset_id
             data["taskset"] = {}
+            taskset_id = None  # a legacy env has no taskset (nor a bundled harness)
         narrow_plugin_field(data, "taskset", taskset_config_type)
-        taskset = data.get("taskset")
-        taskset_id = (
-            taskset.get("id")
-            if isinstance(taskset, dict)
-            else getattr(taskset, "id", None)
-        )
         # A taskset that bundles its own harness runs with it by default; an explicit
         # `--harness.id` / toml id (already on the field) takes precedence.
         narrow_plugin_field(

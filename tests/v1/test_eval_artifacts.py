@@ -117,9 +117,8 @@ def test_resolve_eval_artifact_dir_reports_incomplete_artifacts(tmp_path):
     with pytest.raises(ValueError, match="missing results.jsonl"):
         resolve_eval_artifact_dir(tmp_path)
 
-    with pytest.raises(
-        ValueError, match="must contain both metadata.json and results.jsonl"
-    ):
+    # a run-file path resolves to its directory and gets the same diagnosis
+    with pytest.raises(ValueError, match="missing results.jsonl"):
         resolve_eval_artifact_dir(tmp_path / "metadata.json")
 
 

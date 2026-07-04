@@ -22,14 +22,14 @@
 Run an evaluation with default settings:
 
 ```bash
-prime eval run gem_wordle
+prime eval gem_wordle
 ```
 
 Configure model and sampling (recommend higher `-t` so the model reliably emits the closing `}`):
 
 ```bash
 export OPENAI_API_KEY=EMPTY
-prime eval run gem_wordle \
+prime eval gem_wordle \
   -b http://127.0.0.1:8000/v1 -k OPENAI_API_KEY \
   -m Qwen/Qwen3-30B-A3B-Instruct-2507 \
   -n 20 -r 3 -t 1024 \

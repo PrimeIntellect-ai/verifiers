@@ -133,7 +133,7 @@ return vf.SingleTurnEnv(
 )
 ```
 
-When running `prime eval run`, the evaluation dataset is used by default. If no `eval_dataset` is provided, evaluation falls back to the training dataset.
+When running `prime eval`, the evaluation dataset is used by default. If no `eval_dataset` is provided, evaluation falls back to the training dataset.
 
 ### Lazy Loading with DatasetBuilder
 
@@ -773,7 +773,7 @@ This runs `uv pip install -e`. Hub packages use the same explicit Prime-owned st
 
 ```bash
 prime env install owner/my-env@1.2.3
-prime eval run my_env
+prime eval my_env
 ```
 
 Eval, validate, serve, and GEPA only accept locally importable package ids.
@@ -883,7 +883,7 @@ In practice, you rarely need to call `set_concurrency()` yourself. V0 evaluation
 override it with `--extra-env-kwargs`:
 
 ```bash
-prime eval run --id my-env --extra-env-kwargs '{"concurrency": 256}'
+prime eval --id my-env --extra-env-kwargs '{"concurrency": 256}'
 ```
 
 ## Integrations and Experimental Environments

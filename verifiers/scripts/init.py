@@ -16,7 +16,7 @@ through the V0 bridge:
 
 ```console
 uv pip install -e .
-prime eval run --id {env_id_dash} --model openai/gpt-4.1-mini --num-tasks 20
+prime eval --id {env_id_dash} --model openai/gpt-4.1-mini --num-tasks 20
 ```
 
 V1 tasksets are the default for new work; run `prime env init <name>` without `--v0` to

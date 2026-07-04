@@ -201,7 +201,7 @@ the current golden path.
 ### Validation By Change Type
 
 - Core runtime or shared config parsing: run the focused unit tests plus `uv run pre-commit run --all-files`.
-- Example environment behavior: run the focused tests and a real `prime eval run` smoke when credentials and endpoint access are available.
+- Example environment behavior: run the focused tests and a real `prime eval` smoke when credentials and endpoint access are available.
 - Environment packaging: exercise `tests/test_envs.py` for the changed environment so a fresh venv installs the environment package and its dependencies.
 - Docs or generated agent guidance: run `uv run python scripts/sync.py` and include the regenerated files.
 - Release prep: verify the version source, release notes commit range, `uv build`, and final worktree status.
@@ -250,7 +250,7 @@ prime env init my-environment
 
 # Install and test your environment
 prime env install my-environment
-prime eval run my-environment -m openai/gpt-4.1-mini -n 5
+prime eval my-environment -m openai/gpt-4.1-mini -n 5
 ```
 
 ### Environment Module Structure
@@ -308,7 +308,7 @@ uv run ty check verifiers             # Type check (matches CI Ty target)
 # Environment tools
 prime env init new-env                       # Create a v1 taskset package
 prime env install new-env                    # Install the local package
-prime eval run new-env -m openai/gpt-4.1-mini -n 5  # Test environment
+prime eval new-env -m openai/gpt-4.1-mini -n 5  # Test environment
 prime eval view                              # Browse evals in the tree browser
 ```
 
@@ -316,7 +316,7 @@ prime eval view                              # Browse evals in the tree browser
 
  | Command | Description |
 |---------|-------------|
-| `prime eval run` | Run evaluations on environments |
+| `prime eval` | Run evaluations on environments |
 | `prime env init` | Initialize new environment from template |
 | `prime env install` | Install environment module |
 | `prime lab setup` | Set up training workspace |

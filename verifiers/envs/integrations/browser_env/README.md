@@ -40,7 +40,7 @@ Override names with `browserbase_api_key_var` and `model_api_key_var` if needed.
 
 ### Local development
 
-Shell exports for local runs (e.g. `prime eval run`):
+Shell exports for local runs (e.g. `prime eval`):
 
 ```bash
 export BROWSERBASE_API_KEY="your-api-key"

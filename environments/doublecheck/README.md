@@ -22,13 +22,13 @@
 Run an evaluation with default settings:
 
 ```bash
-prime eval run doublecheck
+prime eval doublecheck
 ```
 
 Configure model and sampling:
 
 ```bash
-prime eval run doublecheck \
+prime eval doublecheck \
   -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
   -a '{"dataset_name": "math", "dataset_split": "train", "num_train_examples": -1}'

@@ -92,7 +92,7 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
 prime env install my-env
-prime eval run my-env --model openai/gpt-5-nano --num-tasks 5
+prime eval my-env --model openai/gpt-5-nano --num-tasks 5
 ```
 Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.toml`.
 
@@ -110,7 +110,7 @@ prime env push my-env # equivalent to --path ./environments/my_env
 To install an environment from the Environments Hub and then evaluate the local package, do:
 ```bash
 prime env install primeintellect/math-python
-prime eval run math-python
+prime eval math-python
 ```
 
 ## Documentation

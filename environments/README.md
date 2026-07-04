@@ -4,7 +4,7 @@ This folder contains installable example environments that showcase common usage
 
 ## Quick start
 
-- **Evaluate**: `prime eval run math-python` (defaults to openai/gpt-4.1-mini, small sample)
+- **Evaluate**: `prime eval math-python` (defaults to openai/gpt-4.1-mini, small sample)
 
 ## Common usage patterns and examples
 
@@ -113,7 +113,7 @@ results = vf_env.evaluate(client=AsyncOpenAI(), model="gpt-4.1-mini", num_exampl
 
 CLI usage:
 ```bash
-prime eval run reverse-text -n 50 -r 1
+prime eval reverse-text -n 50 -r 1
 ```
 
 If you are building a new environment, prefer starting from `prime env init` and consult the top-level README and docs for dataset format, rubric design, and environment class specifications.

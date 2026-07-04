@@ -13,7 +13,6 @@ durable as they land rather than only at the end.
 
 import asyncio
 import json
-import re
 import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -23,7 +22,8 @@ import tomli_w
 from pydantic import TypeAdapter, ValidationError
 
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.trace import Trace
+from verifiers.v1.graph import MessageNode
+from verifiers.v1.trace import Trace, WireTrace
 
 
 class _ResultRecord(dict[str, Any]):
@@ -118,9 +118,8 @@ def convert_results_for_upload(
     invalid_results: list[InvalidResultLine] | None = None,
 ) -> list[dict[str, Any]]:
     """Convert v1 traces to the sample schema while preserving legacy results."""
-    trace_type = None
-    trace_fields = {}
-    node_fields = {}
+    trace_fields = WireTrace.model_fields
+    node_fields = MessageNode.model_fields
     rollout_counts: dict[int, int] = {}
     converted: list[dict[str, Any]] = []
 
@@ -136,13 +135,6 @@ def convert_results_for_upload(
             converted.append(legacy_sample)
             continue
 
-        if trace_type is None:
-            from verifiers.v1 import WireTrace
-            from verifiers.v1.graph import MessageNode
-
-            trace_type = WireTrace
-            trace_fields = trace_type.model_fields
-            node_fields = MessageNode.model_fields
         trace_data = {
             key: value for key, value in sample.items() if key in trace_fields
         }
@@ -151,7 +143,7 @@ def convert_results_for_upload(
             for node in sample["nodes"]
         ]
         try:
-            trace = trace_type.model_validate(trace_data)
+            trace = WireTrace.model_validate(trace_data)
         except ValidationError as exc:
             if invalid_results is not None:
                 errors = exc.errors()
@@ -248,50 +240,41 @@ def has_eval_artifacts(directory: Path) -> bool:
 
 
 def resolve_eval_artifact_dir(path: str | Path) -> Path:
-    """Validate and return the evaluation artifact directory."""
+    """Validate and return the evaluation artifact directory. A path to one of the run's
+    files (config.toml, results.jsonl, ...) resolves to its directory."""
     artifact_path = Path(path)
 
     if artifact_path.is_file():
-        if artifact_path.name in (
+        if artifact_path.name not in (
             "config.toml",
             "results.jsonl",
             "eval.log",
             "metadata.json",
         ):
-            parent = artifact_path.parent
-            if has_eval_artifacts(parent):
-                return parent
-            if (parent / "config.toml").exists():
-                raise ValueError(
-                    f"Directory '{parent}' is not a complete Verifiers run artifact"
-                )
             raise ValueError(
-                f"Directory '{parent}' must contain both metadata.json and results.jsonl"
+                f"Expected a directory path, but got file: {artifact_path}\n"
+                "Pass a directory containing a native V1 run or metadata.json/results.jsonl"
             )
+        artifact_path = artifact_path.parent
+
+    if not artifact_path.is_dir():
+        raise FileNotFoundError(f"Path not found: {artifact_path}")
+    if has_eval_artifacts(artifact_path):
+        return artifact_path
+
+    if (artifact_path / "config.toml").exists():
         raise ValueError(
-            f"Expected a directory path, but got file: {artifact_path}\n"
-            "Pass a directory containing a native V1 run or metadata.json/results.jsonl"
+            f"Directory '{artifact_path}' is not a complete Verifiers run artifact"
         )
-
-    if artifact_path.is_dir():
-        if has_eval_artifacts(artifact_path):
-            return artifact_path
-        if (artifact_path / "config.toml").exists():
-            raise ValueError(
-                f"Directory '{artifact_path}' is not a complete Verifiers run artifact"
-            )
-
-        has_metadata = (artifact_path / "metadata.json").exists()
-        has_results = (artifact_path / "results.jsonl").exists()
-        if has_metadata and not has_results:
-            raise ValueError(f"Directory '{artifact_path}' is missing results.jsonl")
-        if has_results and not has_metadata:
-            raise ValueError(f"Directory '{artifact_path}' is missing metadata.json")
-        raise ValueError(
-            f"Directory '{artifact_path}' is missing both metadata.json and results.jsonl"
-        )
-
-    raise FileNotFoundError(f"Path not found: {artifact_path}")
+    has_metadata = (artifact_path / "metadata.json").exists()
+    has_results = (artifact_path / "results.jsonl").exists()
+    if has_metadata and not has_results:
+        raise ValueError(f"Directory '{artifact_path}' is missing results.jsonl")
+    if has_results and not has_metadata:
+        raise ValueError(f"Directory '{artifact_path}' is missing metadata.json")
+    raise ValueError(
+        f"Directory '{artifact_path}' is missing both metadata.json and results.jsonl"
+    )
 
 
 def discover_eval_artifact_dirs(outputs_dir: Path = Path("outputs")) -> list[Path]:
@@ -314,62 +297,54 @@ def read_upload_data(results_dir: Path) -> EvalUploadData:
         artifacts = read_artifacts(results_dir)
         config = artifacts.config
         taskset = config.get("taskset")
-        env_field = (
-            taskset.get("id") if isinstance(taskset, dict) else None
-        ) or config.get("id")
-        model = config.get("model")
-        if not isinstance(env_field, str) or not isinstance(model, str):
-            raise ValueError("Missing taskset.id/id or model in config.toml")
-
-        results = convert_results_for_upload(
-            artifacts.results, artifacts.invalid_results
+        env = (taskset.get("id") if isinstance(taskset, dict) else None) or config.get(
+            "id"
         )
+        model = config.get("model")
+        if not isinstance(env, str) or not isinstance(model, str):
+            raise ValueError("Missing taskset.id/id or model in config.toml")
+        invalid = artifacts.invalid_results
+        results = convert_results_for_upload(artifacts.results, invalid)
         rewards = [
             row["reward"]
             for row in results
             if isinstance(row.get("reward"), (int, float))
         ]
-        return EvalUploadData(
-            eval_name=f"{env_field}-{model}",
-            model_name=model,
-            env=env_field,
-            metrics={"reward": sum(rewards) / len(rewards)} if rewards else {},
-            metadata={
-                "framework": "verifiers",
-                "run_id": results_dir.name,
-                "num_examples": config.get("num_tasks"),
-                "rollouts_per_example": config.get("num_rollouts"),
-                "resolved_config": config,
-            },
-            results=results,
-            invalid_results=artifacts.invalid_results,
-        )
-
-    metadata_path = results_dir / "metadata.json"
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    env_field = metadata.get("env_id") or metadata.get("env")
-    if not env_field or "model" not in metadata:
-        raise ValueError(
-            f"Missing required 'env_id' or 'model' field in {metadata_path}"
-        )
-
-    samples, invalid = read_results(results_dir / "results.jsonl")
-    results = convert_results_for_upload(samples, invalid)
-    avg_pattern = re.compile(r"^avg_(.+)$")
-    metrics = {}
-    metadata_copy = {}
-    for key, value in metadata.items():
-        if match := avg_pattern.match(key):
-            metrics[match.group(1)] = value
-        else:
-            metadata_copy[key] = value
+        metrics = {"reward": sum(rewards) / len(rewards)} if rewards else {}
+        metadata: dict[str, Any] = {
+            "framework": "verifiers",
+            "run_id": results_dir.name,
+            "num_examples": config.get("num_tasks"),
+            "rollouts_per_example": config.get("num_rollouts"),
+            "resolved_config": config,
+        }
+    else:
+        metadata_path = results_dir / "metadata.json"
+        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+        env = raw.get("env_id") or raw.get("env")
+        model = raw.get("model")
+        if not env or not model:
+            raise ValueError(
+                f"Missing required 'env_id' or 'model' field in {metadata_path}"
+            )
+        samples, invalid = read_results(results_dir / "results.jsonl")
+        results = convert_results_for_upload(samples, invalid)
+        # legacy metadata carries aggregates as avg_<metric> keys
+        metrics = {
+            key.removeprefix("avg_"): value
+            for key, value in raw.items()
+            if key.startswith("avg_")
+        }
+        metadata = {
+            key: value for key, value in raw.items() if not key.startswith("avg_")
+        }
 
     return EvalUploadData(
-        eval_name=f"{env_field}-{metadata['model']}",
-        model_name=metadata["model"],
-        env=env_field,
+        eval_name=f"{env}-{model}",
+        model_name=model,
+        env=env,
         metrics=metrics,
-        metadata=metadata_copy,
+        metadata=metadata,
         results=results,
         invalid_results=invalid,
     )

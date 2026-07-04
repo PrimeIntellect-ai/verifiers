@@ -22,13 +22,13 @@
 Run an evaluation with default settings:
 
 ```bash
-prime eval run reasoning-gym-env
+prime eval reasoning-gym-env
 ```
 
 Configure model and sampling:
 
 ```bash
-prime eval run reasoning-gym-env \
+prime eval reasoning-gym-env \
   -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
   -a '{"gym": "arc_1d", "num_train_examples": 2000, "num_eval_examples": 2000}'

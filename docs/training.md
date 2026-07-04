@@ -119,7 +119,7 @@ configuration, and launch commands. Use `prime train run <config.toml>` for Prim
 
 ### Usage
 
-Basic usage mirrors `prime eval run`:
+Basic usage mirrors `prime eval`:
 ```bash
 prime env install primeintellect/wiki-search
 prime gepa run wiki_search --model google/gemini-3-flash-preview
@@ -148,7 +148,7 @@ After optimization, you'll find:
 - `pareto_frontier.jsonl` - Best candidate references per validation example
 - `metadata.json` - Run configuration and summary
 
-Use `prime eval run` to verify performance before and after optimization.
+Use `prime eval` to verify performance before and after optimization.
 
 ## RL Rules of Thumb
 

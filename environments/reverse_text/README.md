@@ -22,13 +22,13 @@
 Run an evaluation with default settings:
 
 ```bash
-prime eval run reverse-text
+prime eval reverse-text
 ```
 
 Configure model and sampling:
 
 ```bash
-prime eval run reverse-text \
+prime eval reverse-text \
   -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7
 ```

@@ -1,7 +1,7 @@
 # Evaluation
 
 Verifiers owns local evaluation configuration and execution. The Prime CLI forwards
-`prime eval run` arguments unchanged to Verifiers, so the same command model is available
+`prime eval` arguments unchanged to Verifiers, so the same command model is available
 through the `eval` entrypoint.
 
 ## Local evaluation
@@ -10,7 +10,7 @@ A v1 evaluation combines a taskset plugin with a harness:
 
 ```bash
 prime env install owner/my-taskset
-prime eval run my_taskset \
+prime eval my_taskset \
   --harness.id default \
   --model openai/gpt-4.1-mini \
   --num-tasks 10 \
@@ -22,16 +22,16 @@ including private access and version selection; Verifiers only imports the resul
 
 ```bash
 prime env install owner/my-taskset@1.2.3
-prime eval run my_taskset --harness.id default
+prime eval my_taskset --harness.id default
 ```
 
 Use `--dry-run true` to resolve and print the typed configuration without running rollouts:
 
 ```bash
-prime eval run my_taskset --harness.id default --dry-run true
+prime eval my_taskset --harness.id default --dry-run true
 ```
 
-Run `prime eval run --help` for the complete typed surface. Important groups include:
+Run `prime eval --help` for the complete typed surface. Important groups include:
 
 - `--taskset.*`: taskset plugin configuration
 - `--harness.*`: harness and runtime configuration
@@ -47,7 +47,7 @@ V0 remains available through the explicit `--id` bridge:
 
 ```bash
 prime env install owner/my-v0-env
-prime eval run \
+prime eval \
   --id my_v0_env \
   --args '{"split":"test"}' \
   --model openai/gpt-4.1-mini \
@@ -80,7 +80,7 @@ max_tokens = 2048
 ```
 
 ```bash
-prime eval run @ configs/eval/math.toml
+prime eval @ configs/eval/math.toml
 ```
 
 CLI values override file values. Pydantic rejects unknown fields and invalid types before
@@ -103,7 +103,7 @@ The built-in harness can run locally, in Docker, in a Prime sandbox, or in Modal
 runtime with its discriminator and then set its typed fields:
 
 ```bash
-prime eval run my_taskset \
+prime eval my_taskset \
   --harness.runtime.type prime \
   --harness.runtime.cpu 2 \
   --harness.runtime.memory 4
@@ -129,7 +129,7 @@ trace per line as rollouts finish. There is no run manifest or `run.json`.
 Resume an interrupted run by passing only its output directory:
 
 ```bash
-prime eval run --resume outputs/my-taskset--openai--gpt-4.1-mini--default/<run-id>
+prime eval --resume outputs/my-taskset--openai--gpt-4.1-mini--default/<run-id>
 ```
 
 Resume reuses the saved config and appends only missing or failed rollouts.

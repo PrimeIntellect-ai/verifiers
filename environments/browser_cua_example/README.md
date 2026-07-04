@@ -47,13 +47,13 @@ Note: When running in manual server mode, ensure `OPENAI_API_KEY` is set in the 
 
 ```bash
 # Default - pre-built image (fastest)
-prime eval run browser-cua-example -m openai/gpt-4o-mini
+prime eval browser-cua-example -m openai/gpt-4o-mini
 
 # Binary upload (custom server)
-prime eval run browser-cua-example -m openai/gpt-4o-mini -a '{"use_prebuilt_image": false}'
+prime eval browser-cua-example -m openai/gpt-4o-mini -a '{"use_prebuilt_image": false}'
 
 # Local development
-prime eval run browser-cua-example -m openai/gpt-4o-mini -a '{"use_sandbox": false}'
+prime eval browser-cua-example -m openai/gpt-4o-mini -a '{"use_sandbox": false}'
 ```
 
 ### Pre-built Docker Image (Default, Fastest)
@@ -61,7 +61,7 @@ prime eval run browser-cua-example -m openai/gpt-4o-mini -a '{"use_sandbox": fal
 By default, CUA mode uses a pre-built Docker image (`deepdream19/cua-server:latest`) for fastest startup. The image includes the CUA server binary and all dependencies pre-installed:
 
 ```bash
-prime eval run browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
+prime eval browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
 ```
 
 This is the recommended approach for production use. Startup is ~5-10 seconds compared to ~30-60 seconds with binary upload.
@@ -71,7 +71,7 @@ This is the recommended approach for production use. Startup is ~5-10 seconds co
 If you need to use a custom version of the CUA server, disable the prebuilt image to build and upload the binary at runtime:
 
 ```bash
-prime eval run browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY -a '{"use_prebuilt_image": false}'
+prime eval browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY -a '{"use_prebuilt_image": false}'
 ```
 
 This mode:
@@ -95,14 +95,14 @@ For local development, you can run the CUA server manually:
 
 2. **Run the evaluation with sandbox disabled**:
    ```bash
-   prime eval run browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY -a '{"use_sandbox": false}'
+   prime eval browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY -a '{"use_sandbox": false}'
    ```
 
 ### Custom Server URL
 
 If running the CUA server on a different port:
 ```bash
-prime eval run browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY -a '{"use_sandbox": false, "server_url": "http://localhost:8080"}'
+prime eval browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY -a '{"use_sandbox": false, "server_url": "http://localhost:8080"}'
 ```
 
 ## Environment Arguments
@@ -140,7 +140,7 @@ DOCKERHUB_USER=myuser ./build-and-push.sh  # Use different Docker Hub user
 
 Then use your custom image:
 ```bash
-prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"prebuilt_image": "myuser/cua-server:v1.0.0"}'
+prime eval browser-cua-example -m openai/gpt-4.1-mini -a '{"prebuilt_image": "myuser/cua-server:v1.0.0"}'
 ```
 
 ## DOM vs CUA Mode Comparison

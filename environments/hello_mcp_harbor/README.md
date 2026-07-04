@@ -19,7 +19,7 @@ Adapted from Harbor's own [`examples/tasks/hello-mcp`](https://github.com/laude-
 
 ```bash
 # Single rollout against your configured agent
-prime eval run hello-mcp-harbor
+prime eval hello-mcp-harbor
 ```
 
 ## Files
