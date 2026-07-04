@@ -199,3 +199,23 @@ def test_read_upload_data_supports_legacy_runs(tmp_path):
     assert upload.metrics == {"reward": 0.75}
     assert upload.metadata == {"env": "owner/gsm8k", "model": "gpt-4"}
     assert upload.results == [{"id": 1, "reward": 0.75, "example_id": 1}]
+
+
+def test_partial_v1_trace_rows_are_reported_not_uploaded_as_legacy(tmp_path):
+    (tmp_path / "config.toml").write_text(
+        """
+model = "gpt-4"
+
+[taskset]
+id = "gsm8k-v1"
+""".lstrip()
+    )
+    # carries v1 markers but not the full trace shape: must land in invalid_results
+    partial = {"id": "trace-1", "task": {}, "nodes": []}
+    (tmp_path / "results.jsonl").write_text(json.dumps(partial) + "\n")
+
+    upload = read_upload_data(tmp_path)
+
+    assert upload.results == []
+    assert len(upload.invalid_results) == 1
+    assert upload.invalid_results[0].reason.startswith("invalid trace:")

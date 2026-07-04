@@ -184,3 +184,8 @@ class TestMainIngestion:
 
         args = ["@", str(config_path)]
         assert _convert_transitional_args(args) == args
+
+
+def test_unknown_provider_raises_a_clear_error():
+    with pytest.raises(ValueError, match="unknown provider `together`"):
+        build_v1_eval_config({"id": "reverse-text", "provider": "together"})

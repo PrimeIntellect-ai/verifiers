@@ -277,7 +277,12 @@ def _build_client(fields: dict[str, Any]) -> dict[str, Any]:
     client: dict[str, Any] = {}
     provider = fields.pop("provider", None)
     if provider:
-        provider_config = PROVIDER_CONFIGS[provider]
+        provider_config = PROVIDER_CONFIGS.get(provider)
+        if provider_config is None:
+            raise ValueError(
+                f"unknown provider `{provider}` "
+                f"(known: {', '.join(sorted(PROVIDER_CONFIGS))})"
+            )
         if provider_config.get("client_type"):
             raise ValueError(f"--provider {provider} has no v1 equivalent")
         client["base_url"] = provider_config["url"]

@@ -124,11 +124,9 @@ def convert_results_for_upload(
     converted: list[dict[str, Any]] = []
 
     for sample_number, sample in enumerate(samples, start=1):
-        if not (
-            isinstance(sample.get("nodes"), list)
-            and isinstance(sample.get("task"), dict)
-            and isinstance(sample.get("rewards"), dict)
-        ):
+        # legacy rows never carry `nodes`/`rewards`; a row with either marker is a
+        # v1 trace and must validate fully — partial rows are reported, not uploaded
+        if "nodes" not in sample and "rewards" not in sample:
             legacy_sample = dict(sample)
             if "id" in legacy_sample and "example_id" not in legacy_sample:
                 legacy_sample["example_id"] = legacy_sample["id"]
@@ -138,10 +136,14 @@ def convert_results_for_upload(
         trace_data = {
             key: value for key, value in sample.items() if key in trace_fields
         }
-        trace_data["nodes"] = [
-            {key: value for key, value in node.items() if key in node_fields}
-            for node in sample["nodes"]
-        ]
+        raw_nodes = sample.get("nodes")
+        if isinstance(raw_nodes, list):
+            trace_data["nodes"] = [
+                {key: value for key, value in node.items() if key in node_fields}
+                if isinstance(node, dict)
+                else node
+                for node in raw_nodes
+            ]
         try:
             trace = WireTrace.model_validate(trace_data)
         except ValidationError as exc:
