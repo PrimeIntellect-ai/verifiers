@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import logging
 import shlex
+import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
@@ -86,6 +87,17 @@ def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
 _LIVE: "weakref.WeakSet[Runtime]" = weakref.WeakSet()
 _atexit_armed = False
 
+_STOPPING: "dict[Runtime, float]" = {}
+"""In-flight teardowns -> start time. When an interrupt lands mid-`stop()`, one aggregate
+report tells the user how much work is draining, so they can judge whether to wait or
+press Ctrl-C again; also a debugger's view of what a shutdown is stuck on. Entries are
+popped when their `stop()` returns."""
+
+_drain_reported = False
+"""Whether the current drain has been reported — one aggregate line per drain, however
+many teardowns absorb the interrupt (512 in-flight must not print 512 lines). Reset when
+`_STOPPING` empties, so a later drain in a long-lived process reports again."""
+
 
 def register(runtime: "Runtime") -> None:
     """Track a runtime so the atexit hook can free it if a signal cuts its `finally` short.
@@ -146,9 +158,35 @@ class Runtime(ABC):
         """Free the provisioned resource on the normal path (the owner's `finally`),
         shielded from cancellation: a Ctrl-C / SIGTERM cancels that `finally` mid-await,
         and an interrupted teardown leaks the container / paid sandbox. Runs `teardown`
-        to completion, then re-raises the cancellation. Framework method — override
-        `teardown`, not this."""
-        await run_shielded(self.teardown())
+        to completion, then re-raises the cancellation; when the interrupt lands
+        mid-teardown, reports the drain (name, in-flight count, age) so the wait reads
+        as intentional and the user can decide whether to Ctrl-C again. Framework
+        method — override `teardown`, not this."""
+
+        def interrupted() -> None:
+            global _drain_reported
+            logger.debug(
+                "finishing teardown of %s (%s)", self.name, self.descriptor or "-"
+            )
+            if _drain_reported:
+                return
+            _drain_reported = True
+            logger.warning(
+                "finishing %d in-flight teardown(s) (oldest %.0fs) — Ctrl-C again to "
+                "abort; leftover resources are freed best-effort at exit",
+                len(_STOPPING),
+                time.time() - min(_STOPPING.values()),
+            )
+
+        global _drain_reported
+        _STOPPING[self] = time.time()
+        try:
+            await run_shielded(self.teardown(), interrupted=interrupted)
+        finally:
+            _STOPPING.pop(self, None)
+            if _drain_reported and not _STOPPING:
+                _drain_reported = False
+                logger.warning("all in-flight teardowns finished")
 
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown
