@@ -7,10 +7,13 @@ the new task's prompt plus enough metadata to filter, label, and restore it. The
 assembles seeds into tasks; nothing here touches config or I/O beyond line iteration.
 
 Sandbox snapshots: a producer that snapshots the rollout's sandbox records the refs in
-``trace.info["snapshots"]`` (``SNAPSHOTS_INFO_KEY``), keyed by the index (in ``trace.nodes``) of
-the last node whose effects the snapshot contains. Each seed carries the ref of its anchor node
-when one exists, and — since resuming without the sandbox state is unfaithful once state *is*
-captured — a record that carries any refs offers only snapshotted resume points.
+``trace.info["snapshots"]`` (``SNAPSHOTS_INFO_KEY``), keyed by the index (in ``trace.nodes``)
+of the node the snapshot accompanies — the sandbox state as of that node entering the
+conversation. A seed's anchor node is the node its resume point re-enters at: the restart's
+fork node (compaction), the resumed tool result (tool-call), or the attempt's recorded final
+node (recheck). Since resuming without the sandbox state is unfaithful once state *is*
+captured, a record that carries any refs offers only snapshotted resume points — every
+builder drops anchors without a ref.
 """
 
 import json
@@ -30,7 +33,8 @@ RECHECK_PROMPT = (
 
 SNAPSHOTS_INFO_KEY = "snapshots"
 """Where a record carries sandbox snapshot refs: ``trace.info["snapshots"]`` maps the index of a
-node in ``trace.nodes`` (as a string — JSON keys) to an opaque ref restorable into a runtime."""
+node in ``trace.nodes`` (as a string — JSON keys) to an opaque ref restorable into a runtime,
+capturing the sandbox as of that node entering the conversation."""
 
 
 class Seed(NamedTuple):
@@ -54,7 +58,9 @@ def iter_records(paths: Iterable[Path]) -> Iterator[dict]:
                 try:
                     yield json.loads(line)
                 except json.JSONDecodeError as e:
-                    raise ValueError(f"{path}:{number} is not a JSON rollout record") from e
+                    raise ValueError(
+                        f"{path}:{number} is not a JSON rollout record"
+                    ) from e
 
 
 def node_snapshots(trace: Trace) -> dict[int, str]:
@@ -96,24 +102,35 @@ def compaction_seeds(trace: Trace) -> list[Seed]:
         nodes = branch.nodes
         fork = next((i for i, node in enumerate(nodes) if id(node) not in seen), None)
         seen.update(id(node) for node in nodes)
-        first_sampled = next((i for i, node in enumerate(nodes) if node.sampled), len(nodes))
+        first_sampled = next(
+            (i for i, node in enumerate(nodes) if node.sampled), len(nodes)
+        )
         if fork is None or not 1 <= fork < first_sampled:
             continue
+        ref = snapshots.get(id(nodes[fork]))
+        if snapshots and ref is None:
+            continue  # snapshotted record: an unsnapshotted anchor would resume unfaithfully
         context = nodes[:first_sampled]
         if any(node.message.role not in ("system", "user") for node in context):
             continue
         messages = [node.message for node in context]
         prompt: str | Messages
-        if len(messages) == 2 and messages[0].role == "system" and isinstance(messages[1].content, str):
+        if (
+            len(messages) == 2
+            and messages[0].role == "system"
+            and isinstance(messages[1].content, str)
+        ):
             prompt = messages[1].content
         else:
             prompt = messages[1:] if messages[0].role == "system" else messages
+        if prompt == trace.task.prompt or messages == trace.task.prompt:
+            continue  # the task's own launch context (branch ordering put an auxiliary branch first)
         seeds.append(
             Seed(
                 prompt=prompt,
                 name=f"continue:{trace.id[:8]}:compaction{len(seeds)}",
                 tokens=estimate_tokens(context),
-                snapshot=snapshots.get(id(nodes[fork])),
+                snapshot=ref,
             )
         )
     return seeds
@@ -165,20 +182,32 @@ def tool_call_seed(trace: Trace, rng: Random) -> Seed | None:
 
 def recheck_seed(trace: Trace, recheck_prompt: str) -> Seed | None:
     """The source rollout's finished attempt — its final branch — with truncation artifacts
-    stripped (a dangling assistant tool call whose results never arrived, a trailing user turn
-    the model never answered) and the verification request appended as a new user turn. A
-    ``Messages`` prompt without the leading system message. None when no model-produced
+    stripped (everything from the first tool run whose calls never got all their results, a
+    trailing user turn the model never answered) and the verification request appended as a new
+    user turn. A ``Messages`` prompt without the leading system message. The snapshot anchor is
+    the branch's recorded final node (the attempt's end state). None when no model-produced
     assistant turn survives cleanup (nothing to check)."""
     branches = trace.branches
     if not branches:
         return None
     nodes = list(branches[-1].nodes)
-    while nodes:
-        message = nodes[-1].message
-        if message.role == "user" or (message.role == "assistant" and message.tool_calls):
-            nodes.pop()
+    snapshots = node_snapshots(trace)
+    ref = snapshots.get(id(nodes[-1]))
+    if snapshots and ref is None:
+        return None  # snapshotted record: an unsnapshotted anchor would resume unfaithfully
+    for i, node in enumerate(nodes):
+        message = node.message
+        if message.role != "assistant" or not message.tool_calls:
             continue
-        break
+        run = i + 1
+        while run < len(nodes) and nodes[run].message.role == "tool":
+            run += 1
+        answered = {nodes[j].message.tool_call_id for j in range(i + 1, run)}
+        if {call.id for call in message.tool_calls} != answered:
+            nodes = nodes[:i]  # dangling calls would make the replayed prompt malformed
+            break
+    while nodes and nodes[-1].message.role == "user":
+        nodes.pop()
     if not any(node.sampled and node.message.role == "assistant" for node in nodes):
         return None
     messages = [node.message for node in nodes]
@@ -188,5 +217,5 @@ def recheck_seed(trace: Trace, recheck_prompt: str) -> Seed | None:
         prompt=[*messages, UserMessage(content=recheck_prompt)],
         name=f"recheck:{trace.id[:8]}",
         tokens=estimate_tokens(nodes) + len(recheck_prompt) // 4,
-        snapshot=node_snapshots(trace).get(id(nodes[-1])),
+        snapshot=ref,
     )

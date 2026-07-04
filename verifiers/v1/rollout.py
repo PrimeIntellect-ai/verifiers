@@ -42,7 +42,6 @@ from verifiers.v1.runtimes import (
     reachable_url,
 )
 from verifiers.v1.mcp import serve_tools, serve_user
-from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
@@ -137,7 +136,7 @@ class Rollout:
         the runtime is live, then tears the runtime down in a `finally`. Reuses the
         eval-level shared tool servers / interception pool injected at construction (see
         `self.shared_urls` / `self.interception`)."""
-        trace: Trace = Trace(task=self.task, state=state_cls(type(self.taskset))())
+        trace: Trace = Trace(task=self.task, state=self.taskset.state_type()())
         self.trace = trace  # expose for the --rich dashboard
         trace.timing.setup.start = time.time()
         self.runtime = make_runtime(

@@ -9,7 +9,11 @@ from verifiers.v1.tasksets.replay.records import (
     recheck_seed,
     tool_call_seed,
 )
-from verifiers.v1.tasksets.replay.taskset import ReplayConfig, ReplayTaskset, restore_snapshot
+from verifiers.v1.tasksets.replay.taskset import (
+    ReplayConfig,
+    ReplayTaskset,
+    restore_snapshot,
+)
 
 __all__ = [
     "RECHECK_PROMPT",

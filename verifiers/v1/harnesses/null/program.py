@@ -17,7 +17,6 @@ secret, and model arrive as argv (not env), so nothing the program spawns inheri
 import argparse
 import asyncio
 import json
-import os
 from contextlib import AsyncExitStack
 
 from openai import AsyncOpenAI
@@ -98,6 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--system-prompt", default="")
     parser.add_argument("--prompt", default="")
+    parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     return parser.parse_args()
 
@@ -115,11 +115,16 @@ async def main() -> None:
             if args.system_prompt
             else []
         )
-        # A Messages prompt (e.g. an image-bearing prompt) arrives pre-built as OpenAI wire dicts
-        # via INITIAL_MESSAGES (kept in env: it can be large multimodal content that overflows
-        # argv, and it's prompt content, not a credential); otherwise --prompt is the opening
-        # message. Both empty means the task has no prompt — the user simulator seeds the opening.
-        initial = json.loads(os.environ.get("INITIAL_MESSAGES", "[]"))
+        # A Messages prompt (e.g. a replayed history or an image-bearing prompt) arrives
+        # pre-built as OpenAI wire dicts in a file (argv/env cap a single string at
+        # MAX_ARG_STRLEN, and a seeded conversation can be far larger); otherwise --prompt is
+        # the opening message. Both empty means the task has no prompt — the user simulator
+        # seeds the opening.
+        initial = (
+            json.loads(open(args.initial_messages_file).read())
+            if args.initial_messages_file
+            else []
+        )
         if initial:
             messages.extend(initial)
         elif args.prompt:

@@ -45,9 +45,15 @@ from typing import Literal
 
 from pydantic import SerializeAsAny, ValidationError, model_validator
 
-from verifiers.v1.loaders import load_taskset, narrow_plugin_field, task_type, taskset_config_type
+from verifiers.v1.loaders import (
+    load_taskset,
+    narrow_plugin_field,
+    task_type,
+    taskset_config_type,
+)
 from verifiers.v1.mcp import Toolset, User
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.state import State
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.tasksets.replay.records import (
@@ -68,7 +74,9 @@ async def restore_snapshot(runtime: Runtime, ref: str) -> None:
     resume sees the filesystem/session state its seeded context claims exists. Runtimes can't
     capture or restore snapshots yet — no producer records refs today, so this only fires once
     one does; plug the runtime restore call in here when support lands."""
-    raise NotImplementedError(f"sandbox snapshot restore is not supported by runtimes yet (ref {ref!r})")
+    raise NotImplementedError(
+        f"sandbox snapshot restore is not supported by runtimes yet (ref {ref!r})"
+    )
 
 
 class ReplayConfig(TasksetConfig):
@@ -76,9 +84,13 @@ class ReplayConfig(TasksetConfig):
 
     records: str | list[str] = []
     """Glob pattern(s) of rollout record files — ``Trace.to_record()`` JSONL lines, e.g.
-    ``"<output_dir>/rollouts/step_*/train_rollouts.jsonl"``. Required. Lines that don't
-    validate as the source taskset's task type (e.g. another env's rollouts in a mixed train
-    file) are skipped and counted."""
+    ``"<output_dir>/rollouts/step_*/train_rollouts.jsonl"``. Required. Validation freezes the
+    globs to the concrete matched files, so every env-server pool worker builds the identical
+    task list even if the directory keeps growing — point it at a finished run's records, not
+    a live producer's. Lines that don't validate as the source taskset's task type (e.g.
+    another env's rollouts in a mixed train file) are skipped and counted; that filter is
+    structural, so a source whose task type has no distinguishing required fields can't tell
+    foreign records apart — use single-env record files for such sources."""
 
     source: SerializeAsAny[TasksetConfig] = TasksetConfig()
     """The taskset the records came from (``id`` required, plus its own fields), resolved to
@@ -116,11 +128,28 @@ class ReplayConfig(TasksetConfig):
     @model_validator(mode="after")
     def _validate(self):
         if not self.records:
-            raise ValueError("replay requires `records` — glob pattern(s) of rollout JSONL files")
+            raise ValueError(
+                "replay requires `records` — glob pattern(s) of rollout JSONL files"
+            )
         if not self.source.id:
-            raise ValueError("replay requires `source.id` — the taskset the records came from")
-        if self.mode == "recheck" and "anchor" in self.model_fields_set:
+            raise ValueError(
+                "replay requires `source.id` — the taskset the records came from"
+            )
+        # Compare against the default rather than `model_fields_set`: a dumped resolved config
+        # writes every field explicitly, and must re-validate cleanly.
+        if self.mode == "recheck" and self.anchor != "compaction":
             raise ValueError("`anchor` only applies to mode='continue'")
+        # Freeze globs to the matched files: every env-server pool worker re-validates this
+        # config and rebuilds the task list independently, so the file set must not drift as
+        # the records directory grows (an elastic pool spawns workers throughout the run).
+        # No matches leaves the patterns untouched for `load_tasks` to fail on — the files may
+        # not exist where the config is first validated (e.g. a dry run on another host).
+        patterns = [self.records] if isinstance(self.records, str) else self.records
+        matched = sorted(
+            {path for pattern in patterns for path in glob(pattern, recursive=True)}
+        )
+        if matched:
+            self.records = matched
         return self
 
 
@@ -139,6 +168,19 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
     def NEEDS_CONTAINER(self) -> bool:  # type: ignore[override] — mirrors the source's ClassVar
         return type(self.source).NEEDS_CONTAINER
 
+    @property
+    def defines_tools(self) -> bool:
+        # Report the source's capability, not this class's delegating stubs — the Environment's
+        # harness gate must see exactly what the source taskset exposes.
+        return self.source.defines_tools
+
+    @property
+    def defines_user(self) -> bool:
+        return self.source.defines_user
+
+    def state_type(self) -> type[State]:
+        return self.source.state_type()
+
     def load_tasks(self) -> list[Task]:
         # Group rewards and stop conditions are found by inspecting the taskset instance
         # (the server's `requires_group_scoring`, the rollout's stop checks), so delegation
@@ -147,11 +189,19 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
         for name, method in inspect.getmembers(self.source, inspect.ismethod):
             if hasattr(method, "group_reward") or hasattr(method, "stop"):
                 if hasattr(type(self), name):
-                    raise ValueError(f"source hook {self.config.source.id}.{name} shadows a replay taskset attribute")
+                    raise ValueError(
+                        f"source hook {self.config.source.id}.{name} shadows a replay taskset attribute"
+                    )
                 setattr(self, name, method)
 
-        patterns = [self.config.records] if isinstance(self.config.records, str) else self.config.records
-        paths = sorted({path for pattern in patterns for path in glob(pattern, recursive=True)})
+        patterns = (
+            [self.config.records]
+            if isinstance(self.config.records, str)
+            else self.config.records
+        )
+        paths = sorted(
+            {path for pattern in patterns for path in glob(pattern, recursive=True)}
+        )
         if not paths:
             raise ValueError(f"replay `records` matched no files: {patterns}")
         trace_cls = Trace[task_type(self.config.source.id)]
@@ -173,13 +223,22 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
                 skipped["no_seed"] += 1
                 continue
             for seed in seeds:
-                if self.config.max_seed_tokens is not None and seed.tokens > self.config.max_seed_tokens:
+                if (
+                    self.config.max_seed_tokens is not None
+                    and seed.tokens > self.config.max_seed_tokens
+                ):
                     skipped["overlong"] += 1
                     continue
                 if seed.snapshot is not None:
                     self._snapshots[len(tasks)] = seed.snapshot
                 tasks.append(
-                    trace.task.model_copy(update={"idx": len(tasks), "name": seed.name, "prompt": seed.prompt})
+                    trace.task.model_copy(
+                        update={
+                            "idx": len(tasks),
+                            "name": seed.name,
+                            "prompt": seed.prompt,
+                        }
+                    )
                 )
         logger.info(
             "replay(%s/%s): %d tasks from %d files (skipped: %s)",
@@ -187,7 +246,9 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
             self.config.anchor if self.config.mode == "continue" else "-",
             len(tasks),
             len(paths),
-            ", ".join(f"{reason}={count}" for reason, count in skipped.items() if count),
+            ", ".join(
+                f"{reason}={count}" for reason, count in skipped.items() if count
+            ),
         )
         if not tasks:
             raise ValueError(

@@ -27,7 +27,7 @@ from verifiers.v1.types import EnvId
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.mcp import Toolset, User
-from verifiers.v1.state import StateT
+from verifiers.v1.state import State, StateT, state_cls
 from verifiers.v1.task import TaskT
 from verifiers.v1.trace import Trace
 
@@ -62,6 +62,26 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
+
+    @property
+    def defines_tools(self) -> bool:
+        """Whether this taskset exposes MCP tool servers — the Environment's harness-capability
+        gate reads this. Class-override identity by default; a taskset that wraps another (e.g.
+        `replay`) overrides it to report its source's capability instead of its own methods."""
+        return type(self).tools is not Taskset.tools
+
+    @property
+    def defines_user(self) -> bool:
+        """Whether this taskset drives a user simulator — the Environment's harness-capability
+        gate reads this. Class-override identity by default; a wrapping taskset overrides it to
+        report its source's capability."""
+        return type(self).user is not Taskset.user
+
+    def state_type(self) -> type[State]:
+        """The `State` subclass this taskset's rollouts carry (`Trace.state`), read off the
+        `Taskset[TaskT, ConfigT, StateT]` generic. A wrapping taskset overrides this to report
+        its source's state type, so stateful tool servers and user simulators keep their fields."""
+        return state_cls(type(self))
 
     def load_tasks(self) -> list[TaskT]:
         raise NotImplementedError
