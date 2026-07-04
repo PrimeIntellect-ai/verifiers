@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
 from verifiers.types import (
     AssistantMessage,
@@ -214,7 +213,6 @@ async def test_anthropic_merges_consecutive_tool_results_into_single_user_messag
 async def test_anthropic_from_native_response_extracts_usage():
     anthropic = pytest.importorskip("anthropic")
     from anthropic.types import Message as AnthropicMessage
-
     from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 
     client = AnthropicMessagesClient(object())
@@ -267,7 +265,6 @@ async def test_anthropic_tool_call_round_trips_thinking_blocks():
     pytest.importorskip("anthropic")
     from anthropic.types import Message as AnthropicMessage
     from anthropic.types import Usage as AnthropicUsage
-
     from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 
     client = AnthropicMessagesClient(object())
@@ -296,3 +293,54 @@ async def test_anthropic_tool_call_round_trips_thinking_blocks():
         {"type": "thinking", "thinking": "hidden chain", "signature": "sig_1"},
         {"type": "tool_use", "id": "call_1", "name": "lookup", "input": {"q": "x"}},
     ]
+
+
+def test_prepare_images_inplace_offloads_every_image_part_shape(tmp_path):
+    """Ingress offload must cover the full renderer part treaty: nested
+    ``image_url`` dicts, direct-string ``image_url``, direct ``image``
+    strings, and typed pydantic parts — and reject non-file leftovers."""
+    import base64
+
+    pytest.importorskip(
+        "renderers.mm_store", reason="needs a renderers version with raw image offload"
+    )
+    from verifiers.utils.multimodal import prepare_images_inplace
+
+    raw = b"png-ish bytes"
+    data_url = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+    wire = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                    {"type": "image_url", "image_url": data_url},
+                    {"type": "image", "image": data_url},
+                ],
+            }
+        ]
+    }
+    typed = UserMessage(
+        content=[ImageUrlContentPart(image_url=ImageUrlSource(url=data_url))]
+    )
+
+    prepare_images_inplace(wire, image_dir=tmp_path)
+    prepare_images_inplace(typed, image_dir=tmp_path)
+
+    parts = wire["messages"][0]["content"]
+    offloaded = [
+        parts[0]["image_url"]["url"],
+        parts[1]["image_url"],
+        parts[2]["image"],
+        typed.content[0].image_url.url,
+    ]
+    assert len(set(offloaded)) == 1  # content-addressed: same bytes, same file
+    assert offloaded[0].startswith("file://")
+    written = list(tmp_path.iterdir())
+    assert len(written) == 1 and written[0].read_bytes() == raw
+
+    with pytest.raises(RuntimeError, match="file://"):
+        prepare_images_inplace(
+            {"type": "image", "image": "https://example.com/x.png"},
+            image_dir=tmp_path,
+        )

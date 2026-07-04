@@ -32,10 +32,10 @@ from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
+from verifiers.v1 import graph
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
-from verifiers.v1 import graph
 from verifiers.v1.errors import (
     InterceptionError,
     OverlongPromptError,
@@ -302,9 +302,7 @@ class InterceptionServer:
         ):
             if session.opening is None:
                 try:
-                    session.opening = await session.ctx.client.prepare_messages(
-                        dialect, await session.user("")
-                    )
+                    opening = await session.user("")
                 except RolloutError as e:
                     return self._fail(session, dialect, e)
                 except Exception as e:
@@ -312,6 +310,20 @@ class InterceptionServer:
                         session,
                         dialect,
                         UserError(f"user simulator failed: {type(e).__name__}: {e}"),
+                    )
+                try:
+                    session.opening = await session.ctx.client.prepare_messages(
+                        dialect, opening
+                    )
+                except RolloutError as e:
+                    return self._fail(session, dialect, e)
+                except Exception as e:
+                    return self._fail(
+                        session,
+                        dialect,
+                        InterceptionError(
+                            f"message preparation failed: {type(e).__name__}: {e}"
+                        ),
                     )
             body = dialect.extend(body, None, session.opening)
             prompt = [*prompt, *session.opening]
@@ -407,6 +419,15 @@ class InterceptionServer:
                 return _completion_response(completion)
             try:
                 user_messages = await session.user(response.message.content or "")
+            except RolloutError as e:
+                return self._fail(session, dialect, e)
+            except Exception as e:
+                return self._fail(
+                    session,
+                    dialect,
+                    UserError(f"user simulator failed: {type(e).__name__}: {e}"),
+                )
+            try:
                 user_messages = await session.ctx.client.prepare_messages(
                     dialect, user_messages
                 )
@@ -416,7 +437,9 @@ class InterceptionServer:
                 return self._fail(
                     session,
                     dialect,
-                    UserError(f"user simulator failed: {type(e).__name__}: {e}"),
+                    InterceptionError(
+                        f"message preparation failed: {type(e).__name__}: {e}"
+                    ),
                 )
             # Inject the model turn + the simulator's user turn(s): into the wire request for the
             # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
