@@ -1,9 +1,10 @@
 """The validate entrypoint: `uv run validate <taskset-id> [--runtime.type subprocess] [options]`.
 
 Registered as the `validate` console script — the model-free sibling of `eval`. Where `eval`
-runs a model rollout per task, `validate` can either run each task's `validate` hook, run
-setup only, or run all modes in independent runtimes. Each task is provisioned, set up,
-checked, and torn down independently with bounded concurrency.
+runs a model rollout per task, `validate` runs each task's gold check (`setup` + the
+`validate` hook) and a setup-only check in independent runtimes — or just one of them via
+`--only-gold` / `--only-setup`. Each task is provisioned, set up, checked, and torn down
+independently with bounded concurrency.
 
 Fire-and-forget: progress is shown live (the `--rich` dashboard, or per-task log lines) and
 nothing is written to disk.
@@ -40,8 +41,9 @@ from verifiers.v1.utils.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 USAGE = (
-    "usage: uv run validate [<taskset-id>] [--runtime.type subprocess] [options] [@ file.toml]\n"
-    "       runs setup-only, apply-answer, or all validation modes (no model)"
+    "usage: uv run validate [<taskset-id>] [--only-setup | --only-gold] "
+    "[--runtime.type subprocess] [options] [@ file.toml]\n"
+    "       runs the gold and setup-only checks per task (no model)"
 )
 
 
@@ -90,14 +92,12 @@ def _row(
     }
 
 
-async def _run_apply_answer(
-    taskset: Taskset, task, config: ValidateConfig
-) -> ResultRow:
-    """Provision one runtime, run setup + validate, tear it down, and return a row."""
+async def _run_gold(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
+    """The gold check: provision one runtime, run setup + validate, tear it down."""
     start = time.time()
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
-        name=f"validate-apply-answer-{task.idx}-{uuid4().hex[:8]}",
+        name=f"validate-gold-{task.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
         config.timeout.setup if config.timeout.setup is not None else task.timeout.setup
@@ -120,15 +120,15 @@ async def _run_apply_answer(
             await runtime.stop()
         except Exception:
             logger.warning("runtime teardown failed (task %s)", task.idx, exc_info=True)
-    return _row(task, "apply-answer", valid, exc, start)
+    return _row(task, "gold", valid, exc, start)
 
 
-async def _run_noop(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
-    """Provision one runtime, run setup only, tear it down, and return a row."""
+async def _run_setup(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
+    """The setup-only check: provision one runtime, run setup, tear it down."""
     start = time.time()
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
-        name=f"validate-noop-{task.idx}-{uuid4().hex[:8]}",
+        name=f"validate-setup-{task.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
         config.timeout.setup if config.timeout.setup is not None else task.timeout.setup
@@ -149,7 +149,7 @@ async def _run_noop(taskset: Taskset, task, config: ValidateConfig) -> ResultRow
             await runtime.stop()
         except Exception:
             logger.warning("runtime teardown failed (task %s)", task.idx, exc_info=True)
-    return _row(task, "noop", valid, exc, start)
+    return _row(task, "setup", valid, exc, start)
 
 
 def _all_reason(rows: list[ResultRow]) -> str:
@@ -171,11 +171,11 @@ def _all_error(rows: list[ResultRow]) -> tuple[str | None, str | None]:
 
 
 async def _run_all(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
-    """Run every mode (apply-answer, noop) as independent high-level validations."""
+    """Run every check (gold, setup-only) as independent high-level validations."""
     start = time.time()
-    apply_answer = await _run_apply_answer(taskset, task, config)
-    noop = await _run_noop(taskset, task, config)
-    rows = [apply_answer, noop]
+    gold = await _run_gold(taskset, task, config)
+    setup = await _run_setup(taskset, task, config)
+    rows = [gold, setup]
     error, error_type = _all_error(rows)
     return {
         "index": task.idx,
@@ -186,16 +186,16 @@ async def _run_all(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
         "elapsed": round(time.time() - start, 2),
         "error": error,
         "error_type": error_type,
-        "apply_answer": apply_answer,
-        "noop": noop,
+        "gold": gold,
+        "setup": setup,
     }
 
 
 async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
-    if config.mode == "apply-answer":
-        return await _run_apply_answer(taskset, task, config)
-    if config.mode == "noop":
-        return await _run_noop(taskset, task, config)
+    if config.only_gold:
+        return await _run_gold(taskset, task, config)
+    if config.only_setup:
+        return await _run_setup(taskset, task, config)
     return await _run_all(taskset, task, config)
 
 
@@ -214,12 +214,15 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
         raise SystemExit(
             "taskset needs a container runtime to validate - pass --runtime.type docker (or prime)"
         )
+    checks = (
+        "gold" if config.only_gold else "setup" if config.only_setup else "gold+setup"
+    )
     logger.info(
-        "validating %d task(s) from %s on the %s runtime (mode=%s)",
+        "validating %d task(s) from %s on the %s runtime (%s)",
         len(tasks),
         config.name,
         config.runtime.type,
-        config.mode,
+        checks,
     )
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
