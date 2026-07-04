@@ -44,6 +44,12 @@ class OpenThoughtsTBLiteTaskset(HarborTaskset, vf.Taskset[HarborTask, OpenThough
 
 To create & re-use images for your environments, you can use `prime images push` from the Prime CLI ([Documentation](https://docs.primeintellect.ai/sandboxes/images)) for the given Dockerfiles.
 
+When pushing per-task images for a benchmark, name them `<benchmark>.<task_id>` with the tag `latest` — the image *name* carries the task id, the tag stays mutable — e.g. `prime/primeintellect/tmax.task_000000_c19dda5b:latest`. Do not encode the task id in the tag (`<benchmark>:<task_id>`): a stable per-task name keeps re-pushes an in-place replace and matches the existing benchmark image corpora. Push under your team context (`PRIME_TEAM_ID`) so the images are team-owned rather than personal.
+
+```python
+IMAGE_TEMPLATE = "prime/<team-slug>/<benchmark>.{task}:latest"
+```
+
 ## Additional features
 
 Every Harbor taskset can also be modified with a `timeout_multiplier` and a `resource_multiplier`:
