@@ -4,12 +4,12 @@ The opposite shape from wikispeedia: read-only tools and an LLM-judge reward. Th
 loads questions from a HuggingFace dataset and exposes semantic `search_pages` +
 `view_sections`/`read_section` over the full corpus (chroma index) via a `vf.Toolset`. The
 expensive corpus + index are built in the toolset's `setup` (runs in the server process), and
-the toolset is SHARED — one instance for the whole eval, not rebuilt per rollout. The reward
-asks a judge model whether the harness's answer matches the ground truth.
+the toolset is SHARED — one instance for the whole eval, not rebuilt per rollout. Grading is
+the plugged built-in `reference` judge (a default `judges` entry, overridable per eval) with a
+prompt that also requires coherence.
 """
 
 import verifiers.v1 as vf
-from verifiers.v1.dialects import ChatDialect
 
 from wiki_search_v1.servers.wiki import WikiSearchToolset
 
@@ -51,13 +51,13 @@ class TriviaTask(vf.Task):
     answer: str
 
 
-class JudgeConfig(vf.BaseClientConfig):
-    # base_url / api_key_var / Prime team-billing are inherited from BaseClientConfig.
-    model: str = "deepseek/deepseek-v4-flash"
-
-
 class WikiSearchConfig(vf.TasksetConfig):
-    judge: JudgeConfig = JudgeConfig()
+    # The built-in reference judge, plugged by default with this env's prompt (which also
+    # requires coherence). Fully eval-tunable: `--taskset.judges.0.model ...`, or replaced
+    # wholesale from the TOML's `[[taskset.judges]]`.
+    judges: vf.Judges = [
+        vf.ReferenceJudgeConfig(prompt=JUDGE_PROMPT, question_field="question")
+    ]
     # SHARED: the chroma corpus is expensive, so one instance serves the whole eval (its own
     # runtime), reused across rollouts rather than rebuilt per rollout. CLI-tunable, e.g.
     # `--taskset.tools.shared false` or `--taskset.tools.runtime.type docker`.
@@ -81,25 +81,3 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
 
     def tools(self, task: TriviaTask) -> list[vf.Toolset]:
         return [WikiSearchToolset(self.config.tools)]
-
-    @vf.reward(weight=1.0)
-    async def judged(
-        self, task: TriviaTask, trace: vf.Trace, runtime: vf.Runtime
-    ) -> float:
-        response = (
-            trace.assistant_messages[-1].content if trace.assistant_messages else ""
-        )
-        prompt = JUDGE_PROMPT.format(
-            question=task.question, answer=task.answer, response=response or ""
-        )
-        client = vf.resolve_client(self.config.judge)
-        try:
-            verdict = await client.get_response(
-                ChatDialect(),
-                {"messages": [{"role": "user", "content": prompt}]},
-                self.config.judge.model,
-                vf.SamplingConfig(),
-            )
-        finally:
-            await client.close()
-        return float("yes" in (verdict.message.content or "").lower())

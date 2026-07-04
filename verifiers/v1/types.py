@@ -68,6 +68,17 @@ def content_to_parts(content) -> MessageContent:
     return parts
 
 
+def content_text(content: "MessageContent | None") -> str:
+    """The plain text of a message body — a `str` as-is, a parts list joined to its text
+    parts (images dropped), `""` for `None`. The shared text view used by `Task.prompt_text`
+    and `Trace.transcript`."""
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        part.text for part in content or [] if isinstance(part, TextContentPart)
+    )
+
+
 class SystemMessage(StrictBaseModel):
     """A system instruction message."""
 
@@ -295,7 +306,7 @@ def _validate_env_id(env_id: str) -> str:
 
 
 EnvId = Annotated[str, AfterValidator(_validate_env_id)]
-"""A locally importable taskset, harness, or V0 environment package id."""
+"""A locally importable taskset, harness, judge, or V0 environment package id."""
 
 
 def env_name(env_id: str) -> str:

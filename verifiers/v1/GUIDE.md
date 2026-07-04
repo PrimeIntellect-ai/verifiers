@@ -66,7 +66,7 @@ class ReverseTaskset(vf.Taskset[ReverseTask, ReverseConfig]):
 
     @vf.reward()
     async def exact_match(self, task: ReverseTask, trace: vf.Trace) -> float:
-        return float(trace.assistant_messages[-1].content.strip() == task.answer)
+        return float(trace.last_reply == task.answer)
 
 
 __all__ = ["ReverseTaskset"]   # vf resolves the taskset by finding this Taskset subclass
@@ -250,7 +250,7 @@ VERIFY = (Path(__file__).parent / "verify.py").read_text()   # PEP 723 header de
 
 @vf.reward()
 async def verify(self, task, trace, runtime) -> float:
-    r = await runtime.run_uv_script(VERIFY, args=[task.answer, trace.assistant_messages[-1].content])
+    r = await runtime.run_uv_script(VERIFY, args=[task.answer, trace.last_reply])
     return float(r.stdout.strip() == "1.0")
 ```
 
@@ -271,7 +271,7 @@ class CorrectnessJudge(vf.Judge[bool]):                 # Judge[ParsedT] — Par
         return response.text.strip().lower().startswith("yes")
 
 class MyConfig(vf.TasksetConfig):
-    judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
+    judge: vf.JudgeConfig = vf.JudgeConfig()
 
 class MyTaskset(vf.Taskset[MyTask, MyConfig]):
     def __init__(self, config: MyConfig) -> None:
@@ -308,6 +308,94 @@ Good to know:
 - **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`, Prime auto-config). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.
 - **Errors propagate**: a judge API failure errors the rollout (recorded as a `TasksetError` on the trace); the OpenAI SDK already retries transient 429/5xx/connection errors.
 
+### Pluggable judges
+
+A judge can also be **plugged from config alone** — no taskset code. The base `TasksetConfig` has a
+`judges` list; each entry names a judge plugin by `id` (resolved exactly like a taskset or harness id:
+a built-in, a local package, or a hub `org/name[@version]` package) and is run by `Taskset.score`
+after the taskset's own `@reward`s, recording its verdict into `trace.rewards` under its `name`
+(default: the id's package name; entries that would share a reward key are rejected at config
+time — set a distinct `name` on each) with its `weight`. That makes off-the-shelf grading
+composable with **any** taskset × harness pair straight from the eval TOML:
+
+```toml
+[taskset]
+id = "gsm8k-v1"
+
+[[taskset.judges]]                       # reference-answer yes/no -> 1/0
+id = "reference"
+answer_field = "answer"                  # the task field holding the reference answer
+
+[[taskset.judges]]                       # rubric criteria, each scored 1/0
+id = "rubric"
+path = "rubrics/quality.toml"
+weight = 0.5                             # the aggregate's weight in trace.reward
+weights = { cites_sources = 2.0 }        # per-criterion override of the file's weight
+```
+
+The built-ins (in `verifiers.v1.judges`):
+
+| id | class | grades |
+| --- | --- | --- |
+| `reference` | `vf.ReferenceJudge` | the reply against the task's reference answer (`answer_field`; a list = any acceptable answer), 1/0. Knobs: `choices` (verdict labels, e.g. `["A", "B"]`) |
+| `rubric` | `vf.RubricJudge` | every criterion of a `.toml`/`.json` rubric file 1/0 in one structured-output call; rewards the weighted mean (`Σwv/Σw`), records each verdict as a `<name>/<criterion>` metric |
+
+A rubric file lists `[[criteria]]` entries (`name`, `text`, optional `weight`; JSON takes
+`{"criteria": [...]}` or a bare list) — criterion weights come from the file, overridable per name
+via the config's `weights`:
+
+```toml
+[[criteria]]
+name = "cites_sources"
+text = "The response cites at least one specific source."
+weight = 1.0
+```
+
+Good to know:
+
+- **Judges alone are a full reward signal.** `score` runs `@metric`s, `@reward`s, then pluggable
+  judges — each phase optional. A taskset with no `@reward` and one judge gets `trace.reward`
+  entirely from the judge (wiki-search-v1's shape); mixing them sums weighted contributions.
+- **What the built-ins see** is config-selectable: `{question}` = the task field named by
+  `question_field` (else `task.prompt_text` — the prompt as plain text, `Messages` reduced to
+  text parts); `{response}` = the `view` (`vf.JudgeView`): `last_reply` (reference's default —
+  grade the answer) or `full_trace` (rubric's default — grade the process via
+  `Trace.transcript`, every recorded turn minus reasoning). Anything beyond that is a custom
+  judge: `score` gets the full `trace` (and `runtime`) and builds any messages from it.
+- **Error attribution:** a *model* failure scores 0 (empty replies short-circuit without a
+  judge call; wrong/non-committal replies get the negative verdict). A *judge* failure — API
+  error, refusal, unparseable verdict, bad rubric — **raises**: the rollout errors and training
+  excludes/retries the sample. Never silently 0 a judge failure.
+- **What lands on the trace:** the weighted verdict in `trace.rewards[<reward key>]`; rubric's
+  raw per-criterion verdicts in `trace.metrics`; every call's `JudgeResponse` in
+  `trace.info["judge"]` with its tokens + cost in `trace.extra_usage` (shown as `+judge` in the
+  dashboard). All persisted to `results.jsonl`.
+
+Writing your own pluggable judge is the same recipe as any plugin: a package exporting a `Judge`
+subclass via `__all__` that implements `score` — declare any subset of `task` / `trace` / `runtime`
+by parameter name (like a `@reward`) and return a `float` (or a `dict[str, float]`). Declare its
+config via the second generic param so `--taskset.judges` narrows to it:
+
+```python
+class MyJudgeConfig(vf.JudgeConfig):
+    strictness: int = 3
+
+class MyJudge(vf.Judge[float, MyJudgeConfig]):
+    prompt = "…{question}…{response}… Reply yes or no."
+
+    async def score(self, task: vf.Task, trace: vf.Trace) -> float:
+        result = await self.evaluate(trace=trace, question=task.prompt_text, response=trace.last_reply)
+        return float(vf.parse_judge_choice(result.text, ("yes", "no")) == "yes")
+
+__all__ = ["MyJudge", "MyJudgeConfig"]
+```
+
+Every judge's endpoint, model, sampling, prompt template (`prompt` inline, or `prompt_file`
+pointing at a text file with the same `{field}` placeholders), reward key (`name`), and
+`weight` are config fields, so a pluggable judge is fully tunable per eval without touching code.
+The built-ins' default prompts ship as text files next to their modules
+(`verifiers/v1/judges/reference.txt`, `rubric.txt`) — copy one as a `prompt_file` starting point.
+
 ## Stop conditions
 
 A rollout ends when the harness finishes, a framework budget trips (`--max-turns`, token caps), or
@@ -317,7 +405,7 @@ a taskset `@vf.stop` fires. A stop is an `async (self, trace) -> bool` checked b
 ```python
 @vf.stop
 async def saw_answer(self, trace) -> bool:
-    last = trace.assistant_messages[-1].content or ""
+    last = trace.last_reply
     return "FINAL:" in last
 ```
 
@@ -511,19 +599,17 @@ the default is the cheapest correct thing; the rest trade setup cost for isolati
 | **own runtime** *(default)* | *(nothing; `runtime = {type = "docker"\|"prime"}` for a sandbox)* | own runtime per rollout — `subprocess` on the host (default), or a `docker`/`prime` sandbox over a tunnel | full per-rollout isolation; a sandbox also isolates untrusted code / deps / network | pays `setup` every rollout (a sandbox adds spin-up + env install) |
 | **colocated** | `colocated = true` | inside the harness's runtime, one per rollout (no tunnel) | no extra runtime/tunnel; can touch the harness's filesystem | couples to the harness; `setup` per rollout |
 | **shared** | `shared = true` | one instance for the whole eval | `setup` once; writable per-rollout if state lives in `self.state` | state outside `self.state` corrupts across rollouts; `setup_task` skipped |
-| **shared + fork** | `shared = true, fork = true` | warm parent + forked child per rollout (copy-on-write) | `setup` once **and** isolates arbitrary in-process/on-disk state; runs `setup_task` per child | a process per concurrent rollout; Linux only |
 | **remote** *(tools only)* | `url = "https://…"` | connects to an already-running MCP endpoint | zero hosting; use a public/third-party server | no isolation, state, or lifecycle control |
 
-`shared` (and `fork`) work on any runtime — the framework makes the rollout's `/state` channel
-reachable from the shared server (localhost, or a host tunnel when remote). Keep big shared data
-off the Python heap (numpy / mmap / an on-disk index) so fork's copy-on-write actually saves
-memory.
+`shared` works on any runtime — the framework makes the rollout's `/state` channel reachable from the
+shared server (localhost, or a host tunnel when remote). Keep big shared data off the Python heap
+(numpy / mmap / an on-disk index) so one instance scales across rollouts.
 
 **Choosing per-rollout state:** read-only resource → `shared`; state that fits a `State` model →
 `shared` + `self.state` (no extra process, the scalable default); state that can't (module globals,
-on-disk scratch, a stateful C library) → `shared + fork` or a per-rollout placement that pays
-`setup` each time; cheap `setup` → just use the default. **User simulators** support only the
-per-rollout placements (own runtime or `colocated`); `shared` / `fork` / `url` are tools-only.
+on-disk scratch, a stateful C library) → a per-rollout placement (own runtime or `colocated`) that
+pays `setup` each time; cheap `setup` → just use the default. **User simulators** support only the
+per-rollout placements (own runtime or `colocated`); `shared` / `url` are tools-only.
 
 ## Learn from the examples
 
@@ -552,15 +638,16 @@ Otherwise pick a built-in, selected with `--harness.id`:
 
 | id | what it is |
 | --- | --- |
-| `default` | a tiny OpenAI chat loop (MCP tools only, no tools of its own) |
-| `bash` | the `default` chat loop plus a local `bash` tool, for shell-driving agents |
+| `default` | a `bash` + `edit` coding agent (`edit` on by default — `--harness.edit false` for bash-only; `--harness.search true` adds a serper.dev `search` tool) — the fallback when no harness is given |
+| `null` | a tiny OpenAI chat loop (MCP tools only, no tools of its own) |
 | `rlm` | the RLM CLI agent |
 | `codex` | the Codex CLI (Responses dialect + SSE relay) |
 | `mini-swe-agent` | the mini-swe-agent CLI (a minimal SWE agent) |
 | `kimi-code` | the Kimi Code CLI agent |
 
 ```bash
-uv run eval gsm8k-v1 -n 1                    # default harness
+uv run eval gsm8k-v1 -n 1                    # default harness (bash + edit; the fallback)
+uv run eval gsm8k-v1 -n 1 --harness.id null  # bare chat loop, no local tools
 uv run eval gsm8k-v1 -n 1 --harness.id rlm   # same taskset, different driver
 ```
 
@@ -792,7 +879,7 @@ form. In a prime-rl config:
 [[orchestrator.train.env]]
 name    = "gsm8k"
 taskset = { id = "gsm8k-v1", dataset_name = "..." }                 # any v1 taskset id
-harness = { id = "default", runtime = { type = "subprocess" } }
+harness = { id = "null", runtime = { type = "subprocess" } }
 timeout = { scoring = 10 }                                          # per-stage cap (default: no limit)
 # pool  = { type = "elastic", max_workers = 8, multiplex = 128 }    # env-server pool (default elastic, self-sizing)
 ```

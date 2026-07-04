@@ -32,8 +32,6 @@ class ToolsetConfig(BaseConfig):
         costs a per-rollout install.
       - shared: one instance for the whole eval, in its own `runtime` (pays `setup` once; per-rollout
         writable state stays isolated via `self.state`).
-      - shared + fork: like shared, but a forked child per rollout (copy-on-write) also isolates
-        state that can't live in `self.state`.
     See the placement/isolation section of `verifiers/v1/GUIDE.md` for the trade-offs of each.
     Subclass to add the server's own knobs (the data its `@tool` methods read). The server name is
     the class's `TOOL_PREFIX` ClassVar, not a field here — it's an identity (the model sees
@@ -51,15 +49,6 @@ class ToolsetConfig(BaseConfig):
     server's URL), so concurrent rollouts don't corrupt each other — provided the shared server runs
     on a local runtime (the default), which can reach the host's interception server. Mutually
     exclusive with `colocated`."""
-    fork: bool = False
-    """For a `shared` server: fork a child process per rollout (copy-on-write memory + a private
-    working dir), so per-rollout state that can't live in `self.state` — module globals, a mutated
-    in-memory object, relative-path on-disk writes — is isolated per rollout automatically. The
-    expensive `setup` runs once in the parent; each child inherits it warm and runs `setup_task` for
-    its rollout's task (see `verifiers.v1.mcp.multiplex`) — so a stateful per-rollout server pays its
-    `setup` once yet stays isolated. Requires `shared`; works on any runtime (a remote one reaches the
-    rollout's state/task channel over a host tunnel). Linux/fork only; not for CUDA/GPU state or
-    background threads in the server."""
     runtime: RuntimeConfig = SubprocessConfig()
     """The server's own runtime, used unless `colocated` (host/subprocess by default — always
     reachable from any harness runtime; set docker/prime to isolate it in its own sandbox)."""
@@ -72,10 +61,6 @@ class ToolsetConfig(BaseConfig):
     def _validate_placement(self) -> "ToolsetConfig":
         if self.colocated and self.shared:
             raise ValueError("colocated and shared are mutually exclusive")
-        if self.fork and not self.shared:
-            raise ValueError(
-                "fork requires shared — a per-rollout server already runs in its own process"
-            )
         return self
 
 

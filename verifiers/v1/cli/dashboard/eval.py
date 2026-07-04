@@ -1,18 +1,20 @@
 """The eval `--rich` dashboard: a config overview, a progress bar, and one line per rollout.
 
 Reads each `Rollout.trace`/`phase` every tick — no extra plumbing. Each row carries a bracketed
-phase marker that reads at a glance — `[setup]` (yellow), `[rollout]` (cyan), `[finalize]`
-(magenta), `[scoring]` (blue), `[success]` (green), `[error]` (red) — padded so the brackets
-line up in a column down the left edge. The reward shows only once a rollout is fully scored
-(phase DONE), so it never flips as scoring lands. A task's rollouts are grouped adjacently and joined
-by a left brace (╭│╰), so an episode (a task's n rollouts) reads as a unit. Every started
-rollout stays on screen (finished ones keep their result); the overview + progress sit on top,
-above a rule.
+phase marker that reads at a glance — `[pending]` (dim), `[setup]` (yellow), `[rollout]` (cyan),
+`[finalize]` (magenta), `[scoring]` (blue), `[success]` (green), `[error]` (red) — padded so the
+brackets line up in a column down the left edge. The reward shows only once a rollout is fully
+scored (phase DONE), so it never flips as scoring lands. A task's rollouts are grouped adjacently
+and joined by a left brace (╭│╰), so an episode (a task's n rollouts) reads as a unit. Every
+rollout is on screen from the start: one still queued behind the concurrency cap reads `[pending]`
+(its task is all that's known yet) until it begins, and finished ones keep their result. The
+overview + progress sit on top, above a rule.
 """
 
 import contextlib
 import time
 
+from pydantic import BaseModel
 from rich.console import Console, Group
 from rich.markup import escape
 from rich.progress_bar import ProgressBar
@@ -26,7 +28,12 @@ from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Usage
-from verifiers.v1.utils.format import format_count, format_mean, format_time
+from verifiers.v1.utils.format import (
+    format_count,
+    format_mean,
+    format_override,
+    format_time,
+)
 from verifiers.utils.pricing_utils import format_cost_usd
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
@@ -38,6 +45,7 @@ _PAGE_SECONDS = 5.0  # rotate to the next page of rollouts this often when they 
 _LABEL_WIDTH = len("timeouts")
 
 _STYLE = {
+    "pending": "dim",
     "setup": "yellow",
     "running": "cyan",
     "finalize": "magenta",
@@ -46,6 +54,7 @@ _STYLE = {
     "error": "red",
 }
 _MARK_LABEL = {
+    "pending": "pending",
     "setup": "setup",
     "running": "rollout",
     "finalize": "finalize",
@@ -109,9 +118,9 @@ def _aligned(rows: list[list[str]]) -> list[str]:
 
 
 def _warning(config: EvalConfig) -> Text | None:
-    """A local-runtime caution for a code-running harness (none for the tool-less `default`),
+    """A local-runtime caution for a code-running harness (none for the tool-less `null`),
     shown above the overview rather than as a row in it."""
-    if config.harness.id != "default" and config.harness.runtime.type == "subprocess":
+    if config.harness.id != "null" and config.harness.runtime.type == "subprocess":
         return Text(
             "warning  Runs on the local system; local files and settings may affect this "
             "evaluation. Use subprocess only for debugging, or use docker or prime for an "
@@ -119,6 +128,54 @@ def _warning(config: EvalConfig) -> Text | None:
             style="yellow",
         )
     return None
+
+
+def overrides(
+    config: BaseModel,
+    default: BaseModel | None = None,
+    skip: frozenset[str] = frozenset(),
+) -> list[str]:
+    """`field=value` segments for the fields the *user* customized, sorted, diffed against each
+    field's declared default. Not `model_fields_set`: a `--resume` run reloads its config via
+    `model_validate(config.toml)`, and that toml is dumped with `exclude_none` (every field), so
+    `model_fields_set` would flag them all. `default` is the reference instance, threaded through
+    recursion so a pinned nested default (a taskset's `user=UserConfig(colocated=True)`) reads as
+    unchanged. `skip` holds dotted paths (`harness.runtime.type`)."""
+    segments: list[str] = []
+    fields = type(config).model_fields
+    for field in sorted(fields):
+        if field in skip:
+            continue
+        value = getattr(config, field)
+        # `get_default` returns `PydanticUndefined` for a required field, so it always reads as set.
+        field_def = (
+            fields[field].get_default(call_default_factory=True)
+            if default is None
+            else getattr(default, field, None)
+        )
+        if isinstance(value, BaseModel):  # nested config: flatten as `field.<sub>`
+            child_skip = frozenset(
+                s[len(field) + 1 :] for s in skip if s.startswith(f"{field}.")
+            )
+            # A switched discriminator (e.g. subprocess→docker) is an override the per-field diff
+            # misses — within the new class `type` equals its own default — so surface it.
+            class_changed = type(value) is not type(field_def)
+            if (
+                class_changed
+                and "type" not in child_skip
+                and (discriminator := getattr(value, "type", None)) is not None
+            ):
+                segments.append(f"{field}.type={format_override(discriminator)}")
+            # A switched class is a new shape, so diff against its own defaults, not the instance.
+            segments.extend(
+                f"{field}.{seg}"
+                for seg in overrides(
+                    value, default=None if class_changed else field_def, skip=child_skip
+                )
+            )
+        elif value != field_def:
+            segments.append(f"{field}={format_override(value)}")
+    return segments
 
 
 def Overview(config: EvalConfig) -> Table:
@@ -134,6 +191,16 @@ def Overview(config: EvalConfig) -> Table:
     )
     model = f"{config.model}  ({sampling})" if sampling else config.model
     grid.add_row("model", f"{model}  via {config.client.base_url}")
+    # Non-default knobs the user set, one row each when non-empty. `escape` the cell: an override
+    # value (or our `[...]`/`{...}` delimiters) can carry Rich markup that would otherwise be
+    # parsed as styling and dropped. `id` is in the `env` row; harness `runtime.type` too (hidden
+    # here), but only for the harness — a taskset's `user.runtime.type` has no other display.
+    if taskset_over := overrides(config.taskset, skip=frozenset({"id"})):
+        grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
+    if harness_over := overrides(
+        config.harness, skip=frozenset({"id", "runtime.type"})
+    ):
+        grid.add_row("harness", escape("  ·  ".join(harness_over)))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
@@ -153,8 +220,8 @@ def Progress(
         f"{len(done)}/{len(rollouts)} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
     )
-    if page is not None:  # rollouts overflow the screen — show which page is on screen
-        stats += f"  (page {page[0]}/{page[1]})"
+    if page is not None:  # overflowing — show which page, and that the arrows page
+        stats += f"  (page {page[0]}/{page[1]} ◄ ►)"
     row = Table.grid(expand=True, padding=(0, 1))
     row.add_column(ratio=1)  # bar stretches to fill the width left of the stats
     row.add_column(justify="right", no_wrap=True)
@@ -275,33 +342,44 @@ def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
     (completion) token generated across its turns and input is its last turn's prompt — the full
     final context the model saw. A rollout yields one training sample per branch (a linear trace
     is a single branch; compaction and subagents add more), so the totals sum them — matching
-    `Trace.prompt_len` / `Trace.completion_len`. (Output can exceed the final context — reasoning
-    tokens count toward completions but aren't re-fed — so it's not derived by subtraction.)
+    `Trace.num_input_tokens` / `Trace.num_output_tokens`. (Output can exceed the final context —
+    reasoning tokens count toward completions but aren't re-fed — so it's not derived by
+    subtraction.)
 
-    Prefers the token-id counts; falls back to provider-reported usage when the endpoint returns
-    no token ids (e.g. plain OpenAI completions), so the counts aren't shown as 0/0. Returns
-    the branch count from the same derived view so each dashboard tick materializes it once."""
+    Both counts read token ids when present and fall back to provider-reported usage when the
+    endpoint returns no token ids (e.g. plain OpenAI completions), so the counts aren't shown as
+    0/0. Returns the branch count from the same derived view so each dashboard tick materializes
+    it once."""
     usage = trace.usage
     cached = usage.cached_input_tokens if usage else None
     reasoning = usage.reasoning_tokens if usage else None
     branches = trace.branches
     nbranches = len(branches)
-    prompt = sum(b.input_len for b in branches)
-    completion = sum(b.output_len for b in branches)
+    prompt = sum(b.num_input_tokens for b in branches)
+    completion = sum(b.num_output_tokens for b in branches)
     return prompt, completion, cached, reasoning, nbranches
+
+
+def _started(rollout: Rollout) -> float:
+    # Sort key: when a rollout began (its setup start). A still-pending rollout has no trace
+    # yet, so it sorts last (+inf) — behind everything already in flight, in task order.
+    return (
+        rollout.trace.timing.setup.start if rollout.trace is not None else float("inf")
+    )
 
 
 def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
     # The n rollouts of each task, grouped together (so they sit adjacent); groups ordered by
-    # earliest start, rollouts within a group by start. Finished ones stay (never removed).
+    # earliest start, rollouts within a group by start. Every rollout carries its `task` from
+    # construction, so ones still queued behind the concurrency cap (no trace yet) are grouped
+    # and shown too — as `[pending]`. Finished ones stay (never removed).
     by_task: dict[int, list[Rollout]] = {}
     for rollout in rollouts:
-        if rollout.trace is not None:
-            by_task.setdefault(rollout.trace.task.idx, []).append(rollout)
+        by_task.setdefault(rollout.task.idx, []).append(rollout)
     groups = list(by_task.values())
     for group in groups:
-        group.sort(key=lambda r: r.trace.timing.setup.start)
-    groups.sort(key=lambda g: g[0].trace.timing.setup.start)
+        group.sort(key=_started)
+    groups.sort(key=lambda g: _started(g[0]))
     return groups
 
 
@@ -319,6 +397,21 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
     for group in groups:
         for i, rollout in enumerate(group):
             t = rollout.trace
+            task = rollout.task
+            label = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
+            if (
+                t is None
+            ):  # queued behind the concurrency cap — only its task is known yet
+                rows.append(
+                    (
+                        _brace(i, len(group)),
+                        "pending",
+                        [f"task {label}", *[""] * 7],
+                        "",
+                        "",
+                    )
+                )
+                continue
             if rollout.phase == Phase.DONE:  # fully scored — reward is final
                 state = "error" if t.has_error else "success"
                 result = t.error.type if t.has_error else f"reward={t.reward:.2f}"
@@ -332,7 +425,6 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                         stop = f"{stop} (truncated)".strip()
             else:
                 state, result, stop = rollout.phase, "", ""
-            label = f"name={t.task.name[:32]}" if t.task.name else f"idx={t.task.idx}"
             descriptor = (
                 rollout.runtime.descriptor if rollout.runtime is not None else None
             )
@@ -403,13 +495,42 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
     return grid
 
 
+class Pager:
+    """Which page of overflowing rollout rows is on screen. Auto-advances on a timer until the
+    user takes over with the left/right arrows, after which it stays where they leave it. `count`
+    (the page count, set each render by `_paginate`) gates the arrows: they're inert while a single
+    page fits, so a stray press before rollouts overflow can't switch off auto-advance or offset the
+    starting page once paging begins. The chosen page is clamped to `count` (it can shrink on a
+    resize; it otherwise only grows, as rollouts are never removed)."""
+
+    def __init__(self) -> None:
+        self.page = 0
+        self.manual = False
+        self.count = 1
+
+    def on_key(self, key: str) -> None:
+        if key in ("left", "right") and self.count > 1:
+            self.manual = True
+            self.page += 1 if key == "right" else -1
+
+    def index(self, now: float) -> int:
+        # Track the auto page while it drives, so the first arrow continues from what's on screen
+        # rather than jumping back to page 1. Clamp in manual mode (count can shrink on resize).
+        if not self.manual:
+            self.page = int(now / _PAGE_SECONDS) % self.count
+        else:
+            self.page = max(0, min(self.page, self.count - 1))
+        return self.page
+
+
 def _paginate(
-    groups: list[list[Rollout]], rows_per_page: int, now: float
+    groups: list[list[Rollout]], rows_per_page: int, pager: Pager, now: float
 ) -> tuple[list[list[Rollout]], int, int]:
     """Pack groups (a task's rollouts kept together) into pages of at most `rows_per_page` rows,
-    cycling to the next page every `_PAGE_SECONDS`. Returns (this page's groups, 0-based index,
-    page count) — a single page when everything already fits."""
+    selecting the one `pager` points at. Returns (this page's groups, 0-based index, page count) —
+    a single page when everything already fits."""
     if sum(len(g) for g in groups) <= rows_per_page:
+        pager.count = 1  # everything fits on one page — arrows stay inert
         return groups, 0, 1
     pages: list[list[list[Rollout]]] = []
     current: list[list[Rollout]] = []
@@ -422,20 +543,24 @@ def _paginate(
         used += len(group)
     if current:
         pages.append(current)
-    index = int(now / _PAGE_SECONDS) % len(pages)
+    pager.count = len(pages)
+    index = pager.index(now)
     return pages[index], index, len(pages)
 
 
-def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
+def _render(
+    rollouts: list[Rollout], config: EvalConfig, start: float, pager: Pager
+) -> Group:
     now = time.time()
     warning = _warning(config)
     # `{warning}\n\n{overview}` — the caution sits at the very top, blank line, then the overview.
     header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
     # Measure the fixed top (header + progress + rule) so the rollout rows fill the rest of the
-    # screen; page through them on a timer when they'd overflow (rich would otherwise truncate).
+    # screen; page through them (timer, or the left/right arrows) when they'd overflow (rich would
+    # otherwise truncate).
     top = Group(header, Progress(rollouts, start), Rule(style="dim"))
     rows_per_page = max(1, _CONSOLE.size.height - len(_CONSOLE.render_lines(top)) - 1)
-    page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, now)
+    page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, pager, now)
     progress = Progress(rollouts, start, page=(index + 1, count) if count > 1 else None)
     return Group(
         header,
@@ -447,6 +572,10 @@ def _render(rollouts: list[Rollout], config: EvalConfig, start: float) -> Group:
 
 @contextlib.asynccontextmanager
 async def dashboard(rollouts: list[Rollout], config: EvalConfig, start: float):
-    """Refresh the live eval view until the `with` block exits, then a final frame."""
-    async with live_view(lambda: _render(rollouts, config, start)):
+    """Refresh the live eval view until the `with` block exits, then a final frame. Left/right
+    arrows page through rollout rows when they overflow the screen."""
+    pager = Pager()
+    async with live_view(
+        lambda: _render(rollouts, config, start, pager), on_key=pager.on_key
+    ):
         yield

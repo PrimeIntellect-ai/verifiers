@@ -90,8 +90,8 @@ class RolloutLimits:
     """Per-rollout framework limits (None = no cap), checked before each turn is served.
     The first limit reached refuses the turn — halting any harness, the same mechanism as
     a @stop — and becomes the trace's stop condition. Each caps a trace computed property:
-    `max_turns` -> num_turns, `max_input_tokens` -> prompt_len, `max_output_tokens` ->
-    completion_len, `max_total_tokens` -> total_tokens. Token caps are soft by one turn:
+    `max_turns` -> num_turns, `max_input_tokens` -> num_input_tokens, `max_output_tokens` ->
+    num_output_tokens, `max_total_tokens` -> num_total_tokens. Token caps are soft by one turn:
     they're checked between turns, so the turn that crosses a cap still completes."""
 
     max_turns: int | None = None
@@ -105,17 +105,17 @@ class RolloutLimits:
             return "max_turns"
         if (
             self.max_input_tokens is not None
-            and trace.prompt_len >= self.max_input_tokens
+            and trace.num_input_tokens >= self.max_input_tokens
         ):
             return "max_input_tokens"
         if (
             self.max_output_tokens is not None
-            and trace.completion_len >= self.max_output_tokens
+            and trace.num_output_tokens >= self.max_output_tokens
         ):
             return "max_output_tokens"
         if (
             self.max_total_tokens is not None
-            and trace.total_tokens >= self.max_total_tokens
+            and trace.num_total_tokens >= self.max_total_tokens
         ):
             return "max_total_tokens"
         return None
@@ -216,8 +216,8 @@ class InterceptionServer:
         # GET/PUT their `self.state` here, keyed by the same bearer secret as the model routes.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
-        # A forked shared server (see `verifiers.v1.mcp.multiplex`) fetches its rollout's task here
-        # to run `setup_task` per child — a shared server gets no task via env, keyed by the secret.
+        # A launched tool/user server fetches its rollout's task here to run `setup_task` — the task
+        # is never passed via env, only over this channel, keyed by the same bearer secret.
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
@@ -585,7 +585,7 @@ class InterceptionServer:
         )
 
     async def handle_task_get(self, request: web.Request) -> web.Response:
-        """Hand a forked shared server the rollout's task (class ref + JSON) so its child can run
+        """Hand a launched tool/user server the rollout's task (class ref + JSON) so it can run
         `setup_task` for this rollout — keyed by the same bearer secret as the state channel."""
         session = self._session_for(request)
         if session is None:

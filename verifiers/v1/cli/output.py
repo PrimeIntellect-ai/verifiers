@@ -179,9 +179,8 @@ def convert_results_for_upload(
                     for message in branch.messages
                 ],
                 "reward": trace.reward if branch is branches[-1] else None,
-                "num_input_tokens": branch.prompt_len or branch.num_prompt_tokens,
-                "num_output_tokens": branch.completion_len
-                or branch.num_completion_tokens,
+                "num_input_tokens": branch.num_input_tokens,
+                "num_output_tokens": branch.num_output_tokens,
             }
             for branch in branches
         ]

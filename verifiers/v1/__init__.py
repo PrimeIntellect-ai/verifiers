@@ -38,17 +38,42 @@ from verifiers.v1.errors import (
     UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.judge import Judge, JudgeConfig, JudgeResponse, JudgeSamplingConfig
+from verifiers.v1.judge import (
+    Judge,
+    JudgeConfig,
+    JudgeResponse,
+    Judges,
+    JudgeSamplingConfig,
+    JudgeView,
+)
+from verifiers.v1.judges import (
+    ReferenceJudge,
+    ReferenceJudgeConfig,
+    Criterion,
+    RubricJudge,
+    RubricJudgeConfig,
+)
 from verifiers.v1.loaders import (
     default_harness_id,
     harness_config_type,
     import_harness,
+    import_judge,
     import_taskset,
     is_legacy_env,
+    judge_config_type,
     load_harness,
+    load_judge,
     load_taskset,
     task_type,
     taskset_config_type,
+)
+from verifiers.v1.scoring import (
+    compare_stdout_results as compare_stdout_results,
+    extract_boxed_answer as extract_boxed_answer,
+    parse_judge_choice as parse_judge_choice,
+    parse_pytest_outcomes as parse_pytest_outcomes,
+    read_answer_file_or_last_reply as read_answer_file_or_last_reply,
+    verify_boxed_math_answer as verify_boxed_math_answer,
 )
 from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
 from verifiers.v1.rollout import Rollout
@@ -185,18 +210,35 @@ __all__ = [
     # loaders
     "import_taskset",
     "import_harness",
+    "import_judge",
     "load_taskset",
     "load_harness",
+    "load_judge",
     "task_type",
     "taskset_config_type",
     "harness_config_type",
+    "judge_config_type",
     "default_harness_id",
     "is_legacy_env",
     # judge
     "Judge",
     "JudgeConfig",
+    "Judges",
     "JudgeSamplingConfig",
     "JudgeResponse",
+    "JudgeView",
+    "ReferenceJudge",
+    "ReferenceJudgeConfig",
+    "RubricJudge",
+    "RubricJudgeConfig",
+    "Criterion",
+    # scoring
+    "compare_stdout_results",
+    "extract_boxed_answer",
+    "parse_judge_choice",
+    "parse_pytest_outcomes",
+    "read_answer_file_or_last_reply",
+    "verify_boxed_math_answer",
     # mcp
     "Toolset",
     "ToolsetConfig",

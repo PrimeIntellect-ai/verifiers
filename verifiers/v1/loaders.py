@@ -1,13 +1,13 @@
-"""Loaders: resolve a plugin id to its taskset or harness.
+"""Loaders: resolve a plugin id to its taskset, harness, or judge.
 
-A plugin (taskset or harness) is a module that exports its `Taskset` / `Harness` subclass via
-`__all__` — vf walks the exported names and finds the single subclass of the base. An id (an
-`EnvId`) resolves to that module: a built-in id (`default`, `rlm`, `harbor`, `textarena`)
-resolves to its namespaced module under the group package (`verifiers.v1.harnesses.rlm`,
-`verifiers.v1.tasksets.harbor`, ...); any other id names a locally importable flat module
-(hyphens → underscores). Built-ins ship with verifiers under
-`verifiers/v1/{harnesses,tasksets}`; custom ones live under `environments/`, on `sys.path`,
-or in an installed package.
+A plugin (taskset, harness, or judge) is a module that exports its `Taskset` / `Harness` /
+`Judge` subclass via `__all__` — vf walks the exported names and finds the single subclass of
+the base. An id (an `EnvId`) resolves to that module: a built-in id (`default`, `rlm`,
+`harbor`, `reference`, ...) resolves to its namespaced module under the group package
+(`verifiers.v1.harnesses.rlm`, `verifiers.v1.tasksets.harbor`, `verifiers.v1.judges.reference`,
+...); any other id names a locally importable flat module (hyphens → underscores). Built-ins
+ship with verifiers under `verifiers/v1/{harnesses,tasksets,judges}`; custom ones live under
+`environments/`, on `sys.path`, or in an installed package.
 
 The taskset/harness class carries its types as generic args — `Taskset[TaskT, ConfigT]`,
 `Harness[ConfigT]` — which the CLI reads to narrow the plugin's config for `--taskset.*` /
@@ -23,6 +23,7 @@ from typing import Callable, get_args, get_origin
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.judge import Judge, JudgeConfig, judge_config_cls
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.types import env_module
@@ -116,6 +117,10 @@ def import_harness(harness_id: str) -> ModuleType:
     return _import_plugin(harness_id, "harness", "verifiers.v1.harnesses")
 
 
+def import_judge(judge_id: str) -> ModuleType:
+    return _import_plugin(judge_id, "judge", "verifiers.v1.judges")
+
+
 def taskset_class(taskset_id: str) -> type[Taskset]:
     """The taskset's `Taskset` subclass, exported via its module's `__all__`."""
     return _plugin_class(import_taskset(taskset_id), Taskset, "taskset")
@@ -126,11 +131,17 @@ def harness_class(harness_id: str) -> type[Harness]:
     return _plugin_class(import_harness(harness_id), Harness, "harness")
 
 
+def judge_class(judge_id: str) -> type[Judge]:
+    """The judge's `Judge` subclass, exported via its module's `__all__`."""
+    return _plugin_class(import_judge(judge_id), Judge, "judge")
+
+
 def default_harness_id(taskset_id: str) -> str:
     """The harness id to use when none is given. A taskset that bundles its own harness — its
     module also exports a `Harness` subclass via `__all__`, so the taskset id doubles as the
-    harness id — runs with that harness by default; otherwise the shared `default` harness. An
-    explicit `--harness.id` / toml id always takes precedence (this only supplies the fallback)."""
+    harness id — runs with that harness by default; otherwise the shared `default` harness (a
+    bash + edit agent). An explicit `--harness.id` / toml id always takes precedence (this only
+    supplies the fallback); for a tool-less chat loop, pass `--harness.id null`."""
     if not taskset_id:
         return "default"
     try:
@@ -169,6 +180,11 @@ def load_harness(config: HarnessConfig) -> Harness:
     return harness_class(config.id)(config)
 
 
+def load_judge(config: JudgeConfig) -> Judge:
+    """Build a plugged judge for a config by dispatching on its `id` (the judge id)."""
+    return judge_class(config.id)(config)
+
+
 def taskset_config_type(taskset_id: str) -> type[TasksetConfig]:
     """The taskset's `TasksetConfig` subclass, from its `Taskset[TaskT, ConfigT]` generic."""
     for arg in _generic_args(taskset_class(taskset_id), Taskset):
@@ -183,6 +199,11 @@ def harness_config_type(harness_id: str) -> type[HarnessConfig]:
         if isinstance(arg, type) and issubclass(arg, HarnessConfig):
             return arg
     return HarnessConfig
+
+
+def judge_config_type(judge_id: str) -> type[JudgeConfig]:
+    """The judge's config subclass, from its `Judge[ParsedT, ConfigT]` generic."""
+    return judge_config_cls(judge_class(judge_id))
 
 
 def task_type(taskset_id: str) -> type[Task]:

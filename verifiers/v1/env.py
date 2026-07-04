@@ -106,13 +106,13 @@ class EnvConfig(BaseConfig):
     capping is a framework concern, never an harness or task field."""
     max_input_tokens: int | None = None
     """Max input (prompt) tokens per rollout (None = no limit). Caps the trace's
-    `prompt_len`; framework-enforced between turns."""
+    `num_input_tokens`; framework-enforced between turns."""
     max_output_tokens: int | None = None
     """Max output (completion) tokens per rollout (None = no limit). Caps the trace's
-    `completion_len`; framework-enforced between turns."""
+    `num_output_tokens`; framework-enforced between turns."""
     max_total_tokens: int | None = None
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
-    trace's `total_tokens`; framework-enforced between turns."""
+    trace's `num_total_tokens`; framework-enforced between turns."""
     multiplex: int = Field(32, ge=1)
     """Rollouts that share one interception server (and, behind a remote runtime, one
     tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
@@ -273,7 +273,11 @@ class Environment:
                 "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
                 "use --harness.runtime.type docker or prime."
             )
-        if self.harness.config.id != "default" and isinstance(
+        # The warning is about the *agent* running arbitrary code on the host: every harness hands
+        # it local execution (bash/edit, or a CLI agent) except the tool-less `null` chat loop,
+        # whose program only relays the model and remote MCP tools — so exempt `null`, warn for the
+        # rest. (`null` still runs its fixed chat-loop program locally, but nothing agent-authored.)
+        if self.harness.config.id != "null" and isinstance(
             self.harness.config.runtime, SubprocessConfig
         ):
             logger.warning(

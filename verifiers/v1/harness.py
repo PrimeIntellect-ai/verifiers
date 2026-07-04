@@ -8,6 +8,7 @@ runtime and the interception server are owned by the Rollout.
 
 import asyncio
 import logging
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import ClassVar, Generic, TypeVar
@@ -47,6 +48,11 @@ class HarnessConfig(BaseConfig):
     env: dict[str, str] = Field(default_factory=dict)
     """Additional environment variables for the harness program. Harness-owned endpoint,
     authentication, and model variables take precedence."""
+    forward_env: list[str] = Field(default_factory=list)
+    """Names of environment variables to forward into the harness program's runtime, for
+    secrets that must not be written into a checked-in config. Resolved from `os.environ` at
+    launch — names absent from the environment are skipped, and an explicit `env` value takes
+    precedence over a forwarded one."""
     disabled_tools: list[str] | None = None
     """Harness-specific tool names to disable."""
 
@@ -54,6 +60,14 @@ class HarnessConfig(BaseConfig):
     def name(self) -> str:
         """The harness's local package name."""
         return env_name(self.id)
+
+    @property
+    def resolved_env(self) -> dict[str, str]:
+        """`env` merged with the `forward_env` variables present in the current process
+        environment (explicit `env` wins). This is the environment the harness program runs
+        with; harnesses pass it to the runtime instead of `env` directly."""
+        forwarded = {k: os.environ[k] for k in self.forward_env if k in os.environ}
+        return {**forwarded, **self.env}
 
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
