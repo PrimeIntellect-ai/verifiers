@@ -118,8 +118,7 @@ def _request_query(name: str) -> str | None:
 def _die_with_parent() -> None:
     """Ask the kernel to SIGKILL this process when its parent (the launcher) dies, so a server is
     never orphaned if its launcher is torn down without stopping it (a backstop to the runtime's
-    own cleanup). Linux-only; a no-op elsewhere. Cleared across `fork`, so a forked child must call
-    it again."""
+    own cleanup). Linux-only; a no-op elsewhere."""
     import ctypes
     import signal
 
@@ -241,9 +240,8 @@ class ServerBase(Generic[ConfigT, StateT]):
         self, state_url: str | None, secret: str
     ) -> None:
         """Fetch this rollout's task over the state channel and run `setup_task` for it — a no-op
-        without a channel or task (a shared, task-agnostic server). The single place task setup
-        happens: `_serve` calls it with the env channel; a forked child calls it with its per-request
-        channel (see `verifiers.v1.mcp.multiplex`)."""
+        without a channel or task (a shared, task-agnostic server). Called by `_serve` with the
+        per-rollout env channel a launched server carries."""
         task = await self._fetch_task(state_url, secret)
         if task is not None:
             await self.setup_task(task)
@@ -332,8 +330,8 @@ class ServerBase(Generic[ConfigT, StateT]):
         async def _setup() -> None:
             await self.setup()
             # Per-rollout servers carry the rollout's state channel in their env; fetch this rollout's
-            # task over it and run `setup_task`. A shared server has no env channel (its forked
-            # children fetch /task per-request instead — see multiplex), so this is a no-op for it.
+            # task over it and run `setup_task`. A shared server has no env channel, so this is a
+            # no-op for it (it's task-agnostic — one instance for the whole eval).
             await self._setup_task_from_channel(*self._state_channel())
 
         asyncio.run(_setup())
@@ -369,13 +367,6 @@ class ServerBase(Generic[ConfigT, StateT]):
                 self._state_client = None
 
         app.router.lifespan_context = serving_lifespan
-        if getattr(self.config, "fork", False):
-            # `setup` ran once above (warm); fork a child per rollout that inherits it and runs
-            # `setup_task` for the rollout's task (see multiplex).
-            from verifiers.v1.mcp.multiplex import serve_forked
-
-            serve_forked(app, sock, self)
-            return
         server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
         asyncio.run(server.serve(sockets=[sock]))
 

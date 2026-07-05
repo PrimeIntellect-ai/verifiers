@@ -10,7 +10,7 @@ from typing import TypeVar
 
 from pydantic import ConfigDict
 
-from verifiers.v1.types import Messages, StrictBaseModel
+from verifiers.v1.types import Messages, StrictBaseModel, content_text
 
 
 class TaskResources(StrictBaseModel):
@@ -83,6 +83,17 @@ class Task(StrictBaseModel):
     """Optional per-task timeout overrides, one per rollout stage (merge with the eval's `timeout`)."""
     resources: TaskResources = TaskResources()
     """Optional runtime resources this task requests (applied where supported)."""
+
+    @property
+    def prompt_text(self) -> str:
+        """The prompt as plain text — `prompt` itself when it's a `str`, the joined text
+        content of a `Messages` prompt (images are dropped), `""` when the task carries no
+        prompt. For consumers that need the task's framing as text regardless of the prompt
+        form, e.g. the built-in judges' prompt templates."""
+        if isinstance(self.prompt, str):
+            return self.prompt
+        texts = [content_text(message.content) for message in self.prompt or []]
+        return "\n\n".join(text for text in texts if text)
 
 
 class WireTask(Task):

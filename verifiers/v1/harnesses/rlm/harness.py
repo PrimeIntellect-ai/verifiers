@@ -144,10 +144,10 @@ class RLMHarness(Harness[RLMHarnessConfig]):
 
     @metric
     async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:
-        # rlm writes a session meta.json with a rich `metrics` block (turns, token
-        # stats, compactions, tool-call counts). There's one top-level session dir
-        # (sub-harnesses nest as sub-*/), so the glob matches a single file. Surface
-        # its numeric metrics under an `rlm_` prefix; non-numeric fields (e.g.
+        # rlm writes a session meta.json with a rich `metrics` block (compactions,
+        # ipython input size, programmatic tool-call counts). There's one top-level
+        # session dir (sub-harnesses nest as sub-*/), so the glob matches a single
+        # file. Surface its numeric metrics as-is; non-numeric fields (e.g.
         # stop_reason) don't fit the float-only trace metrics, so they're skipped.
         result = await runtime.run(
             ["sh", "-c", f"cat {RLM_HOME}/sessions/*/meta.json"], {}
@@ -159,7 +159,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         except json.JSONDecodeError:
             return {}
         return {
-            f"rlm_{key}": float(value)
+            key: float(value)
             for key, value in meta.get("metrics", {}).items()
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         }
