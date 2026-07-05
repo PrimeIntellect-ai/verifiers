@@ -307,7 +307,7 @@ class InteractiveRolloutApp(App[None]):
         )
         self.ready.set()
 
-    def action_quit(self) -> None:
+    async def action_quit(self) -> None:
         self._quit_requested = True
         if self._future is not None and not self._future.done():
             self._future.set_exception(InteractiveSessionExit())
