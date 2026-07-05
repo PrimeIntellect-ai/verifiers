@@ -44,6 +44,7 @@ dependencies = [
     "rich",
     "tenacity>=8.5.0",
     "textual",
+    "textual-image>=0.13.2; python_version >= '3.12'",
     "tomli; python_version < '3.11'",
     "typing_extensions; python_version < '3.12'",
     "gepa",
@@ -220,6 +221,7 @@ vf-build = "verifiers.scripts.build:main"
 vf-rl = "verifiers.scripts.rl:main"
 vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"
+vf-play = "verifiers.scripts.play:main"
 vf-vllm = "verifiers.scripts.vllm:main"
 
 # hatchling configuration
