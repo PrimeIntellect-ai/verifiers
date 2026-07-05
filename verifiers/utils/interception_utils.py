@@ -27,8 +27,8 @@ from openai.types.chat.chat_completion_chunk import (
     Choice as ChunkChoice,
 )
 
-from verifiers.errors import InfraError
-from verifiers.types import Response, Tool
+from verifiers.errors import Error, InfraError
+from verifiers.types import Response, State, Tool
 from verifiers.utils.logging_utils import print_time, truncate
 
 logger = logging.getLogger(__name__)
@@ -186,7 +186,12 @@ class InterceptionServer:
         state = context.get("state")
         if state is None or state.get("error") or state.get("prompt_too_long"):
             return
-        state["error"] = error
+        if not isinstance(error, Error):
+            error = InterceptionError(f"{type(error).__name__}: {error}")
+        if isinstance(state, State):
+            state._set_error(error)
+        else:
+            state["error"] = error
 
     def register_rollout(
         self,
@@ -308,12 +313,14 @@ class InterceptionServer:
                     f"[{rollout_id}] Rollout error surfaced in non-streaming "
                     f"request: {type(e).__name__}: {e}"
                 )
-                self._set_rollout_error(
-                    rollout_id,
-                    InterceptionError(
+                error = (
+                    e
+                    if isinstance(e, Error)
+                    else InterceptionError(
                         f"Intercepted request failed: {type(e).__name__}: {e}"
-                    ),
+                    )
                 )
+                self._set_rollout_error(rollout_id, error)
                 return web.json_response({"error": str(e)}, status=500)
 
             response_dict = serialize_intercept_response(
@@ -555,12 +562,14 @@ class InterceptionServer:
             logger.debug(
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
             )
-            self._set_rollout_error(
-                rollout_id,
-                StreamInterrupted(
+            error = (
+                e
+                if isinstance(e, Error)
+                else StreamInterrupted(
                     f"Streaming response_future failed: {type(e).__name__}: {e}"
-                ),
+                )
             )
+            self._set_rollout_error(rollout_id, error)
 
         # Surface any write_eof failure so a tail truncation becomes a
         # reschedulable error instead of a silent zero-turn completion.
