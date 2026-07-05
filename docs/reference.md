@@ -1192,6 +1192,7 @@ class PrimeCLIPlugin:
     init_module: str = "verifiers.cli.commands.init"
     setup_module: str = "verifiers.cli.commands.setup"
     build_module: str = "verifiers.cli.commands.build"
+    play_module: str = "verifiers.cli.commands.play"
 
     def build_module_command(
         self, module_name: str, args: Sequence[str] | None = None

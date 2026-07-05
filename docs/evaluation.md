@@ -4,6 +4,7 @@ This section explains how to run evaluations with Verifiers environments. See [E
 
 ## Table of Contents
 - [Basic Usage](#basic-usage)
+- [Interactive Rollout Playthrough](#interactive-rollout-playthrough)
 - [Hosted Evaluations](#hosted-evaluations)
 - [Command Reference](#command-reference)
   - [Environment Selection](#environment-selection)
@@ -30,6 +31,59 @@ prime eval run my-env -m openai/gpt-4.1-mini -n 10
 ```
 
 `prime eval` resolves and installs the environment when needed, imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
+
+## Interactive Rollout Playthrough
+
+Use `vf-play` when you want to manually play the model side of one rollout and
+inspect the exact prompt, tools, tool results, stop condition, reward, and
+metrics:
+
+```bash
+uv run vf-play my-env
+uv run vf-play my-env --index 3
+```
+
+From inside a local environment directory, run the command against the Verifiers
+repo project so uv uses the development checkout instead of the environment's
+published dependency:
+
+```bash
+uv run --project ../.. vf-play
+uv run --project ../.. vf-play --index 3
+```
+
+The command loads one dataset row and opens a persistent terminal UI. Each model
+turn shows the model-visible message list and the available tool schemas. The
+response pane composes one assistant turn from optional reasoning text, optional
+message content, and any number of tool calls: pick a tool from the "Add a tool
+call..." selector, fill its schema-derived argument fields, and press Enter (or
+Add tool call) to add more than one. String arguments are multi-line cells —
+Shift+Enter (or Ctrl+J) inserts a newline, so code-cell arguments work
+naturally. A "Turn to submit" preview always shows exactly what Submit Turn
+will send.
+
+All parts are submitted together as one assistant turn, matching the parallel
+tool-call and reasoning shapes supported by agent clients: message text becomes
+``content``, reasoning becomes ``reasoning_content``, and the tool-call list is
+sent as parallel tool calls. When the dataset row has an ``answer`` field,
+press ``a`` to view it in a popup.
+Multimodal `image_url` content parts are decoded to exact local image files and
+rendered through the terminal's native image protocol when available. If the
+terminal does not expose Sixel or Kitty graphics support, the TUI shows the exact
+saved file path instead of a lossy thumbnail.
+
+Useful flags:
+
+| Flag | Description |
+|------|-------------|
+| `--split {train,eval}` | Select the dataset split; defaults to `eval` and falls back according to the environment's normal dataset behavior. |
+| `--index N` | Select the dataset row to play. |
+| `--env-args JSON` | Pass arguments to `load_environment()`. |
+| `--taskset.FIELD` / `--harness.FIELD` | Apply typed v1 config overrides, matching `prime eval run`. |
+| `--save PATH` | Save the played rollout, including trajectory, as JSON. |
+| `--no-score` | Run generation and cleanup but skip reward/metric scoring. |
+| `--hide-prompt` | Hide the model-visible prompt pane. |
+| `--hide-tools` | Hide the tool schema pane. |
 
 ## Hosted Evaluations
 
