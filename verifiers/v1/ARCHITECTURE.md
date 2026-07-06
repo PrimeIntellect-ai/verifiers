@@ -237,11 +237,14 @@ from a native v1 one; both are an `EnvClient` away.
 
 ## Plugins & ids
 
-Tasksets and harnesses are packages resolved by `id` (`ids.py`, `loaders.py`). An `EnvId` is
-`name` (a local, importable package), `org/name`, or `org/name@version`; `ensure_installed`
-installs the latter two from the Environments Hub on demand. A plugin module exports its
-`Taskset` / `Harness` subclass via `__all__`; `load_taskset` / `load_harness` import the module,
-find that single subclass, and instantiate it, while `narrow_plugin_field` validates a generic
-config dict into the plugin's concrete config type (read off the class's `Taskset[TaskT,
-ConfigT]` / `Harness[ConfigT]` generic) — so the typed CLI/TOML surfaces each plugin's own
-fields without the core knowing them ahead of time.
+Tasksets, harnesses, and judges are packages resolved by `id` (`ids.py`, `loaders.py`). An
+`ID` is `name` (a local, importable package), `org/name`, or `org/name@version`;
+`ensure_installed` installs the latter two from the Environments Hub on demand. A plugin module
+exports its `Taskset` / `Harness` / `Judge` subclass via `__all__`; `load_taskset` /
+`load_harness` / `load_judge` import the module, find that single subclass, and instantiate it,
+while `narrow_plugin_field` validates a generic config dict into the plugin's concrete config
+type (read off the class's `Taskset[TaskT, ConfigT]` / `Harness[ConfigT]` / `Judge[ParsedT,
+ConfigT]` generic) — so the typed CLI/TOML surfaces each plugin's own fields without the core
+knowing them ahead of time. Judges are the lightweight third kind: attached to any eval via the
+base `TasksetConfig.judges` (built-ins under `verifiers/v1/judges`) and run by `Taskset.score`
+after the taskset's own rewards.

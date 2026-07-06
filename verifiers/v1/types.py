@@ -68,6 +68,17 @@ def content_to_parts(content) -> MessageContent:
     return parts
 
 
+def content_text(content: "MessageContent | None") -> str:
+    """The plain text of a message body — a `str` as-is, a parts list joined to its text
+    parts (images dropped), `""` for `None`. The shared text view used by `Task.prompt_text`
+    and `Trace.transcript`."""
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        part.text for part in content or [] if isinstance(part, TextContentPart)
+    )
+
+
 class SystemMessage(StrictBaseModel):
     """A system instruction message."""
 
@@ -288,17 +299,17 @@ Sampling = SamplingConfig
 # --- ids ----------------------------------------------------------------------
 
 
-def _validate_env_id(env_id: str) -> str:
+def _validate_id(plugin_id: str) -> str:
     """Validate the id's shape — a hub id must be a well-formed ``org/name[@version]``; a
     local id is any module name. Returns it unchanged (the value stays a plain ``str``)."""
     from verifiers.utils.install_utils import is_hub_env, parse_env_id
 
-    if is_hub_env(env_id):
-        parse_env_id(env_id)  # raises ValueError on a malformed org/name[@version]
-    return env_id
+    if is_hub_env(plugin_id):
+        parse_env_id(plugin_id)  # raises ValueError on a malformed org/name[@version]
+    return plugin_id
 
 
-EnvId = Annotated[str, AfterValidator(_validate_env_id)]
-"""A taskset / harness / environment id — ``name``, ``org/name``, or ``org/name@version``. A
-plain validated ``str``; derive its package/module name with `env_name` / `env_module`
-(`verifiers.v1.utils.install`)."""
+ID = Annotated[str, AfterValidator(_validate_id)]
+"""A plugin id — a taskset / harness / judge / environment: ``name``, ``org/name``, or
+``org/name@version``. A plain validated ``str``; derive its package/module name with
+`env_name` / `env_module` (`verifiers.v1.utils.install`)."""
