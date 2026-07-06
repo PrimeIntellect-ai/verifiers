@@ -58,6 +58,8 @@ class Criterion(StrictBaseModel):
 class RubricJudgeConfig(JudgeConfig):
     id: EnvId = "rubric"
     """Pinned to the built-in, so a code-level default entry needs no explicit id."""
+    model: str = "openai/gpt-4.1-mini"
+    """Rubric scoring uses structured outputs, so default to a model that supports them."""
     path: Path
     """The rubric file (`.toml` or `.json`) listing the criteria — see the module docstring
     for the shape. A relative path resolves against the eval's working directory."""
