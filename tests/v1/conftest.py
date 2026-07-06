@@ -20,10 +20,11 @@ Every matrix value carries a pytest mark, so subsets select with `-m`:
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
 
 Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placements `colocated` / `shared`,
-harnesses `null` / `default` / `rlm` / `kimi_code` / `codex`. A mark is applied per axis, so it
-selects every case touching that value on ANY axis; for one exact combination use `-k` on the test
-id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`). prime/modal provision real remote
-sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs `-m "not prime and not modal"`.
+harnesses `null` / `default` / `rlm` / `kimi_code` / `codex` / `claude_code`. A mark is applied
+per axis, so it selects every case touching that value on ANY axis; for one exact combination use
+`-k` on the test id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`). prime/modal provision
+real remote sandboxes (slow, infra-flaky, need setup), so they're local-only — CI runs
+`-m "not prime and not modal"`.
 """
 
 import os
@@ -35,6 +36,8 @@ from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.env import Environment
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.trace import Trace
+
+CLAUDE_CODE_E2E_MODEL = "deepseek/deepseek-v4-flash"
 
 # Fixture tasksets/envs (echo-v1, echo-agentic-v1, echo-v0, echo-multi-v0) live in
 # tests/v1/fixtures, added to the path via `pythonpath` in pyproject so the v1 loader and the
@@ -109,10 +112,10 @@ def tool_runtime(request) -> dict:
 
 
 # Harnesses, composed with the runtime fixtures, each carrying its harness mark (`-m default`, ...).
-# Built-ins are bundled in the `harnesses` package; the agent CLIs (`rlm` / `kimi-code` / `codex`)
-# install their dependencies at rollout. `compact` (an example harness) and `terminus-2` (drives
-# the host tmux) are excluded. `test_agentic` skips `null` (a chat loop with no shell);
-# `test_single_turn` skips `codex` (a coding agent, unreliable on a no-op echo).
+# Built-ins are bundled in the `harnesses` package; the agent CLIs (`rlm` / `kimi-code` / `codex` /
+# `claude-code`) install their dependencies at rollout. `compact` (an example harness) and
+# `terminus-2` (drives the host tmux) are excluded. `test_agentic` skips `null` (a chat loop with no
+# shell); `test_single_turn` skips `codex` (a coding agent, unreliable on a no-op echo).
 @pytest.fixture(
     params=[
         pytest.param("null", marks=pytest.mark.null, id="null"),
@@ -120,6 +123,7 @@ def tool_runtime(request) -> dict:
         pytest.param("rlm", marks=pytest.mark.rlm, id="rlm"),
         pytest.param("kimi-code", marks=pytest.mark.kimi_code, id="kimi-code"),
         pytest.param("codex", marks=pytest.mark.codex, id="codex"),
+        pytest.param("claude-code", marks=pytest.mark.claude_code, id="claude-code"),
     ]
 )
 def harness(request) -> str:
@@ -188,6 +192,8 @@ def _eval_config(
     risks truncating the reasoning before the answer (which tanks the reward)."""
     taskset_cfg = {"id": taskset, **(taskset_overrides or {})}
     harness_cfg = {"id": harness, **(harness_overrides or {})}
+    if harness == "claude-code" and model is None:
+        model = CLAUDE_CODE_E2E_MODEL
     _configure_prime_runtimes(taskset_cfg)
     _configure_prime_runtimes(harness_cfg)
     return EvalConfig(
