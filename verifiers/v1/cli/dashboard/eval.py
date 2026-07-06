@@ -498,13 +498,15 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
 class Pager:
     """Which page of overflowing rollout rows is on screen. Auto-advances on a timer until the
     user takes over with the left/right arrows, after which it stays where they leave it. Paging
-    opens on the first page: the timer is anchored to `origin` (the clock at the first paged frame)
+    opens on the first page: the timer is anchored to `origin` (the clock at the first paged frame),
     so `int((now - origin) / _PAGE_SECONDS)` is 0 when paging begins and rotates from there, rather
-    than off the raw wall clock (which would open on an arbitrary page). `count` (the page count, set
-    each render by `_paginate`) gates the arrows: they're inert while a single page fits, so a stray
-    press before rollouts overflow can't switch off auto-advance or offset the starting page once
-    paging begins. The chosen page is clamped to `count` (it can shrink on a resize; it otherwise
-    only grows, as rollouts are never removed)."""
+    than off the raw wall clock (which would open on an arbitrary page). `_paginate` clears `origin`
+    whenever everything fits on one page, so paging re-anchors and re-opens on page 1 if rollouts
+    overflow again after a resize. `count` (the page count, set each render by `_paginate`) gates the
+    arrows: they're inert while a single page fits, so a stray press before rollouts overflow can't
+    switch off auto-advance or offset the starting page once paging begins. The chosen page is
+    clamped to `count` (it can shrink on a resize; it otherwise only grows, as rollouts are never
+    removed)."""
 
     def __init__(self) -> None:
         self.page = 0
@@ -537,7 +539,10 @@ def _paginate(
     selecting the one `pager` points at. Returns (this page's groups, 0-based index, page count) —
     a single page when everything already fits."""
     if sum(len(g) for g in groups) <= rows_per_page:
-        pager.count = 1  # everything fits on one page — arrows stay inert
+        # Everything fits: arrows stay inert, and clear the anchor so paging re-opens on page 1 if
+        # rollouts overflow again later (e.g. a terminal resize) rather than off the stale origin.
+        pager.count = 1
+        pager.origin = None
         return groups, 0, 1
     pages: list[list[list[Rollout]]] = []
     current: list[list[Rollout]] = []
