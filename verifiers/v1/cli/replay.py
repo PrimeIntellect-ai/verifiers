@@ -7,8 +7,10 @@ config is the run's own `config.toml`, so CLI flags / `@ file.toml` layer on top
 `eval` — e.g. re-judge with a different judge model or `--taskset.judges` batching.
 
 The previous scores are cleared and re-scoring runs fresh, so the replay output holds only what it
-produced: the config-plugged judges and trace-only `@reward`/`@metric`/`@group_reward`s. Signals
-that declare a `runtime` parameter (in-sandbox verifiers like a SWE `solved` reward) can't run
+produced: the config-plugged judges and trace-only `@reward`/`@metric`s. Each trace is scored on
+its own (group scoring is an eval concern, skipped here); `--num-rollouts`/`-r` re-scores every
+selected trace that many times (each on its own copy) to sample judge variance. Signals that
+declare a `runtime` parameter (in-sandbox verifiers like a SWE `solved` reward) can't run
 offline and are skipped; those and any harness metrics are therefore not carried into the replay
 output — the source run retains them. `trace.state` is transient runtime scratch that is not
 persisted, so a signal that reads it re-scores against a fresh empty state — the built-in judges
@@ -74,28 +76,25 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     # saved traces), so replay reads any taskset's traces without a runtime or importing its Task
     # type. Judges read `task.prompt_text`; runtime-dependent `@reward`s are skipped anyway.
     traces = read_traces(source, Trace[WireTask, state_cls(type(taskset))])
-    # Group rollouts by task so `num_tasks` selects whole tasks (matching eval) and any
-    # `@group_reward` can re-run across a task's rollouts.
-    groups: dict[int, list[Trace]] = {}
-    for trace in traces:
-        groups.setdefault(trace.task.idx, []).append(trace)
-    episodes = list(groups.values())
-    if config.num_tasks is not None:
-        episodes = episodes[: config.num_tasks]
-    traces = [trace for episode in episodes for trace in episode]
+    if config.num_traces is not None:
+        traces = traces[: config.num_traces]
+    # Replay scores each trace independently (no `@group_reward` — grouping is an eval concern).
+    # `num_rollouts` re-scores every selected trace that many times, each on its own deep copy so
+    # the gradings don't clobber each other — e.g. to measure judge variance over one trace.
+    work = [t.model_copy(deep=True) for t in traces for _ in range(config.num_rollouts)]
 
     save_config(config, out)
     logger.info(
-        "replay: re-scoring %d trace(s) across %d task(s) from %s -> %s",
+        "replay: re-scoring %d trace(s) x%d from %s -> %s",
         len(traces),
-        len(episodes),
+        config.num_rollouts,
         source,
         out,
     )
     start = time.time()
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-    states = [TaskProgress(idx=t.task.idx, name=t.task.name) for t in traces]
+    states = [TaskProgress(idx=t.task.idx, name=t.task.name) for t in work]
 
     async def rescore(trace: Trace, st: TaskProgress) -> None:
         async with sem or contextlib.nullcontext():
@@ -131,16 +130,12 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
         else contextlib.nullcontext()
     )
     async with display:
-        await asyncio.gather(*(rescore(t, s) for t, s in zip(traces, states)))
-        # `@group_reward`s compare a task's rollouts (trace-only, no runtime) — recompute per
-        # episode; a no-op for tasksets without any. Then persist each trace.
-        for episode in episodes:
-            await taskset.score_group(episode)
+        await asyncio.gather(*(rescore(t, s) for t, s in zip(work, states)))
         lock = asyncio.Lock()
-        for trace in traces:
+        for trace in work:
             await append_trace(out, trace, lock)
     logger.info("replay: done in %.1fs -> %s", time.time() - start, out)
-    return traces
+    return work
 
 
 def main(argv: list[str] | None = None) -> None:
