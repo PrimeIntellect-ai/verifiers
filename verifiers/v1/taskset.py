@@ -231,18 +231,17 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
                     trace.record_reward(fn.__name__, result, weight)
             judges = [judge for judge in self.judges if can_run(judge.score)]
             if runtime is None:
+                # Exactly the signals `can_run` filtered out above — those requiring a runtime
+                # (a `runtime` param with no default). Signals whose `runtime` has a default run
+                # offline and are not reported as skipped.
                 skipped = [
                     fn.__name__
                     for fn in (
                         *discover_decorated(self, "metric"),
                         *discover_decorated(self, "reward"),
                     )
-                    if "runtime" in inspect.signature(fn).parameters
-                ] + [
-                    j.reward_name
-                    for j in self.judges
-                    if "runtime" in inspect.signature(j.score).parameters
-                ]
+                    if not can_run(fn)
+                ] + [j.reward_name for j in self.judges if not can_run(j.score)]
                 if skipped:
                     logger.info(
                         "score: no runtime — skipped runtime-dependent signals: %s",
