@@ -72,9 +72,9 @@ class JudgeSamplingConfig(SamplingConfig):
 
 
 class JudgeConfig(BaseClientConfig):
-    """An LLM-judge endpoint. Inherits `base_url` / `api_key_var` / `headers` (with the Prime
-    auto-config) from `BaseClientConfig`; adds the model and sampling. Subclass to add
-    judge-specific fields (see `verifiers.v1.judges.rubric.RubricJudgeConfig`)."""
+    """An LLM-judge endpoint. Inherits `base_url` / `api_key_var` / `headers` from
+    `BaseClientConfig`; adds the model and sampling. Subclass to add judge-specific
+    fields (see `verifiers.v1.judges.rubric.RubricJudgeConfig`)."""
 
     id: EnvId = ""
     """The judge id, which selects a judge plugin for a config-plugged judge (see

@@ -839,11 +839,14 @@ class ClientConfig(BaseModel):
 
 `preserve_all_thinking` and `preserve_thinking_between_tool_calls` are forwarded to the underlying renderer when `client_type == "renderer"`. They control whether past-assistant `reasoning_content` is re-emitted on subsequent renders — `preserve_all_thinking` keeps every past-assistant turn's thinking, and `preserve_thinking_between_tool_calls` keeps thinking only inside the in-flight assistant→tool→…→assistant block after the most recent user turn (when that block contains at least one tool response). Both default to `False` (template default applies).
 
-When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded with the following precedence:
-- **API key**: `PRIME_API_KEY` env var > `~/.prime/config.json` > `"EMPTY"`
-- **Team ID**: `PRIME_TEAM_ID` env var > `~/.prime/config.json` > not set
+When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials come only from
+explicit runtime environment variables:
+- **API key**: `PRIME_API_KEY` env var > `"EMPTY"`
+- **Base URL**: `PRIME_INFERENCE_URL` env var > `https://api.pinference.ai/api/v1`
+- **Team ID header**: `PRIME_TEAM_ID` env var sets `X-Prime-Team-ID`
 
-This allows seamless use after running `prime login`.
+`prime eval` materializes these variables from the selected Prime CLI account before
+spawning Verifiers.
 
 ### EndpointClientConfig
 

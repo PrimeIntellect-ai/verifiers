@@ -1,8 +1,5 @@
-import json
-import logging
 import os
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -14,8 +11,6 @@ from verifiers.types import (
     EndpointClientConfig,
 )
 from verifiers.utils.response_utils import strip_routed_experts_data
-
-logger = logging.getLogger(__name__)
 
 
 def _merge_endpoint(
@@ -34,31 +29,34 @@ def _merge_endpoint(
 
 def resolve_client_config(config: ClientConfig) -> ClientConfig:
     """Resolve endpoint config overrides onto a concrete client config."""
+    parent = ClientConfig.model_validate(config.model_dump(mode="python"))
+    if (
+        config.api_key_var == "PRIME_API_KEY"
+        and "api_base_url" not in config.model_fields_set
+    ):
+        if base_url := os.getenv("PRIME_INFERENCE_URL"):
+            parent.api_base_url = base_url.rstrip("/")
+
     if not config.endpoint_configs:
-        return ClientConfig.model_validate(config.model_dump(mode="python"))
+        return parent
 
     endpoint_idx = config.client_idx % len(config.endpoint_configs)
-    return _merge_endpoint(config, config.endpoint_configs[endpoint_idx])
+    return _merge_endpoint(parent, config.endpoint_configs[endpoint_idx])
 
 
 def resolve_client_configs(config: ClientConfig) -> list[ClientConfig]:
     """Expand a client config into one or more resolved endpoint configs."""
+    parent = ClientConfig.model_validate(config.model_dump(mode="python"))
+    if (
+        config.api_key_var == "PRIME_API_KEY"
+        and "api_base_url" not in config.model_fields_set
+    ):
+        if base_url := os.getenv("PRIME_INFERENCE_URL"):
+            parent.api_base_url = base_url.rstrip("/")
+
     if config.endpoint_configs:
-        return [_merge_endpoint(config, ep) for ep in config.endpoint_configs]
-    return [resolve_client_config(config)]
-
-
-def load_prime_config() -> dict[str, Any]:
-    try:
-        config_file = Path.home() / ".prime" / "config.json"
-        if config_file.exists():
-            data = json.loads(config_file.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
-            logger.warning("Invalid prime config: expected dict")
-    except (RuntimeError, json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
-        logger.warning("Failed to load prime config: %s", exc)
-    return {}
+        return [_merge_endpoint(parent, ep) for ep in config.endpoint_configs]
+    return [parent]
 
 
 def _build_headers_and_api_key(
@@ -68,10 +66,7 @@ def _build_headers_and_api_key(
     api_key = os.getenv(config.api_key_var)
 
     if config.api_key_var == "PRIME_API_KEY":
-        prime_config = load_prime_config()
-        if not api_key:
-            api_key = prime_config.get("api_key")
-        team_id = os.getenv("PRIME_TEAM_ID") or prime_config.get("team_id")
+        team_id = os.getenv("PRIME_TEAM_ID")
         if team_id:
             headers["X-Prime-Team-ID"] = team_id
 
