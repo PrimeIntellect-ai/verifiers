@@ -454,11 +454,15 @@ async def run_legacy_eval(config) -> list[Trace]:
         config.id,
     )
 
-    sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+    request_concurrency = config.max_concurrent
+    if request_concurrency and env.requires_group_rollouts:
+        # max_concurrent is a rollout bound; a group is indivisible.
+        request_concurrency = max(1, request_concurrency // config.num_rollouts)
+    sem = asyncio.Semaphore(request_concurrency) if request_concurrency else None
     write_lock = asyncio.Lock()
 
-    async def run_one(task_idx: int) -> Trace:
-        async def go() -> Trace:
+    async def run_one(task_idx: int) -> list[Trace]:
+        async def go() -> list[Trace]:
             out = await env.run_rollout(
                 input=dict(dataset[task_idx]),
                 client=client,
@@ -468,13 +472,37 @@ async def run_legacy_eval(config) -> list[Trace]:
             )
             trace = rollout_output_to_trace(out, task_idx)
             await append_trace(out_dir, trace, write_lock)
-            return trace
+            return [trace]
 
         if sem is None:
             return await go()
         async with sem:
             return await go()
 
-    # `num_rollouts` rollouts per selected task, all bounded by the one semaphore.
-    coros = [run_one(i) for i in idxs for _ in range(config.num_rollouts)]
-    return list(await asyncio.gather(*coros))
+    async def run_group(task_idx: int) -> list[Trace]:
+        async def go() -> list[Trace]:
+            outs = await env.run_group(
+                group_inputs=[
+                    dict(dataset[task_idx]) for _ in range(config.num_rollouts)
+                ],
+                client=client,
+                model=config.model,
+                sampling_args=sampling_args,
+                state_columns=["trajectory"],
+            )
+            traces = [rollout_output_to_trace(out, task_idx) for out in outs]
+            for trace in traces:
+                await append_trace(out_dir, trace, write_lock)
+            return traces
+
+        if sem is None:
+            return await go()
+        async with sem:
+            return await go()
+
+    if env.requires_group_rollouts:
+        units = [run_group(i) for i in idxs]
+    else:
+        units = [run_one(i) for i in idxs for _ in range(config.num_rollouts)]
+    results = await asyncio.gather(*units)
+    return [trace for unit_traces in results for trace in unit_traces]
