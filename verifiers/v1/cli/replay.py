@@ -8,7 +8,7 @@ config is the run's own `config.toml`, so CLI flags / `@ file.toml` layer on top
 
 The previous scores are cleared and re-scoring runs fresh, so the replay output holds only what it
 produced: the config-plugged judges and trace-only `@reward`/`@metric`s. Each trace is scored on
-its own (group scoring is an eval concern, skipped here); `--num-rollouts`/`-r` re-scores every
+its own (group scoring is an eval concern, skipped here); `--num-rescores`/`-r` re-scores every
 selected trace that many times (each on its own copy) to sample judge variance. Signals that
 declare a `runtime` parameter (in-sandbox verifiers like a SWE `solved` reward) can't run
 offline and are skipped; those and any harness metrics are therefore not carried into the replay
@@ -79,15 +79,15 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     if config.num_traces is not None:
         traces = traces[: config.num_traces]
     # Replay scores each trace independently (no `@group_reward` — grouping is an eval concern).
-    # `num_rollouts` re-scores every selected trace that many times, each on its own deep copy so
+    # `num_rescores` re-scores every selected trace that many times, each on its own deep copy so
     # the gradings don't clobber each other — e.g. to measure judge variance over one trace.
-    work = [t.model_copy(deep=True) for t in traces for _ in range(config.num_rollouts)]
+    work = [t.model_copy(deep=True) for t in traces for _ in range(config.num_rescores)]
 
     save_config(config, out)
     logger.info(
         "replay: re-scoring %d trace(s) x%d from %s -> %s",
         len(traces),
-        config.num_rollouts,
+        config.num_rescores,
         source,
         out,
     )
