@@ -57,7 +57,6 @@ _WARN_DROP_FIELDS = {
 # Purely presentational v0 fields; nothing to warn about.
 _SILENT_DROP_FIELDS = {
     "save_results",
-    "fullscreen",
     "name",
     "version",
     "env_target",

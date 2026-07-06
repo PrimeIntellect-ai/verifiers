@@ -1,7 +1,7 @@
 """
 Shared utilities for Rich-based terminal displays.
 
-Provides common infrastructure for EvalDisplay and GEPADisplay:
+Provides common infrastructure for Rich-based terminal displays:
 - Terminal control detection and handling
 - Screen mode support (normal vs alternate screen buffer)
 - Echo disable/restore for TUI mode
@@ -196,7 +196,7 @@ class BaseDisplay:
 
     def get_log_hint(self) -> Text | None:
         """Return an optional hint for viewing full logs."""
-        return Text("full logs: --disable-tui", style="dim")
+        return None
 
     def _make_log_panel(self) -> Panel:
         """Create a panel showing recent log messages with placeholder lines."""

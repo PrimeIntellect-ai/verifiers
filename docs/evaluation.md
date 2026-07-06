@@ -241,19 +241,11 @@ The `--max-retries` flag enables automatic retry with exponential backoff when r
 
 The `--num-workers` flag controls how many worker processes the env server spawns. Each worker owns its own environment instance and runs rollouts independently. The default `auto` scales with concurrency.
 
-### Display
-
-When evaluating multiple environments, the display shows an overview panel at the top with a compact status line per environment, and a detail panel below with full progress, metrics, and logs for one environment at a time. Use the **left/right arrow keys** to switch between environments. The overview scrolls to keep the selected environment visible and is capped at half the terminal height.
-
-When an eval runs against a Prime Inference endpoint and the model id has pricing available from `prime inference models`, token usage rows also show the estimated total USD cost as `cost (all)`. Cost appears after the final input/output token metrics in the live display and in the final summary. If pricing or token usage is unavailable, the cost field is omitted.
-
 ### Output and Saving
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--verbose` | `-v` | false | Enable debug logging |
-| `--fullscreen` | `-f` | false | Use alternate screen buffer (fullscreen) for the Rich display |
-| `--disable-tui` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
 | `--abbreviated-summary` | `-A` | false | Abbreviated summary: show settings and stats, skip example prompts |
 | `--output-dir` | `-o` | — | Custom output directory for evaluation results and logs |
 | `--save-results` | `-s` | false | Save results to disk |
