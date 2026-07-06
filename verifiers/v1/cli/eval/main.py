@@ -24,10 +24,7 @@ from verifiers.v1.cli.eval.compat import (
     convert_transitional_config,
     is_transitional_config,
 )
-from verifiers.v1.cli.eval.legacy import (
-    is_legacy_eval_invocation,
-    run_legacy_eval_cli,
-)
+from verifiers.v1.cli.eval.legacy import run_legacy_eval
 from verifiers.v1.cli.eval.resume import load_resume_config, split_resume
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.cli.output import output_path, write_config
@@ -81,10 +78,6 @@ def _convert_transitional_args(args: list[str]) -> list[str]:
 def main(argv: list[str] | None = None) -> None:
     """Parse the eval config once, then run it in this process."""
     raw_args = list(sys.argv[1:] if argv is None else argv)
-    if is_legacy_eval_invocation(raw_args):
-        run_legacy_eval_cli(raw_args)
-        return
-
     args = with_positional_taskset(raw_args)
     args = _convert_transitional_args(args)
     if not args or any(arg in ("-h", "--help") for arg in args):
@@ -112,17 +105,20 @@ def main(argv: list[str] | None = None) -> None:
         setup_logging("DEBUG" if config.verbose else "INFO")
         logger.info("wrote config to %s", write_config(config, output_path(config)))
         return
-    if config.is_legacy and config.resume is not None:
-        raise SystemExit("--resume is not supported for legacy (v0) evals")
+    if config.is_legacy:
+        # A classic v0 env, auto-detected at validation (`EnvConfig._resolve_plugins`):
+        # the v0 evaluator owns its own logging and artifact shape.
+        if config.resume is not None:
+            raise SystemExit("--resume is not supported for legacy (v0) evals")
+        run_legacy_eval(config)
+        return
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
     # (the path prime-rl trains through). The `--rich` dashboard reads live in-process Rollout
     # state, so it's in-process only (`server + rich` is rejected at config validation).
-    # Legacy v0 evals returned earlier through the v0 evaluator.
-    rich = config.rich and not config.is_legacy
     # Always tee the run's logs to a file under the output dir (in-process and server mode).
     log_file = str(output_path(config) / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
-    if rich:
+    if config.rich:
         setup_logging(level, log_file=log_file, console=False)
         # drop stray stdlib records that bypass loguru (else they print over the UI)
         logging.lastResort = None
@@ -132,8 +128,6 @@ def main(argv: list[str] | None = None) -> None:
     # rollout's `finally` (tears down containers/sandboxes) and any worker pool it spawned.
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
 
-    if config.is_legacy:
-        raise SystemExit("legacy (v0) envs must be run through the v0 eval path")
     if config.server:  # opt-in: drive rollouts through the env-server worker pool
         from verifiers.v1.cli.eval.runner import run_eval_server
 
@@ -141,7 +135,7 @@ def main(argv: list[str] | None = None) -> None:
     else:  # in-process (default), with or without the live dashboard
         env = vf.Environment(config)
         traces = asyncio.run(run_eval(env, config))
-    if not rich:  # --rich is the whole output; otherwise dump each trace as JSON
+    if not config.rich:  # --rich is the whole output; otherwise dump each trace as JSON
         for trace in traces:
             print(trace.model_dump_json(indent=2, exclude_none=True))
 
