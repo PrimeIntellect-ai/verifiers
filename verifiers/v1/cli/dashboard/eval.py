@@ -497,16 +497,20 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
 
 class Pager:
     """Which page of overflowing rollout rows is on screen. Auto-advances on a timer until the
-    user takes over with the left/right arrows, after which it stays where they leave it. `count`
-    (the page count, set each render by `_paginate`) gates the arrows: they're inert while a single
-    page fits, so a stray press before rollouts overflow can't switch off auto-advance or offset the
-    starting page once paging begins. The chosen page is clamped to `count` (it can shrink on a
-    resize; it otherwise only grows, as rollouts are never removed)."""
+    user takes over with the left/right arrows, after which it stays where they leave it. Paging
+    opens on the first page: the timer is anchored to `origin` (the clock at the first paged frame)
+    so `int((now - origin) / _PAGE_SECONDS)` is 0 when paging begins and rotates from there, rather
+    than off the raw wall clock (which would open on an arbitrary page). `count` (the page count, set
+    each render by `_paginate`) gates the arrows: they're inert while a single page fits, so a stray
+    press before rollouts overflow can't switch off auto-advance or offset the starting page once
+    paging begins. The chosen page is clamped to `count` (it can shrink on a resize; it otherwise
+    only grows, as rollouts are never removed)."""
 
     def __init__(self) -> None:
         self.page = 0
         self.manual = False
         self.count = 1
+        self.origin: float | None = None
 
     def on_key(self, key: str) -> None:
         if key in ("left", "right") and self.count > 1:
@@ -517,7 +521,10 @@ class Pager:
         # Track the auto page while it drives, so the first arrow continues from what's on screen
         # rather than jumping back to page 1. Clamp in manual mode (count can shrink on resize).
         if not self.manual:
-            self.page = int(now / _PAGE_SECONDS) % self.count
+            # Anchor the timer to the first paged frame, so paging opens on page 1 then rotates.
+            if self.origin is None:
+                self.origin = now
+            self.page = int((now - self.origin) / _PAGE_SECONDS) % self.count
         else:
             self.page = max(0, min(self.page, self.count - 1))
         return self.page
