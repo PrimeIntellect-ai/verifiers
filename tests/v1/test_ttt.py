@@ -440,3 +440,121 @@ async def test_interception_server_surfaces_ttt_failure():
             assert r2.status == 400  # non-retryable
 
     assert isinstance(session.error, TTTError)
+
+
+# -- Q&A at compaction ----------------------------------------------------------------------
+
+
+class QAClient:
+    """A fake rollout client for Q&A generations: returns a canned answer per question and
+    records every request body + (model, sampling)."""
+
+    def __init__(self, answer="the answer"):
+        self.answer = answer
+        self.requests: list[tuple[dict, str, dict]] = []
+
+    async def get_response(self, dialect, body, model, sampling, headers=None, session_id=None, turn=None):
+        self.requests.append((body, model, sampling.model_dump(exclude_none=True)))
+        return vf.Response(
+            id="qa",
+            created=0,
+            model=model,
+            message=AssistantMessage(content=self.answer),
+            finish_reason="stop",
+        )
+
+    async def close(self):
+        pass
+
+
+def qa_hook(trace, service, client, **qa_overrides):
+    config = TTTConfig(
+        base_url="http://ttt",
+        qa={"num_pairs": 3, "prompts": ["knowledge?", "what worked?"], **qa_overrides},
+    )
+    ctx = vf.RolloutContext(model="base", client=client, sampling=SamplingConfig(temperature=0.9))
+    hook = TTTRolloutHook(config, trace, ctx=ctx)
+    hook._http = httpx.AsyncClient(transport=httpx.MockTransport(service.handler))
+    return hook
+
+
+async def test_qa_generated_with_branch_in_context_and_shipped():
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    service = FakeService()
+    client = QAClient(answer="learned fact")
+    hook = qa_hook(trace, service, client)
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1, 2], [3]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="summary")])
+    await hook.on_turn_prepared(turn)
+
+    # 3 QA generations (prompts cycled), each with the FULL abandoned branch in context.
+    assert len(client.requests) == 3
+    questions = [body["messages"][-1]["content"] for body, _, _ in client.requests]
+    assert questions == ["knowledge?", "what worked?", "knowledge?"]
+    for body, model, sampling in client.requests:
+        roles = [m["role"] for m in body["messages"]]
+        assert roles == ["user", "assistant", "user"]  # u1, a1, question
+        assert body["messages"][0]["content"] == "u1"
+        assert model == "base"  # version 0 at generation time — the branch's own model
+        assert sampling["max_tokens"] == 1024  # the QA budget, not the rollout's
+
+    # The update shipped the pairs and trained QA-only by default.
+    (update,) = service.updates
+    assert update["qa_pairs"] == [{"question": q, "answer": "learned fact"} for q in questions]
+    assert update["train_rollout"] is False
+    # And the trace records them.
+    record = trace.info["ttt"]["updates"][0]
+    assert record["num_qa_pairs"] == 3
+    assert record["trained_rollout"] is False
+
+
+async def test_qa_also_train_rollout():
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    service = FakeService()
+    hook = qa_hook(trace, service, QAClient(), also_train_rollout=True)
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    await hook.on_turn_prepared(turn)
+    (update,) = service.updates
+    assert update["train_rollout"] is True
+    assert update["token_ids"] == [1, 2]
+
+
+async def test_qa_all_empty_answers_fails_loudly():
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    hook = qa_hook(trace, FakeService(), QAClient(answer="   "))
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    with pytest.raises(TTTError, match="no usable pairs"):
+        await hook.on_turn_prepared(turn)
+
+
+async def test_qa_generation_failure_is_ttt_error():
+    class BrokenClient(QAClient):
+        async def get_response(self, *args, **kwargs):
+            raise RuntimeError("model down")
+
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    hook = qa_hook(trace, FakeService(), BrokenClient())
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    with pytest.raises(TTTError, match="qa generation failed"):
+        await hook.on_turn_prepared(turn)
+
+
+def test_qa_requires_ctx():
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    with pytest.raises(ValueError, match="needs the rollout context"):
+        TTTRolloutHook(TTTConfig(base_url="http://x", qa={}), trace)
+
+
+async def test_qa_generations_never_touch_the_trace():
+    """QA exchanges are housekeeping: the trace's node count is unchanged by generation."""
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    service = FakeService()
+    hook = qa_hook(trace, service, QAClient())
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
+    nodes_before = len(trace.nodes)
+    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    await hook.on_turn_prepared(turn)
+    assert len(trace.nodes) == nodes_before

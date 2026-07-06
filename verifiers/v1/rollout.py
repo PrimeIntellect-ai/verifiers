@@ -18,7 +18,6 @@ import time
 from contextlib import asynccontextmanager
 from enum import StrEnum
 
-from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import (
@@ -28,12 +27,14 @@ from verifiers.v1.errors import (
     ToolsetError,
     boundary,
 )
+from verifiers.v1.harness import Harness
 from verifiers.v1.interception import (
     InterceptionPool,
     InterceptionServer,
     RolloutLimits,
     RolloutSession,
 )
+from verifiers.v1.mcp import serve_tools, serve_user
 from verifiers.v1.runtimes import (
     HOST,
     Runtime,
@@ -41,7 +42,6 @@ from verifiers.v1.runtimes import (
     make_runtime,
     reachable_url,
 )
-from verifiers.v1.mcp import serve_tools, serve_user
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
@@ -165,7 +165,7 @@ class Rollout:
         try:
             session = RolloutSession(ctx, trace, stops, self.limits)
             if self.ttt is not None and self.ttt.enabled:
-                ttt_hook = TTTRolloutHook(self.ttt, trace)
+                ttt_hook = TTTRolloutHook(self.ttt, trace, ctx=ctx)
                 session.ttt = ttt_hook
             await runtime.start()
             setup_deadline = (

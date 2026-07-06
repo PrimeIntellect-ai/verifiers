@@ -28,6 +28,7 @@ TTT requires the renderer (train) client: updates consume the exact token ids th
 saw, so a relay (eval) client — which carries no token ids — fails loudly.
 """
 
+import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING, Literal
@@ -36,11 +37,12 @@ import httpx
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import TTTError
+from verifiers.v1.types import SamplingConfig
 
 if TYPE_CHECKING:
+    from verifiers.v1.clients import RolloutContext
     from verifiers.v1.graph import PendingTurn
     from verifiers.v1.trace import Trace
-    from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,56 @@ class TTTConfig(BaseConfig):
     engine load)."""
     adapter_prefix: str = "ttt"
     """Adapter names are `{prefix}-{trace.id}` — unique per rollout."""
+    qa: "QAConfig | None" = None
+    """Cartridges-style Q&A at compaction (None = off): before each update, generate
+    question–answer pairs about the abandoned branch (with the full branch in context) and
+    train the adapter on those pairs instead of (or in addition to) the raw branch."""
+
+
+DEFAULT_QA_PROMPTS = [
+    (
+        "List the concrete facts, data, and knowledge contained in the conversation above "
+        "as question-answer style statements. Be specific: include names, numbers, paths, "
+        "and exact values."
+    ),
+    (
+        "Which approaches, commands, or strategies in the conversation above worked? "
+        "Describe each one and why it worked."
+    ),
+    (
+        "Which approaches in the conversation above failed or turned out to be dead ends? "
+        "Describe each one and why it failed, so the mistake is not repeated."
+    ),
+    (
+        "What theories, hypotheses, or open questions about the problem does the "
+        "conversation above suggest? State each one and the evidence for or against it."
+    ),
+    (
+        "Describe the setup of the task in the conversation above: the goal, the "
+        "constraints, the tools available, and the current state of progress."
+    ),
+]
+
+
+class QAConfig(BaseConfig):
+    """Q&A generation + training at compaction. The pairs are generated through the same
+    intercepted client the rollout uses (so under the rollout's current adapter, with the
+    full abandoned branch in context) but are *not* committed to the trace — they are
+    framework housekeeping, recorded in `trace.info["ttt"]["qa"]` and carried in the
+    `/update` payload. They therefore never count against the rollout's `RolloutLimits`
+    token caps; `max_tokens` below is their own budget."""
+
+    num_pairs: int = 8
+    """Q&A generations per compaction. `prompts` are cycled to cover the angles."""
+    prompts: list[str] = DEFAULT_QA_PROMPTS
+    """Question templates, each asked against the full abandoned branch."""
+    max_tokens: int | None = 1024
+    """Completion budget per Q&A generation (None = the rollout sampling's own value)."""
+    temperature: float | None = None
+    """Sampling temperature for Q&A generations (None = the rollout sampling's own)."""
+    also_train_rollout: bool = False
+    """Also train on the raw abandoned branch, in the same update. Default off: the plan's
+    Q&A arm trains on the Q&A dataset *instead of* the rollout itself."""
 
 
 class TTTRolloutHook:
@@ -75,9 +127,14 @@ class TTTRolloutHook:
     session's model/sampling overrides. Created by the `Rollout` when `TTTConfig` is present
     and attached to the `RolloutSession`; driven by the interception server."""
 
-    def __init__(self, config: TTTConfig, trace: "Trace") -> None:
+    def __init__(self, config: TTTConfig, trace: "Trace", ctx: "RolloutContext | None" = None) -> None:
         self.config = config
         self.trace = trace
+        self.ctx = ctx
+        """The rollout's client/model/sampling — needed only for Q&A generation (`qa`
+        set); the plain update path never touches the model."""
+        if config.qa is not None and ctx is None:
+            raise ValueError("ttt: qa generation needs the rollout context (ctx).")
         self.adapter_name = f"{config.adapter_prefix}-{trace.id}"
         self.version = 0
         """The adapter version the *next* sampled token runs under: 0 = base model (no
@@ -173,6 +230,40 @@ class TTTRolloutHook:
         path.reverse()
         return path
 
+    async def _generate_qa(self, path: list[int]) -> list[dict]:
+        """Generate the Q&A pairs for an abandoned branch: each question is asked with the
+        FULL branch in context (so the answer can draw on everything about to be dropped),
+        through the same client the rollout uses, under the current adapter. The exchanges
+        are framework housekeeping — never committed to the trace (no trace mutation, no
+        `RolloutLimits` accounting) — and return as `[{question, answer}]` text: the service
+        trains each pair standalone (context absent), Cartridges-style, so the knowledge
+        must come from the weights rather than a context-conditioned mapping."""
+        from verifiers.v1.dialects import ChatDialect
+        from verifiers.v1.dialects.chat import message_to_wire
+
+        assert self.config.qa is not None and self.ctx is not None
+        qa = self.config.qa
+        dialect = ChatDialect()
+        branch_wire = [message_to_wire(self.trace.nodes[nid].message) for nid in path]
+        sampling_data = self.ctx.sampling.model_dump(exclude_none=True)
+        if qa.max_tokens is not None:
+            sampling_data["max_tokens"] = qa.max_tokens
+        if qa.temperature is not None:
+            sampling_data["temperature"] = qa.temperature
+        sampling = self.salted_sampling(SamplingConfig(**sampling_data))
+        model = self.model_override or self.ctx.model
+
+        async def ask(question: str) -> dict:
+            body = {
+                "messages": [*branch_wire, {"role": "user", "content": question}],
+            }
+            response = await self.ctx.client.get_response(dialect, body, model, sampling, session_id=self.trace.id)
+            return {"question": question, "answer": response.message.content or ""}
+
+        questions = [qa.prompts[i % len(qa.prompts)] for i in range(qa.num_pairs)]
+        pairs = await asyncio.gather(*(ask(q) for q in questions))
+        return [pair for pair in pairs if pair["answer"].strip()]
+
     def payload(self, path: list[int], shared: set[int]) -> tuple[list[int], list[bool]]:
         """The update payload for an abandoned branch: its flat token sequence and a
         per-token loss mask. Loss goes to not-yet-trained nodes (`seen`) that are not shared
@@ -194,9 +285,10 @@ class TTTRolloutHook:
         return token_ids, loss_mask
 
     async def _update(self, path: list[int], shared: set[int]) -> None:
-        """One blocking update on an abandoned branch: build the payload, call the service
-        (gradient step(s) + checkpoint + engine adapter load), then switch this rollout's
-        model to the adapter and salt the prefix cache for the new version."""
+        """One blocking update on an abandoned branch: build the payload (plus, when
+        configured, the Q&A pairs generated with the branch still in context), call the
+        service (gradient step(s) + checkpoint + engine adapter load), then switch this
+        rollout's model to the adapter and salt the prefix cache for the new version."""
         token_ids, loss_mask = self.payload(path, shared)
         if not token_ids:
             raise TTTError(
@@ -205,6 +297,20 @@ class TTTRolloutHook:
             )
         if not any(loss_mask):
             return  # nothing new to train (e.g. a fork right after a fork)
+        qa_pairs: list[dict] | None = None
+        train_rollout = True
+        if self.config.qa is not None:
+            try:
+                qa_pairs = await self._generate_qa(path)
+            except TTTError:
+                raise
+            except Exception as e:
+                raise TTTError(f"ttt: qa generation failed: {type(e).__name__}: {e}") from e
+            train_rollout = self.config.qa.also_train_rollout
+            if not qa_pairs and not train_rollout:
+                raise TTTError(
+                    "ttt: qa generation produced no usable pairs and `qa.also_train_rollout` is off — nothing to train."
+                )
         seq_no = self.version + 1
         start = time.perf_counter()
         try:
@@ -216,6 +322,8 @@ class TTTRolloutHook:
                     "token_ids": token_ids,
                     "loss_mask": loss_mask,
                     "seq_no": seq_no,
+                    "qa_pairs": qa_pairs,
+                    "train_rollout": train_rollout,
                 },
                 timeout=self.config.update_timeout,
             )
@@ -244,6 +352,10 @@ class TTTRolloutHook:
         }
         if result.get("ckpt_path"):
             record["ckpt_path"] = result["ckpt_path"]
+        if qa_pairs is not None:
+            record["num_qa_pairs"] = len(qa_pairs)
+            record["qa_pairs"] = qa_pairs
+            record["trained_rollout"] = train_rollout
         self.updates.append(record)
         info = self.trace.info.setdefault("ttt", {"adapter": self.adapter_name})
         info["updates"] = self.updates
