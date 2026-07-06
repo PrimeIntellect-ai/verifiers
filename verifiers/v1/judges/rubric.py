@@ -1,7 +1,8 @@
 """rubric — an off-the-shelf rubric judge, plugged from config alone.
 
 Reads a rubric — a list of yes/no criteria — from a JSON or TOML file and asks the judge model
-to grade all criteria in one structured-output call, scoring each 1/0. The reward is the weighted
+to grade the criteria via structured output, scoring each 1/0 (all in one call by default, or
+batched `max_criteria`-at-a-time — see `RubricJudgeConfig.max_criteria`). The reward is the weighted
 mean of the verdicts (`sum(w*v) / sum(w)`, so it stays in [0, 1]); each verdict is also recorded
 as a `<name>/<criterion>` metric. Criterion weights come from the rubric file and are overridable
 from config (`weights`); the aggregate weighs into `trace.reward` via the judge's `weight`:
@@ -20,6 +21,7 @@ with `rubrics/quality.toml` listing the criteria (JSON takes `{"criteria": [...]
     weight = 1.0
 """
 
+import asyncio
 import json
 import math
 import tomllib
@@ -70,6 +72,17 @@ class RubricJudgeConfig(JudgeConfig):
     """How much of the rollout fills `{response}` (see `JudgeView`). Defaults to the whole
     transcript — rubric criteria typically grade the process (tool use, citations,
     intermediate steps), not just the final answer."""
+    max_criteria: int | None = None
+    """How many criteria to grade per structured-output call. `None` (default) grades all
+    criteria in one call. `1` sends one call per criterion (n independent judges); `k` batches
+    them k-at-a-time. Batches are graded concurrently and merged. Smaller batches trade more
+    calls for robustness where a model's structured-output reliability degrades with schema /
+    prompt size. Must be >= 1."""
+    max_retries: int = 0
+    """Retries per batch when a call fails (empty completion, unparseable reply, or verdicts not
+    matching the batch). 0 (default) keeps the strict contract — one failure errors the rollout.
+    Raise it for flaky endpoints; combined with a small `max_criteria` each retried call is cheap.
+    All attempts are recorded on the trace."""
 
 
 class CriterionVerdict(StrictBaseModel):
@@ -131,23 +144,62 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             raise ValueError(f"rubric '{path}' has no positive criterion weight")
         return criteria
 
-    async def score(self, task: Task, trace: Trace) -> float:
-        criteria = self.criteria
+    def _batches(self, criteria: list[Criterion]) -> list[list[Criterion]]:
+        """Split the criteria into per-call batches of at most `config.max_criteria`
+        (None = one batch of all)."""
+        k = self.config.max_criteria
+        if k is None:
+            return [criteria]
+        if k < 1:
+            raise ValueError(f"`max_criteria` must be >= 1 or None, got {k}")
+        return [criteria[i : i + k] for i in range(0, len(criteria), k)]
+
+    async def _grade_batch(
+        self, task: Task, trace: Trace, batch: list[Criterion]
+    ) -> dict[str, float]:
+        """One structured-output call over `batch`; return `{name: 1.0/0.0}` matched by name."""
         result = await self.evaluate(
             trace=trace,
             question=judge_question(task, self.config.question_field),
             response=judge_response(trace, self.config.view),
-            criteria="\n".join(f"- {c.name}: {c.text}" for c in criteria),
+            criteria="\n".join(f"- {c.name}: {c.text}" for c in batch),
         )
         verdicts = cast(RubricVerdicts, result.parsed).verdicts
-        # Exactly one verdict per criterion, matched by name — anything else is a judge
-        # failure and must error the rollout, not score the model (see `judge_verdict`).
-        if sorted(v.name for v in verdicts) != sorted(c.name for c in criteria):
+        # Exactly one verdict per criterion in the batch, matched by name — anything else is a
+        # judge failure and must error the rollout, not score the model (see `judge_verdict`).
+        if sorted(v.name for v in verdicts) != sorted(c.name for c in batch):
             raise ValueError(
                 f"judge verdicts name {sorted(v.name for v in verdicts)}, expected the "
-                f"rubric's {sorted(c.name for c in criteria)}"
+                f"batch's {sorted(c.name for c in batch)}"
             )
-        by_name = {v.name: float(v.verdict == "yes") for v in verdicts}
+        return {v.name: float(v.verdict == "yes") for v in verdicts}
+
+    async def _score_batch(
+        self, task: Task, trace: Trace, batch: list[Criterion]
+    ) -> dict[str, float]:
+        """Grade one batch, retrying up to `config.max_retries` times on a failed call before
+        letting the last error propagate."""
+        last: Exception | None = None
+        for _ in range(self.config.max_retries + 1):
+            try:
+                return await self._grade_batch(task, trace, batch)
+            except Exception as exc:  # retry transient structured-output failures
+                last = exc
+        raise cast(Exception, last)
+
+    async def score(self, task: Task, trace: Trace) -> float:
+        criteria = self.criteria
+        # Grade the batches concurrently (one call each) and merge; default max_criteria=None is
+        # a single call over all criteria.
+        results = await asyncio.gather(
+            *(
+                self._score_batch(task, trace, batch)
+                for batch in self._batches(criteria)
+            )
+        )
+        by_name: dict[str, float] = {}
+        for batch_verdicts in results:
+            by_name.update(batch_verdicts)
         for criterion in criteria:
             trace.record_metric(
                 f"{self.reward_name}/{criterion.name}", by_name[criterion.name]
