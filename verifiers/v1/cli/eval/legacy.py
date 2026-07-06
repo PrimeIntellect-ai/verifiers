@@ -79,10 +79,8 @@ def is_legacy_eval_invocation(argv: list[str]) -> bool:
 
 
 def run_legacy_eval_cli(argv: list[str]) -> None:
-    """Parse old v0 eval inputs and run the old evaluator."""
+    """Parse v1-shaped CLI inputs for a v0 env and run the old evaluator."""
     args = _parse_args(_normalize_argv(argv))
-    if args.disable_tui and args.fullscreen:
-        raise SystemExit("error: --disable-tui and --fullscreen are mutually exclusive")
     setup_logging(get_log_level(args.verbose))
     asyncio.run(run_evaluations(_eval_run_config(args)))
 
@@ -135,15 +133,12 @@ def _normalize_argv(argv: list[str]) -> list[str]:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="eval")
     parser.add_argument("env_id_or_config")
-    parser.add_argument("--env-args", "-a", type=json.loads, default={})
-    parser.add_argument("--env-dir-path", default=DEFAULT_ENV_DIR_PATH)
-    parser.add_argument(
-        "--provider", "-p", choices=list(PROVIDER_CONFIGS), default=None
-    )
-    parser.add_argument("--endpoints-path", "-e", default=DEFAULT_ENDPOINTS_PATH)
+    parser.add_argument("--args", dest="env_args", type=json.loads, default={})
     parser.add_argument("--model", "-m", default=DEFAULT_MODEL)
     parser.add_argument(
-        "--api-client-type",
+        "--client.v0-client-type",
+        "--client.v0_client_type",
+        dest="api_client_type",
         choices=[
             "openai_completions",
             "openai_chat_completions",
@@ -156,25 +151,21 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
     )
     parser.add_argument(
-        "--api-key-var",
         "--client.api-key-var",
         "--client.api_key_var",
-        "-k",
         dest="api_key_var",
         default=None,
     )
     parser.add_argument(
-        "--api-base-url",
         "--client.base-url",
         "--client.base_url",
-        "-b",
         dest="api_base_url",
         default=None,
     )
-    parser.add_argument("--header", action="append", default=None)
-    parser.add_argument("--header-from-state", action="append", default=None)
     parser.add_argument(
-        "--num-examples",
+        "--client.headers", dest="headers", type=json.loads, default=None
+    )
+    parser.add_argument(
         "--num-tasks",
         "-n",
         dest="num_examples",
@@ -182,7 +173,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
     )
     parser.add_argument(
-        "--rollouts-per-example",
         "--num-rollouts",
         "-r",
         dest="rollouts_per_example",
@@ -195,57 +185,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-concurrent", "-c", type=int, default=DEFAULT_MAX_CONCURRENT
     )
     parser.add_argument(
-        "--max-tokens",
         "--sampling.max-tokens",
         "--sampling.max_tokens",
-        "-t",
         dest="max_tokens",
         type=int,
         default=None,
     )
     parser.add_argument(
-        "--temperature",
         "--sampling.temperature",
-        "-T",
         dest="temperature",
         type=float,
         default=None,
     )
     parser.add_argument(
-        "--top-p", "--sampling.top-p", "--sampling.top_p", dest="top_p", type=float
+        "--sampling.top-p", "--sampling.top_p", dest="top_p", type=float
     )
-    parser.add_argument("--sampling-args", "-S", type=json.loads, default=None)
     parser.add_argument("--output-dir", "-o", default=None)
     parser.add_argument("--verbose", "-v", action="store_true", default=False)
-    parser.add_argument(
-        "--no-interleave-scoring", "-N", action="store_true", default=False
-    )
-    parser.add_argument(
-        "--state-columns",
-        "-C",
-        type=lambda text: [part.strip() for part in text.split(",")],
-        default=[],
-    )
-    parser.add_argument(
-        "--save-results", action="store_true", default=True, help=argparse.SUPPRESS
-    )
     parser.add_argument("--resume", "-R", nargs="?", const=True, default=None)
-    parser.add_argument(
-        "--independent-scoring", "-i", action="store_true", default=False
-    )
-    parser.add_argument("--save-to-hf-hub", "-H", action="store_true", default=False)
-    parser.add_argument("--hf-hub-dataset-name", "-D", default="")
     parser.add_argument("--extra-env-kwargs", "-x", type=json.loads, default={})
-    parser.add_argument("--timeout", type=float, default=None)
-    parser.add_argument("--fullscreen", "-f", action="store_true", default=False)
-    parser.add_argument("--disable-tui", "-d", action="store_true", default=False)
-    parser.add_argument("--max-retries", type=int, default=3)
-    parser.add_argument("--disable-env-server", action="store_true", default=False)
-    parser.add_argument("--num-workers", "-w", default="auto")
     parser.add_argument(
-        "--abbreviated-summary", "-A", action="store_true", default=False
+        "--retries.rollout.max-retries",
+        "--retries.rollout.max_retries",
+        dest="max_retries",
+        type=int,
+        default=3,
     )
-    parser.add_argument("--heartbeat-url", default=None)
     return parser
 
 
@@ -263,7 +228,7 @@ def _eval_run_config(args: argparse.Namespace) -> EvalRunConfig:
         raw_eval_configs = [{"env_id": args.env_id_or_config, **vars(args)}]
     return EvalRunConfig(
         evals=[_build_eval_config(raw) for raw in raw_eval_configs],
-        heartbeat_url=args.heartbeat_url,
+        heartbeat_url=getattr(args, "heartbeat_url", None),
     )
 
 

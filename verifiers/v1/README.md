@@ -267,6 +267,6 @@ The `serve` path uses the legacy bridge and maps v0 rollouts to v1 `Trace`s. Set
 
 ```bash
 uv run eval reverse-text -n 2     # eval a v0 env
-uv run eval reverse-text --env-args '{"dataset_split": "train"}' \
+uv run eval reverse-text --args '{"dataset_split": "train"}' \
   --extra-env-kwargs '{"max_total_completion_tokens": 256}'   # construction + post-load kwargs
 ```
