@@ -171,6 +171,25 @@ class Branch(StrictBaseModel):
         return sum(len(n.token_ids) for n in self.nodes)
 
     @property
+    def ttt_version(self) -> int | None:
+        """The single TTT adapter version this branch's sampled tokens ran under (see
+        `verifiers.v1.ttt`), or None for a rollout without TTT. Sampled-node versions must
+        agree — TTT updates fire only at branch forks, so a branch mixing versions means the
+        bookkeeping broke; fail loudly rather than hand the trainer a corrupt replay ref.
+        Input-only nodes (a shared prefix committed under an older version) don't constrain
+        it — replay correctness follows the version the *sampled* tokens ran under."""
+        versions = {n.ttt_version for n in self.nodes if n.sampled}
+        versions.discard(None)
+        if not versions:
+            return None
+        if len(versions) > 1:
+            raise ValueError(
+                f"branch {self.index} was sampled under multiple TTT adapter versions "
+                f"({sorted(versions)}); updates must only fire at branch forks."
+            )
+        return versions.pop()
+
+    @property
     def usage(self) -> Usage | None:
         """Provider-reported usage summed over model calls in this branch."""
         return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)

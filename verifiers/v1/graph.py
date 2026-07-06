@@ -96,6 +96,12 @@ class MessageNode(StrictBaseModel):
     `mask`; empty for input messages."""
     finish_reason: FinishReason = None
     """The response's finish reason (assistant nodes only) — kept for truncation detection."""
+    ttt_version: int | None = None
+    """The test-time-training adapter version this node's tokens ran under (see
+    `verifiers.v1.ttt`): 0 = the base model, k = after the k-th per-rollout update; None =
+    the rollout ran without TTT. Stamped at commit time on every node of the turn, so a
+    branch is verifiably sampled under exactly one version (`Branch.ttt_version`) and an RL
+    trainer can replay it with the exact adapter checkpoint."""
     multi_modal_data: MultiModalData | None = None
     """The renderer items for the images this message's content introduces (pixel tensors,
     grids, hashes, placeholders) — the only carrier of the pixels from the env server to the

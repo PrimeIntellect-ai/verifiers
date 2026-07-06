@@ -33,6 +33,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
+from verifiers.v1.ttt import TTTConfig
 from verifiers.v1.mcp import serve_shared
 
 
@@ -117,6 +118,11 @@ class EnvConfig(BaseConfig):
     """Rollouts that share one interception server (and, behind a remote runtime, one
     tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
     key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
+    ttt: TTTConfig | None = None
+    """Test-time training (None = off): train a per-rollout LoRA adapter at every context
+    rewrite (compaction) and sample subsequent branches through it. Points at a running TTT
+    service (`--ttt.base-url`); requires the renderer (train) client and an inference engine
+    serving with LoRA enabled. See `verifiers.v1.ttt`."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
@@ -360,6 +366,7 @@ class Environment:
                 limits=self.limits,
                 shared_urls=self._shared_urls,
                 interception=self._interception,
+                ttt=self.config.ttt,
             )
             for _ in range(n)
         ]

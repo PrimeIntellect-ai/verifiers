@@ -34,6 +34,7 @@ from verifiers.v1.errors import (
     SandboxError,
     TasksetError,
     ToolsetError,
+    TTTError,
     TunnelError,
     UserError,
 )
@@ -102,6 +103,7 @@ from verifiers.v1.trace import (
     Trace,
     WireTrace,
 )
+from verifiers.v1.ttt import TTTConfig, TTTRolloutHook
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -176,6 +178,7 @@ __all__ = [
     "SandboxError",
     "TasksetError",
     "InterceptionError",
+    "TTTError",
     "TunnelError",
     # clients
     "Client",
@@ -204,6 +207,8 @@ __all__ = [
     "RetryConfig",
     "RolloutRetryConfig",
     "TimeoutConfig",
+    "TTTConfig",
+    "TTTRolloutHook",
     "Episode",
     "Rollout",
     # loaders

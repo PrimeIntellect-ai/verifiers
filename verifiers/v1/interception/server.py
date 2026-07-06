@@ -37,6 +37,7 @@ from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1 import graph
 from verifiers.v1.errors import (
+    InterceptionError,
     OverlongPromptError,
     RolloutError,
     TasksetError,
@@ -47,6 +48,7 @@ from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Respond
+    from verifiers.v1.ttt import TTTRolloutHook
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +150,26 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
+    ttt: "TTTRolloutHook | None" = None
+    """This rollout's test-time-training hook (see `verifiers.v1.ttt`), set by the Rollout
+    when TTT is configured. Driven around each turn: `on_turn_prepared` before the model
+    call (fork detection → blocking adapter update), `after_commit` after it (version
+    stamping); its model/sampling overrides route the call to the rollout's adapter."""
+
+    def turn_model(self) -> str:
+        """The model this rollout's next turn samples from: the TTT adapter once one is
+        live, else the eval's model."""
+        if self.ttt is not None and self.ttt.model_override is not None:
+            return self.ttt.model_override
+        return self.ctx.model
+
+    def turn_sampling(self):
+        """The sampling for the next turn: the eval's sampling, cache-salted per TTT
+        adapter version once one is live (an in-place adapter reload keeps the lora id, so
+        unsalted prefix KV from the old weights would be silently reused)."""
+        if self.ttt is not None:
+            return self.ttt.salted_sampling(self.ctx.sampling)
+        return self.ctx.sampling
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
@@ -294,6 +316,15 @@ class InterceptionServer:
             # If the simulator ended at the open (its taskset's `@stop` now fires), the loop's
             # `refused()` below halts the harness before any model call — no special-casing here.
         if dialect.streaming(body):
+            if session.ttt is not None:
+                return self._fail(
+                    session,
+                    dialect,
+                    InterceptionError(
+                        "ttt: streaming turns are not supported under test-time training "
+                        "(TTT requires the renderer client, which never streams)"
+                    ),
+                )
             return await self._stream(request, session, dialect, body, prompt)
         headers = request.headers.copy()
         # A user simulator turns one program request into a multi-turn exchange: after each
@@ -325,11 +356,17 @@ class InterceptionServer:
             turn = graph.prepare_turn(session.trace, prompt)
             session.error = None
             try:
+                # TTT: a turn that doesn't extend the previous leaf abandoned its branch —
+                # run one blocking adapter update on it before this turn samples (see
+                # `verifiers.v1.ttt`). A `TTTError` lands in the RolloutError handler below:
+                # stashed as the real cause, surfaced to the harness as a non-retryable 400.
+                if session.ttt is not None:
+                    await session.ttt.on_turn_prepared(turn)
                 response = await session.ctx.client.get_response(
                     dialect,
                     body,
-                    session.ctx.model,
-                    session.ctx.sampling,
+                    session.turn_model(),
+                    session.turn_sampling(),
                     headers=headers,
                     session_id=session.trace.id,
                     turn=turn,
@@ -375,8 +412,11 @@ class InterceptionServer:
                 session.trace.id,
                 len(response.message.tool_calls or []),
             )
+            num_nodes_before = len(session.trace.nodes)
             turn.commit(response)  # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
+            if session.ttt is not None:
+                session.ttt.after_commit(session.trace, num_nodes_before)
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:

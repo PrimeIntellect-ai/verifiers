@@ -256,6 +256,11 @@ class TrainClient(Client):
             raw_sampling.pop("extra_body", None) or {}
         )
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
+        # `cache_salt` is a top-level generate-request field, not a sampling param — pop it
+        # out of `extra_body` and thread it as the `generate(cache_salt=...)` kwarg (mirrors
+        # the v0 renderer client). Callers salt per policy version (prime-rl) and per TTT
+        # adapter version (verifiers.v1.ttt) to keep stale prefix KV from being reused.
+        cache_salt = sampling_params.pop("cache_salt", None)
         sampling_params.update(raw_sampling)
         renderer = self._renderer_pool(
             model,
@@ -308,6 +313,7 @@ class TrainClient(Client):
                 prompt_attribution=prompt_attribution,
                 tools=wire_tools,
                 sampling_params=sampling_params,
+                cache_salt=cache_salt,
                 extra_headers={SESSION_ID_HEADER: session_id} if session_id else None,
             )
         except RendererOverlongPromptError as e:

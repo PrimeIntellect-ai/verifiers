@@ -71,6 +71,16 @@ class InterceptionError(RolloutError):
     """The host interception server (model calls + `/state` + `/task` channels) couldn't be reached."""
 
 
+class TTTError(RolloutError):
+    """A test-time-training update failed (the TTT service call, or a version mismatch).
+    Fails the rollout loudly: after a lost update the adapter no longer matches the context
+    the model believes it has, so continuing would silently corrupt the experiment.
+    `status_code` 400 so the harness's SDK treats it as deterministic (no retry — retrying
+    the model call would re-trigger the same failed update)."""
+
+    status_code = 400
+
+
 class TunnelError(InterceptionError):
     """The `prime_tunnel` tunnel to the host interception server couldn't be established."""
 

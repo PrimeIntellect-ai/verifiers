@@ -46,6 +46,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
+from verifiers.v1.ttt import TTTConfig, TTTRolloutHook
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class Rollout:
         limits: RolloutLimits | None = None,
         shared_urls: dict[str, str] | None = None,
         interception: InterceptionPool | None = None,
+        ttt: TTTConfig | None = None,
     ) -> None:
         self.task = task
         self.taskset = taskset
@@ -89,6 +91,7 @@ class Rollout:
         self.finalize_timeout = finalize_timeout
         self.scoring_timeout = scoring_timeout
         self.limits = limits or RolloutLimits()
+        self.ttt = ttt
         self.shared_urls = shared_urls or {}
         """Eval-level shared tool servers ({name: url}) to reuse instead of starting per rollout;
         the eval-level interception pool. Both injected by `Environment.episode` from the active
@@ -158,8 +161,12 @@ class Rollout:
             self.harness.config.name,
             self.runtime_config.type,
         )
+        ttt_hook: TTTRolloutHook | None = None
         try:
             session = RolloutSession(ctx, trace, stops, self.limits)
+            if self.ttt is not None and self.ttt.enabled:
+                ttt_hook = TTTRolloutHook(self.ttt, trace)
+                session.ttt = ttt_hook
             await runtime.start()
             setup_deadline = (
                 None
@@ -240,6 +247,10 @@ class Rollout:
                     else:
                         if session.error is not None:
                             raise session.error
+            if ttt_hook is not None:
+                # Optional final-branch update (config); still inside the trace's generation
+                # span, before taskset finalize. A failure is a TTTError → captured below.
+                await ttt_hook.finalize_rollout()
             now = time.time()
             trace.timing.generation.end = now
             trace.timing.finalize.start = now
@@ -285,6 +296,10 @@ class Rollout:
                 trace.timing.generation.end = now  # error mid-run: close generation
             if trace.timing.finalize.start and not trace.timing.finalize.end:
                 trace.timing.finalize.end = now  # error mid-finalize: close finalize
+            # Release the rollout's TTT adapter (engine slot + service optimizer state);
+            # its checkpoints stay on disk for RL replay. Never raises.
+            if ttt_hook is not None:
+                await ttt_hook.aclose()
             # Tear down here — group rewards (later) need only the trace, not a live
             # runtime. `runtime` is always set: make_runtime() ran before the `try`.
             try:
