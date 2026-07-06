@@ -50,6 +50,47 @@ def test_legacy_eval_cli_inputs_build_v0_eval_config(tmp_path: Path):
     assert config.client_config.api_key_var == "TEST_API_KEY"
 
 
+def test_legacy_eval_accepts_v1_dotted_cli_aliases(tmp_path: Path):
+    args = _parse_args(
+        [
+            "echo-v0",
+            "--model",
+            "test-model",
+            "--client.base-url",
+            "http://localhost:8000/v1",
+            "--client.api-key-var",
+            "TEST_API_KEY",
+            "--num-tasks",
+            "2",
+            "--num-rollouts",
+            "1",
+            "--sampling.max-tokens",
+            "12",
+            "--sampling.temperature",
+            "0.1",
+            "--sampling.top-p",
+            "0.9",
+            "--output-dir",
+            str(tmp_path),
+        ]
+    )
+
+    run_config = _eval_run_config(args)
+    (config,) = run_config.evals
+
+    assert config.env_id == "echo-v0"
+    assert config.num_examples == 2
+    assert config.rollouts_per_example == 1
+    assert config.output_dir == str(tmp_path)
+    assert config.client_config.api_base_url == "http://localhost:8000/v1"
+    assert config.client_config.api_key_var == "TEST_API_KEY"
+    assert config.sampling_args == {
+        "max_tokens": 12,
+        "temperature": 0.1,
+        "top_p": 0.9,
+    }
+
+
 def test_legacy_eval_toml_always_saves_results(tmp_path: Path):
     config_path = tmp_path / "eval.toml"
     config_path.write_text(

@@ -155,19 +155,65 @@ def _build_parser() -> argparse.ArgumentParser:
         ],
         default=None,
     )
-    parser.add_argument("--api-key-var", "-k", default=None)
-    parser.add_argument("--api-base-url", "-b", default=None)
+    parser.add_argument(
+        "--api-key-var",
+        "--client.api-key-var",
+        "--client.api_key_var",
+        "-k",
+        dest="api_key_var",
+        default=None,
+    )
+    parser.add_argument(
+        "--api-base-url",
+        "--client.base-url",
+        "--client.base_url",
+        "-b",
+        dest="api_base_url",
+        default=None,
+    )
     parser.add_argument("--header", action="append", default=None)
     parser.add_argument("--header-from-state", action="append", default=None)
-    parser.add_argument("--num-examples", "-n", type=int, default=None)
-    parser.add_argument("--rollouts-per-example", "-r", type=int, default=None)
+    parser.add_argument(
+        "--num-examples",
+        "--num-tasks",
+        "-n",
+        dest="num_examples",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--rollouts-per-example",
+        "--num-rollouts",
+        "-r",
+        dest="rollouts_per_example",
+        type=int,
+        default=None,
+    )
     parser.add_argument("--shuffle", "-s", action="store_true", default=False)
     parser.add_argument("--shuffle-seed", type=int, default=None)
     parser.add_argument(
         "--max-concurrent", "-c", type=int, default=DEFAULT_MAX_CONCURRENT
     )
-    parser.add_argument("--max-tokens", "-t", type=int, default=None)
-    parser.add_argument("--temperature", "-T", type=float, default=None)
+    parser.add_argument(
+        "--max-tokens",
+        "--sampling.max-tokens",
+        "--sampling.max_tokens",
+        "-t",
+        dest="max_tokens",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--temperature",
+        "--sampling.temperature",
+        "-T",
+        dest="temperature",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--top-p", "--sampling.top-p", "--sampling.top_p", dest="top_p", type=float
+    )
     parser.add_argument("--sampling-args", "-S", type=json.loads, default=None)
     parser.add_argument("--output-dir", "-o", default=None)
     parser.add_argument("--verbose", "-v", action="store_true", default=False)
@@ -434,6 +480,8 @@ def _sampling_args(raw: dict[str, Any]) -> dict[str, Any]:
     sampling.setdefault("max_tokens", raw.get("max_tokens"))
     if raw.get("temperature") is not None:
         sampling.setdefault("temperature", raw["temperature"])
+    if raw.get("top_p") is not None:
+        sampling.setdefault("top_p", raw["top_p"])
     return sampling
 
 
