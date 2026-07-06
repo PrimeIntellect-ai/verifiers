@@ -309,7 +309,14 @@ class InteractiveRolloutApp(App[None]):
         )
         self.ready.set()
 
-    def action_quit(self) -> None:
+    async def action_quit(self) -> None:
+        # Async to match ``App.action_quit`` (invoked and awaited by the "q"
+        # binding). The real work is synchronous so it can also be triggered
+        # directly via ``request_quit``.
+        self.request_quit()
+
+    def request_quit(self) -> None:
+        """Abort the session: fail any pending turn and close the app."""
         self._quit_requested = True
         if self._future is not None and not self._future.done():
             self._future.set_exception(InteractiveSessionExit())

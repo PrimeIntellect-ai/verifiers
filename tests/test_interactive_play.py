@@ -381,10 +381,26 @@ async def test_app_ask_after_quit_raises_session_exit():
     task = asyncio.create_task(app.run_async(headless=True))
     await app.ready.wait()
 
-    app.action_quit()
+    app.request_quit()
     await task
     with pytest.raises(InteractiveSessionExit):
         await app.ask([UserMessage(content="hello")], [])
+
+
+@pytest.mark.asyncio
+async def test_app_quit_via_q_keypress_fails_pending_turn():
+    # Exercises the real binding path: Textual awaits the async ``action_quit``,
+    # which must still fail the pending turn and stop the app.
+    app = InteractiveRolloutApp()
+    async with app.run_test() as pilot:
+        ask_task = asyncio.create_task(app.ask([UserMessage(content="hi")], []))
+        await pilot.pause()
+        app.set_focus(None)
+        await pilot.press("q")
+        await pilot.pause()
+        with pytest.raises(InteractiveSessionExit):
+            await asyncio.wait_for(ask_task, timeout=2)
+    assert app._quit_requested is True
 
 
 @pytest.mark.asyncio
@@ -432,7 +448,7 @@ async def test_quit_mid_rollout_records_session_exit():
 
     async def quit_soon():
         await asyncio.sleep(0.3)
-        client._app.action_quit()
+        client._app.request_quit()
 
     quitter = asyncio.create_task(quit_soon())
     state = await asyncio.wait_for(
@@ -458,7 +474,7 @@ async def test_app_quit_fails_pending_turn():
     ask_task = asyncio.create_task(app.ask([UserMessage(content="hello")], []))
     await asyncio.sleep(0.1)
 
-    app.action_quit()
+    app.request_quit()
     with pytest.raises(InteractiveSessionExit):
         await ask_task
     await task
