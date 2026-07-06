@@ -4,19 +4,24 @@ Hosted-eval sandboxes and old local configs still speak the classic v0 eval
 dialect: flat run fields plus a single ``[[eval]]`` table (``env_id`` or a
 transitional ``taskset``/``group_size`` shape). The v0 evaluator is gone, so
 this module maps that surface onto a native v1 :class:`EvalConfig` TOML — v0
-env ids route through the legacy bridge via the usual auto-detection. Prime
-reuses these helpers for its own frozen v0 argv surface.
+env ids route through the legacy bridge via the usual auto-detection. The
+mapping leans on ``EvalConfig`` itself: any field the model accepts (by name
+or alias) passes through untouched; only shape changes are hand-translated.
+Prime reuses ``merge_sampling_args``, ``build_extra_headers``, and
+``write_converted_eval_config`` for its hosted-eval surface.
 """
 
 import os
 import tempfile
-import tomllib
 from pathlib import Path
 from typing import Any
 
 import tomli_w
+from pydantic import AliasChoices
 
 from verifiers.types import _validate_extra_headers_value
+from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.types import local_env_id
 
 # v0 provider shorthand: resolves to a client base_url + API-key env var.
 PROVIDER_CONFIGS: dict[str, dict[str, str]] = {
@@ -50,16 +55,15 @@ _WARN_DROP_FIELDS = {
     "endpoints_path": "the v1 CLI has no endpoints registry",
 }
 # Purely presentational v0 fields; nothing to warn about.
-_SILENT_DROP_FIELDS = {"save_results", "fullscreen", "name", "version"}
-_TUI_FIELDS = {"disable_tui", "debug"}
-
-
-def _local_legacy_id(env_id: Any) -> Any:
-    if not isinstance(env_id, str):
-        return env_id
-    if env_id.startswith(("./", "../", "/")):
-        return env_id
-    return env_id.rsplit("@", 1)[0].rsplit("/", 1)[-1]
+_SILENT_DROP_FIELDS = {
+    "save_results",
+    "fullscreen",
+    "name",
+    "version",
+    "env_target",
+    "env_dir_path",
+}
+_TUI_FIELDS = ("disable_tui", "debug")
 
 
 def is_transitional_config(raw: dict[str, Any]) -> bool:
@@ -72,63 +76,46 @@ def merge_sampling_args(
     *,
     max_tokens: int | None = None,
     temperature: float | None = None,
-    prefer_existing_keys: bool = True,
-    include_none_max_tokens: bool = False,
 ) -> dict[str, Any]:
-    """Overlay v0's standalone --max-tokens/--temperature onto a sampling-args dict."""
-    merged_sampling_args = dict(sampling_args or {})
-
-    if (not prefer_existing_keys or "max_tokens" not in merged_sampling_args) and (
-        include_none_max_tokens or max_tokens is not None
-    ):
-        merged_sampling_args["max_tokens"] = max_tokens
-
-    if temperature is not None and (
-        not prefer_existing_keys or "temperature" not in merged_sampling_args
-    ):
-        merged_sampling_args["temperature"] = temperature
-
-    return merged_sampling_args
+    """Overlay v0's standalone --max-tokens/--temperature onto a sampling-args dict;
+    explicit sampling-args keys win."""
+    merged = dict(sampling_args or {})
+    if max_tokens is not None:
+        merged.setdefault("max_tokens", max_tokens)
+    if temperature is not None:
+        merged.setdefault("temperature", temperature)
+    return merged
 
 
-def build_extra_headers(raw: dict[str, Any]) -> dict[str, str]:
-    """Merge v0's ``headers`` table and repeatable ``header`` "Name: Value" entries."""
-    eval_headers_table: dict[str, str] = {}
-    raw_headers = raw.get("headers")
-    if raw_headers is not None:
-        eval_headers_table = _validate_extra_headers_value(raw_headers)
-
-    raw_header_values = raw.get("header")
-    if raw_header_values is None:
-        raw_header_values = []
-    if not isinstance(raw_header_values, list):
+def build_extra_headers(
+    headers: dict[str, str] | list[str] | None = None,
+    header: list[str] | None = None,
+) -> dict[str, str]:
+    """Merge v0's ``headers`` table and repeatable ``header`` "Name: Value" entries.
+    Hosted TOMLs write "Name: Value" strings under ``headers`` too; later entries win."""
+    if header is not None and not isinstance(header, list):
         raise ValueError("'header' must be a list of 'Name: Value' strings")
-
-    eval_headers_from_list: dict[str, str] = {}
-    for header_value in raw_header_values:
-        if not isinstance(header_value, str):
-            raise ValueError(
-                "Each 'header' entry must be a string 'Name: Value', "
-                f"got: {header_value!r}"
-            )
-        if ":" not in header_value:
-            raise ValueError(f"--header must be 'Name: Value', got: {header_value!r}")
-        key, value = header_value.split(":", 1)
-        key, value = key.strip(), value.strip()
-        if not key:
+    entries = list(header or [])
+    if isinstance(headers, list):  # hosted TOMLs write "Name: Value" strings here
+        entries += headers
+        headers = None
+    merged = _validate_extra_headers_value(headers) if headers is not None else {}
+    for entry in entries:
+        if not isinstance(entry, str) or ":" not in entry:
+            raise ValueError(f"--header must be 'Name: Value', got: {entry!r}")
+        name, value = entry.split(":", 1)
+        if not name.strip():
             raise ValueError("--header name cannot be empty")
-        eval_headers_from_list[key] = value
+        merged[name.strip()] = value.strip()
+    return merged
 
-    return {**eval_headers_table, **eval_headers_from_list}
 
-
-def transitional_config_to_fields(config_path: Path) -> dict[str, Any]:
+def _flatten(raw: dict[str, Any]) -> dict[str, Any]:
     """Flatten a transitional eval TOML (``env_id`` and/or a single ``[[eval]]``).
 
     Hosted raw-v1 configs are exactly this shape: top-level run fields plus one
     ``[[eval]]`` table holding the env config.
     """
-    raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
     if "ablation" in raw:
         raise ValueError(
             "[[ablation]] configs are not supported; expand them into v1 configs"
@@ -153,21 +140,19 @@ def transitional_config_to_fields(config_path: Path) -> dict[str, Any]:
     if "env_id" in merged:
         if merged.get("id"):
             raise ValueError("config cannot contain both id and env_id")
-        merged["id"] = _local_legacy_id(merged.pop("env_id"))
+        merged["id"] = merged.pop("env_id")
     return merged
 
 
-def build_v1_eval_config(
-    fields: dict[str, Any], *, tui_disabled: bool = False
-) -> tuple[dict[str, Any], list[str]]:
+def build_v1_eval_config(fields: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """Map v0 fields onto a v1 eval config dict; returns (config, warnings).
 
     ``fields`` carries either a v1 ``taskset`` or a legacy ``id``. Legacy hub refs
-    normalize to the local package name; v1 taskset ids stay local-only.
+    normalize to the local package name; v1 taskset ids stay local-only. Only shape
+    changes are translated here — anything ``EvalConfig`` accepts passes through.
     """
     fields = dict(fields)
     warnings: list[str] = []
-    config: dict[str, Any] = {}
 
     if fields.pop("resume", None):
         raise ValueError("--resume is a v1 flag now: eval --resume <output-dir>")
@@ -186,105 +171,61 @@ def build_v1_eval_config(
             warnings.append(f"ignoring v0-only `{field}`: {reason}")
     for field in _SILENT_DROP_FIELDS:
         fields.pop(field, None)
-    for field in _TUI_FIELDS:
-        tui_disabled = bool(fields.pop(field, False)) or tui_disabled
-    if tui_disabled:
-        config["rich"] = False
+    if any([fields.pop(field, False) for field in _TUI_FIELDS]):
+        fields["rich"] = False
 
     # environment: taskset (v1) or legacy id; env_args attach to whichever is set
     taskset = fields.pop("taskset", None)
-    legacy_id = _local_legacy_id(fields.pop("id", None))
+    legacy_id = fields.pop("id", None)
+    if isinstance(legacy_id, str):
+        legacy_id = local_env_id(legacy_id)
     env_args = fields.pop("env_args", None) or {}
     if legacy_id and isinstance(taskset, dict) and taskset.get("id"):
         raise ValueError("config cannot contain both a legacy env_id and a taskset")
     if legacy_id:
-        config["id"] = legacy_id
+        fields["id"] = legacy_id
         args = {**env_args, **(fields.pop("args", None) or {})}
         if args:
-            config["args"] = args
+            fields["args"] = args
     elif isinstance(taskset, dict) and taskset.get("id"):
         # env_args are taskset kwargs in v1; explicit taskset keys win
-        config["taskset"] = {**env_args, **taskset}
+        fields["taskset"] = {**env_args, **taskset}
     else:
         raise ValueError("config requires a v1 taskset.id or a legacy env id")
 
-    for key in (
-        "harness",
-        "pool",
-        "extra_env_kwargs",
-        "max_turns",
-        "max_input_tokens",
-        "max_output_tokens",
-        "max_total_tokens",
-        "multiplex",
-        "model",
-        "max_concurrent",
-        "shuffle",
-        "output_dir",
-    ):
-        value = fields.pop(key, None)
-        if value is not None:
-            config[key] = value
-    if fields.pop("verbose", False):
-        config["verbose"] = True
-
-    num_examples = fields.pop("num_examples", None)
-    if num_examples is not None and num_examples != -1:  # v0's -1 = all = v1's unset
-        config["num_tasks"] = num_examples
-    num_rollouts = fields.pop("group_size", None) or fields.pop(
-        "rollouts_per_example", None
-    )
-    fields.pop("rollouts_per_example", None)
-    if num_rollouts is not None:
-        config["num_rollouts"] = num_rollouts
+    # v0 counts: -1 num_examples means all (v1: unset); hosted TOMLs carry the rollout
+    # count under both names, group_size wins. EvalConfig's aliases do the renames.
+    if fields.get("num_examples") == -1:
+        del fields["num_examples"]
+    if "group_size" in fields:
+        fields.pop("rollouts_per_example", None)
 
     # v0 --timeout is per-rollout seconds; transitional TOMLs may carry the v1 table
-    timeout = fields.pop("timeout", None)
-    if isinstance(timeout, dict):
-        config["timeout"] = timeout
-    elif timeout is not None:
-        config["timeout"] = {"rollout": timeout}
-
-    retries = dict(fields.pop("retries", None) or {})
+    timeout = fields.get("timeout")
+    if timeout is not None and not isinstance(timeout, dict):
+        fields["timeout"] = {"rollout": timeout}
     max_retries = fields.pop("max_retries", None)
     if max_retries is not None:
+        retries = dict(fields.get("retries") or {})
         retries["rollout"] = {**retries.get("rollout", {}), "max_retries": max_retries}
-    if retries:
-        config["retries"] = retries
+        fields["retries"] = retries
 
-    sampling = _build_sampling(fields)
-    if sampling:
-        config["sampling"] = sampling
-
-    client = _build_client(fields)
-    if client:
-        config["client"] = client
-
-    fields.pop("env_target", None)
-    fields.pop("env_dir_path", None)
-    for leftover in sorted(fields):
-        warnings.append(f"ignoring unknown v0 field `{leftover}`")
-    return config, warnings
-
-
-def _build_sampling(fields: dict[str, Any]) -> dict[str, Any]:
-    """Per-env v1 ``sampling`` overlaid with v0 sampling args; ``extra_body``
-    flattens into the sampling table (v1 passes provider-specific keys through)."""
-    sampling = dict(fields.pop("sampling", None) or {})
+    # sampling: v0 sampling_args (with extra_body flattened — v1 passes provider-specific
+    # keys through) plus standalone flags, overlaid on any v1 `sampling` table; v0 wins.
     sampling_args = merge_sampling_args(
         fields.pop("sampling_args", None),
         max_tokens=fields.pop("max_tokens", None),
         temperature=fields.pop("temperature", None),
-        prefer_existing_keys=True,
     )
     extra_body = sampling_args.pop("extra_body", None)
     if isinstance(extra_body, dict):
         sampling_args = {**extra_body, **sampling_args}
-    return {**sampling, **sampling_args}
+    sampling = {**(fields.pop("sampling", None) or {}), **sampling_args}
+    if sampling:
+        fields["sampling"] = sampling
 
-
-def _build_client(fields: dict[str, Any]) -> dict[str, Any]:
-    client: dict[str, Any] = {}
+    # client: provider shorthand, then explicit v0 fields, over any v1 `client` table
+    client = dict(fields.pop("client", None) or {})
     provider = fields.pop("provider", None)
     if provider:
         provider_config = PROVIDER_CONFIGS.get(provider)
@@ -297,26 +238,33 @@ def _build_client(fields: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"--provider {provider} has no v1 equivalent")
         client["base_url"] = provider_config["url"]
         client["api_key_var"] = provider_config["key"]
-
-    base_url = fields.pop("api_base_url", None)
-    if base_url:
-        client["base_url"] = base_url
-    api_key_var = fields.pop("api_key_var", None)
-    if api_key_var:
-        client["api_key_var"] = api_key_var
-
-    header_list = fields.pop("header", None) or []
-    headers_value = fields.pop("headers", None)
-    if isinstance(headers_value, list):  # hosted TOMLs write "K: V" strings here
-        header_list = [*header_list, *headers_value]
-        headers_value = None
-    raw_headers = {"header": header_list, "headers": headers_value}
+    for src, dst in (("api_base_url", "base_url"), ("api_key_var", "api_key_var")):
+        if value := fields.pop(src, None):
+            client[dst] = value
     headers = build_extra_headers(
-        {k: v for k, v in raw_headers.items() if v is not None}
+        fields.pop("headers", None), fields.pop("header", None)
     )
     if headers:
-        client["headers"] = headers
-    return client
+        client["headers"] = {**client.get("headers", {}), **headers}
+    if client:
+        fields["client"] = client
+
+    # Everything EvalConfig accepts (field names + alias choices) passes through
+    # unchanged — its aliases already speak v0. The rest is unknown v0: warn and drop.
+    accepted: set[str] = set()
+    for name, spec in EvalConfig.model_fields.items():
+        accepted.add(name)
+        if isinstance(spec.validation_alias, AliasChoices):
+            accepted.update(
+                a for a in spec.validation_alias.choices if isinstance(a, str)
+            )
+    config: dict[str, Any] = {}
+    for key in sorted(fields):
+        if key in accepted:
+            config[key] = fields[key]
+        else:
+            warnings.append(f"ignoring unknown v0 field `{key}`")
+    return config, warnings
 
 
 def write_converted_eval_config(
@@ -331,15 +279,16 @@ def write_converted_eval_config(
     return Path(name)
 
 
-def convert_transitional_config(config_path: Path) -> tuple[Path, list[str]]:
-    """Convert a transitional eval TOML into a runnable v1 config file.
+def convert_transitional_config(
+    raw: dict[str, Any], source: Path
+) -> tuple[Path, list[str]]:
+    """Convert a parsed transitional eval TOML into a runnable v1 config file.
 
     The CLI's ingestion boundary: ids must be locally importable (hosts install
     hub refs and pin the local name before handing the file to verifiers).
     """
-    fields = transitional_config_to_fields(config_path)
-    config, warnings = build_v1_eval_config(fields)
+    config, warnings = build_v1_eval_config(_flatten(raw))
     path = write_converted_eval_config(
-        config, header_comment=f"converted from v0 eval config {config_path}"
+        config, header_comment=f"converted from v0 eval config {source}"
     )
     return path, warnings

@@ -64,7 +64,7 @@ def _convert_transitional_args(args: list[str]) -> list[str]:
         raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
         if not is_transitional_config(raw):
             continue
-        converted, warnings = convert_transitional_config(config_path)
+        converted, warnings = convert_transitional_config(raw, config_path)
         for warning in warnings:
             print(f"warning: {warning}", file=sys.stderr)
         print(f"converted v0 eval config {config_path} -> {converted}", file=sys.stderr)

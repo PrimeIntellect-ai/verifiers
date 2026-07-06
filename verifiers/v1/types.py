@@ -317,3 +317,12 @@ def env_name(env_id: str) -> str:
 def env_module(env_id: str) -> str:
     """Normalize a local package id to its importable module name."""
     return _validate_env_id(env_id).replace("-", "_").lower()
+
+
+def local_env_id(ref: str) -> str:
+    """Normalize a hub-era ``org/name[@version]`` ref to the local package id — for
+    ingestion boundaries (v0 config conversion, resume of hub-era runs); `EnvId` itself
+    rejects hub refs. Path-style refs pass through untouched."""
+    if ref.startswith(("./", "../", "/")):
+        return ref
+    return ref.rsplit("@", 1)[0].rsplit("/", 1)[-1]

@@ -16,8 +16,8 @@ from pathlib import Path
 
 from pydantic_core import from_json
 
-from verifiers.v1.cli.eval.compat import _local_legacy_id
 from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.types import local_env_id
 
 
 def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
@@ -50,7 +50,7 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
     tables += raw.get("taskset", {}).get("judges", [])
     for table in tables:
         if isinstance(table.get("id"), str):
-            table["id"] = _local_legacy_id(table["id"])
+            table["id"] = local_env_id(table["id"])
     config = EvalConfig.model_validate(raw)
     config.resume = resume_dir
     config.output_dir = resume_dir
