@@ -35,11 +35,9 @@ state the model can rebuild (or that verify pure text). Run with the same harnes
 the source run so the rebuilt system prompt and tool inventory match the seeded context.
 """
 
-import inspect
 import logging
 import random
 from functools import cached_property
-from glob import glob
 from pathlib import Path
 from typing import Literal
 
@@ -60,6 +58,7 @@ from verifiers.v1.tasksets.replay.records import (
     RECHECK_PROMPT,
     Seed,
     compaction_seeds,
+    expand_records,
     iter_records,
     recheck_seed,
     tool_call_seed,
@@ -73,7 +72,9 @@ async def restore_snapshot(runtime: Runtime, ref: str) -> None:
     """Restore a source rollout's sandbox snapshot into the fresh runtime, so a mid-trajectory
     resume sees the filesystem/session state its seeded context claims exists. Runtimes can't
     capture or restore snapshots yet — no producer records refs today, so this only fires once
-    one does; plug the runtime restore call in here when support lands."""
+    one does; plug the runtime restore call in here when support lands. At that point the ref
+    should also be promoted to a field on the base ``Task`` (the same family as ``image`` /
+    ``workdir``) and the producer contract moved out of this consumer package."""
     raise NotImplementedError(
         f"sandbox snapshot restore is not supported by runtimes yet (ref {ref!r})"
     )
@@ -144,10 +145,7 @@ class ReplayConfig(TasksetConfig):
         # the records directory grows (an elastic pool spawns workers throughout the run).
         # No matches leaves the patterns untouched for `load_tasks` to fail on — the files may
         # not exist where the config is first validated (e.g. a dry run on another host).
-        patterns = [self.records] if isinstance(self.records, str) else self.records
-        matched = sorted(
-            {path for pattern in patterns for path in glob(pattern, recursive=True)}
-        )
+        matched = expand_records(self.records)
         if matched:
             self.records = matched
         return self
@@ -165,56 +163,50 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
         return load_taskset(self.config.source)
 
     @property
-    def NEEDS_CONTAINER(self) -> bool:  # type: ignore[override] — mirrors the source's ClassVar
-        return type(self.source).NEEDS_CONTAINER
-
-    @property
     def defines_tools(self) -> bool:
-        # Report the source's capability, not this class's delegating stubs — the Environment's
-        # harness gate must see exactly what the source taskset exposes.
+        # Report the source's behavior, not this class's delegating stubs — the Environment's
+        # harness gate, the server's group-scoring info, and the rollout's stop checks must see
+        # exactly what the source taskset defines.
         return self.source.defines_tools
 
     @property
     def defines_user(self) -> bool:
         return self.source.defines_user
 
+    def defines_group_rewards(self) -> bool:
+        return self.source.defines_group_rewards()
+
+    @property
+    def needs_container(self) -> bool:
+        return self.source.needs_container
+
+    def stops(self) -> list:
+        return self.source.stops()
+
     def state_type(self) -> type[State]:
         return self.source.state_type()
 
     def load_tasks(self) -> list[Task]:
-        # Group rewards and stop conditions are found by inspecting the taskset instance
-        # (the server's `requires_group_scoring`, the rollout's stop checks), so delegation
-        # alone would hide the source's — surface its tagged methods here. Execution still
-        # goes through the delegating `score_group`, so nothing runs twice.
-        for name, method in inspect.getmembers(self.source, inspect.ismethod):
-            if hasattr(method, "group_reward") or hasattr(method, "stop"):
-                if hasattr(type(self), name):
-                    raise ValueError(
-                        f"source hook {self.config.source.id}.{name} shadows a replay taskset attribute"
-                    )
-                setattr(self, name, method)
-
-        patterns = (
-            [self.config.records]
-            if isinstance(self.config.records, str)
-            else self.config.records
-        )
-        paths = sorted(
-            {path for pattern in patterns for path in glob(pattern, recursive=True)}
-        )
+        paths = expand_records(self.config.records)
         if not paths:
-            raise ValueError(f"replay `records` matched no files: {patterns}")
-        trace_cls = Trace[task_type(self.config.source.id)]
+            raise ValueError(
+                f"replay `records` matched no files: {self.config.records}"
+            )
+        task_cls = task_type(self.config.source.id)
+        trace_cls = Trace[task_cls]
 
         tasks: list[Task] = []
         self._snapshots: dict[int, str] = {}
         skipped = {"foreign": 0, "empty": 0, "no_seed": 0, "overlong": 0}
         for record in iter_records(Path(path) for path in paths):
+            # Filter another env's records on the task fields alone — full-trace validation
+            # walks every node's token ids, far too much work to spend on a line we discard.
             try:
-                trace = trace_cls.model_validate(record)
+                task_cls.model_validate(record.get("task"))
             except ValidationError:
                 skipped["foreign"] += 1
                 continue
+            trace = trace_cls.model_validate(record)
             if not trace.nodes:
                 skipped["empty"] += 1
                 continue

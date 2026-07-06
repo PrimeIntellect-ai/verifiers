@@ -22,7 +22,6 @@ from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
-from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.retries import run_with_retry
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.taskset import Taskset
@@ -55,7 +54,7 @@ class Episode:
         `on_complete` (the runner's persist hook) is called with each trace the instant
         it's finalized (DONE) — per rollout without group rewards, or once per trace after
         group scoring with them."""
-        group_scored = bool(discover_decorated(self.taskset, "group_reward"))
+        group_scored = self.taskset.defines_group_rewards()
 
         async def run_one(rollout: Rollout) -> Trace:
             async with semaphore or nullcontext():

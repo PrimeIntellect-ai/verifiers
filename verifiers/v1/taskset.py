@@ -16,7 +16,7 @@ For a heterogeneous taskset (different verification per task), have a single
 """
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import ClassVar, Generic, TypeVar
 
 from pydantic_config import BaseConfig
@@ -67,20 +67,35 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     def defines_tools(self) -> bool:
         """Whether this taskset exposes MCP tool servers — the Environment's harness-capability
         gate reads this. Class-override identity by default; a taskset that wraps another (e.g.
-        `replay`) overrides it to report its source's capability instead of its own methods."""
+        `replay`) overrides this and the seams below to report its source's behavior instead of
+        its own class's."""
         return type(self).tools is not Taskset.tools
 
     @property
     def defines_user(self) -> bool:
-        """Whether this taskset drives a user simulator — the Environment's harness-capability
-        gate reads this. Class-override identity by default; a wrapping taskset overrides it to
-        report its source's capability."""
+        """Whether this taskset drives a user simulator (see `defines_tools`)."""
         return type(self).user is not Taskset.user
+
+    def defines_group_rewards(self) -> bool:
+        """Whether this taskset scores groups (`@group_reward`) — the env server's `info` and
+        the episode's group-size warning call this; execution flows through `score_group`. A
+        method, not a property: hook discovery walks instances with `inspect.getmembers`, which
+        evaluates properties — and this one runs discovery itself, so a property would recurse."""
+        return bool(discover_decorated(self, "group_reward"))
+
+    @property
+    def needs_container(self) -> bool:
+        """Whether this taskset only runs in a container runtime — the instance-level read of
+        the `NEEDS_CONTAINER` ClassVar (the subclass-facing knob)."""
+        return self.NEEDS_CONTAINER
+
+    def stops(self) -> list[Callable]:
+        """The taskset's `@stop` conditions, checked between turns by the rollout."""
+        return discover_decorated(self, "stop")
 
     def state_type(self) -> type[State]:
         """The `State` subclass this taskset's rollouts carry (`Trace.state`), read off the
-        `Taskset[TaskT, ConfigT, StateT]` generic. A wrapping taskset overrides this to report
-        its source's state type, so stateful tool servers and user simulators keep their fields."""
+        `Taskset[TaskT, ConfigT, StateT]` generic (see `defines_tools`)."""
         return state_cls(type(self))
 
     def load_tasks(self) -> list[TaskT]:

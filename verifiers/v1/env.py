@@ -20,7 +20,6 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.types import EnvId
 from verifiers.v1.interception import InterceptionPool, RolloutLimits
@@ -247,7 +246,7 @@ class Environment:
                 f"{self.taskset.config.id!r} defines one (Taskset.user). Run it with a harness that "
                 f"supports user simulation (e.g. --harness.id default), or use a taskset without one."
             )
-        if self.taskset.NEEDS_CONTAINER and isinstance(
+        if self.taskset.needs_container and isinstance(
             self.harness.config.runtime, SubprocessConfig
         ):
             raise ValueError(
@@ -301,7 +300,7 @@ class Environment:
 
         A taskset with `@group_reward`s compares a task's rollouts, so it needs >=2 of
         them — refuse `n < 2` there (rather than silently scoring a group of one)."""
-        if n < 2 and discover_decorated(self.taskset, "group_reward"):
+        if n < 2 and self.taskset.defines_group_rewards():
             raise ValueError(
                 f"taskset defines @group_reward(s), which compare a task's rollouts and "
                 f"need >=2; got n={n} (pass -r/--num-rollouts >= 2)"

@@ -15,6 +15,7 @@ secret, and model arrive as argv (not env), so nothing the program spawns inheri
 """
 
 import argparse
+from pathlib import Path
 import asyncio
 import json
 from contextlib import AsyncExitStack
@@ -121,7 +122,7 @@ async def main() -> None:
         # the opening message. Both empty means the task has no prompt — the user simulator
         # seeds the opening.
         initial = (
-            json.loads(open(args.initial_messages_file).read())
+            json.loads(Path(args.initial_messages_file).read_text())
             if args.initial_messages_file
             else []
         )

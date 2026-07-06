@@ -293,7 +293,7 @@ async def main() -> None:
         # the opening message. Both empty means the task has no prompt — the user simulator
         # seeds the opening.
         initial = (
-            json.loads(open(args.initial_messages_file).read())
+            json.loads(Path(args.initial_messages_file).read_text())
             if args.initial_messages_file
             else []
         )

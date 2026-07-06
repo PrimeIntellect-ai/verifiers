@@ -29,7 +29,6 @@ from verifiers.utils.serve_utils import msgpack_encoder
 from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
-from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import EnvConfig, Environment
 from verifiers.v1.serve.types import (
     BaseResponse,
@@ -56,9 +55,7 @@ class EnvServer:
         self.env = Environment(config)
         # Load tasks once; the index range is fixed for the server's lifetime.
         self.tasks = self.env.taskset.load_tasks()
-        self.requires_group_scoring = bool(
-            discover_decorated(self.env.taskset, "group_reward")
-        )
+        self.requires_group_scoring = self.env.taskset.defines_group_rewards()
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client

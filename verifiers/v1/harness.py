@@ -7,6 +7,7 @@ runtime and the interception server are owned by the Rollout.
 """
 
 import asyncio
+import json
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -17,6 +18,7 @@ from pydantic import Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import RolloutContext
+from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import HarnessError, boundary
 from verifiers.v1.utils.install import env_name
@@ -31,6 +33,11 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import EnvId, Messages
 
 logger = logging.getLogger(__name__)
+
+# Workdir-relative drop point for a Messages prompt (dot-named so the agent's own file
+# listings don't surface it). A file rather than argv/env: a seeded conversation (a replayed
+# history, multimodal content) can far exceed MAX_ARG_STRLEN.
+INITIAL_MESSAGES_FILE = ".vf_initial_messages.json"
 
 
 class HarnessConfig(BaseConfig):
@@ -91,6 +98,14 @@ class Harness(ABC, Generic[ConfigT]):
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
+
+    async def write_message_prompt(self, runtime: Runtime, prompt: Messages) -> str:
+        """Ship a `Messages` prompt into the runtime as OpenAI wire dicts at
+        `INITIAL_MESSAGES_FILE`; returns the program flag pointing at it. For
+        `SUPPORTS_MESSAGE_PROMPT` harnesses whose program is a chat loop."""
+        wire = json.dumps([message_to_wire(m) for m in prompt])
+        await runtime.write(INITIAL_MESSAGES_FILE, wire.encode())
+        return f"--initial-messages-file={INITIAL_MESSAGES_FILE}"
 
     def resolve_prompt(self, task: Task) -> tuple[str | None, str | Messages | None]:
         """Resolve `(system_prompt, prompt)` for this harness. If the harness

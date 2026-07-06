@@ -114,7 +114,7 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     if config.num_tasks is not None:
         tasks = tasks[: config.num_tasks]
     if isinstance(config.runtime, vf.SubprocessConfig) and (
-        taskset.NEEDS_CONTAINER or any(t.image for t in tasks)
+        taskset.needs_container or any(t.image for t in tasks)
     ):
         raise SystemExit(
             "taskset needs a container runtime to validate - pass --runtime.type docker (or prime)"

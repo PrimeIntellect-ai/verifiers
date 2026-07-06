@@ -272,7 +272,7 @@ def _replay_taskset(tmp_path, source: dict, trace: vf.Trace):
 
 def test_capabilities_state_and_typed_tasks_delegate_to_the_source(tmp_path):
     from echo_tool_v1 import EchoToolTask
-    from echo_user_sim_v1 import EchoUserSimState, EchoUserSimTaskset
+    from echo_user_sim_v1 import EchoUserSimState
     from echo_v1 import EchoTask
 
     trace = vf.Trace(task=EchoTask(idx=0, prompt="say ping", answer="ping"))
@@ -284,6 +284,10 @@ def test_capabilities_state_and_typed_tasks_delegate_to_the_source(tmp_path):
     # wrapper's delegating stubs.
     assert taskset.defines_tools is False
     assert taskset.defines_user is False
+    # Runs discovery on the source instance — would RecursionError if it were a property
+    # (getmembers evaluates properties during the discovery walk).
+    assert taskset.defines_group_rewards() is False
+    assert [stop.__name__ for stop in taskset.stops()] == ["single_turn"]  # the source's @stop
     assert taskset.state_type() is vf.State
     tasks = taskset.load_tasks()
     assert isinstance(tasks[0], EchoTask) and tasks[0].answer == "ping"
@@ -299,4 +303,3 @@ def test_capabilities_state_and_typed_tasks_delegate_to_the_source(tmp_path):
     user_sim_replay = _replay_taskset(tmp_path, {"id": "echo-user-sim-v1"}, trace)
     assert user_sim_replay.defines_user is True
     assert user_sim_replay.state_type() is EchoUserSimState
-    assert EchoUserSimTaskset  # imported for the state assertion's provenance

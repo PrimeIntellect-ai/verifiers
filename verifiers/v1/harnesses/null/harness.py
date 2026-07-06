@@ -12,15 +12,10 @@ from pathlib import Path
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
-
-# Workdir-relative drop point for a Messages prompt (dot-named so the agent's own file
-# listings don't surface it).
-INITIAL_MESSAGES_FILE = ".vf_initial_messages.json"
 
 
 class NullHarnessConfig(HarnessConfig):
@@ -68,18 +63,13 @@ class NullHarness(Harness[NullHarnessConfig]):
                     }
                 )
             )
-        # A Messages prompt (e.g. an image-bearing prompt) seeds the chat loop directly via env
-        # (it can be large multimodal content that overflows argv); a plain string is the single
-        # first user message; None means the task has no prompt and the user simulator opens it.
-        # A Messages prompt seeds the chat loop via a file in the runtime: a seeded conversation
-        # can be long (replayed histories, multimodal content) and overflow the argv/env size
-        # limits (MAX_ARG_STRLEN).
+        # A plain string is the single first user message; a Messages prompt seeds the chat
+        # loop via a file in the runtime (see `write_message_prompt`); None means the task has
+        # no prompt and the user simulator opens it.
         if isinstance(prompt, str):
             args.append(f"--prompt={prompt}")
         elif prompt is not None:
-            wire = json.dumps([message_to_wire(m) for m in prompt])
-            await runtime.write(INITIAL_MESSAGES_FILE, wire.encode())
-            args.append(f"--initial-messages-file={INITIAL_MESSAGES_FILE}")
+            args.append(await self.write_message_prompt(runtime, prompt))
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )

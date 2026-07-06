@@ -18,6 +18,7 @@ builder drops anchors without a ref.
 
 import json
 from collections.abc import Iterable, Iterator
+from glob import glob
 from pathlib import Path
 from random import Random
 from typing import NamedTuple
@@ -48,6 +49,16 @@ class Seed(NamedTuple):
     snapshot: str | None = None
 
 
+def expand_records(records: str | list[str]) -> list[str]:
+    """The sorted, deduplicated files a ``records`` value matches. The one shared expansion —
+    config validation freezes with it and ``load_tasks`` re-runs it — so the two can't drift:
+    a stable file order is what keeps task indices identical across env-server pool workers."""
+    patterns = [records] if isinstance(records, str) else records
+    return sorted(
+        {path for pattern in patterns for path in glob(pattern, recursive=True)}
+    )
+
+
 def iter_records(paths: Iterable[Path]) -> Iterator[dict]:
     """The record dicts of the given JSONL files, in file-then-line order."""
     for path in paths:
@@ -72,11 +83,23 @@ def node_snapshots(trace: Trace) -> dict[int, str]:
 
 def estimate_tokens(nodes: list[MessageNode]) -> int:
     """Token length of a node path: the recorded token count when the record carries token ids
-    (train rollouts), else a chars/4 estimate (eval-relay rollouts record no tokens)."""
+    (train rollouts), else a chars/4 estimate over the message text (eval-relay rollouts record
+    no tokens)."""
     recorded = sum(len(node.token_ids) for node in nodes)
     if recorded:
         return recorded
-    return sum(len(node.message.model_dump_json()) for node in nodes) // 4
+    chars = 0
+    for node in nodes:
+        message = node.message
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            chars += len(content)
+        elif content:
+            chars += sum(len(getattr(part, "text", None) or "") for part in content)
+        chars += len(getattr(message, "reasoning_content", None) or "")
+        for call in getattr(message, "tool_calls", None) or []:
+            chars += len(call.name) + len(call.arguments)
+    return chars // 4
 
 
 def compaction_seeds(trace: Trace) -> list[Seed]:

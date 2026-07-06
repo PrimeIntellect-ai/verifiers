@@ -20,7 +20,6 @@ from enum import StrEnum
 
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import RolloutContext
-from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
@@ -144,7 +143,7 @@ class Rollout:
         )  # ref set first → always tearable-down; named after the rollout for traceability
         runtime = self.runtime
         ctx = self.ctx
-        stops = discover_decorated(self.taskset, "stop")
+        stops = self.taskset.stops()
         logger.info(
             "rollout start: id=%s task=%s harness=%s runtime=%s",
             trace.id,
