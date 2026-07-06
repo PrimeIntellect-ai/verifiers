@@ -262,7 +262,7 @@ def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTask:
             system_prompt = _text(m.get("content"))
         elif m.get("role") == "user":
             user_texts.append(_text(m.get("content")))
-    extra = {"answer": answer} if answer else {}
+    extra = {"answer": answer} if answer is not None else {}
     return WireTask(
         idx=task_idx,
         prompt="\n\n".join(user_texts),
