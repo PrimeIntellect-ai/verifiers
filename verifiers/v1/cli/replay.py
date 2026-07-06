@@ -95,6 +95,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     states = [TaskProgress(idx=t.task.idx, name=t.task.name) for t in work]
+    lock = asyncio.Lock()
 
     async def rescore(trace: Trace, st: TaskProgress) -> None:
         async with sem or contextlib.nullcontext():
@@ -123,6 +124,8 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
             logger.info(
                 "idx=%s %s (%.1fs)", trace.task.idx, st.state, st.end - st.start
             )
+        # Persist as each trace finishes (like eval), so an interrupted replay keeps its progress.
+        await append_trace(out, trace, lock)
 
     display = (
         replay_dashboard(states, config.name, str(source), start)
@@ -131,9 +134,6 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     )
     async with display:
         await asyncio.gather(*(rescore(t, s) for t, s in zip(work, states)))
-        lock = asyncio.Lock()
-        for trace in work:
-            await append_trace(out, trace, lock)
     logger.info("replay: done in %.1fs -> %s", time.time() - start, out)
     return work
 
