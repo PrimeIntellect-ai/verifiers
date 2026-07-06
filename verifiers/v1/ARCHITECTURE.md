@@ -238,8 +238,9 @@ from a native v1 one; both are an `EnvClient` away.
 ## Plugins & ids
 
 Tasksets, harnesses, and judges are packages resolved by `id` (`ids.py`, `loaders.py`). An
-`ID` is `name` (a local, importable package), `org/name`, or `org/name@version`;
-`ensure_installed` installs the latter two from the Environments Hub on demand. A plugin module
+`ID` is `name` (a local, importable package), `org/name`, or `org/name@version`; `env_module`
+derives the package name and v1 imports it — the package must already be installed (the
+platform installs environments; v1 never installs on demand). A plugin module
 exports its `Taskset` / `Harness` / `Judge` subclass via `__all__`; `load_taskset` /
 `load_harness` / `load_judge` import the module, find that single subclass, and instantiate it,
 while `narrow_plugin_field` validates a generic config dict into the plugin's concrete config

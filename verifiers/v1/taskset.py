@@ -28,7 +28,7 @@ from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import TasksetError, boundary
 from verifiers.v1.judge import Judge, Judges
 from verifiers.v1.types import ID
-from verifiers.v1.utils.install import env_name
+from verifiers.v1.utils.ids import env_name
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.mcp import Toolset, User
 from verifiers.v1.state import StateT

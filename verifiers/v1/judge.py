@@ -49,7 +49,7 @@ from typing_extensions import TypeVar
 from verifiers.v1.clients.config import BaseClientConfig, build_async_openai
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.scoring import parse_judge_choice
-from verifiers.v1.utils.install import env_name
+from verifiers.v1.utils.ids import env_name
 from verifiers.v1.types import ID, Messages, SamplingConfig, StrictBaseModel, Usage
 
 if TYPE_CHECKING:

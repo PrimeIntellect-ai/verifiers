@@ -312,4 +312,4 @@ def _validate_id(plugin_id: str) -> str:
 ID = Annotated[str, AfterValidator(_validate_id)]
 """A plugin id — a taskset / harness / judge / environment: ``name``, ``org/name``, or
 ``org/name@version``. A plain validated ``str``; derive its package/module name with
-`env_name` / `env_module` (`verifiers.v1.utils.install`)."""
+`env_name` / `env_module` (`verifiers.v1.utils.ids`)."""

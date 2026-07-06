@@ -25,7 +25,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import Judge, JudgeConfig, judge_config_cls
-from verifiers.v1.utils.install import ensure_installed
+from verifiers.v1.utils.ids import env_module
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 
@@ -53,9 +53,9 @@ def narrow_plugin_field(
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     """Import a plugin by id. A built-in id resolves to its namespaced module under the
     `group` package (`verifiers.v1.harnesses` / `verifiers.v1.tasksets`); a hub
-    `org/name[@version]` id is installed on demand; any other is a local package
-    (hyphens → underscores)."""
-    module = ensure_installed(plugin_id)
+    `org/name[@version]` id resolves to its installed package; any other is a local package
+    (hyphens → underscores). The package must already be importable — v1 does not install."""
+    module = env_module(plugin_id)
     namespaced = f"{group}.{module}"
     target = namespaced if importlib.util.find_spec(namespaced) else module
     try:
@@ -64,8 +64,8 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
         raise ModuleNotFoundError(
             f"{kind} {plugin_id!r} not found (tried to import {target!r}). A {kind} is a "
             f"package exporting its {kind.capitalize()} subclass via `__all__` — the built-in "
-            f"ones ship with verifiers in the `{group}` package, installed from "
-            f"the Environments Hub (`org/name`), or authored yourself."
+            f"ones ship with verifiers in the `{group}` package, a hub env "
+            f"(`org/name`) installed by the platform, or authored yourself."
         ) from e
 
 
