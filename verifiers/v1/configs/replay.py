@@ -28,11 +28,13 @@ class ReplayConfig(BaseConfig):
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     """The taskset, selected by `--taskset.id` (narrowed to its config type). Its
     `taskset.judges` are what replay re-runs; override them via `@ file.toml` / dotted flags."""
-    num_tasks: int | None = Field(
-        None,
-        validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),
+    num_traces: int | None = Field(
+        None, validation_alias=AliasChoices("num_traces", "n")
     )
     """How many saved traces to re-score (None = all)."""
+    num_rollouts: int = Field(1, validation_alias=AliasChoices("num_rollouts", "r"))
+    """Re-score each selected trace this many times — e.g. to measure judge variance across
+    repeated gradings of the same trace."""
     max_concurrent: int | None = Field(
         128, validation_alias=AliasChoices("max_concurrent", "c")
     )
