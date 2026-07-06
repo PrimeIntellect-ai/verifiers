@@ -36,12 +36,12 @@ prime env pull owner/name -t ./tmp-env
 
 ## Prefer v1 environments over legacy ones.
 
-When you find environments, look through the code to see if they import `verifiers.v1`. If we do, always prefer these ones.
+When you find environments, look through the code to see if they import `verifiers.v1`. If they do, always prefer these.
 
 Inspect the taskset to learn about its task and config.
 - `load_tasks()` loads or creates the dataset
 - A `vf.TasksetConfig` denotes the user-configurable settings. As the creator of this environment has put them deliberately, pay attention to those.
-- Some environments come with custom harnesses, which must be paid attention to; while others only work with some harnesses.
+- Some environments come with custom harnesses, which require attention, while others only work with some harnesses.
 - Some environments only work in some runtimes.
 
 For each of the candidates, look into these categories to get a more complete picture.
@@ -50,7 +50,7 @@ For each of the candidates, look into these categories to get a more complete pi
 
 Qualified Hub IDs install on demand.
 
-When the user is ready to test an environment, run a small scale evaluation first to valide that the package runs without problems:
+When the user is ready to test an environment, run a small scale evaluation first to validate that the package runs without problems:
 
 ```bash
 prime eval run owner/name -m deepseek/deepseek-v4-flash -n 3 -r 1

@@ -1,5 +1,5 @@
 ### Installation
-We recommend to install the Prime CLI to interact with the environments.
+We recommend installing the Prime CLI to interact with the environments.
 
 ```bash
 # install uv
@@ -9,7 +9,7 @@ uv tool install prime
 ```
 
 ### Skills
-To equip your agent with the necessary knowledge, we highly recommend to install the skills of this repository:
+To equip your agent with the necessary knowledge, we highly recommend installing the skills of this repository:
 ```bash
 prime lab setup
 ```

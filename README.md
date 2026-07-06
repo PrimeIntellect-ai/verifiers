@@ -10,13 +10,13 @@
 
 # Overview
 
-Verifiers is our library for creating environments to train and evaluate LLMs.
+verifiers is our library for creating environments to train and evaluate LLMs.
 
-Verifiers is tightly integrated with the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), as well as our training framework [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) and our [Hosted Training](https://app.primeintellect.ai/dashboard/training) platform.
+verifiers is tightly integrated with the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), as well as our training framework [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) and our [Hosted Training](https://app.primeintellect.ai/dashboard/training) platform.
 
 ## Installation
 
-We recommend to install the [Prime CLI](https://github.com/PrimeIntellect-ai/prime) to interact with the environments.
+We recommend installing the [Prime CLI](https://github.com/PrimeIntellect-ai/prime) to interact with the environments.
 
 ```bash
 # install uv

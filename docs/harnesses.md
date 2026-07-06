@@ -1,6 +1,6 @@
 # Harnesses
 
-Verifiers supports a range of harnesses out of the box, such as Claude Code, Codex or a minimal, default harness without any built-in tools. However, you may want to build a custom one or extend the selection of third‑party harnesses.
+verifiers supports a range of harnesses out of the box, such as Claude Code, Codex or a minimal, default harness without any built-in tools. However, you may want to build a custom one or extend the selection of third‑party harnesses.
 
 ## A minimal harness implementation
 

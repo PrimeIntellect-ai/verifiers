@@ -42,3 +42,14 @@ The output from evaluations are written into `outputs/<taskset>--<model>--<harne
 ## Resuming evaluations
 
 `--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `results.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone.
+
+## Disabling tools
+
+Almost every harness comes with a `disabled_tools` list, which can be used to disable one or multiple tools:
+
+```toml
+[harness]
+disabled_tools = ["shell_tool"]
+```
+
+The names of these tools are set by the respective harness. Consult the relevant documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.

@@ -1,6 +1,6 @@
 ---
 name: evaluate-environments
-description: Run and evaluate Verifier environments. Set up the necessary config files and observe the runs and their results.
+description: Run and evaluate verifiers environments. Set up the necessary config files and observe the runs and their results.
 ---
 
 # Evaluate Environments
@@ -34,13 +34,13 @@ prime eval validate <MY_ENV> --runtime.type subprocess
 3. Do a small run to see whether it works correctly:
 
 ```bash
-prime eval run <MY_ENV> -mdeepseek/deepseek-v4-flash -n 3 -r 1
+prime eval run <MY_ENV> -m deepseek/deepseek-v4-flash -n 3 -r 1
 ```
 
 4. Inspect successful, zero-reward, and errored traces.
 5. Scale only after task loading, harness capability, runtime lifecycle, and scoring are correct.
 
-When the user requests a full run, do not restrict the number of tasks. Ask for the appropriate harness to use (if not specified or set by a )
+When the user requests a full run, do not restrict the number of tasks. Ask for the appropriate harness to use (if not specified)
 
 ## IDs and plugin resolution
 
@@ -56,6 +56,16 @@ prime eval run owner/name --harness.id codex --harness.runtime.type prime
 
 When specifying environments, always include the owner to resolve it correctly.
 
+## Disabling tools
+
+Almost every harness comes with a `disabled_tools` list, which can be used to disable one or multiple tools:
+
+```toml
+[harness]
+disabled_tools = ["shell_tool"]
+```
+
+The names of these tools are set by the respective harness. Research the relevant first party documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.
 
 ## Typed environment overrides
 

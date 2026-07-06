@@ -1,12 +1,12 @@
 # Architecture
 
-Verifiers is built out of the following parts: 
+verifiers is built out of the following parts: 
 
-The overall evaluation or prime-rl **orchestrator**, which creates several worker processes. These **workers** load the several other rollout-related objects, such as the harness or taskset object, as well as an **interception server**. The worker also creates the **rollout runtime**, where the actual rollout happens.
+The overall evaluation or prime-rl **orchestrator**, which creates several worker processes. These **workers** load several other rollout-related objects, such as the harness or taskset object, as well as an **interception server**. The worker also creates the **rollout runtime**, where the actual rollout happens.
 
-The orchestrator and workers are managed by Verifiers and prime-rl themselves and thus offer little knobs to be configurable.
+The orchestrator and workers are managed by verifiers and prime-rl themselves and thus offer few configurable knobs.
 
-The **rollout** is the actual environment, i.e., the combination of the taskset, the harness and, optionally, the registered tools. Each of the rollouts is independent from the others. Verifiers has three different runtimes which you can use for most environments:
+The **rollout** is the actual environment, i.e., the combination of the taskset, the harness and, optionally, the registered tools. Each of the rollouts is independent from the others. verifiers has three different runtimes which you can use for most environments:
 - The `subprocess` runtime runs the rollouts in Python subprocesses locally. Thus, it is meant for debugging purposes, as there might be side effects during runtime, such as one subprocess altering the config files of the harness, which then affects the other subprocesses.
 - The `docker` runtime runs the rollouts in docker containers on your local machine.
 - Sandbox runtimes, such as `prime` or `modal`, are meant for production, especially for training or higher concurrency evaluation. These runtimes run remotely.

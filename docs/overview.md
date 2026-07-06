@@ -1,12 +1,12 @@
 # Overview
 
-Verifiers is a framework for defining tasks, running agents and harnesses, scoring them on set tasks, and using those for evaluations and reinforcement learning.
+verifiers is a framework for defining tasks, running agents and harnesses, scoring them on set tasks, and using those for evaluations and reinforcement learning.
 
 The following concepts are important when creating or running environments, be it for evals or training:
 
 ## Environment Hub
 
-The [Environment Hub] is Prime Intellects collection of (user-created) environments which are installable and ready to use with Verifiers.
+The [Environment Hub] is Prime Intellect's collection of (user-created) environments which are installable and ready to use with verifiers.
 
 ## Environment
 
@@ -26,13 +26,13 @@ A set of tools defined by the environment that are installed as MCP servers into
 
 ## Trace
 
-A trace records the message graph, rewards, metrics, errors, etc. When using Verifiers for training with [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl), it stores additional information such as tokens and logprobs, built incrementally using [renderers](https://github.com/PrimeIntellect-ai/renderers)).
+A trace records the message graph, rewards, metrics, errors, etc. When using verifiers for training with [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl), it stores additional information such as tokens and logprobs, built incrementally using [renderers](https://github.com/PrimeIntellect-ai/renderers).
 
 ## Documentation
 
 - [Getting started](getting_started.md) - How to install the CLI and the needed skills.
-- [Architecture](architecture.md) — An overview about the architecture and runtime of Verifiers
+- [Architecture](architecture.md) — An overview about the architecture and runtime of verifiers
 - [Environments](environments.md) — How to create environments
-  - [Harbor Environments](harbor.md) — How to Harbor-based environments
+  - [Harbor Environments](harbor.md) — How to create Harbor-based environments
 - [Evaluation](evaluations.md) — How to run said environments
 - [Harnesses](harnesses.md) — How to build custom harnesses

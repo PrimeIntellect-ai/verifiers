@@ -7,7 +7,7 @@ description: Create or migrate native verifiers.v1 taskset and harness packages.
 
 ## Goal
 
-Create native V1 environments that are installable and runnable with Verifiers.
+Create native V1 environments that are installable and runnable with verifiers.
 
 To start, ALWAYS use the CLI to create a package with the correct files:
 
@@ -23,11 +23,17 @@ prime env init my-task-v1 -U      # user simulator
 prime env init my-agent-v1 -H     # custom reusable harness
 ```
 
-Often times, the user does not want nor need a custom reusable harness, as Verifiers offer a lot of built-in ones.
+Often, the user does not want nor need a custom reusable harness, as verifiers offer a lot of built-in ones.
 
 ## Re-use existing abstractions first
 
-For some common tasks, there are existing, pre-built tasksets in the `verifiers.v1.tasksets` folder. These come with batteries included and should always be preferred. The most notable inclusion is the `HarborTaskset`, which allow the creation of Harbor-based tasksets within a few LoC (also see docs/harbor.md).
+For some common tasks, there are existing, pre-built tasksets in the `verifiers.v1.tasksets` folder. These come with batteries included and should always be preferred. The most notable inclusion is the `HarborTaskset`, which allows the creation of Harbor-based tasksets within a few LoC (also see docs/harbor.md).
+
+## Custom task images
+
+When a task needs a custom container image (e.g. a Harbor task whose `task.toml` does not have `docker_image`), you can build and publish it with `prime images push` from the Prime CLI ([Documentation](https://docs.primeintellect.ai/sandboxes/images)). This builds in the cloud — no local Docker needed — and prints the full image reference to use as the task's `image` field.
+
+Use the naming convention `<env>.x86.<task>:latest` for the image name (e.g. `abc.x86.xyz:latest`), where `<env>` is the taskset name and `<task>` is the individual task.
 
 ## Define the needed values first
 
@@ -177,7 +183,7 @@ The selected harness must support user simulation, which a lot of the built-in, 
 
 ## Custom harnesses
 
-Choose a built-in first (which you can find under `verifiers.v1.harnesses`). Add a custom harness only when desired or not implemented currently.
+Choose a built-in first (which you can find under `verifiers.v1.harnesses`). Add a custom harness only when desired or not currently implemented.
 
 Its `launch()` **must** point every model request at the provided `endpoint` with `secret` (to work with the InterceptionServer); direct provider calls bypass trace capture and thus would break downstream usage.
 
@@ -194,7 +200,7 @@ Return the `vf.ProgramResult` from `runtime.run_program()` or `runtime.run_uv_sc
 
 - Add package import-time dependencies to the environment's own `pyproject.toml`.
 - Never edit the repository root `pyproject.toml` or `uv.lock` for an environment dependency.
-- Read required external credentials at the earliest owning boundary so missing values fail clearly
+- Read required external credentials at the earliest owning boundary so missing values fail clearly.
 - Do not require a user-managed background server unless the contract explicitly uses a remote URL.
 
 ## Migration from v0

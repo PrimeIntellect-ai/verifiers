@@ -19,8 +19,8 @@ This AGENTS guide is intended for end users working in a `prime lab setup` works
 
 Use these rules when shaping public v1 APIs, configs, and environment files.
 
-- Prefer Verifiers-native task, trace, server, harness, and runtime interfaces over repeated path/import/discovery plumbing in user packages.
-- Expose as little knobs in the configs as possible, but as much as needed.
+- Prefer verifiers-native task, trace, server, harness, and runtime interfaces over repeated path/import/discovery plumbing in user packages.
+- Expose as few knobs in the configs as possible, but as many as needed.
 - Use strict Pydantic models for structured config, tasks, messages, and state.
 - A basic taskset should fit in a few dozen idiomatic lines: typed task/config classes, `load_tasks()`, and decorated scoring.
 - Do not override `Taskset.__init__`, `Harness.__init__`, or `User.__init__`. Use `setup()` instead.

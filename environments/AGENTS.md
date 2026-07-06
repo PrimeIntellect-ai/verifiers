@@ -106,7 +106,7 @@ class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
 
 ## Using Judges
 
-If your reward is semantic, use a LLM judge.
+If your reward is semantic, use an LLM judge.
 
 ```python
 import verifiers.v1 as vf

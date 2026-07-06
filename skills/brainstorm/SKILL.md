@@ -18,7 +18,7 @@ Run an interactive idea session with the user to turn their idea into a concrete
 
 ## Discovery workflow
 
-Find out what the user wants:
+1. Find out what the user wants:
   - Is it running existing evaluations or training with common environments? If so, use the environments hub to see whether those envs already exist.
   - Is it optimizing an existing workflow? In this case, prompt optimization with GEPA is the right tool.
   - Else: For training and evaluations, building an environment together is the right call.
