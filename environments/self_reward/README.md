@@ -43,10 +43,10 @@ Notes:
 | --- | ---- | ------- | ----------- |
 | `dataset_name` | str | `"PrimeIntellect/Hendrycks-Math"` | HF dataset name or path containing `question`/`answer` |
 | `judge_model` | str | `"gpt-4.1-mini"` | Judge model name (OpenAI-compatible) |
-| `base_url` | str | `"http://0.0.0.0:8000/v1"` | Judge API base URL |
-| `api_key_var` | str | `"JUDGE_API_KEY"` | Env var for judge API key (optional, defaults to "EMPTY" if not set) |
+| `base_url` | str | `"https://api.openai.com/v1"` | Judge API base URL |
+| `api_key_var` | str | `"OPENAI_API_KEY"` | Env var for judge API key (optional, defaults to "EMPTY" if not set) |
 
 ### Metrics
 | Metric | Meaning |
 | ------ | ------- |
-| `reward` | Judge-produced score, normalized to 0–1 |
+| `judge_score` | Judge-produced score, normalized to 0–1 |

@@ -1,4 +1,5 @@
 import os
+import re
 
 from datasets import load_dataset
 from openai import AsyncOpenAI
@@ -11,8 +12,8 @@ def load_environment(
     dataset_subset: str = "default",
     dataset_split: str = "train",
     judge_model: str = "gpt-4.1-mini",
-    base_url: str = "http://0.0.0.0:8000/v1",
-    api_key_var: str = "JUDGE_API_KEY",
+    base_url: str = "https://api.openai.com/v1",
+    api_key_var: str = "OPENAI_API_KEY",
 ):
     def build_dataset():
         return load_dataset(dataset_name, dataset_subset, split=dataset_split)
@@ -26,6 +27,16 @@ def load_environment(
         judge_model=judge_model,
         judge_prompt=judge_prompt,
     )
+
+    async def judge_score(judge, prompt, completion, answer, state) -> float:
+        judge_response = await judge(prompt, completion, answer, state)
+        score = re.search(r"\b(?:0(?:\.\d+)?|1(?:\.0+)?)\b", judge_response)
+        if not score:
+            return 0.0
+        return max(0.0, min(1.0, float(score.group(0))))
+
+    rubric.add_reward_func(judge_score, weight=1.0)
+
     vf_env = vf.SingleTurnEnv(
         dataset=build_dataset,
         system_prompt="You are a helpful assistant.",
