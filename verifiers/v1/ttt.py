@@ -120,6 +120,11 @@ class QAConfig(BaseConfig):
     also_train_rollout: bool = False
     """Also train on the raw abandoned branch, in the same update. Default off: the plan's
     Q&A arm trains on the Q&A dataset *instead of* the rollout itself."""
+    recycle_to_policy: bool = False
+    """Recycle the Q&A pairs into the *policy's* main weights during RL: the trainer side
+    (prime-rl) renders each pair and routes it to the ce loss component — the "one SFT step
+    after the RL update" from the plan, riding the same training batch. Consumed by the
+    prime-rl orchestrator; the rollout side only records the pairs."""
 
 
 class TTTRolloutHook:
