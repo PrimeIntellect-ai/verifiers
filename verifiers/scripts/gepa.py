@@ -1,11 +1,13 @@
-"""Typed CLI for V0 GEPA prompt optimization."""
+"""Typed CLI for GEPA prompt optimization."""
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 import json
 import logging
 import os
 from pathlib import Path
 import sys
+import tomllib
 from typing import Any, cast
 
 from gepa.api import optimize
@@ -13,15 +15,18 @@ from pydantic_config import cli
 
 import verifiers as vf
 from verifiers import setup_logging
-from verifiers.clients import resolve_client
+from verifiers.clients import resolve_client as resolve_v0_client
 from verifiers.envs.env_group import ENV_GROUP_INFO_KEY
 from verifiers.gepa.adapter import VerifiersGEPAAdapter, make_reflection_lm
-from verifiers.gepa.config import GEPAConfig, GEPAEnvConfig
+from verifiers.gepa.config import GEPAConfig, GEPAEnvConfig, GEPAV1Config
 from verifiers.gepa.display import GEPADisplay
 from verifiers.gepa.gepa_utils import save_gepa_results
+from verifiers.gepa.v1_runner import run_gepa_v1_optimization
 from verifiers.types import ClientConfig, EndpointConfig
 from verifiers.utils.eval_utils import load_endpoints
 from verifiers.utils.path_utils import get_gepa_results_path
+from verifiers.v1.cli.resolve import extract_id, narrow_config
+from verifiers.v1.loaders import taskset_class
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +46,66 @@ def _gepa_extra_headers_from_group(
 
 DEFAULT_API_KEY_VAR = "PRIME_API_KEY"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
-USAGE = "usage: vf-gepa <env-id> [options] | vf-gepa @ config.toml"
+USAGE = (
+    "usage: vf-gepa <env-id> [options] | vf-gepa --taskset.id <v1-id> [options] | "
+    "vf-gepa @ config.toml"
+)
 
 
-def main(argv: list[str] | None = None) -> None:
-    argv = list(sys.argv[1:]) if argv is None else list(argv)
+@dataclass(frozen=True)
+class ResolvedGEPAClients:
+    model: str
+    reflection_model: str
+    client_config: ClientConfig
+    reflection_client_config: ClientConfig
+
+
+def _is_v1_taskset_id(env_id: str) -> bool:
+    try:
+        taskset_class(env_id)
+    except (AttributeError, ModuleNotFoundError, TypeError):
+        return False
+    return True
+
+
+def _rewrite_v1_id_flags(argv: list[str]) -> list[str]:
+    rewritten = list(argv)
+    for idx, arg in enumerate(rewritten):
+        if (
+            arg == "--id"
+            and idx + 1 < len(rewritten)
+            and _is_v1_taskset_id(rewritten[idx + 1])
+        ):
+            rewritten[idx] = "--taskset.id"
+        elif arg.startswith("--id="):
+            value = arg.split("=", 1)[1]
+            if _is_v1_taskset_id(value):
+                rewritten[idx] = f"--taskset.id={value}"
+    return rewritten
+
+
+def _config_path(argv: list[str]) -> Path | None:
+    for idx, arg in enumerate(argv):
+        if arg == "@" and idx + 1 < len(argv):
+            return Path(argv[idx + 1])
+        if arg.startswith("@") and len(arg) > 1:
+            return Path(arg[1:])
+    return None
+
+
+def _config_file_uses_v1(argv: list[str]) -> bool:
+    path = _config_path(argv)
+    if path is None or not path.is_file():
+        return False
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    return isinstance(raw.get("taskset"), dict)
+
+
+def _uses_v1_config(argv: list[str]) -> bool:
+    return bool(extract_id(argv, "taskset")) or _config_file_uses_v1(argv)
+
+
+def _rewrite_positional_target(argv: list[str]) -> list[str]:
     target_idx = None
     bool_flags = {
         "--verbose",
@@ -65,23 +125,26 @@ def main(argv: list[str] | None = None) -> None:
         if idx == 0 or (followed_by_flag and (follows_value or follows_bool)):
             target_idx = idx
             break
-    if target_idx is not None:
-        target = argv.pop(target_idx)
-        argv = (
-            ["@", target] if Path(target).suffix == ".toml" else ["--id", target]
-        ) + argv
-    if not argv or any(arg in ("-h", "--help") for arg in argv):
-        print(USAGE)
-        cli(GEPAConfig, args=argv or ["--help"])
-        return
+    if target_idx is None:
+        return _rewrite_v1_id_flags(argv)
 
-    config = cli(GEPAConfig, args=argv)
-    setup_logging("DEBUG" if config.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
-    env_configs = config.environments
-    env_id = config.environment_label
+    target = argv.pop(target_idx)
+    if Path(target).suffix == ".toml":
+        return ["@", target, *argv]
+    if _is_v1_taskset_id(target):
+        return ["--taskset.id", target, *argv]
+    return ["--id", target, *argv]
 
+
+def _resolve_gepa_clients(
+    config: GEPAConfig | GEPAV1Config,
+    *,
+    default_api_key_var: str,
+    default_api_base_url: str,
+    default_extra_headers: Mapping[str, str] | None = None,
+) -> ResolvedGEPAClients:
     endpoints = load_endpoints(str(config.endpoints_path))
-    main_extra_headers: dict[str, str] = {}
+    main_extra_headers = dict(default_extra_headers or {})
     if config.model in endpoints:
         endpoint_group = endpoints[config.model]
         endpoint = endpoint_group[0]
@@ -112,8 +175,8 @@ def main(argv: list[str] | None = None) -> None:
             )
         model = endpoint.model
     else:
-        api_key_var = config.api_key_var or DEFAULT_API_KEY_VAR
-        api_base_url = config.api_base_url or DEFAULT_API_BASE_URL
+        api_key_var = config.api_key_var or default_api_key_var
+        api_base_url = config.api_base_url or default_api_base_url
         model = config.model
 
     reflection_extra_headers = main_extra_headers
@@ -139,13 +202,7 @@ def main(argv: list[str] | None = None) -> None:
         reflection_api_key_var = api_key_var
         reflection_api_base_url = api_base_url
 
-    run_dir = config.run_dir
-    if run_dir is None and config.save_results:
-        run_dir = get_gepa_results_path(env_id, model, str(config.env_dir_path))
-
-    run_gepa_optimization(
-        env_id=env_id,
-        env_configs=env_configs,
+    return ResolvedGEPAClients(
         model=model,
         reflection_model=reflection_model,
         client_config=ClientConfig(
@@ -158,6 +215,110 @@ def main(argv: list[str] | None = None) -> None:
             api_base_url=reflection_api_base_url,
             extra_headers=reflection_extra_headers,
         ),
+    )
+
+
+def _run_v1_or_legacy_gepa(config: GEPAV1Config, resolved: ResolvedGEPAClients) -> None:
+    run_dir = config.run_dir
+    if run_dir is None and config.save_results:
+        run_dir = get_gepa_results_path(
+            config.environment_label, resolved.model, str(config.env_dir_path)
+        )
+
+    if config.is_legacy:
+        run_gepa_optimization(
+            env_id=config.env_id,
+            env_configs=[
+                GEPAEnvConfig(
+                    id=config.env_id,
+                    args=config.args,
+                    extra_env_kwargs=config.extra_env_kwargs,
+                )
+            ],
+            model=resolved.model,
+            reflection_model=resolved.reflection_model,
+            client_config=resolved.client_config,
+            reflection_client_config=resolved.reflection_client_config,
+            max_metric_calls=config.gepa.max_calls,
+            minibatch_size=config.gepa.minibatch_size,
+            perfect_score=config.gepa.perfect_score,
+            state_columns=config.gepa.state_columns,
+            num_train=config.gepa.num_train,
+            num_val=config.gepa.num_val,
+            max_concurrent=config.gepa.max_concurrent,
+            sampling_args=config.sampling.model_dump(exclude_none=True),
+            seed=config.gepa.seed,
+            run_dir=run_dir,
+            save_results=config.save_results,
+            tui_mode=config.tui,
+        )
+        return
+
+    client_config = config.client.model_copy(
+        update={
+            "api_key_var": resolved.client_config.api_key_var,
+            "base_url": resolved.client_config.api_base_url,
+            "headers": resolved.client_config.extra_headers,
+        }
+    )
+    run_gepa_v1_optimization(
+        config=config,
+        model=resolved.model,
+        reflection_model=resolved.reflection_model,
+        client_config=client_config,
+        reflection_client_config=resolved.reflection_client_config,
+        run_dir=run_dir,
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    argv = _rewrite_positional_target(
+        list(sys.argv[1:]) if argv is None else list(argv)
+    )
+    if not argv or any(arg in ("-h", "--help") for arg in argv):
+        print(USAGE)
+        config_cls = (
+            narrow_config(GEPAV1Config, argv) if _uses_v1_config(argv) else GEPAConfig
+        )
+        cli(config_cls, args=argv or ["--help"])
+        return
+
+    if _uses_v1_config(argv):
+        config = cast(GEPAV1Config, cli(narrow_config(GEPAV1Config, argv), args=argv))
+        setup_logging("DEBUG" if config.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
+        resolved = _resolve_gepa_clients(
+            config,
+            default_api_key_var=config.client.api_key_var,
+            default_api_base_url=config.client.base_url,
+            default_extra_headers=config.client.headers,
+        )
+        _run_v1_or_legacy_gepa(config, resolved)
+        return
+
+    config = cast(GEPAConfig, cli(GEPAConfig, args=argv))
+    setup_logging("DEBUG" if config.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
+    env_configs = config.environments
+    env_id = config.environment_label
+
+    resolved = _resolve_gepa_clients(
+        config,
+        default_api_key_var=DEFAULT_API_KEY_VAR,
+        default_api_base_url=DEFAULT_API_BASE_URL,
+    )
+
+    run_dir = config.run_dir
+    if run_dir is None and config.save_results:
+        run_dir = get_gepa_results_path(
+            env_id, resolved.model, str(config.env_dir_path)
+        )
+
+    run_gepa_optimization(
+        env_id=env_id,
+        env_configs=env_configs,
+        model=resolved.model,
+        reflection_model=resolved.reflection_model,
+        client_config=resolved.client_config,
+        reflection_client_config=resolved.reflection_client_config,
         max_metric_calls=config.gepa.max_calls,
         minibatch_size=config.gepa.minibatch_size,
         perfect_score=config.gepa.perfect_score,
@@ -394,7 +555,7 @@ def run_gepa_optimization(
         display.num_val = len(valset)
 
         # Set up client
-        client = resolve_client(client_config)
+        client = resolve_v0_client(client_config)
 
         logger.debug(f"Results will be saved to: {run_dir}")
 

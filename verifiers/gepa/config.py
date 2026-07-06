@@ -3,7 +3,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from verifiers.v1.clients import ClientConfig as V1ClientConfig
+from verifiers.v1.clients import EvalClientConfig
+from verifiers.v1.env import EnvConfig
 from verifiers.v1.types import EnvId
+from verifiers.v1.types import SamplingConfig
 
 
 class GEPAEnvConfig(BaseModel):
@@ -72,3 +76,25 @@ class GEPAConfig(BaseModel):
         if self.id:
             return self.id
         return "+".join(env.id for env in self.env)
+
+
+class GEPAV1Config(EnvConfig):
+    """GEPA config for native v1 taskset/harness environments."""
+
+    model: str = "openai/gpt-4.1-mini"
+    reflection_model: str | None = None
+    endpoints_path: Path = Path("./configs/endpoints.toml")
+    api_key_var: str | None = None
+    api_base_url: str | None = None
+    env_dir_path: Path = Path("./environments")
+    client: V1ClientConfig = EvalClientConfig()
+    gepa: GEPAOptimizationConfig = Field(default_factory=GEPAOptimizationConfig)
+    sampling: SamplingConfig = SamplingConfig()
+    verbose: bool = False
+    run_dir: Path | None = None
+    save_results: bool = True
+    tui: bool = False
+
+    @property
+    def environment_label(self) -> str:
+        return self.env_id

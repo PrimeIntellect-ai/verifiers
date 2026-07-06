@@ -127,6 +127,11 @@ prime gepa run wiki-search --model google/gemini-3-flash-preview
 
 This will optimize the system prompt for the `wiki-search` environment using the specified model for both evaluation rollouts and reflection. Results are saved to `environments/wiki-search/outputs/gepa/`.
 
+Native v1 tasksets use the same taskset/harness shape as v1 eval:
+```bash
+prime gepa run wiki-search-v1 --model google/gemini-3-flash-preview
+```
+
 Key options:
 - `--model` / `-m`: Model for evaluation rollouts
 - `--reflection-model` / `-M`: Teacher model for prompt reflection (defaults to `--model`)
@@ -137,7 +142,7 @@ Key options:
 - `--perfect-score`: Maximum score for a rollout in your environment (if applicable); minibatches achieving this score are skipped during reflection (useful if your environment has a known max score)
 - `--state-columns`: Additional state columns to copy into the reflection dataset. By default, `query`, `completion`, `expected_answer`, `reward`, and `error` are included. Use this to add environment-specific state fields (e.g., `--state-columns tool_calls reasoning_trace`)
 
-In TOML configs, set GEPA parameters such as `max_calls`, `num_train`, `num_val`, `minibatch_size`, and `max_concurrent` under `[gepa]`. Put generation parameters such as `max_tokens` and `temperature` under `[sampling]`; the CLI passes that table through as `sampling_args`. Use `[[env]]` for one or more environments; GEPA samples train and validation examples uniformly by environment. A single `[env]` table is still accepted for older configs.
+In TOML configs, set GEPA parameters such as `max_calls`, `num_train`, `num_val`, `minibatch_size`, and `max_concurrent` under `[gepa]`. Put generation parameters such as `max_tokens` and `temperature` under `[sampling]`. For native v1, use `[taskset]` and optional `[harness]` tables just like eval configs. Legacy v0 configs use `[[env]]` for one or more environments; GEPA samples train and validation examples uniformly by environment. A single `[env]` table is still accepted for older configs.
 
 ### Output
 
