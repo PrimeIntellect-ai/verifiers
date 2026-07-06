@@ -51,8 +51,8 @@ verifiers/
 │   ├── rl/             # Training infrastructure
 │   │   ├── inference/  # vLLM server utilities
 │   │   └── trainer/    # Trainer implementation
-│   ├── cli/            # V1 CLIs and the host command registry
-│   ├── scripts/        # Legacy V0 eval and GEPA implementations
+│   ├── cli/            # Prime-facing CLI modules and plugin exports
+│   ├── scripts/        # Compatibility wrappers around verifiers/cli commands
 │   └── utils/          # Utilities
 ├── environments/       # Installable environment modules
 ├── configs/            # Example training configurations
@@ -60,27 +60,35 @@ verifiers/
 └── docs/               # Documentation
 ```
 
-## Host CLI Export
+## Prime CLI Plugin Export
 
-Verifiers exports the modules for commands that external hosts such as `prime` may delegate to.
+Verifiers exports a plugin consumed by `prime` so command behavior is sourced from verifiers modules.
 
 Entry point:
 
 ```python
-from verifiers.cli import CLI_MODULES
+from verifiers.cli.plugins.prime import get_plugin
 
-eval_module = CLI_MODULES["eval"]
+plugin = get_plugin()
 ```
 
-The registry contains the native V1 `eval`, `init`, `validate`, and `serve` modules plus the
-legacy GEPA module. Interpreter selection, process construction, path handling, and product
-workflows such as install/build belong to the host.
+The plugin exposes:
+
+- `api_version` (current: `1`)
+- command modules:
+  - `eval_module` (`verifiers.cli.commands.eval`)
+  - `gepa_module` (`verifiers.cli.commands.gepa`)
+  - `install_module` (`verifiers.cli.commands.install`)
+  - `init_module` (`verifiers.cli.commands.init`)
+  - `setup_module` (`verifiers.cli.commands.setup`)
+  - `build_module` (`verifiers.cli.commands.build`)
+- `build_module_command(module_name, args)` to construct subprocess invocation for a command module
 
 Contributor guidance:
 
-- Implement native commands under `verifiers/v1/cli/`.
-- Add host-runnable commands to `CLI_MODULES` in `verifiers/cli/__init__.py`.
-- Keep Prime product behavior out of Verifiers command modules.
+- Add new prime-facing command logic under `verifiers/cli/commands/`.
+- Export new command modules through `PrimeCLIPlugin` in `verifiers/cli/plugins/prime.py`.
+- Keep `verifiers/scripts/*` as thin compatibility wrappers that call into `verifiers/cli`.
 
 ## Running Tests
 
@@ -201,7 +209,7 @@ the current golden path.
 ### Validation By Change Type
 
 - Core runtime or shared config parsing: run the focused unit tests plus `uv run pre-commit run --all-files`.
-- Example environment behavior: run the focused tests and a real `prime eval` smoke when credentials and endpoint access are available.
+- Example environment behavior: run the focused tests and a real `prime eval run` smoke when credentials and endpoint access are available.
 - Environment packaging: exercise `tests/test_envs.py` for the changed environment so a fresh venv installs the environment package and its dependencies.
 - Docs or generated agent guidance: run `uv run python scripts/sync.py` and include the regenerated files.
 - Release prep: verify the version source, release notes commit range, `uv build`, and final worktree status.
@@ -245,12 +253,11 @@ uv run pytest tests/test_file.py::test_name -vvs --pdb
 ### Creating a New Environment Module
 
 ```bash
-# Initialize a v1 taskset package
+# Initialize a v0 environment stub
 prime env init my-environment
 
-# Install and test your environment
-prime env install my-environment
-prime eval my-environment -m openai/gpt-4.1-mini -n 5
+# Test your environment
+prime eval run my-environment -m openai/gpt-4.1-mini -n 5
 ```
 
 ### Environment Module Structure
@@ -306,9 +313,8 @@ uv run ruff format --check verifiers tests  # Verify Python formatting
 uv run ty check verifiers             # Type check (matches CI Ty target)
 
 # Environment tools
-prime env init new-env                       # Create a v1 taskset package
-prime env install new-env                    # Install the local package
-prime eval new-env -m openai/gpt-4.1-mini -n 5  # Test environment
+prime env init new-env                       # Create v0 environment stub
+prime eval run new-env -m openai/gpt-4.1-mini -n 5  # Test environment
 prime eval view                              # Browse evals in the tree browser
 ```
 
@@ -316,12 +322,12 @@ prime eval view                              # Browse evals in the tree browser
 
  | Command | Description |
 |---------|-------------|
-| `prime eval` | Run evaluations on environments |
+| `prime eval run` | Run evaluations on environments |
 | `prime env init` | Initialize new environment from template |
 | `prime env install` | Install environment module |
 | `prime lab setup` | Set up training workspace |
 | `prime eval view` | Terminal UI for browsing evals and rollout details |
-| `prime train` | Launch Hosted Training |
+| `prime rl run` | Launch Hosted Training |
 
 ### Project Guidelines
 

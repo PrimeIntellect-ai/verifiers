@@ -139,7 +139,7 @@ return vf.SingleTurnEnv(
 )
 ```
 
-When running `prime eval`, the evaluation dataset is used by default. If no `eval_dataset` is provided, evaluation falls back to the training dataset.
+When running `prime eval run`, the evaluation dataset is used by default. If no `eval_dataset` is provided, evaluation falls back to the training dataset.
 
 ### Lazy Loading with DatasetBuilder
 
@@ -677,67 +677,68 @@ This bypasses the normal model response loop and immediately terminates the roll
 
 ## Developing Environments
 
-Environments are installable Python projects. `prime lab setup` creates a workspace with
-`environments/` and `configs/` directories:
+Environments are packaged as installable Python projects. We recommend developing environments in a workspace with `environments/` and `configs/` folders. The `prime lab setup` command initializes this structure:
 
 ```bash
 prime lab setup
 ```
 
-The default scaffold uses the v1 taskset/harness API:
+The `prime env init` command initializes a new environment project:
 
 ```bash
-prime env init my-env
-prime env init my-agent --add-tool --add-user --add-harness
+prime env init my-env       # v0 stub
 ```
 
-It creates a package that exports taskset and optional harness classes:
+This creates the following structure:
 
 ```
 environments/my_env/
-├── my_env/
-│   ├── __init__.py
-│   └── taskset.py
-├── pyproject.toml
-└── README.md
+├── my_env.py          # environment implementation
+├── pyproject.toml     # package metadata and dependencies
+└── README.md          # documentation template
 ```
-
-See [Bring Your Own Harness](byo-harness.md) for the v1 authoring model. The dataset,
-rubric, and `load_environment()` APIs elsewhere in this page describe V0. Scaffold that
-surface explicitly:
-
-```bash
-prime env init my-v0-env --v0
-```
-
-The V0 scaffold is a single module beside its `pyproject.toml`. OpenEnv projects also keep
-their `proj/` directory there so `.build.json` is packaged beside the loader.
 
 ### pyproject.toml
 
-Both generations use ordinary package metadata:
+The `pyproject.toml` defines package metadata, dependencies, and evaluation defaults:
 
 ```toml
 [project]
 name = "my-env"
 description = "My custom environment"
+tags = ["single-turn", "math", "train", "eval"]
 version = "0.1.0"
-requires-python = ">=3.11"
-dependencies = ["verifiers"]
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers>=0.1.8",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["my_env.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 20
+rollouts_per_example = 5
 ```
+
+Key `pyproject.toml` sections:
+
+- **`[project]`** — Package name (used by `prime env install` and `prime eval run`), description, version, and dependencies. The `tags` field is optional metadata for categorizing environments.
+- **`[build-system]`** — Hatchling is used as the build backend for the Environments Hub.
+- **`[tool.hatch.build]`** — Lists files to include in the package. Always include `pyproject.toml` alongside your environment file to ensure that environment metadata is available when the environment is installed. Add any additional source files here.
+- **`[tool.verifiers.eval]`** — Default parameters for `prime eval run` when flags aren't provided.
 
 ### Managing Dependencies
 
-Declare every runtime dependency in the project. Hub installation uses this metadata for
-public wheels and for private source builds:
+All packages your environment needs must be declared in the `dependencies` array. Always include `verifiers` with a minimum version. If your environment uses additional libraries, add them here—they will be installed automatically when the environment is installed:
 
 ```toml
 dependencies = [
-    "verifiers",
+    "verifiers>=0.1.8",
     "chromadb",
     "nltk>=3.9.2",
 ]
@@ -745,8 +746,7 @@ dependencies = [
 
 ### Required API Keys
 
-V0 environments that require external API keys should validate them early in
-`load_environment()` using `vf.ensure_keys()`:
+Environments that require external API keys (e.g., for judge models or external services) should validate them early in `load_environment()` using `vf.ensure_keys()`:
 
 ```python
 import verifiers as vf
@@ -757,11 +757,10 @@ def load_environment(api_key_var: str = "OPENAI_API_KEY") -> vf.Environment:
     ...
 ```
 
-This raises `MissingKeyError` with a clear list of missing keys. V1 tasksets and harnesses
-should declare or validate secrets at the component that owns the external service.
+This raises `MissingKeyError` with a clear message listing all missing keys and instructions for setting them:
 
 - **Environments Hub**: Add secrets (or link global secrets) on the environment's **Secrets** tab
-- **Hosted Training**: Set `env_files` in your config (e.g., `env_files = ["secrets.env"]`)
+- **Hosted Training**: Set `env_file` in your config (e.g., `env_file = ["secrets.env"]`)
 - **Local**: Export in your shell (e.g., `export OPENAI_API_KEY=...`)
 
 Document required variables in your README under a "Required Environment Variables" section.
@@ -775,14 +774,7 @@ prime env install my-env                    # from ./environments/my_env
 prime env install my-env -p /path/to/environments   # custom path
 ```
 
-This runs `uv pip install -e`. Hub packages use the same explicit Prime-owned step:
-
-```bash
-prime env install owner/my-env@1.2.3
-prime eval my_env
-```
-
-Eval, validate, serve, and GEPA only accept locally importable package ids.
+This runs `uv pip install -e` for local environments when you want an explicit editable install for non-eval tooling. Evaluations do not require this separate step because environment resolution happens inside `prime eval run`.
 
 ## Environment Groups
 
@@ -884,12 +876,10 @@ unregister_executor("my-env-client")
 self.my_executor.shutdown()
 ```
 
-In practice, you rarely need to call `set_concurrency()` yourself. V0 evaluation and
-`prime-rl` compute the worker count from their concurrency settings. For a V0 evaluation,
-override it with `--extra-env-kwargs`:
+In practice, you rarely need to call `set_concurrency()` yourself. Both `prime eval run` and `prime-rl` automatically compute the right worker count from the concurrency level. If you wish to override the automatic value during evaluation, you can do so with the `--extra-env-kwargs` flag:
 
 ```bash
-prime eval --id my-env --extra-env-kwargs '{"concurrency": 256}'
+prime eval run my-env -x '{"concurrency": 256}'
 ```
 
 ## Integrations and Experimental Environments
@@ -903,7 +893,7 @@ Supported third-party environment integrations include:
 - **`BrowserEnv`** — unified browser automation via [Browserbase](https://browserbase.com) with DOM and CUA modes
 - **`OpenEnvEnv`** — wraps OpenEnv gym and MCP contracts using Prime Sandboxes with prebuilt images referenced from `.build.json`
 
-These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv). The bundled OpenEnv project under `proj/` owns its server dependencies; build its image with `prime env build <env-id>` before evaluation or training.
+These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv). The bundled OpenEnv project under `proj/` owns its server dependencies and must be built with `uv run vf-build <env-id>` before evaluation or training.
 
 Newer and more experimental environment classes include:
 

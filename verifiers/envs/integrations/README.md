@@ -146,7 +146,7 @@ image.
 Initialize an OpenEnv environment with the template:
 
 ```bash
-prime env init my-openenv --v0
+prime env init my-openenv --openenv
 ```
 
 The template creates this structure:
@@ -160,7 +160,7 @@ environments/my_openenv/
 Copy your full OpenEnv project into `proj/`, then build the image:
 
 ```bash
-prime env build my-openenv
+uv run vf-build my-openenv
 ```
 
 ```python

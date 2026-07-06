@@ -108,7 +108,7 @@ uv add 'verifiers[all]'     # + training
 prime env init new-environment
 
 # Smoke test
-prime eval new-environment -n 5 -m openai/gpt-4.1-mini
+prime eval run new-environment -n 5 -m openai/gpt-4.1-mini
 ```
 
 ### Requirements
@@ -150,4 +150,4 @@ Only depend on keys your environment explicitly manages.
 
 ### Checklist
 - Guidelines here are followed
-- Environment works with `prime eval`, outputs look sensible
+- Environment works with `prime eval run`, outputs look sensible

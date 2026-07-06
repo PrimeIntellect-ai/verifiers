@@ -101,29 +101,28 @@ prime env init my-env # creates a new template in ./environments/my_env
 ```
 Add an explicit harness loader when the environment owns harness behavior:
 ```bash
-prime env init my-env --add-harness
+prime env init my-env --with-harness
 ```
-To scaffold a legacy v0 environment instead:
+For OpenEnv integration, use:
 ```bash
-prime env init my-openenv --v0
+prime env init my-openenv --openenv
 ```
 Then copy your OpenEnv project into `environments/my_openenv/proj/` and build the image with:
 ```bash
-prime env build my-openenv
+uv run vf-build my-openenv
 ```
 
 This will create a new module called `my_env` with a basic environment template.
 ```
 environments/my_env/
-├── my_env/
-│   ├── __init__.py
-│   └── taskset.py      # Tasks and rewards
+├── my_env.py           # Main implementation
 ├── pyproject.toml      # Dependencies and metadata
 └── README.md           # Documentation
 ```
 
-V1 packages export their taskset configuration and implementation from `__init__.py`.
-Legacy V0 packages instead expose a `load_environment` constructor:
+Environment modules should expose a `load_environment` function which returns an
+environment object. For simple legacy environments, this can still be a direct
+constructor:
 ```python
 # my_env.py
 import verifiers as vf
@@ -144,7 +143,6 @@ stay on the taskset or harness config that owns them:
 
 ```toml
 # configs/rl/my-v1-env.toml
-type = "lora"
 model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 max_steps = 100
 batch_size = 256
@@ -174,7 +172,7 @@ For self-managed training launch commands, use the `prime-rl` documentation.
 
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
-prime eval run my-env --model openai/gpt-5-nano --num-tasks 5
+prime eval run my-env -m openai/gpt-5-nano # run and save eval results locally
 ```
 Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.toml`.
 
@@ -188,10 +186,9 @@ To publish the environment to the [Environments Hub](https://app.primeintellect.
 prime env push --path ./environments/my_env
 ```
 
-To install an environment from the Environments Hub and then evaluate the local package, do:
+To run an evaluation directly from the Environments Hub, do:
 ```bash
-prime env install primeintellect/math-python
-prime eval run math-python
+prime eval run primeintellect/math-python
 ```
 
 ## Documentation

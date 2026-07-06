@@ -256,8 +256,8 @@ async def verify(self, task, trace, runtime) -> float:
 
 ### Judges
 
-When grading can't be deterministic, `vf.Judge` is a reusable LLM judge: it owns the OpenAI client,
-the call, and usage/cost capture, and leaves the two things that
+When grading can't be deterministic, `vf.Judge` is a reusable LLM judge: it owns the OpenAI client
+(with the Prime key/team fallback), the call, and usage/cost capture, and leaves the two things that
 differ as hooks — `build_messages` (prompt) and `parse` (verdict). Subclass it, build it once in the
 taskset `__init__`, and call it from a `@reward`:
 
@@ -305,7 +305,7 @@ Good to know:
 - **Per-task rubric** is just a field — `prompt = "{task.rubric}\n…"` with `evaluate(trace=trace, task=task, …)` (`str.format` does attribute access on a passed-in `task`). For per-task *parsing*, parse in the reward, where the task is in scope.
 - **Structured outputs**: set `schema` to a pydantic model to use OpenAI structured outputs (where the provider supports it — most do); `JudgeResponse.parsed` is then the validated object. For an unsupported model, prompt for JSON and call `Model.model_validate_json(response.text)` in `parse`.
 - **Multiple / dynamic calls per rollout** (e.g. one per table column): call the low-level `complete(messages, *, trace=, schema=, parse=)` directly with `vf.Messages` you build — it records each call when passed `trace`.
-- **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.
+- **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`, Prime auto-config). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.
 - **Errors propagate**: a judge API failure errors the rollout (recorded as a `TasksetError` on the trace); the OpenAI SDK already retries transient 429/5xx/connection errors.
 
 ### Pluggable judges
@@ -890,9 +890,9 @@ tokenizes rollouts into training samples.
 # Backwards compatibility
 
 A classic v0 `verifiers.load_environment` env runs through the v1 CLIs via the legacy bridge — its
-rollouts mapped to v1 `Trace`s. Pass its id like any taskset; the bridge is auto-detected:
+rollouts mapped to v1 `Trace`s. Use `--id` instead of a `taskset`:
 
 ```bash
-uv run eval reverse-text -n 2                                  # eval a v0 env
-uv run eval reverse-text --args.num_train_examples 50          # v0 construction args
+uv run eval --id reverse-text -n 2                                  # eval a v0 env
+uv run eval --id reverse-text --args.num_train_examples 50          # v0 construction args
 ```

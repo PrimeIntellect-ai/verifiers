@@ -58,23 +58,21 @@ Optional features are installed with extras:
 
 Environments built with Verifiers are self-contained Python modules. To initialize a fresh environment template, do:
 ```bash
-prime env init my-env # creates a v1 taskset package in ./environments/my_env
+prime env init my-env # creates a v0 stub in ./environments/my_env
 ```
 
-This creates an installable taskset package. Add `--v0` only when you need a legacy
-`load_environment()` package.
+This will create a new module called `my_env` with a runnable environment
+template.
 ```
 environments/my_env/
-├── my_env/
-│   ├── __init__.py     # Plugin exports
-│   └── taskset.py      # Tasks, hooks, and scoring
+├── my_env.py           # Main implementation
 ├── pyproject.toml      # Dependencies and metadata
 └── README.md           # Documentation
 ```
 
-V1 packages export a taskset config and implementation. The scaffold contains a minimal
-example using the `verifiers.v1` API. V0 packages instead expose a `load_environment`
-function:
+Environment modules should expose a `load_environment` function which returns an
+environment object. For simple legacy environments, this can still be a direct
+constructor:
 ```python
 # my_env.py
 import verifiers as vf
@@ -91,8 +89,7 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
 
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
-prime env install my-env
-prime eval my-env --model openai/gpt-5-nano --num-tasks 5
+prime eval run my-env -m openai/gpt-5-nano # run and save eval results locally
 ```
 Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.toml`.
 
@@ -107,10 +104,9 @@ To publish the environment to the [Environments Hub](https://app.primeintellect.
 prime env push my-env # equivalent to --path ./environments/my_env
 ```
 
-To install an environment from the Environments Hub and then evaluate the local package, do:
+To run an evaluation directly from the Environments Hub, do:
 ```bash
-prime env install primeintellect/math-python
-prime eval math-python
+prime eval run primeintellect/math-python
 ```
 
 ## Documentation

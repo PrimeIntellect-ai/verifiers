@@ -61,8 +61,6 @@ configs/
 Example configuration file for the `primeintellect/reverse-text` environment with `Qwen/Qwen3.5-4B`:
 
 ```toml
-type = "lora"
-
 # Qwen3.5 dense models. Uncomment exactly one model.
 # model = "Qwen/Qwen3.5-0.8B"
 # model = "Qwen/Qwen3.5-2B"
@@ -109,9 +107,12 @@ Our [`prime-rl`](https://github.com/PrimeIntellect-ai/prime-rl) trainer is a pro
 
 ### Setup and Configuration
 
-The Prime CLI does not install or wrap self-managed `prime-rl`. Follow the
-[prime-rl documentation](https://docs.primeintellect.ai/prime-rl) for installation,
-configuration, and launch commands. Use `prime train run <config.toml>` for Prime-hosted runs.
+To set up your workspace for training with `prime-rl`, run:
+```bash
+prime lab setup --prime-rl
+```
+
+This will clone and install the `prime-rl` trainer and its dependencies. For configuration files and launch commands, use the [prime-rl documentation](https://docs.primeintellect.ai/prime-rl).
 
 ## Prompt Optimization with `prime gepa run`
 
@@ -119,26 +120,24 @@ configuration, and launch commands. Use `prime train run <config.toml>` for Prim
 
 ### Usage
 
-Basic usage mirrors `prime eval`:
+Basic usage mirrors `prime eval run`:
 ```bash
-prime env install primeintellect/wiki-search
-prime gepa run wiki_search --model google/gemini-3-flash-preview
+prime gepa run wiki-search --model google/gemini-3-flash-preview
 ```
 
-Prime installs the Hub package; GEPA then optimizes the locally importable `wiki_search`
-environment using the specified model for both evaluation rollouts and reflection.
+This will optimize the system prompt for the `wiki-search` environment using the specified model for both evaluation rollouts and reflection. Results are saved to `environments/wiki-search/outputs/gepa/`.
 
 Key options:
-- `--model`: Model for evaluation rollouts
-- `--reflection-model`: Teacher model for prompt reflection (defaults to `--model`)
-- `--gepa.max-calls`: Evaluation budget (default: 500)
-- `--gepa.num-train`: Training examples (default: 100)
-- `--gepa.num-val`: Validation examples (default: 50)
+- `--model` / `-m`: Model for evaluation rollouts
+- `--reflection-model` / `-M`: Teacher model for prompt reflection (defaults to `--model`)
+- `--max-calls` / `-B`: Evaluation budget (default: 500)
+- `--num-train` / `-n`: Training examples (default: 100)
+- `--num-val` / `-N`: Validation examples (default: 50)
 - `--minibatch-size`: Number of examples evaluated together per reflection step (default: 3)
 - `--perfect-score`: Maximum score for a rollout in your environment (if applicable); minibatches achieving this score are skipped during reflection (useful if your environment has a known max score)
-- `--gepa.state-columns`: Additional state columns to copy into the reflection dataset. By default, `query`, `completion`, `expected_answer`, `reward`, and `error` are included.
+- `--state-columns`: Additional state columns to copy into the reflection dataset. By default, `query`, `completion`, `expected_answer`, `reward`, and `error` are included. Use this to add environment-specific state fields (e.g., `--state-columns tool_calls reasoning_trace`)
 
-In TOML configs, set GEPA parameters such as `max_calls`, `num_train`, `num_val`, `minibatch_size`, and `max_concurrent` under `[gepa]`. Put generation parameters such as `max_tokens` and `temperature` under `[sampling]`. Use `[[env]]` with an `id` for one or more environments; GEPA samples train and validation examples uniformly by environment. The same strict Pydantic model drives TOML and CLI validation.
+In TOML configs, set GEPA parameters such as `max_calls`, `num_train`, `num_val`, `minibatch_size`, and `max_concurrent` under `[gepa]`. Put generation parameters such as `max_tokens` and `temperature` under `[sampling]`; the CLI passes that table through as `sampling_args`. Use `[[env]]` for one or more environments; GEPA samples train and validation examples uniformly by environment. A single `[env]` table is still accepted for older configs.
 
 ### Output
 
@@ -148,7 +147,7 @@ After optimization, you'll find:
 - `pareto_frontier.jsonl` - Best candidate references per validation example
 - `metadata.json` - Run configuration and summary
 
-Use `prime eval` to verify performance before and after optimization.
+Use `prime eval run` to verify performance before and after optimization.
 
 ## RL Rules of Thumb
 

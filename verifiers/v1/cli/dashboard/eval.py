@@ -260,7 +260,7 @@ def _breakdown(done: list[Trace]) -> Table | None:
         segments = []
         for name in names:
             mean = format_mean(
-                done, lambda trace, n=name, s=source: getattr(trace, s).get(n, 0.0)
+                done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0)
             )
             segments.append(f"{name} {mean}")
         grid.add_row(label, "  ·  ".join(segments))
