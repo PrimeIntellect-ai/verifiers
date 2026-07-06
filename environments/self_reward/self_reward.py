@@ -30,10 +30,10 @@ def load_environment(
 
     async def judge_score(judge, prompt, completion, answer, state) -> float:
         judge_response = await judge(prompt, completion, answer, state)
-        score = re.search(r"\b(?:0(?:\.\d+)?|1(?:\.0+)?)\b", judge_response)
-        if not score:
+        scores = re.findall(r"\b(?:0(?:\.\d+)?|1(?:\.0+)?)\b", judge_response)
+        if not scores:
             return 0.0
-        return max(0.0, min(1.0, float(score.group(0))))
+        return max(0.0, min(1.0, float(scores[-1])))
 
     rubric.add_reward_func(judge_score, weight=1.0)
 
