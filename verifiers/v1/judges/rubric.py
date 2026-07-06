@@ -55,6 +55,24 @@ JSON_SUFFIX = (
 )
 
 
+def first_verdicts_object(text: str) -> dict | None:
+    """The first balanced JSON object in `text` that carries a `verdicts` key. Scanning for the
+    key (not just the first `{`) skips prose and, crucially, an echoed format example — the one
+    in `JSON_SUFFIX` fails to parse (its trailing `...` isn't JSON) and is passed over rather
+    than mistaken for the answer. Returns `None` if no such object is found."""
+    decoder = json.JSONDecoder()
+    idx = text.find("{")
+    while idx != -1:
+        try:
+            obj, _ = decoder.raw_decode(text[idx:])
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict) and "verdicts" in obj:
+            return obj
+        idx = text.find("{", idx + 1)
+    return None
+
+
 class Criterion(StrictBaseModel):
     """One rubric entry: a yes/no check the judge scores 1/0."""
 
@@ -172,11 +190,11 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             result = await self.complete(
                 messages, trace=trace
             )  # no schema -> plain text
-            start = result.text.find("{")
-            if start == -1:
-                raise ValueError(f"judge returned no JSON object: {result.text!r}")
-            # Decode the first balanced JSON object, tolerating any prose/braces after it.
-            obj, _ = json.JSONDecoder().raw_decode(result.text[start:])
+            obj = first_verdicts_object(result.text)
+            if obj is None:
+                raise ValueError(
+                    f"judge returned no verdicts JSON object: {result.text!r}"
+                )
             verdicts = RubricVerdicts.model_validate(obj).verdicts
         # Exactly one verdict per criterion in the batch, matched by name — anything else is a
         # judge failure and must error the rollout, not score the model (see `judge_verdict`).
