@@ -44,6 +44,8 @@ dependencies = [
     "rich",
     "tenacity>=8.5.0",
     "textual",
+    # textual-image requires Python >=3.12; on 3.10/3.11 vf-play falls back to
+    # the exact-image-path panel instead of inline terminal image rendering.
     "textual-image>=0.13.2; python_version >= '3.12'",
     "tomli; python_version < '3.11'",
     "typing_extensions; python_version < '3.12'",

@@ -70,6 +70,32 @@ def test_app_rejects_wrong_argument_type():
         InteractiveRolloutApp.parse_human_value("four", {"type": "integer"})
 
 
+def test_app_parses_typed_enums_by_exact_value():
+    parse = InteractiveRolloutApp.parse_human_value
+    # Numeric/boolean enum members keep their type when entered literally.
+    result = parse("10", {"type": "integer", "enum": [10, 20]})
+    assert result == 10 and isinstance(result, int)
+    assert parse("false", {"type": "boolean", "enum": [True, False]}) is False
+    # 1-based index selection still works for string-labelled enums.
+    assert parse("2", {"enum": ["red", "blue"]}) == "blue"
+    # An exact string member wins over index interpretation.
+    assert parse("2", {"enum": ["2", "1"]}) == "2"
+
+
+def test_app_preserves_string_argument_whitespace():
+    schema = {"type": "string"}
+    assert InteractiveRolloutApp.parse_human_value("  a\n  b\n", schema) == "  a\n  b\n"
+
+
+def test_tool_calls_text_shows_decoded_arguments():
+    app = InteractiveRolloutApp()
+    text = app._tool_calls_to_text(
+        [ToolCall(id="c1", name="lookup_item", arguments='{"item_id":7}')]
+    )
+    assert '"item_id": 7' in text
+    assert '\\"' not in text
+
+
 def test_app_exposes_tool_argument_rows_from_schema():
     app = InteractiveRolloutApp()
 
@@ -198,6 +224,38 @@ def code_tool() -> Tool:
             "required": ["code"],
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_app_message_only_turn_with_tool_selected():
+    app = InteractiveRolloutApp()
+    async with app.run_test() as pilot:
+        ask_task = asyncio.create_task(
+            app.ask([UserMessage(content="hi")], [lookup_tool()])
+        )
+        await pilot.pause()
+        # Select a tool to inspect its schema but leave the form blank.
+        app.query_one("#tool-picker", Select).value = "lookup_item"
+        await pilot.pause()
+        app.query_one("#message", TextArea).load_text("just a message")
+        app._submit_current_turn()
+        response = await ask_task
+
+    assert response.content == "just a message"
+    assert response.tool_calls is None
+
+
+def test_remote_image_not_fetched_by_default():
+    from rich.console import Console
+
+    app = InteractiveRolloutApp()
+    renderable = app._image_part_renderable(
+        {"type": "image_url", "image_url": {"url": "http://169.254.169.254/latest"}}
+    )
+    assert isinstance(renderable, Panel)
+    buffer = io.StringIO()
+    Console(file=buffer, width=100).print(renderable)
+    assert "allow-remote-images" in buffer.getvalue()
 
 
 @pytest.mark.asyncio
@@ -507,6 +565,21 @@ def test_play_parse_args_accepts_v1_env_config_overrides():
         "--harness.max-turns",
         "3",
     ]
+    assert args.env_id is None
+
+
+def test_play_parse_args_accepts_env_id_after_options():
+    args = play.parse_args(["--split", "eval", "wordle", "--taskset.id", "demo"])
+    assert args.env_id == "wordle"
+    assert args.split == "eval"
+    assert args.env_config_overrides == ["--taskset.id", "demo"]
+
+
+def test_play_parse_args_keeps_override_value_from_env_id():
+    # A bare override value must not be captured as env_id.
+    args = play.parse_args(["--taskset.max-turns", "3"])
+    assert args.env_id is None
+    assert args.env_config_overrides == ["--taskset.max-turns", "3"]
 
 
 def test_play_infers_env_id_from_current_environment_dir(tmp_path: Path):
@@ -572,6 +645,7 @@ def test_run_interactive_rollout_constructs_tui_client(monkeypatch):
         shuffle_seed=None,
         hide_prompt=False,
         hide_tools=True,
+        allow_remote_images=False,
         model="human",
         sampling_args={},
     )
@@ -640,6 +714,7 @@ def test_run_interactive_rollout_infers_current_env(monkeypatch, tmp_path: Path)
         shuffle_seed=None,
         hide_prompt=False,
         hide_tools=True,
+        allow_remote_images=False,
         model="human",
         sampling_args={},
     )

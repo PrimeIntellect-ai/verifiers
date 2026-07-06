@@ -233,10 +233,12 @@ class InteractiveRolloutApp(App[None]):
         show_tools: bool = True,
         max_content_chars: int = 20000,
         answer: str | None = None,
+        allow_remote_images: bool = False,
     ) -> None:
         super().__init__()
         self.ready = asyncio.Event()
         self._answer = answer
+        self._allow_remote_images = allow_remote_images
         self._quit_requested = False
         self._future: asyncio.Future[TurnResponse] | None = None
         self._turn = 0
@@ -307,7 +309,7 @@ class InteractiveRolloutApp(App[None]):
         )
         self.ready.set()
 
-    async def action_quit(self) -> None:
+    def action_quit(self) -> None:
         self._quit_requested = True
         if self._future is not None and not self._future.done():
             self._future.set_exception(InteractiveSessionExit())
@@ -330,12 +332,18 @@ class InteractiveRolloutApp(App[None]):
             raise InteractiveSessionExit()
         loop = asyncio.get_running_loop()
         future: asyncio.Future[TurnResponse] = loop.create_future()
+        # Assign synchronously so a quit that lands before ``load_turn`` runs
+        # (it is deferred via ``call_later``) still fails this exact future.
+        self._future = future
 
         def load_turn() -> None:
-            self._future = future
+            if self._quit_requested or future.done():
+                return
             self._turn += 1
             self._tools = list(tools)
             self._pending_tool_calls.clear()
+            self._image_cache.clear()
+            self._image_payload_cache.clear()
             self.query_one("#messages-pane", VerticalScroll).loading = False
             self.sub_title = f"Turn {self._turn}"
             self._arg_inputs.clear()
@@ -431,10 +439,15 @@ class InteractiveRolloutApp(App[None]):
         return None if value == Select.BLANK else str(value)
 
     def _current_form_included(self) -> bool:
-        """Whether the tool form currently being edited joins the submitted turn."""
+        """Whether the tool form currently being edited joins the submitted turn.
+
+        Only a form the operator actually filled in is auto-included on submit,
+        so selecting a tool to inspect its schema never blocks a message-only
+        turn. Argument-less calls are added explicitly via ``Add tool call``.
+        """
         if self._selected_tool_name() is None:
             return False
-        return self._current_tool_form_has_values() or not self._pending_tool_calls
+        return self._current_tool_form_has_values()
 
     def _add_current_tool_call(self) -> None:
         try:
@@ -456,10 +469,10 @@ class InteractiveRolloutApp(App[None]):
         arguments: dict[str, Any] = {}
         for name, (input_widget, schema, required) in self._arg_inputs.items():
             raw = self._arg_raw_value(input_widget)
-            if raw == "" and not required:
+            if not raw.strip():
+                if required:
+                    raise ValueError(f"Missing required argument: {name}")
                 continue
-            if raw == "" and required:
-                raise ValueError(f"Missing required argument: {name}")
             arguments[name] = self.parse_human_value(raw, schema)
         return ToolCall(
             id=f"call_{uuid.uuid4().hex[:12]}",
@@ -514,12 +527,14 @@ class InteractiveRolloutApp(App[None]):
 
     @staticmethod
     def _arg_raw_value(widget: Input | TextArea) -> str:
-        raw = widget.value if isinstance(widget, Input) else widget.text
-        return raw.strip()
+        # Return the value verbatim: multiline string arguments (code, YAML)
+        # carry meaningful leading/trailing whitespace and newlines that must
+        # survive to ``parse_human_value``. Callers strip only for empty checks.
+        return widget.value if isinstance(widget, Input) else widget.text
 
     def _current_tool_form_has_values(self) -> bool:
         return any(
-            self._arg_raw_value(input_widget)
+            self._arg_raw_value(input_widget).strip()
             for input_widget, _, _ in self._arg_inputs.values()
         )
 
@@ -735,6 +750,23 @@ class InteractiveRolloutApp(App[None]):
         cached = self._image_cache.get(url)
         if cached is not None:
             return cached
+        is_remote = url.startswith("http://") or url.startswith("https://")
+        if is_remote and not self._allow_remote_images:
+            # Do not issue outbound requests for environment-supplied URLs by
+            # default: it is an SSRF vector (localhost/private ranges) and the
+            # blocking fetch would freeze the event loop. Opt in with
+            # ``--allow-remote-images``.
+            renderable: RenderableType = Panel(
+                Text(
+                    f"Remote image not fetched (pass --allow-remote-images):"
+                    f"\n{self._truncate_text(url)}",
+                    style="yellow",
+                ),
+                title="image_url",
+                border_style="magenta",
+            )
+            self._image_cache[url] = renderable
+            return renderable
         try:
             payload = self.load_image_payload(url)
             image_renderable = self._terminal_image_renderable(payload)
@@ -864,18 +896,24 @@ class InteractiveRolloutApp(App[None]):
         return suffix or ".img"
 
     def _tool_calls_to_text(self, tool_calls: list[ToolCall]) -> str:
-        return "tool_calls:\n" + "\n".join(
-            json.dumps(
+        def render(tool_call: ToolCall) -> str:
+            # ``arguments`` is a JSON string; decode it so the pane shows the
+            # actual argument object instead of a doubly-escaped string.
+            try:
+                arguments: Any = json.loads(tool_call.arguments)
+            except json.JSONDecodeError:
+                arguments = tool_call.arguments
+            return json.dumps(
                 {
                     "id": tool_call.id,
                     "name": tool_call.name,
-                    "arguments": tool_call.arguments,
+                    "arguments": arguments,
                 },
                 indent=2,
                 ensure_ascii=False,
             )
-            for tool_call in tool_calls
-        )
+
+        return "tool_calls:\n" + "\n".join(render(tc) for tc in tool_calls)
 
     def _object_to_mapping(self, value: object) -> Mapping[str, Any]:
         if isinstance(value, Mapping):
@@ -906,16 +944,20 @@ class InteractiveRolloutApp(App[None]):
     def parse_human_value(raw: str, schema: Mapping[str, Any]) -> Any:
         enum = schema.get("enum")
         if isinstance(enum, list) and enum:
-            if raw.isdigit() and 1 <= int(raw) <= len(enum):
-                return enum[int(raw) - 1]
-            if raw in {str(item) for item in enum}:
-                return raw
+            token = raw.strip()
+            # Prefer an exact typed match so numeric/boolean enums keep their
+            # type (e.g. entering "10" for [10, 20] returns int 10, not "10").
             try:
-                parsed = json.loads(raw)
+                parsed = json.loads(token)
             except json.JSONDecodeError:
-                parsed = raw
+                parsed = token
             if parsed in enum:
                 return parsed
+            if token in enum:
+                return token
+            # Fall back to 1-based index selection for string-labelled enums.
+            if token.isdigit() and 1 <= int(token) <= len(enum):
+                return enum[int(token) - 1]
             raise ValueError(f"Expected one of: {', '.join(map(str, enum))}.")
 
         arg_type = InteractiveRolloutApp.schema_type(schema)
@@ -932,7 +974,7 @@ class InteractiveRolloutApp(App[None]):
             except ValueError as exc:
                 raise ValueError("Expected a number.") from exc
         if arg_type == "boolean":
-            lowered = raw.lower()
+            lowered = raw.strip().lower()
             if lowered in {"true", "t", "yes", "y", "1"}:
                 return True
             if lowered in {"false", "f", "no", "n", "0"}:
@@ -949,7 +991,7 @@ class InteractiveRolloutApp(App[None]):
                 raise ValueError("Expected a JSON array.")
             return parsed
         if arg_type == "null":
-            if raw.lower() == "null":
+            if raw.strip().lower() == "null":
                 return None
             raise ValueError("Expected null.")
         return raw

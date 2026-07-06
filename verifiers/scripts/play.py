@@ -18,6 +18,7 @@ from verifiers.cli.interactive import HumanClient, InteractiveSessionExit
 from verifiers.scripts.eval import (
     DEFAULT_ENV_DIR_PATH,
     apply_env_config_cli_overrides,
+    is_env_config_override_flag,
     validate_env_config_override_args,
 )
 from verifiers.types import RolloutInput, SamplingArgs, State
@@ -107,23 +108,55 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Hide the tool schema pane.",
     )
+    parser.add_argument(
+        "--allow-remote-images",
+        action="store_true",
+        help=(
+            "Fetch http(s) image_url content parts from the network. Off by "
+            "default because environment-supplied URLs are an SSRF vector."
+        ),
+    )
     return parser
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
     raw_args = list(sys.argv[1:] if argv is None else argv)
-    env_id = None
-    if raw_args and not raw_args[0].startswith("-"):
-        env_id = raw_args.pop(0)
-    if argv is None:
-        args, env_config_overrides = parser.parse_known_args(raw_args)
-    else:
-        args, env_config_overrides = parser.parse_known_args(raw_args)
+    # Peel off the parser's own options first so ``env_id`` may appear either
+    # before or after them (matching the documented ``[options] [env_id]``).
+    args, leftovers = parser.parse_known_args(raw_args)
+    env_id, env_config_overrides = _split_env_id(leftovers)
     args.env_id = env_id
     validate_env_config_override_args(parser, env_config_overrides)
     args.env_config_overrides = env_config_overrides
     return args
+
+
+def _split_env_id(leftovers: list[str]) -> tuple[str | None, list[str]]:
+    """Separate a bare ``env_id`` token from ``--taskset.*``/``--harness.*``
+    override flags and their values in the parser's leftover args."""
+    env_id: str | None = None
+    overrides: list[str] = []
+    index = 0
+    while index < len(leftovers):
+        token = leftovers[index]
+        if is_env_config_override_flag(token):
+            overrides.append(token)
+            # Consume a space-separated value so it is not mistaken for env_id.
+            if (
+                "=" not in token
+                and index + 1 < len(leftovers)
+                and not leftovers[index + 1].startswith("-")
+            ):
+                overrides.append(leftovers[index + 1])
+                index += 2
+                continue
+        elif env_id is None and not token.startswith("-"):
+            env_id = token
+        else:
+            overrides.append(token)
+        index += 1
+    return env_id, overrides
 
 
 def prepare_local_env_import(env_id: str, env_dir_path: str) -> None:
@@ -154,8 +187,15 @@ def infer_current_env_id(cwd: Path | None = None) -> str | None:
         project = pyproject.get("project")
         if not isinstance(project, dict):
             continue
+        # The verifiers library itself defines the ``vf-play`` entry point;
+        # it is never a playable environment, so keep walking up (or fall back
+        # to requiring an explicit env_id) instead of trying to load it.
+        scripts = project.get("scripts")
+        if isinstance(scripts, dict) and "vf-play" in scripts:
+            continue
         name = project.get("name")
         return name if isinstance(name, str) and name else None
+    return None
     return None
 
 
@@ -240,6 +280,7 @@ async def run_interactive_rollout(
         show_prompt=not args.hide_prompt,
         show_tools=not args.hide_tools,
         answer=str(answer) if answer is not None and str(answer) else None,
+        allow_remote_images=args.allow_remote_images,
     )
 
     try:
@@ -290,7 +331,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     console = Console()
     try:
         state = await run_interactive_rollout(args, console=console)
-    except ValueError as exc:
+    except (ValueError, IndexError) as exc:
         console.print(f"[red]{exc}[/red]")
         return 2
     except InteractiveSessionExit:
