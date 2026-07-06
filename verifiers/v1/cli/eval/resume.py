@@ -16,6 +16,7 @@ from pathlib import Path
 
 from pydantic_core import from_json
 
+from verifiers.v1.cli.eval.compat import _local_legacy_id
 from verifiers.v1.configs.eval import EvalConfig
 
 
@@ -42,7 +43,15 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
         raise SystemExit(
             f"--resume: no config.toml in {resume_dir} - not an eval output dir"
         )
-    config = EvalConfig.model_validate(tomllib.loads(config_path.read_text()))
+    raw = tomllib.loads(config_path.read_text())
+    # Runs saved by hub-era verifiers carry `org/name[@version]` ids; ids are local-only
+    # now, so normalize them to the installed package name before validation.
+    tables = [raw, raw.get("taskset", {}), raw.get("harness", {})]
+    tables += raw.get("taskset", {}).get("judges", [])
+    for table in tables:
+        if isinstance(table.get("id"), str):
+            table["id"] = _local_legacy_id(table["id"])
+    config = EvalConfig.model_validate(raw)
     config.resume = resume_dir
     config.output_dir = resume_dir
     return config

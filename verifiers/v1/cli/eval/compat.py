@@ -54,6 +54,14 @@ _SILENT_DROP_FIELDS = {"save_results", "fullscreen", "name", "version"}
 _TUI_FIELDS = {"disable_tui", "debug"}
 
 
+def _local_legacy_id(env_id: Any) -> Any:
+    if not isinstance(env_id, str):
+        return env_id
+    if env_id.startswith(("./", "../", "/")):
+        return env_id
+    return env_id.rsplit("@", 1)[0].rsplit("/", 1)[-1]
+
+
 def is_transitional_config(raw: dict[str, Any]) -> bool:
     """Whether a parsed TOML uses the v0 eval dialect (``env_id`` / ``[[eval]]``)."""
     return "env_id" in raw or "eval" in raw
@@ -145,7 +153,7 @@ def transitional_config_to_fields(config_path: Path) -> dict[str, Any]:
     if "env_id" in merged:
         if merged.get("id"):
             raise ValueError("config cannot contain both id and env_id")
-        merged["id"] = merged.pop("env_id")
+        merged["id"] = _local_legacy_id(merged.pop("env_id"))
     return merged
 
 
@@ -154,8 +162,8 @@ def build_v1_eval_config(
 ) -> tuple[dict[str, Any], list[str]]:
     """Map v0 fields onto a v1 eval config dict; returns (config, warnings).
 
-    ``fields`` carries either a v1 ``taskset`` or a legacy ``id``; both must
-    already name a locally importable package (hosts resolve hub refs first).
+    ``fields`` carries either a v1 ``taskset`` or a legacy ``id``. Legacy hub refs
+    normalize to the local package name; v1 taskset ids stay local-only.
     """
     fields = dict(fields)
     warnings: list[str] = []
@@ -185,8 +193,10 @@ def build_v1_eval_config(
 
     # environment: taskset (v1) or legacy id; env_args attach to whichever is set
     taskset = fields.pop("taskset", None)
-    legacy_id = fields.pop("id", None)
+    legacy_id = _local_legacy_id(fields.pop("id", None))
     env_args = fields.pop("env_args", None) or {}
+    if legacy_id and isinstance(taskset, dict) and taskset.get("id"):
+        raise ValueError("config cannot contain both a legacy env_id and a taskset")
     if legacy_id:
         config["id"] = legacy_id
         args = {**env_args, **(fields.pop("args", None) or {})}

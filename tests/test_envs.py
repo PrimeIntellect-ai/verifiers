@@ -188,7 +188,7 @@ def help_test_can_eval_env(tmp_venv_dir: Path, env_dir: Path):
 
     eval_cmd = (
         f"cd {tmp_venv_dir} && source .venv/bin/activate && "
-        f"uv run eval --id {env_dir.name} {model_flags} -n 1 -r 1 "
+        f"uv run eval {env_dir.name} {model_flags} -n 1 -r 1 "
         "--sampling.max-tokens 512"
     )
     try:

@@ -41,7 +41,7 @@ logger = logging.getLogger("verifiers.v1.cli.eval")
 USAGE = (
     "usage: eval [<taskset-or-env-id>] [--harness.id <id>] [options] [@ file.toml]\n"
     "       eval --resume <output-dir>\n"
-    "       legacy (v0) envs are auto-detected and run via the bridge (--id <env-id> forces it)"
+    "       legacy (v0) envs are auto-detected and run via the bridge"
 )
 
 
@@ -92,11 +92,7 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(f"{USAGE}\n--resume takes no other arguments")
         config = load_resume_config(resume_dir)
     else:
-        if (
-            not extract_id(args, "taskset")
-            and not any(arg == "--id" or arg.startswith("--id=") for arg in args)
-            and not references_config_file(args)
-        ):
+        if not extract_id(args, "taskset") and not references_config_file(args):
             raise SystemExit(USAGE)
         # `prog` is supported by cli(), but is missing from its overload declarations.
         config = cli(  # type: ignore[no-matching-overload]
