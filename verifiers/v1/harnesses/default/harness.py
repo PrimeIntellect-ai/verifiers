@@ -124,7 +124,13 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             args.append(f"--prompt={prompt}")
         elif prompt is not None:
             env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in prompt])
+        args += self.extra_program_args()
         program = await runtime.prepare_uv_script(
             PROGRAM_SOURCE, self.config.resolved_env
         )
         return await runtime.run_program([*program, *args], env)
+
+    def extra_program_args(self) -> list[str]:
+        """Extra argv a subclass appends to the program invocation (e.g. the compacting
+        harness's `--compact-at-tokens`). The base harness appends nothing."""
+        return []

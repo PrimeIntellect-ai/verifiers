@@ -3,6 +3,10 @@
 Re-exports each harness's class + config off the package."""
 
 from verifiers.v1.harnesses.codex import CodexHarness, CodexHarnessConfig
+from verifiers.v1.harnesses.compacting import (
+    CompactingHarness,
+    CompactingHarnessConfig,
+)
 from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
 from verifiers.v1.harnesses.kimi_code import KimiCodeHarness, KimiCodeHarnessConfig
 from verifiers.v1.harnesses.mini_swe_agent import (
@@ -16,6 +20,8 @@ from verifiers.v1.harnesses.terminus_2 import Terminus2Harness, Terminus2Harness
 __all__ = [
     "CodexHarness",
     "CodexHarnessConfig",
+    "CompactingHarness",
+    "CompactingHarnessConfig",
     "DefaultHarness",
     "DefaultHarnessConfig",
     "KimiCodeHarness",
