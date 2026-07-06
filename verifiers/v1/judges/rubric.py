@@ -1,7 +1,9 @@
 """rubric — an off-the-shelf rubric judge, plugged from config alone.
 
 Reads a rubric — a list of yes/no criteria — from a JSON or TOML file and asks the judge model
-to grade all criteria in one structured-output call, scoring each 1/0. The reward is the weighted
+to grade the criteria, scoring each 1/0 (all in one call by default, or batched
+`max_criteria`-at-a-time). Grading uses plain-text JSON by default, or structured output when
+`structured_output=true` (see `RubricJudgeConfig`). The reward is the weighted
 mean of the verdicts (`sum(w*v) / sum(w)`, so it stays in [0, 1]); each verdict is also recorded
 as a `<name>/<criterion>` metric. Criterion weights come from the rubric file and are overridable
 from config (`weights`); the aggregate weighs into `trace.reward` via the judge's `weight`:
@@ -20,6 +22,7 @@ with `rubrics/quality.toml` listing the criteria (JSON takes `{"criteria": [...]
     weight = 1.0
 """
 
+import asyncio
 import json
 import math
 import tomllib
@@ -41,6 +44,14 @@ from verifiers.v1.types import ID, StrictBaseModel
 # A sibling text file so it doubles as a starting point for a config `prompt_file`.
 RUBRIC_PROMPT = (Path(__file__).resolve().parent / "rubric.txt").read_text(
     encoding="utf-8"
+)
+
+# Appended to the prompt when `structured_output` is off, so the reply is JSON we can parse.
+JSON_SUFFIX = (
+    "\n\nRespond with ONLY a JSON object and nothing else, in exactly this shape:\n"
+    '{"verdicts": [{"name": "<criterion name>", "verdict": "<yes or no>"}, ...]}\n'
+    "with one entry per criterion, using each criterion's exact name and a verdict of "
+    '"yes" or "no".'
 )
 
 
@@ -70,6 +81,17 @@ class RubricJudgeConfig(JudgeConfig):
     """How much of the rollout fills `{response}` (see `JudgeView`). Defaults to the whole
     transcript — rubric criteria typically grade the process (tool use, citations,
     intermediate steps), not just the final answer."""
+    max_criteria: int | None = None
+    """How many criteria to grade per judge call. `None` (default) grades all criteria in one
+    call. `1` sends one call per criterion (n independent judges); `k` batches them k-at-a-time.
+    Batches are graded concurrently and merged. Smaller batches trade more calls for focus/
+    robustness. Must be >= 1."""
+    structured_output: bool = False
+    """Grade via JSON-schema structured output (`response_format`) when `True`; grade via plain-text
+    output parsed as JSON when `False` (the default). Plain text is far more reliable on endpoints
+    whose structured decoding is flaky (e.g. GLM-5.2 and other non-OpenAI models on some providers
+    return empty completions for structured calls, especially over long transcripts); OpenAI models
+    handle either. Transient HTTP failures are already retried by the OpenAI client."""
 
 
 class CriterionVerdict(StrictBaseModel):
@@ -86,8 +108,8 @@ class RubricVerdicts(StrictBaseModel):
 
 
 class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
-    """Scores every rubric criterion 1/0 in one structured judge call; rewards their
-    weighted mean."""
+    """Scores every rubric criterion 1/0 (in one judge call, or batched `max_criteria` at a
+    time) and rewards their weighted mean."""
 
     prompt = RUBRIC_PROMPT
     schema = RubricVerdicts
@@ -131,23 +153,68 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             raise ValueError(f"rubric '{path}' has no positive criterion weight")
         return criteria
 
-    async def score(self, task: Task, trace: Trace) -> float:
-        criteria = self.criteria
-        result = await self.evaluate(
-            trace=trace,
+    async def grade_batch(
+        self, task: Task, trace: Trace, batch: list[Criterion]
+    ) -> dict[str, float]:
+        """Grade one batch of criteria in a single judge call — structured output, or plain-text
+        JSON when `structured_output` is off (which avoids flaky structured decoding). Returns
+        `{name: 1.0/0.0}`, matched back to the batch by name. `score` fans this out per batch."""
+        fields = dict(
             question=judge_question(task, self.config.question_field),
             response=judge_response(trace, self.config.view),
-            criteria="\n".join(f"- {c.name}: {c.text}" for c in criteria),
+            criteria="\n".join(f"- {c.name}: {c.text}" for c in batch),
         )
-        verdicts = cast(RubricVerdicts, result.parsed).verdicts
-        # Exactly one verdict per criterion, matched by name — anything else is a judge
-        # failure and must error the rollout, not score the model (see `judge_verdict`).
-        if sorted(v.name for v in verdicts) != sorted(c.name for c in criteria):
+        if self.config.structured_output:
+            result = await self.evaluate(trace=trace, **fields)
+            verdicts = cast(RubricVerdicts, result.parsed).verdicts
+        else:
+            messages = cast(str, self.build_messages(**fields)) + JSON_SUFFIX
+            result = await self.complete(
+                messages, trace=trace
+            )  # no schema -> plain text
+            start = result.text.find("{")
+            if start == -1:
+                raise ValueError(f"judge returned no JSON object: {result.text!r}")
+            # Decode the first balanced JSON object, tolerating any prose/braces after it.
+            obj, _ = json.JSONDecoder().raw_decode(result.text[start:])
+            verdicts = RubricVerdicts.model_validate(obj).verdicts
+        # Exactly one verdict per criterion in the batch, matched by name — anything else is a
+        # judge failure and must error the rollout, not score the model (see `judge_verdict`).
+        if sorted(v.name for v in verdicts) != sorted(c.name for c in batch):
             raise ValueError(
                 f"judge verdicts name {sorted(v.name for v in verdicts)}, expected the "
-                f"rubric's {sorted(c.name for c in criteria)}"
+                f"batch's {sorted(c.name for c in batch)}"
             )
-        by_name = {v.name: float(v.verdict == "yes") for v in verdicts}
+        return {v.name: float(v.verdict == "yes") for v in verdicts}
+
+    async def score(self, task: Task, trace: Trace) -> float:
+        criteria = self.criteria
+        # Split into batches of `max_criteria` (None = one batch of all), then grade the batches
+        # concurrently (one judge call each) and merge.
+        k = self.config.max_criteria
+        if k is not None and k < 1:
+            raise ValueError(f"`max_criteria` must be >= 1 or None, got {k}")
+        batches = (
+            [criteria]
+            if k is None
+            else [criteria[i : i + k] for i in range(0, len(criteria), k)]
+        )
+        # Fan out one call per batch; if any fails, cancel the siblings so a judge failure
+        # doesn't keep billing the remaining batches.
+        tasks = [
+            asyncio.ensure_future(self.grade_batch(task, trace, batch))
+            for batch in batches
+        ]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        by_name: dict[str, float] = {}
+        for batch_verdicts in results:
+            by_name.update(batch_verdicts)
         for criterion in criteria:
             trace.record_metric(
                 f"{self.reward_name}/{criterion.name}", by_name[criterion.name]
