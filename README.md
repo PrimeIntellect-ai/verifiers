@@ -109,7 +109,7 @@ prime env init my-openenv --openenv
 ```
 Then copy your OpenEnv project into `environments/my_openenv/proj/` and build the image with:
 ```bash
-uv run vf-build my-openenv
+prime env build my-openenv
 ```
 
 This will create a new module called `my_env` with a basic environment template.

@@ -5,10 +5,9 @@ settings that still exercise the path, then assert on the resulting `Trace`(s) â
 not unit tests of individual components. They need a model API key (`PRIME_API_KEY`);
 without one the `e2e`-marked tests skip (config parsing still runs).
 
-`run_v1` / `run_v0` mirror the eval CLI's two paths (`run_eval` for a v1 taskset,
-`run_legacy_eval` for a v0 env). The tests fan out over a matrix of where a rollout places
-things: the harness (`harness`) x the harness runtime (`harness_runtime`) x the user/tool server
-runtime (`user_runtime` / `tool_runtime`).
+`run_v1` mirrors the v1 eval CLI path. The tests fan out over a matrix of where a rollout
+places things: the harness (`harness`) x the harness runtime (`harness_runtime`) x the
+user/tool server runtime (`user_runtime` / `tool_runtime`).
 
 Every matrix value carries a pytest mark, so subsets select with `-m`:
 
@@ -232,32 +231,5 @@ def run_v1_server():
         kwargs.setdefault("pool", {"type": "static", "num_workers": 1})
         config = _eval_config(taskset, **kwargs)
         return await run_eval_server(config)
-
-    return _run
-
-
-@pytest.fixture
-def run_v0():
-    """Run a legacy v0 env through the v1 bridge (the eval CLI's `--id` path)."""
-    from verifiers.v1.legacy import run_legacy_eval
-
-    async def _run(
-        env_id: str,
-        *,
-        output_dir: Path,
-        n: int = 1,
-        max_tokens: int = 2048,
-        args: dict | None = None,
-    ) -> list[Trace]:
-        config = EvalConfig(
-            id=env_id,
-            args=args or {},
-            num_tasks=1,
-            num_rollouts=n,
-            sampling={"max_tokens": max_tokens, "temperature": 0},
-            rich=False,
-            output_dir=output_dir,
-        )
-        return await run_legacy_eval(config)
 
     return _run

@@ -18,6 +18,7 @@ from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 from renderers import RendererConfig
 
+from verifiers.types import ClientType
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.eval import EvalClient
 from verifiers.v1.clients.train import TrainClient
@@ -59,6 +60,8 @@ class EvalClientConfig(BaseClientConfig):
     """The default (eval): forward each request to a matching endpoint via `EvalClient`."""
 
     type: Literal["eval"] = "eval"
+    v0_client_type: ClientType = "openai_chat_completions"
+    """Dialect to use when a legacy v0 environment is bridged through this config."""
 
 
 class TrainClientConfig(BaseClientConfig):

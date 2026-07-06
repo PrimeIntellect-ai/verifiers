@@ -228,12 +228,13 @@ retryable error (`--retries.rollout.include` matches by type name); off by defau
 
 ## The v0 bridge
 
-A classic v0 `verifiers.load_environment` env runs through the v1 CLIs unchanged via
-`LegacyEnvServer` (`legacy.py`), an `EnvServer` subclass that runs the v0 env's own rollout loop
-(no v1 interception) and maps each `RolloutOutput` into a v1 `Trace` with
-`rollout_output_to_trace()` — rebuilding the message graph from the v0 trajectory and carrying
-rewards, metrics, reasoning, and (coarser) tokens. The orchestrator can't tell a bridged v0 env
-from a native v1 one; both are an `EnvClient` away.
+A classic v0 `verifiers.load_environment` env runs through `eval` with the old v0 evaluator,
+so eval artifacts stay in the classic `metadata.json` + `results.jsonl` shape. Server and
+training paths use `LegacyEnvServer` (`legacy.py`), an `EnvServer` subclass that runs the v0
+env's own rollout loop (no v1 interception) and maps each `RolloutOutput` into a v1 `Trace`
+with `rollout_output_to_trace()` — rebuilding the message graph from the v0 trajectory and
+carrying rewards, metrics, reasoning, and (coarser) tokens. The orchestrator can't tell a
+bridged v0 env from a native v1 one; both are an `EnvClient` away.
 
 ## Plugins & ids
 

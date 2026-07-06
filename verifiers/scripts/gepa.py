@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 import sys
+import tomllib
 from typing import Any, cast
 
 from gepa.api import optimize
@@ -75,7 +76,33 @@ def main(argv: list[str] | None = None) -> None:
         cli(GEPAConfig, args=argv or ["--help"])
         return
 
+    config_path = None
+    for idx, arg in enumerate(argv):
+        if arg == "@" and idx + 1 < len(argv):
+            config_path = Path(argv[idx + 1])
+            break
+        if arg.startswith("@") and len(arg) > 1:
+            config_path = Path(arg[1:])
+            break
+    endpoints_overridden = any(
+        arg in ("--endpoints-path", "--endpoints_path")
+        or arg.startswith(("--endpoints-path=", "--endpoints_path="))
+        for arg in argv
+    )
+
     config = cli(GEPAConfig, args=argv)
+    if (
+        config_path is not None
+        and config_path.is_file()
+        and not endpoints_overridden
+        and not config.endpoints_path.is_absolute()
+    ):
+        with config_path.open("rb") as handle:
+            raw = tomllib.load(handle)
+        if "endpoints_path" in raw:
+            config.endpoints_path = (
+                config_path.parent / config.endpoints_path
+            ).resolve()
     setup_logging("DEBUG" if config.verbose else os.getenv("VF_LOG_LEVEL", "INFO"))
     env_configs = config.environments
     env_id = config.environment_label

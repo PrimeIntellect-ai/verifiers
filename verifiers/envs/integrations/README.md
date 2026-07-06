@@ -160,7 +160,7 @@ environments/my_openenv/
 Copy your full OpenEnv project into `proj/`, then build the image:
 
 ```bash
-uv run vf-build my-openenv
+prime env build my-openenv
 ```
 
 ```python

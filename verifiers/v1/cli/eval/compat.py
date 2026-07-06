@@ -2,11 +2,11 @@
 
 Hosted-eval sandboxes and old local configs still speak the classic v0 eval
 dialect: flat run fields plus a single ``[[eval]]`` table (``env_id`` or a
-transitional ``taskset``/``group_size`` shape). The v0 evaluator is gone, so
-this module maps that surface onto a native v1 :class:`EvalConfig` TOML — v0
-env ids route through the legacy bridge via the usual auto-detection. The
-mapping leans on ``EvalConfig`` itself: any field the model accepts (by name
-or alias) passes through untouched; only shape changes are hand-translated.
+transitional ``taskset``/``group_size`` shape). True v0 env ids dispatch to the
+old evaluator before this converter runs; this module maps transitional v1
+taskset configs onto a native v1 :class:`EvalConfig` TOML. The mapping leans on
+``EvalConfig`` itself: any field the model accepts (by name or alias) passes
+through untouched; only shape changes are hand-translated.
 Prime reuses ``merge_sampling_args``, ``build_extra_headers``, and
 ``write_converted_eval_config`` for its hosted-eval surface.
 """
@@ -56,7 +56,6 @@ _WARN_DROP_FIELDS = {
 }
 # Purely presentational v0 fields; nothing to warn about.
 _SILENT_DROP_FIELDS = {
-    "save_results",
     "name",
     "version",
     "env_target",
@@ -162,12 +161,14 @@ def build_v1_eval_config(fields: dict[str, Any]) -> tuple[dict[str, Any], list[s
             "endpoint_id has no v1 equivalent; set model and client.base_url"
         )
     client_type = fields.pop("api_client_type", None)
-    if client_type not in (None, "openai_chat_completions"):
-        raise ValueError(f"--api-client-type {client_type} has no v1 equivalent")
 
     for field, reason in _WARN_DROP_FIELDS.items():
         if fields.pop(field, None) not in (None, False, []):
             warnings.append(f"ignoring v0-only `{field}`: {reason}")
+    if fields.pop("save_results", None) is not None:
+        warnings.append(
+            "ignoring v0-only `save_results`: v1 evals always write artifacts"
+        )
     for field in _SILENT_DROP_FIELDS:
         fields.pop(field, None)
     if any([fields.pop(field, False) for field in _TUI_FIELDS]):
@@ -191,6 +192,7 @@ def build_v1_eval_config(fields: dict[str, Any]) -> tuple[dict[str, Any], list[s
         fields["taskset"] = {**env_args, **taskset}
     else:
         raise ValueError("config requires a v1 taskset.id or a legacy env id")
+    is_legacy = bool(legacy_id)
 
     # v0 counts: -1 num_examples means all (v1: unset); hosted TOMLs carry the rollout
     # count under both names, group_size wins. EvalConfig's aliases do the renames.
@@ -233,10 +235,16 @@ def build_v1_eval_config(fields: dict[str, Any]) -> tuple[dict[str, Any], list[s
                 f"unknown provider `{provider}` "
                 f"(known: {', '.join(sorted(PROVIDER_CONFIGS))})"
             )
-        if provider_config.get("client_type"):
+        if provider_config.get("client_type") and not is_legacy:
             raise ValueError(f"--provider {provider} has no v1 equivalent")
         client["base_url"] = provider_config["url"]
         client["api_key_var"] = provider_config["key"]
+        if provider_config.get("client_type"):
+            client["v0_client_type"] = provider_config["client_type"]
+    if client_type not in (None, "openai_chat_completions"):
+        if not is_legacy:
+            raise ValueError(f"--api-client-type {client_type} has no v1 equivalent")
+        client["v0_client_type"] = client_type
     for src, dst in (("api_base_url", "base_url"), ("api_key_var", "api_key_var")):
         if value := fields.pop(src, None):
             client[dst] = value

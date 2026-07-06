@@ -33,8 +33,7 @@ prime eval gem_wordle \
   -b http://127.0.0.1:8000/v1 -k OPENAI_API_KEY \
   -m Qwen/Qwen3-30B-A3B-Instruct-2507 \
   -n 20 -r 3 -t 1024 \
-  -a '{"num_train_episodes": 1000, "num_eval_episodes": 20}' \
-  -s
+  -a '{"num_train_episodes": 1000, "num_eval_episodes": 20}'
 ```
 
 ### Environment Arguments

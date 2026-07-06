@@ -523,8 +523,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         contract = manifest.get("contract")
         if not isinstance(image, str) or not image.strip():
             raise RuntimeError(
-                "Invalid .build.json: `image` must be a non-empty string. "
-                "Run: prime env build <env-id> (optionally with -p <environments-path>)."
+                "Invalid .build.json: `image` must name a prebuilt, non-empty image."
             )
         try:
             port_num = int(port)
@@ -532,13 +531,11 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             raise RuntimeError("Invalid .build.json: `port` must be an integer.") from e
         if not isinstance(start_command, str) or not start_command.strip():
             raise RuntimeError(
-                "Invalid .build.json: `start_command` must be a non-empty string. "
-                "Run: prime env build <env-id> (optionally with -p <environments-path>)."
+                "Invalid .build.json: `start_command` must be a non-empty string."
             )
         if not isinstance(contract, str) or contract not in {"gym", "mcp"}:
             raise RuntimeError(
-                "Invalid .build.json: `contract` must be either 'gym' or 'mcp'. "
-                "Run: prime env build <env-id> (optionally with -p <environments-path>)."
+                "Invalid .build.json: `contract` must be either 'gym' or 'mcp'."
             )
         return image.strip(), port_num, start_command.strip(), contract
 
@@ -546,16 +543,15 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         manifest_path = project_path / ".build.json"
         if not manifest_path.exists():
             raise RuntimeError(
-                "OpenEnv project is missing .build.json. "
-                "Run: prime env build <env-id> (optionally with -p <environments-path>) "
-                "to build and register the image."
+                "OpenEnv project is missing .build.json. Provide one next to the project "
+                'with the prebuilt image details: {"image", "port", "start_command", '
+                '"contract"}.'
             )
         try:
             data = json.loads(manifest_path.read_text())
         except Exception as e:
             raise RuntimeError(
-                "Failed to parse OpenEnv build manifest at "
-                f"{manifest_path}. Re-run prime env build <env-id>."
+                f"Failed to parse OpenEnv build manifest at {manifest_path}."
             ) from e
         if not isinstance(data, dict):
             raise RuntimeError(

@@ -348,7 +348,9 @@ class LegacyEnvServer(EnvServer):
                 )
             else:
                 v0_config = V0ClientConfig(
-                    client_type="openai_chat_completions",
+                    client_type=getattr(
+                        client_config, "v0_client_type", "openai_chat_completions"
+                    ),
                     api_base_url=client_config.base_url,
                     api_key_var=client_config.api_key_var,
                     extra_headers=dict(client_config.headers or {}),
@@ -392,117 +394,3 @@ class LegacyEnvServer(EnvServer):
             rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs
         ]
         return RunGroupResponse(traces=traces)
-
-
-# --- in-process v0 eval (the `eval` CLI's `--legacy.id` path) ------------------
-
-
-def _eval_client(client_config: ClientConfig, model: str):
-    """A v0 chat-completions client built from the v1 eval `ClientConfig` (base url + api
-    key var + headers). Eval needs no token ids, so this skips the renderer pool the
-    training bridge (`_v0_client`) builds."""
-    from verifiers.clients import resolve_client
-    from verifiers.types import ClientConfig as V0ClientConfig
-
-    return resolve_client(
-        V0ClientConfig(
-            client_type="openai_chat_completions",
-            api_base_url=client_config.base_url,
-            api_key_var=client_config.api_key_var,
-            extra_headers=dict(getattr(client_config, "headers", None) or {}),
-        )
-    )
-
-
-async def run_legacy_eval(config) -> list[Trace]:
-    """In-process v0 eval used by the `eval` CLI when `config.is_legacy` (a legacy `id` is
-    set, no v1 `taskset`).
-
-    Loads the v0 env, runs `num_rollouts` per task with bounded concurrency, maps each v0
-    `RolloutOutput` to a v1 `Trace` (`rollout_output_to_trace`), persists results as they
-    land (the same `results.jsonl` / `config.toml` a native run writes), and returns the
-    traces. The v0 env is run directly (`env.run_rollout`, no env server), so this needs no
-    runtime / interception server. All v0 specifics live here; the CLI only branches on
-    `config.is_legacy`."""
-    import asyncio
-    import random
-
-    from verifiers import load_environment
-
-    from verifiers.v1.cli.output import append_trace, output_path, save_config
-
-    env = load_environment(config.id, **(config.args or {}))
-    if config.extra_env_kwargs:  # post-load knobs (max_total_completion_tokens, …)
-        env.set_kwargs(**config.extra_env_kwargs)
-    dataset = env.get_eval_dataset()  # the eval split (falls back to train when unset)
-    idxs = list(range(len(dataset)))
-    if config.shuffle:
-        random.Random(0).shuffle(idxs)  # fixed seed: same sample every run
-    if config.num_tasks is not None:
-        idxs = idxs[: config.num_tasks]
-
-    client = _eval_client(config.client, config.model)
-    sampling_args = config.sampling.model_dump(exclude_none=True)
-    out_dir = output_path(config)
-    save_config(config, out_dir)
-    logger.info("results: %s", out_dir)
-    logger.info(
-        "running %dx%d v0 rollouts on %s (legacy: %s)",
-        len(idxs),
-        config.num_rollouts,
-        config.model,
-        config.id,
-    )
-
-    request_concurrency = config.max_concurrent
-    if request_concurrency and env.requires_group_rollouts:
-        # max_concurrent is a rollout bound; a group is indivisible.
-        request_concurrency = max(1, request_concurrency // config.num_rollouts)
-    sem = asyncio.Semaphore(request_concurrency) if request_concurrency else None
-    write_lock = asyncio.Lock()
-
-    async def run_one(task_idx: int) -> list[Trace]:
-        async def go() -> list[Trace]:
-            out = await env.run_rollout(
-                input=dict(dataset[task_idx]),
-                client=client,
-                model=config.model,
-                sampling_args=sampling_args,
-                state_columns=["trajectory"],
-            )
-            trace = rollout_output_to_trace(out, task_idx)
-            await append_trace(out_dir, trace, write_lock)
-            return [trace]
-
-        if sem is None:
-            return await go()
-        async with sem:
-            return await go()
-
-    async def run_group(task_idx: int) -> list[Trace]:
-        async def go() -> list[Trace]:
-            outs = await env.run_group(
-                group_inputs=[
-                    dict(dataset[task_idx]) for _ in range(config.num_rollouts)
-                ],
-                client=client,
-                model=config.model,
-                sampling_args=sampling_args,
-                state_columns=["trajectory"],
-            )
-            traces = [rollout_output_to_trace(out, task_idx) for out in outs]
-            for trace in traces:
-                await append_trace(out_dir, trace, write_lock)
-            return traces
-
-        if sem is None:
-            return await go()
-        async with sem:
-            return await go()
-
-    if env.requires_group_rollouts:
-        units = [run_group(i) for i in idxs]
-    else:
-        units = [run_one(i) for i in idxs for _ in range(config.num_rollouts)]
-    results = await asyncio.gather(*units)
-    return [trace for unit_traces in results for trace in unit_traces]

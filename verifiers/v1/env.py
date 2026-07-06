@@ -118,13 +118,14 @@ class EnvConfig(BaseConfig):
     tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
     key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
     # --- legacy (v0) backwards-compat -----------------------------------------
-    # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
-    # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
-    # unset) to opt in; native v1 envs leave these untouched. Mirrors prime-rl's EnvConfig
-    # so it inherits these (a v0 env is driven the same way in eval and the env server).
+    # Run a classic `verifiers.load_environment(id, **args)` env through the v1 env-server
+    # bridge (see `verifiers.v1.legacy`) instead of a v1 taskset/harness. Set `id` (leave
+    # `taskset` unset) to opt in; native v1 envs leave these untouched. The eval CLI
+    # dispatches v0 envs to the old v0 evaluator before building this config.
     id: EnvId | None = None
     """Classic (v0) local package id, loaded via `verifiers.load_environment` and run
-    through the legacy bridge. Set this *instead of* `taskset` to run a v0 environment."""
+    through the legacy bridge for server/training paths. Set this *instead of* `taskset`
+    to run a v0 environment."""
     args: dict = {}
     """Construction kwargs forwarded to `load_environment(id, **args)`."""
     extra_env_kwargs: dict = {}
@@ -134,7 +135,7 @@ class EnvConfig(BaseConfig):
 
     @property
     def is_legacy(self) -> bool:
-        """A v0/legacy env (run via the bridge): a legacy `id` is set and no v1 `taskset`."""
+        """A v0/legacy env: a legacy `id` is set and no v1 `taskset`."""
         return self.id is not None and not self.taskset.id
 
     @property
@@ -164,7 +165,7 @@ class EnvConfig(BaseConfig):
             else getattr(taskset, "id", None)
         )
         # A classic (v0) env given as the taskset id (positional, `--taskset.id`, or toml)
-        # auto-routes through the legacy bridge instead of failing taskset resolution.
+        # auto-routes through the legacy env config instead of failing taskset resolution.
         # A redundant explicit `--id` naming the same env converts too.
         if (
             taskset_id

@@ -178,6 +178,33 @@ def test_gepa_main_reads_typed_toml(monkeypatch, tmp_path: Path):
     assert captured["run_dir"] is None
 
 
+def test_gepa_main_resolves_config_relative_endpoints_path(monkeypatch, tmp_path: Path):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    endpoints_path = tmp_path / "endpoints.toml"
+    endpoints_path.write_text("", encoding="utf-8")
+    config_path = config_dir / "gepa.toml"
+    config_path.write_text(
+        'endpoints_path = "../endpoints.toml"\n[[env]]\nid = "reverse-text"\n',
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_load_endpoints(path: str):
+        captured["endpoints_path"] = Path(path)
+        return {}
+
+    monkeypatch.setattr("verifiers.scripts.gepa.load_endpoints", fake_load_endpoints)
+    monkeypatch.setattr(
+        "verifiers.scripts.gepa.run_gepa_optimization",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    main([str(config_path)])
+
+    assert captured["endpoints_path"] == endpoints_path.resolve()
+
+
 def test_load_gepa_dataset_balances_multiple_envs_by_env():
     env1 = SingleTurnEnv(
         dataset=Dataset.from_dict(
