@@ -1,22 +1,11 @@
 """The replay entrypoint: `uv run replay <output-dir> [options] [@ file.toml]`.
 
-Registered as the `replay` console script — the offline sibling of `eval`. Where `eval` runs a
-model rollout per task and scores it in a live runtime, `replay` loads a finished run's saved
-traces (`<output-dir>/results.jsonl`) and re-runs **scoring only**, with no runtime. Its base
-config is the run's own `config.toml`, so CLI flags / `@ file.toml` layer on top exactly like
-`eval` — e.g. re-judge with a different judge model or `--taskset.judges` batching.
-
-The previous scores are cleared and re-scoring runs fresh, so the replay output holds only what it
-produced: the config-plugged judges and trace-only `@reward`/`@metric`s. Each trace is scored on
-its own (group scoring is an eval concern, skipped here); `--num-rescores`/`-r` re-scores every
-selected trace that many times (each on its own copy) to sample judge variance. Signals that
-declare a `runtime` parameter (in-sandbox verifiers like a SWE `solved` reward) can't run
-offline and are skipped; those and any harness metrics are therefore not carried into the replay
-output — the source run retains them. `trace.state` is transient runtime scratch that is not
-persisted, so a signal that reads it re-scores against a fresh empty state — the built-in judges
-grade from the transcript and are unaffected, but a state-dependent `@reward`/`@metric` should not
-be relied on under replay. Results are written to a fresh output dir (config.toml + results.jsonl),
-like `eval`, so the original run is never overwritten.
+Offline sibling of `eval`: loads a finished run's saved traces and re-runs **scoring only**, no
+runtime. The run's own `config.toml` is the base; CLI flags / `@ file.toml` layer on top (e.g. a
+different judge model). Signals needing a `runtime` (in-sandbox verifiers like a SWE `solved`
+reward) are skipped and left as the source recorded them; config-plugged judges and trace-only
+`@reward`/`@metric`s re-run. `--num-rescores`/`-r` re-scores each trace N times to sample judge
+variance. Results go to a fresh output dir, so the source run is never overwritten.
 """
 
 import asyncio
@@ -71,16 +60,11 @@ def output_dir(config: ReplayConfig) -> Path:
 async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trace]:
     logger.debug("replay config:\n%s", config.model_dump_json(indent=2))
     taskset = vf.load_taskset(config.taskset)
-    # Type the task as `WireTask`: it preserves the taskset's extra fields but requires none of
-    # the runtime-only ones (e.g. a Harbor task's `task_dir`, set during setup and absent from
-    # saved traces), so replay reads any taskset's traces without a runtime or importing its Task
-    # type. Judges read `task.prompt_text`; runtime-dependent `@reward`s are skipped anyway.
+    # `WireTask` reads any taskset's saved task without a runtime or its Task type (see WireTask).
     traces = read_traces(source, Trace[WireTask, state_cls(type(taskset))])
     if config.num_traces is not None:
         traces = traces[: config.num_traces]
-    # Replay scores each trace independently (no `@group_reward` — grouping is an eval concern).
-    # `num_rescores` re-scores every selected trace that many times, each on its own deep copy so
-    # the gradings don't clobber each other — e.g. to measure judge variance over one trace.
+    # `num_rescores` re-scores each trace that many times, each on its own copy.
     work = [t.model_copy(deep=True) for t in traces for _ in range(config.num_rescores)]
 
     save_config(config, out)
@@ -100,10 +84,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     async def rescore(trace: Trace, st: TaskProgress) -> None:
         async with sem or contextlib.nullcontext():
             st.start, st.state = time.time(), "running"
-            # Re-score fresh: drop the saved judge records and every score replay recomputes, so a
-            # changed/removed judge leaves no stale (double-summed) entry. Runtime-only rewards
-            # (e.g. a SWE `solved`) and harness metrics aren't recomputed offline, so they are not
-            # carried into the replay output — the source run keeps them.
+            # Clear prior scores so a changed/removed judge leaves no stale (double-summed) entry.
             if isinstance(trace.info, dict):
                 trace.info.pop("judge", None)
             trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
