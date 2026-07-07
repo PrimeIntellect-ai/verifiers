@@ -13,9 +13,10 @@ A rollout is the composition of three independently-swappable pieces, each loade
 - **Harness** — the program that drives the model turn to turn.
 - **Runtime** — *where* that program (and the taskset's tools / user simulator) executes.
 
-`Environment` (`env.py`) wires them together for an eval; `Rollout` (`rollout.py`) runs one
-trajectory; `Episode` (`episode.py`) runs a task's N rollouts and applies cross-rollout
-scoring. The single artifact every layer produces and consumes is a **`Trace`** — a typed
+`Environment` (`env.py`) wires them together for an eval, building every episode's
+rollouts through an internal `Agent` (`agent.py`) — the same primitive agent programs
+use; `Rollout` (`rollout.py`) runs one trajectory; `Episode` (`episode.py`) runs a
+task's N rollouts and applies cross-rollout scoring. The single artifact every layer produces and consumes is a **`Trace`** — a typed
 message graph (`graph.py`, `trace.py`).
 
 The load-bearing design idea: **a harness only ever points its model SDK at a localhost

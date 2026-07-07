@@ -111,6 +111,15 @@ themselves, via the lineage stamps.
 
 Reward/metric handlers are `async def` — a sync handler fails at scoring time.
 
+## The eval runs on the same primitive
+
+An eval is already an agent program — the simplest one. `Environment` builds every
+episode's rollouts through an internal `Agent` (`Agent.rollout`, the resolve-only half
+of `run`), so placement, stage timeouts, and pairing validation resolve identically
+whether a run came from a config-driven eval or a hand-written program. Provenance is
+stamped by the rollout itself, so *every* trace — eval or program — carries
+`info["agent"]`.
+
 ## Placement rules
 
 - A **fresh box** per run is the default: the agent's runtime policy, resolved per task

@@ -31,7 +31,7 @@ from verifiers.v1.cli.resolve import (
 )
 from verifiers.v1.configs.validate import ValidateConfig
 from verifiers.v1.decorators import invoke
-from verifiers.v1.env import resolve_runtime_config
+from verifiers.v1.resolve import resolve_runtime_config
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.taskset import Taskset

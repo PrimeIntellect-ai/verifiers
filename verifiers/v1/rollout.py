@@ -314,6 +314,17 @@ class Rollout:
                     logger.warning(
                         "runtime teardown failed (rollout %s)", trace.id, exc_info=True
                     )
+        # Who produced this trace — so it stays attributable (to an agent program's
+        # Agents, or an eval's env) after the objects are gone.
+        trace.info["agent"] = {
+            "harness": self.harness.config.id,
+            "model": ctx.model,
+            "runtime": {
+                "type": self.runtime_config.type,
+                "descriptor": runtime.descriptor,
+                "borrowed": not owns_runtime,
+            },
+        }
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

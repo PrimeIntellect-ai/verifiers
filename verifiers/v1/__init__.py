@@ -25,7 +25,6 @@ from verifiers.v1.env import (
     EnvServerConfig,
     Environment,
     StaticPoolConfig,
-    TimeoutConfig,
     pool_serve_kwargs,
 )
 from verifiers.v1.episode import Episode
@@ -77,6 +76,7 @@ from verifiers.v1.scoring import (
     read_answer_file_or_last_reply as read_answer_file_or_last_reply,
     verify_boxed_math_answer as verify_boxed_math_answer,
 )
+from verifiers.v1.resolve import TimeoutConfig
 from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (

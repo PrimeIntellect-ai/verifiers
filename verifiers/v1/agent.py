@@ -30,7 +30,7 @@ from typing import AsyncIterator
 from verifiers.v1.clients import (
     ModelContext,
 )
-from verifiers.v1.env import (
+from verifiers.v1.resolve import (
     TimeoutConfig,
     cap_remote_harness_timeout,
     resolve_runtime_config,
@@ -147,6 +147,24 @@ class Agent:
         from the agent's runtime policy. `ctx` replaces the agent's model context for
         this run — `dataclasses.replace(agent.ctx, model=...)` for a judge sweeping
         models."""
+        return await self.rollout(task, taskset=taskset, runtime=runtime, ctx=ctx).run()
+
+    def rollout(
+        self,
+        task: Task,
+        *,
+        taskset: Taskset | None = None,
+        runtime: Runtime | None = None,
+        ctx: ModelContext | None = None,
+        shared_urls: dict[str, str] | None = None,
+        interception: InterceptionPool | None = None,
+    ) -> Rollout:
+        """Resolve one run of this agent into a `Rollout`, without running it — placement
+        (task-resolved runtime, or the borrowed box), stage timeouts (agent > task, capped
+        for remote sandboxes), pairing validation. `run()` is this plus the await; the
+        `Environment` builds its episodes' rollouts here, injecting its eval-level
+        `shared_urls` / `interception` pool (left None, the agent's own entered pool
+        serves interception when reachable)."""
         ctx = ctx if ctx is not None else self.ctx
         taskset = taskset if taskset is not None else _NULL_TASKSET
         if runtime is not None:
@@ -158,7 +176,7 @@ class Agent:
             )
             run_is_local = runtime_is_local(runtime_config)
         validate_pairing(self.harness, taskset, runtime_config)
-        rollout = Rollout(
+        return Rollout(
             task=task,
             taskset=taskset,
             harness=self.harness,
@@ -173,22 +191,14 @@ class Agent:
             finalize_timeout=_merge(self.timeout.finalize, task.timeout.finalize),
             scoring_timeout=_merge(self.timeout.scoring, task.timeout.scoring),
             limits=self.limits,
-            interception=self._interception_for(run_is_local),
+            shared_urls=shared_urls,
+            interception=(
+                interception
+                if interception is not None
+                else self._interception_for(run_is_local)
+            ),
             runtime=runtime,
         )
-        trace = await rollout.run()
-        # Who produced this trace — so a program's traces stay attributable after the
-        # Agent objects are gone. Resolved per run: overrides and the live box win.
-        trace.info["agent"] = {
-            "harness": self.harness.config.id,
-            "model": ctx.model,
-            "runtime": {
-                "type": runtime_config.type,
-                "descriptor": rollout.runtime.descriptor if rollout.runtime else None,
-                "borrowed": runtime is not None,
-            },
-        }
-        return trace
 
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:

@@ -1,14 +1,16 @@
-"""The environment: a taskset composed with an harness and a runtime.
+"""The environment: a program of agent interactions over a taskset.
 
-The Environment is the eval-level composition and *resolver* — it does not itself run
-rollouts. It holds the taskset, harness, runtime config, and timeouts; lists the tasks;
-and turns one task into a runnable `Episode` of `n` `Rollout`s, resolving per task the
-runtime (image + resources, with cli/task/default precedence) and the timeouts. Execution
-lives one level down: an `Episode` runs `n` `Rollout`s of a task and scores them
-(per-rollout `@reward`/`@metric`, then cross-rollout `@group_reward`); each `Rollout`
-runs one trajectory. The taskset's `@reward`/`@metric` get the rollout's runtime
-(read/exec inside it), so a task scores correctly under any harness; `@group_reward`s
-compare a task's rollouts.
+The Environment is the eval-level composition — it does not itself run rollouts. It
+holds the taskset and the timeouts/limits config, lists the tasks, and turns one task
+into a runnable `Episode`. Its program is the simplest one: a single `Agent` (the
+configured harness, the caller's model context, the harness's runtime policy) run `n`
+times on the task — every episode's rollouts are built through that internal Agent, so
+an eval run and a hand-written agent program resolve placement, timeouts, and pairing
+identically. Execution lives one level down: an `Episode` runs `n` `Rollout`s of a task
+and scores them (per-rollout `@reward`/`@metric`, then cross-rollout `@group_reward`);
+each `Rollout` runs one trajectory. The taskset's `@reward`/`@metric` get the rollout's
+runtime (read/exec inside it), so a task scores correctly under any harness;
+`@group_reward`s compare a task's rollouts.
 """
 
 import contextlib
@@ -18,37 +20,22 @@ from typing import Annotated, Literal
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.agent import Agent
+from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.types import ID
 from verifiers.v1.interception import InterceptionPool, RolloutLimits
+from verifiers.v1.resolve import TimeoutConfig, validate_pairing
 from verifiers.v1.retries import RetryConfig
-from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
-    RuntimeConfig,
     SubprocessConfig,
     runtime_is_local,
 )
 from verifiers.v1.task import Task
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.taskset import TasksetConfig
 from verifiers.v1.mcp import serve_shared
-
-
-class TimeoutConfig(BaseConfig):
-    """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no
-    limit). Each bounds one stage of `Rollout.run`: the taskset's `setup` hook, the harness
-    run, the taskset's `finalize` hook, then scoring."""
-
-    setup: float | None = None
-    """Max wall-clock for the taskset's `setup` hook (per-task runtime prep)."""
-    rollout: float | None = None
-    """Max wall-clock for the rollout (the harness run)."""
-    finalize: float | None = None
-    """Max wall-clock for the taskset's `finalize` hook (post-run work, before scoring)."""
-    scoring: float | None = None
-    """Max wall-clock for scoring — verify + rewards/metrics."""
 
 
 class StaticPoolConfig(BaseConfig):
@@ -185,100 +172,6 @@ class EnvServerConfig(EnvConfig):
 logger = logging.getLogger(__name__)
 
 
-def resolve_runtime_config(
-    base: RuntimeConfig, task: Task, warned: set[tuple[str, str]] | None = None
-) -> RuntimeConfig:
-    """Resolve a task's runtime config from a `base`: inject the task's `image` (a task with
-    an image must run in a container — refuse subprocess), and apply its `workdir` and
-    requested `resources` to the fields the runtime supports. Precedence is cli/toml > task >
-    default; a resource the runtime doesn't support warns once (deduped via `warned`). Shared
-    by `Environment.runtime_for` (rollouts) and the `validate` entrypoint."""
-    config = base
-    updates: dict = {}
-    if task.image is not None:
-        if isinstance(config, SubprocessConfig):
-            raise ValueError(
-                f"task {task.idx!r} requires image {task.image!r}, but the subprocess "
-                "runtime has no container; use the docker or prime runtime"
-            )
-        updates["image"] = task.image
-    workdir_spec = type(config).model_fields.get("workdir")
-    if (
-        task.workdir is not None
-        and workdir_spec is not None
-        and getattr(config, "workdir") == workdir_spec.default
-    ):
-        updates["workdir"] = task.workdir
-    for field, value in task.resources.model_dump(exclude_none=True).items():
-        spec = type(config).model_fields.get(field)
-        if spec is None:
-            key = (config.type, field)
-            if warned is not None and key not in warned:
-                warned.add(key)
-                logger.warning(
-                    "runtime %r doesn't support resource %r; ignoring it",
-                    config.type,
-                    field,
-                )
-        elif (
-            getattr(config, field) == spec.default
-        ):  # still the default → task may set it
-            updates[field] = value
-        # else: cli/toml changed it from the default → it wins over the task
-    return config.model_copy(update=updates) if updates else config
-
-
-def validate_pairing(
-    harness: Harness, taskset: Taskset, runtime_config: RuntimeConfig
-) -> None:
-    """Refuse a harness/taskset/runtime combination that cannot work: a taskset whose
-    tools (MCP) or user simulator the harness doesn't drive would run to completion with
-    the model never seeing them, and a `NEEDS_CONTAINER` taskset's world hooks would run
-    on the host under the subprocess runtime. Shared by `Environment` (once, at init)
-    and `Agent.run` (per run, against the resolved runtime)."""
-    if not harness.SUPPORTS_MCP and type(taskset).tools is not Taskset.tools:
-        raise ValueError(
-            f"Harness {harness.config.id!r} does not support MCP tools, but taskset "
-            f"{taskset.config.id!r} exposes tool servers (MCP). Run it with a harness "
-            f"that supports MCP (e.g. the default harness), or use a taskset without tools."
-        )
-    if not harness.SUPPORTS_USER_SIM and type(taskset).user is not Taskset.user:
-        raise ValueError(
-            f"Harness {harness.config.id!r} does not drive a user simulator, but taskset "
-            f"{taskset.config.id!r} defines one (Taskset.user). Run it with a harness that "
-            f"supports user simulation (e.g. the default harness), or use a taskset without one."
-        )
-    if taskset.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
-        raise ValueError(
-            f"Taskset {taskset.config.id!r} needs a container runtime "
-            "(NEEDS_CONTAINER), but this run resolves to the subprocess runtime; "
-            "use a docker or prime runtime."
-        )
-
-
-def cap_remote_harness_timeout(
-    harness_timeout: float | None, runtime_config: RuntimeConfig, task: Task
-) -> float | None:
-    """Remote sandboxes have a maximum lifetime of 24 hours: cap the harness timeout
-    there (with a warning) so a long run times out cleanly in the framework instead of
-    the provider killing the box mid-run. Shared by `Environment.episode` and
-    `Agent.run`."""
-    if (
-        harness_timeout is not None
-        and harness_timeout > 24 * 60 * 60
-        and not runtime_is_local(runtime_config)
-    ):
-        logger.warning(
-            "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
-            "maximum lifetime of 24 hours; capping it at 24 hours",
-            task.idx,
-            harness_timeout / (60 * 60),
-            runtime_config.type,
-        )
-        return 24 * 60 * 60
-    return harness_timeout
-
-
 class Environment:
     def __init__(self, config: EnvConfig) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
@@ -301,35 +194,39 @@ class Environment:
                 "run.",
                 self.harness.config.id,
             )
-        self.setup_timeout = config.timeout.setup
-        self.harness_timeout = config.timeout.rollout
-        self.finalize_timeout = config.timeout.finalize
-        self.scoring_timeout = config.timeout.scoring
         self.limits = RolloutLimits(
             max_turns=config.max_turns,
             max_input_tokens=config.max_input_tokens,
             max_output_tokens=config.max_output_tokens,
             max_total_tokens=config.max_total_tokens,
         )
-        self._warned_resources: set[tuple[str, str]] = set()
+        self._agent: Agent | None = None
+        """The env's internal Agent — the single-agent program every episode runs. Built
+        on the first `episode()` (an Agent binds a `ModelContext` at construction, and the
+        env only sees one then); each episode passes its own `ctx` per rollout, so a cached
+        agent never pins a stale model."""
         self._shared_urls: dict[str, str] = {}
         self._interception: InterceptionPool | None = None
         """Eval-level serving resources, live only inside `serving()`: shared tool servers
         ({name: url}) and the interception pool. `episode()` injects them into every rollout
         so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
 
-    def runtime_for(self, task: Task) -> RuntimeConfig:
-        """Resolve the runtime config for a task off the harness's runtime (see
-        `resolve_runtime_config`)."""
-        return resolve_runtime_config(
-            self.harness.config.runtime, task, self._warned_resources
-        )
+    def agent(self, ctx: ModelContext) -> Agent:
+        """The env's Agent: the configured harness with the harness's runtime policy and
+        the env's timeouts/limits. One instance backs every episode (its resolution state —
+        e.g. warn dedup — spans the eval); `ctx` only seeds the first construction."""
+        if self._agent is None:
+            self._agent = Agent(
+                self.harness, ctx, limits=self.limits, timeout=self.config.timeout
+            )
+        return self._agent
 
     def episode(self, task: Task, ctx: ModelContext, n: int = 1) -> Episode:
-        """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime
-        (image + resources) and its timeouts (cli/toml > task > default, None = no limit),
-        build one `Rollout` per sample sharing them, and wrap them in an `Episode` (which
-        runs them and applies the taskset's `@group_reward`s across their traces).
+        """Resolve `task` into a runnable episode of `n` rollouts of the env's agent —
+        each rollout resolved by `Agent.rollout` (runtime from image/resources, timeouts
+        cli/toml > task > default, pairing validation) with the env's serving resources
+        injected — and wrap them in an `Episode` (which runs them and applies the
+        taskset's `@group_reward`s across their traces).
 
         A taskset with `@group_reward`s compares a task's rollouts, so it needs >=2 of
         them — refuse `n < 2` there (rather than silently scoring a group of one)."""
@@ -338,47 +235,18 @@ class Environment:
                 f"taskset defines @group_reward(s), which compare a task's rollouts and "
                 f"need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
             )
-        runtime_config = self.runtime_for(task)
-        setup_timeout = (
-            self.setup_timeout if self.setup_timeout is not None else task.timeout.setup
-        )
-        harness_timeout = (
-            self.harness_timeout
-            if self.harness_timeout is not None
-            else task.timeout.harness
-        )
-        harness_timeout = cap_remote_harness_timeout(
-            harness_timeout, runtime_config, task
-        )
-        finalize_timeout = (
-            self.finalize_timeout
-            if self.finalize_timeout is not None
-            else task.timeout.finalize
-        )
-        scoring_timeout = (
-            self.scoring_timeout
-            if self.scoring_timeout is not None
-            else task.timeout.scoring
-        )
-        retries = self.config.retries
+        agent = self.agent(ctx)
         rollouts = [
-            Rollout(
-                task=task,
+            agent.rollout(
+                task,
                 taskset=self.taskset,
-                harness=self.harness,
                 ctx=ctx,
-                runtime_config=runtime_config,
-                setup_timeout=setup_timeout,
-                harness_timeout=harness_timeout,
-                finalize_timeout=finalize_timeout,
-                scoring_timeout=scoring_timeout,
-                limits=self.limits,
                 shared_urls=self._shared_urls,
                 interception=self._interception,
             )
             for _ in range(n)
         ]
-        return Episode(rollouts, self.taskset, retry=retries.rollout)
+        return Episode(rollouts, self.taskset, retry=self.config.retries.rollout)
 
     @contextlib.asynccontextmanager
     async def serving(self, tasks: list[Task]):
