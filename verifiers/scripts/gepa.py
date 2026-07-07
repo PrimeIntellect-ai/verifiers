@@ -17,7 +17,7 @@ from verifiers import setup_logging
 from verifiers.clients import resolve_client
 from verifiers.envs.env_group import ENV_GROUP_INFO_KEY
 from verifiers.gepa.adapter import VerifiersGEPAAdapter, make_reflection_lm
-from verifiers.gepa.config import GEPAConfig, GEPAEnvConfig
+from verifiers.gepa.config import GEPAConfig, GEPAEnvConfig, GEPAOptimizationConfig
 from verifiers.gepa.display import GEPADisplay
 from verifiers.gepa.gepa_utils import save_gepa_results
 from verifiers.types import ClientConfig, EndpointConfig
@@ -89,6 +89,20 @@ def main(argv: list[str] | None = None) -> None:
         or arg.startswith(("--endpoints-path=", "--endpoints_path="))
         for arg in argv
     )
+
+    # Rewrite bare top-level GEPA budget flags (e.g. `--max-calls`, `--num-train`)
+    # to their nested `--gepa.*` form so documented commands keep working without
+    # spelling the nested path.
+    gepa_fields = {
+        name.replace("_", "-") for name in GEPAOptimizationConfig.model_fields
+    }
+    argv = [
+        f"--gepa.{arg[2:]}"
+        if arg.startswith("--")
+        and arg[2:].split("=", 1)[0].replace("_", "-") in gepa_fields
+        else arg
+        for arg in argv
+    ]
 
     config = cli(GEPAConfig, args=argv)
     if (
@@ -167,6 +181,13 @@ def main(argv: list[str] | None = None) -> None:
         reflection_api_base_url = api_base_url
 
     run_dir = config.run_dir
+    if (
+        run_dir is not None
+        and config_path is not None
+        and config_path.is_file()
+        and not run_dir.is_absolute()
+    ):
+        run_dir = (config_path.parent / run_dir).resolve()
     if run_dir is None and config.save_results:
         run_dir = get_gepa_results_path(env_id, model, str(config.env_dir_path))
 

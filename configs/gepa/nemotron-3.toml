@@ -5,7 +5,7 @@ reflection_model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
 # reflection_model = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
 
 [[env]]
-id = "wiki-search-v1"
+id = "wiki-search"
 
 # [[env]]
 # id = "reverse-text"

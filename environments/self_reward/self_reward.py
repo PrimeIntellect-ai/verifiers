@@ -30,10 +30,19 @@ def load_environment(
 
     async def judge_score(judge, prompt, completion, answer, state) -> float:
         judge_response = await judge(prompt, completion, answer, state)
-        scores = re.findall(r"\b(?:0(?:\.\d+)?|1(?:\.0+)?)\b", judge_response)
+        # Match either a fractional score ("X/Y", "X out of Y") or a bare
+        # number, capturing the intended score (the numerator) so denominators
+        # like "/1.0" aren't mistaken for the score and inflate the reward.
+        number = r"0(?:\.\d+)?|1(?:\.0+)?"
+        scores = re.findall(
+            rf"\b({number})\s*(?:/|out of)\s*(?:{number})\b|\b({number})\b",
+            judge_response,
+            flags=re.IGNORECASE,
+        )
         if not scores:
             return 0.0
-        return max(0.0, min(1.0, float(scores[-1])))
+        numerator, bare = scores[-1]
+        return max(0.0, min(1.0, float(numerator or bare)))
 
     rubric.add_reward_func(judge_score, weight=1.0)
 

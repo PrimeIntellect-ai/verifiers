@@ -112,13 +112,14 @@ def main(argv: list[str] | None = None) -> None:
         return
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
     # (the path prime-rl trains through). `--rich` is the v1 live dashboard (in-process only:
-    # `server + rich` is rejected at config validation); legacy (v0) runs get the classic
-    # vf-eval display instead (TTY only). Either display owns the console, so logs go to the
-    # file only. Always tee the run's logs to a file under the output dir.
+    # `server + rich` is rejected at config validation); legacy (v0) runs ignore `--rich` and
+    # get the classic vf-eval display instead (TTY only). Either display owns the console, so
+    # logs go to the file only. Always tee the run's logs to a file under the output dir.
     log_file = str(output_path(config) / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
-    legacy_display = config.is_legacy and config.rich and is_tty()
-    if (config.rich and not config.is_legacy) or legacy_display:
+    legacy_display = config.is_legacy and is_tty()
+    rich_display = config.rich and not config.is_legacy
+    if rich_display or legacy_display:
         setup_logging(level, log_file=log_file, console=False)
         # drop stray stdlib records that bypass loguru (else they print over the UI)
         logging.lastResort = None
@@ -141,7 +142,8 @@ def main(argv: list[str] | None = None) -> None:
     else:  # in-process (default), with or without the live dashboard
         env = vf.Environment(config)
         traces = asyncio.run(run_eval(env, config))
-    if not config.rich:  # --rich is the whole output; otherwise dump each trace as JSON
+    # A display is the whole output; without one, dump each trace as JSON.
+    if not (rich_display or legacy_display):
         for trace in traces:
             print(trace.model_dump_json(indent=2, exclude_none=True))
 

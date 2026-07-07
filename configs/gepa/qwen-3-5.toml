@@ -9,7 +9,7 @@ reflection_model = "Qwen/Qwen3.5-4B"
 # reflection_model = "Qwen/Qwen3.5-9B"
 
 [[env]]
-id = "wiki-search-v1"
+id = "wiki-search"
 
 # [[env]]
 # id = "reverse-text"
