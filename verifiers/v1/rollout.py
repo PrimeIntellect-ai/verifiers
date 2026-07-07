@@ -1,7 +1,8 @@
 """A rollout: one trajectory — drive an harness in a runtime and score its trace.
 
 A Rollout owns a single trajectory end-to-end, including its runtime's lifecycle. It
-makes and starts the runtime, gets an interception endpoint (a slot on the shared pool if
+makes and starts the runtime (unless handed a live one to borrow — then its creator owns
+start and teardown), gets an interception endpoint (a slot on the shared pool if
 one is given, else a per-rollout server exposed via its own runtime), then drives the
 staged lifecycle while the runtime is live — taskset + harness setup, the harness run,
 taskset `finalize`, and per-rollout `@reward`/`@metric` scoring — each under its own stage
@@ -78,6 +79,7 @@ class Rollout:
         limits: RolloutLimits | None = None,
         shared_urls: dict[str, str] | None = None,
         interception: InterceptionPool | None = None,
+        runtime: Runtime | None = None,
     ) -> None:
         self.task = task
         self.taskset = taskset
@@ -95,6 +97,10 @@ class Rollout:
         `Environment.serving` context — so a rollout always has them and no runner has to thread
         them in."""
         self.interception = interception
+        self._borrowed_runtime = runtime
+        """A live runtime to run in instead of provisioning one (an agent program placing this
+        run into an existing box — see `verifiers.v1.agent`). Creator owns teardown: `run()`
+        neither starts nor stops a borrowed runtime."""
         self.phase = Phase.PENDING
         """Lifecycle phase for display (see `Phase`); starts PENDING (queued behind the
         concurrency cap) so the --rich dashboard can list it before it begins, advances to
@@ -145,9 +151,13 @@ class Rollout:
         self.trace = trace  # expose for the --rich dashboard
         self.phase = Phase.SETUP  # leaving the queue: provisioning starts now
         trace.timing.setup.start = time.time()
-        self.runtime = make_runtime(
-            self.runtime_config, name=trace.id
-        )  # ref set first → always tearable-down; named after the rollout for traceability
+        owns_runtime = self._borrowed_runtime is None
+        if owns_runtime:
+            self.runtime = make_runtime(
+                self.runtime_config, name=trace.id
+            )  # ref set first → always tearable-down; named after the rollout for traceability
+        else:
+            self.runtime = self._borrowed_runtime
         runtime = self.runtime
         ctx = self.ctx
         stops = discover_decorated(self.taskset, "stop")
@@ -160,7 +170,8 @@ class Rollout:
         )
         try:
             session = RolloutSession(ctx, trace, stops, self.limits)
-            await runtime.start()
+            if owns_runtime:
+                await runtime.start()
             setup_deadline = (
                 None
                 if self.setup_timeout is None
@@ -287,12 +298,14 @@ class Rollout:
                 trace.timing.finalize.end = now  # error mid-finalize: close finalize
             # Tear down here — group rewards (later) need only the trace, not a live
             # runtime. `runtime` is always set: make_runtime() ran before the `try`.
-            try:
-                await runtime.stop()
-            except Exception:
-                logger.warning(
-                    "runtime teardown failed (rollout %s)", trace.id, exc_info=True
-                )
+            # A borrowed runtime is its creator's to tear down, not this rollout's.
+            if owns_runtime:
+                try:
+                    await runtime.stop()
+                except Exception:
+                    logger.warning(
+                        "runtime teardown failed (rollout %s)", trace.id, exc_info=True
+                    )
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

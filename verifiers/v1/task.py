@@ -83,6 +83,14 @@ class Task(StrictBaseModel):
     """Optional per-task timeout overrides, one per rollout stage (merge with the eval's `timeout`)."""
     resources: TaskResources = TaskResources()
     """Optional runtime resources this task requests (applied where supported)."""
+    sources: tuple[str, ...] = ()
+    """Trace ids this task was derived from — set by agent programs that mint tasks out of
+    earlier traces (a judge task from a solver trace, a solver task from a proposer trace).
+    Empty for a dataset task. Together with `relation`, this is the lineage an AgentGraph
+    is reconstructed from."""
+    relation: str | None = None
+    """How this task relates to its `sources` (e.g. "judges", "solves", "monitors").
+    Free-form; meaningful only when `sources` is non-empty."""
 
     @property
     def prompt_text(self) -> str:

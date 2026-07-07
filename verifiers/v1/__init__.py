@@ -8,6 +8,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.agent import Agent, NullTaskset, make_context
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -206,6 +207,10 @@ __all__ = [
     "TimeoutConfig",
     "Episode",
     "Rollout",
+    # agent programs
+    "Agent",
+    "NullTaskset",
+    "make_context",
     # loaders
     "import_taskset",
     "import_harness",
