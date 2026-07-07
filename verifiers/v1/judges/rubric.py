@@ -1,8 +1,8 @@
 """rubric — an off-the-shelf rubric judge, plugged from config alone.
 
 Reads a rubric — a list of criteria — from a JSON or TOML file and asks the judge model to grade
-each by picking one of its ordered `choices` (default `["yes", "no"]`, a binary check), scored to
-[0, 1] by rank — best → worst, so the first choice is 1.0 and the last 0.0 (all in one call by
+each by picking one of its ordered `choices` (default `["no", "yes"]`, a binary check), scored to
+[0, 1] by rank — worst → best, so the first choice is 0.0 and the last 1.0 (all in one call by
 default, or batched `max_criteria`-at-a-time). Grading uses plain-text JSON by default, or
 structured output when `structured_output=true` (see `RubricJudgeConfig`). The reward is the
 weighted mean of the per-criterion scores (`sum(w*v) / sum(w)`, so it stays in [0, 1]); each score
@@ -22,8 +22,8 @@ with `rubrics/quality.toml` listing the criteria (JSON takes `{"criteria": [...]
     name = "cites_sources"
     text = "The response cites at least one specific source."
     weight = 1.0
-    # choices default to ["yes", "no"]; give an ordered best→worst list for a graded criterion:
-    # choices = ["thorough", "partial", "none"]   # -> 1.0, 0.5, 0.0
+    # choices default to ["no", "yes"]; give an ordered worst→best list for a graded criterion:
+    # choices = ["none", "partial", "thorough"]   # -> 0.0, 0.5, 1.0
 """
 
 import asyncio
@@ -66,10 +66,9 @@ JSON_SUFFIX = (
 
 
 def normalize_choice(choice: str, choices: list[str]) -> float:
-    """Score a chosen option to [0, 1] by rank. `choices` are ordered best → worst, so the first
-    scores 1.0, the last 0.0, and the rest evenly spaced (`choices` always has >= 2 entries)."""
-    rank = choices.index(choice)
-    return (len(choices) - 1 - rank) / (len(choices) - 1)
+    """Score a chosen option to [0, 1] by rank. `choices` are ordered worst → best, so the first
+    scores 0.0, the last 1.0, and the rest evenly spaced (`choices` always has >= 2 entries)."""
+    return choices.index(choice) / (len(choices) - 1)
 
 
 def first_verdicts_object(text: str) -> dict | None:
@@ -100,9 +99,9 @@ class Criterion(StrictBaseModel):
     """The check itself, phrased so the first (best) choice means satisfied."""
     weight: float = 1.0
     """The criterion's share of the reward (overridable per name via `weights` in config)."""
-    choices: list[str] = ["yes", "no"]
-    """Allowed answers, ordered **best → worst**: the first scores 1.0, the last 0.0, the rest
-    evenly spaced by rank. Default `["yes", "no"]` is a binary check. Needs >= 2, no duplicates."""
+    choices: list[str] = ["no", "yes"]
+    """Allowed answers, ordered **worst → best**: the first scores 0.0, the last 1.0, the rest
+    evenly spaced by rank. Default `["no", "yes"]` is a binary check. Needs >= 2, no duplicates."""
 
     @field_validator("choices")
     @classmethod
@@ -223,8 +222,8 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         ) -> str:  # every criterion states its own allowed answers inline
             opts = (
                 "yes or no"
-                if c.choices == ["yes", "no"]
-                else "one of, best to worst: " + ", ".join(c.choices)
+                if c.choices == ["no", "yes"]
+                else "one of, worst to best: " + ", ".join(c.choices)
             )
             return f"- {c.name}: {c.text} (answer {opts})"
 
