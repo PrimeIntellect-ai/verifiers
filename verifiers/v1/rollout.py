@@ -157,6 +157,14 @@ class Rollout:
                 self.runtime_config, name=trace.id
             )  # ref set first → always tearable-down; named after the rollout for traceability
         else:
+            if self._borrowed_runtime.stopped:
+                # A lifetime bug in the borrowing program, not a property of this rollout's
+                # world: raise to the caller instead of capturing onto the trace.
+                raise ValueError(
+                    f"borrowed runtime {self._borrowed_runtime.name!r} was already torn "
+                    "down by its owner; keep the provisioning context open for every run "
+                    "placed into the box"
+                )
             self.runtime = self._borrowed_runtime
         runtime = self.runtime
         ctx = self.ctx
