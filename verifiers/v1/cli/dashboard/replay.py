@@ -25,10 +25,18 @@ class ReplayProgress(TaskProgress):
     detail: str = ""
 
 
-_STYLE = {"pending": "dim", "running": "yellow", "scored": "green", "error": "red"}
+# Colors mirror the eval dashboard for shared states: pending=dim, running=cyan, scored=green
+# (eval's "success"), error=red. `skipped` is replay-only (a rollout that errored → copied through).
+_STYLE = {
+    "pending": "dim",
+    "running": "cyan",
+    "scored": "green",
+    "skipped": "blue",
+    "error": "red",
+}
 _MARK_WIDTH = max(len(state) for state in _STYLE)
 _MARK = {state: escape(f"[{state:<{_MARK_WIDTH}}]") for state in _STYLE}
-_DONE = ("scored", "error")
+_DONE = ("scored", "error", "skipped")
 
 
 def _render(
@@ -36,6 +44,7 @@ def _render(
 ) -> Group:
     done = [s for s in states if s.state in _DONE]
     scored = sum(1 for s in done if s.state == "scored")
+    skipped = sum(1 for s in done if s.state == "skipped")
     overview = Table.grid(padding=(0, 2))
     overview.add_column(style="dim")
     overview.add_column()
@@ -44,7 +53,7 @@ def _render(
 
     stats = (
         f" {len(done)}/{len(states)} · {format_time(time.time() - start)} · "
-        f"scored {scored} · failed {len(done) - scored}"
+        f"scored {scored} · failed {len(done) - scored - skipped} · skipped {skipped}"
     )
     progress = Table.grid()
     progress.add_column()
