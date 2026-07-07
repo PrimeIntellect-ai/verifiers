@@ -29,6 +29,7 @@ with `rubrics/quality.toml` listing the criteria (JSON takes `{"criteria": [...]
 import asyncio
 import json
 import math
+import re
 import tomllib
 from functools import cached_property
 from pathlib import Path
@@ -220,12 +221,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         def render(
             c: Criterion,
         ) -> str:  # every criterion states its own allowed answers inline
-            opts = (
-                "yes or no"
-                if c.choices == ["no", "yes"]
-                else "one of, worst to best: " + ", ".join(c.choices)
-            )
-            return f"- {c.name}: {c.text} (answer {opts})"
+            return f"- {c.name}: {c.text} (answer one of, worst to best: {', '.join(c.choices)})"
 
         reference = ""  # optional gold answer shown to the judge; blank unless `answer_field` set
         if self.config.answer_field:
@@ -239,9 +235,14 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 answer = "\n".join(str(item) for item in answer)
             # A clearly-announced section (leading blank separates it from the Task block; the
             # template's newline before Response closes it). Absent when `answer_field` is unset.
+            # Fence longer than any backtick run in the answer, so a patch/markdown containing ```
+            # can't close it early and spill into the prompt as instructions.
+            fence = "`" * (
+                max((len(m) for m in re.findall(r"`+", answer)), default=2) + 1
+            )
             reference = (
                 "\nReference solution (a correct implementation of this task, for comparison):\n"
-                f"```\n{answer}\n```\n"
+                f"{fence}\n{answer}\n{fence}\n"
             )
 
         fields = dict(
