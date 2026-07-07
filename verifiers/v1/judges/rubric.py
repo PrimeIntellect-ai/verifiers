@@ -237,11 +237,11 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 )
             if isinstance(answer, (list, tuple)):
                 answer = "\n".join(str(item) for item in answer)
-            # A self-contained, clearly-announced section; the trailing blank line separates it
-            # from the Response. Absent entirely when `answer_field` is unset (`{reference}` → "").
+            # A clearly-announced section (leading blank separates it from the Task block; the
+            # template's newline before Response closes it). Absent when `answer_field` is unset.
             reference = (
-                "Reference solution (a correct implementation of this task, for comparison):\n"
-                f"```\n{answer}\n```\n\n"
+                "\nReference solution (a correct implementation of this task, for comparison):\n"
+                f"```\n{answer}\n```\n"
             )
 
         fields = dict(
