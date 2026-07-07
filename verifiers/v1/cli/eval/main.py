@@ -105,6 +105,10 @@ def main(argv: list[str] | None = None) -> None:
     else:  # in-process (default), with or without the live dashboard
         env = vf.Environment(config)
         traces = asyncio.run(run_eval(env, config))
+    if config.push:  # opt-in: upload the run to the platform's Evaluations tab
+        from verifiers.v1.push import push_traces
+
+        push_traces(traces, config)
     if not rich:  # --rich is the whole output; otherwise dump each trace as JSON
         for trace in traces:
             print(trace.model_dump_json(indent=2, exclude_none=True))
