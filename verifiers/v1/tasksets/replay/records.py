@@ -166,13 +166,17 @@ def compaction_seeds(trace: Trace) -> list[Seed]:
     return seeds
 
 
-def tool_call_seed(trace: Trace, rng: Random) -> Seed | None:
-    """One drawn mid-trajectory resume point: the conversation from the start through a
-    complete tool-result run (every tool_call id of the issuing assistant answered — resuming
+def tool_call_seeds(
+    trace: Trace, rng: Random, max_anchors: int | None = 1
+) -> list[Seed]:
+    """Mid-trajectory resume points: each candidate is the conversation from the start through
+    a complete tool-result run (every tool_call id of the issuing assistant answered — resuming
     after a partial run would leave dangling calls in the context). When the record carries
-    sandbox snapshots, only snapshotted tool nodes are candidates. The seed is a ``Messages``
-    prompt without the leading system message (the harness re-emits it), so it needs a
-    message-seeding harness (``default``/``null``). None when the trace has no valid point."""
+    sandbox snapshots, only snapshotted tool nodes are candidates. ``max_anchors`` draws that
+    many candidates uniformly (deterministic in ``rng``), kept in trajectory order; None keeps
+    every candidate. Seeds are ``Messages`` prompts without the leading system message (the
+    harness re-emits it), so they need a message-seeding harness (``default``/``null``). Empty
+    when the trace has no valid point."""
     snapshots = node_snapshots(trace)
     candidates: list[tuple[list[MessageNode], int]] = []
     seen: set[int] = set()
@@ -196,18 +200,29 @@ def tool_call_seed(trace: Trace, rng: Random) -> Seed | None:
             if {call.id for call in issuer.tool_calls} != answered:
                 continue
             candidates.append((nodes, end))
-    if not candidates:
-        return None
-    nodes, end = rng.choice(candidates)
-    messages = [node.message for node in nodes[: end + 1]]
-    if messages[0].role == "system":
-        messages = messages[1:]
-    return Seed(
-        prompt=messages,
-        name=f"continue:{trace.id[:8]}:tool-call{end}",
-        tokens=estimate_tokens(nodes[: end + 1]),
-        snapshot=snapshots.get(id(nodes[end])),
-    )
+    if max_anchors is not None and max_anchors < len(candidates):
+        keep = sorted(rng.sample(range(len(candidates)), max_anchors))
+        candidates = [candidates[i] for i in keep]
+    seeds: list[Seed] = []
+    names: set[str] = set()
+    for nodes, end in candidates:
+        messages = [node.message for node in nodes[: end + 1]]
+        if messages[0].role == "system":
+            messages = messages[1:]
+        base = f"continue:{trace.id[:8]}:tool-call{end}"
+        name, ordinal = base, 1
+        while name in names:  # two branches can anchor at the same in-branch index
+            name, ordinal = f"{base}-{ordinal}", ordinal + 1
+        names.add(name)
+        seeds.append(
+            Seed(
+                prompt=messages,
+                name=name,
+                tokens=estimate_tokens(nodes[: end + 1]),
+                snapshot=snapshots.get(id(nodes[end])),
+            )
+        )
+    return seeds
 
 
 def recheck_seed(trace: Trace, recheck_prompt: str) -> Seed | None:

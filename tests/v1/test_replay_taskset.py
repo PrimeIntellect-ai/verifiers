@@ -4,12 +4,11 @@ import json
 from random import Random
 
 import pytest
-from pydantic import ValidationError
-
 import verifiers.v1 as vf
+from pydantic import ValidationError
 from verifiers.v1 import graph
 from verifiers.v1.loaders import load_taskset, taskset_config_type
-from verifiers.v1.tasksets.replay import compaction_seeds, recheck_seed, tool_call_seed
+from verifiers.v1.tasksets.replay import compaction_seeds, recheck_seed, tool_call_seeds
 
 SYSTEM = vf.SystemMessage(content="be helpful")
 TASK_USER = vf.UserMessage(content="solve the task")
@@ -112,12 +111,23 @@ def test_seeds_carry_their_anchor_snapshot():
     assert compaction_seeds(trace)[0].snapshot == "snap-restart"
     assert recheck_seed(trace, "check").snapshot == "snap-final"
     # With snapshots recorded, only snapshotted tool nodes are valid resume points — none here.
-    assert tool_call_seed(trace, Random(0)) is None
+    assert tool_call_seeds(trace, Random(0)) == []
 
 
-def test_tool_call_seed_resumes_after_a_complete_tool_run():
-    seed = tool_call_seed(_compacted_trace(), Random(0))
-    assert seed is not None
+def _multi_tool_trace() -> vf.Trace:
+    """One linear branch with three complete tool runs, ending in a final answer."""
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="solve the task"))
+    context: list = [SYSTEM, TASK_USER]
+    for call_id in ("c1", "c2", "c3"):
+        reply = _assistant("", call_id)
+        graph.prepare_turn(trace, context).commit(_reply(reply))
+        context = [*context, reply, _tool(call_id)]
+    graph.prepare_turn(trace, context).commit(_reply(_assistant("final answer")))
+    return trace
+
+
+def test_tool_call_seeds_resume_after_a_complete_tool_run():
+    (seed,) = tool_call_seeds(_compacted_trace(), Random(0))
     messages = seed.prompt
     assert (
         messages[0].role == "user"
@@ -127,14 +137,40 @@ def test_tool_call_seed_resumes_after_a_complete_tool_run():
     assert {call.id for call in messages[-2].tool_calls} == {messages[-1].tool_call_id}
 
 
-def test_tool_call_seed_is_deterministic():
-    trace = _compacted_trace()
-    assert tool_call_seed(trace, Random("salt")) == tool_call_seed(
-        trace, Random("salt")
+def test_tool_call_seeds_without_max_anchors_seed_every_valid_boundary():
+    seeds = tool_call_seeds(_multi_tool_trace(), Random(0), max_anchors=None)
+    # One seed per complete tool-result run, in trajectory order, uniquely named.
+    assert [len(seed.prompt) for seed in seeds] == [3, 5, 7]
+    assert [seed.name.rsplit(":", 1)[-1] for seed in seeds] == [
+        "tool-call3",
+        "tool-call5",
+        "tool-call7",
+    ]
+    assert all(seed.prompt[-1].role == "tool" for seed in seeds)
+
+
+def test_tool_call_seeds_draw_a_deterministic_subset_in_trajectory_order():
+    trace = _multi_tool_trace()
+    every = tool_call_seeds(trace, Random(0), max_anchors=None)
+    pair = tool_call_seeds(trace, Random(0), max_anchors=2)
+    assert pair == tool_call_seeds(trace, Random(0), max_anchors=2)
+    assert len(pair) == 2
+    assert [every.index(seed) for seed in pair] == sorted(
+        every.index(seed) for seed in pair
     )
 
 
-def test_tool_call_seed_skips_partial_tool_runs():
+def test_tool_call_seeds_single_draw_is_deterministic():
+    trace = _compacted_trace()
+    (seed,) = tool_call_seeds(trace, Random("salt"))
+    assert [seed] == tool_call_seeds(trace, Random("salt"))
+    every = tool_call_seeds(trace, Random("salt"), max_anchors=None)
+    assert seed.prompt in [s.prompt for s in every]
+    # Both branches anchor at in-branch index 3: names disambiguate with an ordinal.
+    assert [s.name.rsplit(":", 1)[-1] for s in every] == ["tool-call3", "tool-call3-1"]
+
+
+def test_tool_call_seeds_skip_partial_tool_runs():
     trace = vf.Trace(task=vf.Task(idx=0, prompt="solve the task"))
     a1 = _assistant("", "c1", "c2")
     graph.prepare_turn(trace, [SYSTEM, TASK_USER]).commit(_reply(a1))
@@ -142,7 +178,7 @@ def test_tool_call_seed_skips_partial_tool_runs():
     graph.prepare_turn(trace, [SYSTEM, TASK_USER, a1, _tool("c1")]).commit(
         _reply(_assistant("gave up"))
     )
-    assert tool_call_seed(trace, Random(0)) is None
+    assert tool_call_seeds(trace, Random(0), max_anchors=None) == []
 
 
 def test_recheck_seed_appends_the_verification_turn():
@@ -209,7 +245,7 @@ def test_snapshotted_records_offer_only_snapshotted_anchors():
     trace.info["snapshots"] = {"0": "ref-at-the-system-node"}  # no anchor has a ref
     assert compaction_seeds(trace) == []
     assert recheck_seed(trace, "check") is None
-    assert tool_call_seed(trace, Random(0)) is None
+    assert tool_call_seeds(trace, Random(0)) == []
 
 
 def test_replay_config_narrows_source_and_survives_dump_round_trip():
@@ -233,6 +269,25 @@ def test_replay_config_narrows_source_and_survives_dump_round_trip():
                 "records": "x.jsonl",
                 "mode": "recheck",
                 "anchor": "tool-call",
+                "source": {"id": "echo-v1"},
+            }
+        )
+    with pytest.raises(ValidationError, match="max_anchors"):
+        config_cls.model_validate(
+            {
+                "id": "replay",
+                "records": "x.jsonl",
+                "mode": "recheck",
+                "max_anchors": 2,
+                "source": {"id": "echo-v1"},
+            }
+        )
+    with pytest.raises(ValidationError, match="max_anchors"):
+        config_cls.model_validate(
+            {
+                "id": "replay",
+                "records": "x.jsonl",
+                "max_anchors": 0,
                 "source": {"id": "echo-v1"},
             }
         )

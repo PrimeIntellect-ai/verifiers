@@ -7,7 +7,7 @@ from verifiers.v1.tasksets.replay.records import (
     iter_records,
     node_snapshots,
     recheck_seed,
-    tool_call_seed,
+    tool_call_seeds,
 )
 from verifiers.v1.tasksets.replay.taskset import (
     ReplayConfig,
@@ -27,5 +27,5 @@ __all__ = [
     "node_snapshots",
     "recheck_seed",
     "restore_snapshot",
-    "tool_call_seed",
+    "tool_call_seeds",
 ]

@@ -15,9 +15,10 @@ Two built-in modes:
   compaction-prompt matching, so records from different harnesses (each with its own handoff
   wording and shape) all qualify. The canonical ``[system, user(summary)]`` restart seeds as a
   plain string prompt and works under every harness, including agent CLIs like ``rlm``.
-  ``anchor = "tool-call"`` re-enters right after one deterministically-drawn tool result: the
-  seed is the conversation up to that point as a ``Messages`` prompt, which needs a
-  message-seeding harness (``default``/``null``).
+  ``anchor = "tool-call"`` re-enters right after deterministically-drawn tool results
+  (``max_anchors`` per source rollout; None seeds every valid one): each seed is the
+  conversation up to that point as a ``Messages`` prompt, which needs a message-seeding
+  harness (``default``/``null``).
 - ``recheck`` — hand the model its finished attempt (the final branch, truncation artifacts
   stripped) followed by a new user turn asking it to verify and fix its work. Also a
   ``Messages`` prompt. ``last_reply``-style rewards score the revision: seeded context is
@@ -61,7 +62,7 @@ from verifiers.v1.tasksets.replay.records import (
     expand_records,
     iter_records,
     recheck_seed,
-    tool_call_seed,
+    tool_call_seeds,
 )
 from verifiers.v1.trace import Trace
 
@@ -108,7 +109,12 @@ class ReplayConfig(TasksetConfig):
     anchor: Literal["compaction", "tool-call"] = "compaction"
     """Where ``continue`` re-enters: ``compaction`` seeds each recorded post-compaction restart
     prompt (any harness; only rollouts that compacted become sources); ``tool-call`` seeds the
-    conversation through one drawn tool result (needs a message-seeding harness)."""
+    conversation through drawn tool results (needs a message-seeding harness)."""
+
+    max_anchors: int | None = 1
+    """Resume points per source rollout for ``continue`` with ``anchor = "tool-call"``: that
+    many valid anchors drawn deterministically, kept in trajectory order — None seeds every
+    valid anchor. ``compaction`` always seeds every restart."""
 
     recheck_prompt: str = RECHECK_PROMPT
     """The verification request appended as the new user turn in ``recheck`` mode."""
@@ -147,10 +153,14 @@ class ReplayConfig(TasksetConfig):
             raise ValueError(
                 "replay requires `source.id` — the taskset the records came from"
             )
+        if self.max_anchors is not None and self.max_anchors < 1:
+            raise ValueError("`max_anchors` must be None or >= 1")
         # Compare against the default rather than `model_fields_set`: a dumped resolved config
         # writes every field explicitly, and must re-validate cleanly.
         if self.mode == "recheck" and self.anchor != "compaction":
             raise ValueError("`anchor` only applies to mode='continue'")
+        if self.mode == "recheck" and self.max_anchors != 1:
+            raise ValueError("`max_anchors` only applies to mode='continue'")
         if (
             self.min_source_reward is not None
             and self.max_source_reward is not None
@@ -305,8 +315,11 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
             return [seed] if seed else []
         if self.config.anchor == "compaction":
             return compaction_seeds(trace)
-        seed = tool_call_seed(trace, random.Random(f"{self.config.seed}:{trace.id}"))
-        return [seed] if seed else []
+        return tool_call_seeds(
+            trace,
+            random.Random(f"{self.config.seed}:{trace.id}"),
+            self.config.max_anchors,
+        )
 
     def tools(self, task: Task) -> list[Toolset]:
         return self.source.tools(task)
