@@ -1,12 +1,14 @@
 """rubric — an off-the-shelf rubric judge, plugged from config alone.
 
-Reads a rubric — a list of yes/no criteria — from a JSON or TOML file and asks the judge model
-to grade the criteria, scoring each 1/0 (all in one call by default, or batched
-`max_criteria`-at-a-time). Grading uses plain-text JSON by default, or structured output when
-`structured_output=true` (see `RubricJudgeConfig`). The reward is the weighted
-mean of the verdicts (`sum(w*v) / sum(w)`, so it stays in [0, 1]); each verdict is also recorded
-as a `<name>/<criterion>` metric. Criterion weights come from the rubric file and are overridable
-from config (`weights`); the aggregate weighs into `trace.reward` via the judge's `weight`:
+Reads a rubric — a list of criteria — from a JSON or TOML file and asks the judge model to grade
+each by picking one of its ordered `choices` (default `["yes", "no"]`, a binary check), scored to
+[0, 1] by rank — best → worst, so the first choice is 1.0 and the last 0.0 (all in one call by
+default, or batched `max_criteria`-at-a-time). Grading uses plain-text JSON by default, or
+structured output when `structured_output=true` (see `RubricJudgeConfig`). The reward is the
+weighted mean of the per-criterion scores (`sum(w*v) / sum(w)`, so it stays in [0, 1]); each score
+is also recorded as a `<name>/<criterion>` metric. Criterion weights come from the rubric file and
+are overridable from config (`weights`); the aggregate weighs into `trace.reward` via the judge's
+`weight`:
 
     [[env.taskset.judges]]
     id = "rubric"
@@ -20,6 +22,8 @@ with `rubrics/quality.toml` listing the criteria (JSON takes `{"criteria": [...]
     name = "cites_sources"
     text = "The response cites at least one specific source."
     weight = 1.0
+    # choices default to ["yes", "no"]; give an ordered best→worst list for a graded criterion:
+    # choices = ["thorough", "partial", "none"]   # -> 1.0, 0.5, 0.0
 """
 
 import asyncio
@@ -28,7 +32,9 @@ import math
 import tomllib
 from functools import cached_property
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
+
+from pydantic import field_validator
 
 from verifiers.v1.judge import (
     Judge,
@@ -52,10 +58,18 @@ RUBRIC_PROMPT = (Path(__file__).resolve().parent / "rubric.txt").read_text(
 JSON_SUFFIX = (
     "\n\nRespond with ONLY a JSON object and nothing else, in exactly this shape:\n"
     '{"verdicts": [{"name": "<criterion name>", "reason": "<one sentence citing specific '
-    'evidence from the response>", "verdict": "<yes or no>"}, ...]}\n'
+    'evidence from the response>", "verdict": "<answer>"}, ...]}\n'
     "with one entry per criterion, using each criterion's exact name. For each, first write the "
-    'one-sentence reason grounded in the response, then the "yes" or "no" verdict it implies.'
+    'one-sentence reason grounded in the response, then the verdict: "yes" or "no", or — for a '
+    "criterion that lists allowed answers — exactly one of those answers."
 )
+
+
+def normalize_choice(choice: str, choices: list[str]) -> float:
+    """Score a chosen option to [0, 1] by rank. `choices` are ordered best → worst, so the first
+    scores 1.0, the last 0.0, and the rest evenly spaced (`choices` always has >= 2 entries)."""
+    rank = choices.index(choice)
+    return (len(choices) - 1 - rank) / (len(choices) - 1)
 
 
 def first_verdicts_object(text: str) -> dict | None:
@@ -77,14 +91,27 @@ def first_verdicts_object(text: str) -> dict | None:
 
 
 class Criterion(StrictBaseModel):
-    """One rubric entry: a yes/no check the judge scores 1/0."""
+    """One rubric entry the judge grades by picking one of `choices`, scored to [0, 1] by rank.
+    Defaults to a binary yes/no check (1/0)."""
 
     name: str
     """Key for the criterion's metric (`<judge name>/<name>`) and its `weights` override."""
     text: str
-    """The check itself, phrased so "yes" means satisfied."""
+    """The check itself, phrased so the first (best) choice means satisfied."""
     weight: float = 1.0
     """The criterion's share of the reward (overridable per name via `weights` in config)."""
+    choices: list[str] = ["yes", "no"]
+    """Allowed answers, ordered **best → worst**: the first scores 1.0, the last 0.0, the rest
+    evenly spaced by rank. Default `["yes", "no"]` is a binary check. Needs >= 2, no duplicates."""
+
+    @field_validator("choices")
+    @classmethod
+    def _check_choices(cls, v: list[str]) -> list[str]:
+        if len(v) < 2:
+            raise ValueError(f"`choices` needs at least two options, got {v}")
+        if len(set(v)) != len(v):
+            raise ValueError(f"`choices` has duplicate options: {v}")
+        return v
 
 
 class RubricJudgeConfig(JudgeConfig):
@@ -118,11 +145,12 @@ class RubricJudgeConfig(JudgeConfig):
 class CriterionVerdict(StrictBaseModel):
     """One criterion's reply, matched back to the rubric by `name`: a short `reason`
     (chain-of-thought, always recorded for auditability in `trace.info["judge"]`) written *before*
-    the yes/no `verdict`, so the verdict follows from it."""
+    the `verdict`, so the verdict follows from it. `verdict` is one of the criterion's `choices`
+    (validated per criterion in `grade_batch`, since choices vary by criterion)."""
 
     name: str
     reason: str
-    verdict: Literal["yes", "no"]
+    verdict: str
 
 
 class RubricVerdicts(StrictBaseModel):
@@ -182,11 +210,21 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
     ) -> dict[str, float]:
         """Grade one batch of criteria in a single judge call — structured output, or plain-text
         JSON when `structured_output` is off (which avoids flaky structured decoding). Returns
-        `{name: 1.0/0.0}`, matched back to the batch by name. `score` fans this out per batch."""
+        `{name: score}`, each the chosen option normalized to [0, 1] by rank (best → worst),
+        matched back to the batch by name. `score` fans this out per batch."""
+
+        def render(
+            c: Criterion,
+        ) -> str:  # show non-default choices inline so the judge can pick
+            line = f"- {c.name}: {c.text}"
+            if c.choices != ["yes", "no"]:
+                line += f" (answer one of, best to worst: {', '.join(c.choices)})"
+            return line
+
         fields = dict(
             question=judge_question(task, self.config.question_field),
             response=judge_response(trace, self.config.view),
-            criteria="\n".join(f"- {c.name}: {c.text}" for c in batch),
+            criteria="\n".join(render(c) for c in batch),
         )
         if self.config.structured_output:
             result = await self.evaluate(trace=trace, **fields)
@@ -204,12 +242,23 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             verdicts = RubricVerdicts.model_validate(obj).verdicts
         # Exactly one verdict per criterion in the batch, matched by name — anything else is a
         # judge failure and must error the rollout, not score the model (see `judge_verdict`).
-        if sorted(v.name for v in verdicts) != sorted(c.name for c in batch):
+        by_criterion = {c.name: c for c in batch}
+        if sorted(v.name for v in verdicts) != sorted(by_criterion):
             raise ValueError(
                 f"judge verdicts name {sorted(v.name for v in verdicts)}, expected the "
-                f"batch's {sorted(c.name for c in batch)}"
+                f"batch's {sorted(by_criterion)}"
             )
-        return {v.name: float(v.verdict == "yes") for v in verdicts}
+        scores: dict[str, float] = {}
+        for v in verdicts:
+            choices = by_criterion[v.name].choices
+            if (
+                v.verdict not in choices
+            ):  # an off-menu answer is a judge failure, not a 0
+                raise ValueError(
+                    f"judge answered {v.verdict!r} for '{v.name}', expected one of {choices}"
+                )
+            scores[v.name] = normalize_choice(v.verdict, choices)
+        return scores
 
     async def score(self, task: Task, trace: Trace) -> float:
         criteria = self.criteria
