@@ -37,7 +37,7 @@ from verifiers.v1.clients import (
 )
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import TimeoutConfig, resolve_runtime_config
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import Harness
 from verifiers.v1.interception import InterceptionPool, RolloutLimits
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
