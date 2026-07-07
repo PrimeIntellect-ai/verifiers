@@ -77,7 +77,7 @@ class Client(ABC):
 
 
 @dataclass(frozen=True)
-class RolloutContext:
+class ModelContext:
     """The collaborators a single rollout needs (client + model + sampling), bundled
     so harnesses hold no rollout state. Built by the Environment."""
 
