@@ -85,13 +85,16 @@ class ReplayConfig(TasksetConfig):
 
     records: str | list[str] = []
     """Glob pattern(s) of rollout record files — ``Trace.to_record()`` JSONL lines, e.g.
-    ``"<output_dir>/rollouts/step_*/train_rollouts.jsonl"``. Required. Validation freezes the
-    globs to the concrete matched files, so every env-server pool worker builds the identical
-    task list even if the directory keeps growing — point it at a finished run's records, not
-    a live producer's. Lines that don't validate as the source taskset's task type (e.g.
-    another env's rollouts in a mixed train file) are skipped and counted; that filter is
-    structural, so a source whose task type has no distinguishing required fields can't tell
-    foreign records apart — use single-env record files for such sources."""
+    ``"<output_dir>/rollouts/step_*/train_rollouts.jsonl"``. Required, and followed: the globs
+    are re-expanded whenever the env server refreshes, and tasks from new files are appended —
+    so pointing at the *current* run's own records replays them online as they appear (empty at
+    startup is fine). Loading is append-only and file order is numeric-aware, which keeps task
+    indices aligned across pool workers as long as files appear in glob order (a run's step
+    dirs do; avoid sources that grow out of order, e.g. several runs writing one tree). Lines
+    that don't validate as the source taskset's task type (e.g. another env's rollouts in a
+    mixed train file) are skipped and counted; that filter is structural, so a source whose
+    task type has no distinguishing required fields can't tell foreign records apart — use
+    single-env record files for such sources."""
 
     source: SerializeAsAny[TasksetConfig] = TasksetConfig()
     """The taskset the records came from (``id`` required, plus its own fields), resolved to
@@ -114,13 +117,6 @@ class ReplayConfig(TasksetConfig):
     """Skip seeds whose context exceeds this many tokens (recorded count when the record
     carries token ids, else a chars/4 estimate). Unset admits every seed — but a seed near the
     trainer's ``seq_len`` leaves no room to sample, so set this for long-context sources."""
-
-    follow: bool = False
-    """Follow a growing records source (online self-replay): re-expand the globs and append
-    tasks from new files whenever the env server refreshes — point `records` at the *current*
-    run's own `rollouts/step_*/train_rollouts.jsonl`. Appends only, so task indices stay
-    stable across pool workers; empty at startup is fine (records appear with the first
-    steps). Off (default): the file set freezes at config validation and loads once."""
 
     seed: int = 0
     """Salt for the per-record draw of ``tool-call`` resume points (each record's draw is
@@ -152,10 +148,6 @@ class ReplayConfig(TasksetConfig):
         # the records directory grows (an elastic pool spawns workers throughout the run).
         # No matches leaves the patterns untouched for `load_tasks` to fail on — the files may
         # not exist where the config is first validated (e.g. a dry run on another host).
-        if not self.follow:
-            matched = expand_records(self.records)
-            if matched:
-                self.records = matched
         return self
 
 
@@ -200,9 +192,9 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
 
     def load_tasks(self) -> list[Task]:
         paths = expand_records(self.config.records)
-        if not paths and not self.config.follow:
-            raise ValueError(
-                f"replay `records` matched no files: {self.config.records}"
+        if not paths:
+            logger.warning(
+                "replay `records` matched no files (yet): %s", self.config.records
             )
         task_cls = task_type(self.config.source.id)
         trace_cls = Trace[task_cls]
@@ -266,17 +258,14 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
             ),
         )
         self._files_done.update(new_paths)
-        if not tasks and not self.config.follow:
-            raise ValueError(
-                f"replay produced no tasks from {len(paths)} record files "
-                f"(skipped: {skipped}) — check `records`, `source.id`, and `mode`/`anchor`"
-            )
         return tasks
 
     def reload_tasks(self) -> list[Task] | None:
-        """In follow mode, pick up record files that appeared since the last load (see
-        `load_tasks` — incremental and append-only). Static otherwise."""
-        return self.load_tasks() if self.config.follow else None
+        """Pick up record files that appeared since the last load (see `load_tasks` —
+        incremental and append-only). The env server calls this on `info` and on an
+        out-of-range task index, so a records source that grows mid-run (online self-replay
+        from the current run's own rollouts) feeds new tasks continuously."""
+        return self.load_tasks()
 
     def seeds(self, trace: Trace) -> list[Seed]:
         """Every seed a source trace yields under the configured mode. The override point for

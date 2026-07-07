@@ -238,24 +238,6 @@ def test_replay_config_narrows_source_and_survives_dump_round_trip():
         )
 
 
-def test_replay_config_freezes_record_globs(tmp_path):
-    for name in ("a.jsonl", "b.jsonl"):
-        (tmp_path / name).write_text("")
-    config_cls = taskset_config_type("replay")
-    config = config_cls.model_validate(
-        {
-            "id": "replay",
-            "records": str(tmp_path / "*.jsonl"),
-            "source": {"id": "echo-v1"},
-        }
-    )
-    assert config.records == [str(tmp_path / "a.jsonl"), str(tmp_path / "b.jsonl")]
-    # A file appearing later must not shift task indices on a worker's re-validation.
-    (tmp_path / "c.jsonl").write_text("")
-    again = config_cls.model_validate(config.model_dump(mode="json"))
-    assert again.records == config.records
-
-
 def _replay_taskset(tmp_path, source: dict, trace: vf.Trace):
     (tmp_path / "records.jsonl").write_text(json.dumps(trace.to_record()) + "\n")
     return load_taskset(
@@ -307,7 +289,7 @@ def test_capabilities_state_and_typed_tasks_delegate_to_the_source(tmp_path):
     assert user_sim_replay.state_type() is EchoUserSimState
 
 
-def test_follow_mode_appends_tasks_from_new_record_files(tmp_path):
+def test_records_are_followed_and_appended_across_reloads(tmp_path):
     from echo_v1 import EchoTask
 
     def record(idx: int, answer: str) -> str:
@@ -323,7 +305,6 @@ def test_follow_mode_appends_tasks_from_new_record_files(tmp_path):
                 "id": "replay",
                 "records": str(tmp_path / "step_*" / "train_rollouts.jsonl"),
                 "mode": "recheck",
-                "follow": True,
                 "source": {"id": "echo-v1"},
             }
         )
