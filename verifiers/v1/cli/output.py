@@ -66,8 +66,6 @@ def read_traces(results_dir: Path, trace_type: type) -> list[Trace]:
     Streams line-by-line so a large (multi-GB) results file isn't loaded into memory at once."""
     adapter = TypeAdapter(trace_type)
     traces: list[Trace] = []
-    # utf-8 explicitly: `write_trace` writes utf-8 bytes, so decode as utf-8 regardless of the
-    # host's default text encoding.
     with (results_dir / "results.jsonl").open(encoding="utf-8") as f:
         for line in f:
             if line.strip():
