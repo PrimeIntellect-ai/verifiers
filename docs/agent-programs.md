@@ -6,18 +6,25 @@ description: "Program over agents: one executable arrow, placement as a paramete
 ## The Agent
 
 An `Agent` is a reusable value: a **harness** (a concrete `Harness` object — the program
-that drives the model), a
-**model** (a name, served from the default Prime inference endpoint unless `client=`
-says otherwise; `sampling=` optional), and a **runtime policy** (where a run's box comes
+that drives the model), a **rollout context** (the `RolloutContext` every rollout already
+carries: model + client + sampling), and a **runtime policy** (where a run's box comes
 from by default). It has one executable arrow:
 
 ```python
 import verifiers.v1 as vf
 from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
 
-solver = vf.Agent(DefaultHarness(DefaultHarnessConfig()), "z-ai/glm-5.2")
+ctx = vf.RolloutContext(
+    model="z-ai/glm-5.2", client=vf.resolve_client(vf.EvalClientConfig())
+)
+solver = vf.Agent(DefaultHarness(DefaultHarnessConfig()), ctx)
 trace = await solver.run(vf.Task(idx=0, prompt="What is 2+2?"))
 ```
+
+Construction is fully explicit — the harness is an object you build, and the client is
+yours to build and **share**: agents on the same endpoint should share one `Client` (one
+connection pool). prime-rl hands agents its renderer client through the same
+`RolloutContext`.
 
 Every run is a standard `Rollout` — staged lifecycle, typed error attribution,
 token-true trace capture — so anything a program produces is evaluable and trainable.
@@ -46,8 +53,9 @@ its transcript:
 ```python
 sandbox = vf.PrimeConfig()
 harness = DefaultHarness(DefaultHarnessConfig())
-solver = vf.Agent(harness, "z-ai/glm-5.2", sandbox)
-judge = vf.Agent(harness, "openai/gpt-5.4-mini", sandbox)
+client = vf.resolve_client(vf.EvalClientConfig())
+solver = vf.Agent(harness, vf.RolloutContext(model="z-ai/glm-5.2", client=client), sandbox)
+judge = vf.Agent(harness, vf.RolloutContext(model="openai/gpt-5.4-mini", client=client), sandbox)
 
 def judge_task(solver_trace: vf.Trace) -> vf.Task:
     return vf.Task(

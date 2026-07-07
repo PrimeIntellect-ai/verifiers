@@ -7,7 +7,7 @@ abstract method. Each concrete client owns its own wire translation internally.
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
@@ -84,9 +84,13 @@ class Client(ABC):
 
 @dataclass(frozen=True)
 class ModelContext:
-    """The model-side collaborators a harness talks to (client + model + sampling),
-    bundled so harnesses hold no rollout state. Built by the Environment."""
+    """The model leg, as one value: which model (`model`), over which wire (`client`),
+    with which defaults (`sampling` — provider defaults when omitted). Everything that
+    does model I/O consumes one: a `Rollout` for its turns, an `Agent` binds one at
+    construction, the Environment builds one per eval. The client is the expensive,
+    shareable part — consumers on one endpoint should share one `Client` (one
+    connection pool)."""
 
     model: str
     client: Client
-    sampling: Sampling
+    sampling: Sampling = field(default_factory=Sampling)

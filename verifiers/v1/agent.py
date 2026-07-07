@@ -1,8 +1,8 @@
 """The Agent: a reusable (harness x model x runtime) value with one executable arrow.
 
-An `Agent` bundles WHO does the work — the harness (the program), the model (a name on an
-endpoint, bound at construction), and a runtime policy (where a run's box comes from by
-default): `Agent("codex", "z-ai/glm-5.2", PrimeConfig())`. `agent.run(task)` executes one
+An `Agent` bundles WHO does the work — the harness (the program), the rollout context
+(model + client + sampling, the same `RolloutContext` every rollout already carries), and
+a runtime policy (where a run's box comes from by default). `agent.run(task)` executes one
 rollout and returns its `Trace`. Everything else is a parameter, not a concept:
 
   - placement: `runtime=` borrows a live box (creator owns teardown) instead of
@@ -29,10 +29,7 @@ from dataclasses import replace
 from typing import AsyncIterator
 
 from verifiers.v1.clients import (
-    BaseClientConfig,
-    EvalClientConfig,
     RolloutContext,
-    resolve_client,
 )
 from verifiers.v1.env import TimeoutConfig, resolve_runtime_config
 from verifiers.v1.harness import Harness
@@ -65,16 +62,17 @@ class NullTaskset(Taskset[Task, TasksetConfig, State]):
 
 
 class Agent:
-    """A harness + model + runtime policy, runnable on any task.
+    """A harness + model context + runtime policy, runnable on any task.
 
     `harness` is a concrete `Harness` object (v1 construction is explicit), e.g.
     `DefaultHarness(DefaultHarnessConfig())`; harnesses are stateless, so one instance
     can back any number of agents. `load_harness(config)` resolves hub/local ids.
 
-    `model` is bound at construction — an agent IS a model in a harness. Pass the model
-    name (served from the default Prime inference endpoint, or the endpoint in `client=`)
-    or, for callers that manage their own `Client` (e.g. prime-rl's orchestrator, sharing
-    one renderer client across agents), a prebuilt `RolloutContext`.
+    `ctx` is the `RolloutContext` every rollout already carries (model + client +
+    sampling) — an agent IS a model in a harness, bound at construction. The client is
+    yours to build (`resolve_client(EvalClientConfig())`) and to share: agents on the
+    same endpoint should share one `Client` (one connection pool); prime-rl hands every
+    agent its renderer client the same way.
 
     `runtime` here is a *policy* (a `RuntimeConfig`): each `run` provisions a fresh box
     from it, resolved per task (image / workdir / resources); it defaults to the harness
@@ -85,28 +83,13 @@ class Agent:
     def __init__(
         self,
         harness: Harness,
-        model: str | RolloutContext,
+        ctx: RolloutContext,
         runtime: RuntimeConfig | None = None,
         *,
-        client: BaseClientConfig | None = None,
-        sampling: Sampling | None = None,
         limits: RolloutLimits | None = None,
         timeout: TimeoutConfig | None = None,
         multiplex: int = 32,
     ) -> None:
-        if isinstance(model, str):
-            ctx = RolloutContext(
-                model=model,
-                client=resolve_client(client or EvalClientConfig()),
-                sampling=sampling or Sampling(),
-            )
-        else:
-            if client is not None or sampling is not None:
-                raise ValueError(
-                    "pass client=/sampling= only with a model name; a RolloutContext "
-                    "already carries both"
-                )
-            ctx = model
         self.harness = harness
         self.ctx = ctx
         self.runtime_config: RuntimeConfig = (

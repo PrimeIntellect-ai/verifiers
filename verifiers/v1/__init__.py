@@ -8,12 +8,14 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent, NullTaskset, make_context
+from verifiers.v1.agent import Agent, NullTaskset
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
+    EvalClientConfig,
     ModelContext,
+    TrainClientConfig,
     resolve_client,
 )
 from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
@@ -182,6 +184,8 @@ __all__ = [
     "Client",
     "BaseClientConfig",
     "ClientConfig",
+    "EvalClientConfig",
+    "TrainClientConfig",
     "resolve_client",
     # taskset / harness / runtime / environment
     "Taskset",
@@ -210,7 +214,6 @@ __all__ = [
     # agent programs
     "Agent",
     "NullTaskset",
-    "make_context",
     # loaders
     "import_taskset",
     "import_harness",

@@ -42,7 +42,9 @@ class WorldTaskset(vf.Taskset[vf.Task, vf.TasksetConfig]):
 async def main() -> None:
     agent = vf.Agent(
         MiniSWEAgentHarness(MiniSWEAgentHarnessConfig(id="mini-swe-agent")),
-        "z-ai/glm-5.2",
+        vf.RolloutContext(
+            model="z-ai/glm-5.2", client=vf.resolve_client(vf.EvalClientConfig())
+        ),
         vf.PrimeConfig(labels=["agent-programs-demo"]),
         timeout=vf.TimeoutConfig(rollout=420),
     )

@@ -63,8 +63,12 @@ def proposed_task(proposer_trace: vf.Trace) -> ProposedTask:
 
 
 async def main() -> None:
-    proposer = vf.Agent(DefaultHarness(DefaultHarnessConfig()), "openai/gpt-5.4-mini")
-    solver = vf.Agent(DefaultHarness(DefaultHarnessConfig()), "z-ai/glm-5.2")
+    harness = DefaultHarness(DefaultHarnessConfig())
+    client = vf.resolve_client(vf.EvalClientConfig())  # one endpoint, one shared client
+    proposer = vf.Agent(
+        harness, vf.RolloutContext(model="openai/gpt-5.4-mini", client=client)
+    )
+    solver = vf.Agent(harness, vf.RolloutContext(model="z-ai/glm-5.2", client=client))
     taskset = SolveTaskset(vf.TasksetConfig())
 
     async with proposer, solver:
