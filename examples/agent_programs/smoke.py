@@ -4,10 +4,11 @@ import asyncio
 import json
 
 import verifiers.v1 as vf
+from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
 
 
 async def main() -> None:
-    solver = vf.Agent("default", "z-ai/glm-5.2")
+    solver = vf.Agent(DefaultHarness(DefaultHarnessConfig()), "z-ai/glm-5.2")
     task = vf.Task(idx=0, prompt="What is 2+2? Answer with just the number.")
     async with solver:
         trace = await solver.run(task)

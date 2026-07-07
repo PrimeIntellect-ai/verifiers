@@ -8,6 +8,10 @@ not the transcript.
 import asyncio
 
 import verifiers.v1 as vf
+from verifiers.v1.harnesses.mini_swe_agent import (
+    MiniSWEAgentHarness,
+    MiniSWEAgentHarnessConfig,
+)
 
 TASK = (
     "Write a Python script at /app/fizz.py that prints the FizzBuzz sequence for "
@@ -37,7 +41,7 @@ class WorldTaskset(vf.Taskset[vf.Task, vf.TasksetConfig]):
 
 async def main() -> None:
     agent = vf.Agent(
-        "mini-swe-agent",
+        MiniSWEAgentHarness(MiniSWEAgentHarnessConfig(id="mini-swe-agent")),
         "z-ai/glm-5.2",
         vf.PrimeConfig(labels=["agent-programs-demo"]),
         timeout=vf.TimeoutConfig(rollout=420),

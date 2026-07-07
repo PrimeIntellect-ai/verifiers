@@ -18,6 +18,7 @@ import re
 import statistics
 
 import verifiers.v1 as vf
+from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
 
 PROPOSER_PROMPT = (
     "Invent one self-contained arithmetic word problem whose answer is a single "
@@ -62,8 +63,8 @@ def proposed_task(proposer_trace: vf.Trace) -> ProposedTask:
 
 
 async def main() -> None:
-    proposer = vf.Agent("default", "openai/gpt-5.4-mini")
-    solver = vf.Agent("default", "z-ai/glm-5.2")
+    proposer = vf.Agent(DefaultHarness(DefaultHarnessConfig()), "openai/gpt-5.4-mini")
+    solver = vf.Agent(DefaultHarness(DefaultHarnessConfig()), "z-ai/glm-5.2")
     taskset = SolveTaskset(vf.TasksetConfig())
 
     async with proposer, solver:

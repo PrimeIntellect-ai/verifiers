@@ -2,9 +2,9 @@
 
 One box, two agents, sequential:
   1. the program provisions a sandbox from the solver's runtime policy
-  2. the solver (bash harness, GLM-5.2) does real work in the box (writes a file)
+  2. the solver (default bash+edit harness, GLM-5.2) does real work in the box (writes a file)
   3. the program writes the solver's trace into the box (file-based judging)
-  4. the judge (bash harness, gpt-5.4-mini) is placed into the SAME box, inspects both
+  4. the judge (same harness, gpt-5.4-mini) is placed into the SAME box, inspects both
      the world (the solver's artifacts) and the trace, and emits a JSON verdict
   5. the program parses the verdict from the judge's trace
 
@@ -17,6 +17,7 @@ import json
 import re
 
 import verifiers.v1 as vf
+from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
 
 SOLVER_PROMPT = (
     "Compute the sum of all primes below 100 and write just that number to "
@@ -49,8 +50,10 @@ def judge_task(solver_trace: vf.Trace) -> vf.Task:
 
 async def main() -> None:
     sandbox = vf.PrimeConfig(labels=["agent-programs-demo"])
-    solver = vf.Agent("bash", "z-ai/glm-5.2", sandbox)
-    judge = vf.Agent("bash", "openai/gpt-5.4-mini", sandbox)
+    solver = vf.Agent(DefaultHarness(DefaultHarnessConfig()), "z-ai/glm-5.2", sandbox)
+    judge = vf.Agent(
+        DefaultHarness(DefaultHarnessConfig()), "openai/gpt-5.4-mini", sandbox
+    )
 
     task = vf.Task(idx=0, prompt=SOLVER_PROMPT)
     async with solver.provision(task) as box:

@@ -67,19 +67,24 @@ class NullTaskset(Taskset[Task, TasksetConfig, State]):
 class Agent:
     """A harness + model + runtime policy, runnable on any task.
 
+    `harness` is a concrete `Harness` object (v1 construction is explicit), e.g.
+    `DefaultHarness(DefaultHarnessConfig())`; harnesses are stateless, so one instance
+    can back any number of agents. `load_harness(config)` resolves hub/local ids.
+
     `model` is bound at construction — an agent IS a model in a harness. Pass the model
     name (served from the default Prime inference endpoint, or the endpoint in `client=`)
     or, for callers that manage their own `Client` (e.g. prime-rl's orchestrator, sharing
     one renderer client across agents), a prebuilt `RolloutContext`.
 
     `runtime` here is a *policy* (a `RuntimeConfig`): each `run` provisions a fresh box
-    from it, resolved per task (image / workdir / resources). To place a run into an
-    existing box instead, pass a live `Runtime` to `run(runtime=...)` — borrowed boxes
-    are never started or torn down by the run; their creator owns their lifecycle."""
+    from it, resolved per task (image / workdir / resources); it defaults to the harness
+    config's own `runtime`. To place a run into an existing box instead, pass a live
+    `Runtime` to `run(runtime=...)` — borrowed boxes are never started or torn down by
+    the run; their creator owns their lifecycle."""
 
     def __init__(
         self,
-        harness: Harness | str,
+        harness: Harness,
         model: str | RolloutContext,
         runtime: RuntimeConfig | None = None,
         *,
@@ -89,16 +94,6 @@ class Agent:
         timeout: TimeoutConfig | None = None,
         multiplex: int = 32,
     ) -> None:
-        if isinstance(harness, str):
-            from verifiers.v1.loaders import harness_config_type, load_harness
-
-            config_type = harness_config_type(harness)
-            config = (
-                config_type(id=harness, runtime=runtime)
-                if runtime is not None
-                else config_type(id=harness)
-            )
-            harness = load_harness(config)
         if isinstance(model, str):
             ctx = RolloutContext(
                 model=model,

@@ -5,15 +5,17 @@ description: "Program over agents: one executable arrow, placement as a paramete
 
 ## The Agent
 
-An `Agent` is a reusable value: a **harness** (the program that drives the model), a
+An `Agent` is a reusable value: a **harness** (a concrete `Harness` object — the program
+that drives the model), a
 **model** (a name, served from the default Prime inference endpoint unless `client=`
 says otherwise; `sampling=` optional), and a **runtime policy** (where a run's box comes
 from by default). It has one executable arrow:
 
 ```python
 import verifiers.v1 as vf
+from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
 
-solver = vf.Agent("default", "z-ai/glm-5.2")
+solver = vf.Agent(DefaultHarness(DefaultHarnessConfig()), "z-ai/glm-5.2")
 trace = await solver.run(vf.Task(idx=0, prompt="What is 2+2?"))
 ```
 
@@ -43,8 +45,9 @@ its transcript:
 
 ```python
 sandbox = vf.PrimeConfig()
-solver = vf.Agent("bash", "z-ai/glm-5.2", sandbox)
-judge = vf.Agent("bash", "openai/gpt-5.4-mini", sandbox)
+harness = DefaultHarness(DefaultHarnessConfig())
+solver = vf.Agent(harness, "z-ai/glm-5.2", sandbox)
+judge = vf.Agent(harness, "openai/gpt-5.4-mini", sandbox)
 
 def judge_task(solver_trace: vf.Trace) -> vf.Task:
     return vf.Task(
