@@ -46,17 +46,10 @@ RUBRIC_PROMPT = (Path(__file__).resolve().parent / "rubric.txt").read_text(
     encoding="utf-8"
 )
 
-# Appended to the prompt when `structured_output` is off, so the reply is JSON we can parse.
+# Appended to the prompt when `structured_output` is off, so the reply is JSON we can parse. Each
+# criterion carries a one-sentence `reason` written *before* the verdict (chain-of-thought), so the
+# verdict follows from it and the reasoning is auditable in `trace.info["judge"]`.
 JSON_SUFFIX = (
-    "\n\nRespond with ONLY a JSON object and nothing else, in exactly this shape:\n"
-    '{"verdicts": [{"name": "<criterion name>", "verdict": "<yes or no>"}, ...]}\n'
-    "with one entry per criterion, using each criterion's exact name and a verdict of "
-    '"yes" or "no".'
-)
-
-# The `reason`-on variant: one short justification per criterion, written *before* the verdict so
-# the verdict follows from it (chain-of-thought), and recorded verbatim in `trace.info["judge"]`.
-JSON_SUFFIX_REASON = (
     "\n\nRespond with ONLY a JSON object and nothing else, in exactly this shape:\n"
     '{"verdicts": [{"name": "<criterion name>", "reason": "<one sentence citing specific '
     'evidence from the response>", "verdict": "<yes or no>"}, ...]}\n'
@@ -120,26 +113,20 @@ class RubricJudgeConfig(JudgeConfig):
     whose structured decoding is flaky (e.g. GLM-5.2 and other non-OpenAI models on some providers
     return empty completions for structured calls, especially over long transcripts); OpenAI models
     handle either. Transient HTTP failures are already retried by the OpenAI client."""
-    reason: bool = False
-    """Ask the judge to write a one-sentence justification for each criterion *before* its verdict
-    (chain-of-thought). Improves calibration and makes every verdict auditable — the reasons are
-    recorded verbatim in `trace.info["judge"]`. Off by default (verdict only). Applies to the
-    plain-text JSON path; harmless with `structured_output` (the schema carries an optional
-    `reason`)."""
 
 
 class CriterionVerdict(StrictBaseModel):
-    """One criterion's verdict in the judge's reply, matched back to the rubric by `name`. `reason`
-    is a short justification the judge writes *before* the verdict when the judge's `reason` option
-    is on (chain-of-thought; auditable in `trace.info["judge"]`); empty otherwise."""
+    """One criterion's reply, matched back to the rubric by `name`: a short `reason`
+    (chain-of-thought, always recorded for auditability in `trace.info["judge"]`) written *before*
+    the yes/no `verdict`, so the verdict follows from it."""
 
     name: str
-    reason: str = ""
+    reason: str
     verdict: Literal["yes", "no"]
 
 
 class RubricVerdicts(StrictBaseModel):
-    """The judge's structured reply: one verdict per rubric criterion."""
+    """The judge's reply: one reasoned verdict per rubric criterion."""
 
     verdicts: list[CriterionVerdict]
 
@@ -205,8 +192,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             result = await self.evaluate(trace=trace, **fields)
             verdicts = cast(RubricVerdicts, result.parsed).verdicts
         else:
-            suffix = JSON_SUFFIX_REASON if self.config.reason else JSON_SUFFIX
-            messages = cast(str, self.build_messages(**fields)) + suffix
+            messages = cast(str, self.build_messages(**fields)) + JSON_SUFFIX
             result = await self.complete(
                 messages, trace=trace
             )  # no schema -> plain text
