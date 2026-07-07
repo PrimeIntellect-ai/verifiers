@@ -233,12 +233,12 @@ class InteractiveRolloutApp(App[None]):
         show_tools: bool = True,
         max_content_chars: int = 20000,
         answer: str | None = None,
-        allow_remote_images: bool = False,
+        allow_external_images: bool = False,
     ) -> None:
         super().__init__()
         self.ready = asyncio.Event()
         self._answer = answer
-        self._allow_remote_images = allow_remote_images
+        self._allow_external_images = allow_external_images
         self._quit_requested = False
         self._future: asyncio.Future[TurnResponse] | None = None
         self._turn = 0
@@ -757,15 +757,14 @@ class InteractiveRolloutApp(App[None]):
         cached = self._image_cache.get(url)
         if cached is not None:
             return cached
-        is_remote = url.startswith("http://") or url.startswith("https://")
-        if is_remote and not self._allow_remote_images:
-            # Do not issue outbound requests for environment-supplied URLs by
-            # default: it is an SSRF vector (localhost/private ranges) and the
-            # blocking fetch would freeze the event loop. Opt in with
-            # ``--allow-remote-images``.
+        # Only self-contained ``data:`` images are rendered by default.
+        # Environment-supplied ``http(s)`` URLs are an SSRF vector (and block
+        # the event loop), and ``file://``/local paths read arbitrary host
+        # files; both require ``--allow-external-images`` to opt in.
+        if not url.startswith("data:") and not self._allow_external_images:
             renderable: RenderableType = Panel(
                 Text(
-                    f"Remote image not fetched (pass --allow-remote-images):"
+                    f"External image not loaded (pass --allow-external-images):"
                     f"\n{self._truncate_text(url)}",
                     style="yellow",
                 ),
@@ -1012,4 +1011,15 @@ class InteractiveRolloutApp(App[None]):
             for item in raw_type:
                 if isinstance(item, str) and item != "null":
                     return item
+        # Optional parameters from ``convert_func_to_tool_def`` carry no
+        # top-level ``type`` (e.g. ``Optional[bool]`` -> ``{"anyOf": [{"type":
+        # "boolean"}, {"type": "null"}]}``); resolve the first non-null branch.
+        for keyword in ("anyOf", "oneOf"):
+            alternatives = schema.get(keyword)
+            if isinstance(alternatives, list):
+                for alternative in alternatives:
+                    if isinstance(alternative, Mapping):
+                        alt_type = InteractiveRolloutApp.schema_type(alternative)
+                        if alt_type is not None:
+                            return alt_type
         return None

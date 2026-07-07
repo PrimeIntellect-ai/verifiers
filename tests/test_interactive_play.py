@@ -245,17 +245,41 @@ async def test_app_message_only_turn_with_tool_selected():
     assert response.tool_calls is None
 
 
-def test_remote_image_not_fetched_by_default():
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/latest",
+        "file:///etc/passwd",
+        "/etc/hosts",
+    ],
+)
+def test_external_images_not_loaded_by_default(url):
     from rich.console import Console
 
     app = InteractiveRolloutApp()
     renderable = app._image_part_renderable(
-        {"type": "image_url", "image_url": {"url": "http://169.254.169.254/latest"}}
+        {"type": "image_url", "image_url": {"url": url}}
     )
     assert isinstance(renderable, Panel)
     buffer = io.StringIO()
     Console(file=buffer, width=100).print(renderable)
-    assert "allow-remote-images" in buffer.getvalue()
+    assert "allow-external-images" in buffer.getvalue()
+
+
+def test_data_url_image_still_renders_by_default():
+    # Inline data: images are self-contained and always render.
+    app = InteractiveRolloutApp()
+    renderable = app._image_part_renderable(
+        {"type": "image_url", "image_url": {"url": tiny_png_data_url()}}
+    )
+    assert isinstance(renderable, Panel)
+
+
+def test_schema_type_resolves_optional_anyof():
+    schema = {"anyOf": [{"type": "boolean"}, {"type": "null"}], "title": "b"}
+    assert InteractiveRolloutApp.schema_type(schema) == "boolean"
+    # An optional bool entered as "false" is parsed to the JSON boolean.
+    assert InteractiveRolloutApp.parse_human_value("false", schema) is False
 
 
 @pytest.mark.asyncio
@@ -661,7 +685,7 @@ def test_run_interactive_rollout_constructs_tui_client(monkeypatch):
         shuffle_seed=None,
         hide_prompt=False,
         hide_tools=True,
-        allow_remote_images=False,
+        allow_external_images=False,
         model="human",
         sampling_args={},
     )
@@ -730,7 +754,7 @@ def test_run_interactive_rollout_infers_current_env(monkeypatch, tmp_path: Path)
         shuffle_seed=None,
         hide_prompt=False,
         hide_tools=True,
-        allow_remote_images=False,
+        allow_external_images=False,
         model="human",
         sampling_args={},
     )

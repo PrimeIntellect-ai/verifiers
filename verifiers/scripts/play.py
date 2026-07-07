@@ -109,11 +109,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Hide the tool schema pane.",
     )
     parser.add_argument(
-        "--allow-remote-images",
+        "--allow-external-images",
         action="store_true",
         help=(
-            "Fetch http(s) image_url content parts from the network. Off by "
-            "default because environment-supplied URLs are an SSRF vector."
+            "Load image_url parts that reference external resources (http(s), "
+            "file://, or local paths). Off by default; only self-contained "
+            "data: images render, since environment-supplied URLs can trigger "
+            "SSRF or read arbitrary local files."
         ),
     )
     return parser
@@ -194,8 +196,9 @@ def infer_current_env_id(cwd: Path | None = None) -> str | None:
         if isinstance(scripts, dict) and "vf-play" in scripts:
             continue
         name = project.get("name")
-        return name if isinstance(name, str) and name else None
-    return None
+        if isinstance(name, str) and name:
+            return name
+        # Nameless/incomplete metadata: keep walking up rather than giving up.
     return None
 
 
@@ -258,6 +261,8 @@ async def run_interactive_rollout(
     console: Console | None = None,
 ) -> State:
     console = console or Console()
+    if args.env_args is not None and not isinstance(args.env_args, dict):
+        raise ValueError("--env-args must be a JSON object.")
     env_id = resolve_env_id(args)
     env_dir_path = resolve_env_dir_path(args.env_dir_path)
     prepare_local_env_import(env_id, env_dir_path)
@@ -280,7 +285,7 @@ async def run_interactive_rollout(
         show_prompt=not args.hide_prompt,
         show_tools=not args.hide_tools,
         answer=str(answer) if answer is not None and str(answer) else None,
-        allow_remote_images=args.allow_remote_images,
+        allow_external_images=args.allow_external_images,
     )
 
     try:

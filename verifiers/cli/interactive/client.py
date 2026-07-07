@@ -26,7 +26,7 @@ class HumanClient(Client[None, Messages, Response, Tool]):
         max_content_chars: int = 20000,
         headless: bool = False,
         answer: str | None = None,
-        allow_remote_images: bool = False,
+        allow_external_images: bool = False,
     ) -> None:
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self._client = None
@@ -36,7 +36,7 @@ class HumanClient(Client[None, Messages, Response, Tool]):
             show_tools=show_tools,
             max_content_chars=max_content_chars,
             answer=answer,
-            allow_remote_images=allow_remote_images,
+            allow_external_images=allow_external_images,
         )
         self._task: asyncio.Task[None] | None = None
         self._headless = headless
