@@ -533,12 +533,12 @@ async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch):
 
 CHOICES_TOML = (
     '[[criteria]]\nname = "depth"\ntext = "How thorough?"\n'
-    'choices = ["good", "partial", "none"]\n'
+    'choices = ["none", "partial", "good"]\n'
 )
 
 
 async def test_rubric_choices_normalize(tmp_path, monkeypatch):
-    # Ordered choices (best→worst) score by rank: "partial" of ["good","partial","none"] -> 0.5.
+    # Ordered choices (worst→best) score by rank: "partial" of ["none","partial","good"] -> 0.5.
     async def graded(self, messages, *, trace=None, schema=None, parse=None, **s):
         v = {"verdicts": [{"name": "depth", "reason": "r", "verdict": "partial"}]}
         return JudgeResponse(text=json.dumps(v), parsed=None)
