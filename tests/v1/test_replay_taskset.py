@@ -336,3 +336,30 @@ def test_records_are_followed_and_appended_across_reloads(tmp_path):
         json.dumps(own.to_record()) + "\n"
     )
     assert len(taskset.reload_tasks()) == 2
+
+
+def test_source_reward_filter_selects_incorrect_attempts(tmp_path):
+    from echo_v1 import EchoTask
+
+    def record(idx: int, reward: float) -> str:
+        trace = vf.Trace(task=EchoTask(idx=idx, prompt="say hi", answer="hi"))
+        graph.prepare_turn(trace, [SYSTEM, vf.UserMessage(content="say hi")]).commit(
+            _reply(_assistant("hi" if reward else "no"))
+        )
+        trace.record_reward("solved", reward, 1.0)
+        return json.dumps(trace.to_record()) + "\n"
+
+    (tmp_path / "r.jsonl").write_text(record(0, 1.0) + record(1, 0.0))
+    taskset = load_taskset(
+        taskset_config_type("replay").model_validate(
+            {
+                "id": "replay",
+                "records": str(tmp_path / "r.jsonl"),
+                "mode": "recheck",
+                "max_source_reward": 0.5,
+                "source": {"id": "echo-v1"},
+            }
+        )
+    )
+    tasks = taskset.load_tasks()
+    assert len(tasks) == 1  # only the incorrect (reward-0) attempt is rechecked

@@ -118,6 +118,14 @@ class ReplayConfig(TasksetConfig):
     carries token ids, else a chars/4 estimate). Unset admits every seed — but a seed near the
     trainer's ``seq_len`` leaves no room to sample, so set this for long-context sources."""
 
+    min_source_reward: float | None = None
+    """Only seed from source rollouts whose recorded reward is >= this (None = no floor)."""
+
+    max_source_reward: float | None = None
+    """Only seed from source rollouts whose recorded reward is <= this (None = no cap). E.g.
+    `max_source_reward = 0.5` rechecks/continues only incorrect attempts on a 0/1-reward env,
+    concentrating groups where revision can actually flip the outcome."""
+
     seed: int = 0
     """Salt for the per-record draw of ``tool-call`` resume points (each record's draw is
     deterministic in this and the source trace id)."""
@@ -143,6 +151,12 @@ class ReplayConfig(TasksetConfig):
         # writes every field explicitly, and must re-validate cleanly.
         if self.mode == "recheck" and self.anchor != "compaction":
             raise ValueError("`anchor` only applies to mode='continue'")
+        if (
+            self.min_source_reward is not None
+            and self.max_source_reward is not None
+            and self.min_source_reward > self.max_source_reward
+        ):
+            raise ValueError("`min_source_reward` must be <= `max_source_reward`")
         return self
 
 
@@ -206,7 +220,14 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
         # reloads stay aligned across pool workers refreshing at different times.
         new_paths = [path for path in paths if path not in self._files_done]
         tasks = self._tasks
-        skipped = {"replayed": 0, "foreign": 0, "empty": 0, "no_seed": 0, "overlong": 0}
+        skipped = {
+            "replayed": 0,
+            "foreign": 0,
+            "empty": 0,
+            "source_reward": 0,
+            "no_seed": 0,
+            "overlong": 0,
+        }
         for record in iter_records(Path(path) for path in new_paths):
             name = (record.get("task") or {}).get("name") or ""
             if isinstance(name, str) and name.startswith(("continue:", "recheck:")):
@@ -223,6 +244,15 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
             trace = trace_cls.model_validate(record)
             if not trace.nodes:
                 skipped["empty"] += 1
+                continue
+            if (
+                self.config.min_source_reward is not None
+                and trace.reward < self.config.min_source_reward
+            ) or (
+                self.config.max_source_reward is not None
+                and trace.reward > self.config.max_source_reward
+            ):
+                skipped["source_reward"] += 1
                 continue
             seeds = self.seeds(trace)
             if not seeds:
