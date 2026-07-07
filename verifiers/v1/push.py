@@ -1,72 +1,28 @@
 """Push a finished eval run to the Prime Intellect platform (`uv run eval --push`).
 
-Off by default. Converts each in-memory v1 `Trace` to the platform's sample schema and
-uploads the run over the `/evaluations/` API (create -> push samples -> finalize) — the
-same contract `prime eval push` uploads a saved run through, done inline at the end of a
-run rather than later from disk. Auth + base URL come from `$PRIME_API_KEY` /
-`~/.prime/config.json` (written by `prime login`), like the rest of the CLI.
+Off by default. Converts each in-memory v1 `Trace` to the platform's sample schema
+(`verifiers.v1.samples.trace_to_sample`, shared with the prime-rl monitor) and uploads the
+run over the `/evaluations/` API (create -> push samples -> finalize) — the same contract
+`prime eval push` uploads a saved run through, done inline at the end of a run rather than
+later from disk. Auth + base URL come from `$PRIME_API_KEY` / `~/.prime/config.json`
+(written by `prime login`), like the rest of the CLI.
 """
 
 import logging
+import math
 import os
 
 import httpx
 
 from verifiers.utils.client_utils import load_prime_config
 from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.samples import trace_to_sample
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_URL = "https://api.primeintellect.ai"
 DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
-
-
-def trace_to_sample(trace: Trace, rollout_number: int) -> dict:
-    """One rollout -> the platform's sample dict (the "old" v0 eval-sample format).
-
-    The conversation is the unit: `completion` is the final branch's messages and
-    `trajectory` carries one message list per branch. Mirrors prime's
-    `convert_results_for_upload` so a `--push` run renders identically to a
-    `prime eval push` of the same saved results."""
-
-    def dump(messages):
-        return [m.model_dump(mode="json", exclude_none=True) for m in messages]
-
-    task = trace.task.model_dump(mode="json", exclude_none=True)
-    branches = trace.branches
-    return {
-        "sample_id": trace.id,
-        "example_id": trace.task.idx,
-        "rollout_number": rollout_number,
-        "task": task,
-        "prompt": [],
-        "completion": dump(branches[-1].messages) if branches else [],
-        "answer": task.get("answer"),
-        "reward": trace.reward,
-        "timing": trace.timing.model_dump(mode="json", exclude_none=True),
-        "is_completed": trace.is_completed,
-        "is_truncated": trace.is_truncated,
-        "metrics": trace.metrics,
-        "error": trace.error.model_dump(mode="json", exclude_none=True)
-        if trace.error
-        else None,
-        "stop_condition": trace.stop_condition,
-        "trajectory": [
-            {
-                "messages": dump(branch.messages),
-                "reward": trace.reward,
-                "num_input_tokens": branch.num_input_tokens,
-                "num_output_tokens": branch.num_output_tokens,
-            }
-            for branch in branches
-        ],
-        "token_usage": trace.usage.model_dump(mode="json", exclude_none=True)
-        if trace.usage
-        else None,
-        "num_steps": trace.num_turns,
-        "info": dict(trace.info) or None,
-    }
 
 
 def _creds() -> tuple[str | None, str, str, str | None]:
@@ -102,7 +58,7 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
         return None
 
     env_name = config.taskset.id or config.id
-    rewards = [t.reward for t in traces]
+    rewards = [t.reward for t in traces if math.isfinite(t.reward)]
     metrics = {"reward": sum(rewards) / len(rewards)} if rewards else {}
     counts: dict[int, int] = {}
     samples = []
