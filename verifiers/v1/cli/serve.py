@@ -30,11 +30,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
-        cli(
-            narrow_config(ServeConfig, argv),
-            args=argv or ["--help"],
-            prog="serve",
-        )
+        cli(narrow_config(ServeConfig, argv), args=argv or ["--help"], prog="serve")
         return
     legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
     if (

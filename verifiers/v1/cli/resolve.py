@@ -30,7 +30,7 @@ def references_config_file(argv: list[str]) -> bool:
     return any(arg.startswith("@") for arg in argv)
 
 
-def extract_id(argv: list[str], field: str, default: str = "") -> str:
+def extract_id(argv: list[str], field: str) -> str:
     """The chosen `<field>.id` from `--<field>.id <x>` (or `=<x>`) on the CLI, before the typed
     parse (the positional taskset shorthand is applied upstream). Absent here, the id can still
     come from a `@ file.toml` — `EnvConfig` resolves it from the parsed data."""
@@ -40,7 +40,7 @@ def extract_id(argv: list[str], field: str, default: str = "") -> str:
             return argv[i + 1]
         if arg.startswith(flag + "="):
             return arg.split("=", 1)[1]
-    return default
+    return ""
 
 
 def narrow_config(base: type, argv: list[str]) -> type:

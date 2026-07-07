@@ -20,11 +20,11 @@ from pathlib import Path
 from pydantic_config import cli
 
 import verifiers.v1 as vf
+from verifiers.utils.display_utils import is_tty
 from verifiers.v1.cli.eval.compat import (
     convert_transitional_config,
     is_transitional_config,
 )
-from verifiers.v1.cli.eval.legacy import run_legacy_eval
 from verifiers.v1.cli.eval.resume import load_resume_config, split_resume
 from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.cli.output import output_path, write_config
@@ -35,14 +35,15 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.legacy import run_legacy_eval
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger("verifiers.v1.cli.eval")
 
 USAGE = (
-    "usage: eval [<taskset-or-env-id>] [--harness.id <id>] [options] [@ file.toml]\n"
+    "usage: eval [<taskset-or-env-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
     "       eval --resume <output-dir>\n"
-    "       legacy (v0) envs are auto-detected and run through the v0 evaluator"
+    "       legacy (v0) envs run via the bridge (via --id or auto-detected)"
 )
 
 
@@ -77,8 +78,7 @@ def _convert_transitional_args(args: list[str]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> None:
     """Parse the eval config once, then run it in this process."""
-    raw_args = list(sys.argv[1:] if argv is None else argv)
-    args = with_positional_taskset(raw_args)
+    args = with_positional_taskset(list(sys.argv[1:] if argv is None else argv))
     args = _convert_transitional_args(args)
     if not args or any(arg in ("-h", "--help") for arg in args):
         print(USAGE)
@@ -94,7 +94,12 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(f"{USAGE}\n--resume takes no other arguments")
         config = load_resume_config(resume_dir)
     else:
-        if not extract_id(args, "taskset") and not references_config_file(args):
+        legacy_id = any(a == "--id" or a.startswith("--id=") for a in args)  # v0 env id
+        if (
+            not extract_id(args, "taskset")
+            and not legacy_id
+            and not references_config_file(args)
+        ):
             raise SystemExit(USAGE)
         # `prog` is supported by cli(), but is missing from its overload declarations.
         config = cli(  # type: ignore[no-matching-overload]
@@ -105,20 +110,15 @@ def main(argv: list[str] | None = None) -> None:
         setup_logging("DEBUG" if config.verbose else "INFO")
         logger.info("wrote config to %s", write_config(config, output_path(config)))
         return
-    if config.is_legacy:
-        # A classic v0 env, auto-detected at validation (`EnvConfig._resolve_plugins`):
-        # the v0 evaluator owns its own logging and artifact shape.
-        if config.resume is not None:
-            raise SystemExit("--resume is not supported for legacy (v0) evals")
-        run_legacy_eval(config)
-        return
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
-    # (the path prime-rl trains through). The `--rich` dashboard reads live in-process Rollout
-    # state, so it's in-process only (`server + rich` is rejected at config validation).
-    # Always tee the run's logs to a file under the output dir (in-process and server mode).
+    # (the path prime-rl trains through). `--rich` is the v1 live dashboard (in-process only:
+    # `server + rich` is rejected at config validation); legacy (v0) runs get the classic
+    # vf-eval display instead (TTY only). Either display owns the console, so logs go to the
+    # file only. Always tee the run's logs to a file under the output dir.
     log_file = str(output_path(config) / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
-    if config.rich:
+    legacy_display = config.is_legacy and config.rich and is_tty()
+    if (config.rich and not config.is_legacy) or legacy_display:
         setup_logging(level, log_file=log_file, console=False)
         # drop stray stdlib records that bypass loguru (else they print over the UI)
         logging.lastResort = None
@@ -128,7 +128,13 @@ def main(argv: list[str] | None = None) -> None:
     # rollout's `finally` (tears down containers/sandboxes) and any worker pool it spawned.
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
 
-    if config.server:  # opt-in: drive rollouts through the env-server worker pool
+    if legacy_display:  # v0 env under the classic vf-eval display
+        from verifiers.v1.cli.eval.display import run_legacy_eval_with_display
+
+        traces = asyncio.run(run_legacy_eval_with_display(config, log_file))
+    elif config.is_legacy:  # v0 env: bridged to v1 Traces in-process, native artifacts
+        traces = asyncio.run(run_legacy_eval(config))
+    elif config.server:  # opt-in: drive rollouts through the env-server worker pool
         from verifiers.v1.cli.eval.runner import run_eval_server
 
         traces = asyncio.run(run_eval_server(config))

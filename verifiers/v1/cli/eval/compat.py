@@ -2,9 +2,9 @@
 
 Hosted-eval sandboxes and old local configs still speak the classic v0 eval
 dialect: flat run fields plus a single ``[[eval]]`` table (``env_id`` or a
-transitional ``taskset``/``group_size`` shape). True v0 env ids dispatch to the
-old evaluator before this converter runs; this module maps transitional v1
-taskset configs onto a native v1 :class:`EvalConfig` TOML. The mapping leans on
+transitional ``taskset``/``group_size`` shape). This module maps them onto a
+native v1 :class:`EvalConfig` TOML (a v0 ``env_id`` becomes the legacy ``id``,
+run through the in-process bridge). The mapping leans on
 ``EvalConfig`` itself: any field the model accepts (by name or alias) passes
 through untouched; only shape changes are hand-translated.
 Prime reuses ``merge_sampling_args``, ``build_extra_headers``, and
@@ -61,7 +61,6 @@ _SILENT_DROP_FIELDS = {
     "env_target",
     "env_dir_path",
 }
-_TUI_FIELDS = ("disable_tui", "debug")
 
 
 def is_transitional_config(raw: dict[str, Any]) -> bool:
@@ -171,7 +170,8 @@ def build_v1_eval_config(fields: dict[str, Any]) -> tuple[dict[str, Any], list[s
         )
     for field in _SILENT_DROP_FIELDS:
         fields.pop(field, None)
-    if any([fields.pop(field, False) for field in _TUI_FIELDS]):
+    # list, not a genexp: both fields must be popped even after the first hit
+    if any([fields.pop(field, False) for field in ("disable_tui", "debug")]):
         fields["rich"] = False
 
     # environment: taskset (v1) or legacy id; env_args attach to whichever is set

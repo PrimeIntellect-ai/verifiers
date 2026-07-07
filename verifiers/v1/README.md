@@ -21,8 +21,8 @@ tighter type contract. `import verifiers.v1 as vf`.
   plain classes + decorators (`@vf.reward` / `@vf.metric` / ...).
 - **Training-ready traces** — exact token ids + logprobs straight from an agentic rollout
   (renderer client); one training sample per branch, recovered for compaction / subagents.
-- **Hub-native + v0-compatible** — ids install on demand from the Environments Hub, and
-  classic v0 envs keep their eval path while server/training paths use the v1 bridge.
+- **v0-compatible** — classic v0 envs run through the same CLIs via the legacy bridge
+  (in-process for eval, `LegacyEnvServer` for server/training), writing native artifacts.
 
 ## Install
 
@@ -260,10 +260,11 @@ uv run eval harbor --taskset.dataset general-agent@2026-06-25 \
 
 The v0 framework is untouched — the classic `verifiers` API and its entrypoints (`vf-eval`,
 ...) keep working exactly as before; v1 lives alongside it as `verifiers.v1`. On top of
-that, the `eval` entrypoint accepts v0 env ids and old v0 eval configs, then dispatches to
-the v0 evaluator so artifacts stay in the classic `metadata.json` + `results.jsonl` shape.
-The `serve` path uses the legacy bridge and maps v0 rollouts to v1 `Trace`s. Set `--id`
-(instead of a `taskset`) when serving a v0 env:
+that, the `eval` entrypoint accepts v0 env ids and old v0 eval configs, then runs them
+through the legacy bridge — v0 rollouts map to v1 `Trace`s and the run writes the same
+native `config.toml` + `results.jsonl` artifacts as a v1 run (the legacy sample shape
+exists only at the upload boundary, via `convert_results_for_upload`). The `serve` path
+uses the same bridge. Set `--id` (instead of a `taskset`) for a v0 env:
 
 ```bash
 uv run eval reverse-text -n 2     # eval a v0 env

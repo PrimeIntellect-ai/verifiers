@@ -118,14 +118,13 @@ class EnvConfig(BaseConfig):
     tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
     key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
     # --- legacy (v0) backwards-compat -----------------------------------------
-    # Run a classic `verifiers.load_environment(id, **args)` env through the v1 env-server
-    # bridge (see `verifiers.v1.legacy`) instead of a v1 taskset/harness. Set `id` (leave
-    # `taskset` unset) to opt in; native v1 envs leave these untouched. The eval CLI
-    # dispatches v0 envs to the old v0 evaluator before building this config.
+    # Run a classic `verifiers.load_environment(id, **args)` env through the legacy bridge
+    # (see `verifiers.v1.legacy`: in-process for eval, `LegacyEnvServer` for server/training)
+    # instead of a v1 taskset/harness. Set `id` (leave `taskset` unset) to opt in; native
+    # v1 envs leave these untouched.
     id: EnvId | None = None
     """Classic (v0) local package id, loaded via `verifiers.load_environment` and run
-    through the legacy bridge for server/training paths. Set this *instead of* `taskset`
-    to run a v0 environment."""
+    through the legacy bridge. Set this *instead of* `taskset` to run a v0 environment."""
     args: dict = {}
     """Construction kwargs forwarded to `load_environment(id, **args)`."""
     extra_env_kwargs: dict = {}

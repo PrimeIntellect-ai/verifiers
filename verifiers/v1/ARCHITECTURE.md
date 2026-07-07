@@ -228,8 +228,9 @@ retryable error (`--retries.rollout.include` matches by type name); off by defau
 
 ## The v0 bridge
 
-A classic v0 `verifiers.load_environment` env runs through `eval` with the old v0 evaluator,
-so eval artifacts stay in the classic `metadata.json` + `results.jsonl` shape. Server and
+A classic v0 `verifiers.load_environment` env runs through `eval` via the in-process bridge
+(`run_legacy_eval` in `legacy.py`): each v0 `RolloutOutput` maps to a v1 `Trace` and the run
+writes the same native `config.toml` + `results.jsonl` artifacts as a v1 run. Server and
 training paths use `LegacyEnvServer` (`legacy.py`), an `EnvServer` subclass that runs the v0
 env's own rollout loop (no v1 interception) and maps each `RolloutOutput` into a v1 `Trace`
 with `rollout_output_to_trace()` — rebuilding the message graph from the v0 trajectory and
@@ -238,9 +239,9 @@ bridged v0 env from a native v1 one; both are an `EnvClient` away.
 
 ## Plugins & ids
 
-Tasksets, harnesses, and judges are packages resolved by `id` (`ids.py`, `loaders.py`). An
-`ID` is `name` (a local, importable package), `org/name`, or `org/name@version`;
-`ensure_installed` installs the latter two from the Environments Hub on demand. A plugin module
+Tasksets, harnesses, and judges are packages resolved by `id` (`loaders.py`). An `EnvId`
+names a locally importable package (hyphens → underscores); built-in ids resolve to their
+namespaced modules under `verifiers/v1/{tasksets,harnesses,judges}`. A plugin module
 exports its `Taskset` / `Harness` / `Judge` subclass via `__all__`; `load_taskset` /
 `load_harness` / `load_judge` import the module, find that single subclass, and instantiate it,
 while `narrow_plugin_field` validates a generic config dict into the plugin's concrete config

@@ -170,11 +170,8 @@ def main(argv: list[str] | None = None) -> None:
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
-        cli(
-            _narrow(argv),
-            args=argv or ["--help"],
-            prog="validate",
-        )  # full option help, narrowed to the given taskset
+        # full option help, narrowed to the given taskset
+        cli(_narrow(argv), args=argv or ["--help"], prog="validate")
         return
     if not extract_id(argv, "taskset") and not references_config_file(argv):
         raise SystemExit(
