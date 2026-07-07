@@ -20,8 +20,7 @@ from pathlib import Path
 from pydantic_config import cli
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.dashboard.replay import replay_dashboard
-from verifiers.v1.cli.dashboard.validate import TaskProgress
+from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
 from verifiers.v1.cli.output import append_trace, read_traces, save_config, write_config
 from verifiers.v1.configs.replay import ReplayConfig
 from verifiers.v1.state import state_cls
@@ -78,10 +77,10 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     start = time.time()
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-    states = [TaskProgress(idx=t.task.idx, name=t.task.name) for t in work]
+    states = [ReplayProgress(idx=t.task.idx, name=t.task.name) for t in work]
     lock = asyncio.Lock()
 
-    async def rescore(trace: Trace, st: TaskProgress) -> None:
+    async def rescore(trace: Trace, st: ReplayProgress) -> None:
         async with sem or contextlib.nullcontext():
             st.start, st.state = time.time(), "running"
             # Clear prior scores so a changed/removed judge leaves no stale (double-summed) entry.
@@ -90,9 +89,9 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
             trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
             try:
                 await taskset.score(trace)
-                st.state = "scored"
+                st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
             except Exception as exc:
-                st.state = "error"
+                st.state, st.detail = "error", type(exc).__name__
                 trace.capture_error(exc)  # record the re-scoring failure on the trace
                 if not config.rich:
                     logger.warning(
@@ -109,7 +108,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
         await append_trace(out, trace, lock)
 
     display = (
-        replay_dashboard(states, config.name, str(source), start)
+        replay_dashboard(states, config.name, str(source), str(out), start)
         if config.rich
         else contextlib.nullcontext()
     )
