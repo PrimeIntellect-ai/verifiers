@@ -23,7 +23,6 @@ typed error attribution, token-true trace capture). The Agent only decides what 
 the five-tuple.
 """
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -35,7 +34,6 @@ from verifiers.v1.clients import (
     RolloutContext,
     resolve_client,
 )
-from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import TimeoutConfig, resolve_runtime_config
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import InterceptionPool, RolloutLimits
@@ -208,28 +206,6 @@ class Agent:
             },
         }
         return trace
-
-    async def run_group(
-        self,
-        task: Task,
-        n: int,
-        *,
-        taskset: Taskset | None = None,
-        model: str | None = None,
-        sampling: Sampling | None = None,
-    ) -> list[Trace]:
-        """Run this agent on `task` `n` times concurrently (each in its own fresh box) and
-        return the traces. If `taskset` defines `@group_reward`s, they run across the group
-        after the rollouts — same semantics as an eval `Episode`, without its retry layer."""
-        traces = await asyncio.gather(
-            *(
-                self.run(task, taskset=taskset, model=model, sampling=sampling)
-                for _ in range(n)
-            )
-        )
-        if taskset is not None and discover_decorated(taskset, "group_reward"):
-            await taskset.score_group(list(traces))
-        return list(traces)
 
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:

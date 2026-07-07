@@ -1,13 +1,15 @@
-"""Demo 3: a proposer -> solver program (the ProposerSolverEnv shape, as a script).
+"""A proposer -> solver program.
 
   1. the proposer (gpt-5.4-mini) invents a problem with a known answer
   2. the program mints a typed ProposedTask from the proposer's trace (lineage stamped)
-  3. the solver (GLM-5.2) attempts it n=4 times via run_group, scored by a taskset
-     (@reward per rollout + a @group_reward across the group)
-  4. the program assembles the proposer-solver topology and prints it
+  3. the solver (GLM-5.2) attempts it n=4 times — fan-out is a plain asyncio.gather —
+     each run scored by a taskset @reward
+  4. the program reads the structure back off the lineage stamps
 
 Exercises: cross-model chaining, typed Task subclass, taskset-scored agent runs,
-run_group fan-out on a pooled interception server, group scoring outside an eval.
+concurrent fan-out on a pooled interception server. Note there is no group concept
+here: verifiers scores rollouts; grouping (and anything comparative across a group)
+belongs to the consumer — in training, prime-rl samples the group.
 """
 
 import asyncio
@@ -40,19 +42,6 @@ class SolveTaskset(vf.Taskset[ProposedTask, vf.TasksetConfig]):
         numbers = re.findall(r"-?\d+", (reply or "").replace(",", ""))
         return 1.0 if numbers and numbers[-1] == task.answer else 0.0
 
-    @vf.group_reward(weight=0.1)
-    async def consensus(self, traces: list[vf.Trace]) -> list[float]:
-        """Small bonus when the whole group lands on one answer (agreement signal)."""
-        finals = []
-        for trace in traces:
-            reply = (
-                trace.assistant_messages[-1].content if trace.assistant_messages else ""
-            )
-            numbers = re.findall(r"-?\d+", (reply or "").replace(",", ""))
-            finals.append(numbers[-1] if numbers else None)
-        agree = len(set(finals)) == 1 and finals[0] is not None
-        return [1.0 if agree else 0.0] * len(traces)
-
 
 def proposed_task(proposer_trace: vf.Trace) -> ProposedTask:
     """traces -> Task: mint the solver task out of the proposer's final message."""
@@ -75,6 +64,7 @@ def proposed_task(proposer_trace: vf.Trace) -> ProposedTask:
 async def main() -> None:
     proposer = vf.Agent("default", vf.make_context("openai/gpt-5.4-mini"))
     solver = vf.Agent("default", vf.make_context("z-ai/glm-5.2"))
+    taskset = SolveTaskset(vf.TasksetConfig())
 
     async with proposer, solver:
         proposer_trace = await proposer.run(vf.Task(idx=0, prompt=PROPOSER_PROMPT))
@@ -82,23 +72,20 @@ async def main() -> None:
         print("proposed problem:", task.prompt[:200])
         print("claimed answer:  ", task.answer)
 
-        traces = await solver.run_group(
-            task, n=4, taskset=SolveTaskset(vf.TasksetConfig())
+        traces = await asyncio.gather(
+            *(solver.run(task, taskset=taskset) for _ in range(4))
         )
 
-    # The topology a ProposerSolverEnv would return; a typed algorithm consumes this.
-    topology = {
-        "proposer": proposer_trace.id,
-        "solver_groups": {f"task-{task.idx}": [t.id for t in traces]},
-    }
-    print("\ntopology:", json.dumps(topology, indent=2))
+    # No topology object: the structure is already on the traces, via the stamps.
     for trace in traces:
         print(
             f"  solver {trace.id[:8]}: reward={trace.reward:.2f} rewards={trace.rewards} "
             f"turns={trace.num_turns} sources={trace.task.sources[0][:8]}({trace.task.relation})"
         )
     rewards = [t.reward for t in traces]
-    print(f"group: mean={statistics.mean(rewards):.2f} rewards={rewards}")
+    print(
+        f"solved by {proposer_trace.id[:8]}'s task: mean={statistics.mean(rewards):.2f}"
+    )
 
 
 if __name__ == "__main__":

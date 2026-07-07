@@ -69,8 +69,7 @@ flag), so "these two runs shared a box" stays a queryable relation afterwards.
 
 ## Proposer → solvers
 
-Fan-out with judgement attached — the shape a `ProposerSolverEnv` returns as a typed
-topology, written as a script:
+Fan-out with judgement attached, written as a script:
 
 ```python
 class ProposedTask(vf.Task):
@@ -83,12 +82,15 @@ class SolveTaskset(vf.Taskset[ProposedTask, vf.TasksetConfig]):
 
 proposer_trace = await proposer.run(vf.Task(idx=0, prompt=PROPOSE))
 task = mint_task(proposer_trace)          # your traces -> Task function
-traces = await solver.run_group(task, n=8, taskset=SolveTaskset(vf.TasksetConfig()))
+taskset = SolveTaskset(vf.TasksetConfig())
+traces = await asyncio.gather(*(solver.run(task, taskset=taskset) for _ in range(8)))
 ```
 
-`run_group` runs the task `n` times concurrently (each in its own fresh box) and, when
-the taskset defines `@group_reward`s, scores them across the group — the same semantics
-as an eval `Episode`, without its retry layer.
+Fan-out is plain `asyncio.gather` — each run gets its own fresh box, and the entered
+agent's interception pool keeps N concurrent runs cheap. There is deliberately no group
+primitive here: verifiers scores rollouts; grouping — and anything comparative across a
+group — belongs to the consumer (in training, prime-rl samples the group). The structure
+of a multi-agent program lives on the traces themselves, via the lineage stamps.
 
 Reward/metric handlers are `async def` — a sync handler fails at scoring time.
 
