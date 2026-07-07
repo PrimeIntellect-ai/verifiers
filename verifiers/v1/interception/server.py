@@ -32,10 +32,10 @@ from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
+from verifiers.v1 import graph
 from verifiers.v1.clients import RolloutContext
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
-from verifiers.v1 import graph
 from verifiers.v1.errors import (
     InterceptionError,
     OverlongPromptError,
@@ -361,6 +361,7 @@ class InterceptionServer:
                 # `verifiers.v1.ttt`). A `TTTError` lands in the RolloutError handler below:
                 # stashed as the real cause, surfaced to the harness as a non-retryable 400.
                 if session.ttt is not None:
+                    session.ttt.capture_request(body)
                     await session.ttt.on_turn_prepared(turn)
                 response = await session.ctx.client.get_response(
                     dialect,

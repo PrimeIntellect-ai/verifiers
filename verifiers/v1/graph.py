@@ -102,6 +102,11 @@ class MessageNode(StrictBaseModel):
     the rollout ran without TTT. Stamped at commit time on every node of the turn, so a
     branch is verifiably sampled under exactly one version (`Branch.ttt_version`) and an RL
     trainer can replay it with the exact adapter checkpoint."""
+    ttt_qa: bool = False
+    """True for nodes of a TTT Q&A side-generation (see `verifiers.v1.ttt`): committed to
+    the trace as real branches (so RL trains the generation behavior), but excluded from
+    the trace's turn/token metrics and `RolloutLimits` accounting — they run on the QA
+    config's own budget."""
     multi_modal_data: MultiModalData | None = None
     """The renderer items for the images this message's content introduces (pixel tensors,
     grids, hashes, placeholders) — the only carrier of the pixels from the env server to the
@@ -551,8 +556,21 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
 # --- walking the graph (views) ---------------------------------------------------------
 
 
-def leaves(trace: Trace) -> list[int]:
+def leaves(trace: Trace, *, include_qa: bool = True) -> list[int]:
     """Node ids that are no node's parent — one per branch (the last node of each). The
-    `Trace.branches` view walks each leaf's parents back to its root to build the branch."""
-    has_child = {n.parent for n in trace.nodes if n.parent is not None}
-    return [i for i in range(len(trace.nodes)) if i not in has_child]
+    `Trace.branches` view walks each leaf's parents back to its root to build the branch.
+
+    ``include_qa=False`` computes leaves on the subgraph without TTT Q&A nodes (they are
+    always leaf-side — a QA node never has a non-QA child), re-exposing the branch a QA
+    generation forked from: the trace's turn/token metrics and `RolloutLimits` use this
+    view, so QA side-generations don't count against the rollout's budgets."""
+    has_child = {
+        n.parent
+        for n in trace.nodes
+        if n.parent is not None and (include_qa or not n.ttt_qa)
+    }
+    return [
+        i
+        for i, n in enumerate(trace.nodes)
+        if i not in has_child and (include_qa or not n.ttt_qa)
+    ]

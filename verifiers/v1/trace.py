@@ -171,6 +171,13 @@ class Branch(StrictBaseModel):
         return sum(len(n.token_ids) for n in self.nodes)
 
     @property
+    def is_ttt_qa(self) -> bool:
+        """Whether this branch is a TTT Q&A side-generation (its leaf-side nodes carry
+        `ttt_qa`). QA branches are real sampled branches — RL trains them — but analysis,
+        budgets, and rollout metrics treat them separately."""
+        return any(n.ttt_qa for n in self.nodes)
+
+    @property
     def ttt_version(self) -> int | None:
         """The single TTT adapter version this branch's sampled tokens ran under (see
         `verifiers.v1.ttt`), or None for a rollout without TTT. Sampled-node versions must
@@ -302,20 +309,38 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     @property
     def num_input_tokens(self) -> int:
         """Total input context summed over branches (each branch's final-turn prompt) —
-        the trajectory yields one training sample per branch, so totals aggregate them."""
-        return sum(branch.num_input_tokens for branch in self.branches)
+        the trajectory yields one training sample per branch, so totals aggregate them.
+        TTT Q&A side-branches are excluded: budgets (`RolloutLimits`) and metrics cover the
+        rollout proper; QA runs on its own configured budget."""
+        return sum(branch.num_input_tokens for branch in self._main_branches())
 
     @property
     def num_output_tokens(self) -> int:
         """Total assistant-generated (completion) tokens summed over branches — every token
-        the model produced (reasoning included), so it can exceed the final context size."""
-        return sum(branch.num_output_tokens for branch in self.branches)
+        the model produced (reasoning included), so it can exceed the final context size.
+        TTT Q&A side-branches are excluded (see `num_input_tokens`)."""
+        return sum(branch.num_output_tokens for branch in self._main_branches())
 
     @property
     def num_total_tokens(self) -> int:
         """Total sequence length summed over branches (each branch's final-turn prompt +
-        completion) — used for token batching."""
-        return sum(branch.num_total_tokens for branch in self.branches)
+        completion) — used for token batching. TTT Q&A side-branches are excluded (see
+        `num_input_tokens`)."""
+        return sum(branch.num_total_tokens for branch in self._main_branches())
+
+    def _main_branches(self) -> "list[Branch]":
+        """The rollout's own branches — the branch view over the graph without TTT Q&A
+        side-generation nodes (`graph.leaves(include_qa=False)`)."""
+        branches: list[Branch] = []
+        for i, leaf in enumerate(graph.leaves(self, include_qa=False)):
+            path: list[int] = []
+            nid: int | None = leaf
+            while nid is not None:
+                path.append(nid)
+                nid = self.nodes[nid].parent
+            path.reverse()
+            branches.append(Branch(index=i, nodes=[self.nodes[n] for n in path]))
+        return branches
 
     @property
     def usage(self) -> Usage | None:
@@ -352,8 +377,9 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     @property
     def num_turns(self) -> int:
         """Total model turns (sampled responses) across all branches — prompt-supplied
-        assistant messages don't count."""
-        return sum(1 for n in self.nodes if n.sampled)
+        assistant messages don't count. TTT Q&A side-generations are excluded (they run on
+        the QA config's own budget, not the rollout's `max_turns`)."""
+        return sum(1 for n in self.nodes if n.sampled and not n.ttt_qa)
 
     @property
     def is_truncated(self) -> bool:

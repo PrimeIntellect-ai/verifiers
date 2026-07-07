@@ -445,22 +445,42 @@ async def test_interception_server_surfaces_ttt_failure():
 # -- Q&A at compaction ----------------------------------------------------------------------
 
 
-class QAClient:
-    """A fake rollout client for Q&A generations: returns a canned answer per question and
-    records every request body + (model, sampling)."""
+def item_text(pairs: list[dict]) -> str:
+    return "\n".join(
+        f"<item><type>{p.get('type', 'qa')}</type><question>{p['question']}</question>"
+        f"<answer>{p['answer']}</answer></item>"
+        for p in pairs
+    )
 
-    def __init__(self, answer="the answer"):
-        self.answer = answer
+
+class QAClient:
+    """A fake rollout client for Q&A generations: returns a canned structured generation
+    (with token ids, like the renderer) and records every request body + (model, sampling)."""
+
+    def __init__(self, items: list[dict] | None = None):
+        self.items = items if items is not None else [{"question": "What is x for task T?", "answer": "42"}]
         self.requests: list[tuple[dict, str, dict]] = []
+        self.counter = 0
+
+    def content(self) -> str:
+        return item_text(self.items)
 
     async def get_response(self, dialect, body, model, sampling, headers=None, session_id=None, turn=None):
         self.requests.append((body, model, sampling.model_dump(exclude_none=True)))
+        base = 5000 + self.counter * 100
+        self.counter += 1
+        prefix_ids = [tok for nid in turn.prefix_node_ids for tok in turn.trace.nodes[nid].token_ids] if turn else []
+        tail_len = (len(turn.tail) if turn else 1) * 2 + 1
         return vf.Response(
             id="qa",
             created=0,
             model=model,
-            message=AssistantMessage(content=self.answer),
+            message=AssistantMessage(content=self.content()),
             finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[*prefix_ids, *range(base, base + tail_len)],
+                completion_ids=list(range(base + 50, base + 53)),
+            ),
         )
 
     async def close(self):
@@ -470,7 +490,7 @@ class QAClient:
 def qa_hook(trace, service, client, **qa_overrides):
     config = TTTConfig(
         base_url="http://ttt",
-        qa={"num_pairs": 3, "prompts": ["knowledge?", "what worked?"], **qa_overrides},
+        qa={"num_generations": 2, "items_per_generation": 2, "seeds": ["facts", "lessons"], **qa_overrides},
     )
     ctx = vf.RolloutContext(model="base", client=client, sampling=SamplingConfig(temperature=0.9))
     hook = TTTRolloutHook(config, trace, ctx=ctx)
@@ -481,31 +501,65 @@ def qa_hook(trace, service, client, **qa_overrides):
 async def test_qa_generated_with_branch_in_context_and_shipped():
     trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
     service = FakeService()
-    client = QAClient(answer="learned fact")
+    client = QAClient(
+        items=[
+            {"type": "qa", "question": "What is x for task T?", "answer": "42"},
+            {"type": "lesson", "question": "When tool S rate-limits, what should you do?", "answer": "back off"},
+        ]
+    )
     hook = qa_hook(trace, service, client)
     commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1, 2], [3]))
     turn = graph.prepare_turn(trace, [UserMessage(content="summary")])
     await hook.on_turn_prepared(turn)
 
-    # 3 QA generations (prompts cycled), each with the FULL abandoned branch in context.
-    assert len(client.requests) == 3
-    questions = [body["messages"][-1]["content"] for body, _, _ in client.requests]
-    assert questions == ["knowledge?", "what worked?", "knowledge?"]
-    for body, model, sampling in client.requests:
+    # 2 seeded generations, each with the FULL abandoned branch in context + the seeded
+    # generation instruction as the final user message.
+    assert len(client.requests) == 2
+    for i, (body, model, sampling) in enumerate(client.requests):
         roles = [m["role"] for m in body["messages"]]
-        assert roles == ["user", "assistant", "user"]  # u1, a1, question
+        assert roles == ["user", "assistant", "user"]  # u1, a1, instruction
         assert body["messages"][0]["content"] == "u1"
+        instruction = body["messages"][-1]["content"]
+        assert ["facts", "lessons"][i] in instruction  # the seed
+        assert "2 question-answer items" in instruction  # items_per_generation
+        assert "SELF-CONTAINED" in instruction
         assert model == "base"  # version 0 at generation time — the branch's own model
-        assert sampling["max_tokens"] == 1024  # the QA budget, not the rollout's
+        assert sampling["max_tokens"] == 2048  # the QA budget, not the rollout's
 
-    # The update shipped the pairs and trained QA-only by default.
+    # The update shipped the extracted items (2 per generation, deduped to 2 distinct).
     (update,) = service.updates
-    assert update["qa_pairs"] == [{"question": q, "answer": "learned fact"} for q in questions]
+    assert update["qa_pairs"] == client.items  # both generations' items dedup to the two
     assert update["train_rollout"] is False
-    # And the trace records them.
     record = trace.info["ttt"]["updates"][0]
-    assert record["num_qa_pairs"] == 3
+    assert record["num_qa_pairs"] == 2
     assert record["trained_rollout"] is False
+
+
+async def test_qa_exchanges_become_tagged_branches():
+    """QA generations are committed to the trace as ttt_qa branches (RL trains them), but
+    stay out of the rollout's turn/token accounting."""
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    service = FakeService()
+    hook = qa_hook(trace, service, QAClient())
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1, 2], [3]))
+    turns_before = trace.num_turns
+    tokens_before = trace.num_total_tokens
+    turn = graph.prepare_turn(trace, [UserMessage(content="summary")])
+    await hook.on_turn_prepared(turn)
+
+    qa_branches = [b for b in trace.branches if b.is_ttt_qa]
+    assert len(qa_branches) == 2  # one per generation
+    for branch in qa_branches:
+        # The QA branch extends the abandoned branch: its prefix is the trajectory, its
+        # tail the instruction + generation, sampled under the PRE-update version (0).
+        assert branch.ttt_version == 0
+        assert any(n.ttt_qa and n.sampled for n in branch.nodes)
+    # The abandoned branch's leaf now has QA children, so the graph's full branch view
+    # shows the QA branches; the main view (metrics) still sees the trajectory itself.
+
+    # Rollout accounting is unchanged by QA: turns and token totals exclude tagged nodes.
+    assert trace.num_turns == turns_before
+    assert trace.num_total_tokens == tokens_before
 
 
 async def test_qa_also_train_rollout():
@@ -520,9 +574,13 @@ async def test_qa_also_train_rollout():
     assert update["token_ids"] == [1, 2]
 
 
-async def test_qa_all_empty_answers_fails_loudly():
+async def test_qa_no_items_fails_loudly():
+    class EmptyClient(QAClient):
+        def content(self) -> str:
+            return "no structured items here"
+
     trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
-    hook = qa_hook(trace, FakeService(), QAClient(answer="   "))
+    hook = qa_hook(trace, FakeService(), EmptyClient())
     commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
     turn = graph.prepare_turn(trace, [UserMessage(content="s")])
     with pytest.raises(TTTError, match="no usable pairs"):
@@ -548,13 +606,50 @@ def test_qa_requires_ctx():
         TTTRolloutHook(TTTConfig(base_url="http://x", qa={}), trace)
 
 
-async def test_qa_generations_never_touch_the_trace():
-    """QA exchanges are housekeeping: the trace's node count is unchanged by generation."""
+async def test_qa_captures_tools_and_system_prompt():
+    """The hook ships the rollout's system prompt + captured tool schemas with QA updates,
+    and advertises the tools on the QA generations themselves."""
     trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
     service = FakeService()
-    hook = qa_hook(trace, service, QAClient())
-    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
-    nodes_before = len(trace.nodes)
-    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    client = QAClient()
+    hook = qa_hook(trace, service, client)
+    tools = [{"type": "function", "function": {"name": "search", "parameters": {}}}]
+    hook.capture_request({"tools": tools, "messages": []})
+    commit_turn(
+        trace,
+        hook,
+        [vf.SystemMessage(content="you are an agent"), UserMessage(content="u1")],
+        response("a1", [9, 1, 2], [3]),
+    )
+    turn = graph.prepare_turn(trace, [vf.SystemMessage(content="you are an agent"), UserMessage(content="s")])
     await hook.on_turn_prepared(turn)
-    assert len(trace.nodes) == nodes_before
+
+    for body, _, _ in client.requests:
+        assert body["tools"] == tools  # same rendered system block as regular turns
+    (update,) = service.updates
+    assert update["system_prompt"] == "you are an agent"
+    assert update["tools"] == tools
+    assert trace.info["ttt"]["system_prompt"] == "you are an agent"
+    assert trace.info["ttt"]["tools"] == tools
+
+
+def test_parse_and_dedup_items():
+    from verifiers.v1.ttt import dedup_items, parse_qa_items
+
+    text = (
+        "preamble\n"
+        "<item><type>qa</type><question>What is x?</question><answer>42</answer></item>\n"
+        "<item><type>lesson</type><question>When Y happens, do what?</question><answer>Z</answer></item>\n"
+        "<item><type>weird</type><question>Q3?</question><answer>A3</answer></item>\n"
+        "<item><question>no answer</question></item>\n"  # malformed: dropped
+        "trailing junk"
+    )
+    items = parse_qa_items(text)
+    assert [i["type"] for i in items] == ["qa", "lesson", "qa"]  # unknown type -> qa
+
+    duplicates = [
+        {"type": "qa", "question": "What is the value of x in task T?", "answer": "a"},
+        {"type": "qa", "question": "What is the value of x in task T??", "answer": "b"},
+        {"type": "qa", "question": "Completely different question about z", "answer": "c"},
+    ]
+    assert len(dedup_items(duplicates, 0.85)) == 2
