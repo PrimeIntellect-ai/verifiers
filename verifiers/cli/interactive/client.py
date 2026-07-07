@@ -84,7 +84,18 @@ class HumanClient(Client[None, Messages, Response, Tool]):
             self._task = asyncio.create_task(
                 self._app.run_async(headless=self._headless)
             )
-        await self._app.ready.wait()
+        # Race readiness against the app task so a startup failure (e.g. no
+        # usable terminal) surfaces its exception instead of hanging forever
+        # on a ``ready`` event that ``on_mount`` will never set.
+        ready = asyncio.ensure_future(self._app.ready.wait())
+        done, _ = await asyncio.wait(
+            {ready, self._task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if self._task in done:
+            ready.cancel()
+            # Re-raise the startup error (or surface an unexpected clean exit).
+            self._task.result()
+            raise RuntimeError("Interactive TUI exited before it was ready.")
 
     async def get_response(
         self,

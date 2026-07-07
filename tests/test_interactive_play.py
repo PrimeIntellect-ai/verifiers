@@ -282,6 +282,13 @@ def test_schema_type_resolves_optional_anyof():
     assert InteractiveRolloutApp.parse_human_value("false", schema) is False
 
 
+def test_schema_type_leaves_genuine_union_as_freeform():
+    # int | str must not be forced to one arm's type; stay free-form (None).
+    schema = {"anyOf": [{"type": "integer"}, {"type": "string"}]}
+    assert InteractiveRolloutApp.schema_type(schema) is None
+    assert InteractiveRolloutApp.parse_human_value("hello", schema) == "hello"
+
+
 @pytest.mark.asyncio
 async def test_app_string_argument_supports_multiline_code():
     app = InteractiveRolloutApp()
@@ -409,6 +416,20 @@ async def test_app_ask_after_quit_raises_session_exit():
     await task
     with pytest.raises(InteractiveSessionExit):
         await app.ask([UserMessage(content="hello")], [])
+
+
+@pytest.mark.asyncio
+async def test_client_start_surfaces_tui_startup_failure():
+    # If the TUI task dies before signalling ready, start() must raise the
+    # startup error instead of hanging on ready.wait() forever.
+    client = HumanClient(headless=True)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("no terminal")
+
+    client._app.run_async = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="no terminal"):
+        await asyncio.wait_for(client.start(), timeout=5)
 
 
 @pytest.mark.asyncio

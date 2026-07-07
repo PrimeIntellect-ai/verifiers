@@ -786,7 +786,9 @@ class InteractiveRolloutApp(App[None]):
                     border_style="magenta",
                 )
         except Exception as exc:
-            renderable = Text(f"[image_url: {url}] ({exc})", style="red")
+            renderable = Text(
+                f"[image_url: {self._truncate_text(url)}] ({exc})", style="red"
+            )
         self._image_cache[url] = renderable
         return renderable
 
@@ -1013,13 +1015,20 @@ class InteractiveRolloutApp(App[None]):
                     return item
         # Optional parameters from ``convert_func_to_tool_def`` carry no
         # top-level ``type`` (e.g. ``Optional[bool]`` -> ``{"anyOf": [{"type":
-        # "boolean"}, {"type": "null"}]}``); resolve the first non-null branch.
+        # "boolean"}, {"type": "null"}]}``). Resolve to the sole non-null branch
+        # so optionals parse correctly, but leave genuine unions (``int | str``)
+        # as ``None`` (free-form string) rather than forcing one arm's type.
         for keyword in ("anyOf", "oneOf"):
             alternatives = schema.get(keyword)
-            if isinstance(alternatives, list):
-                for alternative in alternatives:
-                    if isinstance(alternative, Mapping):
-                        alt_type = InteractiveRolloutApp.schema_type(alternative)
-                        if alt_type is not None:
-                            return alt_type
+            if not isinstance(alternatives, list):
+                continue
+            branch_types = {
+                alt_type
+                for alternative in alternatives
+                if isinstance(alternative, Mapping)
+                and (alt_type := InteractiveRolloutApp.schema_type(alternative))
+                not in (None, "null")
+            }
+            if len(branch_types) == 1:
+                return next(iter(branch_types))
         return None
