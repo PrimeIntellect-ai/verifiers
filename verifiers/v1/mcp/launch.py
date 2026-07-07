@@ -1,7 +1,8 @@
 """Host-side launching: bring a vf-native server up in a runtime and reach it.
 
-`serve` is the single launcher (any server, any placement); `serve_tools` / `serve_shared` /
-`serve_user` are thin wrappers for a rollout's tools, the eval's shared tools, and the user sim.
+`serve` is the single launcher (any server, any placement); `serve_tools` / `serve_user` are
+thin wrappers for a rollout's tools and the user sim; `SharedServers` is the run-scoped lazy
+registry of `shared`-placement servers.
 `serve_in_runtime` runs the server's module (`python -m <module>`) in a runtime — host (ambient) or
 sandbox (after `_install_in_sandbox` uploads + installs the working-tree `verifiers` source + the env
 package). `connect_user` is the MCP client the framework drives the user sim through.
@@ -48,7 +49,7 @@ logger = logging.getLogger(__name__)
 VF_BUILD_INPUTS = ("pyproject.toml", "README.md", "LICENSE", "verifiers")
 
 # The model's last assistant text in; the next user messages out. The user sim ends the trajectory
-# by setting a flag on the shared `self.state` that the taskset's `@vf.stop` checks, not via a return
+# by setting a flag on the shared `self.state` that the task's `@vf.stop` checks, not via a return
 # flag — so this hands back only messages.
 Respond = Callable[[str], Awaitable[Messages]]
 
@@ -343,30 +344,50 @@ async def serve(
         yield f"{base.rstrip('/')}/mcp"
 
 
-@contextlib.asynccontextmanager
-async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
-    """Start the SHARED tool servers (placement `shared`) ONCE for a whole eval, each in its OWN
-    `runtime`, and yield `{name: url}` reachable by every rollout's harness. Reachability mirrors a
-    per-rollout tool, but there's no single harness runtime to read locality off — the caller
-    (`Environment.shared_tools`) passes the harness runtime's `harness_is_local`, so a host tool gets
-    one host bridge (tunnel) when the harness runs remotely, and a remote tool runtime publishes its
-    own URL. Torn down when the eval ends. A shared server is task-agnostic, so its `setup` gets no
-    task (`serve(toolset, None)`)."""
-    urls: dict[str, str] = {}
-    async with contextlib.AsyncExitStack() as stack:
-        for toolset in toolsets:
-            cfg = toolset.config
-            if not cfg.shared:
-                continue
-            name = toolset.server_name
-            if cfg.url:  # already running remotely
-                urls[name] = cfg.url
-            else:
-                urls[name] = await stack.enter_async_context(
-                    serve(toolset, None, harness_is_local=harness_is_local)
+class SharedServers:
+    """The run-scoped registry of `shared`-placement tool servers: each is started lazily, on
+    the first rollout whose task declares it, and reused by every later rollout — deduped by
+    the toolset's identity (its class + its config + the consuming harness's locality, since a
+    host server bridged for a remote harness serves a different URL than a local one). Owned
+    by the serving context (an in-process eval run, or an env-server worker's lifetime) and
+    torn down with it. Lazy start is what lets a topology's *derived* tasks — which don't
+    exist when serving begins — use shared servers too; seed tasks aren't special. A shared
+    server is task-agnostic, so its `setup` gets no task (`serve(toolset, None)`)."""
+
+    def __init__(self) -> None:
+        self._stack = contextlib.AsyncExitStack()
+        self._urls: dict[str, str] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    async def __aenter__(self) -> "SharedServers":
+        await self._stack.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        await self._stack.__aexit__(*exc)
+
+    async def url_for(self, toolset: Toolset, harness_is_local: bool = True) -> str:
+        """The shared server's URL for `toolset`, starting it on first request. Locks are
+        per identity, so a second requester of the SAME server awaits the first while an
+        unrelated server's (slow) startup never blocks it."""
+        cfg = toolset.config
+        key = (
+            f"{type(toolset).__module__}.{type(toolset).__qualname__}"
+            f":{cfg.model_dump_json()}:{harness_is_local}"
+        )
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if key not in self._urls:
+                if cfg.url:  # already running remotely
+                    self._urls[key] = cfg.url
+                else:
+                    self._urls[key] = await self._stack.enter_async_context(
+                        serve(toolset, None, harness_is_local=harness_is_local)
+                    )
+                logger.info(
+                    "shared tool server '%s': %s", toolset.server_name, self._urls[key]
                 )
-            logger.info("shared tool server '%s': %s", name, urls[name])
-        yield urls
+            return self._urls[key]
 
 
 def _shared_url_for_rollout(url: str, state_base: str | None, state_secret: str) -> str:
@@ -451,7 +472,7 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
     """Open an MCP client session to a user server at `url` and yield an async
     `respond(message)` that calls its `respond` tool, parsing the JSON it returns
     (`{"messages": [...]}`) into typed `Messages`. End-of-trajectory is signalled out-of-band: the
-    server sets a flag on the shared state (a taskset `@vf.stop` checks it), not in this reply.
+    server sets a flag on the shared state (a task `@vf.stop` checks it), not in this reply.
 
     Retries the connect — under high concurrency the colocated user server can be slow to
     accept (or briefly refuse) a connection. A server that stays unreachable raises
@@ -521,10 +542,10 @@ async def serve_user(
 ) -> AsyncIterator[Respond | None]:
     """Bring a rollout's user server up (via the shared `serve` launcher, `for_host=True` since
     the framework drives the user from the HOST) and yield the async `respond` the interception
-    server drives — or `None` when the taskset has no user server. Placement is the user's
+    server drives — or `None` when the task has no user server. Placement is the user's
     `config` (colocated in the harness's runtime, or its own); the rollout's `task` is shipped to
     the server for its `setup`. `state_port`/`state_secret` wire it to the shared-state channel — how
-    the user sim's `respond` reads/writes `self.state` (and ends the trajectory via a flag a taskset
+    the user sim's `respond` reads/writes `self.state` (and ends the trajectory via a flag a task
     `@vf.stop` checks)."""
     if user is None:
         yield None

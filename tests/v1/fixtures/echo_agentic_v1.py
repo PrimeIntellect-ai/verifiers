@@ -29,6 +29,14 @@ class EchoAgenticTask(vf.Task):
     answer: str
     """The phrase the model should write into the file."""
 
+    @vf.reward(weight=1.0)
+    async def wrote_phrase(self, trace: vf.Trace, runtime: Runtime) -> float:
+        try:
+            content = (await runtime.read(TARGET)).decode(errors="replace")
+        except (SandboxError, OSError, ValueError):
+            return 0.0  # the model never wrote the file
+        return float(lenient_match(self.answer, content))
+
 
 class EchoAgenticConfig(vf.TasksetConfig):
     phrase: str = "hello world"
@@ -48,16 +56,6 @@ class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
                 answer=phrase,
             )
         ]
-
-    @vf.reward(weight=1.0)
-    async def wrote_phrase(
-        self, task: EchoAgenticTask, trace: vf.Trace, runtime: Runtime
-    ) -> float:
-        try:
-            content = (await runtime.read(TARGET)).decode(errors="replace")
-        except (SandboxError, OSError, ValueError):
-            return 0.0  # the model never wrote the file
-        return float(lenient_match(task.answer, content))
 
 
 __all__ = ["EchoAgenticTaskset"]

@@ -33,7 +33,6 @@ from verifiers.v1.decorators import invoke
 from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
-from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -71,27 +70,29 @@ def _classify(valid: bool, exc: BaseException | None) -> str:
     return "invalid"
 
 
-async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> dict:
+async def _validate_task(task, config: ValidateConfig, warned: set) -> dict:
     """Validate one task: provision its runtime, run `setup` then `validate` (each under its
     stage timeout), tear the runtime down, and return the result row. A raised error is
     captured onto the row (one bad task is data, not a crash) — never re-raised."""
     start = time.time()
     runtime = make_runtime(
-        resolve_runtime_config(config.runtime, task), name=f"validate-{task.idx}"
+        resolve_runtime_config(config.runtime, task, warned),
+        name=f"validate-{task.idx}",
     )
     setup_timeout = (
         config.setup_timeout if config.setup_timeout is not None else task.timeout.setup
     )
     valid, exc = False, None
     try:
-        trace = Trace(task=task, state=state_cls(type(taskset))())
+        trace = Trace(task=task, state=state_cls(type(task))())
         await runtime.start()
         await asyncio.wait_for(
-            invoke(taskset.setup, {"task": task, "trace": trace, "runtime": runtime}),
+            invoke(task.setup, {"task": task, "trace": trace, "runtime": runtime}),
             setup_timeout,
         )
         valid = await asyncio.wait_for(
-            taskset.validate(task, runtime), config.validate_timeout
+            invoke(task.validate, {"task": task, "runtime": runtime}),
+            config.validate_timeout,
         )
     except Exception as e:
         exc = e
@@ -120,8 +121,8 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
         random.Random(0).shuffle(tasks)
     if config.num_tasks is not None:
         tasks = tasks[: config.num_tasks]
-    if isinstance(config.runtime, vf.SubprocessConfig) and (
-        taskset.NEEDS_CONTAINER or any(t.image for t in tasks)
+    if isinstance(config.runtime, vf.SubprocessConfig) and any(
+        type(t).NEEDS_CONTAINER or t.image for t in tasks
     ):
         raise SystemExit(
             "taskset needs a container runtime to validate - pass --runtime.type docker (or prime)"
@@ -134,6 +135,9 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     )
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+    warned: set = (
+        set()
+    )  # dedupe unsupported-resource warnings across tasks (mirrors eval)
     states = [TaskProgress(idx=t.idx, name=t.name) for t in tasks]
     state_by_idx = {s.idx: s for s in states}
 
@@ -142,7 +146,7 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
         async with sem or contextlib.nullcontext():
             st.start = time.time()
             st.state = "running"
-            row = await _validate_task(taskset, task, config)
+            row = await _validate_task(task, config, warned)
         st.end, st.state = time.time(), row["reason"]
         if not config.rich:  # the dashboard shows this live; otherwise log each task
             detail = f" - {row['error']}" if row["error"] else ""

@@ -1,7 +1,7 @@
 """The built-in default harness: a chat loop with a local `bash` tool, plus optional `edit`/`search`.
 
 A growing-message-list chat loop with a local `bash` tool that runs shell commands in the runtime,
-the taskset's MCP tools, and two optional local tools: `edit` (single-occurrence string replacement
+the task's MCP tools, and two optional local tools: `edit` (single-occurrence string replacement
 in a file, ported from the rlm `edit` skill; on by default — a model handles it more reliably than
 hand-built `sed`/heredoc shell) and `search` (Google results via serper.dev; off by default, needs
 `SERPER_API_KEY`). This is the fallback harness when no `--harness.id` is given. Its uv script

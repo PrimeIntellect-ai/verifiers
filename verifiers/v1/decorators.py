@@ -10,7 +10,7 @@ in-runtime verifier needn't take the trace. The available names are:
     @reward / @metric  (per rollout):  task, trace, runtime
     @group_reward      (per group):    task, traces
 
-All handlers must be `async`. Examples (on a Taskset subclass):
+All handlers must be `async`. Examples (on a `Task` subclass):
 
     @vf.reward(weight=1.0)
     async def correct(self, task, trace, runtime) -> float: ...   # all three
@@ -83,29 +83,50 @@ def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
 
 
 @overload
-def metric(func: F, priority: int = 0) -> F: ...
+def metric(func: F, priority: int = 0, agent: str | None = None) -> F: ...
 @overload
-def metric(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
-def metric(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
-    """Mark a metric `(self, task, trace) -> float` (recorded, not summed)."""
-    decorator = mark("metric", metric_priority=priority)
+def metric(
+    func: None = None, priority: int = 0, agent: str | None = None
+) -> Callable[[F], F]: ...
+def metric(
+    func: F | None = None, priority: int = 0, agent: str | None = None
+) -> F | Callable[[F], F]:
+    """Mark a metric `(self, task, trace) -> float` (recorded, not summed). On a
+    `Topology`, `agent` is required and scopes the metric to that agent's traces —
+    run once per matching trace after the instance completes, with `graph` injectable
+    (see `Topology.score`)."""
+    decorator = mark("metric", metric_priority=priority, _vf_agent=agent)
     return decorator if func is None else decorator(func)
 
 
 @overload
-def reward(func: F, weight: float = 1.0, priority: int = 0) -> F: ...
+def reward(
+    func: F, weight: float = 1.0, priority: int = 0, agent: str | None = None
+) -> F: ...
 @overload
 def reward(
-    func: None = None, weight: float = 1.0, priority: int = 0
+    func: None = None,
+    weight: float = 1.0,
+    priority: int = 0,
+    agent: str | None = None,
 ) -> Callable[[F], F]: ...
 def reward(
-    func: F | None = None, weight: float = 1.0, priority: int = 0
+    func: F | None = None,
+    weight: float = 1.0,
+    priority: int = 0,
+    agent: str | None = None,
 ) -> F | Callable[[F], F]:
     """Mark a per-rollout reward (weighted, summed into trace.reward). Declare any of
     `task`/`trace`/`runtime`; they're injected by name. Return a `float` (recorded under
     the method name) or a `dict[str, float]` (each entry under its own key); every
-    contribution is scaled by `weight` before it's summed into `trace.reward`."""
-    decorator = mark("reward", reward_priority=priority, _vf_weight=weight)
+    contribution is scaled by `weight` before it's summed into `trace.reward`.
+
+    On a `Topology`, `agent` is required and scopes the reward to that agent's traces:
+    it runs once per matching trace *after the whole instance completes* — the deferred,
+    cross-agent tier — declaring any of `task`/`trace`/`graph` (see `Topology.score`)."""
+    decorator = mark(
+        "reward", reward_priority=priority, _vf_weight=weight, _vf_agent=agent
+    )
     return decorator if func is None else decorator(func)
 
 

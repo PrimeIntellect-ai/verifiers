@@ -1,4 +1,7 @@
-"""On-disk output: results.jsonl (one full trace per line) + config.toml.
+"""On-disk output: results.jsonl + config.toml.
+
+One record per line: a full trace (single-agent eval), or a full instance record with its
+traces nested (a topology eval) — either way durable as each unit's rewards become final.
 
 The trace is the full data dump — written verbatim, consumed by the platform
 (visualization) and prime-rl (training). config.toml is the run's resolved EvalConfig,
@@ -12,21 +15,28 @@ durable as they land rather than only at the end.
 """
 
 import asyncio
+import json
 from pathlib import Path
 
 import tomli_w
 from pydantic import TypeAdapter
 
 from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.topology import AgentGraph
 from verifiers.v1.trace import Trace
 
 
 def output_path(config: EvalConfig) -> Path:
-    """Where this run writes: `outputs/<taskset>--<model>--<harness>/<uuid>` (or the explicit
-    `--output-dir`). The per-run `uuid` leaf means runs never overwrite each other."""
+    """Where this run writes: `outputs/<taskset>--<model>--<harness>/<uuid>` — a topology
+    run uses `outputs/<topology>--<model>/<uuid>` (its agents bind their own harnesses) —
+    or the explicit `--output-dir`. The per-run `uuid` leaf means runs never overwrite
+    each other."""
     if config.output_dir is not None:
         return config.output_dir
-    name = f"{config.taskset.name}--{config.model.replace('/', '--')}--{config.harness.name}"
+    if config.topology is not None:
+        name = f"{config.topology.name}--{config.model.replace('/', '--')}"
+    else:
+        name = f"{config.taskset.name}--{config.model.replace('/', '--')}--{config.harness.name}"
     return Path("outputs") / name / config.uuid
 
 
@@ -35,7 +45,14 @@ def write_config(config: EvalConfig, results_dir: Path) -> Path:
     path. mode="json" makes values TOML-friendly (Path -> str, etc.); exclude_none drops the
     nulls TOML can't represent."""
     results_dir.mkdir(parents=True, exist_ok=True)
-    toml = tomli_w.dumps(config.model_dump(mode="json", exclude_none=True))
+    data = config.model_dump(mode="json", exclude_none=True)
+    if config.topology is not None:
+        # A topology run never consults the taskset × harness pair; persisting their
+        # (default) sections would make the saved config claim knobs the run ignored —
+        # and trip the harness-with-topology guard on an `eval @ config.toml` re-run.
+        data.pop("taskset", None)
+        data.pop("harness", None)
+    toml = tomli_w.dumps(data)
     config_path = results_dir / "config.toml"
     config_path.write_text(toml)
     return config_path
@@ -55,6 +72,31 @@ def write_trace(results_dir: Path, trace: Trace) -> None:
     data = TypeAdapter(type(trace)).dump_json(trace, exclude_none=True)
     with (results_dir / "results.jsonl").open("ab") as f:
         f.write(data + b"\n")
+
+
+def write_graph(results_dir: Path, graph: AgentGraph) -> None:
+    """Serialize and append one instance record (traces nested) in the worker thread."""
+    with (results_dir / "results.jsonl").open("ab") as f:
+        f.write(json.dumps(graph.to_record()).encode() + b"\n")
+
+
+async def append_graph(
+    results_dir: Path, graph: AgentGraph, lock: asyncio.Lock
+) -> None:
+    """Append one finished topology instance without blocking the event loop — the
+    topology counterpart of `append_trace`: one record per *instance*, traces nested
+    (an instance's rewards are only final once the whole instance is done)."""
+
+    async def persist() -> None:
+        async with lock:
+            await asyncio.to_thread(write_graph, results_dir, graph)
+
+    persist_task = asyncio.create_task(persist())
+    try:
+        await asyncio.shield(persist_task)
+    except asyncio.CancelledError:
+        await persist_task
+        raise
 
 
 async def append_trace(results_dir: Path, trace: Trace, lock: asyncio.Lock) -> None:

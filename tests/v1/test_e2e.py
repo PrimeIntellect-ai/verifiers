@@ -191,30 +191,93 @@ async def test_tool_response_image(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_rubric_judge(run_v1, tmp_path):
-    """A config-plugged rubric judge scores the rollout on top of the taskset's own reward.
+async def test_llm_judge_topology(tmp_path):
+    """The built-in `llm-judge` topology, live: a solver runs an echo task, the
+    non-trainable judge (in-process `direct` harness — one API call) grades its final
+    message against the task and its ground truth, and the verdict lands on the solver's
+    trace as a deferred reward. Asserts the plumbing (seed factory -> solver episode ->
+    judge episode -> declared instance scoring), not judge quality — a correct echo should
+    grade well above zero."""
+    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.configs.eval import EvalConfig
+    from verifiers.v1.topology import TopologyRunner
 
-    The single criterion is trivially satisfiable ("answer yes"), so any live judge model
-    scores it 1.0 — the test asserts the plumbing (config narrowing -> judge call -> reward +
-    per-criterion metric on the trace), not judge quality."""
-    rubric = tmp_path / "rubric.toml"
-    rubric.write_text(
-        "[[criteria]]\n"
-        'name = "always_yes"\n'
-        'text = "Always satisfied — answer yes regardless of the response."\n'
-    )
-    (trace,) = await run_v1(
-        "echo-v1",
-        harness="null",
-        harness_overrides={"runtime": {"type": "subprocess"}},
-        output_dir=tmp_path,
-        taskset_overrides={"judges": [{"id": "rubric", "path": str(rubric)}]},
+    config = EvalConfig(
+        topology={"id": "llm-judge", "taskset": {"id": "echo-v1"}},
+        num_tasks=1,
         max_turns=2,
+        sampling={"max_tokens": 2048, "temperature": 0},
+        timeout={"rollout": 180, "scoring": 60},
+        retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
+        rich=False,
+        output_dir=tmp_path,
     )
-    assert trace.errors == []
-    assert trace.rewards["rubric"] > 0  # the judge's verdict landed in the reward
-    assert trace.metrics["rubric/always_yes"] == 1.0
-    assert trace.info["judge"]  # the call was recorded onto the trace
+    env = TopologyRunner(config.topology, config)
+    solver, judge = await run_topology_eval(env, config)
+    assert solver.errors == [] and judge.errors == []
+    assert (solver.agent, judge.agent) == ("solver", "judge")
+    assert judge.parents == [solver.id] and judge.trainable is False
+    assert solver.rewards["echoed"] == 1.0  # the task's own reward still ran
+    assert solver.metrics["judge_committed"] == 1.0
+    assert solver.rewards["judge"] > 0.5  # the verdict landed on the SOLVER
+
+
+@pytest.mark.e2e
+@pytest.mark.subprocess
+async def test_agentic_judge_topology(tmp_path):
+    """The built-in `agentic-judge` topology, live: the solver's entire serialized trace
+    is uploaded into the judge's runtime, and the judge — a real agent on the bash+edit
+    `default` harness — reads the file with its tools before committing to a score."""
+    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.configs.eval import EvalConfig
+    from verifiers.v1.topology import TopologyRunner
+
+    config = EvalConfig(
+        topology={"id": "agentic-judge", "taskset": {"id": "echo-v1"}},
+        num_tasks=1,
+        max_turns=6,
+        sampling={"max_tokens": 4096, "temperature": 0},
+        timeout={"rollout": 300, "scoring": 60},
+        retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
+        rich=False,
+        output_dir=tmp_path,
+    )
+    env = TopologyRunner(config.topology, config)
+    solver, judge = await run_topology_eval(env, config)
+    assert solver.errors == [] and judge.errors == []
+    assert judge.parents == [solver.id] and judge.trainable is False
+    assert judge.num_turns >= 2  # it actually investigated (read the file, then scored)
+    assert solver.metrics["judge_committed"] == 1.0
+    assert solver.rewards["judge"] > 0.5
+
+
+@pytest.mark.e2e
+async def test_writer_editors_topology(tmp_path):
+    """The `writer-editors-v1` example, live (all agents on the in-process `direct`
+    harness): draft -> editor critique (fan-out of 1) -> revision (fan-in), then one
+    `vf.Judge` call puts the same `improvement` reward on every trace."""
+    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.configs.eval import EvalConfig
+    from verifiers.v1.topology import TopologyRunner
+
+    config = EvalConfig(
+        topology={"id": "writer-editors-v1", "num_editors": 1},
+        num_tasks=1,
+        max_turns=2,
+        sampling={"max_tokens": 4096, "temperature": 0},
+        timeout={"rollout": 300, "scoring": 120},
+        retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
+        rich=False,
+        output_dir=tmp_path,
+    )
+    env = TopologyRunner(config.topology, config)
+    draft, edit, revision = await run_topology_eval(env, config)
+    assert [t.agent for t in (draft, edit, revision)] == ["writer", "editor", "writer"]
+    assert all(t.errors == [] for t in (draft, edit, revision))
+    assert revision.parents == [draft.id, edit.id]  # the fan-in
+    improvements = {t.rewards["improvement"] for t in (draft, edit, revision)}
+    assert len(improvements) == 1  # one verdict, every trace
+    assert revision.info.get("judge")  # the judge call was recorded on the final draft
 
 
 @pytest.mark.e2e

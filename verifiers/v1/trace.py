@@ -3,9 +3,12 @@
 A `Trace[TaskT]` carries the typed task plus everything produced during a
 rollout (conversation, per-turn responses, reward, metrics, timing, error). It is
 the canonical full data dump — written to disk (`results.jsonl`) and consumed by
-the platform (visualization) and prime-rl (training). Environments subclass it to
-add typed scratch/result fields. The rollout mutates it directly; this replaces
-v1's 600-line `dict`-subclass `State` and its dual "contract version" machinery.
+the platform (visualization) and prime-rl (training). Put env-specific artifacts in
+`info` (persisted) or typed `state` (transient) rather than subclassing — the wire
+types (`WireTrace`, `AgentGraph.load`) reject unknown trace fields, so a subclass's
+extras would not survive a round-trip. The rollout mutates the trace directly; this
+replaces v1's 600-line `dict`-subclass `State` and its dual "contract version"
+machinery.
 """
 
 import logging
@@ -220,6 +223,17 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """Unique id for this rollout, auto-generated per trace."""
     task: TaskT
     """The (immutable) task being solved — fully typed, flows into scoring."""
+    agent: str | None = None
+    """The topology agent that produced this trace (the `Topology` config field name, e.g.
+    `"solver"`). None outside a topology — a plain eval's traces carry no agent."""
+    parents: list[str] = Field(default_factory=list)
+    """Trace ids of the upstream episodes this one was derived from — the agent-graph links.
+    A topology's traces plus these links ARE the agent graph (see `verifiers.v1.topology`);
+    empty for a root episode and for every trace outside a topology."""
+    trainable: bool = True
+    """Whether this trace is a training sample. Set from the producing agent's
+    `AgentConfig.trainable`, so a trainer can drop e.g. a judge agent's traces without
+    consulting the topology config. Always True outside a topology."""
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph — one node per distinct message, linked to its predecessor (see
     `graph`). The ground truth; `branches` is a view over it. Stores each message once, so
@@ -230,7 +244,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     metrics: dict[str, float] = Field(default_factory=dict)
     """Per-`@metric`-function values (unweighted; not summed into the reward)."""
     info: dict[str, Any] = Field(default_factory=dict)
-    """Free-form, JSON-serializable scratch space for taskset-specific metadata that is neither
+    """Free-form, JSON-serializable scratch space for task-specific metadata that is neither
     a reward nor a metric — anything an author wants to scrape off the live runtime and persist
     with the trace (captured logs, command output, container/runtime state, artifact paths).
     Populate it from the runtime in `finalize` (or a `@reward`/`@metric`) by assigning into the
@@ -241,7 +255,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """Transient per-rollout runtime state (see `verifiers.v1.state.State`): shared with the tool/user
     servers as `self.state` (synced over the interception server) and read+written by scoring. Runtime
     scratch (counters, game progress, end-of-trajectory flags) — excluded from every dump (`model_dump`
-    / `to_record`), unlike `info` which persists. Type it via `Taskset[Task, Config, MyState]`; defaults
+    / `to_record`), unlike `info` which persists. Type it via the task class's `STATE` classvar; defaults
     to the base `State`."""
 
     extra_usage: list[Usage] = Field(default_factory=list)
@@ -254,8 +268,10 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     is_completed: bool = False
     stop_condition: str | None = None
     errors: list[Error] = Field(default_factory=list)
-    """Every error captured across attempts, oldest first (more than one only when the
-    rollout was retried). `error` exposes the most recent."""
+    """The failure history when the rollout ultimately failed, oldest first (more than
+    one only when it was retried and the final attempt failed too); empty on success —
+    errors retried away are parked in `info["retry_errors"]` instead, so a successful
+    trace never reads as errored. `error` exposes the most recent."""
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
@@ -479,7 +495,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
 TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]
 
 WireTrace = Trace[WireTask]
-"""A `Trace` typed for loading a dump without the originating taskset: taskset-specific task fields
+"""A `Trace` typed for loading a dump without the originating package: task-specific fields
 ride in `task.model_extra` (`WireTask` allows extras); `state` is never serialized so it needs no
 permissive type. The dump is plain pydantic (no derived computed fields), so load it directly:
 `WireTrace.model_validate(json.loads(line))`."""

@@ -24,6 +24,16 @@ TASKS = [
 class DeepWikiTask(vf.Task):
     answer: str
     """The language the repo is written in (must appear in the model's reply)."""
+    tools: vf.ToolsetConfig = vf.ToolsetConfig(url=DEEPWIKI_URL)
+    """The remote endpoint to connect to (from the taskset's `tools` knob)."""
+
+    def load_tools(self) -> list[vf.Toolset]:
+        return [DeepWikiToolset(self.tools)]
+
+    @vf.reward(weight=1.0)
+    async def answered(self, trace: vf.Trace) -> float:
+        last = trace.last_reply
+        return float(self.answer.lower() in (last or "").lower())
 
 
 class DeepWikiConfig(vf.TasksetConfig):
@@ -42,16 +52,7 @@ class DeepWikiTaskset(vf.Taskset[DeepWikiTask, DeepWikiConfig]):
                     "Then reply with just the language name."
                 ),
                 answer=language,
+                tools=self.config.tools,
             )
             for i, (repo, language) in enumerate(TASKS)
         ]
-
-    def tools(self, task: DeepWikiTask) -> list[vf.Toolset]:
-        return [DeepWikiToolset(self.config.tools)]
-
-    @vf.reward(weight=1.0)
-    async def answered(
-        self, task: DeepWikiTask, trace: vf.Trace, runtime: vf.Runtime
-    ) -> float:
-        last = trace.last_reply
-        return float(task.answer.lower() in (last or "").lower())

@@ -1,18 +1,19 @@
-"""Loaders: resolve a plugin id to its taskset, harness, or judge.
+"""Loaders: resolve a plugin id to its taskset, harness, or topology.
 
-A plugin (taskset, harness, or judge) is a module that exports its `Taskset` / `Harness` /
-`Judge` subclass via `__all__` — vf walks the exported names and finds the single subclass of
-the base. An id (an `ID`) resolves to that module: a built-in id (`default`, `rlm`,
-`harbor`, `reference`, ...) resolves to its namespaced module under the group package
-(`verifiers.v1.harnesses.rlm`, `verifiers.v1.tasksets.harbor`, `verifiers.v1.judges.reference`,
-...); any other id names a flat module — a local package (hyphens → underscores), or an
-`org/name[@version]` package installed on demand from the Environments Hub. Built-ins ship
-with verifiers under `verifiers/v1/{harnesses,tasksets,judges}`; custom ones live under
-`environments/`, on `sys.path`, or on the hub.
+A plugin (taskset, harness, or topology) is a module that exports its `Taskset` / `Harness` /
+`Topology` subclass via `__all__` — vf walks the exported names and finds the single subclass
+of the base. An id (an `ID`) resolves to that module: a built-in id (`default`, `rlm`,
+`harbor`, `llm-judge`, ...) resolves to its namespaced module under the group package
+(`verifiers.v1.harnesses.rlm`, `verifiers.v1.tasksets.harbor`,
+`verifiers.v1.topologies.llm_judge`, ...); any other id names a flat module — a local package
+(hyphens → underscores), or an `org/name[@version]` package installed on demand from the
+Environments Hub. Built-ins ship with verifiers under
+`verifiers/v1/{harnesses,tasksets,topologies}`; custom ones live under `environments/`, on
+`sys.path`, or on the hub.
 
-The taskset/harness class carries its types as generic args — `Taskset[TaskT, ConfigT]`,
-`Harness[ConfigT]` — which the CLI reads to narrow the plugin's config for `--taskset.*` /
-`--harness.*` flags (`taskset_config_type` / `harness_config_type`) and to type the wire trace
+The taskset/harness/topology class carries its types as generic args — `Taskset[TaskT,
+ConfigT]`, `Harness[ConfigT]`, `Topology[ConfigT]` — which the CLI reads to narrow the plugin's
+config for `--taskset.*` / `--harness.*` / `--topology.*` flags and to type the wire trace
 (`task_type`).
 """
 
@@ -24,10 +25,10 @@ from typing import Callable, get_args, get_origin
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.judge import Judge, JudgeConfig, judge_config_cls
 from verifiers.v1.utils.install import ensure_installed
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.topology import Topology, TopologyConfig
 
 
 def narrow_plugin_field(
@@ -48,6 +49,24 @@ def narrow_plugin_field(
     ident = raw.get("id") or default_id
     if ident:
         data[field] = resolve(ident).model_validate({**raw, "id": ident})
+
+
+def narrow_taskset_and_harness(data: dict, default_harness: bool = True) -> dict:
+    """Narrow a config dict's `taskset` / `harness` entries in place to the config types
+    their ids resolve to (see `narrow_plugin_field`). With `default_harness` (the
+    `EnvConfig` behavior), a missing harness id falls back to the taskset's bundled
+    harness (or `default`) so the field always validates against the concrete harness
+    config; pass False to leave a missing harness to the declaring field's own default
+    (an `AgentConfig` subclass pinning a typed harness). Shared by `EnvConfig` and
+    `AgentConfig`, whose validators would otherwise drift."""
+    narrow_plugin_field(data, "taskset", taskset_config_type)
+    taskset = data.get("taskset")
+    taskset_id = (
+        taskset.get("id") if isinstance(taskset, dict) else getattr(taskset, "id", None)
+    )
+    fallback = default_harness_id(taskset_id or "") if default_harness else None
+    narrow_plugin_field(data, "harness", harness_config_type, fallback)
+    return data
 
 
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
@@ -119,8 +138,8 @@ def import_harness(harness_id: str) -> ModuleType:
     return _import_plugin(harness_id, "harness", "verifiers.v1.harnesses")
 
 
-def import_judge(judge_id: str) -> ModuleType:
-    return _import_plugin(judge_id, "judge", "verifiers.v1.judges")
+def import_topology(topology_id: str) -> ModuleType:
+    return _import_plugin(topology_id, "topology", "verifiers.v1.topologies")
 
 
 def taskset_class(taskset_id: str) -> type[Taskset]:
@@ -133,9 +152,9 @@ def harness_class(harness_id: str) -> type[Harness]:
     return _plugin_class(import_harness(harness_id), Harness, "harness")
 
 
-def judge_class(judge_id: str) -> type[Judge]:
-    """The judge's `Judge` subclass, exported via its module's `__all__`."""
-    return _plugin_class(import_judge(judge_id), Judge, "judge")
+def topology_class(topology_id: str) -> type[Topology]:
+    """The topology's `Topology` subclass, exported via its module's `__all__`."""
+    return _plugin_class(import_topology(topology_id), Topology, "topology")
 
 
 def default_harness_id(taskset_id: str) -> str:
@@ -164,9 +183,9 @@ def load_harness(config: HarnessConfig) -> Harness:
     return harness_class(config.id)(config)
 
 
-def load_judge(config: JudgeConfig) -> Judge:
-    """Build a plugged judge for a config by dispatching on its `id` (the judge id)."""
-    return judge_class(config.id)(config)
+def load_topology(config: TopologyConfig) -> Topology:
+    """Build the topology for a config by dispatching on its `id` (the topology id)."""
+    return topology_class(config.id)(config)
 
 
 def taskset_config_type(taskset_id: str) -> type[TasksetConfig]:
@@ -185,17 +204,26 @@ def harness_config_type(harness_id: str) -> type[HarnessConfig]:
     return HarnessConfig
 
 
-def judge_config_type(judge_id: str) -> type[JudgeConfig]:
-    """The judge's config subclass, from its `Judge[ParsedT, ConfigT]` generic."""
-    return judge_config_cls(judge_class(judge_id))
+def topology_config_type(topology_id: str) -> type[TopologyConfig]:
+    """The topology's config subclass, from its `Topology[ConfigT]` generic."""
+    for arg in _generic_args(topology_class(topology_id), Topology):
+        if isinstance(arg, type) and issubclass(arg, TopologyConfig):
+            return arg
+    return TopologyConfig
 
 
-def task_type(taskset_id: str) -> type[Task]:
-    """The taskset's `Task` subclass, read off its `Taskset[TaskT, ConfigT]` generic — no data
-    is loaded, so a caller that imports the taskset can cheaply build a typed `Trace[TaskT]` for
-    the otherwise taskset-specific (loose dict) wire trace. Falls back to the base `Task` when
-    no subclass is given."""
-    for arg in _generic_args(taskset_class(taskset_id), Taskset):
+def taskset_task_type(taskset_cls: type[Taskset]) -> type[Task]:
+    """The `Task` subclass a taskset factory produces, read off its `Taskset[TaskT, ConfigT]`
+    generic — no data is loaded, which is what lets the Environment validate the task class
+    against the harness before any dataset is touched. Falls back to the base `Task` when no
+    subclass is declared."""
+    for arg in _generic_args(taskset_cls, Taskset):
         if isinstance(arg, type) and issubclass(arg, Task):
             return arg
     return Task
+
+
+def task_type(taskset_id: str) -> type[Task]:
+    """`taskset_task_type` by taskset id — so a caller that imports the taskset can cheaply
+    build a typed `Trace[TaskT]` for the otherwise taskset-specific (loose dict) wire trace."""
+    return taskset_task_type(taskset_class(taskset_id))

@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
+    "       uv run eval --topology.id <id> [--topology.taskset.id <id>] [options]   (multi-agent topology)\n"
     "       uv run eval --resume <output-dir>   (re-run a previous run's missing/errored rollouts)"
 )
 
@@ -60,12 +61,13 @@ def main(argv: list[str] | None = None) -> None:
         legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
         if (
             not extract_id(argv, "taskset")
+            and not extract_id(argv, "topology")
             and not legacy_id
             and not references_config_file(argv)
         ):
             raise SystemExit(
                 USAGE
-            )  # need a taskset (positional / --taskset.id), a legacy --id, or a @ file.toml
+            )  # need a taskset (positional / --taskset.id), a --topology.id, a legacy --id, or a @ file.toml
 
         config_type = narrow_config(EvalConfig, argv)
         sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
@@ -79,8 +81,9 @@ def main(argv: list[str] | None = None) -> None:
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
     # (the path prime-rl trains through). The `--rich` dashboard reads live in-process Rollout
     # state, so it's in-process only (`server + rich` is rejected at config validation). Legacy
-    # always runs in-process via the bridge.
-    rich = config.rich and not config.is_legacy
+    # always runs in-process via the bridge; a topology's rollouts are created dynamically as
+    # `go` unfolds, which the dashboard's up-front rollout list can't show yet.
+    rich = config.rich and not config.is_legacy and config.topology is None
     # Always tee the run's logs to a file under the output dir (in-process and server mode).
     log_file = str(output_path(config) / "eval.log")
     level = "DEBUG" if config.verbose else "INFO"
@@ -98,6 +101,12 @@ def main(argv: list[str] | None = None) -> None:
         from verifiers.v1.legacy import run_legacy_eval
 
         traces = asyncio.run(run_legacy_eval(config))
+    elif config.topology is not None:  # multi-agent: run the topology's instances
+        from verifiers.v1.cli.eval.runner import run_topology_eval
+        from verifiers.v1.topology import TopologyRunner
+
+        env = TopologyRunner(config.topology, config)
+        traces = asyncio.run(run_topology_eval(env, config))
     elif config.server:  # opt-in: drive rollouts through the env-server worker pool
         from verifiers.v1.cli.eval.runner import run_eval_server
 

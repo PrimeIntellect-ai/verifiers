@@ -6,12 +6,17 @@ to `verifiers/v1/`.
 
 ## The shape of it
 
-A rollout is the composition of three independently-swappable pieces, each loaded by `id`:
+A rollout pairs a **task** with two independently-swappable pieces:
 
-- **Taskset** — data + scoring. Produces typed `Task`s; owns `@reward`/`@metric`/`@group_reward`
-  and the lifecycle hooks.
-- **Harness** — the program that drives the model turn to turn.
-- **Runtime** — *where* that program (and the taskset's tools / user simulator) executes.
+- **Task** — the unit of work: its *instance* is frozen, serializable data (prompt, ground
+  truth, runtime requests); its *class* carries the episode behavior — `@reward`/`@metric`/
+  `@stop`/`@group_reward` methods, `setup`/`finalize`/`validate` hooks, `load_tools()`/`load_user()`.
+  Methods aren't fields, so data rides the wire while judgement stays importable code — and
+  every way of minting a task (a dataset factory, a topology, mid-`go` construction) is equal.
+  A **Taskset** is the optional factory: config + `load_tasks()`, pure preprocessing, loaded
+  by `id`.
+- **Harness** — the program that drives the model turn to turn (loaded by `id`).
+- **Runtime** — *where* that program (and the task's tools / user simulator) executes.
 
 `Environment` (`env.py`) wires them together for an eval; `Rollout` (`rollout.py`) runs one
 trajectory; `Episode` (`episode.py`) runs a task's N rollouts and applies cross-rollout
@@ -29,11 +34,11 @@ simulator — is invisible to the harness, which stays a plain program.
 Episode (task, n)
 └─ Rollout.run()                              # rollout.py, one asyncio.Task per rollout
    ├─ runtime.start()                         # provision workspace / container / sandbox
-   ├─ taskset.setup(task, runtime)            # Phase.SETUP   — wait_for(setup_timeout)
+   ├─ task.setup(trace, runtime)              # Phase.SETUP   — wait_for(setup_timeout)
    ├─ harness.run(ctx, trace, runtime, …)     # Phase.RUNNING — wait_for(rollout_timeout)
    │     └─ model calls → interception server → client → graph.add_turn()
-   ├─ taskset.finalize(task, trace, runtime)  # Phase.FINALIZE— wait_for(finalize_timeout)
-   ├─ taskset.score + harness.score           # Phase.SCORING — wait_for(scoring_timeout)
+   ├─ task.finalize(trace, runtime)           # Phase.FINALIZE— wait_for(finalize_timeout)
+   ├─ task.score + harness.score              # Phase.SCORING — wait_for(scoring_timeout)
    └─ runtime.stop()                          # guaranteed teardown (also atexit-guarded)
    ⤷ Episode then runs @group_reward across the task's N traces
 ```
@@ -119,8 +124,8 @@ silent corruption.
 
 When the harness POSTs a completion to its localhost endpoint, the `InterceptionServer`
 (`interception/server.py`) routes by the per-rollout bearer secret to a `RolloutSession`, then,
-per turn: checks `refused()` (the rollout's `RolloutLimits` + the taskset's `@stop`s), calls
-the session's client, records the result with `graph.add_turn()`, and — if the taskset has a
+per turn: checks `refused()` (the rollout's `RolloutLimits` + the task's `@stop`s), calls
+the session's client, records the result with `graph.add_turn()`, and — if the task has a
 user simulator — appends the next user message and loops, all invisibly to the harness.
 
 The wire format is abstracted by a **`Dialect`** (`dialects/`), chosen by the request's route:
@@ -163,8 +168,54 @@ interpreter once and caches it, keeping `uv` off the per-rollout hot path.)
 
 Tools and the user simulator are structurally the same thing — an MCP server launched in a
 runtime and reached over the resolved URL. Placement (colocated in the harness's runtime, its
-own per-rollout runtime, a shared one built once, or an existing remote) is config, and
-reachability is resolved automatically.
+own per-rollout runtime, shared, or an existing remote) is config, and reachability is
+resolved automatically. `shared` servers live in a run-scoped lazy registry
+(`SharedServers`): started on the first rollout whose task declares them, deduped by toolset
+identity, torn down with the serving context — so topology-derived tasks get shared servers
+too, and seeds aren't special.
+
+## Topologies — composing episodes across agents
+
+A **`Topology`** (`topology.py`) is a surface over which agents interact: it declares which
+agents exist and, as plain imperative code, how their episodes compose. An **`Agent`** is
+nothing but a name + a harness + routing (model / client / `trainable`), declared as typed
+`AgentConfig` fields on the topology's config (so every agent is CLI-addressable:
+`--topology.judge.model ...`) — it carries nothing task-side, because tasks carry their own
+behavior. An *episode* — one agent consuming one task and producing one trace — is just a
+`Rollout`; nothing about a task or harness is topology-aware. Seeds come from the config's
+`tasks` factory (`--topology.taskset.id gsm8k-v1`) or a `load_tasks` override — exclusive-or,
+enforced at load (a slot that could be silently ignored is refused); downstream tasks
+are minted in `go` (question and verifier in one typed object — the task class travels with
+the instance).
+
+`Topology.go(task, run)` runs one instance: `await run.rollout(agent, task, parents=...)` per
+episode, `run.gather` for fan-out, Python loops for rounds, plain `await`s for fan-in. The two
+cross-agent contracts are deliberately explicit code, not machinery:
+
+- **forward (trace → task)** — pure host-side construction of the next agent's typed `Task`
+  from an upstream trace (its typed task, `last_reply`, `transcript`, or what the taskset's
+  `finalize` peeled into `trace.info` while the runtime was live).
+- **backward (deferred reward)** — declared `@reward(agent=...)` / `@metric(agent=...)`
+  methods on the topology, run by `Topology.score` once per matching trace *after the
+  instance completes* (metrics before rewards, sequential; scopes validated at load). An
+  instance's traces persist only after scoring, so a deferred reward is never missed;
+  `trace.record_reward(...)` inside `go` remains the imperative escape hatch. (The current
+  `Episode` is exactly this shape degenerated to one node: `@group_reward` is a backward
+  arrow over a task's own n rollouts.)
+
+The product is an **`AgentGraph`** — the serialized instance artifact: `{id, topology,
+error, traces[]}`, the global causally ordered view. A topology run persists one instance
+record per `results.jsonl` line (traces nested — an instance's rewards are only final when
+the whole instance is done); `AgentGraph.load` reads one back with `WireTrace`-typed traces.
+The links themselves are plain `Trace` fields (`agent` / `parents` / `trainable`), so the
+graph also reconstructs from any flat trace dump (one instance = one connected component),
+and `graph.error` is the home for a crash in `go` itself. Per-agent routing reuses
+existing machinery: each agent gets its own `RolloutContext` (model/client/sampling overrides)
+and its own interception pool — a non-trainable judge relays to a plain API endpoint while
+the solver runs against the train client. Failures follow the rollout stance one level up: an
+episode failure is data on its trace; a crash in `go` itself is classified `TopologyError` and
+recorded on the graph, never raised across sibling instances. Interleaving two agents'
+*execution* within one episode is deliberately out of scope. (Not yet: env-server serving, `--resume`, the `--rich` dashboard.)
 
 ## Serving — the orchestrator interface
 
@@ -197,13 +248,14 @@ data, not a crash. The whole model is four mechanisms, each in one place (`error
    | `HarnessError` | the harness install/launch or its agent process exit |
    | `ToolsetError` / `UserError` | a task's `Toolset` / `User` server couldn't be built or served |
    | `SandboxError` | a runtime/sandbox op (provisioning, exec, file I/O) |
-   | `TasksetError` | taskset-authored code (`setup`/`finalize`/`@reward`/`@metric`/`@group_reward`) |
+   | `TaskError` | task/taskset-authored code (`setup`/`finalize`/`load_tasks`/`@reward`/`@metric`/`@group_reward`) |
+   | `TopologyError` | topology-authored code (`go`: transforms, interaction control flow, deferred scoring) |
    | `InterceptionError` (`TunnelError`) | the host interception server couldn't be reached |
 
 2. **Classification** — one helper, `boundary(error_cls, what)`, wraps each framework→code call:
    an already-typed `RolloutError` passes through (it crossed a more specific boundary first), a
    stage timeout or any other escaping error becomes `error_cls`. The rule: **extension code
-   (taskset hooks, harness subclasses) raises plain Python errors and never constructs a `vf.*`
+   (task hooks, harness subclasses) raises plain Python errors and never constructs a `vf.*`
    type** — the framework classifies. Infra raises its type at the source instead (`runtimes` →
    `SandboxError`, `clients` → `ProviderError` via `model_error`, the interception tunnel →
    `TunnelError`).
@@ -211,7 +263,7 @@ data, not a crash. The whole model is four mechanisms, each in one place (`error
 3. **Surfacing** — a model/tool/user call fails *behind the harness subprocess* and comes back to
    the program as an HTTP error it may swallow or exit on. The interception server stashes the real
    error on `RolloutSession.error`; the rollout re-raises it once the harness returns (one `finally`),
-   so the trace records the true cause (`ProviderError`/`TasksetError`/`UserError`) rather than a
+   so the trace records the true cause (`ProviderError`/`TaskError`/`UserError`) rather than a
    secondary `HarnessError`.
 
 4. **Capture** — `Rollout.run` (mirrored by `EnvServer._handle`) records the failure — typed
@@ -237,14 +289,16 @@ from a native v1 one; both are an `EnvClient` away.
 
 ## Plugins & ids
 
-Tasksets, harnesses, and judges are packages resolved by `id` (`ids.py`, `loaders.py`). An
+Tasksets, harnesses, and topologies are packages resolved by `id` (`ids.py`, `loaders.py`). An
 `ID` is `name` (a local, importable package), `org/name`, or `org/name@version`;
 `ensure_installed` installs the latter two from the Environments Hub on demand. A plugin module
-exports its `Taskset` / `Harness` / `Judge` subclass via `__all__`; `load_taskset` /
-`load_harness` / `load_judge` import the module, find that single subclass, and instantiate it,
-while `narrow_plugin_field` validates a generic config dict into the plugin's concrete config
-type (read off the class's `Taskset[TaskT, ConfigT]` / `Harness[ConfigT]` / `Judge[ParsedT,
-ConfigT]` generic) — so the typed CLI/TOML surfaces each plugin's own fields without the core
-knowing them ahead of time. Judges are the lightweight third kind: attached to any eval via the
-base `TasksetConfig.judges` (built-ins under `verifiers/v1/judges`) and run by `Taskset.score`
-after the taskset's own rewards.
+exports its `Taskset` / `Harness` / `Topology` subclass via `__all__`; `load_taskset` /
+`load_harness` / `load_topology` import the module, find that single subclass, and instantiate
+it, while `narrow_plugin_field` validates a generic config dict into the plugin's concrete
+config type (read off the class's `Taskset[TaskT, ConfigT]` / `Harness[ConfigT]` /
+`Topology[ConfigT]` generic) — so the typed CLI/TOML surfaces each plugin's own fields without
+the core knowing them ahead of time. There is no judge plugin kind: `vf.Judge` is a plain
+single-call utility invoked from a task's `@reward`, and config-plugged judging is the
+`llm-judge` topology (its judge fixed to the in-process `direct` harness — an episode ≈ one
+API call) or, for a judge that investigates the uploaded trace with tools in its own runtime,
+the `agentic-judge` topology.

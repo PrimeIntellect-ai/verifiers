@@ -32,8 +32,9 @@ from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
     SandboxError,
-    TasksetError,
+    TaskError,
     ToolsetError,
+    TopologyError,
     TunnelError,
     UserError,
 )
@@ -42,29 +43,21 @@ from verifiers.v1.judge import (
     Judge,
     JudgeConfig,
     JudgeResponse,
-    Judges,
     JudgeSamplingConfig,
-    JudgeView,
-)
-from verifiers.v1.judges import (
-    ReferenceJudge,
-    ReferenceJudgeConfig,
-    Criterion,
-    RubricJudge,
-    RubricJudgeConfig,
+    judge_verdict,
 )
 from verifiers.v1.loaders import (
     default_harness_id,
     harness_config_type,
     import_harness,
-    import_judge,
     import_taskset,
-    judge_config_type,
+    import_topology,
     load_harness,
-    load_judge,
     load_taskset,
+    load_topology,
     task_type,
     taskset_config_type,
+    topology_config_type,
 )
 from verifiers.v1.scoring import (
     compare_stdout_results as compare_stdout_results,
@@ -87,6 +80,15 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.topology import (
+    Agent,
+    AgentConfig,
+    AgentGraph,
+    Topology,
+    TopologyConfig,
+    TopologyRunner,
+    TopologyRun,
+)
 from verifiers.v1.mcp import (
     Toolset,
     ToolsetConfig,
@@ -174,7 +176,8 @@ __all__ = [
     "ToolsetError",
     "UserError",
     "SandboxError",
-    "TasksetError",
+    "TaskError",
+    "TopologyError",
     "InterceptionError",
     "TunnelError",
     # clients
@@ -206,30 +209,32 @@ __all__ = [
     "TimeoutConfig",
     "Episode",
     "Rollout",
+    # topology
+    "Agent",
+    "AgentConfig",
+    "AgentGraph",
+    "Topology",
+    "TopologyConfig",
+    "TopologyRunner",
+    "TopologyRun",
     # loaders
     "import_taskset",
     "import_harness",
-    "import_judge",
+    "import_topology",
     "load_taskset",
     "load_harness",
-    "load_judge",
+    "load_topology",
     "task_type",
     "taskset_config_type",
     "harness_config_type",
-    "judge_config_type",
+    "topology_config_type",
     "default_harness_id",
-    # judge
+    # judge (a single-call utility — judge-as-agent is the llm-judge/agentic-judge topologies)
     "Judge",
     "JudgeConfig",
-    "Judges",
     "JudgeSamplingConfig",
     "JudgeResponse",
-    "JudgeView",
-    "ReferenceJudge",
-    "ReferenceJudgeConfig",
-    "RubricJudge",
-    "RubricJudgeConfig",
-    "Criterion",
+    "judge_verdict",
     # scoring
     "compare_stdout_results",
     "extract_boxed_answer",

@@ -39,7 +39,7 @@ from verifiers.v1 import graph
 from verifiers.v1.errors import (
     OverlongPromptError,
     RolloutError,
-    TasksetError,
+    TaskError,
     UserError,
 )
 from verifiers.v1.trace import Trace
@@ -152,7 +152,7 @@ class RolloutSession:
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
-        call halts the harness (its model call errors out); Harness.run treats it as clean. A taskset
+        call halts the harness (its model call errors out); Harness.run treats it as clean. A task
         that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
         so the interception server holds no opinion about the state's contents."""
         if (limit := self.limits.reached(self.trace)) is not None:
@@ -291,7 +291,7 @@ class InterceptionServer:
                 session.opening = await session.user("")
             body = dialect.extend(body, None, session.opening)
             prompt = [*prompt, *session.opening]
-            # If the simulator ended at the open (its taskset's `@stop` now fires), the loop's
+            # If the simulator ended at the open (its task's `@stop` now fires), the loop's
             # `refused()` below halts the harness before any model call — no special-casing here.
         if dialect.streaming(body):
             return await self._stream(request, session, dialect, body, prompt)
@@ -312,7 +312,7 @@ class InterceptionServer:
                 return self._fail(
                     session,
                     dialect,
-                    TasksetError(f"@stop failed: {type(e).__name__}: {e}"),
+                    TaskError(f"@stop failed: {type(e).__name__}: {e}"),
                 )
             if refused is not None:
                 # Refuse the first model call to halt the harness; once a simulated
@@ -394,7 +394,7 @@ class InterceptionServer:
             # Inject the model turn + the simulator's user turn(s): into the wire request for the
             # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
             # survives) and into the typed prompt for the trace. The simulator ends the trajectory
-            # through its taskset's `@stop` (e.g. a `user_finished` flag it set on `self.state`),
+            # through its task's `@stop` (e.g. a `user_finished` flag it set on `self.state`),
             # caught by `refused()` at the top of the next iteration — the interception server holds
             # no opinion about the state's contents.
             body = dialect.extend(body, completion, user_messages)
@@ -420,7 +420,7 @@ class InterceptionServer:
             return self._fail(session, dialect, e)
         except Exception as e:
             return self._fail(
-                session, dialect, TasksetError(f"@stop failed: {type(e).__name__}: {e}")
+                session, dialect, TaskError(f"@stop failed: {type(e).__name__}: {e}")
             )
         if refused is not None:
             return web.json_response(
@@ -601,7 +601,7 @@ class InterceptionServer:
 
     async def handle_state_put(self, request: web.Request) -> web.Response:
         """Replace a rollout's shared `trace.state` with a server's pushed copy (validated into the
-        trace's `State` type). Last write wins per call. A taskset ends the trajectory from state via
+        trace's `State` type). Last write wins per call. A task ends the trajectory from state via
         its own `@stop` (run in `RolloutSession.refused` before each model call)."""
         session = self._session_for(request)
         if session is None:

@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp"]
 # ///
-"""The null harness's program: a chat loop with the taskset's MCP tools (and none of its own).
+"""The null harness's program: a chat loop with the task's MCP tools (and none of its own).
 
 A growing-message-list chat loop. When the harness sets MCP_CONFIG (a standard `mcpServers` URL
 map) it connects to those servers over streamable HTTP, exposes their tools to the model as
@@ -107,8 +107,14 @@ async def main() -> None:
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
+        # Bounded: the streamable-HTTP handshake can wedge (an intermittent mcp-SDK
+        # race), and an unbounded initialize would silently eat the whole rollout
+        # budget as a 0-turn harness_timeout. Failing loudly makes it a classified,
+        # retryable program error instead.
         tools, dispatch = (
-            await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
+            await asyncio.wait_for(connect_mcp(stack, config), timeout=60)
+            if config.get("mcpServers")
+            else ([], {})
         )
         messages = (
             [{"role": "system", "content": args.system_prompt}]

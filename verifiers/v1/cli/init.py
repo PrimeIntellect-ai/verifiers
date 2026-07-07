@@ -80,43 +80,64 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str
     `@reward` to fill in. Each enabled piece (tool/user) adds its import, config field, and
     wiring method."""
     imports = "import verifiers.v1 as vf"
+    typing_imports: list[str] = []
     local_imports: list[str] = []
     config_extra = ""
-    methods: list[str] = []
-    # a user simulator carries per-rollout state and a stop condition, so the taskset is typed with
-    # its `State` subclass; without one it stays on the default `State`.
-    state_param = ""
+    task_fields = ""
+    task_methods: list[str] = []
     if add_tool:
         local_imports.append(f"from {pkg}.servers.tool import {prefix}Toolset")
         config_extra += "\n    tools: vf.ToolsetConfig = vf.ToolsetConfig()"
-        methods.append(
-            f"    def tools(self, task: {prefix}Task) -> list[vf.Toolset]:\n"
-            f"        return [{prefix}Toolset(self.config.tools)]"
+        task_fields += (
+            "\n    tools: vf.ToolsetConfig = vf.ToolsetConfig()\n"
+            '    """Tool-server placement, baked on by the factory (CLI-tunable via --taskset.tools.*)."""'
+        )
+        task_methods.append(
+            "    def load_tools(self) -> list[vf.Toolset]:\n"
+            f"        return [{prefix}Toolset(self.tools)]"
         )
     if add_user:
+        typing_imports.append("from typing import ClassVar")
         local_imports.append(
             f"from {pkg}.servers.user import {prefix}State, {prefix}User"
         )
         config_extra += "\n    user: vf.UserConfig = vf.UserConfig()"
-        state_param = f", {prefix}State"
-        methods.append(
-            f"    def user(self, task: {prefix}Task) -> vf.User:\n"
-            f"        return {prefix}User(self.config.user)"
+        task_fields += (
+            f"\n    STATE: ClassVar[type[vf.State]] = {prefix}State\n"
+            "\n    user: vf.UserConfig = vf.UserConfig()\n"
+            '    """User-sim placement, baked on by the factory (CLI-tunable via --taskset.user.*)."""'
         )
-        methods.append(
+        task_methods.append(
+            "    def load_user(self) -> vf.User:\n"
+            f"        return {prefix}User(self.user)"
+        )
+        task_methods.append(
             "    @vf.stop\n"
             "    async def user_done(self, trace: vf.Trace) -> bool:\n"
             "        return trace.state.done"
         )
+    if typing_imports:
+        imports = "\n".join(typing_imports) + "\n\n" + imports
     if local_imports:
         imports += "\n\n" + "\n".join(local_imports)
-    methods_block = "".join(f"\n{m}\n" for m in methods)
+    factory_kwargs = ""
+    if add_tool:
+        factory_kwargs += ", tools=self.config.tools"
+    if add_user:
+        factory_kwargs += ", user=self.config.user"
+    methods_block = "".join(f"\n{m}\n" for m in task_methods)
     return f'''\
 {imports}
 
 
 class {prefix}Task(vf.Task):
-    """A single task. Add task-specific fields here (e.g. a reference answer)."""
+    """A single task: data as typed fields (e.g. a reference answer), episode behavior —
+    rewards, metrics, stops, lifecycle hooks, tools — as methods on this class."""
+{task_fields}
+{methods_block}
+    @vf.reward(weight=1.0)
+    async def reward(self, trace: vf.Trace) -> float:
+        raise NotImplementedError("Score the rollout and return a float (e.g. in [0, 1]).")
 
 
 class {prefix}Config(vf.TasksetConfig):
@@ -124,16 +145,12 @@ class {prefix}Config(vf.TasksetConfig):
     """How many tasks to build."""{config_extra}
 
 
-class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config{state_param}]):
+class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
     def load_tasks(self) -> list[{prefix}Task]:
         raise NotImplementedError(
-            "Return this taskset's tasks, e.g. "
-            "[{prefix}Task(idx=i, prompt=...) for i in range(self.config.num_tasks)]."
+            "Derive this taskset's tasks, e.g. "
+            "[{prefix}Task(idx=i, prompt=...{factory_kwargs}) for i in range(self.config.num_tasks)]."
         )
-{methods_block}
-    @vf.reward(weight=1.0)
-    async def reward(self, task: {prefix}Task, trace: vf.Trace) -> float:
-        raise NotImplementedError("Score the rollout and return a float (e.g. in [0, 1]).")
 '''
 
 

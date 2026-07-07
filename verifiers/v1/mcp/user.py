@@ -1,6 +1,6 @@
 """`User` + `UserConfig`: the user simulator authored as a vf-native class with a `respond` hook.
 
-A taskset registers a `User` via `Taskset.user` — a vf-native class (like `Toolset`, served as an
+A task registers a `User` via `Task.load_user` — a vf-native class (like `Toolset`, served as an
 MCP server with a runtime) exposing a single `respond` tool. Unlike a tool server it is never handed
 to the model: the framework drives it. After each model turn the interception server calls `respond`
 with the model's last message, appends the simulated user message(s), and re-prompts — so a
@@ -48,7 +48,7 @@ class User(ServerBase[ConfigT, StateT]):
     """A user simulator authored as a vf-native class, initialized from its config: implement
     `respond` (the model's last message in → the next user message(s) out). Consumed by the framework
     (the interception server drives it), never shown to the model. To end the trajectory, set a flag
-    on the shared `self.state` and have the taskset declare a `@vf.stop` over it (the framework holds
+    on the shared `self.state` and have the task class declare a `@vf.stop` over it (the framework holds
     no built-in end signal — see `verifiers.v1.state`). Example:
 
         class HagglerState(vf.State):
@@ -58,10 +58,12 @@ class User(ServerBase[ConfigT, StateT]):
             async def respond(self, message: str) -> vf.Messages:
                 ...
                 if deal_done:
-                    self.state.deal_closed = True   # the taskset's @vf.stop ends it on this
+                    self.state.deal_closed = True   # the task's @vf.stop ends it on this
                 return [{"role": "user", "content": reply}]
 
-        class HagglerTaskset(vf.Taskset[HagglerTask, HagglerConfig, HagglerState]):
+        class HagglerTask(vf.Task):
+            STATE: ClassVar[type[vf.State]] = HagglerState
+
             @vf.stop
             async def deal_closed(self, trace) -> bool:
                 return trace.state.deal_closed
@@ -73,7 +75,7 @@ class User(ServerBase[ConfigT, StateT]):
     async def respond(self, message: str) -> Messages:
         """The model's last assistant text in → the next user message(s) out. Called once with an
         empty `message` to open the conversation when the task has no prompt (`task.prompt is
-        None`); end the trajectory by setting a `self.state` flag a taskset `@vf.stop` checks."""
+        None`); end the trajectory by setting a `self.state` flag a task `@vf.stop` checks."""
         raise NotImplementedError
 
     def _register(self, mcp: FastMCP) -> None:

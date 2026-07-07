@@ -1,13 +1,15 @@
 """wiki-search: answer trivia by searching a wiki corpus (read-only tools + judge).
 
 The opposite shape from wikispeedia: read-only tools and an LLM-judge reward. The taskset
-loads questions from a HuggingFace dataset and exposes semantic `search_pages` +
+loads questions from a HuggingFace dataset; the task exposes semantic `search_pages` +
 `view_sections`/`read_section` over the full corpus (chroma index) via a `vf.Toolset`. The
 expensive corpus + index are built in the toolset's `setup` (runs in the server process), and
 the toolset is SHARED — one instance for the whole eval, not rebuilt per rollout. Grading is
-the plugged built-in `reference` judge (a default `judges` entry, overridable per eval) with a
-prompt that also requires coherence.
+a `vf.Judge` called from the task's `correct` reward, with a prompt that also requires
+coherence.
 """
+
+import functools
 
 import verifiers.v1 as vf
 
@@ -46,18 +48,45 @@ QUESTIONS_DATASET = "willcb/wiki-trivia-questions-v4"
 NUM_QUESTIONS = 20
 
 
+class CorrectnessJudge(vf.Judge[float]):
+    """Scores the reply 1/0 against the reference answer (this env's prompt also
+    requires coherence); an unparseable verdict raises — a judge failure errors the
+    rollout instead of scoring the model 0."""
+
+    prompt = JUDGE_PROMPT
+
+    def parse(self, response: vf.JudgeResponse[float]) -> float:
+        return float(vf.judge_verdict(response.text, ("yes", "no")) == "yes")
+
+
+@functools.cache
+def correctness_judge() -> CorrectnessJudge:
+    """The eval's one judge instance — it holds an HTTP client, so it is cached here
+    rather than constructed per reward call."""
+    return CorrectnessJudge(vf.JudgeConfig())
+
+
 class TriviaTask(vf.Task):
     question: str
     answer: str
+    tools: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
+    """Placement for the wiki tool server (from the taskset's `tools` knob)."""
+
+    def load_tools(self) -> list[vf.Toolset]:
+        return [WikiSearchToolset(self.tools)]
+
+    @vf.reward(weight=1.0)
+    async def correct(self, trace: vf.Trace) -> float:
+        response = trace.last_reply
+        if not (response or "").strip():
+            return 0.0  # nothing to grade — skip the (foregone) judge call
+        result = await correctness_judge().evaluate(
+            trace=trace, question=self.question, answer=self.answer, response=response
+        )
+        return float(result.parsed or 0.0)
 
 
 class WikiSearchConfig(vf.TasksetConfig):
-    # The built-in reference judge, plugged by default with this env's prompt (which also
-    # requires coherence). Fully eval-tunable: `--taskset.judges.0.model ...`, or replaced
-    # wholesale from the TOML's `[[taskset.judges]]`.
-    judges: vf.Judges = [
-        vf.ReferenceJudgeConfig(prompt=JUDGE_PROMPT, question_field="question")
-    ]
     # SHARED: the chroma corpus is expensive, so one instance serves the whole eval (its own
     # runtime), reused across rollouts rather than rebuilt per rollout. CLI-tunable, e.g.
     # `--taskset.tools.shared false` or `--taskset.tools.runtime.type docker`.
@@ -75,9 +104,7 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
                 question=row["question"],
                 answer=str(row["answer"]),
                 prompt=f"{SYSTEM}\n\nQuestion: {row['question']}",
+                tools=self.config.tools,
             )
             for i, row in enumerate(rows.select(range(min(NUM_QUESTIONS, len(rows)))))
         ]
-
-    def tools(self, task: TriviaTask) -> list[vf.Toolset]:
-        return [WikiSearchToolset(self.config.tools)]

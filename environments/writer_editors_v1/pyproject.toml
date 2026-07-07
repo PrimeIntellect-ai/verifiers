@@ -1,0 +1,13 @@
+[project]
+name = "writer-editors-v1"
+version = "0.1.0"
+description = "writer-editors-v1 — a writer drafts, n editors critique, the writer revises; rounds + fan-in (example topology)."
+requires-python = ">=3.10"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["writer_editors_v1"]

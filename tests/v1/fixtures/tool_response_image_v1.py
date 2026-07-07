@@ -27,7 +27,17 @@ class VisionToolset(vf.Toolset[vf.ToolsetConfig]):
 
 
 class ToolResponseImageTask(vf.Task):
-    pass
+    def load_tools(self) -> list[vf.Toolset]:
+        return [VisionToolset(vf.ToolsetConfig())]
+
+    @vf.reward(weight=1.0)
+    async def preserved_image_tool_result(self, trace: vf.Trace) -> float:
+        for message in trace.tool_messages:
+            if isinstance(message.content, list):
+                for part in message.content:
+                    if part.type == "image_url" and part.image_url.url == EXPECTED_URL:
+                        return 1.0
+        return 0.0
 
 
 class ToolResponseImageTaskset(vf.Taskset[ToolResponseImageTask, vf.TasksetConfig]):
@@ -42,18 +52,6 @@ class ToolResponseImageTaskset(vf.Taskset[ToolResponseImageTask, vf.TasksetConfi
                 system_prompt=SYSTEM,
             )
         ]
-
-    def tools(self, task: ToolResponseImageTask) -> list[vf.Toolset]:
-        return [VisionToolset(vf.ToolsetConfig())]
-
-    @vf.reward(weight=1.0)
-    async def preserved_image_tool_result(self, trace: vf.Trace) -> float:
-        for message in trace.tool_messages:
-            if isinstance(message.content, list):
-                for part in message.content:
-                    if part.type == "image_url" and part.image_url.url == EXPECTED_URL:
-                        return 1.0
-        return 0.0
 
 
 __all__ = ["ToolResponseImageTaskset"]

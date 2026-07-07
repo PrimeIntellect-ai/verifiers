@@ -1,15 +1,17 @@
 """A rollout: one trajectory — drive an harness in a runtime and score its trace.
 
-A Rollout owns a single trajectory end-to-end, including its runtime's lifecycle. It
+A Rollout owns a single trajectory end-to-end, including its runtime's lifecycle. The task
+is the whole task-side contract: its class carries the lifecycle hooks, tools, user
+simulator, stops, and judgement the episode consults (see `verifiers.v1.task`). The Rollout
 makes and starts the runtime, gets an interception endpoint (a slot on the shared pool if
 one is given, else a per-rollout server exposed via its own runtime), then drives the
-staged lifecycle while the runtime is live — taskset + harness setup, the harness run,
-taskset `finalize`, and per-rollout `@reward`/`@metric` scoring — each under its own stage
+staged lifecycle while the runtime is live — task + harness setup, the harness run, the
+task's `finalize`, and per-rollout `@reward`/`@metric` scoring — each under its own stage
 timeout (`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`),
-then tears the runtime down in a `finally`. Cross-rollout `@group_reward`s run afterwards (in the Episode) over the traces
-alone — they never need a live runtime — so a runtime is never kept up past its own
-rollout. The runtime ref is set the instant it's created, so it's always tearable-down
-even if `run()` crashes.
+then tears the runtime down in a `finally`. Cross-rollout `@group_reward`s run afterwards
+(in the Episode) over the traces alone — they never need a live runtime — so a runtime is
+never kept up past its own rollout. The runtime ref is set the instant it's created, so
+it's always tearable-down even if `run()` crashes.
 """
 
 import asyncio
@@ -24,7 +26,7 @@ from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
-    TasksetError,
+    TaskError,
     ToolsetError,
     boundary,
 )
@@ -40,11 +42,11 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     make_runtime,
     reachable_url,
+    runtime_is_local,
 )
-from verifiers.v1.mcp import serve_tools, serve_user
+from verifiers.v1.mcp import SharedServers, serve_tools, serve_user
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -67,7 +69,6 @@ class Rollout:
     def __init__(
         self,
         task: Task,
-        taskset: Taskset,
         harness: Harness,
         ctx: RolloutContext,
         runtime_config: RuntimeConfig,
@@ -76,11 +77,10 @@ class Rollout:
         finalize_timeout: float | None = None,
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
-        shared_urls: dict[str, str] | None = None,
+        shared: SharedServers | None = None,
         interception: InterceptionPool | None = None,
     ) -> None:
         self.task = task
-        self.taskset = taskset
         self.harness = harness
         self.ctx = ctx
         self.runtime_config = runtime_config
@@ -89,11 +89,10 @@ class Rollout:
         self.finalize_timeout = finalize_timeout
         self.scoring_timeout = scoring_timeout
         self.limits = limits or RolloutLimits()
-        self.shared_urls = shared_urls or {}
-        """Eval-level shared tool servers ({name: url}) to reuse instead of starting per rollout;
-        the eval-level interception pool. Both injected by `Environment.episode` from the active
-        `Environment.serving` context — so a rollout always has them and no runner has to thread
-        them in."""
+        self.shared = shared
+        """The run-scoped `shared`-placement tool-server registry (see `SharedServers`),
+        injected from the active `serving` context — like `interception` below, so no
+        runner has to thread serving resources through."""
         self.interception = interception
         self.phase = Phase.PENDING
         """Lifecycle phase for display (see `Phase`); starts PENDING (queued behind the
@@ -135,13 +134,30 @@ class Rollout:
                 async with reachable_url(HOST, server.port, consumer=runtime) as url:
                     yield f"{url}/v1", secret, server.port, url
 
+    async def _shared_urls(self, tool_servers) -> dict[str, str]:
+        """Resolve this rollout's `shared`-placement toolsets to their run-level URLs,
+        lazily starting each on first use (see `SharedServers`)."""
+        urls: dict[str, str] = {}
+        shared = [ts for ts in tool_servers if ts.config.shared and not ts.config.url]
+        if shared and self.shared is None:
+            raise ToolsetError(
+                "task declares a `shared` tool server but no shared-server registry is "
+                "serving; run rollouts inside the Environment's `serving()` context"
+            )
+        for toolset in shared:
+            urls[toolset.server_name] = await self.shared.url_for(
+                toolset, harness_is_local=runtime_is_local(self.runtime_config)
+            )
+        return urls
+
     async def run(self) -> Trace:
         """Run the rollout and return its trace. Captures expected `RolloutError`s onto
         the trace (a bad rollout is data, not a crash), runs per-rollout scoring while
         the runtime is live, then tears the runtime down in a `finally`. Reuses the
-        eval-level shared tool servers / interception pool injected at construction (see
-        `self.shared_urls` / `self.interception`)."""
-        trace: Trace = Trace(task=self.task, state=state_cls(type(self.taskset))())
+        run-level shared tool servers / interception pool injected at construction (see
+        `self.shared` / `self.interception`)."""
+        task = self.task
+        trace: Trace = Trace(task=task, state=state_cls(type(task))())
         self.trace = trace  # expose for the --rich dashboard
         self.phase = Phase.SETUP  # leaving the queue: provisioning starts now
         trace.timing.setup.start = time.time()
@@ -150,11 +166,11 @@ class Rollout:
         )  # ref set first → always tearable-down; named after the rollout for traceability
         runtime = self.runtime
         ctx = self.ctx
-        stops = discover_decorated(self.taskset, "stop")
+        stops = discover_decorated(task, "stop")
         logger.info(
             "rollout start: id=%s task=%s harness=%s runtime=%s",
             trace.id,
-            self.task.idx,
+            task.idx,
             self.harness.config.name,
             self.runtime_config.type,
         )
@@ -166,14 +182,12 @@ class Rollout:
                 if self.setup_timeout is None
                 else asyncio.get_running_loop().time() + self.setup_timeout
             )
+            available = {"task": task, "trace": trace, "runtime": runtime}
             async with (
-                boundary(TasksetError, "taskset setup"),
+                boundary(TaskError, "task setup"),
                 asyncio.timeout_at(setup_deadline),
             ):
-                await invoke(
-                    self.taskset.setup,
-                    {"task": self.task, "trace": trace, "runtime": runtime},
-                )
+                await invoke(task.setup, available)
             async with (
                 boundary(HarnessError, "harness setup"),
                 asyncio.timeout_at(setup_deadline),
@@ -188,30 +202,31 @@ class Rollout:
                 state_base,
             ):
                 async with boundary(ToolsetError, "building tool servers"):
-                    tool_servers = self.taskset.tools(self.task)
+                    tool_servers = task.load_tools()
+                    shared_urls = await self._shared_urls(tool_servers)
                 async with (
                     serve_tools(
                         tool_servers,
                         runtime,
-                        self.task,
-                        shared_urls=self.shared_urls,
+                        task,
+                        shared_urls=shared_urls,
                         state_port=state_port,
                         state_secret=secret,
                         state_base=state_base,
                     ) as urls,
                     serve_user(
-                        self.taskset.user(self.task),
-                        self.task,
+                        task.load_user(),
+                        task,
                         harness_runtime=runtime,
                         state_port=state_port,
                         state_secret=secret,
                         state_base=state_base,
                     ) as session.user,
                 ):
-                    if self.task.prompt is None and session.user is None:
-                        raise TasksetError(
+                    if task.prompt is None and session.user is None:
+                        raise TaskError(
                             "task has no prompt and no user simulator to open the "
-                            "conversation; set task.prompt or have Taskset.user return "
+                            "conversation; set task.prompt or have Task.load_user return "
                             "a simulator"
                         )
                     # setup done — the harness is now driving
@@ -243,11 +258,10 @@ class Rollout:
             now = time.time()
             trace.timing.generation.end = now
             trace.timing.finalize.start = now
-            self.phase = Phase.FINALIZE  # post-run taskset work, before scoring
-            async with boundary(TasksetError, "taskset finalize"):
+            self.phase = Phase.FINALIZE  # post-run task work, before scoring
+            async with boundary(TaskError, "task finalize"):
                 await asyncio.wait_for(
-                    self.taskset.finalize(self.task, trace, runtime),
-                    self.finalize_timeout,
+                    invoke(task.finalize, available), self.finalize_timeout
                 )
             now = time.time()
             trace.timing.finalize.end = now
@@ -255,13 +269,13 @@ class Rollout:
                 Phase.SCORING
             )  # per-rollout scoring; the Episode marks DONE after group scoring
             trace.timing.scoring.start = now
-            async with boundary(TasksetError, "scoring"):
-                # Per-rollout scoring: taskset + harness, concurrently, both with the live
+            async with boundary(TaskError, "scoring"):
+                # Per-rollout scoring: task + harness, concurrently, both with the live
                 # runtime. (Cross-rollout `@group_reward`s run later, in the Episode.) Each
                 # method types its own failures; only a timeout is attributed here.
                 await asyncio.wait_for(
                     asyncio.gather(
-                        self.taskset.score(trace, runtime),
+                        task.score(trace, runtime),
                         self.harness.score(trace, runtime),
                     ),
                     self.scoring_timeout,
@@ -296,7 +310,7 @@ class Rollout:
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,
-            self.task.idx,
+            task.idx,
             trace.reward,
             trace.num_turns,
             trace.error.type if trace.error else trace.stop_condition,

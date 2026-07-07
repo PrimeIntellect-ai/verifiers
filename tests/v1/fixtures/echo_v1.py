@@ -1,9 +1,8 @@
 """echo: ask the model to repeat a short phrase back verbatim (single-turn).
 
-The smallest possible reward-1 taskset — no dataset, no tools, no reasoning required — so an
-end-to-end eval run is fast and deterministic. The reward is 1.0 when the phrase appears in
-the model's reply. It's a fixture taskset for the v1 e2e suite (in tests/v1/fixtures, resolved
-by id `echo-v1` via pytest's `pythonpath`).
+The smallest possible reward-1 environment in the task-first shape — the `EchoTask` class
+carries the stop and the reward; the taskset is a three-phrase factory. It's a fixture for
+the v1 e2e suite (in tests/v1/fixtures, resolved by id `echo-v1` via pytest's `pythonpath`).
 """
 
 import verifiers.v1 as vf
@@ -26,6 +25,15 @@ class EchoTask(vf.Task):
     answer: str
     """The phrase the model should echo back."""
 
+    @vf.stop
+    async def single_turn(self, trace: vf.Trace) -> bool:
+        return trace.num_turns >= 1
+
+    @vf.reward(weight=1.0)
+    async def echoed(self, trace: vf.Trace) -> float:
+        reply = trace.assistant_messages[-1].content if trace.assistant_messages else ""
+        return float(lenient_match(self.answer, reply or ""))
+
 
 class EchoConfig(vf.TasksetConfig):
     phrases: list[str] = ["hello world", "ping", "verifiers"]
@@ -47,15 +55,6 @@ class EchoTaskset(vf.Taskset[EchoTask, EchoConfig]):
             )
             for i, phrase in enumerate(self.config.phrases)
         ]
-
-    @vf.stop
-    async def single_turn(self, trace: vf.Trace) -> bool:
-        return trace.num_turns >= 1
-
-    @vf.reward(weight=1.0)
-    async def echoed(self, task: EchoTask, trace: vf.Trace) -> float:
-        reply = trace.assistant_messages[-1].content if trace.assistant_messages else ""
-        return float(lenient_match(task.answer, reply or ""))
 
 
 __all__ = ["EchoTaskset"]

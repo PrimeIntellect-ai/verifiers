@@ -18,7 +18,7 @@ the simulator replays them.
 import difflib
 import random
 import re
-from typing import Literal
+from typing import ClassVar, Literal
 
 from datasets import load_dataset
 
@@ -49,19 +49,62 @@ class AlphabetSortConfig(vf.TasksetConfig):
 
 
 class AlphabetSortTask(vf.Task):
+    STATE: ClassVar[type[vf.State]] = AlphabetSortState
+
     info: dict
     """The pre-generated episode: the `user_turns` the simulator reveals one by one (the opening
     sort prompt, then the follow-ups), the per-turn `ground_truths` the reward grades against,
     and `num_turns`. The task itself carries no prompt — the simulator opens the conversation."""
+    similarity_power: int = 4
+    """Exponent applied to each turn's sequence-similarity score (higher = sharper penalty)."""
+    power_per_turn: bool = True
+    """Power-scale each turn then average (True), or average raw similarities then power once (False)."""
+    user: vf.UserConfig = vf.UserConfig()
+    """Placement for the episode-replaying user simulator (from the taskset's `user` knob)."""
 
-
-class AlphabetSortTaskset(
-    vf.Taskset[AlphabetSortTask, AlphabetSortConfig, AlphabetSortState]
-):
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:
         return trace.state.user_finished
 
+    def load_user(self) -> vf.User:
+        return AlphabetSortUser(self.user)
+
+    @vf.reward(weight=1.0)
+    async def alphabet_sort(self, trace: vf.Trace) -> float:
+        ground_truths = self.info["ground_truths"]
+        num_turns = self.info["num_turns"]
+        responses = [m.content or "" for m in trace.assistant_messages]
+        scores = []
+        for t in range(num_turns):
+            tag = "alphabetical_sorted" if t == 0 else "combined_alphabetical_sorted"
+            response = responses[t] if t < len(responses) else ""
+            expected = "\n".join(s.strip().lower() for s in ground_truths[t])
+            # Multiple <tag> attempts only count if they strictly improve (else 0).
+            attempts = []
+            for content in re.findall(f"<{tag}>(.*?)</{tag}>", response, re.DOTALL):
+                pred = "\n".join(
+                    ln.strip().lower() for ln in content.split("\n") if ln.strip()
+                )
+                sim = (
+                    difflib.SequenceMatcher(None, pred, expected).ratio()
+                    if pred and expected
+                    else 0.0
+                )
+                attempts.append(
+                    sim**self.similarity_power if self.power_per_turn else sim
+                )
+            if not attempts:
+                scores.append(0.0)
+            elif len(attempts) == 1:
+                scores.append(attempts[0])
+            else:
+                improved = all(b > a for a, b in zip(attempts, attempts[1:]))
+                scores.append(attempts[-1] if improved else 0.0)
+        avg = sum(scores) / num_turns if num_turns else 0.0
+        return avg if self.power_per_turn else avg**self.similarity_power
+
+
+class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
     def load_tasks(self) -> list[AlphabetSortTask]:
         c = self.config
         assert 1 <= c.min_turns <= c.max_turns, "need 1 <= min_turns <= max_turns"
@@ -146,42 +189,9 @@ class AlphabetSortTaskset(
                         "ground_truths": ground_truths,
                         "num_turns": len(turns),
                     },
+                    similarity_power=c.similarity_power,
+                    power_per_turn=c.power_per_turn,
+                    user=c.user,
                 )
             )
         return tasks
-
-    def user(self, task: AlphabetSortTask) -> vf.User:
-        return AlphabetSortUser(self.config.user)
-
-    @vf.reward(weight=1.0)
-    async def alphabet_sort(self, task: AlphabetSortTask, trace: vf.Trace) -> float:
-        c = self.config
-        ground_truths = task.info["ground_truths"]
-        num_turns = task.info["num_turns"]
-        responses = [m.content or "" for m in trace.assistant_messages]
-        scores = []
-        for t in range(num_turns):
-            tag = "alphabetical_sorted" if t == 0 else "combined_alphabetical_sorted"
-            response = responses[t] if t < len(responses) else ""
-            expected = "\n".join(s.strip().lower() for s in ground_truths[t])
-            # Multiple <tag> attempts only count if they strictly improve (else 0).
-            attempts = []
-            for content in re.findall(f"<{tag}>(.*?)</{tag}>", response, re.DOTALL):
-                pred = "\n".join(
-                    ln.strip().lower() for ln in content.split("\n") if ln.strip()
-                )
-                sim = (
-                    difflib.SequenceMatcher(None, pred, expected).ratio()
-                    if pred and expected
-                    else 0.0
-                )
-                attempts.append(sim**c.similarity_power if c.power_per_turn else sim)
-            if not attempts:
-                scores.append(0.0)
-            elif len(attempts) == 1:
-                scores.append(attempts[0])
-            else:
-                improved = all(b > a for a, b in zip(attempts, attempts[1:]))
-                scores.append(attempts[-1] if improved else 0.0)
-        avg = sum(scores) / num_turns if num_turns else 0.0
-        return avg if c.power_per_turn else avg**c.similarity_power

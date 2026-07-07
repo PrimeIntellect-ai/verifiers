@@ -31,3 +31,29 @@ def test_parse_judge_choice_uses_first_choice_after_verdict_marker() -> None:
     response = "Final Judgment: B because it is a better answer"
 
     assert vf.parse_judge_choice(response, choices=("A", "B")) == "B"
+
+
+def test_judge_utility_pure_parts():
+    """The judge utility's model-free surface: template rendering (config override beats the
+    class template) and the error-attribution verdict parser (an unparseable verdict raises —
+    a judge failure must not be silently scored against the model)."""
+    import pytest
+
+    import verifiers.v1 as vf
+
+    class YesNoJudge(vf.Judge[bool]):
+        prompt = "Q: {question}\nA: {response}\nCorrect? yes/no"
+
+    judge = YesNoJudge(vf.JudgeConfig())
+    assert (
+        judge.build_messages(question="2+2?", response="4")
+        == "Q: 2+2?\nA: 4\nCorrect? yes/no"
+    )
+    override = YesNoJudge(vf.JudgeConfig(prompt="only {question}"))
+    assert override.build_messages(question="x") == "only x"
+
+    assert (
+        vf.judge_verdict("I think the answer is correct. yes", ("yes", "no")) == "yes"
+    )
+    with pytest.raises(ValueError, match="no yes/no verdict"):
+        vf.judge_verdict("cannot say", ("yes", "no"))

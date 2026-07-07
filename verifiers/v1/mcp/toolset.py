@@ -1,6 +1,6 @@
 """`Toolset` + `ToolsetConfig`: a tool server authored as a vf-native class with `@vf.tool` methods.
 
-A task gives the harness tools by declaring `Toolset`s from `Taskset.tools`. The config carries
+A task gives the harness tools by declaring `Toolset`s from its own `tools` method. The config carries
 placement (where the server runs); the class carries the `@vf.tool` methods the model calls.
 """
 
@@ -35,7 +35,7 @@ class ToolsetConfig(BaseConfig):
     See the placement/isolation section of `verifiers/v1/GUIDE.md` for the trade-offs of each.
     Subclass to add the server's own knobs (the data its `@tool` methods read). The server name is
     the class's `TOOL_PREFIX` ClassVar, not a field here — it's an identity (the model sees
-    `<prefix>_<tool>`, baked into the taskset's prompt), not a tunable knob."""
+    `<prefix>_<tool>`, baked into the task's prompt), not a tunable knob."""
 
     colocated: bool = False
     """Run the server inside the harness's runtime (reached in-sandbox, no tunnel). Off by

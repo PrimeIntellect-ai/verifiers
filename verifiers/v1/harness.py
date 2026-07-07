@@ -36,8 +36,8 @@ logger = logging.getLogger(__name__)
 class HarnessConfig(BaseConfig):
     """A harness's config — subclass per harness to add run knobs. Mirrors `TasksetConfig`: the
     base type names the field, the concrete subclass is resolved by id (no closed union) — the
-    id is supplied by the caller (`--harness.id` / toml / a taskset's bundled harness), never
-    pinned on the subclass."""
+    id is supplied by the caller (`--harness.id` / toml / a taskset's bundled harness / an
+    `AgentConfig` subclass pin in a topology), never hardcoded by the harness itself."""
 
     id: ID = "default"
     """The harness id, which selects this harness: a local package, or an
@@ -45,9 +45,9 @@ class HarnessConfig(BaseConfig):
     `ID`). Set via `--harness.id`."""
     runtime: RuntimeConfig = SubprocessConfig()
     """Where the harness runs (subprocess / docker / prime). Subprocess by default — a local
-    process on the host; a taskset that needs a container (its own image, or NEEDS_CONTAINER)
+    process on the host; a task that needs a container (its `image`, or the task class's NEEDS_CONTAINER)
     selects `--harness.runtime.type docker` (or prime/modal). Lives on the harness — it's the
-    harness's box; tool servers have their own placement (see `TasksetConfig.tools`)."""
+    harness's box; tool servers have their own placement (each task's `tools` config field)."""
     env: dict[str, str] = Field(default_factory=dict)
     """Additional environment variables for the harness program. Harness-owned endpoint,
     authentication, and model variables take precedence."""
@@ -98,7 +98,7 @@ class Harness(ABC, Generic[ConfigT]):
         the user prompt (warning that it isn't sent as a system message). A `Messages`
         prompt (e.g. an image-bearing prompt) is only allowed for harnesses that set
         `SUPPORTS_MESSAGE_PROMPT`. A `None` prompt means the task has no prompt —
-        the user simulator opens the conversation (see `Taskset.user`); the harness emits no
+        the user simulator opens the conversation (see `Task.load_user`); the harness emits no
         opening user message."""
         prompt = task.prompt
         if (

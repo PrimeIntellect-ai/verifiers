@@ -7,6 +7,8 @@ either way the framework drives it and reaches it from wherever the harness runs
 a task tool, so this needs a tool-supporting harness.
 """
 
+from typing import ClassVar
+
 import verifiers.v1 as vf
 
 PHRASES = ["hello world", "goodbye world"]
@@ -15,15 +17,6 @@ SYSTEM = "Repeat the user's message back to them exactly, with no extra words."
 
 def _key(text: str) -> str:
     return "".join(c for c in text.casefold() if c.isalnum())
-
-
-class EchoUserSimTask(vf.Task):
-    phrases: list[str]
-
-
-class EchoUserSimConfig(vf.TasksetConfig):
-    phrases: list[str] = PHRASES
-    user: vf.UserConfig = vf.UserConfig()
 
 
 class EchoUserSimState(vf.State):
@@ -45,13 +38,35 @@ class EchoUserSimUser(vf.User[vf.UserConfig, EchoUserSimState]):
         return [{"role": "user", "content": self.phrases[self.turns]}]
 
 
-class EchoUserSimTaskset(
-    vf.Taskset[EchoUserSimTask, EchoUserSimConfig, EchoUserSimState]
-):
+class EchoUserSimTask(vf.Task):
+    STATE: ClassVar[type[vf.State]] = EchoUserSimState
+
+    phrases: list[str]
+    user: vf.UserConfig = vf.UserConfig()
+    """Placement for the user simulator (from the taskset's `user` knob)."""
+
+    def load_user(self) -> vf.User:
+        return EchoUserSimUser(self.user)
+
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:
         return trace.state.user_finished
 
+    @vf.reward(weight=1.0)
+    async def echoed(self, trace: vf.Trace) -> float:
+        replies = [m.content for m in trace.assistant_messages]
+        if len(replies) < len(self.phrases):
+            return 0.0
+        matched = sum(_key(p) in _key(r or "") for r, p in zip(replies, self.phrases))
+        return matched / len(self.phrases)
+
+
+class EchoUserSimConfig(vf.TasksetConfig):
+    phrases: list[str] = PHRASES
+    user: vf.UserConfig = vf.UserConfig()
+
+
+class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
     def load_tasks(self) -> list[EchoUserSimTask]:
         return [
             EchoUserSimTask(
@@ -59,20 +74,9 @@ class EchoUserSimTaskset(
                 prompt=self.config.phrases[0],
                 system_prompt=SYSTEM,
                 phrases=self.config.phrases,
+                user=self.config.user,
             )
         ]
-
-    def user(self, task: EchoUserSimTask) -> vf.User:
-        return EchoUserSimUser(self.config.user)
-
-    @vf.reward(weight=1.0)
-    async def echoed(self, task: EchoUserSimTask, trace: vf.Trace) -> float:
-        replies = [m.content for m in trace.assistant_messages]
-        phrases = task.phrases
-        if len(replies) < len(phrases):
-            return 0.0
-        matched = sum(_key(p) in _key(r or "") for r, p in zip(replies, phrases))
-        return matched / len(phrases)
 
 
 __all__ = ["EchoUserSimTaskset"]

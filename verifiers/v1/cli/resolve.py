@@ -44,23 +44,28 @@ def extract_id(argv: list[str], field: str, default: str = "") -> str:
 
 
 def narrow_config(base: type, argv: list[str]) -> type:
-    """`base` (an `EnvConfig` subclass) with `taskset`/`harness` narrowed to the config types
-    of the ids given on the CLI — so the single `cli()` parse stays typed and `-h` renders
-    them. A field whose id isn't on the CLI is left as the base type for `EnvConfig` to resolve
-    from a `@ file.toml` (never pre-narrowed to a type the config could then contradict).
-    Absent a config file, the harness falls back to the taskset's bundled harness (if it ships
-    one) else `default`, so bare `-h` renders the harness that will actually run."""
+    """`base` (an `EnvConfig` subclass) with `taskset`/`harness`/`topology` narrowed to the
+    config types of the ids given on the CLI — so the single `cli()` parse stays typed and
+    `-h` renders them. A field whose id isn't on the CLI is left as the base type for the
+    config to resolve from a `@ file.toml` (never pre-narrowed to a type the config could
+    then contradict). Absent a config file, the harness falls back to the taskset's bundled
+    harness (if it ships one) else `default`, so bare `-h` renders the harness that will
+    actually run — unless a topology is chosen, whose agents bind their own harnesses."""
     taskset_id = extract_id(argv, "taskset")
     harness_id = extract_id(argv, "harness")
-    if not harness_id and not references_config_file(argv):
+    topology_id = extract_id(argv, "topology")
+    if not harness_id and not topology_id and not references_config_file(argv):
         harness_id = vf.default_harness_id(taskset_id)
     annotations: dict[str, type] = {}
     fields: dict[str, object] = {}
     for field, resolve, ident in (
         ("taskset", vf.taskset_config_type, taskset_id),
         ("harness", vf.harness_config_type, harness_id),
+        ("topology", vf.topology_config_type, topology_id),
     ):
-        if ident:
+        # Only narrow fields the base config declares — `serve` has no `topology` (yet), and
+        # narrowing must never invent a field the config would then silently swallow.
+        if ident and field in base.model_fields:
             ftype = resolve(ident)
             annotations[field] = ftype
             fields[field] = ftype(id=ident)

@@ -7,14 +7,19 @@ tighter type contract. `import verifiers.v1 as vf`.
 
 ## Highlights
 
-- **Composable taskset × harness** — a taskset (data + scoring) is fully decoupled from the
-  harness (the program driving the rollout); any taskset runs under any harness
-  (`default` / `rlm` / `codex` / your own)
+- **Task-first** — the task is the unit of work: data on the (frozen, serializable)
+  instance, behavior — rewards, stops, lifecycle hooks, tools — on the class. A taskset is
+  just the factory (point it at a dataset); a topology mints the same first-class tasks
+  dynamically. Any task runs under any harness (`default` / `rlm` / `codex` / your own)
 - **Swappable runtime** — the harness, tools, and user simulators all run behind one
   `Runtime` contract, in `subprocess` / `docker` / `prime` / `modal` / ...
 - **First-class branching rollouts** — a rollout isn't assumed linear: context compaction and
   subagents are native. Each branch (a root→leaf path through the trace graph) is its own
   training sample, so a compacting or multi-agent rollout trains end to end.
+- **Multi-agent topologies** — compose agents over episodes: a `Topology` turns one agent's
+  trace into the next agent's task, fans solvers out, and flows rewards backwards (a proposer
+  scored by its solvers' pass rate, a solver scored by an agentic judge). Each instance
+  serializes as an *agent graph*: an instance record with its parent-linked traces nested.
 - **Fully typed** — pydantic end-to-end (`Task` / `Trace` / configs); no loose
   `dict` / `object` / `cast`.
 - **Minimal & pythonic** — the high-level abstractions without the implementation bulk;
@@ -79,9 +84,11 @@ Taskset examples (the `*_v1` packages under `environments/`):
 | `code-golf-v1` | group rewards (`@group_reward` over a task's N rollouts) |
 | `alphabet-sort-v1` | a multi-turn, stateful task driven by a `vf.User` simulator |
 | `glossary-v1` | a custom **colocated** tool server |
-| `wiki-search-v1` | a **shared** tool server (built once for the eval) + an LLM judge |
+| `wiki-search-v1` | a **shared** tool server (lazily built once per run) + a `vf.Judge` reward |
 | `deepwiki-v1` | an **existing remote** tool server, by URL |
 | `wordle-v1` | configuring the vendored `textarena` integration |
+| `proposer-solver-v1` | a multi-agent **topology**: proposer → n solvers (fan-out), deferred rewards |
+| `writer-editors-v1` | a multi-agent **topology**: rounds + fan-in (writer → n editors → revision), one `vf.Judge` verdict rewarding every trace |
 
 Harness examples (under `environments/`):
 
@@ -129,9 +136,33 @@ uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sand
 The framework manages each runtime's full lifecycle — provisioning through
 guaranteed cleanup of its resources, even on exit/interrupt.
 
+### Multi-agent topologies
+
+A *topology* composes episodes — one agent consuming one task and producing one trace — into
+a multi-agent interaction, as plain imperative code (`go`): loops are rounds, gathers are
+fan-out. An agent is pure routing (harness × model/client), so a non-trainable judge can run
+a stronger model on a plain relay while the solver trains; tasks — carrying their own rewards
+and hooks — are minted by the seed factory (`--topology.taskset.id`) or in `go` itself. Each
+instance persists as one *agent graph* record: parent-linked traces, nested.
+
+```bash
+# any taskset, LLM-judged: solver → judge, verdict lands on the solver's trace
+# (the judge is fixed to the in-process `direct` harness — an episode ≈ one API call)
+uv run eval --topology.id llm-judge --topology.taskset.id gsm8k-v1 -n 4
+# judge as a real agent: the solver's whole trace is uploaded into the judge's runtime
+# and the judge (bash+edit `default` harness, configurable) investigates it with tools
+uv run eval --topology.id agentic-judge --topology.taskset.id gsm8k-v1 \
+  --topology.judge.model deepseek/deepseek-v4 -n 4
+# proposer writes questions, n solvers race them, proposer scored by their pass rate
+uv run eval --topology.id proposer-solver-v1 -n 3
+# rounds + fan-in: writer drafts, n editors critique, the writer revises; one judge call
+# compares first draft to final and the same reward lands on every trace
+uv run eval --topology.id writer-editors-v1 -n 3
+```
+
 ### Tools
 
-A taskset may expose task-specific tools beyond the tools shipping natively with
+A task may expose its own tools (`Task.load_tools`); placement is the taskset's `tools` config knob, so it stays CLI-tunable. Tools go beyond the tools shipping natively with
 the harness as MCP servers. Its placement (separate runtime or colocated with
 harness) is configurable on `taskset.tools` and reachability is handled resolved
 automatically. Tools only run under a harness with `SUPPORTS_MCP` (the `default`
@@ -139,7 +170,7 @@ harness has it; `rlm` doesn't) — an incompatible pairing is refused at load. T
 each show one placement:
 
 ```bash
-uv run eval glossary-v1 -n 1     # colocated — in the harness's own runtime, localhost (default)
+uv run eval glossary-v1 -n 1     # own host runtime (the default placement)
 uv run eval wiki-search-v1 -n 1  # shared — one instance built once for the whole eval
 uv run eval deepwiki-v1 -n 1     # an existing remote server, by URL
 ```

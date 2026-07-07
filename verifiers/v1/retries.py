@@ -108,9 +108,10 @@ async def run_with_retry(
     retry: RolloutRetryConfig,
 ) -> Trace:
     """Run the whole rollout, retrying it while its trace ends with a retryable error.
-    Each retry-causing attempt's error is collected onto the returned trace's `errors`,
-    so the final trace shows the full history; the last attempt's trace is returned
-    as-is once attempts run out (or the rollout succeeds / hits a non-retryable error)."""
+    When the final attempt also fails, the earlier attempts' errors are prepended to the
+    returned trace's `errors` (the full failure history); when it succeeds, they are
+    parked in `trace.info["retry_errors"]` instead — the trace must not read as errored
+    (`has_error`) downstream just because an earlier attempt was retried away."""
     if retry.max_retries < 1:
         return await rollout.run()
 
@@ -138,4 +139,8 @@ async def run_with_retry(
     trace = await retrying(rollout.run)
     if trace.errors:  # final attempt errored too → prepend the earlier attempts'
         trace.errors = history + trace.errors
+    elif (
+        history
+    ):  # success after retries → keep the history without tripping `has_error`
+        trace.info["retry_errors"] = [error.model_dump() for error in history]
     return trace

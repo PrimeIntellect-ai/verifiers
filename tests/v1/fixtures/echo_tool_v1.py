@@ -1,6 +1,6 @@
 """echo (v1, MCP tool): retrieve a stamped echo from a `vf.Toolset`, then report it.
 
-The v1 tool fixture for the e2e matrix. The taskset declares an `EchoToolset` (`vf.Toolset`)
+The v1 tool fixture for the e2e matrix. The task declares an `EchoToolset` (`vf.Toolset`)
 with one `@vf.tool` method whose placement is CLI-tunable (`--taskset.tools.colocated`,
 `--taskset.tools.shared`, `--taskset.tools.runtime.type`): it runs colocated in the harness's
 runtime, shared once per eval, or in its own runtime, and the harness must reach it wherever it
@@ -25,7 +25,18 @@ class EchoToolset(vf.Toolset[vf.ToolsetConfig]):
 
 
 class EchoToolTask(vf.Task):
-    pass
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    """Placement for the echo tool server (from the taskset's `tools` knob)."""
+
+    def load_tools(self) -> list[vf.Toolset]:
+        return [EchoToolset(self.tools)]
+
+    @vf.reward(weight=1.0)
+    async def echoed(self, trace: vf.Trace) -> float:
+        # The stamped token reaches the answer only if the model called the MCP tool.
+        last = trace.assistant_messages[-1].content if trace.assistant_messages else ""
+        last = (last or "").lower()
+        return float(PHRASE in last and ECHO_TOKEN in last)
 
 
 class EchoToolConfig(vf.TasksetConfig):
@@ -41,20 +52,9 @@ class EchoToolTaskset(vf.Taskset[EchoToolTask, EchoToolConfig]):
                     f'Call the `echo_back` tool with the message "{PHRASE}", then reply '
                     "with exactly what it returns inside <answer></answer> tags."
                 ),
+                tools=self.config.tools,
             )
         ]
-
-    def tools(self, task: EchoToolTask) -> list[vf.Toolset]:
-        return [EchoToolset(self.config.tools)]
-
-    @vf.reward(weight=1.0)
-    async def echoed(
-        self, task: EchoToolTask, trace: vf.Trace, runtime: vf.Runtime
-    ) -> float:
-        # The stamped token reaches the answer only if the model called the MCP tool.
-        last = trace.assistant_messages[-1].content if trace.assistant_messages else ""
-        last = (last or "").lower()
-        return float(PHRASE in last and ECHO_TOKEN in last)
 
 
 __all__ = ["EchoToolTaskset"]

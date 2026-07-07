@@ -10,9 +10,10 @@ from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.dashboard import dashboard
-from verifiers.v1.cli.output import append_trace, output_path, save_config
-from verifiers.v1.decorators import discover_decorated
+from verifiers.v1.cli.output import append_graph, append_trace, output_path, save_config
 from verifiers.v1.env import Environment
+from verifiers.v1.episode import requires_group_scoring
+from verifiers.v1.topology import TopologyRunner
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -40,9 +41,9 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # durable mid-run, not only at the end). On resume, keep the saved config + good traces and
     # run only the owed rollouts. One lock serializes worker-thread appends from concurrent
     # rollouts while keeping large trace serialization off the event loop.
-    owed: dict[str, int] | None = None
+    owed: dict[int, int] | None = None
     if config.resume is not None:
-        group = bool(discover_decorated(env.taskset, "group_reward"))
+        group = requires_group_scoring(tasks)
         keep, owed = resume.plan(
             out, [t.idx for t in tasks], config.num_rollouts, group
         )
@@ -73,11 +74,11 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     async def on_complete(trace: Trace) -> None:
         await append_trace(out, trace, write_lock)
 
-    # Shared tool servers (if any) come up once here and their URLs flow into every rollout
-    # (non-shared ones start per rollout inside the episodes); the interception pool comes up
-    # here too, so concurrent rollouts share its servers + tunnels rather than one each. Build
-    # episodes inside `serving` so each rollout is wired to those resources at construction.
-    async with env.serving(tasks):
+    # The serving resources — the lazy shared tool-server registry and the interception
+    # pool — come up once here, so concurrent rollouts share servers + tunnels rather than
+    # one each. Build episodes inside `serving` so each rollout is wired to those resources
+    # at construction.
+    async with env.serving():
         episodes = [
             env.episode(task, ctx, n=owed[task.idx] if owed else config.num_rollouts)
             for task in tasks
@@ -93,6 +94,49 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
                 *(episode.run(semaphore, on_complete) for episode in episodes)
             )
     traces = [trace for episode_traces in results for trace in episode_traces]
+    await client.close()
+    return traces
+
+
+async def run_topology_eval(env: TopologyRunner, config: EvalConfig) -> list[Trace]:
+    """The topology counterpart of `run_eval`: one topology instance (`go`) per seed task ×
+    `num_rollouts`, all instances concurrent, with the shared semaphore still bounding
+    total rollouts in flight (episodes across instances and agents). An instance's traces
+    persist together once the instance finishes — deferred (backward-arrow) rewards are
+    recorded onto upstream traces during the instance, so nothing may land earlier."""
+    logger.info("eval config:\n%s", config.model_dump_json(indent=2))
+    client = resolve_client(config.client)
+    tasks = env.topology.load_tasks()
+    if config.shuffle:
+        random.Random(_SHUFFLE_SEED).shuffle(tasks)
+    tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
+    ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
+    semaphore = (
+        asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+    )
+    out = output_path(config)
+    save_config(config, out)
+    logger.info(
+        "running %dx%d topology instance(s) of %s on %s",
+        len(tasks),
+        config.num_rollouts,
+        env.topology.config.id,
+        config.model,
+    )
+    logger.info("results: %s", out)
+    write_lock = asyncio.Lock()
+
+    async def run_instance(task) -> list[Trace]:
+        graph = await env.run_instance(task, semaphore)
+        await append_graph(out, graph, write_lock)
+        return graph.traces
+
+    async with env.serving(ctx):
+        instances = [
+            run_instance(task) for task in tasks for _ in range(config.num_rollouts)
+        ]
+        results = await asyncio.gather(*instances)
+    traces = [trace for instance_traces in results for trace in instance_traces]
     await client.close()
     return traces
 
