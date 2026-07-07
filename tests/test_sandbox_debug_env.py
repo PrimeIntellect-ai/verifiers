@@ -33,12 +33,13 @@ def test_swe_debug_env_is_deprecated_subclass_not_alias():
     assert issubclass(SWEDebugEnv, SandboxDebugEnv)
     assert SandboxDebugRubric.__name__ == "SandboxDebugRubric"
 
-    with pytest.warns(DeprecationWarning, match="use SandboxDebugEnv"):
+    with pytest.warns(DeprecationWarning, match="native v1 `debug` CLI") as warnings:
         env = SWEDebugEnv(
             DummySandboxTaskSet(),
             debug_step="command",
             debug_command="true",
         )
 
+    assert len(warnings) == 1
     assert isinstance(env, SandboxDebugEnv)
     assert env.labels == ["sandbox-debug"]

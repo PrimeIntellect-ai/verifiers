@@ -32,7 +32,7 @@ from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1 import graph
@@ -129,7 +129,7 @@ class RolloutSession:
     checked before each turn, and (optionally) a user simulator the rollout sets before the
     harness runs."""
 
-    ctx: RolloutContext
+    ctx: ModelContext
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
@@ -543,7 +543,7 @@ class InterceptionServer:
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
             result = await session.ctx.client.relay_aux(
-                dialect, route, await request.json()
+                dialect, route, await request.json(), headers=request.headers
             )
         except RolloutError as e:
             # An aux call isn't a model turn, so don't clobber a pending turn error.

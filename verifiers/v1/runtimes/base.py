@@ -20,6 +20,7 @@ from pathlib import PurePosixPath
 from typing import ClassVar, TypeVar
 
 from verifiers.v1.retries import retrying
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +77,12 @@ def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
     return head, 1
 
 
-# `stop()` frees a runtime's external resource on the normal path (the rollout's `finally`).
-# A Ctrl-C / SIGTERM can cancel that `finally` mid-teardown, so runtimes are tracked in
-# `_LIVE` and freed by a *synchronous* `atexit` hook (`cleanup`) — sync because the event
-# loop is gone at interpreter shutdown. SIGKILL runs none of this.
+# `stop()` frees a runtime's external resource on the normal path (the rollout's `finally`),
+# shielded so a Ctrl-C / SIGTERM task cancellation can't cut it short. A second Ctrl-C
+# raises KeyboardInterrupt out of the event loop itself — no task-level shield survives
+# that — so runtimes are also tracked in `_LIVE` and freed by a *synchronous* `atexit`
+# hook (`cleanup`), sync because the loop is gone at interpreter shutdown. SIGKILL runs
+# none of this.
 _LIVE: "weakref.WeakSet[Runtime]" = weakref.WeakSet()
 _atexit_armed = False
 
@@ -140,8 +143,19 @@ class Runtime(ABC):
         host port into a URL the program can reach."""
 
     async def stop(self) -> None:
-        """Free the provisioned resource on the normal path, off the event loop. Override
-        only for teardown that must be async (e.g. a remote API call)."""
+        """Free the provisioned resource on the normal path (the owner's `finally`),
+        shielded from cancellation: a Ctrl-C / SIGTERM cancels that `finally` mid-await,
+        and an interrupted teardown leaks the container / paid sandbox. Runs `teardown`
+        to completion, then re-raises the cancellation. Framework method — override
+        `teardown`, not this."""
+        await run_shielded(self.teardown())
+
+    async def teardown(self) -> None:
+        """Free the provisioned resource, off the event loop. Override only for teardown
+        that must be async (e.g. a remote API call); `stop` shields it from cancellation.
+        Best-effort and idempotent, like `cleanup`. An override must not consume state
+        `cleanup` keys off before its first await: if the event loop dies mid-teardown
+        (second Ctrl-C), the atexit backstop must still find the resource."""
         await asyncio.to_thread(self.cleanup)
 
     def cleanup(self) -> None:
@@ -325,18 +339,10 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
     try:
         yield url
     finally:
-        # Delay cancellation until the synchronous stop has finished.
-        cancelled = None
-        stop_task = asyncio.create_task(asyncio.to_thread(tunnel.sync_stop))
+        # Run the synchronous stop to completion even under cancellation (`run_shielded`
+        # re-raises the cancellation after); tunnel-stop failures are best-effort.
         with contextlib.suppress(Exception):
-            while not stop_task.done():
-                try:
-                    await asyncio.shield(stop_task)
-                except asyncio.CancelledError as e:
-                    cancelled = e
-            stop_task.result()
-        if cancelled is not None:
-            raise cancelled
+            await run_shielded(asyncio.to_thread(tunnel.sync_stop))
 
 
 class _Host:

@@ -6,7 +6,7 @@ import logging
 import random
 import time
 
-from verifiers.v1.clients import RolloutContext, resolve_client
+from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.dashboard import dashboard
@@ -29,7 +29,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     if config.shuffle:
         random.Random(_SHUFFLE_SEED).shuffle(tasks)
     tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
-    ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
+    ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.
     semaphore = (

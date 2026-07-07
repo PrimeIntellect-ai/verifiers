@@ -122,10 +122,10 @@ This will clone and install the `prime-rl` trainer and its dependencies. For con
 
 Basic usage mirrors `prime eval run`:
 ```bash
-prime gepa run wiki-search-v1 --model google/gemini-3-flash-preview
+prime gepa run wiki-search --model google/gemini-3-flash-preview
 ```
 
-This will optimize the system prompt for the `wiki-search-v1` environment using the specified model for both evaluation rollouts and reflection. Results are saved to `environments/wiki_search_v1/outputs/gepa/`.
+This will optimize the system prompt for the `wiki-search` environment using the specified model for both evaluation rollouts and reflection. Results are saved to `environments/wiki-search/outputs/gepa/`.
 
 Key options:
 - `--model` / `-m`: Model for evaluation rollouts

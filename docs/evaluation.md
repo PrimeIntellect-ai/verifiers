@@ -216,7 +216,7 @@ client translate them for the selected provider.
 |------|-------|---------|-------------|
 | `--num-examples` | `-n` | 5 | Number of dataset examples to evaluate |
 | `--rollouts-per-example` | `-r` | 3 | Rollouts per example (for pass@k, variance) |
-| `--shuffle` | `-s` | false | Shuffle the evaluation dataset before selecting examples |
+| `--shuffle` | — | false | Shuffle the evaluation dataset before selecting examples |
 | `--shuffle-seed` | — | 0 when shuffled | Seed used with `--shuffle` |
 
 Multiple rollouts per example enable metrics like pass@k and help measure variance. The total number of rollouts is `num_examples × rollouts_per_example`.
@@ -241,20 +241,29 @@ The `--max-retries` flag enables automatic retry with exponential backoff when r
 
 The `--num-workers` flag controls how many worker processes the env server spawns. Each worker owns its own environment instance and runs rollouts independently. The default `auto` scales with concurrency.
 
+### Display
+
+When evaluating multiple environments, the display shows an overview panel at the top with a compact status line per environment, and a detail panel below with full progress, metrics, and logs for one environment at a time. Use the **left/right arrow keys** to switch between environments. The overview scrolls to keep the selected environment visible and is capped at half the terminal height.
+
+When an eval runs against a Prime Inference endpoint and the model id has pricing available from `prime inference models`, token usage rows also show the estimated total USD cost as `cost (all)`. Cost appears after the final input/output token metrics in the live display and in the final summary. If pricing or token usage is unavailable, the cost field is omitted.
+
 ### Output and Saving
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--verbose` | `-v` | false | Enable debug logging |
+| `--fullscreen` | `-f` | false | Use alternate screen buffer (fullscreen) for the Rich display |
+| `--disable-tui` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
 | `--abbreviated-summary` | `-A` | false | Abbreviated summary: show settings and stats, skip example prompts |
 | `--output-dir` | `-o` | — | Custom output directory for evaluation results and logs |
+| `--save-results` | `-s` | false | Save results to disk |
 | `--resume [PATH]` | `-R` | — | Resume from a previous run (auto-detect latest matching incomplete run if PATH omitted) |
 | `--state-columns` | `-C` | — | Extra state columns to save (comma-separated) |
 | `--save-to-hf-hub` | `-H` | false | Push results to Hugging Face Hub |
 | `--hf-hub-dataset-name` | `-D` | — | Dataset name for HF Hub |
 | `--heartbeat-url` | — | — | Heartbeat URL for uptime monitoring |
 
-Results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`. Use `--output-dir` to override the base output directory — when set, results (and logs) are saved under `{output_dir}/evals/{env_id}--{model}/{run_id}/` instead. The directory contains:
+By default, results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`. Use `--output-dir` to override the base output directory — when set, results (and logs) are saved under `{output_dir}/evals/{env_id}--{model}/{run_id}/` instead. The directory contains:
 
 - `results.jsonl` — rollout outputs, one per line
 - `metadata.json` — evaluation configuration and aggregate metrics
@@ -263,20 +272,20 @@ When Prime Inference pricing is available for the evaluated model, `metadata.jso
 
 ### Resuming Evaluations
 
-Long-running evaluations can be interrupted and resumed using checkpointing. Results are saved incrementally after each completed group of rollouts. Use `--resume` to continue from where you left off. Pass a path to resume a specific run, or omit the path to auto-detect the latest incomplete matching run.
+Long-running evaluations can be interrupted and resumed using checkpointing. When `--save-results` is enabled, results are saved incrementally after each completed group of rollouts. Use `--resume` to continue from where you left off. Pass a path to resume a specific run, or omit the path to auto-detect the latest incomplete matching run.
 
 **Running with checkpoints:**
 
 ```bash
-prime eval run my-env -n 1000
+prime eval run my-env -n 1000 -s
 ```
 
-Partial results are written to disk after each group completes. If the evaluation is interrupted, the output directory will contain all completed rollouts up until the interruption.
+With `-s` (save results) enabled, partial results are written to disk after each group completes. If the evaluation is interrupted, the output directory will contain all completed rollouts up until the interruption.
 
 **Resuming from a checkpoint:**
 
 ```bash
-prime eval run my-env -n 1000 --resume ./environments/my_env/outputs/evals/my-env--openai--gpt-4.1-mini/abc12345
+prime eval run my-env -n 1000 -s --resume ./environments/my_env/outputs/evals/my-env--openai--gpt-4.1-mini/abc12345
 ```
 
 When a resume path is provided, it must point to a valid evaluation results directory containing both `results.jsonl` and `metadata.json`. With `--resume` and no path, verifiers scans the environment/model output directory and picks the most recent incomplete run matching `env_id`, `model`, `rollouts_per_example`, `shuffle`, and `shuffle_seed` where saved `num_examples` is less than or equal to the current run. When resuming:
@@ -296,20 +305,20 @@ When resuming, the current run configuration should match the original run. Mism
 
 ```bash
 # Start a large evaluation with checkpointing
-prime eval run math-python -n 500 -r 3
+prime eval run math-python -n 500 -r 3 -s
 
 # If interrupted, find the run directory
 ls ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/
 
 # Resume from the checkpoint
-prime eval run math-python -n 500 -r 3 \
+prime eval run math-python -n 500 -r 3 -s \
   --resume ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/abc12345
 ```
 
 The `--state-columns` flag allows saving environment-specific state fields that your environment stores during rollouts:
 
 ```bash
-prime eval run my-env -C "judge_response,parsed_answer"
+prime eval run my-env -s -C "judge_response,parsed_answer"
 ```
 
 ## Environment Defaults
