@@ -4,8 +4,8 @@ Task:
 ```
 {question}
 ```
-{reference}
-Response:
+
+{reference}Response:
 ```
 {response}
 ```
