@@ -62,8 +62,8 @@ def proposed_task(proposer_trace: vf.Trace) -> ProposedTask:
 
 
 async def main() -> None:
-    proposer = vf.Agent("default", vf.make_context("openai/gpt-5.4-mini"))
-    solver = vf.Agent("default", vf.make_context("z-ai/glm-5.2"))
+    proposer = vf.Agent("default", "openai/gpt-5.4-mini")
+    solver = vf.Agent("default", "z-ai/glm-5.2")
     taskset = SolveTaskset(vf.TasksetConfig())
 
     async with proposer, solver:

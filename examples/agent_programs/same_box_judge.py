@@ -49,8 +49,8 @@ def judge_task(solver_trace: vf.Trace) -> vf.Task:
 
 async def main() -> None:
     sandbox = vf.PrimeConfig(labels=["agent-programs-demo"])
-    solver = vf.Agent("bash", vf.make_context("z-ai/glm-5.2"), sandbox)
-    judge = vf.Agent("bash", vf.make_context("openai/gpt-5.4-mini"), sandbox)
+    solver = vf.Agent("bash", "z-ai/glm-5.2", sandbox)
+    judge = vf.Agent("bash", "openai/gpt-5.4-mini", sandbox)
 
     task = vf.Task(idx=0, prompt=SOLVER_PROMPT)
     async with solver.provision(task) as box:

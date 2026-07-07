@@ -7,7 +7,7 @@ import verifiers.v1 as vf
 
 
 async def main() -> None:
-    solver = vf.Agent("default", vf.make_context("z-ai/glm-5.2"))
+    solver = vf.Agent("default", "z-ai/glm-5.2")
     task = vf.Task(idx=0, prompt="What is 2+2? Answer with just the number.")
     async with solver:
         trace = await solver.run(task)

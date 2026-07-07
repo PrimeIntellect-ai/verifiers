@@ -38,7 +38,7 @@ class WorldTaskset(vf.Taskset[vf.Task, vf.TasksetConfig]):
 async def main() -> None:
     agent = vf.Agent(
         "mini-swe-agent",
-        vf.make_context("z-ai/glm-5.2"),
+        "z-ai/glm-5.2",
         vf.PrimeConfig(labels=["agent-programs-demo"]),
         timeout=vf.TimeoutConfig(rollout=420),
     )
