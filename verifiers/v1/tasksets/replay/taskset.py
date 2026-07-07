@@ -1,7 +1,7 @@
 """replay — re-enter saved rollouts as fresh tasks: continue them mid-way, or recheck them.
 
 Loads rollout records (``Trace.to_record()`` JSONL lines, as prime-rl writes to
-``<output_dir>/rollouts/step_*/*_rollouts.jsonl``) and turns each into a task that re-enters the
+``<output_dir>/rollouts/step_*/*_rollouts*.jsonl``) and turns each into a task that re-enters the
 original task from a resume point. The ``source`` taskset — the one the records came from — is
 loaded by id and provides everything but the seed: tools, user simulator, setup/finalize, and
 scoring, so a new completion is judged by the original env's own verifier. Each replayed task
@@ -85,7 +85,7 @@ class ReplayConfig(TasksetConfig):
 
     records: str | list[str] = []
     """Glob pattern(s) of rollout record files — ``Trace.to_record()`` JSONL lines, e.g.
-    ``"<output_dir>/rollouts/step_*/train_rollouts.jsonl"``. Required, and followed: the globs
+    ``"<output_dir>/rollouts/step_*/train_rollouts_<env>.jsonl"``. Required, and followed: the globs
     are re-expanded whenever the env server refreshes, and tasks from new files are appended —
     so pointing at the *current* run's own records replays them online as they appear (empty at
     startup is fine). Loading is append-only and file order is numeric-aware, which keeps task

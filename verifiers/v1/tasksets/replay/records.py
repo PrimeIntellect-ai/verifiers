@@ -1,7 +1,7 @@
 """Turn saved rollout records back into resume points.
 
 A record is one ``Trace.to_record()`` JSONL line (prime-rl writes them to
-``<output_dir>/rollouts/step_*/*_rollouts.jsonl``). Everything here is a pure function of the
+``<output_dir>/rollouts/step_*/*_rollouts*.jsonl``). Everything here is a pure function of the
 reloaded trace: pick a resume point, slice the conversation up to it, and hand back a ``Seed`` —
 the new task's prompt plus enough metadata to filter, label, and restore it. The taskset
 assembles seeds into tasks; nothing here touches config or I/O beyond line iteration.
