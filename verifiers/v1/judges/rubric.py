@@ -60,8 +60,8 @@ JSON_SUFFIX = (
     '{"verdicts": [{"name": "<criterion name>", "reason": "<one sentence citing specific '
     'evidence from the response>", "verdict": "<answer>"}, ...]}\n'
     "with one entry per criterion, using each criterion's exact name. For each, first write the "
-    'one-sentence reason grounded in the response, then the verdict: "yes" or "no", or — for a '
-    "criterion that lists allowed answers — exactly one of those answers."
+    "one-sentence reason grounded in the response, then set verdict to exactly one of the options "
+    "listed in parentheses after that criterion."
 )
 
 
@@ -125,6 +125,11 @@ class RubricJudgeConfig(JudgeConfig):
     question_field: str = ""
     """Task field to fill the prompt's `{question}`; empty = the task's prompt rendered as
     text (`Task.prompt_text`)."""
+    answer_field: str = ""
+    """Optional task field holding a reference answer (e.g. a gold patch) to show the judge, like
+    the reference judge. Empty (default) shows none — `{reference}` renders blank. A list-valued
+    field is joined one item per line. Needs `{reference}` in the prompt (the built-in `rubric.txt`
+    has it)."""
     view: JudgeView = "full_trace"
     """How much of the rollout fills `{response}` (see `JudgeView`). Defaults to the whole
     transcript — rubric criteria typically grade the process (tool use, citations,
@@ -215,16 +220,33 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
 
         def render(
             c: Criterion,
-        ) -> str:  # show non-default choices inline so the judge can pick
-            line = f"- {c.name}: {c.text}"
-            if c.choices != ["yes", "no"]:
-                line += f" (answer one of, best to worst: {', '.join(c.choices)})"
-            return line
+        ) -> str:  # every criterion states its own allowed answers inline
+            opts = (
+                "yes or no"
+                if c.choices == ["yes", "no"]
+                else "one of, best to worst: " + ", ".join(c.choices)
+            )
+            return f"- {c.name}: {c.text} (answer {opts})"
+
+        reference = ""  # optional gold answer shown to the judge; blank unless `answer_field` set
+        if self.config.answer_field:
+            answer = getattr(task, self.config.answer_field, None)
+            if answer is None:
+                raise ValueError(
+                    f"rubric judge found no {self.config.answer_field!r} field on the task; "
+                    "point `answer_field` at the task's reference-answer field or leave it empty"
+                )
+            if isinstance(answer, (list, tuple)):
+                answer = "\n".join(str(item) for item in answer)
+            reference = (
+                f"\nReference solution (the task's gold answer):\n```\n{answer}\n```\n"
+            )
 
         fields = dict(
             question=judge_question(task, self.config.question_field),
             response=judge_response(trace, self.config.view),
             criteria="\n".join(render(c) for c in batch),
+            reference=reference,
         )
         if self.config.structured_output:
             result = await self.evaluate(trace=trace, **fields)
