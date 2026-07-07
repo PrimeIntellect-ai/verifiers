@@ -93,14 +93,21 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 st.state, st.detail, st.end = "skipped", "rollout errored", time.time()
             else:
                 st.state = "running"
-                # Clear prior scores so a changed/removed judge leaves no stale (double-summed) entry.
+                prior_rewards = dict(trace.rewards)
+                prior_metrics = dict(trace.metrics)
+                # Clear before re-scoring so recomputed keys replace prior values without warning.
+                # Keys that offline scoring skips (runtime-dependent signals) are restored below.
                 if isinstance(trace.info, dict):
                     trace.info.pop("judge", None)
                 trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
                 try:
                     await taskset.score(trace)
+                    trace.rewards = {**prior_rewards, **trace.rewards}
+                    trace.metrics = {**prior_metrics, **trace.metrics}
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
+                    trace.rewards = {**prior_rewards, **trace.rewards}
+                    trace.metrics = {**prior_metrics, **trace.metrics}
                     st.state, st.detail = "error", type(exc).__name__
                     trace.capture_error(
                         exc
