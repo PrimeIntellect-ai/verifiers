@@ -30,6 +30,7 @@ from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.env import EnvConfig, Environment
+from verifiers.v1.task import Task
 from verifiers.v1.serve.types import (
     BaseResponse,
     HealthResponse,
@@ -115,16 +116,28 @@ class EnvServer:
         legacy v0 bridge overrides this (it runs its own rollouts, with no v1 serving)."""
         return self.env.serving(self.tasks)
 
+    def _task(self, task_idx: int) -> Task:
+        """Resolve a task index, refreshing a growing taskset when the index is beyond this
+        worker's list (append-only reloads keep indices aligned across pool workers)."""
+        if task_idx >= len(self.tasks):
+            self._refresh_tasks()
+        return self.tasks[task_idx]
+
+    def _refresh_tasks(self) -> None:
+        tasks = self.env.taskset.reload_tasks()
+        if tasks is not None:
+            self.tasks = tasks
+
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=1)
+        episode = self.env.episode(self._task(req.task_idx), ctx, n=1)
         traces = await episode.run()
         # Trust the concrete trace; serialize it once before client-side re-typing.
         return RunRolloutResponse.model_construct(trace=traces[0])
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        episode = self.env.episode(self.tasks[req.task_idx], ctx, n=req.n)
+        episode = self.env.episode(self._task(req.task_idx), ctx, n=req.n)
         traces = await episode.run()
         # Avoid a dump-and-validate copy for every trusted trace in the group.
         return RunGroupResponse.model_construct(traces=traces)
@@ -138,6 +151,7 @@ class EnvServer:
             if route == "health":
                 response: BaseResponse = HealthResponse()
             elif route == "info":
+                self._refresh_tasks()  # a growing taskset reports its current size
                 response = InfoResponse(
                     num_tasks=len(self.tasks),
                     requires_group_scoring=self.requires_group_scoring,

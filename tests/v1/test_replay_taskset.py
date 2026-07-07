@@ -287,7 +287,9 @@ def test_capabilities_state_and_typed_tasks_delegate_to_the_source(tmp_path):
     # Runs discovery on the source instance — would RecursionError if it were a property
     # (getmembers evaluates properties during the discovery walk).
     assert taskset.defines_group_rewards() is False
-    assert [stop.__name__ for stop in taskset.stops()] == ["single_turn"]  # the source's @stop
+    assert [stop.__name__ for stop in taskset.stops()] == [
+        "single_turn"
+    ]  # the source's @stop
     assert taskset.state_type() is vf.State
     tasks = taskset.load_tasks()
     assert isinstance(tasks[0], EchoTask) and tasks[0].answer == "ping"
@@ -303,3 +305,53 @@ def test_capabilities_state_and_typed_tasks_delegate_to_the_source(tmp_path):
     user_sim_replay = _replay_taskset(tmp_path, {"id": "echo-user-sim-v1"}, trace)
     assert user_sim_replay.defines_user is True
     assert user_sim_replay.state_type() is EchoUserSimState
+
+
+def test_follow_mode_appends_tasks_from_new_record_files(tmp_path):
+    from echo_v1 import EchoTask
+
+    def record(idx: int, answer: str) -> str:
+        trace = vf.Trace(task=EchoTask(idx=idx, prompt=f"say {answer}", answer=answer))
+        graph.prepare_turn(
+            trace, [SYSTEM, vf.UserMessage(content=f"say {answer}")]
+        ).commit(_reply(_assistant(answer)))
+        return json.dumps(trace.to_record()) + "\n"
+
+    taskset = load_taskset(
+        taskset_config_type("replay").model_validate(
+            {
+                "id": "replay",
+                "records": str(tmp_path / "step_*" / "train_rollouts.jsonl"),
+                "mode": "recheck",
+                "follow": True,
+                "source": {"id": "echo-v1"},
+            }
+        )
+    )
+    assert (
+        taskset.load_tasks() == []
+    )  # empty at startup is fine: records appear with step 1
+
+    (tmp_path / "step_9").mkdir()
+    (tmp_path / "step_9" / "train_rollouts.jsonl").write_text(record(0, "ping"))
+    first = taskset.reload_tasks()
+    assert [t.answer for t in first] == ["ping"]
+
+    # step_10 sorts after step_9 (numeric-aware), and the reload appends without reindexing.
+    (tmp_path / "step_10").mkdir()
+    (tmp_path / "step_10" / "train_rollouts.jsonl").write_text(record(1, "pong"))
+    second = taskset.reload_tasks()
+    assert [(t.idx, t.answer) for t in second] == [(0, "ping"), (1, "pong")]
+    assert second[0] is first[0]  # already-served indices keep meaning the same task
+
+    # The replay env's own rollouts (replayed task names) never become new seeds.
+    replayed = second[1].model_copy(update={"name": "recheck:deadbeef"})
+    own = vf.Trace(task=replayed)
+    graph.prepare_turn(own, [SYSTEM, vf.UserMessage(content="say pong")]).commit(
+        _reply(_assistant("pong"))
+    )
+    (tmp_path / "step_11").mkdir()
+    (tmp_path / "step_11" / "train_rollouts.jsonl").write_text(
+        json.dumps(own.to_record()) + "\n"
+    )
+    assert len(taskset.reload_tasks()) == 2

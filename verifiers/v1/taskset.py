@@ -101,6 +101,13 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
     def load_tasks(self) -> list[TaskT]:
         raise NotImplementedError
 
+    def reload_tasks(self) -> list[TaskT] | None:
+        """Refresh the task list mid-serve, for tasksets whose backing source grows while a
+        run is live (e.g. `replay` in follow mode). None (the default) means static: tasks
+        load once at server startup. An implementation must be append-only — an index already
+        served keeps meaning the same task, since pool workers refresh independently."""
+        return None
+
     def tools(self, task: TaskT) -> list[Toolset]:
         """Tool servers exposing this task's tools to the model — `vf.Toolset`s (classes with
         `@vf.tool` methods), each carrying its `config` (placement / runtime; a remote `url`

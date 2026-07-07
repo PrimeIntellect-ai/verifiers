@@ -115,6 +115,13 @@ class ReplayConfig(TasksetConfig):
     carries token ids, else a chars/4 estimate). Unset admits every seed — but a seed near the
     trainer's ``seq_len`` leaves no room to sample, so set this for long-context sources."""
 
+    follow: bool = False
+    """Follow a growing records source (online self-replay): re-expand the globs and append
+    tasks from new files whenever the env server refreshes — point `records` at the *current*
+    run's own `rollouts/step_*/train_rollouts.jsonl`. Appends only, so task indices stay
+    stable across pool workers; empty at startup is fine (records appear with the first
+    steps). Off (default): the file set freezes at config validation and loads once."""
+
     seed: int = 0
     """Salt for the per-record draw of ``tool-call`` resume points (each record's draw is
     deterministic in this and the source trace id)."""
@@ -145,13 +152,18 @@ class ReplayConfig(TasksetConfig):
         # the records directory grows (an elastic pool spawns workers throughout the run).
         # No matches leaves the patterns untouched for `load_tasks` to fail on — the files may
         # not exist where the config is first validated (e.g. a dry run on another host).
-        matched = expand_records(self.records)
-        if matched:
-            self.records = matched
+        if not self.follow:
+            matched = expand_records(self.records)
+            if matched:
+                self.records = matched
         return self
 
 
 class ReplayTaskset(Taskset[Task, ReplayConfig]):
+    _tasks: list[Task] = []
+    _files_done: set[str] = set()
+    """Incremental-load state, created per instance on first `load_tasks` (the class defaults
+    only back a taskset inspected without loading): accumulated tasks + files already parsed."""
     _snapshots: dict[int, str] = {}
     """Task idx -> sandbox snapshot ref of its seed's anchor node; rebuilt by `load_tasks`
     (the class default only backs a taskset used without loading, e.g. in tests)."""
@@ -188,17 +200,28 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
 
     def load_tasks(self) -> list[Task]:
         paths = expand_records(self.config.records)
-        if not paths:
+        if not paths and not self.config.follow:
             raise ValueError(
                 f"replay `records` matched no files: {self.config.records}"
             )
         task_cls = task_type(self.config.source.id)
         trace_cls = Trace[task_cls]
 
-        tasks: list[Task] = []
-        self._snapshots: dict[int, str] = {}
-        skipped = {"foreign": 0, "empty": 0, "no_seed": 0, "overlong": 0}
-        for record in iter_records(Path(path) for path in paths):
+        # Incremental and append-only: only files not seen before are parsed, and new tasks
+        # extend the existing list — an index already served keeps meaning the same task, so
+        # `follow` reloads stay aligned across pool workers refreshing at different times.
+        if "_tasks" not in self.__dict__:  # first load on this instance
+            self._tasks, self._files_done, self._snapshots = [], set(), {}
+        new_paths = [path for path in paths if path not in self._files_done]
+        tasks = self._tasks
+        skipped = {"replayed": 0, "foreign": 0, "empty": 0, "no_seed": 0, "overlong": 0}
+        for record in iter_records(Path(path) for path in new_paths):
+            name = (record.get("task") or {}).get("name") or ""
+            if isinstance(name, str) and name.startswith(("continue:", "recheck:")):
+                skipped["replayed"] += (
+                    1  # this taskset's own output; don't compound seeds
+                )
+                continue
             # Filter another env's records on the task fields alone — full-trace validation
             # walks every node's token ids, far too much work to spend on a line we discard.
             try:
@@ -242,12 +265,18 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
                 f"{reason}={count}" for reason, count in skipped.items() if count
             ),
         )
-        if not tasks:
+        self._files_done.update(new_paths)
+        if not tasks and not self.config.follow:
             raise ValueError(
                 f"replay produced no tasks from {len(paths)} record files "
                 f"(skipped: {skipped}) — check `records`, `source.id`, and `mode`/`anchor`"
             )
         return tasks
+
+    def reload_tasks(self) -> list[Task] | None:
+        """In follow mode, pick up record files that appeared since the last load (see
+        `load_tasks` — incremental and append-only). Static otherwise."""
+        return self.load_tasks() if self.config.follow else None
 
     def seeds(self, trace: Trace) -> list[Seed]:
         """Every seed a source trace yields under the configured mode. The override point for

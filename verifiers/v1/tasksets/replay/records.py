@@ -17,6 +17,7 @@ builder drops anchors without a ref.
 """
 
 import json
+import re
 from collections.abc import Iterable, Iterator
 from glob import glob
 from pathlib import Path
@@ -49,14 +50,21 @@ class Seed(NamedTuple):
     snapshot: str | None = None
 
 
+def _natural(path: str) -> tuple:
+    """Sort key ordering embedded numbers numerically, so ``step_9`` sorts before ``step_10``."""
+    return tuple(
+        int(part) if part.isdigit() else part for part in re.split(r"(\d+)", path)
+    )
+
+
 def expand_records(records: str | list[str]) -> list[str]:
     """The sorted, deduplicated files a ``records`` value matches. The one shared expansion —
     config validation freezes with it and ``load_tasks`` re-runs it — so the two can't drift:
-    a stable file order is what keeps task indices identical across env-server pool workers."""
+    a stable file order (numeric-aware, so step dirs sort in step order) is what keeps task
+    indices identical across env-server pool workers."""
     patterns = [records] if isinstance(records, str) else records
-    return sorted(
-        {path for pattern in patterns for path in glob(pattern, recursive=True)}
-    )
+    matched = {path for pattern in patterns for path in glob(pattern, recursive=True)}
+    return sorted(matched, key=_natural)
 
 
 def iter_records(paths: Iterable[Path]) -> Iterator[dict]:
