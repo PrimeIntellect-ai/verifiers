@@ -543,7 +543,7 @@ class InterceptionServer:
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
             result = await session.ctx.client.relay_aux(
-                dialect, route, await request.json()
+                dialect, route, await request.json(), headers=request.headers
             )
         except RolloutError as e:
             # An aux call isn't a model turn, so don't clobber a pending turn error.
