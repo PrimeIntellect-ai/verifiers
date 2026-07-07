@@ -6,15 +6,14 @@ description: "Program over agents: one executable arrow, placement as a paramete
 ## The Agent
 
 An `Agent` is a reusable value: a **harness** (a concrete `Harness` object — the program
-that drives the model), a **rollout context** (the `RolloutContext` every rollout already
-carries: model + client + sampling), and a **runtime policy** (where a run's box comes
-from by default). It has one executable arrow:
+that drives the model), a **model context** (`ModelContext`: model + client + sampling),
+and a **runtime policy** (where a run's box comes from by default). It has one executable arrow:
 
 ```python
 import verifiers.v1 as vf
 from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
 
-ctx = vf.RolloutContext(
+ctx = vf.ModelContext(
     model="z-ai/glm-5.2", client=vf.resolve_client(vf.EvalClientConfig())
 )
 solver = vf.Agent(DefaultHarness(DefaultHarnessConfig()), ctx)
@@ -24,7 +23,7 @@ trace = await solver.run(vf.Task(idx=0, prompt="What is 2+2?"))
 Construction is fully explicit — the harness is an object you build, and the client is
 yours to build and **share**: agents on the same endpoint should share one `Client` (one
 connection pool). prime-rl hands agents its renderer client through the same
-`RolloutContext`.
+`ModelContext`.
 
 Every run is a standard `Rollout` — staged lifecycle, typed error attribution,
 token-true trace capture — so anything a program produces is evaluable and trainable.
@@ -35,7 +34,8 @@ Everything beyond the arrow is a parameter, not a concept:
 - **`runtime=`** places the run into a live box (borrowed — the run neither starts nor
   tears it down) instead of provisioning a fresh one. `agent.provision(task)` hands the
   program a box to place runs into.
-- **`model=` / `sampling=`** override the agent's context per run.
+- **`ctx=`** replaces the agent's model context per run
+  (`dataclasses.replace(agent.ctx, model=...)` for a judge sweeping models).
 
 Entered as an async context manager, an Agent owns an interception pool so concurrent
 runs share servers and tunnels (`async with agent: ...`); un-entered, each run brings up
@@ -54,8 +54,8 @@ its transcript:
 sandbox = vf.PrimeConfig()
 harness = DefaultHarness(DefaultHarnessConfig())
 client = vf.resolve_client(vf.EvalClientConfig())
-solver = vf.Agent(harness, vf.RolloutContext(model="z-ai/glm-5.2", client=client), sandbox)
-judge = vf.Agent(harness, vf.RolloutContext(model="openai/gpt-5.4-mini", client=client), sandbox)
+solver = vf.Agent(harness, vf.ModelContext(model="z-ai/glm-5.2", client=client), sandbox)
+judge = vf.Agent(harness, vf.ModelContext(model="openai/gpt-5.4-mini", client=client), sandbox)
 
 def judge_task(solver_trace: vf.Trace) -> vf.Task:
     return vf.Task(
@@ -68,6 +68,8 @@ def judge_task(solver_trace: vf.Trace) -> vf.Task:
         sources=(solver_trace.id,),
         relation="judges",
     )
+
+task = vf.Task(idx=0, prompt="Compute the sum of the first 100 primes into /app/answer.txt")
 
 async with solver.provision(task) as box:
     solver_trace = await solver.run(task, runtime=box)
@@ -99,10 +101,11 @@ traces = await asyncio.gather(*(solver.run(task, taskset=taskset) for _ in range
 ```
 
 Fan-out is plain `asyncio.gather` — each run gets its own fresh box, and the entered
-agent's interception pool keeps N concurrent runs cheap. There is deliberately no group
-primitive here: verifiers scores rollouts; grouping — and anything comparative across a
-group — belongs to the consumer (in training, prime-rl samples the group). The structure
-of a multi-agent program lives on the traces themselves, via the lineage stamps.
+agent's interception pool keeps N concurrent runs cheap. The Agent deliberately has no
+group verb: each run scores its rollout on its own, and comparing siblings — relative
+success, preference, advantages — belongs to whoever gathered the traces (in training,
+prime-rl samples the group). The structure of a multi-agent program lives on the traces
+themselves, via the lineage stamps.
 
 Reward/metric handlers are `async def` — a sync handler fails at scoring time.
 

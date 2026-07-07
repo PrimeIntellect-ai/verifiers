@@ -7,9 +7,9 @@
   4. the program reads the structure back off the lineage stamps
 
 Exercises: cross-model chaining, typed Task subclass, taskset-scored agent runs,
-concurrent fan-out on a pooled interception server. Note there is no group concept
-here: verifiers scores rollouts; grouping (and anything comparative across a group)
-belongs to the consumer — in training, prime-rl samples the group.
+concurrent fan-out on a pooled interception server. Note the Agent has no group verb:
+each solver run scores its rollout on its own, and anything comparative across the
+fan-out belongs to whoever gathered the traces — in training, prime-rl samples the group.
 """
 
 import asyncio
@@ -66,9 +66,9 @@ async def main() -> None:
     harness = DefaultHarness(DefaultHarnessConfig())
     client = vf.resolve_client(vf.EvalClientConfig())  # one endpoint, one shared client
     proposer = vf.Agent(
-        harness, vf.RolloutContext(model="openai/gpt-5.4-mini", client=client)
+        harness, vf.ModelContext(model="openai/gpt-5.4-mini", client=client)
     )
-    solver = vf.Agent(harness, vf.RolloutContext(model="z-ai/glm-5.2", client=client))
+    solver = vf.Agent(harness, vf.ModelContext(model="z-ai/glm-5.2", client=client))
     taskset = SolveTaskset(vf.TasksetConfig())
 
     async with proposer, solver:

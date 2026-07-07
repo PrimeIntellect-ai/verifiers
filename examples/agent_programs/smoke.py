@@ -8,7 +8,7 @@ from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
 
 
 async def main() -> None:
-    ctx = vf.RolloutContext(
+    ctx = vf.ModelContext(
         model="z-ai/glm-5.2", client=vf.resolve_client(vf.EvalClientConfig())
     )
     solver = vf.Agent(DefaultHarness(DefaultHarnessConfig()), ctx)

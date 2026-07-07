@@ -1,7 +1,7 @@
 """The Agent: a reusable (harness x model x runtime) value with one executable arrow.
 
-An `Agent` bundles WHO does the work — the harness (the program), the rollout context
-(model + client + sampling, the same `RolloutContext` every rollout already carries), and
+An `Agent` bundles WHO does the work — the harness (the program), the model context
+(model + client + sampling, the same `ModelContext` every rollout consumes), and
 a runtime policy (where a run's box comes from by default). `agent.run(task)` executes one
 rollout and returns its `Trace`. Everything else is a parameter, not a concept:
 
@@ -25,11 +25,10 @@ the five-tuple.
 
 import logging
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from typing import AsyncIterator
 
 from verifiers.v1.clients import (
-    RolloutContext,
+    ModelContext,
 )
 from verifiers.v1.env import TimeoutConfig, resolve_runtime_config
 from verifiers.v1.harness import Harness
@@ -45,7 +44,6 @@ from verifiers.v1.state import State
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Sampling
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +59,10 @@ class NullTaskset(Taskset[Task, TasksetConfig, State]):
     is the inherited no-op; `load_tasks` is never called (the program supplies the task)."""
 
 
+_NULL_TASKSET = NullTaskset(TasksetConfig())
+"""The shared no-judgement taskset behind every unscored `agent.run` (it is stateless)."""
+
+
 class Agent:
     """A harness + model context + runtime policy, runnable on any task.
 
@@ -68,8 +70,8 @@ class Agent:
     `DefaultHarness(DefaultHarnessConfig())`; harnesses are stateless, so one instance
     can back any number of agents. `load_harness(config)` resolves hub/local ids.
 
-    `ctx` is the `RolloutContext` every rollout already carries (model + client +
-    sampling) — an agent IS a model in a harness, bound at construction. The client is
+    `ctx` is the `ModelContext` (model + client + sampling) — an agent IS a model in
+    a harness, bound at construction. The client is
     yours to build (`resolve_client(EvalClientConfig())`) and to share: agents on the
     same endpoint should share one `Client` (one connection pool); prime-rl hands every
     agent its renderer client the same way.
@@ -83,7 +85,7 @@ class Agent:
     def __init__(
         self,
         harness: Harness,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         runtime: RuntimeConfig | None = None,
         *,
         limits: RolloutLimits | None = None,
@@ -98,19 +100,8 @@ class Agent:
         self.limits = limits or RolloutLimits()
         self.timeout = timeout or TimeoutConfig()
         self.multiplex = multiplex
-        self._taskset = NullTaskset(TasksetConfig())
         self._pool: InterceptionPool | None = None
         self._warned_resources: set[tuple[str, str]] = set()
-
-    @property
-    def fingerprint(self) -> dict:
-        """Who this agent is — stamped onto every trace it produces (`trace.info["agent"]`),
-        so a program's traces stay attributable after the Agent objects are gone."""
-        return {
-            "harness": self.harness.config.id,
-            "model": self.ctx.model,
-            "runtime": self.runtime_config.type,
-        }
 
     async def __aenter__(self) -> "Agent":
         self._pool = InterceptionPool(self.runtime_config, self.multiplex)
@@ -139,25 +130,21 @@ class Agent:
         *,
         taskset: Taskset | None = None,
         runtime: Runtime | None = None,
-        model: str | None = None,
-        sampling: Sampling | None = None,
+        ctx: ModelContext | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace.
 
         `taskset` attaches judgement (its world hooks + `@reward`/`@metric` run as in any
         eval); omitted, the run is unscored. `runtime` places the run into a live box
         (borrowed — not started or torn down here) instead of provisioning a fresh one
-        from the agent's runtime policy. `model`/`sampling` override the agent's context
-        for this run (e.g. a judge sweeping several models)."""
-        ctx = self.ctx
-        if model is not None:
-            ctx = replace(ctx, model=model)
-        if sampling is not None:
-            ctx = replace(ctx, sampling=sampling)
-        taskset = taskset if taskset is not None else self._taskset
+        from the agent's runtime policy. `ctx` replaces the agent's model context for
+        this run — `dataclasses.replace(agent.ctx, model=...)` for a judge sweeping
+        models."""
+        ctx = ctx if ctx is not None else self.ctx
+        taskset = taskset if taskset is not None else _NULL_TASKSET
         if runtime is not None:
             runtime_config = runtime.config
-            run_is_local = type(runtime).is_local
+            run_is_local = runtime.is_local
         else:
             runtime_config = resolve_runtime_config(
                 self.runtime_config, task, self._warned_resources
@@ -178,9 +165,11 @@ class Agent:
             runtime=runtime,
         )
         trace = await rollout.run()
+        # Who produced this trace — so a program's traces stay attributable after the
+        # Agent objects are gone. Resolved per run: overrides and the live box win.
         trace.info["agent"] = {
-            **self.fingerprint,
-            "model": ctx.model,  # per-run override wins over the agent default
+            "harness": self.harness.config.id,
+            "model": ctx.model,
             "runtime": {
                 "type": runtime_config.type,
                 "descriptor": rollout.runtime.descriptor if rollout.runtime else None,
