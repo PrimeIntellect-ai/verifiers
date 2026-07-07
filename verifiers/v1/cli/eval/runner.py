@@ -6,11 +6,11 @@ import logging
 import random
 import time
 
-from verifiers.v1.clients import RolloutContext, resolve_client
-from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.dashboard import dashboard
+from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.output import append_graph, append_trace, output_path, save_config
+from verifiers.v1.clients import ModelContext, resolve_client
+from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.env import Environment
 from verifiers.v1.episode import requires_group_scoring
 from verifiers.v1.topology import TopologyRunner
@@ -30,7 +30,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     if config.shuffle:
         random.Random(_SHUFFLE_SEED).shuffle(tasks)
     tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
-    ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
+    ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.
     semaphore = (
@@ -110,7 +110,7 @@ async def run_topology_eval(env: TopologyRunner, config: EvalConfig) -> list[Tra
     if config.shuffle:
         random.Random(_SHUFFLE_SEED).shuffle(tasks)
     tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
-    ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
+    ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
@@ -149,9 +149,9 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
     import multiprocessing as mp
     from functools import partial
 
-    from verifiers.v1.utils.logging import setup_logging
     from verifiers.v1.env import pool_serve_kwargs
     from verifiers.v1.serve import EnvClient, env_config_data, serve_env
+    from verifiers.v1.utils.logging import setup_logging
 
     legacy = config.is_legacy
     server_kwargs = (

@@ -210,7 +210,7 @@ the whole instance is done); `AgentGraph.load` reads one back with `WireTrace`-t
 The links themselves are plain `Trace` fields (`agent` / `parents` / `trainable`), so the
 graph also reconstructs from any flat trace dump (one instance = one connected component),
 and `graph.error` is the home for a crash in `go` itself. Per-agent routing reuses
-existing machinery: each agent gets its own `RolloutContext` (model/client/sampling overrides)
+existing machinery: each agent gets its own `ModelContext` (model/client/sampling overrides)
 and its own interception pool — a non-trainable judge relays to a plain API endpoint while
 the solver runs against the train client. Failures follow the rollout stance one level up: an
 episode failure is data on its trace; a crash in `go` itself is classified `TopologyError` and

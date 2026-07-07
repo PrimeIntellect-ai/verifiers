@@ -169,6 +169,8 @@ flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 vf-eval = "verifiers.scripts.eval:main"
 eval = "verifiers.v1.cli.eval.main:main"
 validate = "verifiers.v1.cli.validate:main"
+debug = "verifiers.v1.cli.debug:main"
+replay = "verifiers.v1.cli.replay:main"
 serve = "verifiers.v1.cli.serve:main"
 init = "verifiers.v1.cli.init:main"
 vf-gepa = "verifiers.scripts.gepa:main"

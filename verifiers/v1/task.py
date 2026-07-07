@@ -14,6 +14,7 @@ question and verifier in one typed object.
 """
 
 import asyncio
+import inspect
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, TypeVar
 
@@ -170,18 +171,28 @@ class Task(StrictBaseModel):
         records the reason (the raised error's message)."""
         return True
 
-    async def score(self, trace: "Trace", runtime: "Runtime") -> None:
+    async def score(self, trace: "Trace", runtime: "Runtime | None" = None) -> None:
         """Score one rollout: run all `@metric`, then `@reward` methods over its trace,
         concurrently within each phase. Each metric is recorded in `trace.metrics` (a
         number, or a mapping merged in); each reward (weighted — likewise a number or a
         mapping merged in) in `trace.rewards`, which `trace.reward` sums. Methods declare
         what they need — `task` (self), `trace`, `runtime` — so a reward is either a pure
         function of the trace or runs read/write/exec in that (still-live) runtime, e.g. a
-        verifier script."""
-        available = {"task": self, "trace": trace, "runtime": runtime}
+        verifier script. `runtime` may be None for offline replay; methods that require a
+        runtime are skipped, while trace-only methods still re-score."""
+        available = {"task": self, "trace": trace}
+        if runtime is not None:
+            available["runtime"] = runtime
+
+        def can_run(fn) -> bool:
+            if runtime is not None:
+                return True
+            param = inspect.signature(fn).parameters.get("runtime")
+            return param is None or param.default is not inspect.Parameter.empty
+
         async with boundary(TaskError, f"task {type(self).__name__} scoring"):
             for kind in ("metric", "reward"):
-                fns = discover_decorated(self, kind)
+                fns = [fn for fn in discover_decorated(self, kind) if can_run(fn)]
                 results = (
                     [await invoke(fn, available) for fn in fns]
                     if len(fns) < 2

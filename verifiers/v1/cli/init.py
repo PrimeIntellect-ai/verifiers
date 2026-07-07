@@ -209,7 +209,7 @@ class {prefix}Harness(vf.Harness[{prefix}HarnessConfig]):
 
     async def launch(
         self,
-        ctx: vf.RolloutContext,
+        ctx: vf.ModelContext,
         trace: vf.Trace,
         runtime: vf.Runtime,
         endpoint: str,

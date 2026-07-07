@@ -70,7 +70,7 @@ class JudgeConfig(BaseClientConfig):
     auto-config) from `BaseClientConfig`; adds the model and sampling. Subclass to add
     judge-specific fields."""
 
-    model: str = "deepseek/deepseek-v4-flash"
+    model: str = "openai/gpt-5.4-nano"
     sampling: JudgeSamplingConfig = JudgeSamplingConfig()
     prompt: str | None = None
     """Prompt-template override for `build_messages` (None = the judge class's own `prompt`),

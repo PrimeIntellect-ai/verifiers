@@ -226,9 +226,9 @@ class PrimeRuntime(Runtime):
             with contextlib.suppress(Exception):
                 SandboxClient(APIClient()).delete(self._sandbox_id)
 
-    async def stop(self) -> None:
-        # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs from the
-        # rollout's `finally`, so it fires on success, error, and cancellation.
+    async def teardown(self) -> None:
+        # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
+        # `stop`, shielded from cancellation, so it fires on success, error, and Ctrl-C.
         client, self._client = self._client, None  # `_client` is the idempotency guard
         if client is None:
             return

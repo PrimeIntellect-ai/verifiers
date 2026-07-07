@@ -19,7 +19,7 @@ import httpx
 from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
-from verifiers.v1.dialects import ChatDialect, Dialect
+from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, SamplingConfig
@@ -108,11 +108,11 @@ class EvalClient(Client):
     ) -> httpx.Headers:
         """Build provider headers from the intercepted request.
 
-        Preserve provider feature headers such as `openai-beta`, discard localhost auth and
-        transport framing, then apply endpoint-configured headers, session routing, and real
-        provider auth.
+        Preserve provider feature headers such as `openai-beta` / `anthropic-beta`,
+        discard localhost auth and transport framing, then apply endpoint-configured headers,
+        session routing, and real provider auth.
         """
-        headers = httpx.Headers(incoming if isinstance(dialect, ChatDialect) else None)
+        headers = httpx.Headers(incoming)
         connection = headers.pop("connection", "")
         for name in _BLOCKED_REQUEST_HEADERS | set(
             map(str.strip, connection.lower().split(","))
@@ -205,12 +205,18 @@ class EvalClient(Client):
             close=resp.aclose,
         )
 
-    async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
+    async def relay_aux(
+        self,
+        dialect: Dialect,
+        route: str,
+        body: dict,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict:
         # A side request (e.g. count_tokens): relay its native JSON and return the provider JSON.
         resp = await self._request(
             self.base_url + route,
             body,
-            self._headers(dialect, None, None),
+            self._headers(dialect, headers, None),
         )
         return from_json(resp.content)
 

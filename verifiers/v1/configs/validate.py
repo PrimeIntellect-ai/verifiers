@@ -1,6 +1,6 @@
 """The `ValidateConfig`: the single config object the validate CLI parses.
 
-Validation is per-task and model-free — it runs the taskset's `validate` hook (apply a gold
+Validation is per-task and model-free — it runs the task's `validate` hook (apply a gold
 solution, run a verifier) in a runtime, not a harness rollout. So the config carries just the
 taskset, the `runtime` its hook runs in (docker by default — a gold check often needs the
 task's declared container), the stage timeouts, and the run knobs. No harness, model, or
@@ -15,6 +15,17 @@ from verifiers.v1.runtimes import DockerConfig, RuntimeConfig
 from verifiers.v1.taskset import TasksetConfig
 
 
+class CheckTimeoutConfig(BaseConfig):
+    """Per-task wall-clock timeouts for the model-free check CLIs (validate/debug), in
+    seconds (None = no limit). The nested shape mirrors eval's `--timeout.*` flags."""
+
+    setup: float | None = None
+    """Max wall-clock for the task's `setup` hook per task."""
+    total: float | None = None
+    """Max wall-clock for the check itself per task — the `validate` hook, or the debug
+    command/script."""
+
+
 class ValidateConfig(BaseConfig):
     """A taskset plus how to validate it. The taskset is selected by `--taskset.id` (with a
     bare positional shorthand, `validate gsm8k-v1`); its fields stay typed and overridable
@@ -27,10 +38,15 @@ class ValidateConfig(BaseConfig):
     (subprocess), a gold check often needs the task's declared container; a SWE task overrides
     the image per task. Use `--runtime.type subprocess` for a check that needs no container —
     one that only reads task data or runs a uv-script verifier (e.g. gsm8k)."""
-    setup_timeout: float | None = None
-    """Max wall-clock for the taskset's `setup` hook per task (None = no limit)."""
-    validate_timeout: float | None = None
-    """Max wall-clock for the taskset's `validate` hook per task (None = no limit)."""
+    timeout: CheckTimeoutConfig = CheckTimeoutConfig()
+    """Per-task stage timeouts: `--timeout.setup` for the `setup` hook, `--timeout.total`
+    for the `validate` hook."""
+    only_setup: bool = False
+    """Run only the setup check per task (the task's `setup` hook, no gold check). By default
+    every check — setup-only and gold — runs in independent runtimes per task, reported
+    as one aggregate row."""
+    only_gold: bool = False
+    """Run only the gold check per task (`setup` + the `validate` hook)."""
     num_tasks: int | None = Field(
         None,
         validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),
@@ -50,6 +66,12 @@ class ValidateConfig(BaseConfig):
     @property
     def name(self) -> str:
         return self.taskset.name
+
+    @model_validator(mode="after")
+    def _validate_only(self):
+        if self.only_setup and self.only_gold:
+            raise ValueError("pass at most one of `--only-setup` or `--only-gold`")
+        return self
 
     @model_validator(mode="before")
     @classmethod

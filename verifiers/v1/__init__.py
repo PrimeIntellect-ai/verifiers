@@ -12,7 +12,7 @@ from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
-    RolloutContext,
+    ModelContext,
     resolve_client,
 )
 from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
@@ -191,7 +191,7 @@ __all__ = [
     "BaseConfig",
     "Harness",
     "HarnessConfig",
-    "RolloutContext",
+    "ModelContext",
     "Runtime",
     "RuntimeConfig",
     "ProgramResult",

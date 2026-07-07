@@ -6,7 +6,7 @@ loads it. A caller (e.g. the orchestrator) stays env-agnostic: it asks `info` fo
 the task count + whether group scoring is needed, then `run_rollout` / `run_group`
 by task index. Per request the server resolves a `Client` from the request's
 `client` config (cached, so a renderer's tokenizer is built once), wraps it in a
-`RolloutContext`, and runs `env.episode(task, ctx, n).run()`, returning each
+`ModelContext`, and runs `env.episode(task, ctx, n).run()`, returning each
 `Trace` as a JSON dict (with its computed `branches`).
 
 Minimal port of `verifiers.serve` (ROUTER + msgpack), single async process: each
@@ -26,7 +26,7 @@ import zmq.asyncio
 
 from verifiers.utils.process_utils import use_threading_tqdm_lock
 from verifiers.utils.serve_utils import msgpack_encoder
-from verifiers.v1.clients import RolloutContext, resolve_client
+from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.env import EnvConfig, Environment
@@ -104,8 +104,8 @@ class EnvServer:
 
     def _context(
         self, client_config: ClientConfig, model: str, sampling: SamplingConfig
-    ) -> RolloutContext:
-        return RolloutContext(
+    ) -> ModelContext:
+        return ModelContext(
             client=self._client(client_config, model), model=model, sampling=sampling
         )
 

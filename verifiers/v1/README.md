@@ -46,7 +46,8 @@ uv sync --python 3.12 --extra harbor
 ```bash
 uv run init my-task-v1           # scaffold a new environment (--add-tool/--add-user/--add-harness)
 uv run eval gsm8k-v1 -n 5 -r 3   # single-turn math; default harness; subprocess runtime
-uv run validate gsm8k-v1 -n 5    # model-free: run each task's gold check (the `validate` hook)
+uv run validate gsm8k-v1 -n 5    # model-free gold + setup-only checks (--only-gold / --only-setup)
+uv run debug gsm8k-v1 -n 1 --command 'pwd'  # setup, run one shell action, save traces
 uv run eval -h                   # typed help (+ the local example tasksets/harnesses)
 ```
 

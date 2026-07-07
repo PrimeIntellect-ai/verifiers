@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from enum import StrEnum
 
 from verifiers.v1.harness import Harness
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import (
     HarnessError,
@@ -70,7 +70,7 @@ class Rollout:
         self,
         task: Task,
         harness: Harness,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         runtime_config: RuntimeConfig,
         setup_timeout: float | None = None,
         harness_timeout: float | None = None,

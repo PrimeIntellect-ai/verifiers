@@ -34,7 +34,7 @@ from typing import Generic, TypeVar
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.clients import ClientConfig, RolloutContext, resolve_client
+from verifiers.v1.clients import ClientConfig, ModelContext, resolve_client
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.env import (
     EnvConfig,
@@ -460,10 +460,10 @@ class TopologyRunner:
         """`(task class, agent name)` pairs already `validate_pairing`-checked — derived
         task classes don't exist at load time, so the check runs (once) at the first
         episode that pairs them with an agent's harness."""
-        self._ctxs: dict[str, RolloutContext] = {}
+        self._ctxs: dict[str, ModelContext] = {}
         self._pools: dict[str, InterceptionPool] = {}
         self._shared: SharedServers | None = None
-        """Run-level serving resources, live only inside `serving()`: one rollout context
+        """Run-level serving resources, live only inside `serving()`: one model context
         and one interception pool per agent (an agent's harness may run in its own runtime,
         against its own model/client), plus the lazy shared tool-server registry."""
 
@@ -478,9 +478,9 @@ class TopologyRunner:
             ) from None
 
     @contextlib.asynccontextmanager
-    async def serving(self, ctx: RolloutContext):
+    async def serving(self, ctx: ModelContext):
         """Hold the run-level serving resources for the duration of a topology eval: per
-        agent, a `RolloutContext` (`ctx` with the agent's model/client/sampling overrides
+        agent, a `ModelContext` (`ctx` with the agent's model/client/sampling overrides
         applied) and an interception pool — pools are deduped by the harness runtime they
         tunnel to, so two agents on identical runtimes share servers + tunnels — plus the
         lazy shared tool-server registry. Clients built for an override are closed on
@@ -489,7 +489,7 @@ class TopologyRunner:
         instances inside this context."""
         async with contextlib.AsyncExitStack() as stack:
             shared = await stack.enter_async_context(SharedServers())
-            ctxs: dict[str, RolloutContext] = {}
+            ctxs: dict[str, ModelContext] = {}
             pools: dict[str, InterceptionPool] = {}
             pool_by_runtime: dict[str, InterceptionPool] = {}
             for name, agent in self.topology.agents.items():
@@ -497,7 +497,7 @@ class TopologyRunner:
                 if agent.config.client is not None:
                     client = resolve_client(agent.config.client)
                     stack.push_async_callback(client.close)
-                ctxs[name] = RolloutContext(
+                ctxs[name] = ModelContext(
                     model=agent.config.model or ctx.model,
                     client=client,
                     sampling=agent.config.sampling or ctx.sampling,

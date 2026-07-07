@@ -16,7 +16,7 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic import Field
 from pydantic_config import BaseConfig
 
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import HarnessError, boundary
 from verifiers.v1.utils.install import env_name
@@ -131,7 +131,7 @@ class Harness(ABC, Generic[ConfigT]):
 
     async def run(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
@@ -176,7 +176,7 @@ class Harness(ABC, Generic[ConfigT]):
     @abstractmethod
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
