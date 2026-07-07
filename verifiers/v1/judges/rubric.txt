@@ -4,7 +4,7 @@ Task:
 ```
 {question}
 ```
-
+{reference}
 Response:
 ```
 {response}
@@ -13,4 +13,4 @@ Response:
 Criteria:
 {criteria}
 
-For each criterion, give a "yes" or "no" verdict under its exact name.
+For each criterion, answer under its exact name with exactly one of the options given in parentheses after it.

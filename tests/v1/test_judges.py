@@ -29,9 +29,9 @@ class QATask(vf.Task):
     answer: str = ""
 
 
-def make_trace(reply: str = "It is Paris.") -> vf.Trace:
+def make_trace(reply: str = "It is Paris.", answer: str = "Paris") -> vf.Trace:
     return vf.Trace(
-        task=QATask(idx=0, prompt="Capital of France?", answer="Paris"),
+        task=QATask(idx=0, prompt="Capital of France?", answer=answer),
         nodes=[
             MessageNode(
                 parent=None,
@@ -573,6 +573,19 @@ def test_rubric_choices_validation(tmp_path):
             tmp_path,
             body='[[criteria]]\nname = "x"\ntext = "t"\nchoices = ["a", "a"]\n',
         ).criteria
+
+
+async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model):
+    # off by default: no reference block in the prompt.
+    t = make_trace()
+    await rubric_judge(tmp_path).score(t.task, t)
+    assert "Reference solution" not in fake_judge_model[-1]
+
+    # answer_field set: the task's gold answer is shown to the judge.
+    t = make_trace(answer="ZEBRA-GOLD")
+    await rubric_judge(tmp_path, answer_field="answer").score(t.task, t)
+    assert "Reference solution" in fake_judge_model[-1]
+    assert "ZEBRA-GOLD" in fake_judge_model[-1]
 
 
 # --- Taskset.score integration -------------------------------------------------------------
