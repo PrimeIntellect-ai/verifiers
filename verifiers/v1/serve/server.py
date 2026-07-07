@@ -30,7 +30,6 @@ from verifiers.v1.clients import RolloutContext, resolve_client
 from verifiers.v1.clients.client import Client
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.env import EnvConfig, Environment
-from verifiers.v1.task import Task
 from verifiers.v1.serve.types import (
     BaseResponse,
     HealthResponse,
@@ -40,6 +39,7 @@ from verifiers.v1.serve.types import (
     RunRolloutRequest,
     RunRolloutResponse,
 )
+from verifiers.v1.task import Task
 from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ class EnvServer:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
-        # Load tasks once; the index range is fixed for the server's lifetime.
+        # Load tasks at startup; a growing taskset appends more via `_refresh_tasks`.
         self.tasks = self.env.taskset.load_tasks()
         self.requires_group_scoring = self.env.taskset.defines_group_rewards()
         self._clients: dict[

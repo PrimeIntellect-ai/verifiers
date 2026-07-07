@@ -143,22 +143,24 @@ class ReplayConfig(TasksetConfig):
         # writes every field explicitly, and must re-validate cleanly.
         if self.mode == "recheck" and self.anchor != "compaction":
             raise ValueError("`anchor` only applies to mode='continue'")
-        # Freeze globs to the matched files: every env-server pool worker re-validates this
-        # config and rebuilds the task list independently, so the file set must not drift as
-        # the records directory grows (an elastic pool spawns workers throughout the run).
-        # No matches leaves the patterns untouched for `load_tasks` to fail on — the files may
-        # not exist where the config is first validated (e.g. a dry run on another host).
         return self
 
 
 class ReplayTaskset(Taskset[Task, ReplayConfig]):
-    _tasks: list[Task] = []
-    _files_done: set[str] = set()
-    """Incremental-load state, created per instance on first `load_tasks` (the class defaults
-    only back a taskset inspected without loading): accumulated tasks + files already parsed."""
-    _snapshots: dict[int, str] = {}
-    """Task idx -> sandbox snapshot ref of its seed's anchor node; rebuilt by `load_tasks`
-    (the class default only backs a taskset used without loading, e.g. in tests)."""
+    # Incremental-load state, filled by `load_tasks` and lazy so a taskset inspected without
+    # loading (e.g. in tests) reads empty state: accumulated tasks, files already parsed, and
+    # task idx -> sandbox snapshot ref of its seed's anchor node.
+    @cached_property
+    def _tasks(self) -> list[Task]:
+        return []
+
+    @cached_property
+    def _files_done(self) -> set[str]:
+        return set()
+
+    @cached_property
+    def _snapshots(self) -> dict[int, str]:
+        return {}
 
     @cached_property
     def source(self) -> Taskset:
@@ -201,18 +203,15 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
 
         # Incremental and append-only: only files not seen before are parsed, and new tasks
         # extend the existing list — an index already served keeps meaning the same task, so
-        # `follow` reloads stay aligned across pool workers refreshing at different times.
-        if "_tasks" not in self.__dict__:  # first load on this instance
-            self._tasks, self._files_done, self._snapshots = [], set(), {}
+        # reloads stay aligned across pool workers refreshing at different times.
         new_paths = [path for path in paths if path not in self._files_done]
         tasks = self._tasks
         skipped = {"replayed": 0, "foreign": 0, "empty": 0, "no_seed": 0, "overlong": 0}
         for record in iter_records(Path(path) for path in new_paths):
             name = (record.get("task") or {}).get("name") or ""
             if isinstance(name, str) and name.startswith(("continue:", "recheck:")):
-                skipped["replayed"] += (
-                    1  # this taskset's own output; don't compound seeds
-                )
+                # This taskset's own output — don't compound seeds.
+                skipped["replayed"] += 1
                 continue
             # Filter another env's records on the task fields alone — full-trace validation
             # walks every node's token ids, far too much work to spend on a line we discard.

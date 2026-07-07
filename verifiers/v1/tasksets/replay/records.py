@@ -50,7 +50,7 @@ class Seed(NamedTuple):
     snapshot: str | None = None
 
 
-def _natural(path: str) -> tuple:
+def _natural(path: str) -> tuple[int | str, ...]:
     """Sort key ordering embedded numbers numerically, so ``step_9`` sorts before ``step_10``."""
     return tuple(
         int(part) if part.isdigit() else part for part in re.split(r"(\d+)", path)
@@ -58,10 +58,9 @@ def _natural(path: str) -> tuple:
 
 
 def expand_records(records: str | list[str]) -> list[str]:
-    """The sorted, deduplicated files a ``records`` value matches. The one shared expansion —
-    config validation freezes with it and ``load_tasks`` re-runs it — so the two can't drift:
-    a stable file order (numeric-aware, so step dirs sort in step order) is what keeps task
-    indices identical across env-server pool workers."""
+    """The sorted, deduplicated files a ``records`` value matches. A stable file order
+    (numeric-aware, so step dirs sort in step order) is what keeps task indices identical
+    across env-server pool workers, each re-expanding the globs as the source grows."""
     patterns = [records] if isinstance(records, str) else records
     matched = {path for pattern in patterns for path in glob(pattern, recursive=True)}
     return sorted(matched, key=_natural)

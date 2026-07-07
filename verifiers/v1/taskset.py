@@ -103,9 +103,10 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
 
     def reload_tasks(self) -> list[TaskT] | None:
         """Refresh the task list mid-serve, for tasksets whose backing source grows while a
-        run is live (e.g. `replay` in follow mode). None (the default) means static: tasks
-        load once at server startup. An implementation must be append-only — an index already
-        served keeps meaning the same task, since pool workers refresh independently."""
+        run is live (e.g. `replay` following a live run's records). None (the default) means
+        static: tasks load once at server startup. An implementation must be append-only —
+        an index already served keeps meaning the same task, since pool workers refresh
+        independently."""
         return None
 
     def tools(self, task: TaskT) -> list[Toolset]:
