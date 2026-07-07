@@ -4,8 +4,10 @@ Offline sibling of `eval`: loads a finished run's saved traces and re-runs **sco
 runtime. The run's own `config.toml` is the base; CLI flags / `@ file.toml` layer on top (e.g. a
 different judge model). Signals needing a `runtime` (in-sandbox verifiers like a SWE `solved`
 reward) are skipped and left as the source recorded them; config-plugged judges and trace-only
-`@reward`/`@metric`s re-run. `--num-rescores`/`-r` re-scores each trace N times to sample judge
-variance. Results go to a fresh output dir, so the source run is never overwritten.
+`@reward`/`@metric`s re-run. Rollouts that errored during generation (`stop_condition == "error"`)
+were never scored by eval, so they're copied through unchanged rather than re-scored on a broken
+transcript. `--num-rescores`/`-r` re-scores each trace N times to sample judge variance. Results go
+to a fresh output dir, so the source run is never overwritten.
 """
 
 import asyncio
@@ -82,24 +84,34 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
 
     async def rescore(trace: Trace, st: ReplayProgress) -> None:
         async with sem or contextlib.nullcontext():
-            st.start, st.state = time.time(), "running"
-            # Clear prior scores so a changed/removed judge leaves no stale (double-summed) entry.
-            if isinstance(trace.info, dict):
-                trace.info.pop("judge", None)
-            trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
-            try:
-                await taskset.score(trace)
-                st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
-            except Exception as exc:
-                st.state, st.detail = "error", type(exc).__name__
-                trace.capture_error(exc)  # record the re-scoring failure on the trace
-                if not config.rich:
-                    logger.warning(
-                        "replay: scoring failed for task %s",
-                        trace.task.idx,
-                        exc_info=True,
-                    )
-            st.end = time.time()
+            st.start = time.time()
+            # A rollout that errored during generation was never scored by eval (its scoring phase
+            # never ran), so re-scoring would grade a broken/partial transcript. Copy it through
+            # unchanged, mirroring eval. A *scoring* error leaves `stop_condition` as the
+            # generation outcome, so those still re-score (the offline-recovery case).
+            if trace.stop_condition == "error":
+                st.state, st.detail, st.end = "skipped", "rollout errored", time.time()
+            else:
+                st.state = "running"
+                # Clear prior scores so a changed/removed judge leaves no stale (double-summed) entry.
+                if isinstance(trace.info, dict):
+                    trace.info.pop("judge", None)
+                trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
+                try:
+                    await taskset.score(trace)
+                    st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
+                except Exception as exc:
+                    st.state, st.detail = "error", type(exc).__name__
+                    trace.capture_error(
+                        exc
+                    )  # record the re-scoring failure on the trace
+                    if not config.rich:
+                        logger.warning(
+                            "replay: scoring failed for task %s",
+                            trace.task.idx,
+                            exc_info=True,
+                        )
+                st.end = time.time()
         if not config.rich:
             logger.info(
                 "idx=%s %s (%.1fs)", trace.task.idx, st.state, st.end - st.start
