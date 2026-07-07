@@ -52,6 +52,8 @@ def proposed_task(proposer_trace: vf.Trace) -> ProposedTask:
         else ""
     )
     match = re.search(r"\{.*\}", reply or "", re.DOTALL)
+    if match is None:
+        raise ValueError(f"proposer did not reply with a JSON object: {reply!r}")
     proposed = json.loads(match.group())
     return ProposedTask(
         idx=0,

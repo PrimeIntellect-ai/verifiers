@@ -46,7 +46,7 @@ async def main() -> None:
             model="z-ai/glm-5.2", client=vf.resolve_client(vf.EvalClientConfig())
         ),
         vf.PrimeConfig(labels=["agent-programs-demo"]),
-        timeout=vf.TimeoutConfig(rollout=420),
+        timeout=vf.TimeoutConfig(rollout=420, scoring=60),  # scoring runs agent code
     )
     trace = await agent.run(
         vf.Task(idx=0, prompt=TASK), taskset=WorldTaskset(vf.TasksetConfig())
