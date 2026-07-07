@@ -30,7 +30,9 @@ token-true trace capture — so anything a program produces is evaluable and tra
 Everything beyond the arrow is a parameter, not a concept:
 
 - **`taskset=`** attaches judgement (`@reward` / `@metric`, `setup` / `finalize`) to a
-  run. Omitted, the run is unscored — a pure `Task -> Trace` arrow.
+  run. Omitted, the run is unscored — a pure `Task -> Trace` arrow. Impossible pairings
+  are refused up front, exactly as in an eval: a taskset whose tools or user simulator
+  the harness doesn't drive, or a `NEEDS_CONTAINER` taskset on the subprocess runtime.
 - **`runtime=`** places the run into a live box (borrowed — the run neither starts nor
   tears it down) instead of provisioning a fresh one. `agent.provision(task)` hands the
   program a box to place runs into.

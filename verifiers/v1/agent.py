@@ -30,7 +30,12 @@ from typing import AsyncIterator
 from verifiers.v1.clients import (
     ModelContext,
 )
-from verifiers.v1.env import TimeoutConfig, resolve_runtime_config
+from verifiers.v1.env import (
+    TimeoutConfig,
+    cap_remote_harness_timeout,
+    resolve_runtime_config,
+    validate_pairing,
+)
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import InterceptionPool, RolloutLimits
 from verifiers.v1.rollout import Rollout
@@ -104,6 +109,8 @@ class Agent:
         self._warned_resources: set[tuple[str, str]] = set()
 
     async def __aenter__(self) -> "Agent":
+        if self._pool is not None:
+            raise RuntimeError("Agent is already entered; enter it once and share it")
         self._pool = InterceptionPool(self.runtime_config, self.multiplex)
         await self._pool.__aenter__()
         return self
@@ -150,6 +157,7 @@ class Agent:
                 self.runtime_config, task, self._warned_resources
             )
             run_is_local = runtime_is_local(runtime_config)
+        validate_pairing(self.harness, taskset, runtime_config)
         rollout = Rollout(
             task=task,
             taskset=taskset,
@@ -157,7 +165,11 @@ class Agent:
             ctx=ctx,
             runtime_config=runtime_config,
             setup_timeout=_merge(self.timeout.setup, task.timeout.setup),
-            harness_timeout=_merge(self.timeout.rollout, task.timeout.harness),
+            harness_timeout=cap_remote_harness_timeout(
+                _merge(self.timeout.rollout, task.timeout.harness),
+                runtime_config,
+                task,
+            ),
             finalize_timeout=_merge(self.timeout.finalize, task.timeout.finalize),
             scoring_timeout=_merge(self.timeout.scoring, task.timeout.scoring),
             limits=self.limits,
@@ -190,8 +202,11 @@ class Agent:
             else self.runtime_config
         )
         runtime = make_runtime(config)
-        await runtime.start()
         try:
+            # start inside the try: a failed start may already hold a remote sandbox,
+            # so it must reach `stop()` (safe on a partially-started runtime) like in
+            # `Rollout.run`.
+            await runtime.start()
             yield runtime
         finally:
             await runtime.stop()

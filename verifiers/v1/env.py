@@ -18,7 +18,7 @@ from typing import Annotated, Literal
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.harness import HarnessConfig
+from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
@@ -32,7 +32,7 @@ from verifiers.v1.runtimes import (
     runtime_is_local,
 )
 from verifiers.v1.task import Task
-from verifiers.v1.taskset import TasksetConfig
+from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.mcp import serve_shared
 
 
@@ -228,40 +228,65 @@ def resolve_runtime_config(
     return config.model_copy(update=updates) if updates else config
 
 
+def validate_pairing(
+    harness: Harness, taskset: Taskset, runtime_config: RuntimeConfig
+) -> None:
+    """Refuse a harness/taskset/runtime combination that cannot work: a taskset whose
+    tools (MCP) or user simulator the harness doesn't drive would run to completion with
+    the model never seeing them, and a `NEEDS_CONTAINER` taskset's world hooks would run
+    on the host under the subprocess runtime. Shared by `Environment` (once, at init)
+    and `Agent.run` (per run, against the resolved runtime)."""
+    if not harness.SUPPORTS_MCP and type(taskset).tools is not Taskset.tools:
+        raise ValueError(
+            f"Harness {harness.config.id!r} does not support MCP tools, but taskset "
+            f"{taskset.config.id!r} exposes tool servers (MCP). Run it with a harness "
+            f"that supports MCP (e.g. the default harness), or use a taskset without tools."
+        )
+    if not harness.SUPPORTS_USER_SIM and type(taskset).user is not Taskset.user:
+        raise ValueError(
+            f"Harness {harness.config.id!r} does not drive a user simulator, but taskset "
+            f"{taskset.config.id!r} defines one (Taskset.user). Run it with a harness that "
+            f"supports user simulation (e.g. the default harness), or use a taskset without one."
+        )
+    if taskset.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
+        raise ValueError(
+            f"Taskset {taskset.config.id!r} needs a container runtime "
+            "(NEEDS_CONTAINER), but this run resolves to the subprocess runtime; "
+            "use a docker or prime runtime."
+        )
+
+
+def cap_remote_harness_timeout(
+    harness_timeout: float | None, runtime_config: RuntimeConfig, task: Task
+) -> float | None:
+    """Remote sandboxes have a maximum lifetime of 24 hours: cap the harness timeout
+    there (with a warning) so a long run times out cleanly in the framework instead of
+    the provider killing the box mid-run. Shared by `Environment.episode` and
+    `Agent.run`."""
+    if (
+        harness_timeout is not None
+        and harness_timeout > 24 * 60 * 60
+        and not runtime_is_local(runtime_config)
+    ):
+        logger.warning(
+            "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
+            "maximum lifetime of 24 hours; capping it at 24 hours",
+            task.idx,
+            harness_timeout / (60 * 60),
+            runtime_config.type,
+        )
+        return 24 * 60 * 60
+    return harness_timeout
+
+
 class Environment:
     def __init__(self, config: EnvConfig) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
-        from verifiers.v1.taskset import Taskset
 
         self.config = config
         self.taskset = load_taskset(config.taskset)
         self.harness = load_harness(config.harness)
-        if (
-            not self.harness.SUPPORTS_MCP
-            and type(self.taskset).tools is not Taskset.tools
-        ):
-            raise ValueError(
-                f"Harness {self.harness.config.id!r} does not support MCP tools, but taskset "
-                f"{self.taskset.config.id!r} exposes tool servers (MCP). Run it with a harness "
-                f"that supports MCP (e.g. --harness.id default), or use a taskset without tools."
-            )
-        if (
-            not self.harness.SUPPORTS_USER_SIM
-            and type(self.taskset).user is not Taskset.user
-        ):
-            raise ValueError(
-                f"Harness {self.harness.config.id!r} does not drive a user simulator, but taskset "
-                f"{self.taskset.config.id!r} defines one (Taskset.user). Run it with a harness that "
-                f"supports user simulation (e.g. --harness.id default), or use a taskset without one."
-            )
-        if self.taskset.NEEDS_CONTAINER and isinstance(
-            self.harness.config.runtime, SubprocessConfig
-        ):
-            raise ValueError(
-                f"Taskset {self.taskset.config.id!r} needs a container runtime "
-                "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
-                "use --harness.runtime.type docker or prime."
-            )
+        validate_pairing(self.harness, self.taskset, self.harness.config.runtime)
         # The warning is about the *agent* running arbitrary code on the host: every harness hands
         # it local execution (bash/edit, or a CLI agent) except the tool-less `null` chat loop,
         # whose program only relays the model and remote MCP tools — so exempt `null`, warn for the
@@ -322,19 +347,9 @@ class Environment:
             if self.harness_timeout is not None
             else task.timeout.harness
         )
-        if (
-            harness_timeout is not None
-            and harness_timeout > 24 * 60 * 60
-            and not runtime_is_local(runtime_config)
-        ):
-            logger.warning(
-                "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
-                "maximum lifetime of 24 hours; capping it at 24 hours",
-                task.idx,
-                harness_timeout / (60 * 60),
-                runtime_config.type,
-            )
-            harness_timeout = 24 * 60 * 60
+        harness_timeout = cap_remote_harness_timeout(
+            harness_timeout, runtime_config, task
+        )
         finalize_timeout = (
             self.finalize_timeout
             if self.finalize_timeout is not None
