@@ -9,7 +9,6 @@ later from disk. Auth + base URL come from `$PRIME_API_KEY` / `~/.prime/config.j
 """
 
 import logging
-import math
 import os
 
 import httpx
@@ -58,7 +57,7 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
         return None
 
     env_name = config.taskset.id or config.id
-    rewards = [t.reward for t in traces if math.isfinite(t.reward)]
+    rewards = [t.reward for t in traces]
     metrics = {"reward": sum(rewards) / len(rewards)} if rewards else {}
     counts: dict[int, int] = {}
     samples = []
