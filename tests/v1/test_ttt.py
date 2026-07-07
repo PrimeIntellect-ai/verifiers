@@ -653,3 +653,92 @@ def test_parse_and_dedup_items():
         {"type": "qa", "question": "Completely different question about z", "answer": "c"},
     ]
     assert len(dedup_items(duplicates, 0.85)) == 2
+
+
+async def test_qa_verify_drops_flagged_items():
+    """qa.verify: one extra call re-presents the branch + numbered items; flagged items
+    are dropped from the training set and recorded as rejected on the trace."""
+
+    class ScriptedClient(QAClient):
+        def __init__(self, contents: list[str]):
+            super().__init__()
+            self.contents = list(contents)
+
+        def content(self) -> str:
+            return self.contents.pop(0)
+
+    items = [
+        {"type": "qa", "question": "What is x in task T?", "answer": "42"},
+        {"type": "qa", "question": "What port does service S use?", "answer": "8080"},
+    ]
+    generation = item_text(items)
+    verdict = "<failed>\n<num>1</num> <reason>unsupported</reason>\n</failed>"
+
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    service = FakeService()
+    client = ScriptedClient([generation, generation, verdict])
+    hook = qa_hook(trace, service, client, verify=True)
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1, 2], [3]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="summary")])
+    await hook.on_turn_prepared(turn)
+
+    # 2 generations + 1 verification call, all against the branch.
+    assert len(client.requests) == 3
+    verification_body = client.requests[-1][0]
+    instruction = verification_body["messages"][-1]["content"]
+    assert "Item 1:" in instruction and "Item 2:" in instruction
+    assert "SELF-CONTAINMENT" in instruction
+
+    # Item 1 dropped from the shipped training set; item 2 survives.
+    (update,) = service.updates
+    assert update["qa_pairs"] == [items[1]]
+    # The rejected item is recorded with its reason.
+    (rejected,) = trace.info["ttt"]["qa_rejected"]
+    assert rejected["question"] == items[0]["question"]
+    assert rejected["reason"] == "unsupported"
+    # The verification exchange is itself a tagged branch (3 QA branches total).
+    assert sum(1 for b in trace.branches if b.is_ttt_qa) == 3
+
+
+async def test_qa_verify_fails_open_on_malformed_verdict():
+    """A verification reply with no parseable <failed> block keeps ALL items — a malformed
+    grader must not silently discard the study set."""
+
+    class ScriptedClient(QAClient):
+        def __init__(self, contents: list[str]):
+            super().__init__()
+            self.contents = list(contents)
+
+        def content(self) -> str:
+            return self.contents.pop(0)
+
+    items = [{"type": "qa", "question": "What is x in task T?", "answer": "42"}]
+    generation = item_text(items)
+
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    service = FakeService()
+    client = ScriptedClient([generation, generation, "gibberish with no block"])
+    hook = qa_hook(trace, service, client, verify=True)
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    await hook.on_turn_prepared(turn)
+    (update,) = service.updates
+    assert update["qa_pairs"] == items
+    assert "qa_rejected" not in trace.info["ttt"]
+
+
+def test_parse_failed_items():
+    from verifiers.v1.ttt import parse_failed_items
+
+    text = (
+        "Looking at the items...\n<failed>\n"
+        "<num>2</num> <reason>refers to 'the error' without naming it</reason>\n"
+        "<num>5</num>\n"  # no reason: fine
+        "<num>99</num> <reason>out of range: ignored</reason>\n"
+        "</failed>"
+    )
+    failed = parse_failed_items(text, num_items=6)
+    assert failed == {2: "refers to 'the error' without naming it", 5: ""}
+    # Empty block = everything passed; missing block = fail open (keep all).
+    assert parse_failed_items("<failed></failed>", 3) == {}
+    assert parse_failed_items("no block at all", 3) == {}

@@ -119,6 +119,83 @@ Format each item exactly like this:
 </item>"""
 
 
+QA_META_PROMPT = """\
+Below are {num_attempts} independent attempts at the same task, each with the study-set
+items that attempt produced about its own experience, and the reward the attempt earned
+(higher is better).
+
+{attempts}
+
+Extract the most valuable GENERAL lessons from comparing these attempts. Focus on:
+- what the high-reward attempts did that the low-reward ones did not (and vice versa);
+- pitfalls several attempts hit;
+- lessons that would transfer to similar tasks, not just this exact one.
+
+Rules:
+- SELF-CONTAINED: each question must be fully understandable without these attempts.
+  Name the kind of task, the tools, and the situation explicitly. Never write "the
+  attempts above", "attempt 3", or similar references.
+- Phrase each lesson's question as the situation in which it applies ("When doing X and Y
+  happens, what should you do?") and the answer as the lesson, including when it is valid.
+- Answers must be supported by the attempts' evidence.
+
+Format each item exactly like this:
+
+<item>
+<type>lesson</type>
+<question>...</question>
+<answer>...</answer>
+</item>"""
+
+
+QA_VERIFICATION_PROMPT = """\
+You are grading the study-set items below, which were written about the conversation
+above. For each item, check:
+
+1. CORRECTNESS: is the answer factually correct and fully supported by the conversation?
+2. SELF-CONTAINMENT: is the question understandable by someone who never saw this
+   conversation? It must not say "the conversation above", "this task", "the error", or
+   otherwise depend on unstated context.
+
+Items:
+
+{items}
+
+Reply with the numbers of the items that FAIL either check, one per line, each with a
+short reason:
+
+<failed>
+<num>3</num> <reason>answer states X but the conversation says Y</reason>
+<num>7</num> <reason>question refers to "the error" without naming it</reason>
+</failed>
+
+If every item passes, reply with an empty block: <failed></failed>"""
+
+
+def format_items_for_verification(items: list[dict]) -> str:
+    """Number the items for the verification prompt (1-based, matching `parse_failed_items`)."""
+    blocks = []
+    for i, item in enumerate(items, 1):
+        blocks.append(f"Item {i}:\nQ: {item['question']}\nA: {item['answer']}")
+    return "\n\n".join(blocks)
+
+
+def parse_failed_items(text: str, num_items: int) -> dict[int, str]:
+    """Extract `{item_number: reason}` from a verification reply's `<failed>` block
+    (1-based numbers; out-of-range ones are ignored). A reply with NO parseable block
+    fails everything open (empty dict — keep all items) rather than closed: a malformed
+    verification must not silently discard the whole study set."""
+    failed: dict[int, str] = {}
+    block = re.search(r"<failed>(.*?)</failed>", text, re.DOTALL)
+    if block is None:
+        return {}
+    for m in re.finditer(r"<num>\s*(\d+)\s*</num>\s*(?:<reason>(.*?)</reason>)?", block.group(1), re.DOTALL):
+        num = int(m.group(1))
+        if 1 <= num <= num_items:
+            failed[num] = (m.group(2) or "").strip()
+    return failed
+
+
 def parse_qa_items(text: str) -> list[dict]:
     """Extract `<item>` blocks from a generation: `[{type, question, answer}]`. Malformed
     blocks (missing question/answer) are dropped; a missing/unknown type defaults to "qa"."""
@@ -185,6 +262,17 @@ class QAConfig(BaseConfig):
     """Sampling temperature for QA generations (None = the rollout sampling's own)."""
     dedup_threshold: float | None = 0.85
     """Near-duplicate question filter (token-overlap Jaccard); None disables."""
+    verify: bool = False
+    """Batch-verify the extracted items before training: one extra model call per
+    compaction re-presents the abandoned branch plus all candidate items and asks which
+    fail (answer unsupported by the conversation, or question not self-contained); failing
+    items are dropped from the adapter's training set. The verification exchange is
+    committed as a `ttt_qa` branch like the generations (RL sees it); rejected items stay
+    recorded in `trace.info["ttt"]` for analysis. Off by default — enable once real traces
+    show the generation prompt's contract isn't holding."""
+    verification_prompt: str = QA_VERIFICATION_PROMPT
+    """The verification instruction template (must keep the `{items}` placeholder and the
+    `<failed>` output format)."""
     also_train_rollout: bool = False
     """Also train on the raw abandoned branch, in the same update. Default off: the plan's
     Q&A arm trains on the Q&A dataset *instead of* the rollout itself."""
@@ -193,6 +281,19 @@ class QAConfig(BaseConfig):
     (prime-rl) renders each pair (system-prompt-conditioned) and routes it to the ce loss
     component — the "one SFT step after the RL update" from the plan, riding the same
     training batch. Consumed by the prime-rl orchestrator."""
+    meta_lessons: bool = False
+    """Group-level meta-extraction during RL: after a GRPO group finishes, one model call
+    sees every rollout's Q&A pairs together with its reward and extracts lessons common
+    across the attempts — contrasting what the successful ones did against the failed ones
+    — which are then trained into the policy's main weights (ce component) like recycled
+    pairs. De-myopifies the per-rollout Q&A: the contrastive success-vs-failure signal on
+    the same task is what per-rollout extraction can't see. Consumed by the prime-rl
+    orchestrator; the rollout side only records the per-rollout pairs."""
+    meta_prompt: str = QA_META_PROMPT
+    """The meta-extraction instruction template (must keep the `{attempts}` placeholder
+    and the `<item>` output format)."""
+    meta_max_tokens: int = 2048
+    """Completion budget for the meta-extraction call."""
 
 
 class TTTRolloutHook:
@@ -336,13 +437,19 @@ class TTTRolloutHook:
         (the rollout's advantage reinforces lessons that helped). The tag keeps them out of
         `RolloutLimits` and the trace's turn/token metrics — they run on `qa.max_tokens`.
 
-        Returns the structurally extracted, deduplicated `[{type, question, answer}]`
-        items; the update trains the adapter on them rendered standalone (branch context
-        absent, system prompt + tools present), Cartridges-style, so the knowledge must
-        come from the weights rather than a context-conditioned mapping."""
+        With `qa.verify`, one extra call re-presents the branch plus all candidate items
+        and drops the ones the model flags (answer unsupported, or question not
+        self-contained); rejected items are recorded in `trace.info["ttt"]["qa_rejected"]`.
+
+        Returns the structurally extracted, deduplicated (and verified)
+        `[{type, question, answer}]` items; the update trains the adapter on them rendered
+        standalone (branch context absent, system prompt + tools present),
+        Cartridges-style, so the knowledge must come from the weights rather than a
+        context-conditioned mapping."""
         from verifiers.v1 import graph
         from verifiers.v1.dialects import ChatDialect
         from verifiers.v1.dialects.chat import message_to_wire
+        from verifiers.v1.types import UserMessage
 
         assert self.config.qa is not None and self.ctx is not None
         qa = self.config.qa
@@ -357,12 +464,11 @@ class TTTRolloutHook:
         sampling = self.salted_sampling(SamplingConfig(**sampling_data))
         model = self.model_override or self.ctx.model
 
-        from verifiers.v1.types import UserMessage
-
-        async def generate(prompt_text: str):
-            # A prepared turn (same prefix walk the interception server does) lets the
-            # renderer client bridge to the branch's exact stored tokens instead of
-            # re-rendering — the QA branch shares the abandoned branch's prefix verbatim.
+        async def ask(prompt_text: str):
+            """One exchange against the abandoned branch. A prepared turn (the same prefix
+            walk the interception server does) lets the renderer client bridge to the
+            branch's exact stored tokens instead of re-rendering — the QA branch shares the
+            abandoned branch's prefix verbatim."""
             prompt = [*branch_messages, UserMessage(content=prompt_text)]
             turn = graph.prepare_turn(self.trace, prompt)
             body = {
@@ -374,24 +480,45 @@ class TTTRolloutHook:
             )
             return turn, response
 
-        prompts = [
-            qa.generation_prompt.format(seed=qa.seeds[i % len(qa.seeds)], num_items=qa.items_per_generation)
-            for i in range(qa.num_generations)
-        ]
-        generations = await asyncio.gather(*(generate(p) for p in prompts))
-
-        # Commit each exchange as a tagged branch (sequentially — graph mutation), then
-        # extract + dedup the items across all generations.
-        items: list[dict] = []
-        for turn, response in generations:
+        def commit_tagged(turn, response) -> str:
+            """Commit an exchange as a `ttt_qa` branch; return the generation text."""
             before = len(self.trace.nodes)
             turn.commit(response)
             for node in self.trace.nodes[before:]:
                 node.ttt_qa = True
                 node.ttt_version = self.version
-            items.extend(parse_qa_items(response.message.content or ""))
+            return response.message.content or ""
+
+        prompts = [
+            qa.generation_prompt.format(seed=qa.seeds[i % len(qa.seeds)], num_items=qa.items_per_generation)
+            for i in range(qa.num_generations)
+        ]
+        generations = await asyncio.gather(*(ask(p) for p in prompts))
+
+        # Commit each exchange as a tagged branch (sequentially — graph mutation), then
+        # extract + dedup the items across all generations.
+        items: list[dict] = []
+        for turn, response in generations:
+            items.extend(parse_qa_items(commit_tagged(turn, response)))
         if qa.dedup_threshold is not None:
             items = dedup_items(items, qa.dedup_threshold)
+
+        if qa.verify and items:
+            verify_prompt = qa.verification_prompt.format(items=format_items_for_verification(items))
+            turn, response = await ask(verify_prompt)
+            failed = parse_failed_items(commit_tagged(turn, response), len(items))
+            if failed:
+                rejected = [{**items[num - 1], "reason": reason} for num, reason in sorted(failed.items())]
+                self.trace.info.setdefault("ttt", {"adapter": self.adapter_name}).setdefault("qa_rejected", []).extend(
+                    rejected
+                )
+                items = [item for i, item in enumerate(items, 1) if i not in failed]
+                logger.info(
+                    "ttt: qa verification rejected %d/%d items for %s",
+                    len(rejected),
+                    len(rejected) + len(items),
+                    self.trace.id,
+                )
         return items
 
     def payload(self, path: list[int], shared: set[int]) -> tuple[list[int], list[bool]]:
