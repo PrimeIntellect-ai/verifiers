@@ -47,23 +47,31 @@ def make_trace(reply: str = "It is Paris.") -> vf.Trace:
 
 @pytest.fixture
 def fake_judge_model(monkeypatch):
-    """Fake the judge's model call, recording each prompt for assertions. Text calls reply
-    "yes" iff "Paris" appears in the response block of the rendered prompt; structured
-    (`schema`) calls verdict each `- name: text` criteria line "yes" iff it mentions Paris."""
+    """Fake the judge's model call, recording each prompt for assertions. Rubric calls (a JSON
+    `verdicts` instruction or a `schema`) reply one reasoned verdict per `- name: text` criterion,
+    "yes" iff it mentions Paris; other judges reply plain "yes"/"no" by the response block."""
     prompts: list[str] = []
 
     async def fake_complete(
         self, messages, *, trace=None, schema=None, parse=None, **sampling
     ):
         prompts.append(messages)
-        if schema is not None:
+        # Rubric calls carry criteria lines + a JSON `verdicts` instruction; reply one verdict per
+        # criterion (yes iff its text mentions Paris) with a reason. Other judges get plain yes/no.
+        if schema is not None or '"verdicts"' in messages:
             verdicts = [
-                {"name": name, "verdict": "yes" if "Paris" in text else "no"}
+                {
+                    "name": name,
+                    "reason": "cites Paris" if "Paris" in text else "no Paris",
+                    "verdict": "yes" if "Paris" in text else "no",
+                }
                 for name, text in re.findall(r"^- ([^:]+): (.+)$", messages, re.M)
             ]
             response = JudgeResponse(
-                text=json.dumps(verdicts),
-                parsed=schema.model_validate({"verdicts": verdicts}),
+                text=json.dumps({"verdicts": verdicts}),
+                parsed=schema.model_validate({"verdicts": verdicts})
+                if schema
+                else None,
             )
         else:
             response = JudgeResponse(
@@ -501,7 +509,7 @@ def test_rubric_rejects_bad_files(tmp_path):
 
 async def test_rubric_score(tmp_path, fake_judge_model):
     # verdicts: mentions_paris=1 (w=3), is_polite=0 (w=1) -> weighted mean 0.75, from ONE
-    # structured judge call; each verdict lands as a `<name>/<criterion>` metric.
+    # judge call; each verdict lands as a `<name>/<criterion>` metric.
     judge = rubric_judge(tmp_path)
     trace = make_trace()
     assert await judge.score(trace.task, trace) == 0.75
@@ -513,13 +521,13 @@ async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch):
     # A reply that doesn't verdict exactly the rubric's criteria is a judge failure: raise
     # (-> rollout error), don't guess or silently score 0.
     async def wrong_names(self, messages, *, trace=None, schema=None, parse=None, **s):
-        verdicts = {"verdicts": [{"name": "typo", "verdict": "yes"}]}
-        return JudgeResponse(text="", parsed=schema.model_validate(verdicts))
+        verdicts = {"verdicts": [{"name": "typo", "reason": "x", "verdict": "yes"}]}
+        return JudgeResponse(text=json.dumps(verdicts), parsed=None)
 
     monkeypatch.setattr(Judge, "complete", wrong_names)
     judge = rubric_judge(tmp_path)
     trace = make_trace()
-    with pytest.raises(ValueError, match="expected the rubric"):
+    with pytest.raises(ValueError, match="expected the batch"):
         await judge.score(trace.task, trace)
 
 
