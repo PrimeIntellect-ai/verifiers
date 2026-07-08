@@ -20,7 +20,7 @@ import time
 from typing import Any
 from uuid import uuid4
 
-from pydantic_config import cli
+from verifiers.v1.configs import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard

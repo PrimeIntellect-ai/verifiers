@@ -9,7 +9,7 @@ rollouts on request by task idx.
 import sys
 from functools import partial
 
-from pydantic_config import cli
+from verifiers.v1.configs import cli
 
 from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.cli.resolve import (

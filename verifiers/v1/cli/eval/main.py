@@ -15,7 +15,7 @@ import logging
 import signal
 import sys
 
-from pydantic_config import cli
+from verifiers.v1.configs import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.utils.logging import setup_logging

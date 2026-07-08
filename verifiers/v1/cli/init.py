@@ -12,7 +12,7 @@ a legacy v0 `load_environment` package instead (via `verifiers.scripts.init`).
 import sys
 from pathlib import Path
 
-from pydantic_config import cli
+from verifiers.v1.configs import cli
 
 from verifiers.v1.configs.init import InitConfig
 

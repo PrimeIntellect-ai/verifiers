@@ -19,7 +19,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from pydantic_config import cli
+from verifiers.v1.configs import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
