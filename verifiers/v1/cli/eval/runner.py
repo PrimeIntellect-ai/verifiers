@@ -6,7 +6,7 @@ import logging
 import random
 import time
 
-from verifiers.v1.clients import RolloutContext, resolve_client
+from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.cli.eval import resume
 from verifiers.v1.cli.dashboard import dashboard
@@ -29,7 +29,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     if config.shuffle:
         random.Random(_SHUFFLE_SEED).shuffle(tasks)
     tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
-    ctx = RolloutContext(client=client, model=config.model, sampling=config.sampling)
+    ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.
     semaphore = (
@@ -41,6 +41,10 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # run only the owed rollouts. One lock serializes worker-thread appends from concurrent
     # rollouts while keeping large trace serialization off the event loop.
     owed: dict[str, int] | None = None
+    # On resume, the kept (good) on-disk rollouts, reloaded as finished traces so the live
+    # dashboard counts the whole run (progress, reward, err, usage/time) rather than only this
+    # session's re-run rollouts. Only the --rich dashboard reads them, so skip the load otherwise.
+    finished: list[Trace] = []
     if config.resume is not None:
         group = bool(discover_decorated(env.taskset, "group_reward"))
         keep, owed = resume.plan(
@@ -51,6 +55,8 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             raise SystemExit(0)
         tasks = [task for task in tasks if owed.get(task.idx)]
         resume.rewrite_results(out, keep)
+        if config.rich:
+            finished = resume.load_kept(out, env.taskset)
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
             out,
@@ -84,7 +90,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
         ]
         rollouts = [rollout for episode in episodes for rollout in episode.rollouts]
         display = (
-            dashboard(rollouts, config, start)
+            dashboard(rollouts, config, start, finished=finished)
             if config.rich
             else contextlib.nullcontext()
         )

@@ -271,7 +271,7 @@ class CorrectnessJudge(vf.Judge[bool]):                 # Judge[ParsedT] — Par
         return response.text.strip().lower().startswith("yes")
 
 class MyConfig(vf.TasksetConfig):
-    judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
+    judge: vf.JudgeConfig = vf.JudgeConfig()
 
 class MyTaskset(vf.Taskset[MyTask, MyConfig]):
     def __init__(self, config: MyConfig) -> None:
@@ -307,6 +307,94 @@ Good to know:
 - **Multiple / dynamic calls per rollout** (e.g. one per table column): call the low-level `complete(messages, *, trace=, schema=, parse=)` directly with `vf.Messages` you build — it records each call when passed `trace`.
 - **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`, Prime auto-config). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.
 - **Errors propagate**: a judge API failure errors the rollout (recorded as a `TasksetError` on the trace); the OpenAI SDK already retries transient 429/5xx/connection errors.
+
+### Pluggable judges
+
+A judge can also be **plugged from config alone** — no taskset code. The base `TasksetConfig` has a
+`judges` list; each entry names a judge plugin by `id` (resolved exactly like a taskset or harness id:
+a built-in, a local package, or a hub `org/name[@version]` package) and is run by `Taskset.score`
+after the taskset's own `@reward`s, recording its verdict into `trace.rewards` under its `name`
+(default: the id's package name; entries that would share a reward key are rejected at config
+time — set a distinct `name` on each) with its `weight`. That makes off-the-shelf grading
+composable with **any** taskset × harness pair straight from the eval TOML:
+
+```toml
+[taskset]
+id = "gsm8k-v1"
+
+[[taskset.judges]]                       # reference-answer yes/no -> 1/0
+id = "reference"
+answer_field = "answer"                  # the task field holding the reference answer
+
+[[taskset.judges]]                       # rubric criteria, each scored 1/0
+id = "rubric"
+path = "rubrics/quality.toml"
+weight = 0.5                             # the aggregate's weight in trace.reward
+weights = { cites_sources = 2.0 }        # per-criterion override of the file's weight
+```
+
+The built-ins (in `verifiers.v1.judges`):
+
+| id | class | grades |
+| --- | --- | --- |
+| `reference` | `vf.ReferenceJudge` | the reply against the task's reference answer (`answer_field`; a list = any acceptable answer), 1/0. Knobs: `choices` (verdict labels, e.g. `["A", "B"]`) |
+| `rubric` | `vf.RubricJudge` | every criterion of a `.toml`/`.json` rubric file 1/0 in one structured-output call; rewards the weighted mean (`Σwv/Σw`), records each verdict as a `<name>/<criterion>` metric |
+
+A rubric file lists `[[criteria]]` entries (`name`, `text`, optional `weight`; JSON takes
+`{"criteria": [...]}` or a bare list) — criterion weights come from the file, overridable per name
+via the config's `weights`:
+
+```toml
+[[criteria]]
+name = "cites_sources"
+text = "The response cites at least one specific source."
+weight = 1.0
+```
+
+Good to know:
+
+- **Judges alone are a full reward signal.** `score` runs `@metric`s, `@reward`s, then pluggable
+  judges — each phase optional. A taskset with no `@reward` and one judge gets `trace.reward`
+  entirely from the judge (wiki-search-v1's shape); mixing them sums weighted contributions.
+- **What the built-ins see** is config-selectable: `{question}` = the task field named by
+  `question_field` (else `task.prompt_text` — the prompt as plain text, `Messages` reduced to
+  text parts); `{response}` = the `view` (`vf.JudgeView`): `last_reply` (reference's default —
+  grade the answer) or `full_trace` (rubric's default — grade the process via
+  `Trace.transcript`, every recorded turn minus reasoning). Anything beyond that is a custom
+  judge: `score` gets the full `trace` (and `runtime`) and builds any messages from it.
+- **Error attribution:** a *model* failure scores 0 (empty replies short-circuit without a
+  judge call; wrong/non-committal replies get the negative verdict). A *judge* failure — API
+  error, refusal, unparseable verdict, bad rubric — **raises**: the rollout errors and training
+  excludes/retries the sample. Never silently 0 a judge failure.
+- **What lands on the trace:** the weighted verdict in `trace.rewards[<reward key>]`; rubric's
+  raw per-criterion verdicts in `trace.metrics`; every call's `JudgeResponse` in
+  `trace.info["judge"]` with its tokens + cost in `trace.extra_usage` (shown as `+judge` in the
+  dashboard). All persisted to `results.jsonl`.
+
+Writing your own pluggable judge is the same recipe as any plugin: a package exporting a `Judge`
+subclass via `__all__` that implements `score` — declare any subset of `task` / `trace` / `runtime`
+by parameter name (like a `@reward`) and return a `float` (or a `dict[str, float]`). Declare its
+config via the second generic param so `--taskset.judges` narrows to it:
+
+```python
+class MyJudgeConfig(vf.JudgeConfig):
+    strictness: int = 3
+
+class MyJudge(vf.Judge[float, MyJudgeConfig]):
+    prompt = "…{question}…{response}… Reply yes or no."
+
+    async def score(self, task: vf.Task, trace: vf.Trace) -> float:
+        result = await self.evaluate(trace=trace, question=task.prompt_text, response=trace.last_reply)
+        return float(vf.parse_judge_choice(result.text, ("yes", "no")) == "yes")
+
+__all__ = ["MyJudge", "MyJudgeConfig"]
+```
+
+Every judge's endpoint, model, sampling, prompt template (`prompt` inline, or `prompt_file`
+pointing at a text file with the same `{field}` placeholders), reward key (`name`), and
+`weight` are config fields, so a pluggable judge is fully tunable per eval without touching code.
+The built-ins' default prompts ship as text files next to their modules
+(`verifiers/v1/judges/reference.txt`, `rubric.txt`) — copy one as a `prompt_file` starting point.
 
 ## Stop conditions
 

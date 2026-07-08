@@ -12,7 +12,7 @@ from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
-    RolloutContext,
+    ModelContext,
     resolve_client,
 )
 from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
@@ -38,13 +38,30 @@ from verifiers.v1.errors import (
     UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.judge import Judge, JudgeConfig, JudgeResponse, JudgeSamplingConfig
+from verifiers.v1.judge import (
+    Judge,
+    JudgeConfig,
+    JudgeResponse,
+    Judges,
+    JudgeSamplingConfig,
+    JudgeView,
+)
+from verifiers.v1.judges import (
+    ReferenceJudge,
+    ReferenceJudgeConfig,
+    Criterion,
+    RubricJudge,
+    RubricJudgeConfig,
+)
 from verifiers.v1.loaders import (
     default_harness_id,
     harness_config_type,
     import_harness,
+    import_judge,
     import_taskset,
+    judge_config_type,
     load_harness,
+    load_judge,
     load_taskset,
     task_type,
     taskset_config_type,
@@ -88,7 +105,7 @@ from verifiers.v1.trace import (
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
-    EnvId,
+    ID,
     ImageUrlContentPart,
     ImageUrlSource,
     Message,
@@ -110,7 +127,7 @@ from verifiers.v1.types import (
 
 __all__ = [
     # types
-    "EnvId",
+    "ID",
     "AssistantMessage",
     "ContentPart",
     "ImageUrlContentPart",
@@ -171,7 +188,7 @@ __all__ = [
     "BaseConfig",
     "Harness",
     "HarnessConfig",
-    "RolloutContext",
+    "ModelContext",
     "Runtime",
     "RuntimeConfig",
     "ProgramResult",
@@ -192,17 +209,27 @@ __all__ = [
     # loaders
     "import_taskset",
     "import_harness",
+    "import_judge",
     "load_taskset",
     "load_harness",
+    "load_judge",
     "task_type",
     "taskset_config_type",
     "harness_config_type",
+    "judge_config_type",
     "default_harness_id",
     # judge
     "Judge",
     "JudgeConfig",
+    "Judges",
     "JudgeSamplingConfig",
     "JudgeResponse",
+    "JudgeView",
+    "ReferenceJudge",
+    "ReferenceJudgeConfig",
+    "RubricJudge",
+    "RubricJudgeConfig",
+    "Criterion",
     # scoring
     "compare_stdout_results",
     "extract_boxed_answer",

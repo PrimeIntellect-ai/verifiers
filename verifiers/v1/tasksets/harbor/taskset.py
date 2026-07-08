@@ -90,6 +90,10 @@ class HarborTask(Task):
     tags: list[str] = []
     task_dir: str = Field(exclude=True)
     """Host path to the task dir; used to stage tests/ to verify, not serialized."""
+    verifier_env: dict[str, str] = {}
+    """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
+    Resolved against the host environment at scoring time, like `harbor run` — so a
+    verifier that needs judge API keys or configuration actually receives them."""
 
 
 def harbor_cli() -> str:
@@ -268,7 +272,21 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
         category=meta.get("category"),
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
+        verifier_env=config.get("verifier", {}).get("env", {}),
     )
+
+
+def verifier_env(task: HarborTask) -> dict[str, str]:
+    """The env a task's verifier runs with: its [verifier.env] templates resolved against
+    the host environment (`${VAR}` / `${VAR:-default}`, harbor's own semantics). Resolution
+    is deferred to scoring time so resolved secrets never land on the serialized task."""
+    if not task.verifier_env:
+        return {}
+    # Lazy: `harbor` is the optional extra, but scoring implies the dataset was
+    # downloaded, which already required it.
+    from harbor.utils.env import resolve_env_vars
+
+    return resolve_env_vars(task.verifier_env)
 
 
 # Harbor test directories are immutable after download, so repeated rollouts can reuse
@@ -315,7 +333,7 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
             ],
             {},
         )
-        await runtime.run(["sh", "-c", "cd /tests && bash test.sh"], {})
+        await runtime.run(["sh", "-c", "cd /tests && bash test.sh"], verifier_env(task))
         try:
             reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
             return float(reward or 0)

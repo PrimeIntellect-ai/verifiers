@@ -67,7 +67,13 @@ class Client(ABC):
         generates and cannot stream."""
         raise NotImplementedError(f"{type(self).__name__} does not support streaming")
 
-    async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
+    async def relay_aux(
+        self,
+        dialect: Dialect,
+        route: str,
+        body: dict,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict:
         """Relay a non-model-turn side request (an `aux_route`, e.g. Anthropic's `count_tokens`)
         verbatim to the provider and return its JSON. Only the relay (eval) client supports it."""
         raise NotImplementedError(f"{type(self).__name__} does not relay aux routes")
@@ -77,9 +83,9 @@ class Client(ABC):
 
 
 @dataclass(frozen=True)
-class RolloutContext:
-    """The collaborators a single rollout needs (client + model + sampling), bundled
-    so harnesses hold no rollout state. Built by the Environment."""
+class ModelContext:
+    """The model-side collaborators a harness talks to (client + model + sampling),
+    bundled so harnesses hold no rollout state. Built by the Environment."""
 
     model: str
     client: Client

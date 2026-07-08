@@ -16,7 +16,7 @@ from typing import ClassVar, Generic, TypeVar
 from pydantic import Field
 from pydantic_config import BaseConfig
 
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import HarnessError, boundary
 from verifiers.v1.utils.install import env_name
@@ -28,7 +28,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import EnvId, Messages
+from verifiers.v1.types import ID, Messages
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +39,10 @@ class HarnessConfig(BaseConfig):
     id is supplied by the caller (`--harness.id` / toml / a taskset's bundled harness), never
     pinned on the subclass."""
 
-    id: EnvId = "default"
+    id: ID = "default"
     """The harness id, which selects this harness: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
-    `EnvId`). Set via `--harness.id`."""
+    `ID`). Set via `--harness.id`."""
     runtime: RuntimeConfig = SubprocessConfig()
     """Where the harness runs (subprocess / docker / prime). Subprocess by default — a local
     process on the host; a taskset that needs a container (its own image, or NEEDS_CONTAINER)
@@ -131,7 +131,7 @@ class Harness(ABC, Generic[ConfigT]):
 
     async def run(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
@@ -176,7 +176,7 @@ class Harness(ABC, Generic[ConfigT]):
     @abstractmethod
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,

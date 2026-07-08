@@ -1,6 +1,6 @@
 """The client abstraction and its OpenAI-compatible + renderer implementations."""
 
-from verifiers.v1.clients.client import Client, RolloutContext
+from verifiers.v1.clients.client import Client, ModelContext
 from verifiers.v1.clients.config import (
     BaseClientConfig,
     ClientConfig,
@@ -13,7 +13,7 @@ from verifiers.v1.clients.train import TrainClient
 
 __all__ = [
     "Client",
-    "RolloutContext",
+    "ModelContext",
     "BaseClientConfig",
     "ClientConfig",
     "EvalClientConfig",

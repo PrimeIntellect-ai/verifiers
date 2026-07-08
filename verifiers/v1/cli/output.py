@@ -12,6 +12,7 @@ durable as they land rather than only at the end.
 """
 
 import asyncio
+import json
 from pathlib import Path
 
 import tomli_w
@@ -56,6 +57,20 @@ def write_trace(results_dir: Path, trace: Trace) -> None:
     data = TypeAdapter(type(trace)).dump_json(trace, exclude_none=True)
     with (results_dir / "results.jsonl").open("ab") as f:
         f.write(data + b"\n")
+
+
+def read_traces(results_dir: Path, trace_type: type) -> list[Trace]:
+    """Load a run's saved traces from `results.jsonl`, typed as `trace_type` — the inverse of
+    `write_trace`. Used by `replay` to re-score finished rollouts (pass the taskset's typed
+    `Trace[...]`, or `Trace[WireTask, ...]` to read any taskset's traces without importing it).
+    Streams line-by-line so a large (multi-GB) results file isn't loaded into memory at once."""
+    adapter = TypeAdapter(trace_type)
+    traces: list[Trace] = []
+    with (results_dir / "results.jsonl").open(encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                traces.append(adapter.validate_python(json.loads(line)))
+    return traces
 
 
 async def append_trace(results_dir: Path, trace: Trace, lock: asyncio.Lock) -> None:
