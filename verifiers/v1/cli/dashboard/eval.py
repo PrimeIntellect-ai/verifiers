@@ -13,6 +13,7 @@ overview + progress sit on top, above a rule.
 
 import contextlib
 import time
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from rich.console import Console, Group
@@ -35,6 +36,9 @@ from verifiers.v1.utils.format import (
     format_time,
 )
 from verifiers.utils.pricing_utils import format_cost_usd
+
+if TYPE_CHECKING:
+    from verifiers.v1.push import PushState
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
@@ -178,7 +182,7 @@ def overrides(
     return segments
 
 
-def Overview(config: EvalConfig) -> Table:
+def Overview(config: EvalConfig, push: "PushState | None" = None) -> Table:
     sampling = ", ".join(
         f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items()
     )
@@ -205,6 +209,16 @@ def Overview(config: EvalConfig) -> Table:
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
     grid.add_row("output", Text(str(output_path(config)), overflow="fold"))
+    # --push status: dim while the run finishes + uploads, then the viewer URL (green) or the
+    # failure (red). Present only when the upload runs behind this dashboard (see `run_eval`).
+    if push is not None:
+        if not push.done:
+            value = Text("pushing traces after run completes", style="dim")
+        elif push.url:
+            value = Text(push.url, style="green", overflow="fold")
+        else:
+            value = Text("failed", style="red")
+        grid.add_row("push", value)
     return grid
 
 
@@ -576,11 +590,16 @@ def _render(
     start: float,
     pager: Pager,
     finished: list[Trace] | None = None,
+    push: "PushState | None" = None,
 ) -> Group:
     now = time.time()
     warning = _warning(config)
     # `{warning}\n\n{overview}` — the caution sits at the very top, blank line, then the overview.
-    header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
+    header = (
+        Group(warning, Text(""), Overview(config, push))
+        if warning
+        else Overview(config, push)
+    )
     # Measure the fixed top (header + progress + rule) so the rollout rows fill the rest of the
     # screen; page through them (timer, or the left/right arrows) when they'd overflow (rich would
     # otherwise truncate).
@@ -607,13 +626,17 @@ async def dashboard(
     config: EvalConfig,
     start: float,
     finished: list[Trace] | None = None,
+    push: "PushState | None" = None,
 ):
     """Refresh the live eval view until the `with` block exits, then a final frame. Left/right
     arrows page through rollout rows when they overflow the screen. On resume, `finished` carries
     the kept on-disk rollouts (reloaded as finished traces) so the counts and scores cover the
-    whole run, not just this session's re-run rollouts."""
+    whole run, not just this session's re-run rollouts. `push` is the shared `--push` status the
+    overview renders (dim pending -> green URL / red failed), updated by the caller when the
+    inline upload lands."""
     pager = Pager()
     async with live_view(
-        lambda: _render(rollouts, config, start, pager, finished), on_key=pager.on_key
+        lambda: _render(rollouts, config, start, pager, finished, push),
+        on_key=pager.on_key,
     ):
         yield

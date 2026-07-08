@@ -1,6 +1,6 @@
-"""Push a finished eval run to the Prime Intellect platform (`uv run eval --push`).
+"""Push a finished eval run to the Prime Intellect platform (`uv run eval`, `--no-push` to skip).
 
-Off by default. Converts each in-memory v1 `Trace` to the platform's sample schema
+On by default. Converts each in-memory v1 `Trace` to the platform's sample schema
 (`verifiers.v1.samples.trace_to_sample`, shared with the prime-rl monitor) and uploads the
 run over the `/evaluations/` API (create -> push samples -> finalize) — the same contract
 `prime eval push` uploads a saved run through, done inline at the end of a run rather than
@@ -10,6 +10,7 @@ later from disk. Auth + base URL come from `$PRIME_API_KEY` / `~/.prime/config.j
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -23,6 +24,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_API_URL = "https://api.primeintellect.ai"
 DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
+
+
+@dataclass
+class PushState:
+    """Live status of the push, shared with the v1 `--rich` dashboard so its overview can show a
+    dim pending note while the run finishes and uploads, then resolve to the viewer URL (green) or
+    `failed` (red). `done` flips true once the upload attempt returns; `url` is set only on a
+    successful upload. Set from `push_traces`'s return value — the upload itself stays stateless."""
+
+    url: str | None = None
+    done: bool = False
 
 
 def _creds() -> tuple[str | None, str, str, str | None]:
@@ -129,5 +141,5 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
         return None
 
     url = f"{frontend}/dashboard/evaluations/{eval_id}"
-    logger.info("--push: uploaded %d samples (evaluation_id=%s)", len(samples), eval_id)
+    logger.info("--push: uploaded %d samples -> %s", len(samples), url)
     return url

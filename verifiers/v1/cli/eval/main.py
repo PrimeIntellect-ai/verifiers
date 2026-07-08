@@ -105,7 +105,9 @@ def main(argv: list[str] | None = None) -> None:
     else:  # in-process (default), with or without the live dashboard
         env = vf.Environment(config)
         traces = asyncio.run(run_eval(env, config))
-    if config.push:  # opt-in: upload the run to the platform's Evaluations tab
+    # The in-process --rich path uploads inline (so its overview resolves to the viewer URL);
+    # every other path uploads here, logging the URL.
+    if config.push and not rich:
         from verifiers.v1.push import push_traces
 
         push_traces(traces, config)
