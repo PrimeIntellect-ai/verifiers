@@ -1,14 +1,15 @@
 """The environment: a taskset composed with an harness and a runtime.
 
 The Environment is the eval-level composition and *resolver* — it does not itself run
-rollouts. It holds the taskset, harness, runtime config, and timeouts; lists the tasks;
-and turns one task into a runnable `Episode` of `n` `Rollout`s, resolving per task the
-runtime (image + resources, with cli/task/default precedence) and the timeouts. Execution
-lives one level down: an `Episode` runs `n` `Rollout`s of a task and scores them
+rollouts. It holds the taskset (the loader), harness, runtime config, and timeouts; lists
+the tasks; and turns one task into a runnable `Episode` of `n` `Rollout`s, resolving per
+task the runtime (image + resources, with cli/task/default precedence) and the timeouts.
+Execution lives one level down: an `Episode` runs `n` `Rollout`s of a task and scores them
 (per-rollout `@reward`/`@metric`, then cross-rollout `@group_reward`); each `Rollout`
-runs one trajectory. The taskset's `@reward`/`@metric` get the rollout's runtime
+runs one trajectory. The task's `@reward`/`@metric` get the rollout's runtime
 (read/exec inside it), so a task scores correctly under any harness; `@group_reward`s
-compare a task's rollouts.
+compare a task's rollouts. Harness capability checks (tools, user sim, container) are
+per task — tasks carry their own behavior, so a loaded list may mix task types.
 """
 
 import contextlib
@@ -38,15 +39,15 @@ from verifiers.v1.mcp import serve_shared
 
 class TimeoutConfig(BaseConfig):
     """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no
-    limit). Each bounds one stage of `Rollout.run`: the taskset's `setup` hook, the harness
-    run, the taskset's `finalize` hook, then scoring."""
+    limit). Each bounds one stage of `Rollout.run`: the task's `setup` hook, the harness
+    run, the task's `finalize` hook, then scoring."""
 
     setup: float | None = None
-    """Max wall-clock for the taskset's `setup` hook (per-task runtime prep)."""
+    """Max wall-clock for the task's `setup` hook (per-task runtime prep)."""
     rollout: float | None = None
     """Max wall-clock for the rollout (the harness run)."""
     finalize: float | None = None
-    """Max wall-clock for the taskset's `finalize` hook (post-run work, before scoring)."""
+    """Max wall-clock for the task's `finalize` hook (post-run work, before scoring)."""
     scoring: float | None = None
     """Max wall-clock for scoring — verify + rewards/metrics."""
 
@@ -91,7 +92,7 @@ class EnvConfig(BaseConfig):
     """The rollout's two peers: the taskset (data + scoring) and the harness (which
     program drives it, and where it runs — `harness.runtime`). Both are chosen at eval
     time, not by the env — only `taskset` is narrowed per env (to its config type,
-    inferred from `load_taskset`). Tool-server placement lives on `taskset.tools`."""
+    inferred from `load_taskset`). Tool-server placement lives on `Task.tools`."""
 
     # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, DefaultHarnessConfig);
     # without it model_dump() narrows to the base type and drops the subclass fields, so the
@@ -231,37 +232,10 @@ def resolve_runtime_config(
 class Environment:
     def __init__(self, config: EnvConfig) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
-        from verifiers.v1.taskset import Taskset
 
         self.config = config
         self.taskset = load_taskset(config.taskset)
         self.harness = load_harness(config.harness)
-        if (
-            not self.harness.SUPPORTS_MCP
-            and type(self.taskset).tools is not Taskset.tools
-        ):
-            raise ValueError(
-                f"Harness {self.harness.config.id!r} does not support MCP tools, but taskset "
-                f"{self.taskset.config.id!r} exposes tool servers (MCP). Run it with a harness "
-                f"that supports MCP (e.g. --harness.id default), or use a taskset without tools."
-            )
-        if (
-            not self.harness.SUPPORTS_USER_SIM
-            and type(self.taskset).user is not Taskset.user
-        ):
-            raise ValueError(
-                f"Harness {self.harness.config.id!r} does not drive a user simulator, but taskset "
-                f"{self.taskset.config.id!r} defines one (Taskset.user). Run it with a harness that "
-                f"supports user simulation (e.g. --harness.id default), or use a taskset without one."
-            )
-        if self.taskset.NEEDS_CONTAINER and isinstance(
-            self.harness.config.runtime, SubprocessConfig
-        ):
-            raise ValueError(
-                f"Taskset {self.taskset.config.id!r} needs a container runtime "
-                "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
-                "use --harness.runtime.type docker or prime."
-            )
         # The warning is about the *agent* running arbitrary code on the host: every harness hands
         # it local execution (bash/edit, or a CLI agent) except the tool-less `null` chat loop,
         # whose program only relays the model and remote MCP tools — so exempt `null`, warn for the
@@ -301,17 +275,39 @@ class Environment:
         )
 
     def episode(self, task: Task, ctx: ModelContext, n: int = 1) -> Episode:
-        """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime
-        (image + resources) and its timeouts (cli/toml > task > default, None = no limit),
-        build one `Rollout` per sample sharing them, and wrap them in an `Episode` (which
-        runs them and applies the taskset's `@group_reward`s across their traces).
+        """Resolve `task` into a runnable episode of `n` rollouts: check the harness
+        supports what this task needs (tools / user sim / a container — per task, since a
+        loaded list may mix task types), pick its runtime (image + resources) and its
+        timeouts (cli/toml > task > default, None = no limit), build one `Rollout` per
+        sample sharing them, and wrap them in an `Episode` (which runs them and applies
+        the task's `@group_reward`s across their traces).
 
-        A taskset with `@group_reward`s compares a task's rollouts, so it needs >=2 of
+        A task with `@group_reward`s compares its rollouts, so it needs >=2 of
         them — refuse `n < 2` there (rather than silently scoring a group of one)."""
-        if n < 2 and discover_decorated(self.taskset, "group_reward"):
+        if not self.harness.SUPPORTS_MCP and type(task).tools is not Task.tools:
             raise ValueError(
-                f"taskset defines @group_reward(s), which compare a task's rollouts and "
-                f"need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
+                f"Harness {self.harness.config.id!r} does not support MCP tools, but task "
+                f"{task.idx!r} ({type(task).__name__}) exposes tool servers (MCP). Run it with "
+                f"a harness that supports MCP (e.g. --harness.id default), or use tasks without tools."
+            )
+        if not self.harness.SUPPORTS_USER_SIM and type(task).user is not Task.user:
+            raise ValueError(
+                f"Harness {self.harness.config.id!r} does not drive a user simulator, but task "
+                f"{task.idx!r} ({type(task).__name__}) defines one (Task.user). Run it with a "
+                f"harness that supports user simulation (e.g. --harness.id default), or use tasks without one."
+            )
+        if task.NEEDS_CONTAINER and isinstance(
+            self.harness.config.runtime, SubprocessConfig
+        ):
+            raise ValueError(
+                f"Task {task.idx!r} ({type(task).__name__}) needs a container runtime "
+                "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
+                "use --harness.runtime.type docker or prime."
+            )
+        if n < 2 and discover_decorated(task, "group_reward"):
+            raise ValueError(
+                f"task {task.idx!r} defines @group_reward(s), which compare a task's rollouts "
+                f"and need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
             )
         runtime_config = self.runtime_for(task)
         setup_timeout = (
@@ -349,10 +345,10 @@ class Environment:
         rollouts = [
             Rollout(
                 task=task,
-                taskset=self.taskset,
                 harness=self.harness,
                 ctx=ctx,
                 runtime_config=runtime_config,
+                judges=self.taskset.judges,
                 setup_timeout=setup_timeout,
                 harness_timeout=harness_timeout,
                 finalize_timeout=finalize_timeout,
@@ -363,7 +359,7 @@ class Environment:
             )
             for _ in range(n)
         ]
-        return Episode(rollouts, self.taskset, retry=retries.rollout)
+        return Episode(rollouts, retry=retries.rollout)
 
     @contextlib.asynccontextmanager
     async def serving(self, tasks: list[Task]):
@@ -400,7 +396,7 @@ class Environment:
         data to every rollout); `tools(tasks[0])` here only builds the toolset instances. A shared
         server on a host runtime is bridged to the host once (a tunnel) when the harness runs
         remotely, so an in-sandbox harness can still reach it (see `serve_shared`)."""
-        servers = self.taskset.tools(tasks[0]) if tasks else []
+        servers = tasks[0].tools() if tasks else []
         if not any(server.config.shared for server in servers):
             yield {}
             return

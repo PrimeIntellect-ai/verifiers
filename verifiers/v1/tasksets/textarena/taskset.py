@@ -123,17 +123,33 @@ class TextArenaConfig(vf.TasksetConfig):
     the harness's runtime/workdir (a non-colocated user runs in its own workspace → reward always 0)."""
 
 
-class TextArenaTask(vf.Task):
+class TextArenaTask(vf.Task[TextArenaState]):
     info: dict
     """What the user simulator needs to set up the game: the `game` id and the RNG `seed`
     that reproduces the exact episode this task's prompt was built from."""
+    user_config: vf.UserConfig = vf.UserConfig(colocated=True)
+    """How the game-engine user simulator is placed (baked from the taskset config at load);
+    colocated is required — see `TextArenaConfig.user`."""
 
+    def user(self) -> vf.User:
+        return TextArenaUser(self.user_config)
 
-class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig, TextArenaState]):
     @vf.stop
     async def game_over(self, trace: vf.Trace) -> bool:
         return trace.state.game_over
 
+    @vf.reward(weight=1.0)
+    async def game_reward(self, runtime: vf.Runtime) -> float:
+        # The simulator wrote the game's own outcome to the runtime when the episode ended;
+        # a missing file means the game never finished (e.g. every move was invalid).
+        try:
+            data = await runtime.read(OUTCOME_FILE)
+        except (FileNotFoundError, OSError):
+            return 0.0
+        return float(json.loads(data)["reward"])
+
+
+class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
     def load_tasks(self) -> list[TextArenaTask]:
         # One task per RNG seed; the simulator re-seeds to reproduce the same episode. Games
         # that embed the per-episode setup in the prompt (WordLadder's start/target,
@@ -158,24 +174,10 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig, TextArenaState
                 prompt=observation(i) if seed_specific else first,
                 system_prompt=SYSTEM_PROMPT,
                 info={"game": self.config.game, "seed": i},
+                user_config=self.config.user,
             )
             for i in range(self.config.num_tasks)
         ]
-
-    def user(self, task: TextArenaTask) -> vf.User:
-        return TextArenaUser(self.config.user)
-
-    @vf.reward(weight=1.0)
-    async def game_reward(
-        self, task: TextArenaTask, trace: vf.Trace, runtime: vf.Runtime
-    ) -> float:
-        # The simulator wrote the game's own outcome to the runtime when the episode ended;
-        # a missing file means the game never finished (e.g. every move was invalid).
-        try:
-            data = await runtime.read(OUTCOME_FILE)
-        except (FileNotFoundError, OSError):
-            return 0.0
-        return float(json.loads(data)["reward"])
 
 
 if __name__ == "__main__":

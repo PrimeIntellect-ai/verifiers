@@ -56,8 +56,10 @@ class EnvServer:
         self.env = Environment(config)
         # Load tasks once; the index range is fixed for the server's lifetime.
         self.tasks = self.env.taskset.load_tasks()
-        self.requires_group_scoring = bool(
-            discover_decorated(self.env.taskset, "group_reward")
+        # Per task type (a loaded list may mix them): the env group-scores iff any task does.
+        self.requires_group_scoring = any(
+            discover_decorated(task, "group_reward")
+            for task in {type(t): t for t in self.tasks}.values()
         )
         self._clients: dict[
             tuple[str, str], Client

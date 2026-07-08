@@ -5,21 +5,22 @@ the tagged bound methods, sorted by descending priority then name.
 
 Scoring methods declare the inputs they need *by parameter name* and the framework
 injects them (`invoke`) — so a pure-trace reward needn't take the runtime, and an
-in-runtime verifier needn't take the trace. The available names are:
+in-runtime verifier needn't take the trace. They live on the `Task` subclass, so
+`self` IS the task; the available names are:
 
-    @reward / @metric  (per rollout):  task, trace, runtime
-    @group_reward      (per group):    task, traces
+    @reward / @metric  (per rollout):  trace, runtime
+    @group_reward      (per group):    traces
 
-All handlers must be `async`. Examples (on a Taskset subclass):
+All handlers must be `async`. Examples (on a Task subclass):
 
     @vf.reward(weight=1.0)
-    async def correct(self, task, trace, runtime) -> float: ...   # all three
+    async def correct(self, trace, runtime) -> float: ...         # both
 
     @vf.metric
     async def turns(self, trace) -> float: ...                    # trace only
 
     @vf.group_reward
-    async def most_concise(self, traces) -> list[float]: ...      # compares a task's rollouts
+    async def most_concise(self, traces) -> list[float]: ...      # compares this task's rollouts
 
 A `@group_reward` compares trace metadata across a task's rollouts; anything from the
 runtime is recorded per rollout as a `@metric` first.
@@ -87,7 +88,7 @@ def metric(func: F, priority: int = 0) -> F: ...
 @overload
 def metric(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
 def metric(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
-    """Mark a metric `(self, task, trace) -> float` (recorded, not summed)."""
+    """Mark a metric `(self, trace) -> float` (recorded, not summed)."""
     decorator = mark("metric", metric_priority=priority)
     return decorator if func is None else decorator(func)
 
@@ -102,9 +103,9 @@ def reward(
     func: F | None = None, weight: float = 1.0, priority: int = 0
 ) -> F | Callable[[F], F]:
     """Mark a per-rollout reward (weighted, summed into trace.reward). Declare any of
-    `task`/`trace`/`runtime`; they're injected by name. Return a `float` (recorded under
-    the method name) or a `dict[str, float]` (each entry under its own key); every
-    contribution is scaled by `weight` before it's summed into `trace.reward`."""
+    `trace`/`runtime`; they're injected by name (`self` is the task). Return a `float`
+    (recorded under the method name) or a `dict[str, float]` (each entry under its own
+    key); every contribution is scaled by `weight` before it's summed into `trace.reward`."""
     decorator = mark("reward", reward_priority=priority, _vf_weight=weight)
     return decorator if func is None else decorator(func)
 
@@ -118,8 +119,8 @@ def group_reward(
 def group_reward(
     func: F | None = None, weight: float = 1.0, priority: int = 0
 ) -> F | Callable[[F], F]:
-    """Mark a group reward `(self, traces[, task]) -> list[float]`: one score per trace,
-    computed by comparing all rollouts of a task (e.g. pairwise preference) — a function
+    """Mark a group reward `(self, traces) -> list[float]`: one score per trace,
+    computed by comparing all rollouts of this task (e.g. pairwise preference) — a function
     of trace metadata. Each score is weighted and summed into that trace's reward,
     alongside the per-rollout rewards."""
     decorator = mark("group_reward", group_reward_priority=priority, _vf_weight=weight)

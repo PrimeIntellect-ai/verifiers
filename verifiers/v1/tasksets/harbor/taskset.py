@@ -8,7 +8,7 @@ Defaults to the registry `harbor/hello-world` dataset.
 The harness runs in a container and edits /app; then the task's verifier
 (tests/test.sh) runs in the SAME container and the reward it writes to
 /logs/verifier/reward.txt becomes the score. The verification lives on the
-taskset (the `solved` reward), so a harbor task runs under ANY harness.
+task (the `solved` reward), so a harbor task runs under ANY harness.
 
 A task's declared [environment].docker_image becomes a first-class `Task.image`
 the Environment injects into the runtime (docker/prime both pull it). A task whose
@@ -36,7 +36,6 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import Task, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.trace import Trace
 from verifiers.v1.types import StrictBaseModel
 
 CACHE = Path.home() / ".cache" / "harbor"
@@ -81,7 +80,8 @@ class HarborTask(Task):
     """A Harbor task. The base fields carry instruction.md (`prompt`), the
     resolved container `image`, the `harness_timeout`/`scoring_timeout`/`resources`
     (from task.toml's [harness]/[verifier]/[environment]), and [task].name/description;
-    the rest mirror [metadata]."""
+    the rest mirror [metadata]. Scoring (`solved`) stages the task's harbor verifier
+    into the live runtime and reads back the reward it writes."""
 
     keywords: list[str] = []
     authors: list[Author] = []
@@ -94,6 +94,27 @@ class HarborTask(Task):
     """Raw [verifier.env] entries (literals or `${VAR}`/`${VAR:-default}` templates).
     Resolved against the host environment at scoring time, like `harbor run` — so a
     verifier that needs judge API keys or configuration actually receives them."""
+
+    @reward(weight=1.0)
+    async def solved(self, runtime: Runtime) -> float:
+        # Stage the task's tests into the live runtime, run its harbor verifier, and
+        # read back the reward it writes — runtime-opaque (write/run/read hide whether
+        # that's the host fs or across a container boundary), so it scores under any harness.
+        await runtime.write("/tmp/tests.tgz", make_tar(Path(self.task_dir) / "tests"))
+        await runtime.run(
+            [
+                "sh",
+                "-c",
+                "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests",
+            ],
+            {},
+        )
+        await runtime.run(["sh", "-c", "cd /tests && bash test.sh"], verifier_env(self))
+        try:
+            reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
+            return float(reward or 0)
+        except (SandboxError, OSError, ValueError):
+            return 0.0
 
 
 def harbor_cli() -> str:
@@ -318,24 +339,3 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
             parse_task(task_dir, idx, self.config)
             for idx, task_dir in enumerate(task_dirs)
         ]
-
-    @reward(weight=1.0)
-    async def solved(self, task: HarborTask, trace: Trace, runtime: Runtime) -> float:
-        # Stage the task's tests into the live runtime, run its harbor verifier, and
-        # read back the reward it writes — runtime-opaque (write/run/read hide whether
-        # that's the host fs or across a container boundary), so it scores under any harness.
-        await runtime.write("/tmp/tests.tgz", make_tar(Path(task.task_dir) / "tests"))
-        await runtime.run(
-            [
-                "sh",
-                "-c",
-                "mkdir -p /logs/verifier /tests && tar -xzf /tmp/tests.tgz -C /tests",
-            ],
-            {},
-        )
-        await runtime.run(["sh", "-c", "cd /tests && bash test.sh"], verifier_env(task))
-        try:
-            reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
-            return float(reward or 0)
-        except (SandboxError, OSError, ValueError):
-            return 0.0

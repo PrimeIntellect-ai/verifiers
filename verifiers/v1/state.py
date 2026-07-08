@@ -7,7 +7,7 @@ free-form artifact bag persisted to `results.jsonl` — `state` is transient run
 game progress, an end-of-trajectory flag): never written to disk or sent over the wire.
 
 The base `State` is empty — the framework holds no opinion about its contents. Subclass it to declare
-typed fields, then parameterize the taskset (`Taskset[Task, Config, MyState]`) and any stateful server
+typed fields, then parameterize the task (`Task[MyState]`) and any stateful server
 (`Toolset[Config, MyState]` / `User[Config, MyState]`) to type it. To end a trajectory from state,
 add your own flag and a `@vf.stop` that checks it (e.g. `user_finished`) — see the user-sim examples.
 """
@@ -34,13 +34,16 @@ StateT = TypeVar("StateT", bound=State, default=State)
 
 
 def state_cls(cls: type) -> type[State]:
-    """The `State` subclass a class parameterizes — `Taskset[Task, Config, MyState]`,
+    """The `State` subclass a class parameterizes — `Task[MyState]`,
     `Toolset[Config, MyState]`, `User[Config, MyState]` — read off its generic bases, walking the MRO
     so a further subclass inherits it. Falls back to the base `State` when none is given (the common
-    case: an env that doesn't customize state, written without the extra generic param)."""
+    case: an env that doesn't customize state, written without the generic param). A pydantic generic
+    (`Task[MyState]`) parametrizes into a real class, not a typing alias, so its args live in
+    `__pydantic_generic_metadata__` rather than `__orig_bases__`; check both."""
     for klass in getattr(cls, "__mro__", [cls]):
-        for base in getattr(klass, "__orig_bases__", ()):
-            for arg in get_args(base):
+        meta = getattr(klass, "__pydantic_generic_metadata__", None) or {}
+        for base in (*meta.get("args", ()), *getattr(klass, "__orig_bases__", ())):
+            for arg in (base, *get_args(base)):
                 if isinstance(arg, type) and issubclass(arg, State):
                     return arg
     return State

@@ -1,6 +1,6 @@
 """The built-in null harness: runs a small chat-loop program as a uv script, no tools of its own.
 
-A growing-message-list chat loop with the taskset's MCP tools (host-side, resolved to URLs by
+A growing-message-list chat loop with the task's MCP tools (host-side, resolved to URLs by
 the Environment) — and no tools of its own (it's "null" precisely because it adds no
 harness-side tooling). Its uv script (deps: openai, mcp) is prepared during setup, then launched
 as the harness program. For a shell-driving agent, use a dedicated agentic harness (e.g.

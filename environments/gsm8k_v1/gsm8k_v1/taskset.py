@@ -24,6 +24,29 @@ class GSM8KTask(vf.Task):
     answer: str
     """The ground-truth final answer (the value after GSM8K's `####`)."""
 
+    @vf.reward(weight=1.0)
+    async def correct(self, trace: vf.Trace, runtime: vf.Runtime) -> float:
+        prediction = trace.last_reply
+        result = await runtime.run_uv_script(
+            VERIFY, args=[self.answer, prediction or ""]
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
+        lines = result.stdout.strip().splitlines()
+        return float(lines[-1]) if lines else 0.0
+
+    async def validate(self, runtime: vf.Runtime) -> bool:
+        """Valid iff the verifier accepts the ground-truth answer: run `verify.py` on the gold
+        answer as a well-formed `#### N` prediction and require a 1.0 score — catching rows the
+        verifier can't parse or grade (the model-free counterpart of the `correct` reward)."""
+        result = await runtime.run_uv_script(
+            VERIFY, args=[self.answer, f"#### {self.answer}"]
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
+        lines = result.stdout.strip().splitlines()
+        return bool(lines) and float(lines[-1]) == 1.0
+
 
 class GSM8KConfig(vf.TasksetConfig):
     split: Literal["train", "test"] = "test"
@@ -42,28 +65,3 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
             )
             for i, row in enumerate(rows)
         ]
-
-    @vf.reward(weight=1.0)
-    async def correct(
-        self, task: GSM8KTask, trace: vf.Trace, runtime: vf.Runtime
-    ) -> float:
-        prediction = trace.last_reply
-        result = await runtime.run_uv_script(
-            VERIFY, args=[task.answer, prediction or ""]
-        )
-        if result.exit_code != 0:
-            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
-        lines = result.stdout.strip().splitlines()
-        return float(lines[-1]) if lines else 0.0
-
-    async def validate(self, task: GSM8KTask, runtime: vf.Runtime) -> bool:
-        """Valid iff the verifier accepts the ground-truth answer: run `verify.py` on the gold
-        answer as a well-formed `#### N` prediction and require a 1.0 score — catching rows the
-        verifier can't parse or grade (the model-free counterpart of the `correct` reward)."""
-        result = await runtime.run_uv_script(
-            VERIFY, args=[task.answer, f"#### {task.answer}"]
-        )
-        if result.exit_code != 0:
-            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
-        lines = result.stdout.strip().splitlines()
-        return bool(lines) and float(lines[-1]) == 1.0

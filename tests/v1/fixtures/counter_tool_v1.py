@@ -29,15 +29,26 @@ class CounterToolset(vf.Toolset[vf.ToolsetConfig, CounterState]):
         return f"count={self.state.count}"
 
 
-class CounterTask(vf.Task):
-    pass
+class CounterTask(vf.Task[CounterState]):
+    tools_config: vf.ToolsetConfig = vf.ToolsetConfig()
+    """Toolset placement (baked from the taskset config at load); a field named `tools`
+    would shadow the method."""
+
+    def tools(self) -> list[vf.Toolset]:
+        return [CounterToolset(self.tools_config)]
+
+    @vf.reward(weight=1.0)
+    async def counted(self, trace: vf.Trace) -> float:
+        # The tool incremented `self.state.count` per call and pushed it to `trace.state` over the
+        # interception channel; reading it back non-zero here proves the round-trip (>= 2 accumulated).
+        return float(trace.state.count >= 2)
 
 
 class CounterConfig(vf.TasksetConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig()
 
 
-class CounterTaskset(vf.Taskset[CounterTask, CounterConfig, CounterState]):
+class CounterTaskset(vf.Taskset[CounterTask, CounterConfig]):
     def load_tasks(self) -> list[CounterTask]:
         return [
             CounterTask(
@@ -47,17 +58,9 @@ class CounterTaskset(vf.Taskset[CounterTask, CounterConfig, CounterState]):
                     "each result before the next. After the last result, reply with "
                     "<answer>done</answer>."
                 ),
+                tools_config=self.config.tools,
             )
         ]
-
-    def tools(self, task: CounterTask) -> list[vf.Toolset]:
-        return [CounterToolset(self.config.tools)]
-
-    @vf.reward(weight=1.0)
-    async def counted(self, trace: vf.Trace) -> float:
-        # The tool incremented `self.state.count` per call and pushed it to `trace.state` over the
-        # interception channel; reading it back non-zero here proves the round-trip (>= 2 accumulated).
-        return float(trace.state.count >= 2)
 
 
 __all__ = ["CounterTaskset"]

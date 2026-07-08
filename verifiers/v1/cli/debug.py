@@ -28,7 +28,7 @@ from verifiers.v1.decorators import invoke
 from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
 from verifiers.v1.state import state_cls
-from verifiers.v1.taskset import Taskset
+from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.logging import setup_logging
 
@@ -203,8 +203,8 @@ async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
     }
 
 
-async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace, bool]:
-    trace = Trace(task=task, state=state_cls(type(taskset))())
+async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
+    trace = Trace(task=task, state=state_cls(type(task))())
     debug = {
         "task": task_info(task),
         "action": "command" if config.command is not None else "script",
@@ -224,7 +224,7 @@ async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace
         await runtime.start()
         debug["runtime"] = runtime_info(runtime)
         await asyncio.wait_for(
-            invoke(taskset.setup, {"task": task, "trace": trace, "runtime": runtime}),
+            invoke(task.setup, {"trace": trace, "runtime": runtime}),
             setup_timeout,
         )
         trace.timing.setup.end = time.time()
@@ -264,8 +264,8 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
         random.Random(0).shuffle(tasks)
     if config.num_tasks is not None:
         tasks = tasks[: config.num_tasks]
-    if isinstance(config.runtime, vf.SubprocessConfig) and (
-        taskset.NEEDS_CONTAINER or any(t.image for t in tasks)
+    if isinstance(config.runtime, vf.SubprocessConfig) and any(
+        type(t).NEEDS_CONTAINER or t.image for t in tasks
     ):
         raise SystemExit(
             "taskset needs a container runtime to debug - pass --runtime.type docker (or prime)"
@@ -286,7 +286,7 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
 
     async def one(task) -> Trace:
         async with sem or contextlib.nullcontext():
-            trace, cancelled = await debug_task(taskset, task, config)
+            trace, cancelled = await debug_task(task, config)
         await append_trace(out, trace, write_lock)
         info = trace.info["debug"]
         detail = f" - {info['error']}" if info.get("error") else ""

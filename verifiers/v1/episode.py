@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.retries import run_with_retry
 from verifiers.v1.rollout import Phase, Rollout
-from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.memory import trim_memory_periodically
 
@@ -34,11 +33,11 @@ if TYPE_CHECKING:
 
 
 class Episode:
-    def __init__(
-        self, rollouts: list[Rollout], taskset: Taskset, retry: RolloutRetryConfig
-    ) -> None:
+    def __init__(self, rollouts: list[Rollout], retry: RolloutRetryConfig) -> None:
         self.rollouts = rollouts
-        self.taskset = taskset
+        self.task = rollouts[0].task
+        """The shared task — every rollout in an episode samples the same one; its
+        `@group_reward`s (if any) run across their traces."""
         self.retry = retry
 
     async def run(
@@ -55,7 +54,7 @@ class Episode:
         `on_complete` (the runner's persist hook) is called with each trace the instant
         it's finalized (DONE) — per rollout without group rewards, or once per trace after
         group scoring with them."""
-        group_scored = bool(discover_decorated(self.taskset, "group_reward"))
+        group_scored = bool(discover_decorated(self.task, "group_reward"))
 
         async def run_one(rollout: Rollout) -> Trace:
             async with semaphore or nullcontext():
@@ -70,7 +69,7 @@ class Episode:
 
         traces = await asyncio.gather(*(run_one(r) for r in self.rollouts))
         if group_scored:
-            await self.taskset.score_group(traces)  # cross-rollout @group_rewards
+            await self.task.score_group(traces)  # cross-rollout @group_rewards
             for rollout in self.rollouts:
                 rollout.phase = Phase.DONE
             for trace in traces:

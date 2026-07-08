@@ -15,6 +15,17 @@ from glossary_v1.servers.facts import FACTS, GlossaryToolset
 class GlossaryTask(vf.Task):
     answer: str
     """The fact the `lookup` tool returns for this task's entity."""
+    tools_config: vf.ToolsetConfig = vf.ToolsetConfig()
+    """How the facts toolset is placed (baked from the taskset config at load)."""
+
+    def tools(self) -> list[vf.Toolset]:
+        return [GlossaryToolset(self.tools_config)]
+
+    @vf.reward(weight=1.0)
+    async def looked_up(self, trace: vf.Trace) -> float:
+        # The fact only reaches the answer if the model called the MCP tool.
+        last = trace.last_reply
+        return float(self.answer.lower() in (last or "").lower())
 
 
 class GlossaryConfig(vf.TasksetConfig):
@@ -32,17 +43,7 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
                     "reply with exactly what it returns inside <answer></answer> tags."
                 ),
                 answer=fact,
+                tools_config=self.config.tools,
             )
             for i, (entity, fact) in enumerate(FACTS.items())
         ]
-
-    def tools(self, task: GlossaryTask) -> list[vf.Toolset]:
-        return [GlossaryToolset(self.config.tools)]
-
-    @vf.reward(weight=1.0)
-    async def looked_up(
-        self, task: GlossaryTask, trace: vf.Trace, runtime: vf.Runtime
-    ) -> float:
-        # The fact only reaches the answer if the model called the MCP tool.
-        last = trace.last_reply
-        return float(task.answer.lower() in (last or "").lower())

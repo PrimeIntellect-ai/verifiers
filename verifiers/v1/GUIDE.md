@@ -8,14 +8,15 @@ why, see the [README](README.md); this guide is the longer-form how-to. `import 
 A v1 environment is three decoupled pieces, each packagable and configured through typed
 config. You'll likely work with them in different proportions:
 
-- **Taskset** — the data and the scoring: it produces typed `Task`s and owns every `@reward` /
-  `@metric`, plus any tools and a user simulator (*what* the model is asked and *how* it's
-  graded). For many environments, this is the only piece you write.
+- **Taskset** — the loader: config in, typed `Task`s out. Each `Task` carries its data *and*
+  its behavior — every `@reward` / `@metric`, its lifecycle hooks, plus any tools and a user
+  simulator (*what* the model is asked and *how* it's graded). For many environments, the
+  task subclass plus a thin loader is the only piece you write.
 - **Harness** — the program that drives the rollout turn to turn, a chat loop or an agent CLI
   (*how* the model is called). **Usually you just pick a built-in** (`default` / `rlm` /
   `codex`); you only write your own if you need a custom rollout loop. With some exceptions, any
   taskset runs under any harness.
-- **Runtime** — *where* the harness (and the taskset's tools / user simulator) executes:
+- **Runtime** — *where* the harness (and a task's tools / user simulator) executes:
   `subprocess` / `docker` / `prime` / `modal`. **You never write one** — runtimes ship with the
   framework behind one `Runtime` contract and compose with any taskset/harness; you just choose
   where code runs.
@@ -43,7 +44,8 @@ flag names are the dotted config path (`--harness.runtime.type docker`). See the
 
 A taskset is a package exporting a `vf.Taskset`. Scaffold one with `uv run init my-task-v1` (add
 `--add-tool` / `--add-user` / `--add-harness` for more pieces, `--v0` for a legacy environment),
-or copy the closest `environments/<name>_v1` and edit. The minimal shape is:
+or copy the closest `environments/<name>_v1` and edit. The behavior lives on the `Task`
+subclass — the taskset is just the loader that yields it. The minimal shape is:
 
 ```python
 import verifiers.v1 as vf
@@ -51,6 +53,10 @@ import verifiers.v1 as vf
 
 class ReverseTask(vf.Task):
     answer: str                     # your own fields, alongside vf.Task's (prompt, system_prompt, ...)
+
+    @vf.reward()
+    async def exact_match(self, trace: vf.Trace) -> float:
+        return float(trace.last_reply == self.answer)
 
 
 class ReverseConfig(vf.TasksetConfig):
@@ -64,32 +70,34 @@ class ReverseTaskset(vf.Taskset[ReverseTask, ReverseConfig]):
             for i, w in enumerate(WORDS[: self.config.num_tasks])
         ]
 
-    @vf.reward()
-    async def exact_match(self, task: ReverseTask, trace: vf.Trace) -> float:
-        return float(trace.last_reply == task.answer)
-
 
 __all__ = ["ReverseTaskset"]   # vf resolves the taskset by finding this Taskset subclass
 ```
 
-`vf.Taskset[TaskT, ConfigT, StateT]` is generic over three types: your `Task` subclass, your
-`TasksetConfig` subclass, and (optionally) your `State` subclass. The third defaults to the base
-`vf.State`, so a stateless taskset writes just `Taskset[MyTask, MyConfig]`. The framework reads
-these off the generic bases to type `self.config`, `trace.task`, and `trace.state`.
+`vf.Taskset[TaskT, ConfigT]` is generic over two types: your `Task` subclass and your
+`TasksetConfig` subclass. The framework reads these off the generic bases to type `self.config`
+and `trace.task`. A task that shares typed per-rollout state with its tools / user simulator
+additionally parameterizes the task — `vf.Task[MyState]` — to type `trace.state`
+(see [State](#per-rollout-state)).
 
 The taskset module must export its `Taskset` subclass via `__all__` — the loader walks the
 exported names and finds the single `Taskset` subclass.
 
-**Capability flag.** A taskset has one class var, `NEEDS_CONTAINER` (default `False`); set it `True`
-to declare the taskset only runs in a container runtime (`docker` / `prime`), so the framework
-refuses the subprocess runtime up front — the taskset-wide counterpart to a task's per-row `image`
+**Capability flag.** A task has one class var, `NEEDS_CONTAINER` (default `False`); set it `True`
+to declare the task only runs in a container runtime (`docker` / `prime`), so the framework
+refuses the subprocess runtime up front — the class-wide counterpart to a task's per-row `image`
 (see [Runtimes](#runtimes)).
 
 ## The task
 
-`vf.Task` is a frozen pydantic model. Subclass it to add typed, task-specific fields (the
-reference answer, ground truths, per-row metadata) that flow — fully typed — into your rewards as
-`trace.task`. The base fields every task has:
+`vf.Task` is a frozen pydantic model that carries the task's data *and* its behavior. Subclass it
+to add typed, task-specific fields (the reference answer, ground truths, per-row metadata) — your
+rewards and hooks read them as `self` — plus the `@reward` / `@metric` methods and any
+[lifecycle hooks](#lifecycle-hooks). Because behavior rides on the task, a heterogeneous run
+(tasks from different datasets, each with its own verification) is just a list of
+differently-typed tasks. Tasks are frozen and shared across their rollouts, so methods must not
+stash per-rollout state on `self` — that lives on the trace (see [State](#per-rollout-state)).
+The base fields every task has:
 
 | field | type | meaning |
 | --- | --- | --- |
@@ -160,17 +168,18 @@ class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
 
 ## Scoring — rewards, metrics, group rewards
 
-Rewards and metrics are decorated `async` methods. The framework **injects whichever arguments
-you name** — declare any subset of `task` / `trace` / `runtime` and you get exactly those:
+Rewards and metrics are decorated `async` methods on the `Task` subclass — `self` *is* the task,
+so your typed fields are right there. The framework **injects whichever arguments you name** —
+declare any subset of `trace` / `runtime` and you get exactly those:
 
 ```python
 @vf.reward(weight=1.0)                 # summed (weighted) into trace.reward — a float or a dict to merge
-async def correct(self, task, trace) -> float: ...
+async def correct(self, trace) -> float: ...
 
 @vf.metric()                           # recorded, not summed — a float or a dict to merge
 async def enthusiasm(self, trace) -> float:
 
-@vf.group_reward(weight=0.1)           # compares a task's N rollouts — here, a length penalty
+@vf.group_reward(weight=0.1)           # compares this task's N rollouts — here, a length penalty
 async def brevity(self, traces: list[vf.Trace]) -> list[float]:
 ```
 
@@ -178,17 +187,18 @@ The decorators and what each can receive:
 
 | decorator | params | optional kwargs | returns |
 | --- | --- | --- | --- |
-| `@vf.reward` | `task`, `trace`, `runtime` | `weight=1.0`, `priority=0` | `float`, **or a `dict[str, float]`** (each × weight → summed into `trace.reward`) |
-| `@vf.metric` | `task`, `trace`, `runtime` | `priority=0` | `float`, **or a `dict[str, float]`** merged into `trace.metrics` |
-| `@vf.group_reward` | `task`, `traces` | `weight=1.0`, `priority=0` | `list[float]`, one per trace |
+| `@vf.reward` | `trace`, `runtime` | `weight=1.0`, `priority=0` | `float`, **or a `dict[str, float]`** (each × weight → summed into `trace.reward`) |
+| `@vf.metric` | `trace`, `runtime` | `priority=0` | `float`, **or a `dict[str, float]`** merged into `trace.metrics` |
+| `@vf.group_reward` | `traces` | `weight=1.0`, `priority=0` | `list[float]`, one per trace |
 | `@vf.stop` | `trace` | `priority=0` | `bool` |
 
 Good to know:
 
-- **`@group_reward` gets no `runtime` and no single `trace`** — only `task` and `traces` (it runs
-  after the per-rollout runtimes are gone). To compare a runtime-derived signal across a task's
-  rollouts, record it per-rollout as a `@metric`/`@reward` first, then read it off each trace in
-  the group reward. Group rewards need `-r/--num-rollouts ≥ 2`.
+- **`@group_reward` gets no `runtime` and no single `trace`** — only `traces` (it runs
+  after the per-rollout runtimes are gone; `self` is the shared task). To compare a
+  runtime-derived signal across a task's rollouts, record it per-rollout as a
+  `@metric`/`@reward` first, then read it off each trace in the group reward. Group rewards
+  need `-r/--num-rollouts ≥ 2`.
 - **`priority`** orders execution within a kind (higher first, then by name). It mostly matters for
   `@stop` — the highest-priority stop that fires sets the stop reason.
 
@@ -249,8 +259,8 @@ inside the runtime and never touch the host:
 VERIFY = (Path(__file__).parent / "verify.py").read_text()   # PEP 723 header declares its deps
 
 @vf.reward()
-async def verify(self, task, trace, runtime) -> float:
-    r = await runtime.run_uv_script(VERIFY, args=[task.answer, trace.last_reply])
+async def verify(self, trace, runtime) -> float:
+    r = await runtime.run_uv_script(VERIFY, args=[self.answer, trace.last_reply])
     return float(r.stdout.strip() == "1.0")
 ```
 
@@ -258,8 +268,9 @@ async def verify(self, task, trace, runtime) -> float:
 
 When grading can't be deterministic, `vf.Judge` is a reusable LLM judge: it owns the OpenAI client
 (with the Prime key/team fallback), the call, and usage/cost capture, and leaves the two things that
-differ as hooks — `build_messages` (prompt) and `parse` (verdict). Subclass it, build it once in the
-taskset `__init__`, and call it from a `@reward`:
+differ as hooks — `build_messages` (prompt) and `parse` (verdict). Subclass it, bake its config into
+a task field at load (so the knobs stay CLI-tunable via `--taskset.judge.*`), and call it from a
+`@reward`:
 
 ```python
 import verifiers.v1 as vf
@@ -270,18 +281,22 @@ class CorrectnessJudge(vf.Judge[bool]):                 # Judge[ParsedT] — Par
     def parse(self, response: vf.JudgeResponse[bool]) -> bool:
         return response.text.strip().lower().startswith("yes")
 
+class MyTask(vf.Task):
+    question: str
+    answer: str
+    judge: vf.JudgeConfig = vf.JudgeConfig()
+
+    @vf.reward()
+    async def correct(self, trace) -> float:
+        result = await CorrectnessJudge(self.judge).evaluate(trace=trace, question=self.question, answer=self.answer, response=...)
+        return 1.0 if result.parsed else 0.0
+
 class MyConfig(vf.TasksetConfig):
     judge: vf.JudgeConfig = vf.JudgeConfig()
 
 class MyTaskset(vf.Taskset[MyTask, MyConfig]):
-    def __init__(self, config: MyConfig) -> None:
-        super().__init__(config)
-        self.judge = CorrectnessJudge(config.judge)
-
-    @vf.reward()
-    async def correct(self, task, trace) -> float:
-        result = await self.judge.evaluate(trace=trace, question=task.question, answer=task.answer, response=...)
-        return 1.0 if result.parsed else 0.0
+    def load_tasks(self) -> list[MyTask]:
+        return [MyTask(..., judge=self.config.judge) for ... in ...]
 ```
 
 `evaluate(*, trace=None, **fields)` renders the prompt (`build_messages`), calls the model, and
@@ -302,7 +317,7 @@ The two hooks:
 
 Good to know:
 
-- **Per-task rubric** is just a field — `prompt = "{task.rubric}\n…"` with `evaluate(trace=trace, task=task, …)` (`str.format` does attribute access on a passed-in `task`). For per-task *parsing*, parse in the reward, where the task is in scope.
+- **Per-task rubric** is just a field — `prompt = "{task.rubric}\n…"` with `evaluate(trace=trace, task=self, …)` (`str.format` does attribute access on a passed-in `task`). For per-task *parsing*, parse in the reward, where the task is `self`.
 - **Structured outputs**: set `schema` to a pydantic model to use OpenAI structured outputs (where the provider supports it — most do); `JudgeResponse.parsed` is then the validated object. For an unsupported model, prompt for JSON and call `Model.model_validate_json(response.text)` in `parse`.
 - **Multiple / dynamic calls per rollout** (e.g. one per table column): call the low-level `complete(messages, *, trace=, schema=, parse=)` directly with `vf.Messages` you build — it records each call when passed `trace`.
 - **Config**: `JudgeConfig` adds `model` + `sampling` (a `JudgeSamplingConfig`) to `BaseClientConfig` (`base_url`/`api_key_var`/`headers`, Prime auto-config). CLI-overridable: `--taskset.judge.model …`, `--taskset.judge.sampling.max-tokens …`.
@@ -312,8 +327,8 @@ Good to know:
 
 A judge can also be **plugged from config alone** — no taskset code. The base `TasksetConfig` has a
 `judges` list; each entry names a judge plugin by `id` (resolved exactly like a taskset or harness id:
-a built-in, a local package, or a hub `org/name[@version]` package) and is run by `Taskset.score`
-after the taskset's own `@reward`s, recording its verdict into `trace.rewards` under its `name`
+a built-in, a local package, or a hub `org/name[@version]` package) and is run by `Task.score`
+after the task's own `@reward`s, recording its verdict into `trace.rewards` under its `name`
 (default: the id's package name; entries that would share a reward key are rejected at config
 time — set a distinct `name` on each) with its `weight`. That makes off-the-shelf grading
 composable with **any** taskset × harness pair straight from the eval TOML:
@@ -354,7 +369,7 @@ weight = 1.0
 Good to know:
 
 - **Judges alone are a full reward signal.** `score` runs `@metric`s, `@reward`s, then pluggable
-  judges — each phase optional. A taskset with no `@reward` and one judge gets `trace.reward`
+  judges — each phase optional. A task with no `@reward` and one judge gets `trace.reward`
   entirely from the judge (wiki-search-v1's shape); mixing them sums weighted contributions.
 - **What the built-ins see** is config-selectable: `{question}` = the task field named by
   `question_field` (else `task.prompt_text` — the prompt as plain text, `Messages` reduced to
@@ -399,8 +414,8 @@ The built-ins' default prompts ship as text files next to their modules
 ## Stop conditions
 
 A rollout ends when the harness finishes, a framework budget trips (`--max-turns`, token caps), or
-a taskset `@vf.stop` fires. A stop is an `async (self, trace) -> bool` checked between turns; its
-**method name becomes the stop reason**:
+a task `@vf.stop` fires. A stop is an `async (self, trace) -> bool` on the task, checked between
+turns; its **method name becomes the stop reason**:
 
 ```python
 @vf.stop
@@ -409,19 +424,21 @@ async def saw_answer(self, trace) -> bool:
     return "FINAL:" in last
 ```
 
-The framework has no built-in "the task is done" signal — multi-turn tasksets end either from the
+The framework has no built-in "the task is done" signal — multi-turn tasks end either from the
 trace (above) or from per-rollout state set by a tool / user sim (see [State](#per-rollout-state)).
 
 ## Lifecycle hooks
 
-A rollout runs **`setup → harness → finalize → scoring`**. A taskset can hook any stage:
+A rollout runs **`setup → harness → finalize → scoring`**. A task can hook any stage — like the
+scoring methods, `setup` / `finalize` declare the inputs they need by parameter name (any subset
+of `trace` / `runtime`):
 
 | hook | signature | when | gets runtime? |
 | --- | --- | --- | --- |
-| `setup` | `(self, task, runtime)` | per-task prep before the harness (clone a repo, start a service) — the trace doesn't exist yet | ✓ |
-| `finalize` | `(self, task, trace, runtime)` | after the harness, before scoring — apply a diff, snapshot, scrape artifacts into `trace.info` | ✓ |
-| `tools` | `(self, task) -> list[vf.Toolset]` | per task, before the harness — the task's tool servers | ✗ |
-| `user` | `(self, task) -> vf.User \| None` | per task, before the harness — the user simulator | ✗ |
+| `setup` | `(self, trace, runtime)` | per-task prep before the harness (clone a repo, start a service) — the trace exists but is empty | ✓ |
+| `finalize` | `(self, trace, runtime)` | after the harness, before scoring — apply a diff, snapshot, scrape artifacts into `trace.info` | ✓ |
+| `tools` | `(self) -> list[vf.Toolset]` | per task, before the harness — the task's tool servers | ✗ |
+| `user` | `(self) -> vf.User \| None` | per task, before the harness — the user simulator | ✗ |
 
 `setup`/`finalize` errors fail the rollout legibly (captured onto the trace, not a crash).
 
@@ -440,26 +457,30 @@ isolated environment. On a `runtime` you can call:
 
 A non-zero `exit_code` is a normal result, not an exception — check it and `raise` (a plain
 Python error) yourself if it should fail the stage; the framework records a failure in your
-taskset code as a `TasksetError`. The same code works on subprocess / docker / prime / modal.
+task code as a `TasksetError`. The same code works on subprocess / docker / prime / modal.
 
-A SWE taskset is the canonical case: `setup` provisions the repo, the agent edits it during the
+A SWE task is the canonical case: `setup` provisions the repo, the agent edits it during the
 rollout, and a `@reward` runs the tests in the *same* runtime:
 
 ```python
-class SWETaskset(vf.Taskset[SWETask, SWEConfig]):
-    NEEDS_CONTAINER = True   # the only Taskset class var: refuse the subprocess runtime
+class SWETask(vf.Task):
+    NEEDS_CONTAINER = True   # the only Task class var: refuse the subprocess runtime
 
-    async def setup(self, task, runtime) -> None:
-        await runtime.run(["git", "clone", task.repo_url, "/repo"], {})
-        await runtime.run(["git", "-C", "/repo", "checkout", task.base_commit], {})
+    repo_url: str
+    base_commit: str
+    test_cmd: str
 
-    async def finalize(self, task, trace, runtime) -> None:
+    async def setup(self, runtime) -> None:
+        await runtime.run(["git", "clone", self.repo_url, "/repo"], {})
+        await runtime.run(["git", "-C", "/repo", "checkout", self.base_commit], {})
+
+    async def finalize(self, trace, runtime) -> None:
         diff = await runtime.run(["git", "-C", "/repo", "diff"], {})
         trace.info["diff"] = diff.stdout   # scrape the agent's diff off the live runtime
 
     @vf.reward()
-    async def tests_pass(self, task, trace, runtime) -> float:
-        result = await runtime.run(["bash", "-lc", task.test_cmd], {})
+    async def tests_pass(self, runtime) -> float:
+        result = await runtime.run(["bash", "-lc", self.test_cmd], {})
         return 1.0 if result.exit_code == 0 else 0.0
 ```
 
@@ -490,7 +511,7 @@ It pairs with [`trace.state`](#per-rollout-state) — the two per-rollout stores
 the rollout's tool servers, user simulator, and scoring — the one place per-rollout *runtime* state
 lives (counters, game progress, your own end-of-trajectory flag). Unlike [`info`](#persisted-info) it is **never**
 persisted to disk or sent over the wire. Subclass `vf.State` to declare typed fields (each needs a
-default) and parameterize the taskset and any stateful server on it:
+default) and parameterize the task and any stateful server on it:
 
 ```python
 class GameState(vf.State):
@@ -503,7 +524,7 @@ class GameUser(vf.User[vf.UserConfig, GameState]):
             self.state.game_over = True   # the @vf.stop below ends the rollout
         return [{"role": "user", "content": reply}]
 
-class GameTaskset(vf.Taskset[GameTask, GameConfig, GameState]):
+class GameTask(vf.Task[GameState]):
     @vf.stop
     async def game_over(self, trace) -> bool:   # stop reason is this method's name
         return trace.state.game_over
@@ -520,7 +541,7 @@ Who touches it how:
 > calls a harness runs **concurrently** (several `tool_calls` in one assistant turn) therefore race
 > — each reads the same starting state and the last push wins, so concurrent increments/appends are
 > lost. Tools the harness runs **sequentially** compose correctly. Keep shared-state mutations on
-> the sequential path. The taskset and its servers must share **one** `State` subclass — a server
+> the sequential path. The task and its servers must share **one** `State` subclass — a server
 > pushing a mismatching shape is rejected (the rollout fails legibly).
 
 ## Tools
@@ -555,8 +576,8 @@ Two setup hooks, plus the shared state:
   server** (warns if defined there).
 - `self.config` is the server's typed knobs; `self.state` is the shared per-rollout `State`.
 
-A taskset exposes a task's tools via `tools(task) -> list[vf.Toolset]`, constructing each from a
-config field so placement is CLI-tunable (below).
+A task exposes its tools via `tools() -> list[vf.Toolset]`, constructing each from a config
+baked into a task field at load so placement stays CLI-tunable (below).
 
 ## User simulators
 
@@ -567,7 +588,7 @@ class HagglerUser(vf.User[vf.UserConfig, HagglerState]):
     async def respond(self, message: str) -> vf.Messages:
         # the model's last assistant text in → the next user message(s) out ([] to emit nothing)
         if done:
-            self.state.deal_closed = True       # end via a @vf.stop the taskset declares
+            self.state.deal_closed = True       # end via a @vf.stop the task declares
         return [{"role": "user", "content": reply}]
 
 
@@ -576,13 +597,13 @@ if __name__ == "__main__":
 ```
 
 The framework calls `respond` after each agent turn and injects the reply as the next user
-message; it's consumed by the framework, never shown to the model. A taskset supplies one via
-`user(task) -> vf.User | None`. If a task carries **no prompt** (`prompt=None`), the simulator also
+message; it's consumed by the framework, never shown to the model. A task supplies one via
+`user() -> vf.User | None`. If a task carries **no prompt** (`prompt=None`), the simulator also
 **opens the conversation**: the framework calls `respond("")` once before the first model turn and
 seeds its reply as the initial user message. End the trajectory by setting a `self.state` flag a
-taskset `@vf.stop` checks (there's no built-in end signal).
+task `@vf.stop` checks (there's no built-in end signal).
 
-A taskset may expose **both** tools and a user sim at once — they're served together each rollout;
+A task may expose **both** tools and a user sim at once — they're served together each rollout;
 the harness just needs to support both.
 
 ## Server placement & isolation
@@ -590,8 +611,8 @@ the harness just needs to support both.
 Each tool/user server is its own self-launching module under the env package's `servers/`, ending
 with `if __name__ == "__main__": <Server>.run()`; the framework launches it with
 `python -m <env>.servers.<name>`. **Placement** lives on the server's config (a `vf.ToolsetConfig`
-/ `vf.UserConfig` field on the taskset config), so it's per-server and CLI-tunable
-(`--taskset.tools.shared true`). It decides **where** the server runs and **how many** there are —
+/ `vf.UserConfig` field on the taskset config, baked into a task field at load), so it's
+per-server and CLI-tunable (`--taskset.tools.shared true`). It decides **where** the server runs and **how many** there are —
 the default is the cheapest correct thing; the rest trade setup cost for isolation:
 
 | mode | config | runs | pros | cons |
@@ -742,7 +763,7 @@ redirect the program's model calls; `self.config.env` just supplies any extra en
 ### Harness metrics
 
 A harness can define its own `@vf.metric` methods (injected `task` / `trace` / `runtime`), run over
-the finished trace alongside the taskset's — handy to surface what the program left behind in the
+the finished trace alongside the task's — handy to surface what the program left behind in the
 runtime (e.g. read a `meta.json` the binary wrote). A harness can't define rewards.
 
 ---
@@ -760,8 +781,8 @@ uv run eval gsm8k-v1 -n 1 --harness.runtime.type prime       # remote prime sand
 uv run eval gsm8k-v1 -n 1 --harness.runtime.type modal       # remote modal sandbox (requires auth)
 ```
 
-A taskset that sets `NEEDS_CONTAINER` (or a task with an `image`) refuses the subprocess runtime —
-pass `docker` / `prime` / `modal`.
+A task class that sets `NEEDS_CONTAINER` (or a task with an `image`) refuses the subprocess
+runtime — pass `docker` / `prime` / `modal`.
 
 ---
 
@@ -825,7 +846,7 @@ trace per line, appended as each rollout finishes — durable mid-run), and `eva
 ## `validate`
 
 Model-free checks that a task is sound. By default each task gets two independent
-runtimes — a **gold** check (the taskset's `setup` then its `validate` hook: the gold patch
+runtimes — a **gold** check (the task's `setup` then its `validate` hook: the gold patch
 makes the tests pass, the verifier accepts the gold answer) and a **setup-only** check —
 reported as one aggregate row. Restrict to one check with `--only-gold` / `--only-setup`.
 No model, no harness.
@@ -848,8 +869,8 @@ uv run validate swebench-v1 -n 1 --runtime.type prime --only-gold
 Each task is provisioned, set up, validated, and torn down independently; a raised error is
 captured as a result row (one bad task is data, not a crash) with reason `valid` / `invalid` /
 `timeout` / `error`. **Fire-and-forget — nothing is written to disk**; results show live. Note the
-default runtime is **docker** (unlike eval's subprocess), and a subprocess runtime against a
-`NEEDS_CONTAINER` / image-bearing taskset aborts with a clear error.
+default runtime is **docker** (unlike eval's subprocess), and a subprocess runtime against
+`NEEDS_CONTAINER` / image-bearing tasks aborts with a clear error.
 
 ## `debug`
 

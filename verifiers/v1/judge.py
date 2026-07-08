@@ -29,10 +29,10 @@ so judge behaviour and spend are no longer invisible. The record lands even if t
 empty structured output comes back, or `parse` raises (the request was already billed). Omit `trace`
 for a pure call (e.g. in tests).
 
-A judge can also be *plugged* rather than called from taskset code: a judge with an `id` and a
+A judge can also be *plugged* rather than called from task code: a judge with an `id` and a
 `score` implementation is a plugin (like a taskset or harness — see `verifiers.v1.judges` for the
 built-ins and `verifiers.v1.loaders` for resolution), attached to any eval via the base
-`TasksetConfig.judges` and run by `Taskset.score` after the taskset's own `@reward`s.
+`TasksetConfig.judges` and run by `Task.score` after the task's own `@reward`s.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ class JudgeConfig(BaseClientConfig):
     """The judge id, which selects a judge plugin for a config-plugged judge (see
     `TasksetConfig.judges`): a built-in (`reference`, `rubric`), a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see `ID`).
-    Empty for a judge the taskset builds and calls itself."""
+    Empty for a judge the task builds and calls itself."""
     name: str = ""
     """The reward key this judge's verdict records under when plugged (see `Judge.reward_name`);
     defaults to the id's package name. Set it to disambiguate two plugged judges sharing an id."""
@@ -112,7 +112,7 @@ class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
     text: str
     """The judge's raw reply."""
     parsed: ParsedT | None = None
-    """The verdict the taskset acts on (`parse`'s output, or the structured object for `schema`)."""
+    """The verdict the task acts on (`parse`'s output, or the structured object for `schema`)."""
     usage: Usage | None = None
 
 
@@ -227,7 +227,7 @@ class Judge(Generic[ParsedT, ConfigT]):
 
     async def score(self, task: "Task", trace: "Trace") -> float | Mapping[str, float]:
         """The plugged-judge contract: grade one finished rollout, returning a verdict that
-        `Taskset.score` records into `trace.rewards` under `config.reward_name` with
+        `Task.score` records into `trace.rewards` under `config.reward_name` with
         `config.weight` (a mapping records each entry under its own key, like a `@reward`).
         Like the scoring hooks, an override declares the inputs it needs *by parameter name*
         and the framework injects them: any subset of `task`, `trace`, `runtime`. Not
@@ -236,7 +236,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         raise NotImplementedError(
             f"{type(self).__name__} implements no `score`, so it can't be plugged via "
             "`taskset.judges`; implement `score` (see verifiers.v1.judges for examples) or "
-            "call it from a taskset `@reward` instead."
+            "call it from a task `@reward` instead."
         )
 
     def parse(self, response: JudgeResponse[ParsedT]) -> ParsedT:

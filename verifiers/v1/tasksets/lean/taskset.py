@@ -42,6 +42,8 @@ DEFAULT_SYSTEM_PROMPT = "You are an expert Lean 4 theorem prover working with Ma
 
 
 class LeanTask(Task):
+    NEEDS_CONTAINER = True
+
     formal_statement: str
     header: str = ""
     imports: str = "import Mathlib"
@@ -51,6 +53,99 @@ class LeanTask(Task):
     protected_signature: str = ""
     # Gold proof body (replaces ``  sorry``); "" when the dataset ships no gold.
     formal_proof: str = ""
+    # Sandbox layout + compile budget, baked from the taskset config at load so the
+    # task's hooks and reward are self-contained.
+    lean_project_path: str = LEAN_PROJECT_PATH
+    proof_file_path: str = PROOF_FILE_PATH
+    compile_timeout: int = 300
+
+    # ---- sandbox helpers ----------------------------------------------------
+
+    async def _compile(self, runtime: Runtime) -> tuple[bool, str, int]:
+        """Run ``lake env lean`` on the proof file; returns (compiled, output, exit_code)."""
+        cmd = (
+            f"cd {shlex.quote(self.lean_project_path)} && "
+            f"timeout {self.compile_timeout} lake env lean {shlex.quote(self.proof_file_path)} 2>&1; "
+            "echo EXIT_CODE:$?"
+        )
+        result = await runtime.run(["bash", "-lc", cmd], {})
+        return parse_compile_output((result.stdout or "") + (result.stderr or ""))
+
+    # ---- lifecycle ----------------------------------------------------------
+
+    async def setup(self, runtime: Runtime) -> None:
+        """Plant the ``sorry`` starter file in the sandbox before the agent runs."""
+        content = build_starter_file(
+            self.formal_statement,
+            header=self.header,
+            imports=self.imports,
+            normalize=self.normalize_mathlib_imports,
+        )
+        await runtime.write(self.proof_file_path, content.encode())
+
+    # ---- scoring ------------------------------------------------------------
+
+    @reward(weight=1.0)
+    async def lean_compiled(self, trace: Trace, runtime: Runtime) -> float:
+        """1.0 iff the final proof compiles cleanly (exit 0, no ``sorry``) and the
+        protected theorem signature is intact; 0.0 otherwise.
+
+        Reads the final ``proof.lean`` back through the live runtime, runs the
+        host-side signature guard (with comment/string stripping), then re-runs
+        ``lake env lean``. Diagnostics land on ``trace.info`` for inspection.
+        """
+        if trace.has_error:
+            return 0.0
+
+        # Read the final proof back. A read failure here is genuinely exceptional
+        # (setup planted the file; the agent edits it in-sandbox), so let it
+        # propagate as a scoring error rather than swallow an infra/sandbox failure
+        # into a false-negative 0. (The prime runtime collapses every read error
+        # into SandboxError, so there's no file-not-found type to narrow to.)
+        current = (await runtime.read(self.proof_file_path)).decode("utf-8", "replace")
+
+        expected_sig = self.protected_signature or expected_protected_signature(
+            self.formal_statement
+        )
+        if expected_sig and not protected_signature_substring_present(
+            current, expected_sig
+        ):
+            trace.info["lean_tampered"] = True
+            trace.info["compile_output"] = "signature rewritten or hidden in a comment"
+            return 0.0
+        trace.info["lean_tampered"] = False
+
+        compiled, output, exit_code = await self._compile(runtime)
+        trace.info["lean_compiled"] = compiled
+        trace.info["compile_exit_code"] = exit_code
+        trace.info["compile_output"] = output[-4000:]
+        return 1.0 if compiled else 0.0
+
+    # ---- validation (model-free gold check) ---------------------------------
+
+    async def validate(self, runtime: Runtime) -> bool:
+        """Compile the gold proof: substitute it for ``sorry`` and check it type-checks.
+
+        ``False`` is reserved for a row whose gold proof exists but **fails to
+        compile** (a genuinely bad/unprovable row). A row with **no** gold proof
+        (statement-only datasets, or an empty proof column) returns ``True`` — there
+        is nothing to refute, matching the base ``Task.validate`` no-op; flagging
+        it ``invalid`` would both swamp the report on statement-only datasets and
+        mask the rows whose gold actually fails on a sparse-gold dataset.
+        """
+        gold = (self.formal_proof or "").rstrip()
+        if not gold:
+            return True
+        content = build_starter_file(
+            self.formal_statement,
+            header=self.header,
+            imports=self.imports,
+            normalize=self.normalize_mathlib_imports,
+            proof_body=gold,
+        )
+        await runtime.write(self.proof_file_path, content.encode())
+        compiled, _, _ = await self._compile(runtime)
+        return compiled
 
 
 class LeanDatasetConfig(BaseConfig):
@@ -80,10 +175,6 @@ class LeanConfig(TasksetConfig):
 
 
 class LeanTaskset(Taskset[LeanTask, LeanConfig]):
-    NEEDS_CONTAINER = True
-
-    # ---- task loading -------------------------------------------------------
-
     def load_tasks(self) -> list[LeanTask]:
         from datasets import load_dataset
 
@@ -144,6 +235,9 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                     normalize_mathlib_imports=ds.normalize_mathlib_imports,
                     protected_signature=expected_protected_signature(formal_statement),
                     formal_proof=gold,
+                    lean_project_path=config.lean_project_path,
+                    proof_file_path=config.proof_file_path,
+                    compile_timeout=config.compile_timeout,
                 )
             )
         return tasks
@@ -167,99 +261,6 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
             "or `admit`. A clean compile prints nothing and exits 0."
         )
         return block
-
-    # ---- sandbox helpers ----------------------------------------------------
-
-    async def _compile(self, runtime: Runtime) -> tuple[bool, str, int]:
-        """Run ``lake env lean`` on the proof file; returns (compiled, output, exit_code)."""
-        cfg = self.config
-        cmd = (
-            f"cd {shlex.quote(cfg.lean_project_path)} && "
-            f"timeout {cfg.compile_timeout} lake env lean {shlex.quote(cfg.proof_file_path)} 2>&1; "
-            "echo EXIT_CODE:$?"
-        )
-        result = await runtime.run(["bash", "-lc", cmd], {})
-        return parse_compile_output((result.stdout or "") + (result.stderr or ""))
-
-    # ---- lifecycle ----------------------------------------------------------
-
-    async def setup(self, task: LeanTask, runtime: Runtime) -> None:
-        """Plant the ``sorry`` starter file in the sandbox before the agent runs."""
-        content = build_starter_file(
-            task.formal_statement,
-            header=task.header,
-            imports=task.imports,
-            normalize=task.normalize_mathlib_imports,
-        )
-        await runtime.write(self.config.proof_file_path, content.encode())
-
-    # ---- scoring ------------------------------------------------------------
-
-    @reward(weight=1.0)
-    async def lean_compiled(
-        self, task: LeanTask, trace: Trace, runtime: Runtime
-    ) -> float:
-        """1.0 iff the final proof compiles cleanly (exit 0, no ``sorry``) and the
-        protected theorem signature is intact; 0.0 otherwise.
-
-        Reads the final ``proof.lean`` back through the live runtime, runs the
-        host-side signature guard (with comment/string stripping), then re-runs
-        ``lake env lean``. Diagnostics land on ``trace.info`` for inspection.
-        """
-        if trace.has_error:
-            return 0.0
-
-        # Read the final proof back. A read failure here is genuinely exceptional
-        # (setup planted the file; the agent edits it in-sandbox), so let it
-        # propagate as a scoring error rather than swallow an infra/sandbox failure
-        # into a false-negative 0. (The prime runtime collapses every read error
-        # into SandboxError, so there's no file-not-found type to narrow to.)
-        current = (await runtime.read(self.config.proof_file_path)).decode(
-            "utf-8", "replace"
-        )
-
-        expected_sig = task.protected_signature or expected_protected_signature(
-            task.formal_statement
-        )
-        if expected_sig and not protected_signature_substring_present(
-            current, expected_sig
-        ):
-            trace.info["lean_tampered"] = True
-            trace.info["compile_output"] = "signature rewritten or hidden in a comment"
-            return 0.0
-        trace.info["lean_tampered"] = False
-
-        compiled, output, exit_code = await self._compile(runtime)
-        trace.info["lean_compiled"] = compiled
-        trace.info["compile_exit_code"] = exit_code
-        trace.info["compile_output"] = output[-4000:]
-        return 1.0 if compiled else 0.0
-
-    # ---- validation (model-free gold check) ---------------------------------
-
-    async def validate(self, task: LeanTask, runtime: Runtime) -> bool:
-        """Compile the gold proof: substitute it for ``sorry`` and check it type-checks.
-
-        ``False`` is reserved for a row whose gold proof exists but **fails to
-        compile** (a genuinely bad/unprovable row). A row with **no** gold proof
-        (statement-only datasets, or an empty proof column) returns ``True`` — there
-        is nothing to refute, matching the base ``Taskset.validate`` no-op; flagging
-        it ``invalid`` would both swamp the report on statement-only datasets and
-        mask the rows whose gold actually fails on a sparse-gold dataset.
-        """
-        gold = (task.formal_proof or "").rstrip()
-        if not gold:
-            return True
-        content = build_starter_file(
-            task.formal_statement,
-            header=task.header,
-            imports=task.imports,
-            normalize=task.normalize_mathlib_imports,
-            proof_body=gold,
-        )
-        await runtime.write(self.config.proof_file_path, content.encode())
-        compiled, _, _ = await self._compile(runtime)
-        return compiled
 
 
 __all__ = ["LeanTask", "LeanConfig", "LeanTaskset"]

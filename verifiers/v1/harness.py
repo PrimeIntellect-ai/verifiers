@@ -98,7 +98,7 @@ class Harness(ABC, Generic[ConfigT]):
         the user prompt (warning that it isn't sent as a system message). A `Messages`
         prompt (e.g. an image-bearing prompt) is only allowed for harnesses that set
         `SUPPORTS_MESSAGE_PROMPT`. A `None` prompt means the task has no prompt —
-        the user simulator opens the conversation (see `Taskset.user`); the harness emits no
+        the user simulator opens the conversation (see `Task.user`); the harness emits no
         opening user message."""
         prompt = task.prompt
         if (
@@ -155,7 +155,7 @@ class Harness(ABC, Generic[ConfigT]):
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Run this harness's `@metric` methods over the finished trace, concurrently,
-        recording each into `trace.metrics`. Mirrors `Taskset.score` (which the
+        recording each into `trace.metrics`. Mirrors `Task.score` (which the
         Rollout runs in parallel with this); metrics declare what they need (`task`,
         `trace`, `runtime`) and can read what the harness left behind in the runtime.
         No-op for an harness with no `@metric`s."""

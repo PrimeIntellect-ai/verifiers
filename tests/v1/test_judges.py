@@ -1,5 +1,5 @@
 """Pluggable judges: plugin resolution, base-`TasksetConfig.judges` narrowing, the built-in
-`reference` / `rubric` judges, and `Taskset.score` running plugged judges after the decorated
+`reference` / `rubric` judges, and `Task.score` running plugged judges after the decorated
 rewards. Judge model calls are faked at `Judge.complete` — no network."""
 
 import json
@@ -29,9 +29,13 @@ class QATask(vf.Task):
     answer: str = ""
 
 
-def make_trace(reply: str = "It is Paris.", answer: str = "Paris") -> vf.Trace:
+def make_trace(
+    reply: str = "It is Paris.",
+    answer: str = "Paris",
+    task_cls: type[QATask] = QATask,
+) -> vf.Trace:
     return vf.Trace(
-        task=QATask(idx=0, prompt="Capital of France?", answer=answer),
+        task=task_cls(idx=0, prompt="Capital of France?", answer=answer),
         nodes=[
             MessageNode(
                 parent=None,
@@ -427,7 +431,7 @@ async def test_reference_choices(fake_judge_model):
 
 async def test_error_attribution(monkeypatch, tmp_path):
     # The policy: a MODEL failure scores 0.0; a JUDGE failure errors the rollout (raises
-    # out of Taskset.score as a TasksetError) so training skips the sample instead of
+    # out of Task.score as a TasksetError) so training skips the sample instead of
     # punishing the model for a broken judge.
     async def gibberish_judge(
         self, messages, *, trace=None, schema=None, parse=None, **s
@@ -446,13 +450,13 @@ async def test_error_attribution(monkeypatch, tmp_path):
         JudgedConfig.model_validate({"judges": [{"id": "reference"}]})
     )
     # model failure: empty reply -> judge skipped, reward 0.0, NO error
-    trace = make_trace(reply="")
-    await taskset.score(trace, runtime=None)
+    trace = make_trace(reply="", task_cls=JudgedTask)
+    await trace.task.score(trace, runtime=None, judges=taskset.judges)
     assert trace.rewards["reference"] == 0.0
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
-    trace = make_trace()
+    trace = make_trace(task_cls=JudgedTask)
     with pytest.raises(vf.TasksetError, match="no yes/no verdict"):
-        await taskset.score(trace, runtime=None)
+        await trace.task.score(trace, runtime=None, judges=taskset.judges)
     assert "reference" not in trace.rewards
     assert len(trace.info["judge"]) == 1  # the billed call is still recorded
 
@@ -588,23 +592,25 @@ async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model):
     assert "ZEBRA-GOLD" in fake_judge_model[-1]
 
 
-# --- Taskset.score integration -------------------------------------------------------------
+# --- Task.score integration -------------------------------------------------------------
+
+
+class JudgedTask(QATask):
+    @vf.reward
+    async def own(self, trace) -> float:
+        return 0.25
 
 
 class JudgedConfig(vf.TasksetConfig):
     pass
 
 
-class JudgedTaskset(vf.Taskset[QATask, JudgedConfig]):
-    def load_tasks(self) -> list[QATask]:
+class JudgedTaskset(vf.Taskset[JudgedTask, JudgedConfig]):
+    def load_tasks(self) -> list[JudgedTask]:
         return []
 
-    @vf.reward
-    async def own(self, trace) -> float:
-        return 0.25
 
-
-async def test_taskset_score_runs_plugged_judges(tmp_path, fake_judge_model):
+async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     rubric = tmp_path / "rubric.toml"
     rubric.write_text(RUBRIC_TOML)
     cfg = JudgedConfig.model_validate(
@@ -616,8 +622,8 @@ async def test_taskset_score_runs_plugged_judges(tmp_path, fake_judge_model):
         }
     )
     taskset = JudgedTaskset(cfg)
-    trace = make_trace()
-    await taskset.score(trace, runtime=None)
+    trace = make_trace(task_cls=JudgedTask)
+    await trace.task.score(trace, runtime=None, judges=taskset.judges)
     assert trace.rewards["own"] == 0.25  # decorated rewards still run
     assert (
         trace.rewards["reference"] == 0.5
@@ -628,8 +634,7 @@ async def test_taskset_score_runs_plugged_judges(tmp_path, fake_judge_model):
     )  # every judge call recorded (rubric = one call)
 
 
-async def test_taskset_without_judges_scores_as_before():
-    taskset = JudgedTaskset(JudgedConfig())
-    trace = make_trace()
-    await taskset.score(trace, runtime=None)
+async def test_task_without_judges_scores_as_before():
+    trace = make_trace(task_cls=JudgedTask)
+    await trace.task.score(trace, runtime=None)
     assert trace.rewards == {"own": 0.25}

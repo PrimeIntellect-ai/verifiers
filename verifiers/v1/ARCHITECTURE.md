@@ -8,10 +8,11 @@ to `verifiers/v1/`.
 
 A rollout is the composition of three independently-swappable pieces, each loaded by `id`:
 
-- **Taskset** — data + scoring. Produces typed `Task`s; owns `@reward`/`@metric`/`@group_reward`
-  and the lifecycle hooks.
+- **Taskset** — the loader: config in, typed `Task`s out. Each `Task` carries its data and its
+  behavior — `@reward`/`@metric`/`@group_reward` and the lifecycle hooks live on the task class,
+  so a loaded list may mix task types, each scoring itself.
 - **Harness** — the program that drives the model turn to turn.
-- **Runtime** — *where* that program (and the taskset's tools / user simulator) executes.
+- **Runtime** — *where* that program (and a task's tools / user simulator) executes.
 
 `Environment` (`env.py`) wires them together for an eval; `Rollout` (`rollout.py`) runs one
 trajectory; `Episode` (`episode.py`) runs a task's N rollouts and applies cross-rollout
@@ -29,11 +30,11 @@ simulator — is invisible to the harness, which stays a plain program.
 Episode (task, n)
 └─ Rollout.run()                              # rollout.py, one asyncio.Task per rollout
    ├─ runtime.start()                         # provision workspace / container / sandbox
-   ├─ taskset.setup(task, runtime)            # Phase.SETUP   — wait_for(setup_timeout)
+   ├─ task.setup(trace, runtime)              # Phase.SETUP   — wait_for(setup_timeout)
    ├─ harness.run(ctx, trace, runtime, …)     # Phase.RUNNING — wait_for(rollout_timeout)
    │     └─ model calls → interception server → client → graph.add_turn()
-   ├─ taskset.finalize(task, trace, runtime)  # Phase.FINALIZE— wait_for(finalize_timeout)
-   ├─ taskset.score + harness.score           # Phase.SCORING — wait_for(scoring_timeout)
+   ├─ task.finalize(trace, runtime)           # Phase.FINALIZE— wait_for(finalize_timeout)
+   ├─ task.score + harness.score              # Phase.SCORING — wait_for(scoring_timeout)
    └─ runtime.stop()                          # guaranteed teardown (also atexit-guarded)
    ⤷ Episode then runs @group_reward across the task's N traces
 ```
@@ -119,8 +120,8 @@ silent corruption.
 
 When the harness POSTs a completion to its localhost endpoint, the `InterceptionServer`
 (`interception/server.py`) routes by the per-rollout bearer secret to a `RolloutSession`, then,
-per turn: checks `refused()` (the rollout's `RolloutLimits` + the taskset's `@stop`s), calls
-the session's client, records the result with `graph.add_turn()`, and — if the taskset has a
+per turn: checks `refused()` (the rollout's `RolloutLimits` + the task's `@stop`s), calls
+the session's client, records the result with `graph.add_turn()`, and — if the task has a
 user simulator — appends the next user message and loops, all invisibly to the harness.
 
 The wire format is abstracted by a **`Dialect`** (`dialects/`), chosen by the request's route:
@@ -197,13 +198,13 @@ data, not a crash. The whole model is four mechanisms, each in one place (`error
    | `HarnessError` | the harness install/launch or its agent process exit |
    | `ToolsetError` / `UserError` | a task's `Toolset` / `User` server couldn't be built or served |
    | `SandboxError` | a runtime/sandbox op (provisioning, exec, file I/O) |
-   | `TasksetError` | taskset-authored code (`setup`/`finalize`/`@reward`/`@metric`/`@group_reward`) |
+   | `TasksetError` | task-authored code (`setup`/`finalize`/`@reward`/`@metric`/`@group_reward`) |
    | `InterceptionError` (`TunnelError`) | the host interception server couldn't be reached |
 
 2. **Classification** — one helper, `boundary(error_cls, what)`, wraps each framework→code call:
    an already-typed `RolloutError` passes through (it crossed a more specific boundary first), a
    stage timeout or any other escaping error becomes `error_cls`. The rule: **extension code
-   (taskset hooks, harness subclasses) raises plain Python errors and never constructs a `vf.*`
+   (task hooks, harness subclasses) raises plain Python errors and never constructs a `vf.*`
    type** — the framework classifies. Infra raises its type at the source instead (`runtimes` →
    `SandboxError`, `clients` → `ProviderError` via `model_error`, the interception tunnel →
    `TunnelError`).
@@ -246,5 +247,5 @@ while `narrow_plugin_field` validates a generic config dict into the plugin's co
 type (read off the class's `Taskset[TaskT, ConfigT]` / `Harness[ConfigT]` / `Judge[ParsedT,
 ConfigT]` generic) — so the typed CLI/TOML surfaces each plugin's own fields without the core
 knowing them ahead of time. Judges are the lightweight third kind: attached to any eval via the
-base `TasksetConfig.judges` (built-ins under `verifiers/v1/judges`) and run by `Taskset.score`
-after the taskset's own rewards.
+base `TasksetConfig.judges` (built-ins under `verifiers/v1/judges`), built once by the taskset
+loader, and run by `Task.score` after the task's own rewards.

@@ -61,7 +61,7 @@ def write_trace(results_dir: Path, trace: Trace) -> None:
 
 def read_traces(results_dir: Path, trace_type: type) -> list[Trace]:
     """Load a run's saved traces from `results.jsonl`, typed as `trace_type` — the inverse of
-    `write_trace`. Used by `replay` to re-score finished rollouts (pass the taskset's typed
+    `write_trace`. Used by `replay` to re-score finished rollouts (pass the task's typed
     `Trace[...]`, or `Trace[WireTask, ...]` to read any taskset's traces without importing it).
     Streams line-by-line so a large (multi-GB) results file isn't loaded into memory at once."""
     adapter = TypeAdapter(trace_type)

@@ -4,7 +4,7 @@ A run writes `config.toml` + `results.jsonl` into its output dir. `--resume <dir
 that config verbatim (so it takes no other flags) and writes back into the same dir, running
 only the rollouts still owed: the *missing* ones (never written — the run was interrupted) and
 the *errored* ones (written with an error). Good rollouts are kept; errored ones are dropped
-and redone. A group-scored taskset is resumed a whole task at a time (its rollouts are scored
+and redone. A group-scored task is resumed a whole task at a time (its rollouts are scored
 together), so any task that isn't fully complete is redone from scratch.
 """
 
@@ -18,9 +18,8 @@ from pydantic_core import from_json
 
 from verifiers.v1.cli.output import read_traces
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.state import state_cls
+from verifiers.v1.state import State
 from verifiers.v1.task import WireTask
-from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
 
 
@@ -121,12 +120,13 @@ def rewrite_results(resume_dir: Path, keep: list[int]) -> None:
     tmp.replace(path)
 
 
-def load_kept(resume_dir: Path, taskset: Taskset) -> list[Trace]:
+def load_kept(resume_dir: Path) -> list[Trace]:
     """Reload the kept (good) traces as finished `Trace`s, so a resumed run's live dashboard counts
     them toward the whole run (progress, reward, err, and the usage/time breakdown). Call *after*
     `rewrite_results`, which leaves only the kept rows on disk. `WireTask` reads any taskset's saved
-    task without a runtime or its `Task` type (mirrors `replay`)."""
-    return read_traces(resume_dir, Trace[WireTask, state_cls(type(taskset))])
+    task without a runtime or its `Task` type (mirrors `replay`); these traces are display-only, so
+    no task upgrade is needed."""
+    return read_traces(resume_dir, Trace[WireTask, State])
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:

@@ -17,10 +17,6 @@ def _key(text: str) -> str:
     return "".join(c for c in text.casefold() if c.isalnum())
 
 
-class EchoUserSimTask(vf.Task):
-    phrases: list[str]
-
-
 class EchoUserSimConfig(vf.TasksetConfig):
     phrases: list[str] = PHRASES
     user: vf.UserConfig = vf.UserConfig()
@@ -45,13 +41,30 @@ class EchoUserSimUser(vf.User[vf.UserConfig, EchoUserSimState]):
         return [{"role": "user", "content": self.phrases[self.turns]}]
 
 
-class EchoUserSimTaskset(
-    vf.Taskset[EchoUserSimTask, EchoUserSimConfig, EchoUserSimState]
-):
+class EchoUserSimTask(vf.Task[EchoUserSimState]):
+    phrases: list[str]
+    user_config: vf.UserConfig = vf.UserConfig()
+    """User-sim placement (baked from the taskset config at load); a field named `user`
+    would shadow the method."""
+
+    def user(self) -> vf.User:
+        return EchoUserSimUser(self.user_config)
+
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:
         return trace.state.user_finished
 
+    @vf.reward(weight=1.0)
+    async def echoed(self, trace: vf.Trace) -> float:
+        replies = [m.content for m in trace.assistant_messages]
+        phrases = self.phrases
+        if len(replies) < len(phrases):
+            return 0.0
+        matched = sum(_key(p) in _key(r or "") for r, p in zip(replies, phrases))
+        return matched / len(phrases)
+
+
+class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
     def load_tasks(self) -> list[EchoUserSimTask]:
         return [
             EchoUserSimTask(
@@ -59,20 +72,9 @@ class EchoUserSimTaskset(
                 prompt=self.config.phrases[0],
                 system_prompt=SYSTEM,
                 phrases=self.config.phrases,
+                user_config=self.config.user,
             )
         ]
-
-    def user(self, task: EchoUserSimTask) -> vf.User:
-        return EchoUserSimUser(self.config.user)
-
-    @vf.reward(weight=1.0)
-    async def echoed(self, task: EchoUserSimTask, trace: vf.Trace) -> float:
-        replies = [m.content for m in trace.assistant_messages]
-        phrases = task.phrases
-        if len(replies) < len(phrases):
-            return 0.0
-        matched = sum(_key(p) in _key(r or "") for r, p in zip(replies, phrases))
-        return matched / len(phrases)
 
 
 __all__ = ["EchoUserSimTaskset"]

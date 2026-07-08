@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp"]
 # ///
-"""The null harness's program: a chat loop with the taskset's MCP tools (and none of its own).
+"""The null harness's program: a chat loop with the task's MCP tools (and none of its own).
 
 A growing-message-list chat loop. When the harness sets MCP_CONFIG (a standard `mcpServers` URL
 map) it connects to those servers over streamable HTTP, exposes their tools to the model as

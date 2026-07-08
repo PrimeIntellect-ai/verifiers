@@ -7,9 +7,9 @@ tighter type contract. `import verifiers.v1 as vf`.
 
 ## Highlights
 
-- **Composable taskset × harness** — a taskset (data + scoring) is fully decoupled from the
-  harness (the program driving the rollout); any taskset runs under any harness
-  (`default` / `rlm` / `codex` / your own)
+- **Composable taskset × harness** — a taskset (a loader of typed tasks, each carrying its
+  data and its scoring) is fully decoupled from the harness (the program driving the rollout);
+  any taskset runs under any harness (`default` / `rlm` / `codex` / your own)
 - **Swappable runtime** — the harness, tools, and user simulators all run behind one
   `Runtime` contract, in `subprocess` / `docker` / `prime` / `modal` / ...
 - **First-class branching rollouts** — a rollout isn't assumed linear: context compaction and
@@ -132,9 +132,9 @@ guaranteed cleanup of its resources, even on exit/interrupt.
 
 ### Tools
 
-A taskset may expose task-specific tools beyond the tools shipping natively with
-the harness as MCP servers. Its placement (separate runtime or colocated with
-harness) is configurable on `taskset.tools` and reachability is handled resolved
+A task may expose its own tools beyond the tools shipping natively with
+the harness as MCP servers. Their placement (separate runtime or colocated with
+harness) is configurable on `taskset.tools` and reachability is resolved
 automatically. Tools only run under a harness with `SUPPORTS_MCP` (the `default`
 harness has it; `rlm` doesn't) — an incompatible pairing is refused at load. The tool examples
 each show one placement:
@@ -147,8 +147,8 @@ uv run eval deepwiki-v1 -n 1     # an existing remote server, by URL
 
 ### User
 
-A stateful, multi-turn task can drive the *user* side of the conversation itself: a taskset's
-`user(task)` returns a `vf.User` — structurally a tool server, but the framework drives it,
+A stateful, multi-turn task can drive the *user* side of the conversation itself: a task's
+`user()` returns a `vf.User` — structurally a tool server, but the framework drives it,
 calling it after each assistant turn for the next user message(s) plus a done flag, then
 re-prompting. The harness never knows — it just sees another user turn — but it must support
 one (`SUPPORTS_USER_SIM`; the `default` harness has it, `rlm` doesn't). Placement is config on

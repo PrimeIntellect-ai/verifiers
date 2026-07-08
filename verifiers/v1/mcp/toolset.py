@@ -1,6 +1,6 @@
 """`Toolset` + `ToolsetConfig`: a tool server authored as a vf-native class with `@vf.tool` methods.
 
-A task gives the harness tools by declaring `Toolset`s from `Taskset.tools`. The config carries
+A task gives the harness tools by declaring `Toolset`s from `Task.tools`. The config carries
 placement (where the server runs); the class carries the `@vf.tool` methods the model calls.
 """
 

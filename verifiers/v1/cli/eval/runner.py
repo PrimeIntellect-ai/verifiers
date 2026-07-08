@@ -46,7 +46,12 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # session's re-run rollouts. Only the --rich dashboard reads them, so skip the load otherwise.
     finished: list[Trace] = []
     if config.resume is not None:
-        group = bool(discover_decorated(env.taskset, "group_reward"))
+        # Group scoring is per task type (a loaded list may mix them): resume must plan
+        # whole-group re-runs iff any task in the run group-scores.
+        group = any(
+            discover_decorated(task, "group_reward")
+            for task in {type(t): t for t in tasks}.values()
+        )
         keep, owed = resume.plan(
             out, [t.idx for t in tasks], config.num_rollouts, group
         )
@@ -56,7 +61,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
         tasks = [task for task in tasks if owed.get(task.idx)]
         resume.rewrite_results(out, keep)
         if config.rich:
-            finished = resume.load_kept(out, env.taskset)
+            finished = resume.load_kept(out)
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
             out,

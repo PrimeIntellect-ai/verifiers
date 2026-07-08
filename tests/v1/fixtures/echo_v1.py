@@ -26,6 +26,15 @@ class EchoTask(vf.Task):
     answer: str
     """The phrase the model should echo back."""
 
+    @vf.stop
+    async def single_turn(self, trace: vf.Trace) -> bool:
+        return trace.num_turns >= 1
+
+    @vf.reward(weight=1.0)
+    async def echoed(self, trace: vf.Trace) -> float:
+        reply = trace.assistant_messages[-1].content if trace.assistant_messages else ""
+        return float(lenient_match(self.answer, reply or ""))
+
 
 class EchoConfig(vf.TasksetConfig):
     phrases: list[str] = ["hello world", "ping", "verifiers"]
@@ -47,15 +56,6 @@ class EchoTaskset(vf.Taskset[EchoTask, EchoConfig]):
             )
             for i, phrase in enumerate(self.config.phrases)
         ]
-
-    @vf.stop
-    async def single_turn(self, trace: vf.Trace) -> bool:
-        return trace.num_turns >= 1
-
-    @vf.reward(weight=1.0)
-    async def echoed(self, task: EchoTask, trace: vf.Trace) -> float:
-        reply = trace.assistant_messages[-1].content if trace.assistant_messages else ""
-        return float(lenient_match(task.answer, reply or ""))
 
 
 __all__ = ["EchoTaskset"]

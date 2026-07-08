@@ -61,10 +61,27 @@ def output_dir(config: ReplayConfig) -> Path:
 async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trace]:
     logger.debug("replay config:\n%s", config.model_dump_json(indent=2))
     taskset = vf.load_taskset(config.taskset)
+    task_cls = vf.task_type(config.taskset.id)
     # `WireTask` reads any taskset's saved task without a runtime or its Task type (see WireTask).
-    traces = read_traces(source, Trace[WireTask, state_cls(type(taskset))])
+    traces = read_traces(source, Trace[WireTask, state_cls(task_cls)])
     if config.num_traces is not None:
         traces = traces[: config.num_traces]
+    # A `WireTask` carries the data but none of the taskset's behavior, so re-scoring needs
+    # the real Task type. A task that can't be rebuilt from the wire (a load-time-only field
+    # excluded from serialization, like harbor's `task_dir`) stays a `WireTask`: judges and
+    # the base task's trace-only signals still run, the subclass's own `@reward`s don't
+    # (runtime-dependent ones would be skipped offline anyway).
+    for trace in traces:
+        try:
+            trace.task = task_cls.model_validate(trace.task.model_dump())
+        except Exception:
+            logger.warning(
+                "replay: can't rebuild %s from the saved task %s; re-scoring it as a "
+                "plain WireTask (judges + base-task signals only)",
+                task_cls.__name__,
+                trace.task.idx,
+                exc_info=True,
+            )
     # `num_rescores` re-scores each trace that many times, each on its own copy.
     work = [t.model_copy(deep=True) for t in traces for _ in range(config.num_rescores)]
 
@@ -98,7 +115,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                     trace.info.pop("judge", None)
                 trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
                 try:
-                    await taskset.score(trace)
+                    await trace.task.score(trace, judges=taskset.judges)
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
                     st.state, st.detail = "error", type(exc).__name__

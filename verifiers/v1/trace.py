@@ -241,7 +241,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """Transient per-rollout runtime state (see `verifiers.v1.state.State`): shared with the tool/user
     servers as `self.state` (synced over the interception server) and read+written by scoring. Runtime
     scratch (counters, game progress, end-of-trajectory flags) — excluded from every dump (`model_dump`
-    / `to_record`), unlike `info` which persists. Type it via `Taskset[Task, Config, MyState]`; defaults
+    / `to_record`), unlike `info` which persists. Type it via `Task[MyState]`; defaults
     to the base `State`."""
 
     extra_usage: list[Usage] = Field(default_factory=list)

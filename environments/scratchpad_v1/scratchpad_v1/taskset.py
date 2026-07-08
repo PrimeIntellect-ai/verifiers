@@ -28,8 +28,23 @@ INSTRUCTION = (
 )
 
 
-class ScratchpadTask(vf.Task):
+class ScratchpadTask(vf.Task[ScratchpadState]):
     word: str
+    tools_config: ScratchpadToolsetConfig = ScratchpadToolsetConfig(shared=True)
+    """How the scratchpad toolset is placed (baked from the taskset config at load)."""
+
+    def tools(self) -> list[vf.Toolset]:
+        return [ScratchpadToolset(self.tools_config)]
+
+    @vf.stop
+    async def done(self, trace: vf.Trace) -> bool:
+        # A tool call then a final answer; cap turns so a chatty model still terminates.
+        return trace.num_turns >= 4
+
+    @vf.reward(weight=1.0)
+    async def isolated(self, trace: vf.Trace) -> float:
+        answer = trace.last_reply
+        return float(self.word in (answer or ""))
 
 
 class ScratchpadConfig(vf.TasksetConfig):
@@ -39,22 +54,14 @@ class ScratchpadConfig(vf.TasksetConfig):
     tools: ScratchpadToolsetConfig = ScratchpadToolsetConfig(shared=True)
 
 
-class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig, ScratchpadState]):
+class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig]):
     def load_tasks(self) -> list[ScratchpadTask]:
         return [
-            ScratchpadTask(idx=i, word=w, prompt=INSTRUCTION.format(word=w))
+            ScratchpadTask(
+                idx=i,
+                word=w,
+                prompt=INSTRUCTION.format(word=w),
+                tools_config=self.config.tools,
+            )
             for i, w in enumerate(WORDS)
         ]
-
-    def tools(self, task: ScratchpadTask) -> list[vf.Toolset]:
-        return [ScratchpadToolset(self.config.tools)]
-
-    @vf.stop
-    async def done(self, trace: vf.Trace) -> bool:
-        # A tool call then a final answer; cap turns so a chatty model still terminates.
-        return trace.num_turns >= 4
-
-    @vf.reward(weight=1.0)
-    async def isolated(self, task: ScratchpadTask, trace: vf.Trace) -> float:
-        answer = trace.last_reply
-        return float(task.word in (answer or ""))
