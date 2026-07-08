@@ -54,6 +54,10 @@ class EvalConfig(EnvServerConfig):
     server: bool = False
     """Drive rollouts through the env-server worker pool (sized by `--pool.*`) instead of
     in-process — the path prime-rl trains through. Incompatible with `--rich`."""
+    push: bool = True
+    """Upload the finished run to the Prime Intellect platform (the private Evaluations
+    tab) at the end of the eval. On by default; disable with `--no-push`. Needs
+    `$PRIME_API_KEY` or `prime login`."""
     output_dir: Path | None = Field(
         None, validation_alias=AliasChoices("output_dir", "o")
     )

@@ -13,6 +13,7 @@ overview + progress sit on top, above a rule.
 
 import contextlib
 import time
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from rich.console import Console, Group
@@ -35,6 +36,9 @@ from verifiers.v1.utils.format import (
     format_time,
 )
 from verifiers.utils.pricing_utils import format_cost_usd
+
+if TYPE_CHECKING:
+    from verifiers.v1.push import PushState
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
@@ -206,6 +210,21 @@ def Overview(config: EvalConfig) -> Table:
     grid.add_row("timeouts", timeouts)
     grid.add_row("output", Text(str(output_path(config)), overflow="fold"))
     return grid
+
+
+def _push_footer(push: "PushState | None") -> Group | None:
+    """The `--push` status line under the rollouts, shown once the run finishes and the upload
+    begins: dim `Pushing traces...` while it runs, then white `Traces pushed (<url>)` or red
+    `Trace push failed (<err>)`. `None` (no line) until the upload starts and when `--push` is off."""
+    if push is None or not push.started:
+        return None
+    if not push.done:
+        line = Text("Pushing traces...", style="dim")
+    elif push.url:
+        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
+    else:
+        line = Text(f"Trace push failed ({push.error})", style="red", overflow="fold")
+    return Group(Rule(style="dim"), line)
 
 
 def Progress(
@@ -576,16 +595,22 @@ def _render(
     start: float,
     pager: Pager,
     finished: list[Trace] | None = None,
+    push: "PushState | None" = None,
 ) -> Group:
     now = time.time()
     warning = _warning(config)
     # `{warning}\n\n{overview}` — the caution sits at the very top, blank line, then the overview.
     header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
-    # Measure the fixed top (header + progress + rule) so the rollout rows fill the rest of the
-    # screen; page through them (timer, or the left/right arrows) when they'd overflow (rich would
-    # otherwise truncate).
+    # The --push status line appears under the rollouts once the upload starts (None during the run
+    # / when off). Measure the fixed top (header + progress + rule) and the footer so the rollout
+    # rows fill what's left; page through them (timer / arrows) when they'd overflow (else rich
+    # truncates).
+    footer = _push_footer(push)
     top = Group(header, Progress(rollouts, start, finished=finished), Rule(style="dim"))
-    rows_per_page = max(1, _CONSOLE.size.height - len(_CONSOLE.render_lines(top)) - 1)
+    reserved = len(_CONSOLE.render_lines(top))
+    if footer is not None:
+        reserved += len(_CONSOLE.render_lines(footer))
+    rows_per_page = max(1, _CONSOLE.size.height - reserved - 1)
     page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, pager, now)
     progress = Progress(
         rollouts,
@@ -593,12 +618,15 @@ def _render(
         page=(index + 1, count) if count > 1 else None,
         finished=finished,
     )
-    return Group(
+    parts = [
         header,
         progress,
         Rule(style="dim"),
         Rows(page_groups, now, config.harness.runtime.type),
-    )
+    ]
+    if footer is not None:
+        parts.append(footer)
+    return Group(*parts)
 
 
 @contextlib.asynccontextmanager
@@ -607,13 +635,17 @@ async def dashboard(
     config: EvalConfig,
     start: float,
     finished: list[Trace] | None = None,
+    push: "PushState | None" = None,
 ):
     """Refresh the live eval view until the `with` block exits, then a final frame. Left/right
     arrows page through rollout rows when they overflow the screen. On resume, `finished` carries
     the kept on-disk rollouts (reloaded as finished traces) so the counts and scores cover the
-    whole run, not just this session's re-run rollouts."""
+    whole run, not just this session's re-run rollouts. `push` is the shared `--push` status the
+    view renders as a line under the rollouts once the upload starts (dim -> white URL / red error),
+    updated by the caller as the inline upload runs and lands."""
     pager = Pager()
     async with live_view(
-        lambda: _render(rollouts, config, start, pager, finished), on_key=pager.on_key
+        lambda: _render(rollouts, config, start, pager, finished, push),
+        on_key=pager.on_key,
     ):
         yield
