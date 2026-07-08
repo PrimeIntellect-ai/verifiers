@@ -55,7 +55,7 @@ class ScratchpadConfig(vf.TasksetConfig):
 
 
 class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig]):
-    def load_tasks(self) -> list[ScratchpadTask]:
+    def load(self) -> list[ScratchpadTask]:
         return [
             ScratchpadTask(
                 idx=i,

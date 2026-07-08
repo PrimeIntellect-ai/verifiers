@@ -606,7 +606,7 @@ class JudgedConfig(vf.TasksetConfig):
 
 
 class JudgedTaskset(vf.Taskset[JudgedTask, JudgedConfig]):
-    def load_tasks(self) -> list[JudgedTask]:
+    def load(self) -> list[JudgedTask]:
         return []
 
 

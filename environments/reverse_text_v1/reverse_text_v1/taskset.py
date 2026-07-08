@@ -40,7 +40,7 @@ class ReverseTextConfig(vf.TasksetConfig):
 
 
 class ReverseTextTaskset(vf.Taskset[ReverseTextTask, ReverseTextConfig]):
-    def load_tasks(self) -> list[ReverseTextTask]:
+    def load(self) -> list[ReverseTextTask]:
         from datasets import load_dataset
 
         rows = load_dataset(self.config.dataset_name, split=self.config.dataset_split)

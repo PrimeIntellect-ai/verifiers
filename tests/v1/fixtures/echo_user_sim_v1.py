@@ -65,7 +65,7 @@ class EchoUserSimTask(vf.Task[EchoUserSimState]):
 
 
 class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
-    def load_tasks(self) -> list[EchoUserSimTask]:
+    def load(self) -> list[EchoUserSimTask]:
         return [
             EchoUserSimTask(
                 idx=0,

@@ -3,7 +3,7 @@
 Registered as the `init` console script — the v1 sibling of v0's `vf-init`. It scaffolds a new
 environment package under `--path` (default `./environments`), following the layout of the
 shipped `environments/*_v1` examples: a `pyproject.toml`, a package whose `__init__.py` re-exports
-the plugin via `__all__`, and a `taskset.py` that runs out of the box (replace `load_tasks` and
+the plugin via `__all__`, and a `taskset.py` that runs out of the box (replace `load` and
 the `@reward`). The optional flags add more scaffolding — a `vf.Toolset` (`--add-tool`), a
 `vf.User` simulator (`--add-user`), and a custom `vf.Harness` (`--add-harness`). `--v0` scaffolds
 a legacy v0 `load_environment` package instead (via `verifiers.scripts.init`).
@@ -77,7 +77,7 @@ def _init_py(pkg: str, prefix: str, add_harness: bool) -> str:
 
 def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str:
     """The taskset module skeleton — the task's behavior (`@reward`, tool/user wiring) on the
-    `Task` subclass, and a thin `Taskset` with `load_tasks` to fill in. Each enabled piece
+    `Task` subclass, and a thin `Taskset` with `load` to fill in. Each enabled piece
     (tool/user) adds its import, a baked task field, its config field, and a wiring method."""
     imports = "import verifiers.v1 as vf"
     local_imports: list[str] = []
@@ -135,7 +135,7 @@ class {prefix}Config(vf.TasksetConfig):
 
 
 class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
-    def load_tasks(self) -> list[{prefix}Task]:
+    def load(self) -> list[{prefix}Task]:
         raise NotImplementedError(
             "Return this taskset's tasks, e.g. "
             "[{prefix}Task(idx=i, prompt=...{load_kwargs}) for i in range(self.config.num_tasks)]."
@@ -217,7 +217,7 @@ def _readme(
 ) -> str:
     layout = [
         f"- `{pkg}/taskset.py` — the task (`@reward` scoring + behavior) and the taskset: "
-        "`load_tasks` (data + prompts)."
+        "`load` (data + prompts)."
     ]
     if add_tool:
         layout.append(
@@ -239,7 +239,7 @@ A v1 verifiers environment, scaffolded with `init`.
 
 ## Develop
 
-1. Implement `load_tasks` and the `@reward` in `{pkg}/taskset.py` (see `environments/*_v1`).
+1. Implement `load` and the `@reward` in `{pkg}/taskset.py` (see `environments/*_v1`).
 2. Install + run:
 
 ```bash

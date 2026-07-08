@@ -41,7 +41,7 @@ class EchoConfig(vf.TasksetConfig):
 
 
 class EchoTaskset(vf.Taskset[EchoTask, EchoConfig]):
-    def load_tasks(self) -> list[EchoTask]:
+    def load(self) -> list[EchoTask]:
         return [
             # Keep coding-agent harnesses on the direct-response path instead of
             # spending this single-turn smoke task on a tool call.

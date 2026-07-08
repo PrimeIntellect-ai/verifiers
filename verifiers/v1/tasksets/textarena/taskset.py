@@ -150,7 +150,7 @@ class TextArenaTask(vf.Task[TextArenaState]):
 
 
 class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
-    def load_tasks(self) -> list[TextArenaTask]:
+    def load(self) -> list[TextArenaTask]:
         # One task per RNG seed; the simulator re-seeds to reproduce the same episode. Games
         # that embed the per-episode setup in the prompt (WordLadder's start/target,
         # WordSearch's grid) need the prompt built under each seed; games whose prompt

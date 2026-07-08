@@ -70,7 +70,7 @@ class WikiSearchConfig(vf.TasksetConfig):
 
 
 class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
-    def load_tasks(self) -> list[TriviaTask]:
+    def load(self) -> list[TriviaTask]:
         from datasets import load_dataset
 
         rows = load_dataset(QUESTIONS_DATASET, split="train")

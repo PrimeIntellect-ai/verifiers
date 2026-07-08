@@ -82,7 +82,7 @@ class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
         ("reverse-str", "the string HELLO reversed", "OLLEH"),
     ]
 
-    def load_tasks(self) -> list[CodeGolfTask]:
+    def load(self) -> list[CodeGolfTask]:
         return [
             CodeGolfTask(
                 idx=i,

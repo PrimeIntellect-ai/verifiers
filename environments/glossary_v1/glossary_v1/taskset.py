@@ -33,7 +33,7 @@ class GlossaryConfig(vf.TasksetConfig):
 
 
 class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
-    def load_tasks(self) -> list[GlossaryTask]:
+    def load(self) -> list[GlossaryTask]:
         return [
             GlossaryTask(
                 idx=i,

@@ -64,7 +64,7 @@ class ReverseConfig(vf.TasksetConfig):
 
 
 class ReverseTaskset(vf.Taskset[ReverseTask, ReverseConfig]):
-    def load_tasks(self) -> list[ReverseTask]:
+    def load(self) -> list[ReverseTask]:
         return [
             ReverseTask(idx=i, prompt=f"Reverse: {w}", answer=w[::-1])
             for i, w in enumerate(WORDS[: self.config.num_tasks])
@@ -148,13 +148,13 @@ able to change. The base `TasksetConfig` carries `id` (the taskset's id, set via
 
 ## Loading tasks
 
-`def load_tasks(self) -> list[TaskT]` builds the task list. It runs **once at load** (not per
+`def load(self) -> list[TaskT]` builds the task list. It runs **once at load** (not per
 rollout), so do dataset loading / filtering / slicing here off `self.config`. Return your typed
 `Task` subclass instances.
 
 ```python
 class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
-    def load_tasks(self) -> list[GSM8KTask]:
+    def load(self) -> list[GSM8KTask]:
         rows = load_dataset("openai/gsm8k", "main", split=self.config.split)   # read knobs off self.config
         return [
             GSM8KTask(
@@ -295,7 +295,7 @@ class MyConfig(vf.TasksetConfig):
     judge: vf.JudgeConfig = vf.JudgeConfig()
 
 class MyTaskset(vf.Taskset[MyTask, MyConfig]):
-    def load_tasks(self) -> list[MyTask]:
+    def load(self) -> list[MyTask]:
         return [MyTask(..., judge=self.config.judge) for ... in ...]
 ```
 
@@ -899,7 +899,7 @@ and the full stdout/stderr under `trace.info["debug"]`.
 
 Scaffold a new v1 environment package under `--path` (default `./environments`), following the
 shipped `*_v1` layout: a `pyproject.toml`, a `README.md`, a package whose `__init__.py` re-exports
-the plugin via `__all__`, and a `taskset.py` that runs out of the box (replace `load_tasks` and the
+the plugin via `__all__`, and a `taskset.py` that runs out of the box (replace `load` and the
 `@reward`).
 
 ```bash

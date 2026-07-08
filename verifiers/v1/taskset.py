@@ -10,7 +10,7 @@ simulation, `@reward`/`@metric` scoring — lives on the `Task` subclass it yiel
 The class stays generic over its task and config types (`Taskset[TaskT, ConfigT]`)
 so the loaders can read them: `taskset_config_type` narrows `--taskset.*` CLI/toml
 flags to the real config, and `task_type` types the wire trace. Subclass: implement
-`load_tasks`.
+`load`.
 """
 
 from functools import cached_property
@@ -92,15 +92,15 @@ ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
 
 
 class Taskset(Generic[TaskT, ConfigT]):
-    """Generic over its task and config types, so `self.config` and `load_tasks` are fully
+    """Generic over its task and config types, so `self.config` and `load` are fully
     typed (and the loaders can narrow CLI flags / type the wire trace off the generics).
-    Subclass: implement `load_tasks` — resolve config there and bake the results into task
+    Subclass: implement `load` — resolve config there and bake the results into task
     fields, so each task carries everything its hooks and rewards need."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
-    def load_tasks(self) -> list[TaskT]:
+    def load(self) -> list[TaskT]:
         raise NotImplementedError
 
     @cached_property

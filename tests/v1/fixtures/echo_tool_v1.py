@@ -45,7 +45,7 @@ class EchoToolConfig(vf.TasksetConfig):
 
 
 class EchoToolTaskset(vf.Taskset[EchoToolTask, EchoToolConfig]):
-    def load_tasks(self) -> list[EchoToolTask]:
+    def load(self) -> list[EchoToolTask]:
         return [
             EchoToolTask(
                 idx=0,

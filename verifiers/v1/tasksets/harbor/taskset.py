@@ -323,7 +323,7 @@ def make_tar(directory: Path) -> bytes:
 
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
-    def load_tasks(self) -> list[HarborTask]:
+    def load(self) -> list[HarborTask]:
         root = dataset_dir(self.config)
         task_dirs = [
             toml_path.parent

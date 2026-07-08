@@ -49,7 +49,7 @@ class CounterConfig(vf.TasksetConfig):
 
 
 class CounterTaskset(vf.Taskset[CounterTask, CounterConfig]):
-    def load_tasks(self) -> list[CounterTask]:
+    def load(self) -> list[CounterTask]:
         return [
             CounterTask(
                 idx=0,

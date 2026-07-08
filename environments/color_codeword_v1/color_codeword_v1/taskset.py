@@ -124,7 +124,7 @@ class ColorCodewordTask(vf.Task[ColorCodewordState]):
 
 
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
-    def load_tasks(self) -> list[ColorCodewordTask]:
+    def load(self) -> list[ColorCodewordTask]:
         c = self.config
         rng = random.Random(SEED)
         colors = list(COLOR_MAP)

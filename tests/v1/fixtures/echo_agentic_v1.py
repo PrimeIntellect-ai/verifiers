@@ -43,7 +43,7 @@ class EchoAgenticConfig(vf.TasksetConfig):
 
 
 class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
-    def load_tasks(self) -> list[EchoAgenticTask]:
+    def load(self) -> list[EchoAgenticTask]:
         phrase = self.config.phrase
         return [
             EchoAgenticTask(

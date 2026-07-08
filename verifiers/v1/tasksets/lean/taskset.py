@@ -59,8 +59,6 @@ class LeanTask(Task):
     proof_file_path: str = PROOF_FILE_PATH
     compile_timeout: int = 300
 
-    # ---- sandbox helpers ----------------------------------------------------
-
     async def _compile(self, runtime: Runtime) -> tuple[bool, str, int]:
         """Run ``lake env lean`` on the proof file; returns (compiled, output, exit_code)."""
         cmd = (
@@ -71,8 +69,6 @@ class LeanTask(Task):
         result = await runtime.run(["bash", "-lc", cmd], {})
         return parse_compile_output((result.stdout or "") + (result.stderr or ""))
 
-    # ---- lifecycle ----------------------------------------------------------
-
     async def setup(self, runtime: Runtime) -> None:
         """Plant the ``sorry`` starter file in the sandbox before the agent runs."""
         content = build_starter_file(
@@ -82,8 +78,6 @@ class LeanTask(Task):
             normalize=self.normalize_mathlib_imports,
         )
         await runtime.write(self.proof_file_path, content.encode())
-
-    # ---- scoring ------------------------------------------------------------
 
     @reward(weight=1.0)
     async def lean_compiled(self, trace: Trace, runtime: Runtime) -> float:
@@ -120,8 +114,6 @@ class LeanTask(Task):
         trace.info["compile_exit_code"] = exit_code
         trace.info["compile_output"] = output[-4000:]
         return 1.0 if compiled else 0.0
-
-    # ---- validation (model-free gold check) ---------------------------------
 
     async def validate(self, runtime: Runtime) -> bool:
         """Compile the gold proof: substitute it for ``sorry`` and check it type-checks.
@@ -175,7 +167,7 @@ class LeanConfig(TasksetConfig):
 
 
 class LeanTaskset(Taskset[LeanTask, LeanConfig]):
-    def load_tasks(self) -> list[LeanTask]:
+    def load(self) -> list[LeanTask]:
         from datasets import load_dataset
 
         config = self.config

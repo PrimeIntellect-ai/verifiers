@@ -55,7 +55,7 @@ class EnvServer:
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
         # Load tasks once; the index range is fixed for the server's lifetime.
-        self.tasks = self.env.taskset.load_tasks()
+        self.tasks = self.env.taskset.load()
         # Per task type (a loaded list may mix them): the env group-scores iff any task does.
         self.requires_group_scoring = any(
             discover_decorated(task, "group_reward")

@@ -41,7 +41,7 @@ class DeepWikiConfig(vf.TasksetConfig):
 
 
 class DeepWikiTaskset(vf.Taskset[DeepWikiTask, DeepWikiConfig]):
-    def load_tasks(self) -> list[DeepWikiTask]:
+    def load(self) -> list[DeepWikiTask]:
         return [
             DeepWikiTask(
                 idx=i,

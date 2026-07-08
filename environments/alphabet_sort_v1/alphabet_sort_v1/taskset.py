@@ -11,7 +11,7 @@ The whole conversation is driven by a `vf.User` simulator (`AlphabetSortUser` in
 conversation with the initial sort prompt — before the model is ever called — and then injects
 each follow-up after the assistant turn. The episode is one rollout the harness only ever sees
 as a single exchange. The simulator runs on the host (not colocated in the agent's runtime), so
-the host-driven loop reaches it on every runtime. The episodes are pre-generated in `load_tasks`;
+the host-driven loop reaches it on every runtime. The episodes are pre-generated in `load`;
 the simulator replays them.
 """
 
@@ -104,7 +104,7 @@ class AlphabetSortTask(vf.Task[AlphabetSortState]):
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
-    def load_tasks(self) -> list[AlphabetSortTask]:
+    def load(self) -> list[AlphabetSortTask]:
         c = self.config
         assert 1 <= c.min_turns <= c.max_turns, "need 1 <= min_turns <= max_turns"
         assert 1 <= c.min_names_per_turn <= c.max_names_per_turn, (
