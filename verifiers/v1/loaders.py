@@ -169,6 +169,19 @@ def load_judge(config: JudgeConfig) -> Judge:
     return judge_class(config.id)(config)
 
 
+_judges: dict[str, Judge] = {}
+
+
+def judge_for(config: JudgeConfig) -> Judge:
+    """The shared `Judge` instance for a plugged-judge config — built once per distinct
+    config per process (a judge holds an HTTP client, so the tasks that share a config
+    share the instance; `Task.plugged_judges` resolves through this)."""
+    key = config.model_dump_json()
+    if key not in _judges:
+        _judges[key] = load_judge(config)
+    return _judges[key]
+
+
 def taskset_config_type(taskset_id: str) -> type[TasksetConfig]:
     """The taskset's `TasksetConfig` subclass, from its `Taskset[TaskT, ConfigT]` generic."""
     for arg in _generic_args(taskset_class(taskset_id), Taskset):

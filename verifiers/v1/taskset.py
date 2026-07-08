@@ -15,14 +15,13 @@ one concrete task type (replay rebuilds every saved row as the declared `TaskT`,
 a row of any other class would silently lose its own behavior there).
 """
 
-from functools import cached_property
 from typing import Generic, TypeVar, get_args, get_origin
 
 from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import TasksetError
-from verifiers.v1.judge import Judge, Judges
+from verifiers.v1.judge import Judges, check_judges, resolve_judges
 from verifiers.v1.task import Task, TaskT
 from verifiers.v1.types import ID
 from verifiers.v1.utils.install import env_name
@@ -37,10 +36,11 @@ class TasksetConfig(BaseConfig):
     `ID`). Set via `--taskset.id`."""
     judges: Judges = []
     """Config-plugged judges, each resolved by `id` — a built-in (`reference`, `rubric`), a local
-    package, or a hub `org/name[@version]` package exporting a `Judge` subclass — and run by
-    `Task.score` after the task's own `@reward`s: grading plugged into any taskset/harness pair
-    from the eval config alone, no taskset code. Each entry records its verdict in
-    `trace.rewards` under its `name` with its `weight` (see `JudgeConfig`)."""
+    package, or a hub `org/name[@version]` package exporting a `Judge` subclass: grading plugged
+    into any taskset/harness pair from the eval config alone, no taskset code. `tasks()` appends
+    these to every row's own `Task.judges`, and `Task.score` runs them after the task's
+    `@reward`s. Each entry records its verdict in `trace.rewards` under its `name` with its
+    `weight` (see `JudgeConfig`)."""
 
     @property
     def name(self) -> str:
@@ -50,44 +50,19 @@ class TasksetConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_judges(cls, data):
-        """Narrow each `judges` entry to the config type its `id` resolves to (mirrors
-        `EnvConfig._resolve_plugins`), so judge-specific fields (e.g. rubric's `path`)
+        """Narrow each `judges` entry to the config type its `id` resolves to (see
+        `judge.resolve_judges`), so judge-specific fields (e.g. rubric's `path`)
         validate against the real config instead of being rejected by the base type."""
-        if not isinstance(data, dict) or not data.get("judges"):
-            return data
-        from verifiers.v1.loaders import judge_config_type
-
-        entries = []
-        for entry in data["judges"]:
-            raw = entry.model_dump() if isinstance(entry, BaseConfig) else dict(entry)
-            if not raw.get("id"):
-                raise ValueError(
-                    "each `judges` entry needs an `id` (a judge plugin: `reference`, "
-                    "`rubric`, a local package, or a hub `org/name` package)"
-                )
-            entries.append(judge_config_type(raw["id"]).model_validate(raw))
-        data["judges"] = entries
+        if isinstance(data, dict) and data.get("judges"):
+            data["judges"] = resolve_judges(data["judges"])
         return data
 
     @model_validator(mode="after")
     def _check_judges(self) -> "TasksetConfig":
         """Validate the resolved `judges` — after the before-hook so class-level *defaults*
         (which never pass through it, e.g. a taskset config pre-plugging a judge) are held
-        to the same rules: an `id` on every entry, and no two entries sharing a reward key
-        (the second would clobber the first's verdict)."""
-        names = []
-        for entry in self.judges:
-            if not entry.id:
-                raise ValueError(
-                    "each `judges` entry needs an `id` (a judge plugin: `reference`, "
-                    "`rubric`, a local package, or a hub `org/name` package)"
-                )
-            names.append(entry.name or env_name(entry.id))
-        if duplicates := {name for name in names if names.count(name) > 1}:
-            raise ValueError(
-                f"`judges` entries share a reward key {sorted(duplicates)}; set a "
-                "distinct `name` on each to keep both verdicts"
-            )
+        to the same rules (see `judge.check_judges`)."""
+        check_judges(self.judges)
         return self
 
 
@@ -140,14 +115,14 @@ class Taskset(Generic[TaskT, ConfigT]):
                 f"{type(self).__name__} loaded mixed task types "
                 f"{sorted(cls.__name__ for cls in kinds)} — a taskset yields one task type"
             )
+        if plugged := tuple(self.config.judges):
+            # Bake the config-plugged judges onto every row, after any judges the task
+            # already carries (a shared reward key raises) — so a loaded task is complete
+            # and `Task.score` reads only `task.judges`.
+            baked = []
+            for task in tasks:
+                merged = (*task.judges, *plugged)
+                check_judges(merged)
+                baked.append(task.model_copy(update={"judges": merged}))
+            tasks = baked
         return tasks
-
-    @cached_property
-    def judges(self) -> list[Judge]:
-        """The plugged judges, built once from `config.judges` (each entry resolved by its
-        `id` — see `JudgeConfig` / `verifiers.v1.judges`). Attached to each task
-        (`Task.judges`) by the scoring caller — the Environment at episode time, `replay`
-        before re-scoring; `Task.score` runs them after the task's decorated rewards."""
-        from verifiers.v1.loaders import load_judge
-
-        return [load_judge(entry) for entry in self.config.judges]

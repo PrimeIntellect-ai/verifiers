@@ -348,10 +348,6 @@ class Environment:
             else task.timeout.scoring
         )
         retries = self.config.retries
-        if self.taskset.judges:
-            # The task carries its judges (see `Task.judges`): attach the config-plugged
-            # ones here, on a copy — the loaded task stays pristine.
-            task = task.model_copy(update={"judges": tuple(self.taskset.judges)})
         rollouts = [
             Rollout(
                 task=task,

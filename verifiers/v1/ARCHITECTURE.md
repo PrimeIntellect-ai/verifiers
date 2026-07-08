@@ -248,6 +248,7 @@ while `narrow_plugin_field` validates a generic config dict into the plugin's co
 type (read off the class's `Taskset[TaskT, ConfigT]` / `Harness[ConfigT]` / `Judge[ParsedT,
 ConfigT]` generic) — so the typed CLI/TOML surfaces each plugin's own fields without the core
 knowing them ahead of time. Judges are the lightweight third kind: attached to any eval via the
-base `TasksetConfig.judges` (built-ins under `verifiers/v1/judges`), built once by the taskset
-loader, attached to each task (`Task.judges`), and run by `Task.score` after the task's own
+base `TasksetConfig.judges` (built-ins under `verifiers/v1/judges`), baked into each task's
+`judges` field as configs at load, built on demand (`loaders.judge_for`, one shared instance
+per distinct config), and run by `Task.score` after the task's own
 rewards.

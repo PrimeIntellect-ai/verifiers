@@ -15,9 +15,9 @@ which the hooks and signals read off `self`.
 
 It is the single judgement authority, scored at two granularities (execution lives
 in the Rollout — per-rollout — and the Episode — group — which call these):
-  - `score` runs `@reward`/`@metric` — plus the task's attached config-plugged
-    judges (the `judges` field, from `TasksetConfig.judges`; see
-    `verifiers.v1.judge`) — over one trace (in its live runtime).
+  - `score` runs `@reward`/`@metric` — plus the task's plugged judges (built from
+    the `judges` field's configs; see `verifiers.v1.judge`) — over one trace (in
+    its live runtime).
   - `score_group` runs `@group_reward` over all the rollouts of this task at once —
     pairwise/preference rewards that compare samples.
 
@@ -35,18 +35,18 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Annotated, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, Self, TypeVar
 
-from pydantic import ConfigDict, Field, GetPydanticSchema
-from pydantic_core import core_schema
+from pydantic import ConfigDict, SerializeAsAny, model_validator
 
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import TasksetError, boundary
-from verifiers.v1.judge import Judge
+from verifiers.v1.judge import JudgeConfig, check_judges, resolve_judges
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, StrictBaseModel, content_text
 
 if TYPE_CHECKING:
+    from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset, User
     from verifiers.v1.runtimes import Runtime
     from verifiers.v1.trace import Trace
@@ -68,6 +68,7 @@ _RESERVED_NAMES = frozenset(
         "score_group",
         "offline_skipped",
         "restore_offline",
+        "plugged_judges",
         "prompt_text",
     }
 )
@@ -175,16 +176,39 @@ class Task(StrictBaseModel, Generic[StateT]):
     """Optional per-task timeout overrides, one per rollout stage (merge with the eval's `timeout`)."""
     resources: TaskResources = TaskResources()
     """Optional runtime resources this task requests (applied where supported)."""
-    judges: Annotated[
-        tuple[Judge, ...],
-        # Judge is a plain class; validate/serialize as "any" without opening the whole
-        # model to arbitrary types. Never serialized (excluded), so the wire is unchanged.
-        GetPydanticSchema(lambda _source, _handler: core_schema.any_schema()),
-    ] = Field(default=(), exclude=True, repr=False)
-    """The config-plugged judges (built from `TasksetConfig.judges`), attached by the
-    scoring caller — the `Environment` at episode time, `replay` before re-scoring.
-    `score` runs them after the task's own `@reward`s. Excluded from serialization:
-    judges are runtime objects, plugged back in from config on every run."""
+    judges: tuple[SerializeAsAny[JudgeConfig], ...] = ()
+    """The task's plugged judges, as configs — data, so they ride the wire like every
+    other field and a saved trace records exactly what judged it. `score` builds the
+    runtime `Judge`s from them (`plugged_judges`) and runs them after the task's own
+    `@reward`s, each verdict recorded under its reward key with its `weight`.
+    `Taskset.tasks()` appends the eval's `TasksetConfig.judges` to every row at load;
+    a `load()` can also give rows their own (e.g. a per-row rubric), and a subclass
+    can declare class-wide defaults."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_judges(cls, data):
+        """Narrow `judges` entries to the config type their `id` resolves to (see
+        `judge.resolve_judges`) — wire rows arrive as plain dicts, and the base type
+        would reject judge-specific fields (e.g. rubric's `path`)."""
+        if isinstance(data, dict) and data.get("judges"):
+            data["judges"] = resolve_judges(data["judges"])
+        return data
+
+    @model_validator(mode="after")
+    def _check_judges(self) -> Self:
+        """Hold `judges` — including class-level defaults, which skip the before-hook —
+        to the plugged rules (an `id` on every entry, distinct reward keys)."""
+        check_judges(self.judges)
+        return self
+
+    def plugged_judges(self) -> "list[Judge]":
+        """The runtime `Judge` objects for this task's `judges` configs — shared per
+        distinct config across the process (a judge holds an HTTP client), see
+        `loaders.judge_for`."""
+        from verifiers.v1.loaders import judge_for
+
+        return [judge_for(config) for config in self.judges]
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs) -> None:
@@ -270,8 +294,8 @@ class Task(StrictBaseModel, Generic[StateT]):
         trace: "Trace",
         runtime: "Runtime | None" = None,
     ) -> None:
-        """Score one rollout: run all `@metric`, then `@reward`, then the attached
-        config-plugged `judges` (see the `judges` field) over its trace, concurrently
+        """Score one rollout: run all `@metric`, then `@reward`, then the task's plugged
+        `judges` (see the `judges` field) over its trace, concurrently
         within each phase. Each metric is recorded in `trace.metrics` (a number, or a mapping
         merged in); each reward and judge verdict (weighted — likewise a number or a mapping
         merged in) in `trace.rewards`, which `trace.reward` sums. Signals declare what they
@@ -285,7 +309,7 @@ class Task(StrictBaseModel, Generic[StateT]):
         judges (which grade from the trace) still run, overwriting their own keys and leaving the
         skipped signals' previously-recorded values untouched. With a runtime present (the eval
         path) nothing is skipped."""
-        judges = self.judges
+        judges = self.plugged_judges()
         available = {"task": self, "trace": trace}
         if runtime is not None:
             available["runtime"] = runtime
@@ -383,17 +407,21 @@ class Task(StrictBaseModel, Generic[StateT]):
     def offline_skipped(self) -> list[str]:
         """The names of the signals `score` skips when re-scoring without a runtime (they
         declare a default-less `runtime` parameter): this task's `@metric`/`@reward`s plus
-        its attached judges."""
-        return [
+        its plugged judges."""
+        signals = [
             fn.__name__
             for fn in (
                 *discover_decorated(self, "metric"),
                 *discover_decorated(self, "reward"),
             )
             if _requires_runtime(fn)
-        ] + [
-            judge.reward_name for judge in self.judges if _requires_runtime(judge.score)
         ]
+        judges = [
+            judge.reward_name
+            for judge in self.plugged_judges()
+            if _requires_runtime(judge.score)
+        ]
+        return signals + judges
 
     def restore_offline(
         self,
@@ -419,7 +447,7 @@ class Task(StrictBaseModel, Generic[StateT]):
         if isinstance(recorded, Mapping):
             attached = {
                 judge.reward_name
-                for judge in self.judges
+                for judge in self.plugged_judges()
                 if _requires_runtime(judge.score)
             }
             keys = (

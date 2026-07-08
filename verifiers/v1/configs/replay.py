@@ -27,7 +27,8 @@ class ReplayConfig(BaseConfig):
     """Auto-generated run id — the leaf of the output dir, so replays never overwrite."""
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     """The taskset, selected by `--taskset.id` (narrowed to its config type). Its
-    `taskset.judges` are what replay re-runs; override them via `@ file.toml` / dotted flags."""
+    `taskset.judges` override the tasks' recorded judges by reward key (and new ones
+    join); set them via `@ file.toml` / dotted flags."""
     num_traces: int | None = Field(
         None, validation_alias=AliasChoices("num_traces", "n")
     )

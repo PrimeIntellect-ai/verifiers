@@ -325,13 +325,17 @@ Good to know:
 
 ### Pluggable judges
 
-A judge can also be **plugged from config alone** — no taskset code. The base `TasksetConfig` has a
-`judges` list; each entry names a judge plugin by `id` (resolved exactly like a taskset or harness id:
-a built-in, a local package, or a hub `org/name[@version]` package) and is run by `Task.score`
-after the task's own `@reward`s, recording its verdict into `trace.rewards` under its `name`
-(default: the id's package name; entries that would share a reward key are rejected at config
-time — set a distinct `name` on each) with its `weight`. That makes off-the-shelf grading
-composable with **any** taskset × harness pair straight from the eval TOML:
+A judge can also be **plugged as config** — no judge-calling code. The task carries its judges'
+configs in the `Task.judges` field (data, on the wire like every other field, so a saved trace
+records exactly what judged it); each entry names a judge plugin by `id` (resolved exactly like a
+taskset or harness id: a built-in, a local package, or a hub `org/name[@version]` package) and is
+built and run by `Task.score` after the task's own `@reward`s, recording its verdict into
+`trace.rewards` under its `name` (default: the id's package name; entries that would share a
+reward key are rejected up front — set a distinct `name` on each) with its `weight`. Judges plug
+in at three levels: the base `TasksetConfig.judges` list appends to every row at load (grading
+composable with **any** taskset × harness pair straight from the eval TOML), a Task subclass can
+declare class-wide defaults, and a `load()` can give single rows their own (e.g. a per-row
+rubric):
 
 ```toml
 [taskset]

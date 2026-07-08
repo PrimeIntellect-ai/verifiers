@@ -31,8 +31,9 @@ for a pure call (e.g. in tests).
 
 A judge can also be *plugged* rather than called from task code: a judge with an `id` and a
 `score` implementation is a plugin (like a taskset or harness — see `verifiers.v1.judges` for the
-built-ins and `verifiers.v1.loaders` for resolution), attached to any eval via the base
-`TasksetConfig.judges` and run by `Task.score` after the task's own `@reward`s.
+built-ins and `verifiers.v1.loaders` for resolution). Its config lives on the task (`Task.judges`
+— per row, per task class, or appended to every row from the base `TasksetConfig.judges` at
+load), and `Task.score` builds and runs it after the task's own `@reward`s.
 """
 
 from __future__ import annotations
@@ -103,6 +104,49 @@ Judges = list[SerializeAsAny[JudgeConfig]]
 `id`. `SerializeAsAny` keeps the resolved subclasses' fields through `model_dump` (the
 env-server wire). Use it to give a taskset config a default judge:
 `judges: vf.Judges = [vf.ReferenceJudgeConfig()]` (the built-ins pin their own `id`)."""
+
+
+def judge_key(config: JudgeConfig) -> str:
+    """The reward key a plugged judge records under: the config `name`, else the id's
+    package name (`Judge.reward_name` adds a class-name fallback for code-level judges,
+    which have neither)."""
+    return config.name or env_name(config.id)
+
+
+def resolve_judges(entries: Sequence[Any]) -> list[JudgeConfig]:
+    """Narrow raw judge entries to the config type their `id` resolves to (mirrors
+    `EnvConfig._resolve_plugins`), so judge-specific fields (e.g. rubric's `path`)
+    validate against the real config instead of being rejected by the base type."""
+    from verifiers.v1.loaders import judge_config_type
+
+    resolved = []
+    for entry in entries:
+        raw = entry.model_dump() if isinstance(entry, BaseModel) else dict(entry)
+        if not raw.get("id"):
+            raise ValueError(
+                "each `judges` entry needs an `id` (a judge plugin: `reference`, "
+                "`rubric`, a local package, or a hub `org/name` package)"
+            )
+        resolved.append(judge_config_type(raw["id"]).model_validate(raw))
+    return resolved
+
+
+def check_judges(entries: Sequence[JudgeConfig]) -> None:
+    """Hold judge entries to the plugged rules: an `id` on every entry (class-level
+    defaults never pass through `resolve_judges`) and no two entries sharing a reward
+    key (the second would clobber the first's verdict)."""
+    for entry in entries:
+        if not entry.id:
+            raise ValueError(
+                "each `judges` entry needs an `id` (a judge plugin: `reference`, "
+                "`rubric`, a local package, or a hub `org/name` package)"
+            )
+    keys = [judge_key(entry) for entry in entries]
+    if duplicates := {key for key in keys if keys.count(key) > 1}:
+        raise ValueError(
+            f"`judges` entries share a reward key {sorted(duplicates)}; set a "
+            "distinct `name` on each to keep both verdicts"
+        )
 
 
 class JudgeResponse(StrictBaseModel, Generic[ParsedT]):
@@ -211,7 +255,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         fallback = re.sub(
             r"(?<!^)(?=[A-Z])", "_", type(self).__name__.removesuffix("Judge")
         ).lower()
-        return self.config.name or env_name(self.config.id) or fallback or "judge"
+        return judge_key(self.config) or fallback or "judge"
 
     def build_messages(self, **fields: Any) -> str | Messages:
         """Prompt-setup hook: turn the `evaluate` fields into the messages to send (a single user
