@@ -24,6 +24,14 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
 
     task = trace.task.model_dump(mode="json", exclude_none=True)
     branches = trace.branches
+    # The platform stores a fixed set of sample columns and folds everything else into `info`;
+    # per-rollout sub-rewards / metrics are read back from `info["reward_signals"]`, so the
+    # per-reward-function and metric breakdown goes there (a flat top-level key would just be
+    # buried in `info` unread).
+    info = dict(trace.info)
+    reward_signals = {**trace.rewards, **trace.metrics}
+    if reward_signals:
+        info["reward_signals"] = reward_signals
     return {
         "sample_id": trace.id,
         "example_id": trace.task.idx,
@@ -53,6 +61,5 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
         "token_usage": trace.usage.model_dump(mode="json", exclude_none=True)
         if trace.usage
         else None,
-        "num_steps": trace.num_turns,
-        "info": dict(trace.info) or None,
+        "info": info or None,
     }

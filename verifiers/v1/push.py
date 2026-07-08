@@ -10,6 +10,7 @@ later from disk. Auth + base URL come from `$PRIME_API_KEY` / `~/.prime/config.j
 
 import logging
 import os
+from typing import Any
 
 import httpx
 
@@ -28,9 +29,18 @@ def _creds() -> tuple[str | None, str, str, str | None]:
     """(api_key, api_base, frontend_url, team_id) from env vars / `~/.prime/config.json`."""
     cfg = load_prime_config()
     api_key = os.getenv("PRIME_API_KEY") or cfg.get("api_key")
-    base = os.getenv("PRIME_API_BASE_URL") or os.getenv("PRIME_BASE_URL") or cfg.get("base_url") or DEFAULT_API_URL
+    base = (
+        os.getenv("PRIME_API_BASE_URL")
+        or os.getenv("PRIME_BASE_URL")
+        or cfg.get("base_url")
+        or DEFAULT_API_URL
+    )
     base = base.rstrip("/").removesuffix("/api/v1")
-    frontend = os.getenv("PRIME_FRONTEND_URL") or cfg.get("frontend_url") or DEFAULT_FRONTEND_URL
+    frontend = (
+        os.getenv("PRIME_FRONTEND_URL")
+        or cfg.get("frontend_url")
+        or DEFAULT_FRONTEND_URL
+    )
     team_id = os.getenv("PRIME_TEAM_ID") or cfg.get("team_id")
     return api_key, base, frontend, team_id
 
@@ -42,28 +52,40 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
     `prime env push`, then create evaluation -> push samples -> finalize."""
     api_key, base, frontend, team_id = _creds()
     if not api_key:
-        logger.warning("--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload")
+        logger.warning(
+            "--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload"
+        )
         return None
 
-    def compute_metrics() -> dict[str, float]:
-        """Run-level aggregates: mean reward over all traces, each env metric averaged over
-        the traces that recorded it, and the errored fraction — the same avg_reward /
-        avg_metrics / avg_error semantics as v0's `GenerateMetadata` accumulators."""
-        if not traces:
-            return {}
+    def compute_metrics() -> dict[str, Any]:
+        """Run-level aggregates in the platform's canonical shape: `reward` (mean over all
+        traces), `metrics` (each reward-function and env-metric averaged over the traces that
+        recorded it), and `error` (errored fraction). The platform promotes a per-sample field
+        to its own column only when the key is declared here in `metrics`; anything else folds
+        into the sample's `info`. So both the sub-reward and metric names must appear here to
+        render as per-rollout columns."""
         sums: dict[str, float] = {}
         counts: dict[str, int] = {}
         for trace in traces:
-            for name, value in trace.metrics.items():
+            for name, value in {**trace.rewards, **trace.metrics}.items():
                 sums[name] = sums.get(name, 0.0) + value
                 counts[name] = counts.get(name, 0) + 1
-        metrics = {name: sums[name] / counts[name] for name in sums}
-        metrics["reward"] = sum(t.reward for t in traces) / len(traces)
-        metrics["error_rate"] = sum(t.has_error for t in traces) / len(traces)
-        return metrics
+        n = len(traces)
+        return {
+            "reward": sum(t.reward for t in traces) / n if n else 0.0,
+            "metrics": {name: sums[name] / counts[name] for name in sums},
+            "error": sum(t.has_error for t in traces) / n if n else 0.0,
+        }
 
     env_name = config.taskset.id or config.id
     metrics = compute_metrics()
+    metadata = {
+        "framework": "verifiers",
+        "run_id": config.uuid,
+        "model": config.model,
+        "num_examples": config.num_tasks,
+        "rollouts_per_example": config.num_rollouts,
+    }
     counts: dict[int, int] = {}
     samples = []
     for trace in traces:
@@ -80,7 +102,9 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
             resp.raise_for_status()
             return resp.json()
 
-        env_id = post("/environmentshub/resolve", {"name": env_name, **team})["data"]["id"]
+        env_id = post("/environmentshub/resolve", {"name": env_name, **team})["data"][
+            "id"
+        ]
         eval_id = post(
             "/evaluations/",
             {
@@ -89,7 +113,7 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
                 "model_name": config.model,
                 "dataset": env_name,
                 "framework": "verifiers",
-                "metadata": {"framework": "verifiers", "run_id": config.uuid},
+                "metadata": metadata,
                 "metrics": metrics,
                 "tags": [],
                 **team,
