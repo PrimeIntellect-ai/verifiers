@@ -26,7 +26,9 @@ same instance), so hook and scoring methods must not stash per-rollout state on
 
 Scoring after deserialization needs the real class: a `WireTask` carries the data
 but none of the behavior, so a consumer that re-scores (e.g. `replay`) upgrades it
-via `task_type(taskset_id)` first.
+first. Every dump records its concrete class (`task_class`), resolved back within the
+taskset's declared task type's subclass tree (`resolve_task_class`) — so a taskset
+whose `load()` mixes task types round-trips each row as the right one.
 """
 
 import asyncio
@@ -35,7 +37,13 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, ClassVar, Generic, TypeVar
 
-from pydantic import ConfigDict, Field, GetPydanticSchema
+from pydantic import (
+    ConfigDict,
+    Field,
+    GetPydanticSchema,
+    computed_field,
+    model_validator,
+)
 from pydantic_core import core_schema
 
 from verifiers.v1.decorators import discover_decorated, invoke
@@ -64,9 +72,15 @@ _RESERVED_NAMES = frozenset(
         "validate",
         "score",
         "score_group",
+        "offline_skipped",
         "prompt_text",
+        "task_class",
     }
 )
+
+
+def _class_path(cls: type) -> str:
+    return f"{cls.__module__}:{cls.__qualname__}"
 
 
 def _requires_runtime(fn) -> bool:
@@ -165,6 +179,24 @@ class Task(StrictBaseModel, Generic[StateT]):
     scoring caller — the `Environment` at episode time, `replay` before re-scoring.
     `score` runs them after the task's own `@reward`s. Excluded from serialization:
     judges are runtime objects, plugged back in from config on every run."""
+
+    @computed_field(repr=False)  # type: ignore[prop-decorator]
+    @property
+    def task_class(self) -> str:
+        """The concrete class this task serializes from (`module:qualname`), stamped into
+        every dump — so an offline consumer (`replay`) can rebuild each row as its actual
+        subclass when a taskset's `load()` mixes task types (see `resolve_task_class`)."""
+        return _class_path(type(self))
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_own_dump(cls, data):
+        # `task_class` is computed on output; a strict Task must still round-trip its own
+        # dump, so drop the key on input. `WireTask` (extra="allow") keeps it instead —
+        # in `model_extra` — to preserve the recorded class across wire round-trips.
+        if isinstance(data, Mapping) and cls.model_config.get("extra") != "allow":
+            data = {key: value for key, value in data.items() if key != "task_class"}
+        return data
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs) -> None:
@@ -296,9 +328,7 @@ class Task(StrictBaseModel, Generic[StateT]):
                 # Exactly the signals `can_run` filtered out above — those requiring a runtime
                 # (a `runtime` param with no default). Signals whose `runtime` has a default run
                 # offline and are not reported as skipped.
-                skipped = self.offline_skipped() + [
-                    j.reward_name for j in judges if not can_run(j.score)
-                ]
+                skipped = self.offline_skipped()
                 if skipped:
                     logger.info(
                         "score: no runtime — skipped runtime-dependent signals: %s",
@@ -319,10 +349,10 @@ class Task(StrictBaseModel, Generic[StateT]):
                     trace.record_reward(judge.reward_name, result, judge.config.weight)
 
     def offline_skipped(self) -> list[str]:
-        """The names of this task's `@metric`/`@reward` signals that `score` skips when
-        re-scoring without a runtime (they declare a default-less `runtime` parameter).
-        Lets an offline consumer (`replay`) preserve their previously recorded values
-        instead of dropping them."""
+        """The names of the signals `score` skips when re-scoring without a runtime (they
+        declare a default-less `runtime` parameter): this task's `@metric`/`@reward`s plus
+        its attached judges. Lets an offline consumer (`replay`) preserve their previously
+        recorded values instead of dropping them."""
         return [
             fn.__name__
             for fn in (
@@ -330,6 +360,8 @@ class Task(StrictBaseModel, Generic[StateT]):
                 *discover_decorated(self, "reward"),
             )
             if _requires_runtime(fn)
+        ] + [
+            judge.reward_name for judge in self.judges if _requires_runtime(judge.score)
         ]
 
     async def score_group(self, traces: "list[Trace]") -> None:
@@ -369,5 +401,31 @@ class WireTask(Task):
 
     model_config = ConfigDict(extra="allow")
 
+    @computed_field(repr=False)  # type: ignore[prop-decorator]
+    @property
+    def task_class(self) -> str:
+        # A WireTask is a container for some other class's row: re-serializing must keep
+        # the recorded class, not stamp its own.
+        recorded = (self.model_extra or {}).get("task_class")
+        return recorded if isinstance(recorded, str) else _class_path(type(self))
+
 
 TaskT = TypeVar("TaskT", bound=Task)
+
+
+def resolve_task_class(base: type[TaskT], path: str | None) -> type[TaskT]:
+    """The concrete Task class a wire row recorded as `path` (`module:qualname`, see
+    `Task.task_class`), resolved strictly within `base`'s subclass tree — only classes the
+    taskset plugin already imported, never an arbitrary import. Falls back to `base` when
+    the row predates the field or records a class that no longer exists."""
+
+    def walk(cls: type[TaskT]):
+        yield cls
+        for sub in cls.__subclasses__():
+            yield from walk(sub)
+
+    if path:
+        for cls in walk(base):
+            if _class_path(cls) == path:
+                return cls
+    return base

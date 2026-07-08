@@ -404,8 +404,21 @@ class Environment:
         servers: dict[str, Toolset] = {}
         for task in tasks:
             for server in task.tools():
-                if server.config.shared and server.server_name not in servers:
+                if not server.config.shared:
+                    continue
+                seen = servers.get(server.server_name)
+                if seen is None:
                     servers[server.server_name] = server
+                # The name is the routing key (`shared_urls[name]`), so same-named shared
+                # servers must be the same server — refuse to silently route two different
+                # ones to whichever started.
+                elif type(seen) is not type(server) or seen.config != server.config:
+                    raise ValueError(
+                        f"shared tool server name {server.server_name!r} is claimed by two "
+                        f"different servers ({type(seen).__name__} / {type(server).__name__}); "
+                        f"every rollout routes to one eval-level server per name, so "
+                        f"same-named shared servers must be identical — rename one"
+                    )
         if not servers:
             yield {}
             return

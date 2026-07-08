@@ -26,7 +26,7 @@ from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
 from verifiers.v1.cli.output import append_trace, read_traces, save_config, write_config
 from verifiers.v1.configs.replay import ReplayConfig
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import WireTask
+from verifiers.v1.task import WireTask, resolve_task_class
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.logging import setup_logging
 
@@ -67,20 +67,21 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     if config.num_traces is not None:
         traces = traces[: config.num_traces]
     # A `WireTask` carries the data but none of the taskset's behavior, so re-scoring needs
-    # the real Task type. A task that can't be rebuilt from the wire (a load-time-only field
-    # excluded from serialization, like harbor's `task_dir`) stays a `WireTask`: judges and
-    # the base task's trace-only signals still run, the subclass's own `@reward`s don't
-    # (runtime-dependent ones would be skipped offline anyway). The wire records no concrete
-    # class either, so a taskset whose `load()` yields multiple Task subtypes replays every
-    # row as the taskset's declared task type — subtype-only signals don't run.
+    # the real Task type — each row's concrete class as recorded on the wire (`task_class`),
+    # resolved within the taskset's declared type's subclass tree, so a `load()` that mixes
+    # task types replays each row with its own behavior. A task that can't be rebuilt from
+    # the wire (a load-time-only field excluded from serialization, like harbor's `task_dir`)
+    # stays a `WireTask`: judges and the base task's trace-only signals still run, the
+    # subclass's own `@reward`s don't (runtime-dependent ones would be skipped offline anyway).
     for trace in traces:
+        cls = resolve_task_class(task_cls, trace.task.task_class)
         try:
-            trace.task = task_cls.model_validate(trace.task.model_dump())
+            trace.task = cls.model_validate(trace.task.model_dump())
         except Exception:
             logger.warning(
                 "replay: can't rebuild %s from the saved task %s; re-scoring it as a "
                 "plain WireTask (judges + base-task signals only)",
-                task_cls.__name__,
+                cls.__name__,
                 trace.task.idx,
                 exc_info=True,
             )

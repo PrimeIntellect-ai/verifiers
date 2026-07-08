@@ -77,8 +77,9 @@ def test_wire_trace_round_trip():
     assert rt.stop_condition == "done"
     assert rt.info == {"build": "ok"}
     assert rt.task.model_extra == {
-        "answer": "a"
-    }  # taskset extras preserved on WireTask
+        "answer": "a",
+        "task_class": "test_trace:MyTask",
+    }  # taskset extras preserved on WireTask, plus the recorded concrete class
 
     # the env-server wire form (a plain model_dump) loads too
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
