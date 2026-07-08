@@ -9,7 +9,7 @@ rollouts on request by task idx.
 import sys
 from functools import partial
 
-from verifiers.v1.configs import cli
+from pydantic_config import cli
 
 from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.cli.resolve import (
@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> None:
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        cli(narrow_config(ServeConfig, argv))
+        cli(narrow_config(ServeConfig, argv), env_prefix="VF")
         return
     legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
     if (
@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> None:
 
     config_type = narrow_config(ServeConfig, argv)
     sys.argv = [sys.argv[0], *argv]
-    config = cli(config_type)
+    config = cli(config_type, env_prefix="VF")
     if config.dry_run:
         print(config.model_dump_json(indent=2, exclude_none=True))
         return

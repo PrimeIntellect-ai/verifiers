@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from verifiers.v1.configs import cli
+from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.output import append_trace, save_config
@@ -310,14 +310,14 @@ def main(argv: list[str] | None = None) -> None:
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        cli(_narrow(argv))
+        cli(_narrow(argv), env_prefix="VF")
         return
     if not extract_id(argv, "taskset") and not references_config_file(argv):
         raise SystemExit(USAGE)
 
     config_type = _narrow(argv)
     sys.argv = [sys.argv[0], *argv]
-    config = cli(config_type)
+    config = cli(config_type, env_prefix="VF")
     setup_logging("DEBUG" if config.verbose else "INFO")
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     asyncio.run(run_debug(config))

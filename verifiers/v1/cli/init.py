@@ -12,7 +12,7 @@ a legacy v0 `load_environment` package instead (via `verifiers.scripts.init`).
 import sys
 from pathlib import Path
 
-from verifiers.v1.configs import cli
+from pydantic_config import cli
 
 from verifiers.v1.configs.init import InitConfig
 
@@ -300,11 +300,11 @@ def main(argv: list[str] | None = None) -> None:
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        cli(InitConfig)
+        cli(InitConfig, env_prefix="VF")
         return
 
     sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
-    config = cli(InitConfig)
+    config = cli(InitConfig, env_prefix="VF")
     if not config.name:
         raise SystemExit(USAGE)
     if config.v0:

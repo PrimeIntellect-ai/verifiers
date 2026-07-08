@@ -19,7 +19,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from verifiers.v1.configs import cli
+from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
@@ -135,7 +135,7 @@ def main(argv: list[str] | None = None) -> None:
     if not argv or any(a in ("-h", "--help") for a in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        cli(ReplayConfig)  # full, typed pydantic-config option help
+        cli(ReplayConfig, env_prefix="VF")  # full, typed pydantic-config option help
         return
     source = Path(argv.pop(0))  # the finished run dir to replay
     config_path = source / "config.toml"
@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> None:
     layered = ["@", str(config_path), *argv]
     config_type = _narrow(config_path)
     sys.argv = [sys.argv[0], *layered]
-    config = cli(config_type)
+    config = cli(config_type, env_prefix="VF")
     # Honor a user-set output_dir (via -o or an @ file); drop the *source* run's own output_dir
     # so a replay always writes to a fresh dir and never back over the run it re-scores.
     source_out = (tomllib.loads(config_path.read_text())).get("output_dir")

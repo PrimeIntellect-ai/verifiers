@@ -20,7 +20,7 @@ import time
 from typing import Any
 from uuid import uuid4
 
-from verifiers.v1.configs import cli
+from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
@@ -263,7 +263,9 @@ def main(argv: list[str] | None = None) -> None:
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        cli(_narrow(argv))  # full option help, narrowed to the given taskset
+        cli(
+            _narrow(argv), env_prefix="VF"
+        )  # full option help, narrowed to the given taskset
         return
     if not extract_id(argv, "taskset") and not references_config_file(argv):
         raise SystemExit(
@@ -272,7 +274,7 @@ def main(argv: list[str] | None = None) -> None:
 
     config_type = _narrow(argv)
     sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
-    config = cli(config_type)
+    config = cli(config_type, env_prefix="VF")
     # Nothing is persisted, so logs are the whole output. Under `--rich` the dashboard owns the
     # screen, so keep logs off the console (else stray records print over the UI).
     setup_logging("DEBUG" if config.verbose else "INFO", console=not config.rich)

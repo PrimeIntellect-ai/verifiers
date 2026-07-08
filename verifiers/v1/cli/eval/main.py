@@ -15,7 +15,7 @@ import logging
 import signal
 import sys
 
-from verifiers.v1.configs import cli
+from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.utils.logging import setup_logging
@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> None:
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
         cli(
-            narrow_config(EvalConfig, argv)
+            narrow_config(EvalConfig, argv), env_prefix="VF"
         )  # full option help, narrowed to the given ids
         return
     resume_dir, rest = split_resume(argv)
@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> None:
 
         config_type = narrow_config(EvalConfig, argv)
         sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
-        config = cli(config_type)
+        config = cli(config_type, env_prefix="VF")
         if config.dry_run:  # resolved + validated; write it to the output dir and exit
             setup_logging("DEBUG" if config.verbose else "INFO")
             logger.info("wrote config to %s", write_config(config, output_path(config)))
