@@ -206,10 +206,6 @@ For production RL training, use `openai_chat_completions_token` — it's the tri
 
 `verifiers` is intended to be largely trainer-agnostic and is straightforward to support for any trainer which can expose an OpenAI-compatible inference client for rollouts.
 
-### `vf.RLTrainer` (Legacy)
-
-The legacy `vf.RLTrainer` still exists for educational and experimental purposes via the optional `verifiers-rl` package and the legacy RL CLI entrypoint, but it is not actively maintained. It is a compact single-node async RL trainer with a narrower feature set than production trainers. Its core implementation (`trainer.py` and `orchestrator.py` under `packages/verifiers-rl/verifiers_rl/rl/trainer/`) remains intentionally lightweight for algorithm experimentation. For production training and current guidance, use [`prime-rl`](#training-with-prime-rl).
-
 ### Tinker
 
 [Tinker](https://thinkingmachines.ai/tinker/) supports Verifiers environments via the `tinker-cookbook` recipes.
