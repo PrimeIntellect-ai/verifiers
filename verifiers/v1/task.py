@@ -347,12 +347,36 @@ class Task(StrictBaseModel, Generic[StateT]):
                         trace.record_reward(name, value, judge.config.weight)
                 else:
                     trace.record_reward(judge.reward_name, result, judge.config.weight)
+            if runtime is not None and isinstance(trace.info, dict):
+                # Map each runtime-requiring signal to the reward/metric keys it actually
+                # produced — a Mapping result records under its own keys, not the method
+                # name — so an offline re-score (`replay`) can restore exactly these
+                # (`offline_skipped` names the signals; this maps them to their keys).
+                def keys(result, fallback: str) -> list[str]:
+                    return list(result) if isinstance(result, Mapping) else [fallback]
+
+                produced = {
+                    fn.__name__: keys(result, fn.__name__)
+                    for fn, result in (
+                        *zip(metrics, metric_results),
+                        *zip(rewards, reward_results),
+                    )
+                    if _requires_runtime(fn)
+                } | {
+                    judge.reward_name: keys(result, judge.reward_name)
+                    for judge, result in zip(runnable_judges, judge_results)
+                    if _requires_runtime(judge.score)
+                }
+                if produced:
+                    trace.info["offline_keys"] = produced
 
     def offline_skipped(self) -> list[str]:
         """The names of the signals `score` skips when re-scoring without a runtime (they
         declare a default-less `runtime` parameter): this task's `@metric`/`@reward`s plus
         its attached judges. Lets an offline consumer (`replay`) preserve their previously
-        recorded values instead of dropping them."""
+        recorded values instead of dropping them — expanded to the keys each signal
+        actually recorded via the trace's `info["offline_keys"]` (a Mapping-returning
+        signal records under its own keys, not its name)."""
         return [
             fn.__name__
             for fn in (

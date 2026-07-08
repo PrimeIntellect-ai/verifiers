@@ -128,12 +128,21 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                         )
                     await trace.task.score(trace)
                     # Runtime-dependent signals can't re-run offline; keep what the source
-                    # run recorded for exactly those instead of dropping their scores.
+                    # run recorded for exactly those instead of dropping their scores. The
+                    # eval stamped each such signal's actual recorded keys into
+                    # `info["offline_keys"]` (a Mapping-returning signal records under its
+                    # own keys); traces predating it fall back to the signal name.
+                    produced = (
+                        trace.info.get("offline_keys", {})
+                        if isinstance(trace.info, dict)
+                        else {}
+                    )
                     for name in trace.task.offline_skipped():
-                        if name in prior_rewards and name not in trace.rewards:
-                            trace.rewards[name] = prior_rewards[name]
-                        if name in prior_metrics and name not in trace.metrics:
-                            trace.metrics[name] = prior_metrics[name]
+                        for key in produced.get(name, [name]):
+                            if key in prior_rewards and key not in trace.rewards:
+                                trace.rewards[key] = prior_rewards[key]
+                            if key in prior_metrics and key not in trace.metrics:
+                                trace.metrics[key] = prior_metrics[key]
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
                     st.state, st.detail = "error", type(exc).__name__
