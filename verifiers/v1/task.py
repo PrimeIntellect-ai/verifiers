@@ -355,18 +355,23 @@ class Task(StrictBaseModel, Generic[StateT]):
                 def keys(result, fallback: str) -> list[str]:
                     return list(result) if isinstance(result, Mapping) else [fallback]
 
-                produced = {
-                    fn.__name__: keys(result, fn.__name__)
-                    for fn, result in (
-                        *zip(metrics, metric_results),
-                        *zip(rewards, reward_results),
-                    )
-                    if _requires_runtime(fn)
-                } | {
-                    judge.reward_name: keys(result, judge.reward_name)
-                    for judge, result in zip(runnable_judges, judge_results)
-                    if _requires_runtime(judge.score)
-                }
+                # Grouped (not a dict-comprehension union): same-named signals — e.g. a
+                # judge sharing a task reward's name — must merge their keys, not
+                # overwrite each other's.
+                produced: dict[str, list[str]] = {}
+                for fn, result in (
+                    *zip(metrics, metric_results),
+                    *zip(rewards, reward_results),
+                ):
+                    if _requires_runtime(fn):
+                        produced.setdefault(fn.__name__, []).extend(
+                            keys(result, fn.__name__)
+                        )
+                for judge, result in zip(runnable_judges, judge_results):
+                    if _requires_runtime(judge.score):
+                        produced.setdefault(judge.reward_name, []).extend(
+                            keys(result, judge.reward_name)
+                        )
                 if produced:
                     trace.info["offline_keys"] = produced
 
