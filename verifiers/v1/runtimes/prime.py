@@ -48,8 +48,7 @@ class PrimeConfig(BaseConfig):
     disk: float = 5.0
     """Disk in GB."""
     idle_timeout: float | None = 3600
-    """Seconds of inactivity before the sandbox self-deletes (None disables). Default 1h,
-    well under the 24h max lifetime."""
+    """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
