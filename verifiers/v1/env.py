@@ -285,6 +285,11 @@ class Environment:
 
         A task with `@group_reward`s compares its rollouts, so it needs >=2 of
         them — refuse `n < 2` there (rather than silently scoring a group of one)."""
+        # Capability checks are by value: `tools()`/`user()` read the task's fields, so
+        # an override may yield nothing for this row — a class-override check would be
+        # cheaper but wrongly reject those. The short-circuit means the calls only run
+        # when the harness lacks the capability, and they construct (never launch) the
+        # declared servers; the real per-rollout instances are built in `Rollout.run`.
         if not self.harness.SUPPORTS_MCP and task.tools():
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not support MCP tools, but task "

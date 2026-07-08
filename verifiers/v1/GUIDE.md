@@ -244,7 +244,10 @@ A reward reads the finished trajectory off `trace`. The most useful members, by 
 
 `trace.reward` / `trace.rewards` / `trace.metrics` are scoring *outputs*, filled in during the
 scoring pass — don't read them from inside a `@reward`/`@metric`; a `@group_reward` reads metrics
-off each finished trace instead.
+off each finished trace instead. Each `rewards`/`metrics` entry is a `vf.Score` — the value plus
+its provenance (which producer recorded it, and whether it needs a live runtime, which is how
+`replay` knows what it can re-score offline). Read a metric as a float with
+`trace.metric(name, default)`.
 
 ### In-runtime scoring
 

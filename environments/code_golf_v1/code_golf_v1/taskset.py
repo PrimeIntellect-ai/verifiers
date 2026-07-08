@@ -53,7 +53,7 @@ class CodeGolfTask(vf.Task):
 
     @vf.reward
     async def correct(self, trace: vf.Trace) -> float:
-        return trace.metrics.get("passed", 0.0)
+        return trace.metric("passed")
 
     @vf.group_reward(weight=0.5)
     async def most_concise(self, traces: list[vf.Trace]) -> list[float]:
@@ -65,7 +65,7 @@ class CodeGolfTask(vf.Task):
     @vf.group_reward(weight=0.5)
     async def fastest(self, traces: list[vf.Trace]) -> list[float]:
         """The lowest recorded `latency` in the group wins; ties share."""
-        times = [t.metrics.get("latency", 1e6) for t in traces]
+        times = [t.metric("latency", 1e6) for t in traces]
         best = min(times)
         return [1.0 if t == best else 0.0 for t in times]
 

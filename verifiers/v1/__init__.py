@@ -105,7 +105,7 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     Branch,
     Error,
-    ScoreRecord,
+    Score,
     TimeSpan,
     Timing,
     Trace,
@@ -161,7 +161,7 @@ __all__ = [
     "TaskResources",
     "TaskTimeout",
     "Trace",
-    "ScoreRecord",
+    "Score",
     "ScoreSource",
     "scoring_source",
     "WireTrace",

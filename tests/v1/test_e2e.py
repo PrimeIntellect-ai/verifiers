@@ -212,8 +212,8 @@ async def test_rubric_judge(run_v1, tmp_path):
         max_turns=2,
     )
     assert trace.errors == []
-    assert trace.rewards["rubric"] > 0  # the judge's verdict landed in the reward
-    assert trace.metrics["rubric/always_yes"] == 1.0
+    assert trace.rewards["rubric"].value > 0  # the judge's verdict landed in the reward
+    assert trace.metric("rubric/always_yes") == 1.0
     assert trace.info["judge"]  # the call was recorded onto the trace
 
 

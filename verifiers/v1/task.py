@@ -54,7 +54,7 @@ from verifiers.v1.types import Messages, StrictBaseModel, content_text
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset, User
     from verifiers.v1.runtimes import Runtime
-    from verifiers.v1.trace import Trace
+    from verifiers.v1.trace import Score, Trace
 
 logger = logging.getLogger(__name__)
 
@@ -399,40 +399,37 @@ class Task(StrictBaseModel, Generic[StateT]):
     def prune_offline(self, trace: "Trace") -> None:
         """Prepare a saved trace for an offline re-score (`replay`, after attaching this
         run's judges): drop the `rewards`/`metrics` entries the re-score will recompute
-        and keep the rest — decided per entry from the trace's recorded provenance
-        (`Trace.score_log`). Kept: entries whose producer can't run offline — runtime-
-        requiring signals (source-run truth, so a `WireTask` fallback keeps them without
-        the subclass's behavior), attached runtime-requiring judges, `@group_reward`s
-        (no group context offline), harness metrics, and direct writes made outside any
-        scoring context. Cleared: trace-only signals and judges (they re-record — and a
-        removed judge's entries simply stay cleared, leaving no stale value). Kept
-        entries are in place *during* re-scoring, so trace-only signals that read them
-        (e.g. a `@reward` reading a runtime `@metric`'s entry) see them. Traces
-        predating the log fall back to keeping the `offline_skipped` + `@group_reward`
+        and keep the rest — decided per entry from its recorded provenance (`Score`).
+        Kept: entries whose producer can't run offline — runtime-requiring signals
+        (source-run truth, so a `WireTask` fallback keeps them without the subclass's
+        behavior), attached runtime-requiring judges, `@group_reward`s (no group context
+        offline), harness metrics, and direct writes made outside any scoring context.
+        Cleared: trace-only signals and judges (they re-record — and a removed judge's
+        entries simply stay cleared, leaving no stale value). Kept entries are in place
+        *during* re-scoring, so trace-only signals that read them (e.g. a `@reward`
+        reading a runtime `@metric`'s entry) see them. Entries from traces predating
+        provenance ("legacy") keep by name — the `offline_skipped` + `@group_reward`
         names."""
         attached = {
             judge.reward_name for judge in self.judges if _requires_runtime(judge.score)
         }
-        latest = {(record.kind, record.key): record for record in trace.score_log}
-        # Pre-provenance traces: keep by name — the runtime-requiring signal/judge names
-        # plus group rewards (an offline re-score can't recompute those either).
+        # Pre-provenance entries: keep by name — the runtime-requiring signal/judge
+        # names plus group rewards (an offline re-score can't recompute those either).
         fallback = set(self.offline_skipped()) | {
             fn.__name__ for fn in discover_decorated(self, "group_reward")
         }
 
-        def keep(kind: str, key: str) -> bool:
-            record = latest.get((kind, key))
-            if record is None:
+        def keep(key: str, entry: "Score") -> bool:
+            if entry.origin == "legacy":
                 return key in fallback
-            if record.origin == "signal":
-                return record.requires_runtime
-            if record.origin == "judge":
-                return record.requires_runtime and record.name in attached
+            if entry.origin == "signal":
+                return entry.requires_runtime
+            if entry.origin == "judge":
+                return entry.requires_runtime and entry.name in attached
             return True  # group / harness / other: offline re-scoring can't recompute
 
-        trace.rewards = {k: v for k, v in trace.rewards.items() if keep("reward", k)}
-        trace.metrics = {k: v for k, v in trace.metrics.items() if keep("metric", k)}
-        trace.score_log = [r for r in trace.score_log if keep(r.kind, r.key)]
+        trace.rewards = {k: v for k, v in trace.rewards.items() if keep(k, v)}
+        trace.metrics = {k: v for k, v in trace.metrics.items() if keep(k, v)}
 
     async def score_group(self, traces: "list[Trace]") -> None:
         """Score a group of rollouts of this task: run every `@group_reward` over all

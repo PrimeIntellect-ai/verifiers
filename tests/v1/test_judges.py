@@ -453,7 +453,7 @@ async def test_error_attribution(monkeypatch, tmp_path):
     trace = make_trace(reply="", task_cls=JudgedTask)
     trace.task = trace.task.model_copy(update={"judges": tuple(taskset.judges)})
     await trace.task.score(trace, runtime=None)
-    assert trace.rewards["reference"] == 0.0
+    assert trace.rewards["reference"].value == 0.0
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
     trace = make_trace(task_cls=JudgedTask)
     trace.task = trace.task.model_copy(update={"judges": tuple(taskset.judges)})
@@ -519,7 +519,10 @@ async def test_rubric_score(tmp_path, fake_judge_model):
     judge = rubric_judge(tmp_path)
     trace = make_trace()
     assert await judge.score(trace.task, trace) == 0.75
-    assert trace.metrics == {"rubric/mentions_paris": 1.0, "rubric/is_polite": 0.0}
+    assert {k: s.value for k, s in trace.metrics.items()} == {
+        "rubric/mentions_paris": 1.0,
+        "rubric/is_polite": 0.0,
+    }
     assert len(trace.info["judge"]) == 1  # one call for the whole rubric
 
 
@@ -553,7 +556,7 @@ async def test_rubric_choices_normalize(tmp_path, monkeypatch):
     judge = rubric_judge(tmp_path, body=CHOICES_TOML, name="q")
     trace = make_trace()
     assert await judge.score(trace.task, trace) == 0.5
-    assert trace.metrics == {"q/depth": 0.5}
+    assert {k: s.value for k, s in trace.metrics.items()} == {"q/depth": 0.5}
 
 
 async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch):
@@ -627,11 +630,13 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     trace = make_trace(task_cls=JudgedTask)
     trace.task = trace.task.model_copy(update={"judges": tuple(taskset.judges)})
     await trace.task.score(trace, runtime=None)
-    assert trace.rewards["own"] == 0.25  # decorated rewards still run
+    assert trace.rewards["own"].value == 0.25  # decorated rewards still run
     assert (
-        trace.rewards["reference"] == 0.5
+        trace.rewards["reference"].value == 0.5
     )  # 1.0 * weight 0.5, under the id-derived name
-    assert trace.rewards["quality"] == 0.75  # the rubric's aggregate, under its `name`
+    assert (
+        trace.rewards["quality"].value == 0.75
+    )  # the rubric's aggregate, under its `name`
     assert (
         len(trace.info["judge"]) == 2
     )  # every judge call recorded (rubric = one call)
@@ -640,4 +645,4 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
 async def test_task_without_judges_scores_as_before():
     trace = make_trace(task_cls=JudgedTask)
     await trace.task.score(trace, runtime=None)
-    assert trace.rewards == {"own": 0.25}
+    assert {k: s.value for k, s in trace.rewards.items()} == {"own": 0.25}

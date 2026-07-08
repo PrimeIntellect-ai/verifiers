@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
 
 import numpy as np
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 from renderers.base import MultiModalData
 
 if TYPE_CHECKING:
@@ -72,22 +72,39 @@ class Error(StrictBaseModel):
     traceback: str | None = None
 
 
-class ScoreRecord(StrictBaseModel):
-    """One write to `Trace.rewards`/`Trace.metrics`, with its provenance: which producer
-    recorded the key and whether it needs a live runtime. Appended by `record_reward`/
-    `record_metric` (the source comes from the caller, or from the scoring context —
-    `SCORE_SOURCE` — for writes made inside a handler's body). `replay` reads the log to
-    decide, per entry, whether an offline re-score recomputes it or must keep the
-    recorded value (`Task.prune_offline`)."""
+class Score(StrictBaseModel):
+    """One `Trace.rewards`/`Trace.metrics` entry: the value plus its provenance — which
+    producer recorded it and whether that producer needs a live runtime. Built by
+    `record_reward`/`record_metric` (the source comes from the caller, or from the
+    scoring context — `SCORE_SOURCE` — for writes made inside a handler's body).
+    `replay` reads the provenance to decide, per entry, whether an offline re-score
+    recomputes it or must keep the recorded value (`Task.prune_offline`). A bare number
+    (a trace saved before provenance existed) coerces to origin "legacy", which replay
+    handles by producer name instead."""
 
-    kind: Literal["reward", "metric"]
-    key: str
     value: float
-    origin: Literal["signal", "judge", "group", "harness", "other"] = "other"
+    origin: Literal["signal", "judge", "group", "harness", "other", "legacy"] = "other"
     name: str = ""
     """The producer's name — the signal method, the judge's reward name — `""` for a
     direct write outside any scoring context."""
     requires_runtime: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_legacy(cls, data):
+        if isinstance(data, (int, float)) and not isinstance(data, bool):
+            return {"value": data, "origin": "legacy"}
+        return data
+
+
+def _score(value: float, source: ScoreSource | None) -> Score:
+    """Build a `Score` from the explicit `source`, else the ambient scoring context."""
+    origin, name, requires_runtime = (
+        source or SCORE_SOURCE.get() or ScoreSource("other", "", False)
+    )
+    return Score(
+        value=value, origin=origin, name=name, requires_runtime=requires_runtime
+    )
 
 
 class Branch(StrictBaseModel):
@@ -244,16 +261,14 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     `graph`). The ground truth; `branches` is a view over it. Stores each message once, so
     size is linear (not quadratic) in turns."""
 
-    rewards: dict[str, float] = Field(default_factory=dict)
-    """Per-`@reward`-function contributions, with each function's weight applied."""
-    metrics: dict[str, float] = Field(default_factory=dict)
-    """Per-`@metric`-function values (unweighted; not summed into the reward)."""
-    score_log: list[ScoreRecord] = Field(default_factory=list)
-    """Provenance of every `rewards`/`metrics` write (append-only, oldest first; the last
-    record per key is current). `rewards`/`metrics` stay the plain float views that
-    signals and consumers read; this log is what offline tooling decides from — `replay`
-    keeps exactly the entries whose producer can't re-run without a runtime (see
-    `Task.prune_offline`)."""
+    rewards: dict[str, Score] = Field(default_factory=dict)
+    """Per-`@reward`-function contributions (each function's weight applied), each a
+    `Score` carrying its value and provenance. `reward` sums the values; read one as a
+    float via `rewards[name].value`."""
+    metrics: dict[str, Score] = Field(default_factory=dict)
+    """Per-`@metric`-function values (unweighted; not summed into the reward), each a
+    `Score` carrying its value and provenance. Read one as a float via `metric(name)` —
+    the common pattern for a signal consuming another signal's result."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Free-form, JSON-serializable scratch space for taskset-specific metadata that is neither
     a reward nor a metric — anything an author wants to scrape off the live runtime and persist
@@ -289,7 +304,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
 
     @property
     def reward(self) -> float:
-        return sum(self.rewards.values())
+        return sum(entry.value for entry in self.rewards.values())
 
     @property
     def error(self) -> Error | None:
@@ -433,20 +448,28 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         messages = branches[-1].messages if branches else []
         return [m for m in messages if isinstance(m, ToolMessage)]
 
+    def metric(self, name: str, default: float = 0.0) -> float:
+        """The recorded value of metric `name` as a float (`default` when absent) — the
+        read for a signal consuming another signal's result (e.g. a trace-only `@reward`
+        reading a runtime `@metric`'s entry)."""
+        entry = self.metrics.get(name)
+        return entry.value if entry is not None else default
+
     def record_metric(
         self, name: str, value: float, source: ScoreSource | None = None
     ) -> None:
-        """Record a single `@metric` result under `name`, logging its provenance
-        (`source`, or the ambient scoring context for writes made inside a handler's
-        body, else "other") into `score_log`. Warns if it overrides an existing metric
-        (a name collision, e.g. an harness and a task metric sharing a name) — last
-        writer wins, but loudly."""
+        """Record a single `@metric` result under `name`, with its provenance (`source`,
+        or the ambient scoring context for writes made inside a handler's body, else
+        "other"). Warns if it overrides an existing metric (a name collision, e.g. an
+        harness and a task metric sharing a name) — last writer wins, but loudly."""
         if name in self.metrics:
             logger.warning(
-                "metric %r overridden: %s -> %s", name, self.metrics[name], value
+                "metric %r overridden: %s -> %s",
+                name,
+                self.metrics[name].value,
+                value,
             )
-        self.metrics[name] = float(value)
-        self._log_score("metric", name, float(value), source)
+        self.metrics[name] = _score(float(value), source)
 
     def record_metrics(
         self, values: "Mapping[str, float]", source: ScoreSource | None = None
@@ -455,23 +478,6 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         e.g. an harness's depth/calls/tokens). Each key warns on override as above."""
         for name, value in values.items():
             self.record_metric(name, value, source)
-
-    def _log_score(
-        self, kind: str, key: str, value: float, source: ScoreSource | None
-    ) -> None:
-        origin, name, requires_runtime = (
-            source or SCORE_SOURCE.get() or ScoreSource("other", "", False)
-        )
-        self.score_log.append(
-            ScoreRecord(
-                kind=kind,  # type: ignore[arg-type]
-                key=key,
-                value=value,
-                origin=origin,
-                name=name,
-                requires_runtime=requires_runtime,
-            )
-        )
 
     def record_judge(self, response: "JudgeResponse") -> None:
         """Persist a judge call (`Judge.evaluate` / `Judge.complete` is pure): append the typed
@@ -489,16 +495,18 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         source: ScoreSource | None = None,
     ) -> None:
         """Record a `@reward`/`@group_reward` contribution under `name` (weight
-        applied; summed into `reward`), logging its provenance like `record_metric`.
+        applied; summed into `reward`), with its provenance like `record_metric`.
         Warns on override — a per-rollout reward and a group reward sharing a name
         would otherwise silently clobber."""
         contribution = float(value) * float(weight)
         if name in self.rewards:
             logger.warning(
-                "reward %r overridden: %s -> %s", name, self.rewards[name], contribution
+                "reward %r overridden: %s -> %s",
+                name,
+                self.rewards[name].value,
+                contribution,
             )
-        self.rewards[name] = contribution
-        self._log_score("reward", name, contribution, source)
+        self.rewards[name] = _score(contribution, source)
 
     def stop(self, condition: str = "done") -> None:
         self.is_completed = True

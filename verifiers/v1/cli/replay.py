@@ -5,7 +5,7 @@ runtime. The run's own `config.toml` is the base; CLI flags / `@ file.toml` laye
 different judge model). Config-plugged judges and trace-only `@reward`/`@metric`s re-run;
 everything an offline re-score can't recompute keeps its source-recorded value — runtime-needing
 signals (in-sandbox verifiers like a SWE `solved` reward), group rewards (no group context),
-harness metrics. Decided per entry from the trace's recorded provenance (`Trace.score_log`, see
+harness metrics. Decided per entry from its recorded provenance (`Score`, see
 `Task.prune_offline`). Rollouts that errored during generation (`stop_condition == "error"`)
 were never scored by eval, so they're copied through unchanged rather than re-scored on a broken
 transcript. `--num-rescores`/`-r` re-scores each trace N times to sample judge variance. Results go
