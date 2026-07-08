@@ -71,13 +71,12 @@ def _read_results(results_path: Path) -> Iterator[tuple[int, int, bool]]:
 
 
 def plan(
-    resume_dir: Path, selected_idxs: list[int], num_rollouts: int, group_idxs: set[int]
+    resume_dir: Path, selected_idxs: list[int], num_rollouts: int, group_scored: bool
 ) -> tuple[list[int], dict[int, int]]:
     """Diff the saved results against the run's target (`num_rollouts` per selected task).
     Returns (byte offsets of rows to keep, rollouts owed per task idx). An errored trace is
-    dropped and re-run; a group-scored task (its idx in `group_idxs` — per task, since a
-    loaded list may mix task types) is kept only if fully complete, else its whole group
-    is redone."""
+    dropped and re-run; on a group-scored run (one task type per taskset, so run-wide) a
+    task is kept only if fully complete, else its whole group is redone."""
     # Retain only the offsets resume can reuse; trace payloads stay on disk.
     selected = set(selected_idxs)
     by_idx: dict[int, list[int]] = defaultdict(list)
@@ -88,7 +87,7 @@ def plan(
     owed: dict[int, int] = {}
     for idx in selected_idxs:
         good = by_idx.get(idx, [])
-        if idx in group_idxs:
+        if group_scored:
             if len(good) >= num_rollouts:
                 keep.extend(good)
             else:

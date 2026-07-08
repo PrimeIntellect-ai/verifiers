@@ -25,7 +25,7 @@ _SHUFFLE_SEED = (
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
-    tasks = env.taskset.load()
+    tasks = env.taskset.tasks()
     if config.shuffle:
         random.Random(_SHUFFLE_SEED).shuffle(tasks)
     tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
@@ -47,13 +47,13 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     finished: list[Trace] = []
     if config.resume is not None:
         # A group-scored task's episode must be re-run whole (its `@group_reward`s
-        # compare all its rollouts); other tasks only re-run what's missing. Decided per
-        # task, since a loaded list may mix group-scored and plain task types.
-        group_idxs = {
-            task.idx for task in tasks if discover_decorated(task, "group_reward")
-        }
+        # compare all its rollouts); other tasks only re-run what's missing. One task
+        # type per taskset, so group scoring is a run-wide property.
+        group_scored = bool(tasks) and bool(
+            discover_decorated(tasks[0], "group_reward")
+        )
         keep, owed = resume.plan(
-            out, [t.idx for t in tasks], config.num_rollouts, group_idxs
+            out, [t.idx for t in tasks], config.num_rollouts, group_scored
         )
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
@@ -161,7 +161,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         client = EnvClient(address=address)
         await client.wait_for_server_startup(timeout=600)
         info = await client.info()
-        group_idxs = set(info.group_idxs)
+        group_scored = info.requires_group_scoring
         idxs = list(range(info.num_tasks))
         if config.shuffle:
             random.Random(_SHUFFLE_SEED).shuffle(idxs)
@@ -169,7 +169,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             idxs = idxs[: config.num_tasks]
         out = output_path(config)
         if config.resume is not None:
-            keep, owed = resume.plan(out, idxs, config.num_rollouts, group_idxs)
+            keep, owed = resume.plan(out, idxs, config.num_rollouts, group_scored)
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
                 raise SystemExit(0)
@@ -193,7 +193,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             )
         logger.info("results: %s", out)
         request_concurrency = config.max_concurrent
-        if request_concurrency and group_idxs:
+        if request_concurrency and group_scored:
             # max_concurrent is a rollout resource bound, not a request-throughput target.
             # A group is indivisible, so one oversized group must still be allowed to run.
             request_concurrency = max(1, request_concurrency // config.num_rollouts)
@@ -226,16 +226,15 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             await append_trace(out, trace, write_lock)
             return [trace]
 
-        # Per task: a group-scored task must run its rollouts together (cross-rollout
-        # scoring) → one `run_group` request (one worker); any other task's rollouts are
+        # A group-scored task must run its rollouts together (cross-rollout scoring) →
+        # one `run_group` request per task (one worker); otherwise rollouts are
         # independent → one `run_rollout` request each, which the broker round-robins
         # (least-busy) across workers — mirrors the prime-rl dispatcher.
-        units = [run_group_unit(i) for i in idxs if i in group_idxs] + [
-            run_rollout_unit(i)
-            for i in idxs
-            if i not in group_idxs
-            for _ in range(owed[i])
-        ]
+        units = (
+            [run_group_unit(i) for i in idxs]
+            if group_scored
+            else [run_rollout_unit(i) for i in idxs for _ in range(owed[i])]
+        )
         results = await asyncio.gather(*units)
         await client.close()
         return [trace for unit_traces in results for trace in unit_traces]

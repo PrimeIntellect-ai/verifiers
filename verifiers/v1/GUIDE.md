@@ -93,9 +93,9 @@ refuses the subprocess runtime up front — the class-wide counterpart to a task
 `vf.Task` is a frozen pydantic model that carries the task's data *and* its behavior. Subclass it
 to add typed, task-specific fields (the reference answer, ground truths, per-row metadata) — your
 rewards and hooks read them as `self` — plus the `@reward` / `@metric` methods and any
-[lifecycle hooks](#lifecycle-hooks). Because behavior rides on the task, a heterogeneous run
-(tasks from different datasets, each with its own verification) is just a list of
-differently-typed tasks. Tasks are frozen and shared across their rollouts, so methods must not
+[lifecycle hooks](#lifecycle-hooks). Because behavior rides on the task, verification never
+branches on a type field — each dataset's task class carries its own. A taskset yields one
+concrete task type (enforced at load). Tasks are frozen and shared across their rollouts, so methods must not
 stash per-rollout state on `self` — that lives on the trace (see [State](#per-rollout-state)).
 The base fields every task has:
 

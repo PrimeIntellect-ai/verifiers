@@ -136,7 +136,7 @@ class EnvClient:
         )
 
     async def info(self) -> InfoResponse:
-        """Return the taskset `num_tasks` + which task idxs group-score (`group_idxs`)."""
+        """Return the taskset `num_tasks` + whether its tasks group-score."""
         return await self._request(InfoRequest(), InfoResponse)
 
     async def run_rollout(

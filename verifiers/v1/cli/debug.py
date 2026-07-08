@@ -259,7 +259,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
 
 async def run_debug(config: DebugConfig) -> list[Trace]:
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.load()
+    tasks = taskset.tasks()
     if config.shuffle:
         random.Random(0).shuffle(tasks)
     if config.num_tasks is not None:

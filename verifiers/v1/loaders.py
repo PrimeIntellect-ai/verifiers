@@ -191,11 +191,8 @@ def judge_config_type(judge_id: str) -> type[JudgeConfig]:
 
 
 def task_type(taskset_id: str) -> type[Task]:
-    """The taskset's `Task` subclass, read off its `Taskset[TaskT, ConfigT]` generic — no data
-    is loaded, so a caller that imports the taskset can cheaply build a typed `Trace[TaskT]` for
-    the otherwise taskset-specific (loose dict) wire trace. Falls back to the base `Task` when
-    no subclass is given."""
-    for arg in _generic_args(taskset_class(taskset_id), Taskset):
-        if isinstance(arg, type) and issubclass(arg, Task):
-            return arg
-    return Task
+    """The taskset's `Task` subclass (`Taskset.task_type`) — no data is loaded, so a caller
+    that imports the taskset can cheaply build a typed `Trace[TaskT]` for the otherwise
+    taskset-specific (loose dict) wire trace. Falls back to the base `Task` when no
+    subclass is given."""
+    return taskset_class(taskset_id).task_type()

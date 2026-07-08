@@ -55,16 +55,12 @@ class EnvServer:
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
         # Load tasks once; the index range is fixed for the server's lifetime.
-        self.tasks = self.env.taskset.load()
-        # Per task (a loaded list may mix group-scored and plain task types). List
-        # positions, not `task.idx` — the RPCs index `self.tasks[req.task_idx]`
-        # positionally, and the eval client samples `range(num_tasks)`.
-        self.group_idxs = sorted(
-            position
-            for position, task in enumerate(self.tasks)
-            if discover_decorated(task, "group_reward")
+        self.tasks = self.env.taskset.tasks()
+        # One task type per taskset (`Taskset.tasks` enforces it), so group scoring is a
+        # run-wide property.
+        self.requires_group_scoring = bool(self.tasks) and bool(
+            discover_decorated(self.tasks[0], "group_reward")
         )
-        self.requires_group_scoring = bool(self.group_idxs)
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client
@@ -150,7 +146,6 @@ class EnvServer:
                 response = InfoResponse(
                     num_tasks=len(self.tasks),
                     requires_group_scoring=self.requires_group_scoring,
-                    group_idxs=self.group_idxs,
                 )
             elif route == "run_rollout":
                 response = await self._run_rollout(

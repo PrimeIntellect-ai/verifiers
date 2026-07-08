@@ -10,7 +10,8 @@ A rollout is the composition of three independently-swappable pieces, each loade
 
 - **Taskset** — the loader: config in, typed `Task`s out. Each `Task` carries its data and its
   behavior — `@reward`/`@metric`/`@group_reward` and the lifecycle hooks live on the task class,
-  so a loaded list may mix task types, each scoring itself.
+  so each task scores itself. One concrete task type per taskset, enforced at load
+  (`Taskset.tasks`).
 - **Harness** — the program that drives the model turn to turn.
 - **Runtime** — *where* that program (and a task's tools / user simulator) executes.
 

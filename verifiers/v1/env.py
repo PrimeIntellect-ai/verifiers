@@ -9,7 +9,8 @@ Execution lives one level down: an `Episode` runs `n` `Rollout`s of a task and s
 runs one trajectory. The task's `@reward`/`@metric` get the rollout's runtime
 (read/exec inside it), so a task scores correctly under any harness; `@group_reward`s
 compare a task's rollouts. Harness capability checks (tools, user sim, container) are
-per task — tasks carry their own behavior, so a loaded list may mix task types.
+per task, by value — one task class per taskset, but its instances can still differ
+row to row (`tools()`/`user()` read the task's fields).
 """
 
 import contextlib
@@ -276,8 +277,8 @@ class Environment:
 
     def episode(self, task: Task, ctx: ModelContext, n: int = 1) -> Episode:
         """Resolve `task` into a runnable episode of `n` rollouts: check the harness
-        supports what this task needs (tools / user sim / a container — per task, since a
-        loaded list may mix task types), pick its runtime (image + resources) and its
+        supports what this task needs (tools / user sim / a container — per task, by
+        value, since instances differ per row), pick its runtime (image + resources) and its
         timeouts (cli/toml > task > default, None = no limit), build one `Rollout` per
         sample sharing them, and wrap them in an `Episode` (which runs them and applies
         the task's `@group_reward`s across their traces).

@@ -10,17 +10,20 @@ simulation, `@reward`/`@metric` scoring — lives on the `Task` subclass it yiel
 The class stays generic over its task and config types (`Taskset[TaskT, ConfigT]`)
 so the loaders can read them: `taskset_config_type` narrows `--taskset.*` CLI/toml
 flags to the real config, and `task_type` types the wire trace. Subclass: implement
-`load`.
+`load`; consumers call `tasks`, which checks the one-type contract: a taskset yields
+one concrete task type (replay rebuilds every saved row as the declared `TaskT`, so
+a row of any other class would silently lose its own behavior there).
 """
 
 from functools import cached_property
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, get_args, get_origin
 
 from pydantic import model_validator
 from pydantic_config import BaseConfig
 
+from verifiers.v1.errors import TasksetError
 from verifiers.v1.judge import Judge, Judges
-from verifiers.v1.task import TaskT
+from verifiers.v1.task import Task, TaskT
 from verifiers.v1.types import ID
 from verifiers.v1.utils.install import env_name
 
@@ -102,6 +105,42 @@ class Taskset(Generic[TaskT, ConfigT]):
 
     def load(self) -> list[TaskT]:
         raise NotImplementedError
+
+    @classmethod
+    def task_type(cls) -> type[Task]:
+        """The declared `TaskT`, read off the `Taskset[TaskT, ConfigT]` generic across the
+        MRO (most-derived specialization wins, so a thin wrapper re-binding only the config
+        inherits its parent's task type). Falls back to the base `Task` when no subclass
+        is given."""
+        for klass in cls.__mro__:
+            for orig in getattr(klass, "__orig_bases__", ()):
+                if get_origin(orig) is Taskset:
+                    for arg in get_args(orig):
+                        if isinstance(arg, type) and issubclass(arg, Task):
+                            return arg
+        return Task
+
+    def tasks(self) -> list[TaskT]:
+        """`load`, plus the one-type contract check: every row must be exactly the declared
+        `TaskT`. Enforced loudly because the wire is typed on the declaration — `replay`
+        rebuilds every saved row as `task_type()`, so a row of any other class would
+        silently replay without its own behavior. Consumers load through this; `load` is
+        the subclass hook."""
+        tasks = self.load()
+        declared = self.task_type()
+        kinds = {type(task) for task in tasks}
+        if declared is not Task:
+            if wrong := sorted(cls.__name__ for cls in kinds - {declared}):
+                raise TasksetError(
+                    f"{type(self).__name__} declares task type {declared.__name__} "
+                    f"but loaded {wrong} — a taskset yields one task type"
+                )
+        elif len(kinds) > 1:
+            raise TasksetError(
+                f"{type(self).__name__} loaded mixed task types "
+                f"{sorted(cls.__name__ for cls in kinds)} — a taskset yields one task type"
+            )
+        return tasks
 
     @cached_property
     def judges(self) -> list[Judge]:

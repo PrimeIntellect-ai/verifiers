@@ -39,10 +39,9 @@ class InfoResponse(BaseResponse):
     num_tasks: int = 0
     """Number of tasks in the taskset — the index range the caller samples from."""
     requires_group_scoring: bool = False
-    """Whether any loaded task defines `@group_reward`s (i.e. `group_idxs` is non-empty)."""
-    group_idxs: list[int] = []
-    """Idxs of the tasks that group-score — the caller runs those via `run_group` (a whole
-    episode per request) and plans their resume whole-group; the rest go per-rollout."""
+    """Whether the taskset's tasks define `@group_reward`s (one task type per taskset) —
+    the caller then runs each task via `run_group` (a whole episode per request) and
+    plans its resume whole-group; otherwise everything goes per-rollout."""
 
 
 class RunRolloutRequest(BaseRequest):
