@@ -461,13 +461,13 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         """Record a single `@metric` result under `name`, with its provenance (`source`,
         or the ambient scoring context for writes made inside a handler's body, else
         "other"). Warns if it overrides an existing metric (a name collision, e.g. an
-        harness and a task metric sharing a name) — last writer wins, but loudly."""
-        if name in self.metrics:
+        harness and a task metric sharing a name) — last writer wins, but loudly.
+        Overriding a "legacy" entry is silent: that's an offline re-score re-recording
+        over a kept pre-provenance value (see `Task.prune_offline`), not a collision."""
+        existing = self.metrics.get(name)
+        if existing is not None and existing.origin != "legacy":
             logger.warning(
-                "metric %r overridden: %s -> %s",
-                name,
-                self.metrics[name].value,
-                value,
+                "metric %r overridden: %s -> %s", name, existing.value, value
             )
         self.metrics[name] = _score(float(value), source)
 

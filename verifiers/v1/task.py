@@ -408,28 +408,38 @@ class Task(StrictBaseModel, Generic[StateT]):
         entries simply stay cleared, leaving no stale value). Kept entries are in place
         *during* re-scoring, so trace-only signals that read them (e.g. a `@reward`
         reading a runtime `@metric`'s entry) see them. Entries from traces predating
-        provenance ("legacy") keep by name — the `offline_skipped` + `@group_reward`
-        names."""
+        provenance ("legacy") can't be attributed, so they split by kind: legacy
+        rewards keep by name — the `offline_skipped` + `@group_reward` names;
+        conservative, so a removed judge's verdict can't sneak back into the reward
+        sum, at the cost of dropping a mapping-returning runtime `@reward`'s keys —
+        while legacy metrics all keep: nothing sums them, keys a mapping `@metric`
+        produced stay readable during re-scoring, and the offline re-run overwrites
+        its own (overriding a legacy entry doesn't warn)."""
         attached = {
             judge.reward_name for judge in self.judges if _requires_runtime(judge.score)
         }
-        # Pre-provenance entries: keep by name — the runtime-requiring signal/judge
-        # names plus group rewards (an offline re-score can't recompute those either).
+        # Pre-provenance legacy rewards: keep by name — the runtime-requiring
+        # signal/judge names plus group rewards (an offline re-score can't recompute
+        # those either).
         fallback = set(self.offline_skipped()) | {
             fn.__name__ for fn in discover_decorated(self, "group_reward")
         }
 
-        def keep(key: str, entry: "Score") -> bool:
-            if entry.origin == "legacy":
-                return key in fallback
+        def keep(entry: "Score") -> bool:
             if entry.origin == "signal":
                 return entry.requires_runtime
             if entry.origin == "judge":
                 return entry.requires_runtime and entry.name in attached
             return True  # group / harness / other: offline re-scoring can't recompute
 
-        trace.rewards = {k: v for k, v in trace.rewards.items() if keep(k, v)}
-        trace.metrics = {k: v for k, v in trace.metrics.items() if keep(k, v)}
+        trace.rewards = {
+            k: v
+            for k, v in trace.rewards.items()
+            if (k in fallback if v.origin == "legacy" else keep(v))
+        }
+        trace.metrics = {
+            k: v for k, v in trace.metrics.items() if v.origin == "legacy" or keep(v)
+        }
 
     async def score_group(self, traces: "list[Trace]") -> None:
         """Score a group of rollouts of this task: run every `@group_reward` over all
