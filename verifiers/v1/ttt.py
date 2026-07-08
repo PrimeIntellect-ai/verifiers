@@ -37,7 +37,8 @@ from typing import TYPE_CHECKING, Literal
 import httpx
 from pydantic_config import BaseConfig
 
-from verifiers.v1.errors import TTTError
+from verifiers.v1.errors import OverlongPromptError, ProviderError, TTTError
+from verifiers.v1.retries import retrying
 from verifiers.v1.types import SamplingConfig
 
 if TYPE_CHECKING:
@@ -46,6 +47,30 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
+# Bounded retries for transient faults, module-level so tests can dial them down. Retrying
+# a /update or /release is idempotent: the service replays an exact duplicate of the last
+# applied seq_no from cache, so a lost response never double-trains.
+TTT_UPDATE_RETRIES = 3
+TTT_RELEASE_RETRIES = 2
+TTT_QA_RETRIES = 2
+
+
+class _Transient(Exception):
+    """Internal marker for a retryable fault, so `retrying()`'s type-based predicate can
+    see it (it can't inspect status codes); the real error rides as `__cause__` and is
+    re-raised once retries are exhausted."""
+
+    def unwrap(self) -> BaseException:
+        return self.__cause__ or self
+
+
+def _transient_provider(e: BaseException) -> bool:
+    """Provider faults worth retrying: the timeout/5xx/429 family. Never an
+    `OverlongPromptError` (a budget limit) or any other 4xx (deterministic)."""
+    if isinstance(e, OverlongPromptError):
+        return False
+    return isinstance(e, ProviderError) and (e.status_code == 429 or e.status_code >= 500)
 
 
 class TTTConfig(BaseConfig):
@@ -382,12 +407,15 @@ class TTTRolloutHook:
         if self.version == 0 and self._http is None:
             return  # never updated, nothing to release
         try:
-            response = await self._client().post(
-                f"{self.config.base_url}/release",
-                json={"rollout_id": self.trace.id, "adapter_name": self.adapter_name},
+            # Retry transients first: a leaked release leaks a service slot + engine
+            # adapter until restart. Still best-effort — warn-and-continue on final failure.
+            await self._post_service(
+                "/release",
+                {"rollout_id": self.trace.id, "adapter_name": self.adapter_name},
                 timeout=60.0,
+                retries=TTT_RELEASE_RETRIES,
+                label="ttt /release",
             )
-            response.raise_for_status()
         except Exception:
             logger.warning(
                 "ttt: release failed for %s (adapter %s)",
@@ -406,6 +434,31 @@ class TTTRolloutHook:
         if self._http is None:
             self._http = httpx.AsyncClient()
         return self._http
+
+    async def _post_service(
+        self, path: str, json: dict, *, timeout: float, retries: int, label: str
+    ) -> httpx.Response:
+        """POST to the TTT service with bounded retries on transients: connection faults,
+        timeouts, and 502/503 (adapter load failed / work loop busy) — never 4xx (409 is a
+        deterministic per-job validation error). Safe to retry: the service replays an
+        exact duplicate of the last applied seq_no from cache. Worst-case wall time is
+        ~(retries+1) x `timeout` plus backoff."""
+        try:
+            async for attempt in retrying(on=_Transient, retries=retries, label=label):
+                with attempt:
+                    try:
+                        response = await self._client().post(f"{self.config.base_url}{path}", json=json, timeout=timeout)
+                        response.raise_for_status()
+                        return response
+                    except (httpx.TransportError, httpx.TimeoutException) as e:
+                        raise _Transient() from e
+                    except httpx.HTTPStatusError as e:
+                        if e.response.status_code in (502, 503):
+                            raise _Transient() from e
+                        raise
+        except _Transient as e:
+            raise e.unwrap()  # surface the real fault once retries are exhausted
+        raise AssertionError("unreachable: retrying() returns or reraises")
 
     def _system_prompt(self) -> str | None:
         """The rollout's system prompt text (the trace's root system node), for the
@@ -489,11 +542,46 @@ class TTTRolloutHook:
                 node.ttt_version = self.version
             return response.message.content or ""
 
+        async def ask_retrying(prompt_text: str, label: str):
+            """`ask` with bounded retries on transient provider faults (timeout/5xx/429;
+            never content or 4xx faults). Re-running is safe: commits happen only after the
+            gather (`commit_tagged`), so a failed attempt never produced a committed turn."""
+            try:
+                async for attempt in retrying(on=_Transient, retries=TTT_QA_RETRIES, label=label):
+                    with attempt:
+                        try:
+                            return await ask(prompt_text)
+                        except (httpx.TransportError, httpx.TimeoutException) as e:
+                            raise _Transient() from e
+                        except Exception as e:
+                            if _transient_provider(e):
+                                raise _Transient() from e
+                            raise
+            except _Transient as e:
+                raise e.unwrap()  # surface the real fault once retries are exhausted
+            raise AssertionError("unreachable: retrying() returns or reraises")
+
         prompts = [
             qa.generation_prompt.format(seed=qa.seeds[i % len(qa.seeds)], num_items=qa.items_per_generation)
             for i in range(qa.num_generations)
         ]
-        generations = await asyncio.gather(*(ask(p) for p in prompts))
+        results = await asyncio.gather(
+            *(ask_retrying(p, "ttt qa generation") for p in prompts), return_exceptions=True
+        )
+        generations = [r for r in results if not isinstance(r, BaseException)]
+        failures = [r for r in results if isinstance(r, BaseException)]
+        if failures:
+            # Degrade, don't kill: a failed generation contributes zero items — unless
+            # nothing survived and the raw branch isn't trained either, in which case the
+            # update would train on nothing, so keep raising (TTTError via the caller).
+            if not generations and not qa.also_train_rollout:
+                raise failures[0]
+            logger.warning(
+                "ttt: %d/%d qa generations failed for %s after retries; continuing with the rest",
+                len(failures),
+                len(results),
+                self.trace.id,
+            )
 
         # Commit each exchange as a tagged branch (sequentially — graph mutation), then
         # extract + dedup the items across all generations.
@@ -505,7 +593,13 @@ class TTTRolloutHook:
 
         if qa.verify and items:
             verify_prompt = qa.verification_prompt.format(items=format_items_for_verification(items))
-            turn, response = await ask(verify_prompt)
+            try:
+                turn, response = await ask_retrying(verify_prompt, "ttt qa verification")
+            except Exception:
+                # Verification is an optional filter: on final failure keep all items
+                # rather than killing the rollout.
+                logger.warning("ttt: qa verification failed for %s after retries; keeping all items", self.trace.id)
+                return items
             failed = parse_failed_items(commit_tagged(turn, response), len(items))
             if failed:
                 rejected = [{**items[num - 1], "reason": reason} for num, reason in sorted(failed.items())]
@@ -571,9 +665,12 @@ class TTTRolloutHook:
         seq_no = self.version + 1
         start = time.perf_counter()
         try:
-            response = await self._client().post(
-                f"{self.config.base_url}/update",
-                json={
+            # Bounded retries on transients (timeout stays per-attempt: worst case is
+            # ~4x update_timeout + backoff); service-side duplicate-seq_no replay makes
+            # retrying the same payload idempotent.
+            response = await self._post_service(
+                "/update",
+                {
                     "rollout_id": self.trace.id,
                     "adapter_name": self.adapter_name,
                     "token_ids": token_ids,
@@ -589,8 +686,9 @@ class TTTRolloutHook:
                     "tools": self.tools_wire if qa_pairs else None,
                 },
                 timeout=self.config.update_timeout,
+                retries=TTT_UPDATE_RETRIES,
+                label=f"ttt /update {seq_no}",
             )
-            response.raise_for_status()
             result = response.json()
         except TTTError:
             raise

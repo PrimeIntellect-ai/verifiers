@@ -5,7 +5,7 @@ import httpx
 import pytest
 import verifiers.v1 as vf
 from verifiers.v1 import graph
-from verifiers.v1.errors import TTTError
+from verifiers.v1.errors import ProviderError, TTTError
 from verifiers.v1.ttt import TTTConfig, TTTRolloutHook
 from verifiers.v1.types import AssistantMessage, SamplingConfig, TurnTokens, UserMessage
 
@@ -22,17 +22,25 @@ def response(content: str, prompt_ids: list[int], completion_ids: list[int]) -> 
 
 
 class FakeService:
-    """Collects /update and /release calls; returns the echoing version."""
+    """Collects /update and /release calls; returns the echoing version. `statuses` scripts
+    per-call /update HTTP statuses (popped in order; exhausted → 200) for retry tests."""
 
-    def __init__(self, fail: bool = False, wrong_version: bool = False):
+    def __init__(self, fail: bool = False, wrong_version: bool = False, statuses: list[int] | None = None):
         self.updates: list[dict] = []
         self.releases: list[dict] = []
+        self.update_calls = 0
         self.fail = fail
         self.wrong_version = wrong_version
+        self.statuses = list(statuses or [])
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         payload = None if not request.content else __import__("json").loads(request.content)
         if request.url.path == "/update":
+            self.update_calls += 1
+            if self.statuses:
+                status = self.statuses.pop(0)
+                if status != 200:
+                    return httpx.Response(status, json={"detail": "scripted"})
             if self.fail:
                 return httpx.Response(500, json={"detail": "boom"})
             self.updates.append(payload)
@@ -742,3 +750,145 @@ def test_parse_failed_items():
     # Empty block = everything passed; missing block = fail open (keep all).
     assert parse_failed_items("<failed></failed>", 3) == {}
     assert parse_failed_items("no block at all", 3) == {}
+
+
+# -- bounded retries on transients ----------------------------------------------------------
+
+
+@pytest.fixture
+def fast_retries(monkeypatch):
+    """Drop the retry backoff so retry tests don't sleep, and let the `verifiers` logger
+    propagate so caplog sees the retry/degrade warnings."""
+    import logging
+
+    from tenacity import wait_none
+    from verifiers.v1 import ttt as ttt_mod
+
+    real = ttt_mod.retrying
+
+    def no_wait(**kwargs):
+        r = real(**kwargs)
+        r.wait = wait_none()
+        return r
+
+    monkeypatch.setattr(ttt_mod, "retrying", no_wait)
+    monkeypatch.setattr(logging.getLogger("verifiers"), "propagate", True)
+
+
+async def test_update_retries_transient_503_then_succeeds(fast_retries, caplog):
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    service = FakeService(statuses=[503])  # first attempt 503, then 200
+    hook = hook_with(trace, service)
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    with caplog.at_level("WARNING", logger="verifiers.v1.retries"):
+        await hook.on_turn_prepared(turn)
+    assert service.update_calls == 2
+    assert len(service.updates) == 1  # applied exactly once
+    assert hook.version == 1
+    assert sum("retrying ttt /update" in r.getMessage() for r in caplog.records) == 1
+
+
+async def test_update_409_is_not_retried(fast_retries):
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    service = FakeService(statuses=[409] * 10)  # deterministic validation error
+    hook = hook_with(trace, service)
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    with pytest.raises(TTTError, match="update 1 failed"):
+        await hook.on_turn_prepared(turn)
+    assert service.update_calls == 1  # single call, no retry
+
+
+async def test_update_persistent_503_fails_after_all_attempts(fast_retries):
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    service = FakeService(statuses=[503] * 10)
+    hook = hook_with(trace, service)
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    with pytest.raises(TTTError, match="update 1 failed"):
+        await hook.on_turn_prepared(turn)
+    assert service.update_calls == 4  # 1 + TTT_UPDATE_RETRIES
+
+
+class FlakyQAClient(QAClient):
+    """Raises a transient ProviderError the first `fail_first` times a prompt containing
+    `fail_on` is asked; other prompts (and later retries) answer normally."""
+
+    def __init__(self, items, fail_on: str, fail_first: int):
+        super().__init__(items)
+        self.fail_on = fail_on
+        self.fails_left = fail_first
+        self.failed_calls = 0
+
+    async def get_response(self, dialect, body, model, sampling, headers=None, session_id=None, turn=None):
+        if self.fail_on in body["messages"][-1]["content"] and self.fails_left > 0:
+            self.fails_left -= 1
+            self.failed_calls += 1
+            raise ProviderError("work loop busy", status_code=503)
+        return await super().get_response(dialect, body, model, sampling, headers, session_id, turn)
+
+
+async def test_qa_generation_transient_failure_retried(fast_retries):
+    """One of two generation calls fails once then its retry succeeds: items from both."""
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    service = FakeService()
+    client = FlakyQAClient(
+        [{"type": "qa", "question": "What is x for task T?", "answer": "42"}],
+        fail_on="beta-seed",
+        fail_first=1,
+    )
+    hook = qa_hook(trace, service, client, seeds=["alpha-seed", "beta-seed"])
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    await hook.on_turn_prepared(turn)
+    assert client.failed_calls == 1
+    assert len(client.requests) == 2  # both generations succeeded (one on retry)
+    (update,) = service.updates
+    assert update["qa_pairs"] == client.items
+
+
+async def test_qa_generation_persistent_failure_degrades(fast_retries, caplog):
+    """One generation fails all attempts: the surviving call's items ship, no raise."""
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    service = FakeService()
+    client = FlakyQAClient(
+        [{"type": "qa", "question": "What is x for task T?", "answer": "42"}],
+        fail_on="beta-seed",
+        fail_first=99,
+    )
+    hook = qa_hook(trace, service, client, seeds=["alpha-seed", "beta-seed"])
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    with caplog.at_level("WARNING", logger="verifiers.v1.ttt"):
+        await hook.on_turn_prepared(turn)
+    assert client.failed_calls == 3  # 1 + TTT_QA_RETRIES
+    (update,) = service.updates
+    assert update["qa_pairs"] == client.items  # the surviving generation's items
+    assert any("qa generations failed" in r.getMessage() for r in caplog.records)
+
+
+async def test_qa_all_generations_fail_is_ttt_error(fast_retries):
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    client = FlakyQAClient([], fail_on="", fail_first=999)  # every call fails
+    hook = qa_hook(trace, FakeService(), client)
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    with pytest.raises(TTTError, match="qa generation failed"):
+        await hook.on_turn_prepared(turn)
+
+
+async def test_qa_verify_persistent_failure_keeps_items(fast_retries, caplog):
+    """The verify call failing all attempts is an optional filter lost, not a dead rollout."""
+    items = [{"type": "qa", "question": "What is x for task T?", "answer": "42"}]
+    trace = vf.Trace(task=vf.Task(idx=0, prompt="t"))
+    service = FakeService()
+    client = FlakyQAClient(items, fail_on="grading the study-set", fail_first=99)
+    hook = qa_hook(trace, service, client, verify=True)
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
+    turn = graph.prepare_turn(trace, [UserMessage(content="s")])
+    with caplog.at_level("WARNING", logger="verifiers.v1.ttt"):
+        await hook.on_turn_prepared(turn)
+    (update,) = service.updates
+    assert update["qa_pairs"] == items  # kept despite the failed verification
+    assert any("qa verification failed" in r.getMessage() for r in caplog.records)
