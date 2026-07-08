@@ -4,7 +4,13 @@ A record is one ``Trace.to_record()`` JSONL line (prime-rl writes them to
 ``<output_dir>/rollouts/step_*/*_rollouts*.jsonl``). Everything here is a pure function of the
 reloaded trace: pick a resume point, slice the conversation up to it, and hand back a ``Seed`` —
 the new task's prompt plus enough metadata to filter, label, and restore it. The taskset
-assembles seeds into tasks; nothing here touches config or I/O beyond line iteration.
+assembles seeds into tasks; nothing here touches config or I/O beyond record/index file reading.
+
+Record files may ship with a derived sibling index (prime-rl writes ``index_<env>.jsonl`` next
+to each ``train_rollouts_<env>.jsonl``): one row per record line with selection fields
+(``task_name``, ``reward``, ``branches``, ...) and the line's byte span (``offset``, ``len``).
+``read_index`` / ``select_index_rows`` / ``iter_indexed_records`` let a consumer filter records
+index-side and parse only the survivors; a missing index means full parse.
 
 Sandbox snapshots: a producer that snapshots the rollout's sandbox records the refs in
 ``trace.info["snapshots"]`` (``SNAPSHOTS_INFO_KEY``), keyed by the index (in ``trace.nodes``)
@@ -79,6 +85,64 @@ def iter_records(paths: Iterable[Path]) -> Iterator[dict]:
                     raise ValueError(
                         f"{path}:{number} is not a JSON rollout record"
                     ) from e
+
+
+def read_index(record_path: Path) -> list[dict] | None:
+    """The record file's sibling index rows (``index_<env>.jsonl`` next to
+    ``train_rollouts_<env>.jsonl`` / ``eval_rollouts_<env>.jsonl``), or None when the filename
+    doesn't follow that convention or no index exists — the caller then full-parses the
+    records. Each row describes one record line: selection fields plus its byte span."""
+    name = record_path.name
+    for prefix in ("train_rollouts_", "eval_rollouts_"):
+        if name.startswith(prefix):
+            index_path = record_path.with_name("index_" + name[len(prefix) :])
+            break
+    else:
+        return None
+    if not index_path.exists():
+        return None
+    with open(index_path) as lines:
+        return [json.loads(line) for line in lines if line.strip()]
+
+
+def select_index_rows(
+    rows: list[dict],
+    min_reward: float | None = None,
+    max_reward: float | None = None,
+    min_branches: int = 1,
+) -> tuple[list[dict], dict[str, int]]:
+    """Index-side record selection: drop rows whose record could never seed — already-replayed
+    task names (``continue:``/``recheck:``), rewards outside ``[min_reward, max_reward]``, and
+    branch counts below ``min_branches`` (2 when only compacted rollouts can seed) — before any
+    record line is parsed. Returns the surviving rows in order and the skip counts, keyed like
+    the taskset's skip reasons."""
+    skipped = {"replayed": 0, "source_reward": 0, "no_seed": 0}
+    selected: list[dict] = []
+    for row in rows:
+        name = row.get("task_name") or ""
+        if isinstance(name, str) and name.startswith(("continue:", "recheck:")):
+            skipped["replayed"] += 1
+            continue
+        reward = row["reward"]
+        if (min_reward is not None and reward < min_reward) or (
+            max_reward is not None and reward > max_reward
+        ):
+            skipped["source_reward"] += 1
+            continue
+        if row["branches"] < min_branches:
+            skipped["no_seed"] += 1
+            continue
+        selected.append(row)
+    return selected, skipped
+
+
+def iter_indexed_records(path: Path, rows: Iterable[dict]) -> Iterator[dict]:
+    """The record dicts at the given index rows' byte spans (``offset``/``len``), in row
+    order — the record file is opened once and only the selected spans are read and parsed."""
+    with open(path, "rb") as records:
+        for row in rows:
+            records.seek(row["offset"])
+            yield json.loads(records.read(row["len"]))
 
 
 def node_snapshots(trace: Trace) -> dict[int, str]:

@@ -38,6 +38,7 @@ the source run so the rebuilt system prompt and tool inventory match the seeded 
 
 import logging
 import random
+from collections.abc import Iterable
 from functools import cached_property
 from pathlib import Path
 from typing import Literal
@@ -60,8 +61,11 @@ from verifiers.v1.tasksets.replay.records import (
     Seed,
     compaction_seeds,
     expand_records,
+    iter_indexed_records,
     iter_records,
+    read_index,
     recheck_seed,
+    select_index_rows,
     tool_call_seeds,
 )
 from verifiers.v1.trace import Trace
@@ -238,54 +242,79 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
             "no_seed": 0,
             "overlong": 0,
         }
-        for record in iter_records(Path(path) for path in new_paths):
-            name = (record.get("task") or {}).get("name") or ""
-            if isinstance(name, str) and name.startswith(("continue:", "recheck:")):
-                # This taskset's own output — don't compound seeds.
-                skipped["replayed"] += 1
-                continue
-            # Filter another env's records on the task fields alone — full-trace validation
-            # walks every node's token ids, far too much work to spend on a line we discard.
-            try:
-                task_cls.model_validate(record.get("task"))
-            except ValidationError:
-                skipped["foreign"] += 1
-                continue
-            trace = trace_cls.model_validate(record)
-            if not trace.nodes:
-                skipped["empty"] += 1
-                continue
-            if (
-                self.config.min_source_reward is not None
-                and trace.reward < self.config.min_source_reward
-            ) or (
-                self.config.max_source_reward is not None
-                and trace.reward > self.config.max_source_reward
-            ):
-                skipped["source_reward"] += 1
-                continue
-            seeds = self.seeds(trace)
-            if not seeds:
-                skipped["no_seed"] += 1
-                continue
-            for seed in seeds:
-                if (
-                    self.config.max_seed_tokens is not None
-                    and seed.tokens > self.config.max_seed_tokens
-                ):
-                    skipped["overlong"] += 1
-                    continue
-                if seed.snapshot is not None:
-                    self._snapshots[len(tasks)] = seed.snapshot
-                tasks.append(
-                    trace.task.model_copy(
-                        update={
-                            "idx": len(tasks),
-                            "name": seed.name,
-                            "prompt": seed.prompt,
-                        }
-                    )
+        # Only compacted rollouts (>= 2 branches) can seed a compaction continue — an
+        # index-side filter that spares parsing the (typically dominant) linear records.
+        min_branches = (
+            2
+            if self.config.mode == "continue" and self.config.anchor == "compaction"
+            else 1
+        )
+        for path in new_paths:
+            index = read_index(Path(path))
+            if index is None:
+                records: Iterable[dict] = iter_records([Path(path)])
+            else:
+                # Index-selected loading: filter on the recorded task name / reward /
+                # branch count first, then read and parse only the surviving byte spans.
+                # The parsed-record checks below still run on every survivor — the index
+                # can't validate task types or node contents.
+                rows, index_skipped = select_index_rows(
+                    index,
+                    min_reward=self.config.min_source_reward,
+                    max_reward=self.config.max_source_reward,
+                    min_branches=min_branches,
                 )
+                for reason, count in index_skipped.items():
+                    skipped[reason] += count
+                records = iter_indexed_records(Path(path), rows)
+            for record in records:
+                name = (record.get("task") or {}).get("name") or ""
+                if isinstance(name, str) and name.startswith(("continue:", "recheck:")):
+                    # This taskset's own output — don't compound seeds.
+                    skipped["replayed"] += 1
+                    continue
+                # Filter another env's records on the task fields alone — full-trace validation
+                # walks every node's token ids, far too much work to spend on a line we discard.
+                try:
+                    task_cls.model_validate(record.get("task"))
+                except ValidationError:
+                    skipped["foreign"] += 1
+                    continue
+                trace = trace_cls.model_validate(record)
+                if not trace.nodes:
+                    skipped["empty"] += 1
+                    continue
+                if (
+                    self.config.min_source_reward is not None
+                    and trace.reward < self.config.min_source_reward
+                ) or (
+                    self.config.max_source_reward is not None
+                    and trace.reward > self.config.max_source_reward
+                ):
+                    skipped["source_reward"] += 1
+                    continue
+                seeds = self.seeds(trace)
+                if not seeds:
+                    skipped["no_seed"] += 1
+                    continue
+                for seed in seeds:
+                    if (
+                        self.config.max_seed_tokens is not None
+                        and seed.tokens > self.config.max_seed_tokens
+                    ):
+                        skipped["overlong"] += 1
+                        continue
+                    if seed.snapshot is not None:
+                        self._snapshots[len(tasks)] = seed.snapshot
+                    tasks.append(
+                        trace.task.model_copy(
+                            update={
+                                "idx": len(tasks),
+                                "name": seed.name,
+                                "prompt": seed.prompt,
+                            }
+                        )
+                    )
         logger.info(
             "replay(%s/%s): %d tasks from %d files (skipped: %s)",
             self.config.mode,

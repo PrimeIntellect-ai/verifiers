@@ -4,9 +4,12 @@ from verifiers.v1.tasksets.replay.records import (
     Seed,
     compaction_seeds,
     estimate_tokens,
+    iter_indexed_records,
     iter_records,
     node_snapshots,
+    read_index,
     recheck_seed,
+    select_index_rows,
     tool_call_seeds,
 )
 from verifiers.v1.tasksets.replay.taskset import (
@@ -23,9 +26,12 @@ __all__ = [
     "Seed",
     "compaction_seeds",
     "estimate_tokens",
+    "iter_indexed_records",
     "iter_records",
     "node_snapshots",
+    "read_index",
     "recheck_seed",
     "restore_snapshot",
+    "select_index_rows",
     "tool_call_seeds",
 ]

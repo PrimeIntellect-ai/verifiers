@@ -1,6 +1,7 @@
 """The replay taskset: seed construction from trace records, config resolution, delegation."""
 
 import json
+from pathlib import Path
 from random import Random
 
 import pytest
@@ -8,7 +9,12 @@ import verifiers.v1 as vf
 from pydantic import ValidationError
 from verifiers.v1 import graph
 from verifiers.v1.loaders import load_taskset, taskset_config_type
-from verifiers.v1.tasksets.replay import compaction_seeds, recheck_seed, tool_call_seeds
+from verifiers.v1.tasksets.replay import (
+    compaction_seeds,
+    read_index,
+    recheck_seed,
+    tool_call_seeds,
+)
 
 SYSTEM = vf.SystemMessage(content="be helpful")
 TASK_USER = vf.UserMessage(content="solve the task")
@@ -418,3 +424,120 @@ def test_source_reward_filter_selects_incorrect_attempts(tmp_path):
     )
     tasks = taskset.load_tasks()
     assert len(tasks) == 1  # only the incorrect (reward-0) attempt is rechecked
+
+
+def _echo_trace(idx: int, reward: float, name: str | None = None) -> vf.Trace:
+    from echo_v1 import EchoTask
+
+    trace = vf.Trace(task=EchoTask(idx=idx, prompt="say hi", answer="hi", name=name))
+    graph.prepare_turn(trace, [SYSTEM, vf.UserMessage(content="say hi")]).commit(
+        _reply(_assistant("hi" if reward else "no"))
+    )
+    trace.record_reward("solved", reward, 1.0)
+    return trace
+
+
+def _index_row(trace: vf.Trace) -> dict:
+    """The selection fields prime-rl records for one `index_<env>.jsonl` row (the byte span is
+    filled in by `_write_indexed_records` from the line actually written)."""
+    return {
+        "trace": trace.id,
+        "task_idx": trace.task.idx,
+        "task_name": trace.task.name,
+        "reward": trace.reward,
+        "policy_version": 0,
+        "step": 1,
+        "branches": trace.num_branches,
+        "turns": trace.num_turns,
+        "stop": trace.stop_condition,
+    }
+
+
+def _write_indexed_records(dir_path: Path, entries: list[tuple[str, dict]]) -> str:
+    """Write `train_rollouts_echo.jsonl` plus its sibling `index_echo.jsonl` from (record
+    line, index row) pairs, filling each row's byte span while writing."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    offset, data, rows = 0, b"", []
+    for line, row in entries:
+        encoded = line.encode()
+        rows.append({**row, "offset": offset, "len": len(encoded)})
+        offset += len(encoded)
+        data += encoded
+    (dir_path / "train_rollouts_echo.jsonl").write_bytes(data)
+    (dir_path / "index_echo.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows)
+    )
+    return str(dir_path / "train_rollouts_echo.jsonl")
+
+
+def _load_replay(records: str, **overrides):
+    return load_taskset(
+        taskset_config_type("replay").model_validate(
+            {
+                "id": "replay",
+                "records": records,
+                "source": {"id": "echo-v1"},
+                **overrides,
+            }
+        )
+    )
+
+
+def test_index_selected_loading_matches_full_parse(tmp_path):
+    traces = [
+        _echo_trace(0, 1.0),
+        _echo_trace(1, 0.0),
+        _echo_trace(2, 0.0, name="recheck:deadbeef"),
+    ]
+    entries = [(json.dumps(t.to_record()) + "\n", _index_row(t)) for t in traces]
+    indexed = _write_indexed_records(tmp_path / "indexed", entries)
+    (tmp_path / "plain").mkdir()
+    plain = tmp_path / "plain" / "train_rollouts_echo.jsonl"
+    plain.write_text("".join(line for line, _ in entries))
+    assert read_index(Path(indexed)) is not None
+    assert read_index(plain) is None  # no sibling index: full parse
+    assert read_index(plain.with_name("records.jsonl")) is None  # unrecognized filename
+
+    config = {"mode": "recheck", "max_source_reward": 0.5}
+    with_index = _load_replay(indexed, **config).load_tasks()
+    without_index = _load_replay(str(plain), **config).load_tasks()
+    assert with_index == without_index
+    assert [t.name for t in with_index] == [f"recheck:{traces[1].id[:8]}"]
+
+
+def test_index_filters_skip_without_parsing_records(tmp_path):
+    """Index-filtered records are never read: their lines can be invalid JSON at the recorded
+    spans and index-selected loading still works — while the index-less fallback, which must
+    parse every line, fails on them."""
+    keep = _echo_trace(0, 0.0)
+    entries = [
+        (json.dumps(keep.to_record()) + "\n", _index_row(keep)),
+        ("NOT JSON (filtered by reward)\n", _index_row(_echo_trace(1, 1.0))),
+        (
+            "NOT JSON (filtered as replayed)\n",
+            _index_row(_echo_trace(2, 0.0, name="recheck:deadbeef")),
+        ),
+    ]
+    records = _write_indexed_records(tmp_path, entries)
+    tasks = _load_replay(records, mode="recheck", max_source_reward=0.5).load_tasks()
+    assert [t.name for t in tasks] == [f"recheck:{keep.id[:8]}"]
+
+    (tmp_path / "index_echo.jsonl").unlink()
+    with pytest.raises(ValueError, match="not a JSON rollout record"):
+        _load_replay(records, mode="recheck", max_source_reward=0.5).load_tasks()
+
+
+def test_index_branch_count_prefilters_linear_records_for_compaction(tmp_path):
+    """`continue`/`compaction` can only seed from compacted (multi-branch) rollouts, so the
+    index filters the typically-dominant linear records before any parsing."""
+    from echo_v1 import EchoTask
+
+    compacted = _compacted_trace()
+    compacted.task = EchoTask(idx=0, prompt="solve the task", answer="hi")
+    entries = [
+        (json.dumps(compacted.to_record()) + "\n", _index_row(compacted)),
+        ("NOT JSON (linear, one branch)\n", _index_row(_echo_trace(1, 0.0))),
+    ]
+    records = _write_indexed_records(tmp_path, entries)
+    tasks = _load_replay(records, mode="continue", anchor="compaction").load_tasks()
+    assert [t.name for t in tasks] == [f"continue:{compacted.id[:8]}:compaction0"]
