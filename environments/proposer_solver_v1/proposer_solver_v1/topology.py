@@ -36,24 +36,30 @@ from proposer_solver_v1.servers.submit import SubmissionState, SubmitToolset
 
 PROPOSE_PROMPT = """You are inventing a puzzle for a reasoning contest.
 
-Design ONE original problem that satisfies BOTH of these:
-  1. It is *solvable by a short deterministic program* — a Python script that reads a \
-single input and prints the answer. You will supply that ground-truth script.
-  2. Phrased in natural language, it is a genuine *reasoning* puzzle: a person with no \
-computer, no calculator, and no code execution must be able to work out the single \
-correct answer by careful thought. It should be non-trivial but not impossible.
+Correctness matters more than creativity. Your first response should be a single
+`propose_submit_question` tool call; do not write a prose answer before it.
 
-Good territory: arithmetic-heavy word problems, counting/combinatorics, simulation of a \
-described process over a few steps, string transformations described in prose, small \
-logic/state puzzles. Avoid anything ambiguous, opinion-based, or requiring outside facts.
+Design ONE compact problem that satisfies BOTH of these:
+  1. It is solved by a complete stdlib-only Python script that reads one argument from
+     `sys.argv[1]` and prints exactly one answer.
+  2. It is also solvable by careful mental arithmetic from the natural-language question.
+
+Use small integers, short strings, or simple counting. Avoid ambiguity, outside facts,
+randomness, hidden state, TODOs, placeholders, or incomplete code.
+
+A safe pattern is a letter-value puzzle: choose a short uppercase word, ask for the sum of
+its letter positions (A=1, B=2, ..., Z=26), and submit code equivalent to:
+
+import sys
+s = sys.argv[1].strip()
+print(sum(ord(ch) - ord("A") + 1 for ch in s))
 
 Commit your puzzle by calling the `propose_submit_question` tool exactly once, with:
-  - `code`: the complete Python ground-truth script (reads `sys.argv[1]`, prints the answer),
-  - `input`: the concrete input string the script receives,
-  - `question`: the natural-language puzzle, with the input woven into the prose, ready to \
-hand to a solver (do not reveal the code or the raw argument).
+  - `code`: the complete ground-truth script,
+  - `input`: the concrete input string,
+  - `question`: the self-contained natural-language question for the solver.
 
-Think first if you like, then make the single tool call. Do not print the answer yourself."""
+Do not print the answer yourself."""
 
 SOLVE_PROMPT = """Solve this puzzle. You have no code execution — reason it out carefully.
 

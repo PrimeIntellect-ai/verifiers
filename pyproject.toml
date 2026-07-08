@@ -81,7 +81,7 @@ examples = [
     "gsm8k-v1", "glossary-v1", "deepwiki-v1", "wiki-search-v1", "code-golf-v1",
     "reverse-text-v1", "color-codeword-v1",
     "wordle-v1", "alphabet-sort-v1", "scratchpad-v1",
-    "proposer-solver-v1", "writer-editors-v1",
+    "proposer-solver-v1", "writer-editors-v1", "shared-runtime-v1",
 ]
 
 [project.optional-dependencies]
@@ -151,6 +151,7 @@ alphabet-sort-v1 = { path = "environments/alphabet_sort_v1", editable = true }
 scratchpad-v1 = { path = "environments/scratchpad_v1", editable = true }
 proposer-solver-v1 = { path = "environments/proposer_solver_v1", editable = true }
 writer-editors-v1 = { path = "environments/writer_editors_v1", editable = true }
+shared-runtime-v1 = { path = "environments/shared_runtime_v1", editable = true }
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)

@@ -5425,6 +5425,17 @@ wheels = [
 ]
 
 [[package]]
+name = "shared-runtime-v1"
+version = "0.1.0"
+source = { editable = "environments/shared_runtime_v1" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers" }]
+
+[[package]]
 name = "shellingham"
 version = "1.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -6274,6 +6285,7 @@ examples = [
     { name = "proposer-solver-v1" },
     { name = "reverse-text-v1" },
     { name = "scratchpad-v1" },
+    { name = "shared-runtime-v1" },
     { name = "wiki-search-v1" },
     { name = "wordle-v1" },
     { name = "writer-editors-v1" },
@@ -6361,6 +6373,7 @@ examples = [
     { name = "proposer-solver-v1", editable = "environments/proposer_solver_v1" },
     { name = "reverse-text-v1", editable = "environments/reverse_text_v1" },
     { name = "scratchpad-v1", editable = "environments/scratchpad_v1" },
+    { name = "shared-runtime-v1", editable = "environments/shared_runtime_v1" },
     { name = "wiki-search-v1", editable = "environments/wiki_search_v1" },
     { name = "wordle-v1", editable = "environments/wordle_v1" },
     { name = "writer-editors-v1", editable = "environments/writer_editors_v1" },
