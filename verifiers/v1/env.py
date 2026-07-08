@@ -403,7 +403,9 @@ class Environment:
         corpus is built once, not per rollout. No-op ({}) when none are shared. A shared server
         must be task-agnostic: its `setup` gets no task (so it can't silently serve one task's
         data to every rollout); calling `tools()` here only builds the toolset instances. Every
-        task is swept — a mixed list may expose shared tools on any of its types — deduped by
+        task is swept — one task class per taskset, but `tools()` reads the instance's fields,
+        so rows can expose different servers (a representative-task check would miss them; the
+        sweep is by value, runs once per eval, and constructs without launching) — deduped by
         server name (same name = the same task-agnostic server, started once). A shared
         server on a host runtime is bridged to the host once (a tunnel) when the harness runs
         remotely, so an in-sandbox harness can still reach it (see `serve_shared`)."""
