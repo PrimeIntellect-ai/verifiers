@@ -16,6 +16,7 @@ from collections.abc import Mapping
 import re
 
 import httpx
+from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
@@ -95,8 +96,18 @@ class EvalClient(Client):
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
         )
-        raw = from_json(resp.content)
-        response = dialect.parse_response(dialect.validate_response(raw))
+        # A corrupted response (e.g. an HTML error page or a truncated body on a
+        # flaky tunnel) surfaces as a JSON parse failure or a schema validation
+        # failure — map these to a retryable 502 so the harness SDK retries the
+        # call instead of crashing the whole rollout on one bad response.
+        try:
+            raw = from_json(resp.content)
+            response = dialect.parse_response(dialect.validate_response(raw))
+        except (ValueError, ValidationError) as e:
+            raise model_error(
+                f"malformed upstream response: {type(e).__name__}: {e}",
+                status_code=502,
+            ) from e
         response.raw = raw  # the program gets the provider's bytes back 1:1
         return response
 
@@ -144,6 +155,8 @@ class EvalClient(Client):
         except httpx.TimeoutException as e:
             raise model_error(str(e), status_code=504) from e
         except httpx.HTTPError as e:
+            raise model_error(str(e), status_code=503) from e
+        except ConnectionResetError as e:
             raise model_error(str(e), status_code=503) from e
         if not stream:
             try:
