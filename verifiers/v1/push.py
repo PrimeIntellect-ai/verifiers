@@ -28,20 +28,29 @@ def _creds() -> tuple[str | None, str, str, str | None]:
     """(api_key, api_base, frontend_url, team_id) from env vars / `~/.prime/config.json`."""
     cfg = load_prime_config()
     api_key = os.getenv("PRIME_API_KEY") or cfg.get("api_key")
-    base = (
-        os.getenv("PRIME_API_BASE_URL")
-        or os.getenv("PRIME_BASE_URL")
-        or cfg.get("base_url")
-        or DEFAULT_API_URL
-    )
+    base = os.getenv("PRIME_API_BASE_URL") or os.getenv("PRIME_BASE_URL") or cfg.get("base_url") or DEFAULT_API_URL
     base = base.rstrip("/").removesuffix("/api/v1")
-    frontend = (
-        os.getenv("PRIME_FRONTEND_URL")
-        or cfg.get("frontend_url")
-        or DEFAULT_FRONTEND_URL
-    )
+    frontend = os.getenv("PRIME_FRONTEND_URL") or cfg.get("frontend_url") or DEFAULT_FRONTEND_URL
     team_id = os.getenv("PRIME_TEAM_ID") or cfg.get("team_id")
     return api_key, base, frontend, team_id
+
+
+def _run_metrics(traces: list[Trace]) -> dict[str, float]:
+    """Run-level aggregates: mean reward over all traces, each env metric averaged over
+    the traces that recorded it, and the errored fraction — the same avg_reward /
+    avg_metrics / avg_error semantics as v0's `GenerateMetadata` accumulators."""
+    if not traces:
+        return {}
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for trace in traces:
+        for name, value in trace.metrics.items():
+            sums[name] = sums.get(name, 0.0) + value
+            counts[name] = counts.get(name, 0) + 1
+    metrics = {name: sums[name] / counts[name] for name in sums}
+    metrics["reward"] = sum(t.reward for t in traces) / len(traces)
+    metrics["error_rate"] = sum(t.has_error for t in traces) / len(traces)
+    return metrics
 
 
 def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
@@ -51,14 +60,11 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
     `prime env push`, then create evaluation -> push samples -> finalize."""
     api_key, base, frontend, team_id = _creds()
     if not api_key:
-        logger.warning(
-            "--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload"
-        )
+        logger.warning("--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload")
         return None
 
     env_name = config.taskset.id or config.id
-    rewards = [t.reward for t in traces]
-    metrics = {"reward": sum(rewards) / len(rewards)} if rewards else {}
+    metrics = _run_metrics(traces)
     counts: dict[int, int] = {}
     samples = []
     for trace in traces:
@@ -75,9 +81,7 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
             resp.raise_for_status()
             return resp.json()
 
-        env_id = post("/environmentshub/resolve", {"name": env_name, **team})["data"][
-            "id"
-        ]
+        env_id = post("/environmentshub/resolve", {"name": env_name, **team})["data"]["id"]
         eval_id = post(
             "/evaluations/",
             {
