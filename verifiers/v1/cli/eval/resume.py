@@ -16,7 +16,12 @@ from pathlib import Path
 
 from pydantic_core import from_json
 
+from verifiers.v1.cli.output import read_traces
 from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.state import state_cls
+from verifiers.v1.task import WireTask
+from verifiers.v1.taskset import Taskset
+from verifiers.v1.trace import Trace
 
 
 def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
@@ -114,6 +119,14 @@ def rewrite_results(resume_dir: Path, keep: list[int]) -> None:
             if not raw.endswith(b"\n"):
                 output.write(b"\n")
     tmp.replace(path)
+
+
+def load_kept(resume_dir: Path, taskset: Taskset) -> list[Trace]:
+    """Reload the kept (good) traces as finished `Trace`s, so a resumed run's live dashboard counts
+    them toward the whole run (progress, reward, err, and the usage/time breakdown). Call *after*
+    `rewrite_results`, which leaves only the kept rows on disk. `WireTask` reads any taskset's saved
+    task without a runtime or its `Task` type (mirrors `replay`)."""
+    return read_traces(resume_dir, Trace[WireTask, state_cls(type(taskset))])
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:

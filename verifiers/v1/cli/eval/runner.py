@@ -42,6 +42,10 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # run only the owed rollouts. One lock serializes worker-thread appends from concurrent
     # rollouts while keeping large trace serialization off the event loop.
     owed: dict[int, int] | None = None
+    # On resume, the kept (good) on-disk rollouts, reloaded as finished traces so the live
+    # dashboard counts the whole run (progress, reward, err, usage/time) rather than only this
+    # session's re-run rollouts. Only the --rich dashboard reads them, so skip the load otherwise.
+    finished: list[Trace] = []
     if config.resume is not None:
         group = requires_group_scoring(tasks)
         keep, owed = resume.plan(
@@ -52,6 +56,8 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             raise SystemExit(0)
         tasks = [task for task in tasks if owed.get(task.idx)]
         resume.rewrite_results(out, keep)
+        if config.rich:
+            finished = resume.load_kept(out, env.taskset)
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
             out,
@@ -85,7 +91,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
         ]
         rollouts = [rollout for episode in episodes for rollout in episode.rollouts]
         display = (
-            dashboard(rollouts, config, start)
+            dashboard(rollouts, config, start, finished=finished)
             if config.rich
             else contextlib.nullcontext()
         )
