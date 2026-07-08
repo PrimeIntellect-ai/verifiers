@@ -95,32 +95,39 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
     team = {"team_id": team_id} if team_id else {}
     api = f"{base}/api/v1"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    with httpx.Client(headers=headers, timeout=300.0) as client:
+    # The run is already done and its results saved; a network blip or platform error here must
+    # not crash the run (or, on the non-rich path, swallow the final per-trace output that prints
+    # after this) — log and skip the upload instead.
+    try:
+        with httpx.Client(headers=headers, timeout=300.0) as client:
 
-        def post(path: str, body: dict) -> dict:
-            resp = client.post(f"{api}{path}", json=body)
-            resp.raise_for_status()
-            return resp.json()
+            def post(path: str, body: dict) -> dict:
+                resp = client.post(f"{api}{path}", json=body)
+                resp.raise_for_status()
+                return resp.json()
 
-        env_id = post("/environmentshub/resolve", {"name": env_name, **team})["data"][
-            "id"
-        ]
-        eval_id = post(
-            "/evaluations/",
-            {
-                "name": f"{env_name}--{config.model}--{config.uuid[:8]}",
-                "environments": [{"id": env_id}],
-                "model_name": config.model,
-                "dataset": env_name,
-                "framework": "verifiers",
-                "metadata": metadata,
-                "metrics": metrics,
-                "tags": [],
-                **team,
-            },
-        )["evaluation_id"]
-        post(f"/evaluations/{eval_id}/samples", {"samples": samples})
-        post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
+            env_id = post("/environmentshub/resolve", {"name": env_name, **team})[
+                "data"
+            ]["id"]
+            eval_id = post(
+                "/evaluations/",
+                {
+                    "name": f"{env_name}--{config.model}--{config.uuid[:8]}",
+                    "environments": [{"id": env_id}],
+                    "model_name": config.model,
+                    "dataset": env_name,
+                    "framework": "verifiers",
+                    "metadata": metadata,
+                    "metrics": metrics,
+                    "tags": [],
+                    **team,
+                },
+            )["evaluation_id"]
+            post(f"/evaluations/{eval_id}/samples", {"samples": samples})
+            post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
+    except Exception as e:
+        logger.warning("--push: upload failed (%s: %s); skipping", type(e).__name__, e)
+        return None
 
     url = f"{frontend}/dashboard/evaluations/{eval_id}"
     logger.info("--push: uploaded %d samples (evaluation_id=%s)", len(samples), eval_id)
