@@ -35,24 +35,6 @@ def _creds() -> tuple[str | None, str, str, str | None]:
     return api_key, base, frontend, team_id
 
 
-def _run_metrics(traces: list[Trace]) -> dict[str, float]:
-    """Run-level aggregates: mean reward over all traces, each env metric averaged over
-    the traces that recorded it, and the errored fraction — the same avg_reward /
-    avg_metrics / avg_error semantics as v0's `GenerateMetadata` accumulators."""
-    if not traces:
-        return {}
-    sums: dict[str, float] = {}
-    counts: dict[str, int] = {}
-    for trace in traces:
-        for name, value in trace.metrics.items():
-            sums[name] = sums.get(name, 0.0) + value
-            counts[name] = counts.get(name, 0) + 1
-    metrics = {name: sums[name] / counts[name] for name in sums}
-    metrics["reward"] = sum(t.reward for t in traces) / len(traces)
-    metrics["error_rate"] = sum(t.has_error for t in traces) / len(traces)
-    return metrics
-
-
 def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
     """Upload a finished run to the platform; return the viewer URL (None if skipped).
 
@@ -63,8 +45,25 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
         logger.warning("--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload")
         return None
 
+    def compute_metrics() -> dict[str, float]:
+        """Run-level aggregates: mean reward over all traces, each env metric averaged over
+        the traces that recorded it, and the errored fraction — the same avg_reward /
+        avg_metrics / avg_error semantics as v0's `GenerateMetadata` accumulators."""
+        if not traces:
+            return {}
+        sums: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        for trace in traces:
+            for name, value in trace.metrics.items():
+                sums[name] = sums.get(name, 0.0) + value
+                counts[name] = counts.get(name, 0) + 1
+        metrics = {name: sums[name] / counts[name] for name in sums}
+        metrics["reward"] = sum(t.reward for t in traces) / len(traces)
+        metrics["error_rate"] = sum(t.has_error for t in traces) / len(traces)
+        return metrics
+
     env_name = config.taskset.id or config.id
-    metrics = _run_metrics(traces)
+    metrics = compute_metrics()
     counts: dict[int, int] = {}
     samples = []
     for trace in traces:
