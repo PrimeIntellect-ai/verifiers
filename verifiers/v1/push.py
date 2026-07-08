@@ -16,7 +16,7 @@ import httpx
 
 from verifiers.utils.client_utils import load_prime_config
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.samples import reward_column_name, trace_to_sample
+from verifiers.v1.samples import trace_to_sample
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -60,13 +60,11 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
     def compute_metrics() -> dict[str, Any]:
         """Run-level aggregates as v0's `GenerateMetadata`: `avg_reward` (mean over all traces),
         `avg_metrics` (each sub-reward and env-metric averaged over the traces that recorded it),
-        and `avg_error` (errored fraction) — what the overview renders. Sub-rewards use the same
-        `*_reward_func` column names as the per-sample fields so the two line up."""
+        and `avg_error` (errored fraction) — what the overview renders."""
         sums: dict[str, float] = {}
         counts: dict[str, int] = {}
         for trace in traces:
-            named = {reward_column_name(k): v for k, v in trace.rewards.items()}
-            for name, value in {**named, **trace.metrics}.items():
+            for name, value in {**trace.rewards, **trace.metrics}.items():
                 sums[name] = sums.get(name, 0.0) + value
                 counts[name] = counts.get(name, 0) + 1
         n = len(traces)

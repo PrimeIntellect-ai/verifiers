@@ -12,18 +12,6 @@ from typing import Any
 
 from verifiers.v1.trace import Trace
 
-# The platform promotes a numeric sample field to a per-rollout reward column only when its
-# name ends in one of these (the v0 reward-function naming convention); any other field folds
-# into the sample's `info`.
-_REWARD_COLUMN_SUFFIXES = ("reward", "reward_func", "score")
-
-
-def reward_column_name(name: str) -> str:
-    """A reward-function name in the form the platform renders as a per-rollout column: v0
-    reward functions already end in `_reward_func`; give any v1 name that lacks a recognized
-    suffix one so it lands as a column instead of buried in `info`."""
-    return name if name.endswith(_REWARD_COLUMN_SUFFIXES) else f"{name}_reward_func"
-
 
 def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
     """One rollout -> the platform's sample dict (the "old" v0 eval-sample format).
@@ -56,7 +44,6 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
         "trajectory": [
             {
                 "messages": dump(branch.messages),
-                "reward": trace.reward,
                 "num_input_tokens": branch.num_input_tokens,
                 "num_output_tokens": branch.num_output_tokens,
             }
@@ -67,9 +54,8 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
         else None,
         "info": dict(trace.info) or None,
     }
-    # Flatten each sub-reward onto the sample as a top-level `*_reward_func`/`*_score` key so the
-    # platform renders it as a per-rollout reward column. Env metrics stay in the nested `metrics`
-    # field (they aren't reward columns — the platform keeps them inside `info`, as it does for v0).
+    # Flatten each sub-reward onto the sample as a top-level key, the way v0's `state_to_output`
+    # does. Env metrics stay in the nested `metrics` field.
     for name, value in trace.rewards.items():
-        sample.setdefault(reward_column_name(name), value)
+        sample.setdefault(name, value)
     return sample
