@@ -17,9 +17,8 @@ The rounds + fan-in shape, one self-contained package:
 import asyncio
 import logging
 
-from pydantic import SerializeAsAny
-
 import verifiers.v1 as vf
+from verifiers.v1.topologies.llm_judge import parse_score
 
 logger = logging.getLogger(__name__)
 
@@ -94,22 +93,6 @@ end your reply with a final line of exactly `SCORE: <n>`, where <n> is an intege
 (worse or unchanged) to 10 (a dramatic, unambiguous improvement)."""
 
 
-def parse_score(text: str) -> float | None:
-    """The last `SCORE: <n>` line of `text`, normalized to 0..1 (markdown `**`/backtick
-    emphasis and a `/10` suffix tolerated, clamped to the 0-10 scale); None when no
-    verdict was committed."""
-    for line in reversed(text.splitlines()):
-        stripped = line.strip().strip("*`").strip()
-        if not stripped.upper().startswith("SCORE:"):
-            continue
-        try:
-            score = float(stripped.split(":", 1)[1].split("/")[0].strip())
-        except ValueError:
-            return None
-        return min(max(score / 10.0, 0.0), 1.0)
-    return None
-
-
 class ImprovementJudge(vf.Judge[float]):
     """One call comparing first draft to final draft — the cheap `vf.Judge` utility tier
     (the judge-as-agent tier is the `llm-judge`/`agentic-judge` topologies)."""
@@ -137,17 +120,9 @@ class ReviseTask(vf.Task):
     the fan-in, rendered into one task."""
 
 
-class DirectAgentConfig(vf.AgentConfig):
-    """Both roles default to the in-process `direct` chat loop. Pinned on an `AgentConfig`
-    subclass (never on the outer field's default instance), so a partial override like
-    `--topology.editor.model <id>` tunes the agent without silently replacing the pin."""
-
-    harness: SerializeAsAny[vf.HarnessConfig] = vf.HarnessConfig(id="direct")
-
-
 class WriterEditorsConfig(vf.TopologyConfig):
-    writer: DirectAgentConfig = DirectAgentConfig()
-    editor: DirectAgentConfig = DirectAgentConfig()
+    writer: vf.DirectAgentConfig = vf.DirectAgentConfig()
+    editor: vf.DirectAgentConfig = vf.DirectAgentConfig()
     num_editors: int = 3
     """Editors critiquing each draft (the fan-out width)."""
     num_rounds: int = 1

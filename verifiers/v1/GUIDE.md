@@ -775,25 +775,21 @@ config — the field *name* is the agent's name, and every agent is CLI-addressa
 (`--topology.solver.harness.id rlm`, `--topology.judge.model <id>`):
 
 ```python
-from pydantic import SerializeAsAny
-
-
-class DirectAgentConfig(vf.AgentConfig):
-    harness: SerializeAsAny[vf.HarnessConfig] = vf.HarnessConfig(id="direct")
-
-
 class ProposerSolverConfig(vf.TopologyConfig):
-    proposer: DirectAgentConfig = DirectAgentConfig()
-    solver: DirectAgentConfig = DirectAgentConfig()
+    proposer: vf.NullAgentConfig = vf.NullAgentConfig()      # `null` chat loop (has MCP tools)
+    solver: vf.DirectAgentConfig = vf.DirectAgentConfig()    # in-process `direct` (tool-less)
     num_solvers: int = 4
 ```
 
 An `AgentConfig` binds a harness (and where it runs — `harness.runtime`) plus per-agent
 routing: `model` / `client` / `sampling` overrides and a `trainable` flag (stamped onto every
 trace the agent produces, so a trainer can drop e.g. judge traces without the topology
-config). Subclass it to pin typed per-agent defaults — the `llm-judge` topology's judge pins
-the `direct` harness and `trainable=False`. The tasks an agent consumes (each carrying its own
-behavior) arrive per episode, from the topology's seeds or constructed in `go`.
+config). Subclass it to pin typed per-agent defaults — `vf.DirectAgentConfig` /
+`vf.NullAgentConfig` are the shared common pins, and the `llm-judge` topology's judge pins
+the `direct` harness plus `trainable=False` (a pin must live on the subclass's field default,
+e.g. `harness: SerializeAsAny[vf.HarnessConfig] = vf.HarnessConfig(id="direct")`, so partial
+overrides deep-merge into it). The tasks an agent consumes (each carrying its own behavior)
+arrive per episode, from the topology's seeds or constructed in `go`.
 
 An `AgentConfig` field is the one declaration form. The default `load_agents` builds one
 `AgentBinding` per field, in declaration order; override it only to compose agents

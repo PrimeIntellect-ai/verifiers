@@ -1,9 +1,25 @@
 """Explicit executable agents.
 
-An `Agent` is the reusable lower-level primitive under evals, topologies, and plain
-agent programs: harness + model context + runtime policy, with one arrow,
-`run(task) -> Trace`. Topologies add graph recording and deferred rewards around that
-arrow; the agent itself only knows how to execute one task.
+An `Agent` is the reusable execution primitive under evals, topologies, and plain agent
+programs: harness + model context + runtime policy, with one arrow, `run(task) -> Trace`.
+Topologies add graph recording and deferred rewards around that arrow; the agent itself
+only knows how to execute one task.
+
+A bare agent is fully standalone — each `run` provisions a runtime from the policy and
+brings up its own per-rollout interception server, right for scripts and small programs:
+
+    agent = vf.Agent(DirectHarness(DirectHarnessConfig()), ctx)
+    trace = await agent.run(vf.Task(idx=0, prompt="..."))
+
+Serving resources have exactly one owner: `RunServices`. For pooled operation (N
+concurrent runs sharing interception servers and shared MCP tools, like an eval), enter
+a scope and inject it — `async with RunServices() as services:
+Agent(..., services=services)` — which is precisely what `TopologyRunner.serving` does
+for every agent it binds. The agent never owns services; it borrows them.
+
+The framework's config-driven packaging of agents — CLI/toml-addressable, persisted as
+agent graphs, eval- and trainer-integrated — is the topology (`verifiers.v1.topology`);
+reach for a bare `Agent` when you're scripting.
 """
 
 from __future__ import annotations
@@ -34,6 +50,7 @@ if TYPE_CHECKING:
 
 
 Parent = Trace | str
+"""An upstream lineage link: the parent trace itself, or just its id."""
 
 
 def _parent_ids(parents: Sequence[Parent]) -> list[str]:
@@ -41,15 +58,15 @@ def _parent_ids(parents: Sequence[Parent]) -> list[str]:
 
 
 class _AgentAttempt:
-    """One retryable attempt. Each `run()` builds a fresh `Rollout` when the agent owns
-    runtime provisioning; borrowed-runtime attempts deliberately reuse the borrowed box."""
+    """One retryable attempt (see `retries.Runnable`): each `run()` builds and runs a
+    fresh `Rollout` when the agent owns runtime provisioning; borrowed-runtime attempts
+    deliberately reuse the borrowed box."""
 
     def __init__(
         self,
         agent: "Agent",
         task: Task,
         *,
-        ctx: ModelContext,
         runtime_config: RuntimeConfig,
         runtime: Runtime | None,
         shared: SharedServers | None,
@@ -58,7 +75,6 @@ class _AgentAttempt:
     ) -> None:
         self.agent = agent
         self.task = task
-        self.ctx = ctx
         self.runtime_config = runtime_config
         self.runtime = runtime
         self.shared = shared
@@ -66,20 +82,25 @@ class _AgentAttempt:
         self.parents = parents
 
     async def run(self) -> Trace:
-        rollout = self.agent.rollout(
-            self.task,
-            ctx=self.ctx,
+        agent = self.agent
+        rollout = Rollout(
+            task=self.task,
+            harness=agent.harness,
+            ctx=agent.ctx,
             runtime_config=self.runtime_config,
-            runtime=self.runtime,
+            timeouts=resolve_stage_timeouts(
+                agent.timeout, self.task, self.runtime_config
+            ),
+            limits=agent.limits,
             shared=self.shared,
             interception=self.interception,
+            runtime=self.runtime,
         )
         trace = await rollout.run()
-        self.agent.stamp(
+        agent.stamp(
             trace,
             parents=self.parents,
             runtime=rollout.runtime,
-            ctx=self.ctx,
             borrowed=self.runtime is not None,
         )
         return trace
@@ -90,7 +111,11 @@ class Agent:
 
     `run(task)` provisions a fresh runtime from the policy and tears it down. To share a
     world explicitly, use `provision()` and pass the yielded runtime back to one or more
-    `run(..., runtime=box)` calls; borrowed runtime rollouts never start or stop the box.
+    `run(..., runtime=box)` calls; borrowed-runtime rollouts never start or stop the box.
+
+    `services` is the (optional) serving scope the agent borrows pooled interception and
+    shared MCP servers from — see the module docstring; without one, every run brings up
+    its own per-rollout interception server.
     """
 
     def __init__(
@@ -103,7 +128,6 @@ class Agent:
         trainable: bool = True,
         limits: RolloutLimits | None = None,
         timeout: TimeoutConfig | None = None,
-        multiplex: int = 32,
         services: RunServices | None = None,
     ) -> None:
         self.harness = harness
@@ -113,28 +137,9 @@ class Agent:
         self.trainable = trainable
         self.limits = limits or RolloutLimits()
         self.timeout = timeout or TimeoutConfig()
-        self.multiplex = multiplex
         self._services = services
-        self._owned_services: RunServices | None = None
         self._warned_resources: set[tuple[str, str]] = set()
         self._validated: set[tuple[type[Task], str, str]] = set()
-
-    async def __aenter__(self) -> "Agent":
-        if self._owned_services is not None:
-            raise RuntimeError("Agent is already entered")
-        if self._services is not None:
-            raise RuntimeError("Agent already has external services; enter the owner")
-        services = RunServices(self.multiplex)
-        self._owned_services = await services.__aenter__()
-        self._services = self._owned_services
-        return self
-
-    async def __aexit__(self, *exc) -> None:
-        services = self._owned_services
-        self._owned_services = None
-        self._services = None
-        if services is not None:
-            await services.__aexit__(*exc)
 
     def runtime_for(self, task: Task, runtime: Runtime | None = None) -> RuntimeConfig:
         """The runtime placement this run will actually use."""
@@ -148,61 +153,30 @@ class Agent:
             validate_pairing(type(task), self.harness, runtime_config)
             self._validated.add(key)
 
-    def rollout(
-        self,
-        task: Task,
-        *,
-        ctx: ModelContext | None = None,
-        runtime_config: RuntimeConfig | None = None,
-        runtime: Runtime | None = None,
-        shared: SharedServers | None = None,
-        interception: InterceptionPool | None = None,
-    ) -> Rollout:
-        """Build, but do not run, one rollout for `task`."""
-        actual_runtime = runtime_config or self.runtime_for(task, runtime)
-        self._validate_pairing(task, actual_runtime)
-        timeouts = resolve_stage_timeouts(self.timeout, task, actual_runtime)
-        return Rollout(
-            task=task,
-            harness=self.harness,
-            ctx=ctx or self.ctx,
-            runtime_config=actual_runtime,
-            setup_timeout=timeouts.setup,
-            harness_timeout=timeouts.rollout,
-            finalize_timeout=timeouts.finalize,
-            scoring_timeout=timeouts.scoring,
-            limits=self.limits,
-            shared=shared,
-            interception=interception,
-            runtime=runtime,
-        )
-
     async def run(
         self,
         task: Task,
         *,
         parents: Sequence[Parent] = (),
         runtime: Runtime | None = None,
-        ctx: ModelContext | None = None,
-        services: RunServices | None = None,
         retry: RolloutRetryConfig | None = None,
     ) -> Trace:
-        """Run this agent on `task` once and return its trace."""
-        ctx = ctx or self.ctx
-        services = services if services is not None else self._services
+        """Run this agent on `task` once and return its trace, stamped with lineage
+        (`parents`) and this agent's provenance. `runtime` places the run into a live
+        borrowed box instead of provisioning one; `retry` applies the whole-rollout
+        retry policy."""
         runtime_config = self.runtime_for(task, runtime)
-        shared = services.shared if services is not None else None
-        interception = (
-            await services.pool_for(runtime_config) if services is not None else None
-        )
+        self._validate_pairing(task, runtime_config)
+        services = self._services
         attempt = _AgentAttempt(
             self,
             task,
-            ctx=ctx,
             runtime_config=runtime_config,
             runtime=runtime,
-            shared=shared,
-            interception=interception,
+            shared=services.shared if services is not None else None,
+            interception=await services.pool_for(runtime_config)
+            if services is not None
+            else None,
             parents=parents,
         )
         if retry is not None:
@@ -215,7 +189,6 @@ class Agent:
         *,
         parents: Sequence[Parent],
         runtime: Runtime | None,
-        ctx: ModelContext,
         borrowed: bool,
     ) -> None:
         """Record agent provenance on a finished trace."""
@@ -226,7 +199,7 @@ class Agent:
         trace.info["agent"] = {
             "name": self.name,
             "harness": self.harness.config.id,
-            "model": ctx.model,
+            "model": self.ctx.model,
             "runtime": {
                 "type": runtime.config.type if runtime is not None else None,
                 "descriptor": runtime.descriptor if runtime is not None else None,

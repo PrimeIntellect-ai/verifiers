@@ -281,6 +281,43 @@ async def test_writer_editors_topology(tmp_path):
 
 
 @pytest.mark.e2e
+@pytest.mark.subprocess
+async def test_shared_runtime_topology(tmp_path):
+    """The `shared-runtime-v1` example, live: `go` provisions one box via
+    `run.agent("writer").provision(task)`, the writer's `finalize` writes its reply into
+    it, and the reader — borrowed into the SAME box — verifies the artifact in `setup`.
+    The borrowed-runtime plumbing end to end."""
+    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.configs.eval import EvalConfig
+    from verifiers.v1.topology import TopologyRunner
+
+    config = EvalConfig(
+        topology={"id": "shared-runtime-v1"},
+        num_tasks=1,
+        max_turns=2,
+        sampling={"max_tokens": 512, "temperature": 0},
+        timeout={"rollout": 180, "scoring": 60},
+        retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
+        rich=False,
+        output_dir=tmp_path,
+    )
+    env = TopologyRunner(config.topology, config)
+    written, read = await run_topology_eval(env, config)
+    assert written.errors == [] and read.errors == []
+    assert (written.agent, read.agent) == ("writer", "reader")
+    assert read.parents == [written.id]
+    # both rollouts rode the one provisioned box, and neither owned it
+    assert written.info["agent"]["runtime"]["borrowed"] is True
+    assert read.info["agent"]["runtime"]["borrowed"] is True
+    assert (
+        written.info["agent"]["runtime"]["descriptor"]
+        == read.info["agent"]["runtime"]["descriptor"]
+    )
+    assert read.rewards["read_shared_note"] == 1.0  # the handoff verified in-runtime
+    assert written.rewards["handoff_succeeded"] == 1.0  # mirrored onto the writer
+
+
+@pytest.mark.e2e
 async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     """Agentic: write a phrase to a file with the agent's shell, checked in the runtime."""
     if harness == "null":

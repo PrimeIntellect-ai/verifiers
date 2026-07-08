@@ -1,13 +1,15 @@
 """shared-runtime-v1 - two agents borrow one provisioned runtime.
 
-This example is intentionally small: the writer runs first and, in its task `finalize`,
-writes the model's reply into the live runtime. The reader then runs in the same borrowed
-runtime; its task `setup` reads the file before the model turn. The reader reward verifies
-that the artifact it saw in setup matches what the writer wrote, and a deferred writer
-reward mirrors that handoff result back onto the writer trace.
+This example is intentionally small and demonstrates the *plumbing*, not model skill: the
+writer runs first and, in its task `finalize`, writes the model's reply into the live
+runtime. The reader then runs in the same borrowed runtime; its task `setup` reads the
+file before the model turn. The reader reward verifies that the artifact it saw in setup
+matches what the writer wrote, and a deferred writer reward mirrors that handoff result
+back onto the writer trace. Neither model's *reply* is graded — the rewards close over
+the runtime handoff itself, which is the thing being demonstrated (both agents ride the
+cheap in-process `direct` harness; the shared piece is the runtime, not the harness —
+`--topology.writer.harness.runtime.*` moves the shared world).
 """
-
-from pydantic import SerializeAsAny
 
 import verifiers.v1 as vf
 
@@ -18,16 +20,6 @@ WRITE_PROMPT = """Reply with exactly this sentence: shared runtime handoff ready
 READ_PROMPT = """A previous agent wrote an artifact into your borrowed runtime.
 
 Reply with one concise sentence acknowledging that the handoff was inspected."""
-
-
-class DirectAgentConfig(vf.AgentConfig):
-    """Both agents use the cheap in-process direct harness.
-
-    The shared piece here is not the harness process; it is the runtime borrowed by both
-    rollouts. Change `--topology.writer.harness.runtime.*` to move the shared world.
-    """
-
-    harness: SerializeAsAny[vf.HarnessConfig] = vf.HarnessConfig(id="direct")
 
 
 class WriteTask(vf.Task):
@@ -64,8 +56,8 @@ class ReadTask(vf.Task):
 
 
 class SharedRuntimeConfig(vf.TopologyConfig):
-    writer: DirectAgentConfig = DirectAgentConfig()
-    reader: DirectAgentConfig = DirectAgentConfig()
+    writer: vf.DirectAgentConfig = vf.DirectAgentConfig()
+    reader: vf.DirectAgentConfig = vf.DirectAgentConfig()
 
 
 class SharedRuntimeTopology(vf.Topology[SharedRuntimeConfig]):
@@ -77,7 +69,9 @@ class SharedRuntimeTopology(vf.Topology[SharedRuntimeConfig]):
         reader = run.agent("reader")
         async with writer.provision(task) as runtime:
             written = await writer.run(task, runtime=runtime)
-            note = written.info["shared_runtime"]["wrote"]
+            note = written.info.get("shared_runtime", {}).get("wrote")
+            if note is None:
+                return  # writer episode failed before finalize — nothing was handed off
             await reader.run(
                 ReadTask(idx=task.idx, prompt=READ_PROMPT, expected=note),
                 parents=[written],

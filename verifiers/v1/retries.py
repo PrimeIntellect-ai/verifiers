@@ -12,7 +12,7 @@ attempt's error onto the returned trace's `errors`; off by default.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import Field
 from pydantic_config import BaseConfig
@@ -27,10 +27,16 @@ from tenacity import (
 )
 
 if TYPE_CHECKING:
-    from verifiers.v1.rollout import Rollout
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
+
+class Runnable(Protocol):
+    """Anything whole-run retryable: one `run()` producing a complete `Trace` per attempt —
+    a `Rollout`, or an agent attempt wrapping one (`verifiers.v1.agent`)."""
+
+    async def run(self) -> Trace: ...
 
 
 def retrying(
@@ -104,7 +110,7 @@ def should_retry(trace: Trace, retry: RolloutRetryConfig) -> bool:
 
 
 async def run_with_retry(
-    rollout: Rollout,
+    rollout: Runnable,
     retry: RolloutRetryConfig,
 ) -> Trace:
     """Run the whole rollout, retrying it while its trace ends with a retryable error.

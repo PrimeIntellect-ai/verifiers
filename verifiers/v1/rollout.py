@@ -16,6 +16,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
@@ -46,6 +47,9 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 
+if TYPE_CHECKING:
+    from verifiers.v1.env import TimeoutConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,10 +73,7 @@ class Rollout:
         harness: Harness,
         ctx: ModelContext,
         runtime_config: RuntimeConfig,
-        setup_timeout: float | None = None,
-        harness_timeout: float | None = None,
-        finalize_timeout: float | None = None,
-        scoring_timeout: float | None = None,
+        timeouts: "TimeoutConfig | None" = None,
         limits: RolloutLimits | None = None,
         shared: SharedServers | None = None,
         interception: InterceptionPool | None = None,
@@ -82,10 +83,12 @@ class Rollout:
         self.harness = harness
         self.ctx = ctx
         self.runtime_config = runtime_config
-        self.setup_timeout = setup_timeout
-        self.harness_timeout = harness_timeout
-        self.finalize_timeout = finalize_timeout
-        self.scoring_timeout = scoring_timeout
+        # The resolved per-stage budgets (`resolve_stage_timeouts`), unpacked once here —
+        # every runner hands over the one resolved object instead of four kwargs.
+        self.setup_timeout = timeouts.setup if timeouts else None
+        self.harness_timeout = timeouts.rollout if timeouts else None
+        self.finalize_timeout = timeouts.finalize if timeouts else None
+        self.scoring_timeout = timeouts.scoring if timeouts else None
         self.limits = limits or RolloutLimits()
         self.shared = shared
         """The run-scoped `shared`-placement tool-server registry (see `SharedServers`),

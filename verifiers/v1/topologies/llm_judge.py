@@ -58,6 +58,24 @@ REFERENCE_SECTION = """
 """
 
 
+def parse_score(text: str) -> float | None:
+    """A `SCORE: <n>` verdict in `text`, normalized to 0..1 — the last such line
+    (markdown `**`/backtick emphasis and a `/10` suffix tolerated), clamped to the 0-10
+    scale. None when no verdict was committed (the caller decides what that means).
+    The one verdict grammar shared by everything that asks for a 0-10 score line
+    (`JudgeTask`, `agentic-judge`, `writer-editors-v1`'s improvement judge)."""
+    for line in reversed(text.splitlines()):
+        stripped = line.strip().strip("*`").strip()
+        if not stripped.upper().startswith("SCORE:"):
+            continue
+        try:
+            score = float(stripped.split(":", 1)[1].split("/")[0].strip())
+        except ValueError:
+            return None
+        return min(max(score / 10.0, 0.0), 1.0)
+    return None
+
+
 class JudgeTask(Task):
     """A grading assignment: `prompt` carries the rendered upstream task + ground truth +
     attempt, the class carries the stop and the verdict parser — question and rubric in one
@@ -91,20 +109,8 @@ class JudgeTask(Task):
 
     @staticmethod
     def parse_score(trace: Trace) -> float | None:
-        """The judge's verdict, normalized to 0..1 — the last `SCORE: <n>` line of its
-        final reply (markdown `**`/backtick emphasis and a `/10` suffix tolerated),
-        clamped to the 0-10 scale. None when the judge never committed to one (the
-        caller decides what a missing verdict means)."""
-        for line in reversed(trace.last_reply.splitlines()):
-            text = line.strip().strip("*`").strip()
-            if not text.upper().startswith("SCORE:"):
-                continue
-            try:
-                score = float(text.split(":", 1)[1].split("/")[0].strip())
-            except ValueError:
-                return None
-            return min(max(score / 10.0, 0.0), 1.0)
-        return None
+        """The judge's verdict — `parse_score` over its final reply."""
+        return parse_score(trace.last_reply)
 
     @stop
     async def committed(self, trace: Trace) -> bool:
@@ -183,4 +189,10 @@ class LLMJudgeTopology(Topology[LLMJudgeConfig]):
         return JudgeTask.parse_score(judges[0]) if judges else None
 
 
-__all__ = ["JudgeAgentConfig", "JudgeTask", "LLMJudgeConfig", "LLMJudgeTopology"]
+__all__ = [
+    "JudgeAgentConfig",
+    "JudgeTask",
+    "LLMJudgeConfig",
+    "LLMJudgeTopology",
+    "parse_score",
+]

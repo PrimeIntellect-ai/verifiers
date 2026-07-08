@@ -39,17 +39,11 @@ def stub_agent_run(monkeypatch) -> None:
     """Run topology instances through real `TopologyRunner.serving`, but replace the
     executable agent's rollout work with a tiny deterministic trace."""
 
-    async def fake_agent_run(
-        self, task, *, parents=(), runtime=None, ctx=None, services=None, retry=None
-    ):
+    async def fake_agent_run(self, task, *, parents=(), runtime=None, retry=None):
         trace = echoing_trace(task, getattr(task, "answer", "ok"))
         trace.record_reward("echoed", 1.0)
         self.stamp(
-            trace,
-            parents=parents,
-            runtime=runtime,
-            ctx=ctx or self.ctx,
-            borrowed=runtime is not None,
+            trace, parents=parents, runtime=runtime, borrowed=runtime is not None
         )
         return trace
 
@@ -88,7 +82,6 @@ def test_pinned_harness_survives_sibling_and_partial_overrides():
     (`--topology.solver.model X`) must not silently replace a pinned harness with the
     default agent; (b) an id-less partial harness override must deep-merge into the pin,
     not reset it; (c) a base-typed `HarnessConfig(id=...)` pin is detected by value."""
-    import echo_chain_v1
     from proposer_solver_v1.topology import ProposerSolverConfig
 
     # (a) sibling field override keeps the subclass pin
@@ -108,11 +101,8 @@ def test_pinned_harness_survives_sibling_and_partial_overrides():
     assert judge.harness.id == "direct"
     assert judge.harness.runtime.type == "docker"
     # (c) a base-typed pin (null) is a value pin — bare construction keeps it
-    assert echo_chain_v1.NullAgentConfig().harness.id == "null"
-    assert (
-        echo_chain_v1.NullAgentConfig.model_validate({"model": "org/x"}).harness.id
-        == "null"
-    )
+    assert vf.NullAgentConfig().harness.id == "null"
+    assert vf.NullAgentConfig.model_validate({"model": "org/x"}).harness.id == "null"
 
 
 def test_pinned_agent_harness_still_swaps_by_id():
@@ -247,6 +237,111 @@ async def test_declared_judgement_scores_the_instance(stub_agent_run):
     (proposer,) = graph.traces  # malformed proposal → no solver fan-out
     assert proposer.metrics == {"solve_rate": 0.0}
     assert proposer.rewards == {"echoed": 1.0, "difficulty": 0.0}
+
+
+async def test_proposer_solver_fan_out_and_difficulty(monkeypatch):
+    """The happy path: the proposer commits a submission, `go` fans `num_solvers` solver
+    episodes out over the minted `SolverTask` (all parented under the proposer), and the
+    declared judgement averages the solvers' `correct` into `solve_rate` → `difficulty`
+    (peaked at 50%, so a 2/4 split scores 1.0)."""
+    verdicts = iter([1.0, 0.0, 1.0, 0.0])
+
+    async def fake_agent_run(self, task, *, parents=(), runtime=None, retry=None):
+        if self.name == "proposer":
+            trace = echoing_trace(task, "submitted")
+            trace.info["submission"] = {
+                "code": "import sys\nprint(1)",
+                "input": "",
+                "question": "What is 1?",
+            }
+        else:
+            trace = echoing_trace(task, "ANSWER: 1")
+            trace.record_reward("correct", next(verdicts))
+        self.stamp(
+            trace, parents=parents, runtime=runtime, borrowed=runtime is not None
+        )
+        return trace
+
+    monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
+    config = EvalConfig(topology={"id": "proposer-solver-v1"}, rich=False)
+    env = TopologyRunner(config.topology, config)
+    graph = await run_stubbed_instance(env, env.topology.load_tasks()[0])
+    assert graph.error is None
+    proposer, *solvers = graph.traces
+    assert [t.agent for t in solvers] == ["solver"] * 4  # num_solvers default
+    assert all(t.parents == [proposer.id] for t in solvers)
+    assert all(
+        t.task.prompt == solvers[0].task.prompt for t in solvers
+    )  # one minted task
+    assert proposer.metrics == {"solve_rate": 0.5}
+    assert proposer.rewards == {"difficulty": 1.0}
+
+
+async def test_provisioned_runtime_is_borrowed_across_runs(echo_chain_env, monkeypatch):
+    """`run.agent(...).provision()` hands `go` a live box whose lifetime the provisioner
+    owns; runs passed `runtime=box` are stamped borrowed and never tear it down — and a
+    bare-id parent (`parents=[trace.id]`) links the same as a `Trace`."""
+
+    class FakeRuntime:
+        config = vf.SubprocessConfig()
+        descriptor = "fake"
+        started = stopped = False
+
+        async def start(self):
+            self.started = True
+
+        async def stop(self):
+            self.stopped = True
+
+    import verifiers.v1.agent as agent_module
+
+    fake = FakeRuntime()
+    monkeypatch.setattr(agent_module, "make_runtime", lambda config: fake)
+    env = echo_chain_env
+    seed = env.topology.load_tasks()[0]
+    async with env.serving(vf.ModelContext(model="org/model", client=object())):
+        run = vf.TopologyRun(env)
+        agent = run.agent("first")
+        async with agent.provision(seed) as box:
+            assert box is fake and fake.started and not fake.stopped
+            first = await agent.run(seed, runtime=box)
+            second = await agent.run(seed, runtime=box, parents=[first.id])  # str arm
+        assert fake.stopped  # provisioner owns teardown, on exit
+    assert first.info["agent"]["runtime"]["borrowed"] is True
+    assert second.info["agent"]["runtime"]["borrowed"] is True
+    assert second.parents == [first.id]
+    assert run.graph.traces == [first, second]
+
+
+async def test_shared_runtime_topology_hands_off_through_one_box(monkeypatch):
+    """The shared-runtime example, stubbed: the writer's borrowed run hands its note to a
+    reader run in the SAME provisioned box (both traces stamped borrowed), and the
+    deferred writer reward mirrors the reader's verification."""
+
+    async def fake_agent_run(self, task, *, parents=(), runtime=None, retry=None):
+        trace = echoing_trace(task, "shared runtime handoff ready.")
+        if self.name == "writer":
+            trace.info["shared_runtime"] = {"wrote": "note", "path": "shared/note.txt"}
+        else:
+            trace.record_reward("read_shared_note", 1.0)
+        self.stamp(
+            trace, parents=parents, runtime=runtime, borrowed=runtime is not None
+        )
+        return trace
+
+    monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
+    config = EvalConfig(topology={"id": "shared-runtime-v1"}, rich=False)
+    env = TopologyRunner(config.topology, config)
+    graph = await run_stubbed_instance(env, env.topology.load_tasks()[0])
+    assert graph.error is None
+    written, read = graph.traces
+    assert (written.agent, read.agent) == ("writer", "reader")
+    assert read.parents == [written.id]
+    assert read.task.expected == "note"  # the forward arrow carried the handoff
+    # both runs were placed into the one provisioned box
+    assert written.info["agent"]["runtime"]["borrowed"] is True
+    assert read.info["agent"]["runtime"]["borrowed"] is True
+    assert written.rewards == {"handoff_succeeded": 1.0}  # mirrored off the reader
 
 
 async def test_go_failure_is_captured_on_graph(echo_chain_env, monkeypatch):

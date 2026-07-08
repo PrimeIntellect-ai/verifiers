@@ -34,8 +34,7 @@ from typing import Generic, TypeVar
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent as ExecutableAgent
-from verifiers.v1.agent import Parent
+from verifiers.v1.agent import Agent, Parent
 from verifiers.v1.clients import ClientConfig, ModelContext, resolve_client
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.env import (
@@ -142,6 +141,23 @@ class AgentConfig(BaseConfig):
         else:
             narrow_plugin_field(data, "harness", harness_config_type, "default")
         return data
+
+
+class DirectAgentConfig(AgentConfig):
+    """An agent pinned to the in-process `direct` chat loop — tool-less, an episode ≈ one
+    API call. The most common pin, shared so topologies don't each redeclare it; per the
+    pin contract, partial overrides (`--topology.<agent>.model ...`) tune it and an
+    explicit `--topology.<agent>.harness.id` still swaps it."""
+
+    harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="direct")
+
+
+class NullAgentConfig(AgentConfig):
+    """An agent pinned to the `null` chat loop — a subprocess program WITH the task's MCP
+    tools but none of its own. The pin for an agent that must call task tools without
+    being a full coding agent."""
+
+    harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="null")
 
 
 class TopologyConfig(BaseConfig):
@@ -398,7 +414,7 @@ class TopologyAgent:
         self._run = run
         self.name = name
 
-    def _executable(self) -> ExecutableAgent:
+    def _executable(self) -> Agent:
         return self._run.env.executable_agent(self.name)
 
     @property
@@ -409,7 +425,12 @@ class TopologyAgent:
     def harness(self) -> Harness:
         return self._executable().harness
 
-    def provision(self, task: Task | None = None):
+    def provision(
+        self, task: Task | None = None
+    ) -> contextlib.AbstractAsyncContextManager[Runtime]:
+        """Provision a runtime from this agent's policy (resolved for `task` when given)
+        and tear it down on exit — the box for `run(..., runtime=box)` calls to share,
+        by this agent or any other (see `Agent.provision`)."""
         return self._executable().provision(task)
 
     async def run(
@@ -418,10 +439,9 @@ class TopologyAgent:
         *,
         parents: Sequence[Parent] = (),
         runtime: Runtime | None = None,
-        ctx: ModelContext | None = None,
     ) -> Trace:
         return await self._run.run_agent(
-            self.name, task, parents=parents, runtime=runtime, ctx=ctx
+            self.name, task, parents=parents, runtime=runtime
         )
 
 
@@ -451,7 +471,6 @@ class TopologyRun:
         *,
         parents: Sequence[Parent] = (),
         runtime: Runtime | None = None,
-        ctx: ModelContext | None = None,
     ) -> Trace:
         """Run a topology-bound explicit agent and record its trace in this graph."""
         executable = self.env.executable_agent(agent)
@@ -460,7 +479,6 @@ class TopologyRun:
                 task,
                 parents=parents,
                 runtime=runtime,
-                ctx=ctx,
                 retry=self.env.config.retries.rollout,
             )
         self.graph.add(trace)
@@ -493,7 +511,7 @@ class TopologyRunner:
                 "it. A topology wanting a config-driven source *inside* a custom "
                 "`load_tasks` declares its own factory field, not the built-in `taskset` slot."
             )
-        self._agents: dict[str, ExecutableAgent] = {}
+        self._agents: dict[str, Agent] = {}
         """Executable agents, live only inside `serving()`: one per topology agent slot,
         bound to its model context and the serving scope's shared resources."""
 
@@ -506,8 +524,8 @@ class TopologyRunner:
                 f"unknown agent {name!r}: topology {self.topology.config.id!r} defines {sorted(self.topology.agents)}"
             ) from None
 
-    def executable_agent(self, name: str) -> ExecutableAgent:
-        """The named public `Agent` bound to the active serving scope."""
+    def executable_agent(self, name: str) -> Agent:
+        """The named executable `Agent` bound to the active serving scope."""
         try:
             return self._agents[name]
         except KeyError:
@@ -532,26 +550,25 @@ class TopologyRunner:
             services = await stack.enter_async_context(
                 RunServices(self.config.multiplex)
             )
-            agents: dict[str, ExecutableAgent] = {}
-            for name, agent in self.topology.agents.items():
+            agents: dict[str, Agent] = {}
+            for name, binding in self.topology.agents.items():
                 client = ctx.client
-                if agent.config.client is not None:
-                    client = resolve_client(agent.config.client)
+                if binding.config.client is not None:
+                    client = resolve_client(binding.config.client)
                     stack.push_async_callback(client.close)
                 agent_ctx = ModelContext(
-                    model=agent.config.model or ctx.model,
+                    model=binding.config.model or ctx.model,
                     client=client,
-                    sampling=_merge_sampling(ctx.sampling, agent.config.sampling),
+                    sampling=_merge_sampling(ctx.sampling, binding.config.sampling),
                 )
-                agents[name] = ExecutableAgent(
-                    agent.harness,
+                agents[name] = Agent(
+                    binding.harness,
                     agent_ctx,
-                    agent.harness.config.runtime,
+                    binding.harness.config.runtime,
                     name=name,
-                    trainable=agent.config.trainable,
+                    trainable=binding.config.trainable,
                     limits=self.config.limits,
                     timeout=self.config.timeout,
-                    multiplex=self.config.multiplex,
                     services=services,
                 )
             self._agents = agents

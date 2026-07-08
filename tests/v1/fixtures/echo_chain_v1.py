@@ -14,17 +14,10 @@ import verifiers.v1 as vf
 from echo_v1 import EchoConfig, EchoTask, lenient_match
 
 
-class NullAgentConfig(vf.AgentConfig):
-    """Pinned to the `null` chat loop — on a subclass, so partial overrides tune the pin
-    (and a base-typed `HarnessConfig` pin is still detected, by value)."""
-
-    harness: SerializeAsAny[vf.HarnessConfig] = vf.HarnessConfig(id="null")
-
-
 class EchoChainConfig(vf.TopologyConfig):
     taskset: SerializeAsAny[vf.TasksetConfig] = EchoConfig(id="echo-v1")
-    first: NullAgentConfig = NullAgentConfig()
-    second: NullAgentConfig = NullAgentConfig()
+    first: vf.NullAgentConfig = vf.NullAgentConfig()
+    second: vf.NullAgentConfig = vf.NullAgentConfig()
 
 
 class EchoChainTopology(vf.Topology[EchoChainConfig]):

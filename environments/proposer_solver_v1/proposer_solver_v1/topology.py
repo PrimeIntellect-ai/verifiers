@@ -28,8 +28,6 @@ import asyncio
 import re
 from typing import ClassVar
 
-from pydantic import SerializeAsAny
-
 import verifiers.v1 as vf
 
 from proposer_solver_v1.servers.submit import SubmissionState, SubmitToolset
@@ -186,26 +184,14 @@ class SolverTask(vf.Task):
         return float(answers_match(expected, got))
 
 
-class NullAgentConfig(vf.AgentConfig):
-    """The proposer runs the `null` harness — a chat loop WITH the task's MCP tools, so it
-    can call `submit_question` (`direct` sets `SUPPORTS_MCP=False` and would refuse the
-    pairing). Pinned on an `AgentConfig` subclass (never on the outer field's default
-    instance), so a partial override like `--topology.proposer.model <id>` tunes the agent
-    without silently replacing the pin."""
-
-    harness: SerializeAsAny[vf.HarnessConfig] = vf.HarnessConfig(id="null")
-
-
-class DirectAgentConfig(vf.AgentConfig):
-    """The solver runs the tool-less in-process `direct` chat loop — it genuinely cannot
-    execute code, so it must reason the puzzle out. Pinned on an `AgentConfig` subclass."""
-
-    harness: SerializeAsAny[vf.HarnessConfig] = vf.HarnessConfig(id="direct")
-
-
 class ProposerSolverConfig(vf.TopologyConfig):
-    proposer: NullAgentConfig = NullAgentConfig()
-    solver: DirectAgentConfig = DirectAgentConfig()
+    proposer: vf.NullAgentConfig = vf.NullAgentConfig()
+    """The proposer needs the `null` chat loop — a program WITH the task's MCP tools, so
+    it can call `submit_question` (`direct` sets `SUPPORTS_MCP=False` and would refuse
+    the pairing)."""
+    solver: vf.DirectAgentConfig = vf.DirectAgentConfig()
+    """The solver is tool-less in-process `direct` — it genuinely cannot execute code,
+    so it must reason the puzzle out."""
     num_solvers: int = 4
     """Solver episodes per proposed puzzle (the fan-out width)."""
 
