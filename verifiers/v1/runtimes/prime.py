@@ -9,6 +9,7 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 import asyncio
 import contextlib
 import logging
+import math
 import shlex
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -84,7 +85,7 @@ class PrimeRuntime(Runtime):
         # prime's idle timeout is in whole minutes; convert from the seconds config surface
         # (floored to the SDK's 1-minute minimum).
         idle_minutes = (
-            max(1, round(self.config.idle_timeout / 60))
+            max(1, math.ceil(self.config.idle_timeout / 60))
             if self.config.idle_timeout is not None
             else None
         )
