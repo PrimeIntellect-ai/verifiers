@@ -76,19 +76,20 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
 
     env_name = config.taskset.id or config.id
     metrics = compute_metrics()
-    metadata = {
-        "framework": "verifiers",
-        "run_id": config.uuid,
-        "model": config.model,
-        "num_examples": config.num_tasks,
-        "rollouts_per_example": config.num_rollouts,
-        **metrics,
-    }
     counts: dict[int, int] = {}
     samples = []
     for trace in traces:
         counts[trace.task.idx] = counts.get(trace.task.idx, 0) + 1
         samples.append(trace_to_sample(trace, counts[trace.task.idx]))
+
+    metadata = {
+        "framework": "verifiers",
+        "run_id": config.uuid,
+        "model": config.model,
+        "num_examples": len(counts),
+        "rollouts_per_example": config.num_rollouts,
+        **metrics,
+    }
 
     team = {"team_id": team_id} if team_id else {}
     api = f"{base}/api/v1"
