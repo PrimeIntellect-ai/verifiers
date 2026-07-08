@@ -9,7 +9,6 @@ runs the `echo-chain-v1` fixture topology live (skipped without a key), mirrorin
 import json
 
 import pytest
-
 import verifiers.v1 as vf
 from verifiers.v1.cli.output import output_path
 from verifiers.v1.cli.resolve import narrow_config
@@ -219,6 +218,51 @@ async def test_run_instance_links_and_defers(echo_chain_env):
     # backward arrow: relay reward recorded on the upstream trace after the child finished
     assert first.rewards == {"echoed": 1.0, "relay": 1.0}
     assert second.rewards == {"echoed": 1.0}
+
+
+async def test_explicit_agents_record_into_topology_graph(monkeypatch):
+    """The new `run.agent(name).run(task)` surface still records the same graph links and
+    trainability stamps as the compatibility `run.rollout(name, task)` wrapper."""
+    import echo_chain_v1
+
+    config = EvalConfig(topology={"id": "echo-chain-v1"}, rich=False)
+    env = TopologyRunner(config.topology, config)
+
+    async def explicit_go(self, task, run):
+        first = await run.agent("first").run(task)
+        derived = type(task)(
+            idx=task.idx,
+            prompt=f"echo {task.answer}",
+            answer=task.answer,
+        )
+        await run.agent("second").run(derived, parents=[first])
+
+    async def fake_agent_run(
+        self, task, *, parents=(), runtime=None, ctx=None, services=None, retry=None
+    ):
+        trace = echoing_trace(task, getattr(task, "answer", "ok"))
+        trace.record_reward("echoed", 1.0)
+        self.stamp(
+            trace,
+            parents=parents,
+            runtime=None,
+            ctx=ctx or self.ctx,
+            borrowed=runtime is not None,
+        )
+        return trace
+
+    monkeypatch.setattr(echo_chain_v1.EchoChainTopology, "go", explicit_go)
+    monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
+    seed = env.topology.load_tasks()[0]
+    async with env.serving(vf.ModelContext(model="org/model", client=object())):
+        graph = await env.run_instance(seed)
+
+    first, second = graph.traces
+    assert (first.agent, second.agent) == ("first", "second")
+    assert first.parents == [] and second.parents == [first.id]
+    assert first.trainable and second.trainable
+    assert first.info["agent"]["model"] == "org/model"
+    assert graph.children(first, agent="second") == [second]
 
 
 async def test_declared_judgement_scores_the_instance(monkeypatch):

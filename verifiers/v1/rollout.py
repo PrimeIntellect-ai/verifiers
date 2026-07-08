@@ -3,15 +3,12 @@
 A Rollout owns a single trajectory end-to-end, including its runtime's lifecycle. The task
 is the whole task-side contract: its class carries the lifecycle hooks, tools, user
 simulator, stops, and judgement the episode consults (see `verifiers.v1.task`). The Rollout
-makes and starts the runtime, gets an interception endpoint (a slot on the shared pool if
-one is given, else a per-rollout server exposed via its own runtime), then drives the
-staged lifecycle while the runtime is live — task + harness setup, the harness run, the
-task's `finalize`, and per-rollout `@reward`/`@metric` scoring — each under its own stage
-timeout (`setup_timeout`/`harness_timeout`/`finalize_timeout`/`scoring_timeout`),
-then tears the runtime down in a `finally`. Cross-rollout `@group_reward`s run afterwards
-(in the Episode) over the traces alone — they never need a live runtime — so a runtime is
-never kept up past its own rollout. The runtime ref is set the instant it's created, so
-it's always tearable-down even if `run()` crashes.
+makes and starts the runtime (unless handed a live one to borrow), gets an interception
+endpoint (a slot on the shared pool if one is given, else a per-rollout server exposed
+via its own runtime), then drives the staged lifecycle while the runtime is live —
+task + harness setup, the harness run, the task's `finalize`, and per-rollout
+`@reward`/`@metric` scoring — each under its own stage timeout. A rollout tears down
+only runtimes it created; a borrowed runtime's owner owns teardown.
 """
 
 import asyncio
@@ -20,7 +17,6 @@ import time
 from contextlib import asynccontextmanager
 from enum import StrEnum
 
-from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import (
@@ -30,12 +26,14 @@ from verifiers.v1.errors import (
     ToolsetError,
     boundary,
 )
+from verifiers.v1.harness import Harness
 from verifiers.v1.interception import (
     InterceptionPool,
     InterceptionServer,
     RolloutLimits,
     RolloutSession,
 )
+from verifiers.v1.mcp import SharedServers, serve_tools, serve_user
 from verifiers.v1.runtimes import (
     HOST,
     Runtime,
@@ -44,7 +42,6 @@ from verifiers.v1.runtimes import (
     reachable_url,
     runtime_is_local,
 )
-from verifiers.v1.mcp import SharedServers, serve_tools, serve_user
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
@@ -79,6 +76,7 @@ class Rollout:
         limits: RolloutLimits | None = None,
         shared: SharedServers | None = None,
         interception: InterceptionPool | None = None,
+        runtime: Runtime | None = None,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -94,6 +92,9 @@ class Rollout:
         injected from the active `serving` context — like `interception` below, so no
         runner has to thread serving resources through."""
         self.interception = interception
+        self._borrowed_runtime = runtime
+        """A live runtime to run in instead of provisioning one. The borrower gets its
+        own trace/session/secrets, but the runtime owner keeps start/stop ownership."""
         self.phase = Phase.PENDING
         """Lifecycle phase for display (see `Phase`); starts PENDING (queued behind the
         concurrency cap) so the --rich dashboard can list it before it begins, advances to
@@ -161,9 +162,19 @@ class Rollout:
         self.trace = trace  # expose for the --rich dashboard
         self.phase = Phase.SETUP  # leaving the queue: provisioning starts now
         trace.timing.setup.start = time.time()
-        self.runtime = make_runtime(
-            self.runtime_config, name=trace.id
-        )  # ref set first → always tearable-down; named after the rollout for traceability
+        owns_runtime = self._borrowed_runtime is None
+        if owns_runtime:
+            self.runtime = make_runtime(
+                self.runtime_config, name=trace.id
+            )  # ref set first → always tearable-down; named after the rollout for traceability
+        else:
+            if self._borrowed_runtime.stopped:
+                raise ValueError(
+                    f"borrowed runtime {self._borrowed_runtime.name!r} was already "
+                    "torn down by its owner; keep the provisioning context open for "
+                    "every run placed into it"
+                )
+            self.runtime = self._borrowed_runtime
         runtime = self.runtime
         ctx = self.ctx
         stops = discover_decorated(task, "stop")
@@ -176,7 +187,8 @@ class Rollout:
         )
         try:
             session = RolloutSession(ctx, trace, stops, self.limits)
-            await runtime.start()
+            if owns_runtime:
+                await runtime.start()
             setup_deadline = (
                 None
                 if self.setup_timeout is None
@@ -299,14 +311,15 @@ class Rollout:
                 trace.timing.generation.end = now  # error mid-run: close generation
             if trace.timing.finalize.start and not trace.timing.finalize.end:
                 trace.timing.finalize.end = now  # error mid-finalize: close finalize
-            # Tear down here — group rewards (later) need only the trace, not a live
-            # runtime. `runtime` is always set: make_runtime() ran before the `try`.
-            try:
-                await runtime.stop()
-            except Exception:
-                logger.warning(
-                    "runtime teardown failed (rollout %s)", trace.id, exc_info=True
-                )
+            # Tear down here only when this rollout created the runtime. A borrowed
+            # runtime belongs to its provisioning context and may host later rollouts.
+            if owns_runtime:
+                try:
+                    await runtime.stop()
+                except Exception:
+                    logger.warning(
+                        "runtime teardown failed (rollout %s)", trace.id, exc_info=True
+                    )
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

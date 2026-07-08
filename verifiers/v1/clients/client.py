@@ -7,7 +7,7 @@ abstract method. Each concrete client owns its own wire translation internally.
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
@@ -85,8 +85,9 @@ class Client(ABC):
 @dataclass(frozen=True)
 class ModelContext:
     """The model-side collaborators a harness talks to (client + model + sampling),
-    bundled so harnesses hold no rollout state. Built by the Environment."""
+    bundled so harnesses hold no rollout state. Built by the Environment, an Agent, or
+    a topology's serving scope."""
 
     model: str
     client: Client
-    sampling: Sampling
+    sampling: Sampling = field(default_factory=Sampling)

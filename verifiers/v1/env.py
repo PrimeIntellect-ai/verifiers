@@ -21,12 +21,12 @@ if TYPE_CHECKING:
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
-from verifiers.v1.types import ID
+from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.interception import InterceptionPool, RolloutLimits
+from verifiers.v1.mcp import SharedServers
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
@@ -34,9 +34,10 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
     runtime_is_local,
 )
+from verifiers.v1.services import RunServices
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
-from verifiers.v1.mcp import SharedServers
+from verifiers.v1.types import ID
 
 
 class TimeoutConfig(BaseConfig):
@@ -185,13 +186,18 @@ class EnvServerConfig(EnvConfig):
 logger = logging.getLogger(__name__)
 
 
-def validate_pairing(task_cls: type[Task], harness: "Harness") -> None:
+def validate_pairing(
+    task_cls: type[Task], harness: "Harness", runtime_config: RuntimeConfig | None = None
+) -> None:
     """Refuse an incompatible task × harness pair up front: MCP tools / a user simulator
     under a harness that can't drive them, or a container-only task class on the subprocess
     runtime. Also warns when a code-running harness executes on the local host. Class-level
     (override detection), so it runs before any data is loaded — at Environment load via the
     factory's declared task type, and once per `(task class, harness)` for a topology's
-    derived tasks (memoized at rollout construction)."""
+    derived tasks (memoized at rollout construction). When an Agent places a rollout into
+    a borrowed runtime, `runtime_config` is that actual placement rather than the agent's
+    default harness runtime."""
+    actual_runtime = runtime_config or harness.config.runtime
     if not harness.SUPPORTS_MCP and task_cls.load_tools is not Task.load_tools:
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but task "
@@ -204,21 +210,17 @@ def validate_pairing(task_cls: type[Task], harness: "Harness") -> None:
             f"{task_cls.__name__!r} defines one (Task.load_user). Run it with a harness that "
             f"supports user simulation (e.g. --harness.id default), or use a task without one."
         )
-    if task_cls.NEEDS_CONTAINER and isinstance(
-        harness.config.runtime, SubprocessConfig
-    ):
+    if task_cls.NEEDS_CONTAINER and isinstance(actual_runtime, SubprocessConfig):
         raise ValueError(
             f"Task {task_cls.__name__!r} needs a container runtime "
-            "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
+            "(NEEDS_CONTAINER), but this run resolves to the subprocess runtime; "
             "use --harness.runtime.type docker or prime."
         )
     # The warning is about the *agent* running arbitrary code on the host: every harness hands
     # it local execution (bash/edit, or a CLI agent) except the tool-less `null` chat loop,
     # whose program only relays the model and remote MCP tools — so exempt `null`, warn for the
     # rest. (`null` still runs its fixed chat-loop program locally, but nothing agent-authored.)
-    if harness.config.id != "null" and isinstance(
-        harness.config.runtime, SubprocessConfig
-    ):
+    if harness.config.id != "null" and isinstance(actual_runtime, SubprocessConfig):
         logger.warning(
             "Harness %r is running in the subprocess runtime on the local system. "
             "Local files and settings may affect the evaluation; use subprocess only "
@@ -315,6 +317,7 @@ class Environment:
         validate_pairing(taskset_task_type(type(self.taskset)), self.harness)
         self.limits = config.limits
         self._warned_resources: set[tuple[str, str]] = set()
+        self._services: RunServices | None = None
         self._shared: SharedServers | None = None
         self._interception: InterceptionPool | None = None
         """Run-level serving resources, live only inside `serving()`: the lazy shared
@@ -370,15 +373,14 @@ class Environment:
         built inside this context injects them into its rollouts — that's what keeps both
         eval runners (in-process and env-server) on one serving path. Build episodes inside
         this context; the resources are torn down on exit."""
-        async with (
-            SharedServers() as shared,
-            self.interception_pool() as interception,
-        ):
-            self._shared = shared
-            self._interception = interception
+        async with RunServices(self.config.multiplex) as services:
+            self._services = services
+            self._shared = services.shared
+            self._interception = await services.pool_for(self.harness.config.runtime)
             try:
                 yield
             finally:
+                self._services = None
                 self._shared = None
                 self._interception = None
 

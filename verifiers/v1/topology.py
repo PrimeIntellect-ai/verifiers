@@ -4,8 +4,8 @@ A `Topology` composes *episodes* — one agent consuming one task and producing 
 into a multi-agent interaction: which agents exist, how one agent's trace becomes a
 downstream agent's task, and how rewards flow backwards once downstream agents have run.
 Each episode is an ordinary `Rollout` (same lifecycle, same error model, same trace), and
-tasks are the whole task-side contract — their classes carry the behavior — so an `Agent`
-is nothing but a name + a harness + routing, and any task runs under any agent.
+tasks are the whole task-side contract — their classes carry the behavior — so a topology
+declares named agent bindings, then executes public `Agent` objects against tasks.
 
 The interaction pattern is plain imperative Python in `go` — not a DSL: a loop is rounds,
 `gather` (or `asyncio.gather` over `rollout` calls) is fan-out, and awaiting several traces
@@ -34,13 +34,12 @@ from typing import Generic, TypeVar
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
+from verifiers.v1.agent import Agent as ExecutableAgent
+from verifiers.v1.agent import Parent
 from verifiers.v1.clients import ClientConfig, ModelContext, resolve_client
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.env import (
     EnvConfig,
-    resolve_runtime_config,
-    resolve_stage_timeouts,
-    validate_pairing,
 )
 from verifiers.v1.errors import TopologyError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
@@ -48,6 +47,7 @@ from verifiers.v1.interception import InterceptionPool
 from verifiers.v1.mcp import SharedServers
 from verifiers.v1.retries import run_with_retry
 from verifiers.v1.rollout import Rollout
+from verifiers.v1.services import RunServices
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
 from verifiers.v1.trace import Error, Trace, WireTrace
@@ -177,11 +177,12 @@ class TopologyConfig(BaseConfig):
 ConfigT = TypeVar("ConfigT", bound=TopologyConfig)
 
 
-class Agent:
-    """A loaded agent: a name + the harness driving its episodes + routing, nothing more —
-    a partially-applied rollout that `TopologyRunner.rollout(agent, task)` completes.
-    Tasks (which carry their own behavior) arrive per episode; the task × harness pairing
-    is validated once per task class, at the first episode that pairs them."""
+class AgentBinding:
+    """A topology-registered agent slot: name + config + loaded harness.
+
+    The executable value exposed inside `Topology.go` is the public `vf.Agent`; this
+    binding is the config-side declaration a topology loads and validates.
+    """
 
     def __init__(
         self, name: str, config: AgentConfig, harness: Harness | None = None
@@ -263,18 +264,18 @@ class Topology(Generic[ConfigT]):
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
-    def load_agents(self) -> dict[str, Agent]:
+    def load_agents(self) -> dict[str, AgentBinding]:
         """The topology's agents, one per `AgentConfig` field on the config (in declaration
         order). Override only to compose agents programmatically — each is still just
-        `Agent(name, config)`."""
+        `AgentBinding(name, config)`."""
         return {
-            name: Agent(name, value)
+            name: AgentBinding(name, value)
             for name, value in self.config
             if isinstance(value, AgentConfig)
         }
 
     @cached_property
-    def agents(self) -> dict[str, Agent]:
+    def agents(self) -> dict[str, AgentBinding]:
         """The loaded agents, built once via `load_agents`. Loading also validates the
         topology's declared judgement (`@reward`/`@metric` methods) against them, so a
         typo'd or missing agent scope fails at load time, not mid-eval."""
@@ -378,6 +379,46 @@ class Topology(Generic[ConfigT]):
         raise NotImplementedError
 
 
+class TopologyAgent:
+    """A topology-bound view of a registered executable `Agent`.
+
+    It exposes the public agent's `run` / `provision` surface, but routes completed
+    traces through the owning `TopologyRun` so the graph, parents, trainability, retries,
+    and concurrency limit remain topology-owned.
+    """
+
+    def __init__(self, run: "TopologyRun", name: str) -> None:
+        self._run = run
+        self.name = name
+
+    @property
+    def agent(self) -> ExecutableAgent:
+        return self._run.env.executable_agent(self.name)
+
+    @property
+    def config(self) -> AgentConfig:
+        return self._run.env.agent(self.name).config
+
+    @property
+    def harness(self) -> Harness:
+        return self.agent.harness
+
+    def provision(self, task: Task | None = None):
+        return self.agent.provision(task)
+
+    async def run(
+        self,
+        task: Task,
+        *,
+        parents: Sequence[Parent] = (),
+        runtime=None,
+        ctx: ModelContext | None = None,
+    ) -> Trace:
+        return await self._run.run_agent(
+            self.name, task, parents=parents, runtime=runtime, ctx=ctx
+        )
+
+
 class TopologyRun:
     """One live topology instance: the execution surface `go` programs against. Owns the
     instance's `AgentGraph` and links every episode into it; concurrency, retries, and
@@ -392,8 +433,36 @@ class TopologyRun:
         self.graph = AgentGraph(topology=env.topology.config.id)
         self._semaphore = semaphore
 
+    def agent(self, name: str) -> TopologyAgent:
+        """The registered executable agent named `name`, bound to this graph."""
+        self.env.agent(name)  # validate spelling with the existing actionable error
+        return TopologyAgent(self, name)
+
+    async def run_agent(
+        self,
+        agent: str,
+        task: Task,
+        *,
+        parents: Sequence[Parent] = (),
+        runtime=None,
+        ctx: ModelContext | None = None,
+    ) -> Trace:
+        """Run a topology-bound explicit agent and record its trace in this graph."""
+        executable = self.env.executable_agent(agent)
+        async with self._semaphore or contextlib.nullcontext():
+            trace = await executable.run(
+                task,
+                parents=parents,
+                runtime=runtime,
+                ctx=ctx,
+                retry=self.env.config.retries.rollout,
+            )
+        self.graph.add(trace)
+        await trim_memory_periodically()
+        return trace
+
     async def rollout(
-        self, agent: str, task: Task, parents: Sequence[Trace] = ()
+        self, agent: str, task: Task, parents: Sequence[Parent] = ()
     ) -> Trace:
         """Run one episode — `agent` consuming `task` — and return its trace, linked under
         `parents` in the agent graph. Bounded by the eval's rollout concurrency and retried
@@ -403,16 +472,28 @@ class TopologyRun:
         rollout = self.env.rollout(binding, task)
         async with self._semaphore or contextlib.nullcontext():
             trace = await run_with_retry(rollout, self.env.config.retries.rollout)
-        trace.agent = binding.name
-        trace.parents = [parent.id for parent in parents]
-        trace.trainable = binding.config.trainable
+        executable = self.env._agents.get(agent)
+        if executable is None:
+            trace.agent = binding.name
+            trace.parents = [
+                parent.id if isinstance(parent, Trace) else parent for parent in parents
+            ]
+            trace.trainable = binding.config.trainable
+        else:
+            executable.stamp(
+                trace,
+                parents=parents,
+                runtime=rollout.runtime,
+                ctx=rollout.ctx,
+                borrowed=False,
+            )
         self.graph.add(trace)
         # hand freed per-turn request bodies (base64 images) back to the OS
         await trim_memory_periodically()
         return trace
 
     async def gather(
-        self, agent: str, tasks: Sequence[Task], parents: Sequence[Trace] = ()
+        self, agent: str, tasks: Sequence[Task], parents: Sequence[Parent] = ()
     ) -> list[Trace]:
         """Fan out: run `agent` over `tasks` concurrently and return the traces aligned to
         `tasks` (`[task] * n` samples one task n times). Fan-in is just Python: await the
@@ -455,19 +536,16 @@ class TopologyRunner:
                 "it. A topology wanting a config-driven source *inside* a custom "
                 "`load_tasks` declares its own factory field, not the built-in `taskset` slot."
             )
-        self._warned_resources: set[tuple[str, str]] = set()
-        self._validated: set[tuple[type[Task], str]] = set()
-        """`(task class, agent name)` pairs already `validate_pairing`-checked — derived
-        task classes don't exist at load time, so the check runs (once) at the first
-        episode that pairs them with an agent's harness."""
         self._ctxs: dict[str, ModelContext] = {}
         self._pools: dict[str, InterceptionPool] = {}
+        self._services: RunServices | None = None
         self._shared: SharedServers | None = None
+        self._agents: dict[str, ExecutableAgent] = {}
         """Run-level serving resources, live only inside `serving()`: one model context
         and one interception pool per agent (an agent's harness may run in its own runtime,
         against its own model/client), plus the lazy shared tool-server registry."""
 
-    def agent(self, name: str) -> Agent:
+    def agent(self, name: str) -> AgentBinding:
         """The named agent, with an actionable error for a typo in `go`."""
         try:
             return self.topology.agents[name]
@@ -475,6 +553,18 @@ class TopologyRunner:
             raise ValueError(
                 f"unknown agent {name!r}: topology {self.topology.config.id!r} defines "
                 f"{sorted(self.topology.agents)}"
+            ) from None
+
+    def executable_agent(self, name: str) -> ExecutableAgent:
+        """The named public `Agent` bound to the active serving scope."""
+        try:
+            return self._agents[name]
+        except KeyError:
+            # First validate the name so a misspelling reports topology context; if the
+            # name exists, serving() is missing.
+            self.agent(name)
+            raise RuntimeError(
+                "topology agents are only executable inside TopologyRunner.serving()"
             ) from None
 
     @contextlib.asynccontextmanager
@@ -488,10 +578,10 @@ class TopologyRunner:
         mid-enter never leaves the runner pointing at torn-down resources. Build
         instances inside this context."""
         async with contextlib.AsyncExitStack() as stack:
-            shared = await stack.enter_async_context(SharedServers())
+            services = await stack.enter_async_context(RunServices(self.config.multiplex))
             ctxs: dict[str, ModelContext] = {}
             pools: dict[str, InterceptionPool] = {}
-            pool_by_runtime: dict[str, InterceptionPool] = {}
+            agents: dict[str, ExecutableAgent] = {}
             for name, agent in self.topology.agents.items():
                 client = ctx.client
                 if agent.config.client is not None:
@@ -502,43 +592,39 @@ class TopologyRunner:
                     client=client,
                     sampling=agent.config.sampling or ctx.sampling,
                 )
-                runtime_key = agent.harness.config.runtime.model_dump_json()
-                if runtime_key not in pool_by_runtime:
-                    pool_by_runtime[runtime_key] = await stack.enter_async_context(
-                        InterceptionPool(
-                            agent.harness.config.runtime, self.config.multiplex
-                        )
-                    )
-                pools[name] = pool_by_runtime[runtime_key]
-            self._ctxs, self._pools, self._shared = ctxs, pools, shared
+                pools[name] = await services.pool_for(agent.harness.config.runtime)
+                agents[name] = ExecutableAgent(
+                    agent.harness,
+                    ctxs[name],
+                    agent.harness.config.runtime,
+                    name=name,
+                    trainable=agent.config.trainable,
+                    limits=self.config.limits,
+                    timeout=self.config.timeout,
+                    multiplex=self.config.multiplex,
+                    services=services,
+                )
+            self._ctxs = ctxs
+            self._pools = pools
+            self._services = services
+            self._shared = services.shared
+            self._agents = agents
             try:
                 yield
             finally:
-                self._ctxs, self._pools, self._shared = {}, {}, None
+                self._ctxs = {}
+                self._pools = {}
+                self._services = None
+                self._shared = None
+                self._agents = {}
 
-    def rollout(self, agent: Agent, task: Task) -> Rollout:
+    def rollout(self, agent: AgentBinding, task: Task) -> Rollout:
         """Resolve one episode — `task` run by `agent` — into a `Rollout` wired to the
         agent's runtime, context, and interception pool, under the eval-level timeouts and
-        limits (task overrides apply as usual). The task × harness pairing is validated on
-        the first episode that pairs them (memoized per class), so a bad pairing fails
-        before any runtime spins up."""
-        if (type(task), agent.name) not in self._validated:
-            validate_pairing(type(task), agent.harness)
-            self._validated.add((type(task), agent.name))
-        runtime_config = resolve_runtime_config(
-            agent.harness.config.runtime, task, self._warned_resources
-        )
-        timeouts = resolve_stage_timeouts(self.config.timeout, task, runtime_config)
-        return Rollout(
-            task=task,
-            harness=agent.harness,
-            ctx=self._ctxs[agent.name],
-            runtime_config=runtime_config,
-            setup_timeout=timeouts.setup,
-            harness_timeout=timeouts.rollout,
-            finalize_timeout=timeouts.finalize,
-            scoring_timeout=timeouts.scoring,
-            limits=self.config.limits,
+        limits (task overrides apply as usual). The executable `Agent` validates the task
+        × harness × runtime pairing before any runtime spins up."""
+        return self.executable_agent(agent.name).rollout(
+            task,
             shared=self._shared,
             interception=self._pools.get(agent.name),
         )

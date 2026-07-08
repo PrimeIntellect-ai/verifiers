@@ -8,19 +8,22 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.agent import Agent
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
+    EvalClientConfig,
     ModelContext,
+    TrainClientConfig,
     resolve_client,
 )
 from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
 from verifiers.v1.env import (
     ElasticPoolConfig,
     EnvConfig,
-    EnvServerConfig,
     Environment,
+    EnvServerConfig,
     StaticPoolConfig,
     TimeoutConfig,
     pool_serve_kwargs,
@@ -38,6 +41,7 @@ from verifiers.v1.errors import (
     TunnelError,
     UserError,
 )
+from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import (
     Judge,
@@ -59,13 +63,11 @@ from verifiers.v1.loaders import (
     taskset_config_type,
     topology_config_type,
 )
-from verifiers.v1.scoring import (
-    compare_stdout_results as compare_stdout_results,
-    extract_boxed_answer as extract_boxed_answer,
-    parse_judge_choice as parse_judge_choice,
-    parse_pytest_outcomes as parse_pytest_outcomes,
-    read_answer_file_or_last_reply as read_answer_file_or_last_reply,
-    verify_boxed_math_answer as verify_boxed_math_answer,
+from verifiers.v1.mcp import (
+    Toolset,
+    ToolsetConfig,
+    User,
+    UserConfig,
 )
 from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
 from verifiers.v1.rollout import Rollout
@@ -77,25 +79,37 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
 )
+from verifiers.v1.scoring import (
+    compare_stdout_results as compare_stdout_results,
+)
+from verifiers.v1.scoring import (
+    extract_boxed_answer as extract_boxed_answer,
+)
+from verifiers.v1.scoring import (
+    parse_judge_choice as parse_judge_choice,
+)
+from verifiers.v1.scoring import (
+    parse_pytest_outcomes as parse_pytest_outcomes,
+)
+from verifiers.v1.scoring import (
+    read_answer_file_or_last_reply as read_answer_file_or_last_reply,
+)
+from verifiers.v1.scoring import (
+    verify_boxed_math_answer as verify_boxed_math_answer,
+)
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.topology import (
-    Agent,
+    AgentBinding,
     AgentConfig,
     AgentGraph,
     Topology,
+    TopologyAgent,
     TopologyConfig,
-    TopologyRunner,
     TopologyRun,
+    TopologyRunner,
 )
-from verifiers.v1.mcp import (
-    Toolset,
-    ToolsetConfig,
-    User,
-    UserConfig,
-)
-from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     Branch,
     Error,
@@ -105,9 +119,9 @@ from verifiers.v1.trace import (
     WireTrace,
 )
 from verifiers.v1.types import (
+    ID,
     AssistantMessage,
     ContentPart,
-    ID,
     ImageUrlContentPart,
     ImageUrlSource,
     Message,
@@ -121,8 +135,8 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolCall,
-    TurnTokens,
     ToolMessage,
+    TurnTokens,
     Usage,
     UserMessage,
 )
@@ -184,6 +198,8 @@ __all__ = [
     "Client",
     "BaseClientConfig",
     "ClientConfig",
+    "EvalClientConfig",
+    "TrainClientConfig",
     "resolve_client",
     # taskset / harness / runtime / environment
     "Taskset",
@@ -209,11 +225,13 @@ __all__ = [
     "TimeoutConfig",
     "Episode",
     "Rollout",
-    # topology
+    # agents / topology
     "Agent",
+    "AgentBinding",
     "AgentConfig",
     "AgentGraph",
     "Topology",
+    "TopologyAgent",
     "TopologyConfig",
     "TopologyRunner",
     "TopologyRun",
