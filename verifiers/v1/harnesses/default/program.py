@@ -25,7 +25,27 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 
 import httpx
-from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APIResponseValidationError,
+    APITimeoutError,
+    AsyncOpenAI,
+    InternalServerError,
+    RateLimitError,
+)
+from pydantic import ValidationError
+
+_RETRYABLE: tuple[type[BaseException], ...] = (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    RateLimitError,
+    APIResponseValidationError,
+    ValidationError,
+    ConnectionResetError,
+)
+
+_RETRY_DELAYS: tuple[int, ...] = (15, 30, 60, 90, 120)
 
 SERPER_URL = "https://google.serper.dev/search"
 
@@ -184,6 +204,14 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
 async def chat(
     client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
 ):
+    for delay in _RETRY_DELAYS:
+        try:
+            completion = await client.chat.completions.create(
+                model=model, messages=messages, tools=tools or None
+            )
+            return completion.choices[0].message
+        except _RETRYABLE:
+            await asyncio.sleep(delay)
     completion = await client.chat.completions.create(
         model=model, messages=messages, tools=tools or None
     )
@@ -265,9 +293,6 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
-    # No client-side retries: re-sending a request whose turn the interception already committed
-    # re-samples it and forks the trace into an extra dead-end branch. A generous timeout lets a
-    # slow turn finish instead of timing out and re-sending; genuine failures surface as error rows.
     client = AsyncOpenAI(
         base_url=args.base_url, api_key=args.api_key, timeout=1800.0, max_retries=0
     )
