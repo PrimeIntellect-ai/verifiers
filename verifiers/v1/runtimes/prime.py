@@ -9,11 +9,13 @@ direction (a program in the sandbox reaching a host service) is the shared host-
 import asyncio
 import contextlib
 import logging
+import math
 import shlex
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 
+from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
@@ -21,6 +23,9 @@ from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime, par
 from verifiers.v1.runtimes.limiters import creation_limiter
 
 logger = logging.getLogger(__name__)
+
+MAX_LIFETIME = 24 * 60 * 60
+"""Prime's fixed cap (seconds) on any sandbox's total lifetime."""
 
 
 class PrimeConfig(BaseConfig):
@@ -47,10 +52,21 @@ class PrimeConfig(BaseConfig):
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
     disk: float = 5.0
     """Disk in GB."""
+    idle_timeout: float | None = 3600
+    """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
     and globally — see limiters.TUNNEL_LIMITER.)"""
+
+    @model_validator(mode="after")
+    def _validate_idle_timeout(self) -> "PrimeConfig":
+        if self.idle_timeout is not None and self.idle_timeout > MAX_LIFETIME:
+            raise ValueError(
+                f"idle_timeout ({self.idle_timeout}s) must not exceed the "
+                f"{MAX_LIFETIME}s ({MAX_LIFETIME // 3600}h) max sandbox lifetime"
+            )
+        return self
 
 
 class PrimeRuntime(Runtime):
@@ -79,12 +95,20 @@ class PrimeRuntime(Runtime):
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
+        # prime's idle timeout is in whole minutes; convert from the seconds config surface
+        # (floored to the SDK's 1-minute minimum).
+        idle_minutes = (
+            max(1, math.ceil(self.config.idle_timeout / 60))
+            if self.config.idle_timeout is not None
+            else None
+        )
         options = {
             "cpu_cores": self.config.cpu,
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": 24 * 60,  # Maximum lifetime of any sandbox.
+            "timeout_minutes": MAX_LIFETIME // 60,
+            "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
