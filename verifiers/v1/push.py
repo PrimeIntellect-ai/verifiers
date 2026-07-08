@@ -60,10 +60,7 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
     def compute_metrics() -> dict[str, Any]:
         """Run-level aggregates in the platform's canonical shape: `reward` (mean over all
         traces), `metrics` (each reward-function and env-metric averaged over the traces that
-        recorded it), and `error` (errored fraction). The platform promotes a per-sample field
-        to its own column only when the key is declared here in `metrics`; anything else folds
-        into the sample's `info`. So both the sub-reward and metric names must appear here to
-        render as per-rollout columns."""
+        recorded it), and `error` (errored fraction) — the breakdown the overview renders."""
         sums: dict[str, float] = {}
         counts: dict[str, int] = {}
         for trace in traces:
