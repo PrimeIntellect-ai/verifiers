@@ -56,11 +56,11 @@ class EnvServer:
         self.env = Environment(config)
         # Load tasks once; the index range is fixed for the server's lifetime.
         self.tasks = self.env.taskset.load()
-        # Per task type (a loaded list may mix them): the env group-scores iff any task does.
-        self.requires_group_scoring = any(
-            discover_decorated(task, "group_reward")
-            for task in {type(t): t for t in self.tasks}.values()
+        # Per task (a loaded list may mix group-scored and plain task types).
+        self.group_idxs = sorted(
+            task.idx for task in self.tasks if discover_decorated(task, "group_reward")
         )
+        self.requires_group_scoring = bool(self.group_idxs)
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client
@@ -146,6 +146,7 @@ class EnvServer:
                 response = InfoResponse(
                     num_tasks=len(self.tasks),
                     requires_group_scoring=self.requires_group_scoring,
+                    group_idxs=self.group_idxs,
                 )
             elif route == "run_rollout":
                 response = await self._run_rollout(

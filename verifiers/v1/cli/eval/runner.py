@@ -161,6 +161,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         client = EnvClient(address=address)
         await client.wait_for_server_startup(timeout=600)
         info = await client.info()
+        group_idxs = set(info.group_idxs)
         idxs = list(range(info.num_tasks))
         if config.shuffle:
             random.Random(_SHUFFLE_SEED).shuffle(idxs)
@@ -168,14 +169,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             idxs = idxs[: config.num_tasks]
         out = output_path(config)
         if config.resume is not None:
-            # The env-server reports group scoring run-wide (not per task), so plan
-            # all-or-nothing here.
-            keep, owed = resume.plan(
-                out,
-                idxs,
-                config.num_rollouts,
-                set(idxs) if info.requires_group_scoring else set(),
-            )
+            keep, owed = resume.plan(out, idxs, config.num_rollouts, group_idxs)
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
                 raise SystemExit(0)
@@ -199,7 +193,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             )
         logger.info("results: %s", out)
         request_concurrency = config.max_concurrent
-        if request_concurrency and info.requires_group_scoring:
+        if request_concurrency and group_idxs:
             # max_concurrent is a rollout resource bound, not a request-throughput target.
             # A group is indivisible, so one oversized group must still be allowed to run.
             request_concurrency = max(1, request_concurrency // config.num_rollouts)
@@ -232,14 +226,16 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             await append_trace(out, trace, write_lock)
             return [trace]
 
-        # A group-scored taskset must run each task's rollouts together (cross-rollout
-        # scoring) → one `run_group` request per task (one worker). Otherwise the rollouts
-        # are independent → one `run_rollout` request each, which the broker round-robins
+        # Per task: a group-scored task must run its rollouts together (cross-rollout
+        # scoring) → one `run_group` request (one worker); any other task's rollouts are
+        # independent → one `run_rollout` request each, which the broker round-robins
         # (least-busy) across workers — mirrors the prime-rl dispatcher.
-        if info.requires_group_scoring:
-            units = [run_group_unit(i) for i in idxs]
-        else:
-            units = [run_rollout_unit(i) for i in idxs for _ in range(owed[i])]
+        units = [run_group_unit(i) for i in idxs if i in group_idxs] + [
+            run_rollout_unit(i)
+            for i in idxs
+            if i not in group_idxs
+            for _ in range(owed[i])
+        ]
         results = await asyncio.gather(*units)
         await client.close()
         return [trace for unit_traces in results for trace in unit_traces]
