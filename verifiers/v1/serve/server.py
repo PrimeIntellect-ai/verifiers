@@ -56,9 +56,13 @@ class EnvServer:
         self.env = Environment(config)
         # Load tasks once; the index range is fixed for the server's lifetime.
         self.tasks = self.env.taskset.load()
-        # Per task (a loaded list may mix group-scored and plain task types).
+        # Per task (a loaded list may mix group-scored and plain task types). List
+        # positions, not `task.idx` — the RPCs index `self.tasks[req.task_idx]`
+        # positionally, and the eval client samples `range(num_tasks)`.
         self.group_idxs = sorted(
-            task.idx for task in self.tasks if discover_decorated(task, "group_reward")
+            position
+            for position, task in enumerate(self.tasks)
+            if discover_decorated(task, "group_reward")
         )
         self.requires_group_scoring = bool(self.group_idxs)
         self._clients: dict[

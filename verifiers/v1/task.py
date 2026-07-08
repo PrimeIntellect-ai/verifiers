@@ -355,33 +355,35 @@ class Task(StrictBaseModel, Generic[StateT]):
                 def keys(result, fallback: str) -> list[str]:
                     return list(result) if isinstance(result, Mapping) else [fallback]
 
-                # Grouped (not a dict-comprehension union): same-named signals — e.g. a
-                # judge sharing a task reward's name — must merge their keys, not
-                # overwrite each other's.
-                produced: dict[str, list[str]] = {}
+                # Grouped (not a dict-comprehension union): same-named signals must
+                # merge their keys, not overwrite each other's. Signals and judges are
+                # recorded separately — on restore, a signal's keys are intrinsic to the
+                # task, while a judge's only apply if that judge is still attached.
+                signals: dict[str, list[str]] = {}
                 for fn, result in (
                     *zip(metrics, metric_results),
                     *zip(rewards, reward_results),
                 ):
                     if _requires_runtime(fn):
-                        produced.setdefault(fn.__name__, []).extend(
+                        signals.setdefault(fn.__name__, []).extend(
                             keys(result, fn.__name__)
                         )
+                judge_keys: dict[str, list[str]] = {}
                 for judge, result in zip(runnable_judges, judge_results):
                     if _requires_runtime(judge.score):
-                        produced.setdefault(judge.reward_name, []).extend(
+                        judge_keys.setdefault(judge.reward_name, []).extend(
                             keys(result, judge.reward_name)
                         )
-                if produced:
-                    trace.info["offline_keys"] = produced
+                if signals or judge_keys:
+                    trace.info["offline_keys"] = {
+                        "signals": signals,
+                        "judges": judge_keys,
+                    }
 
     def offline_skipped(self) -> list[str]:
         """The names of the signals `score` skips when re-scoring without a runtime (they
         declare a default-less `runtime` parameter): this task's `@metric`/`@reward`s plus
-        its attached judges. Lets an offline consumer (`replay`) preserve their previously
-        recorded values instead of dropping them — expanded to the keys each signal
-        actually recorded via the trace's `info["offline_keys"]` (a Mapping-returning
-        signal records under its own keys, not its name)."""
+        its attached judges."""
         return [
             fn.__name__
             for fn in (
@@ -392,6 +394,48 @@ class Task(StrictBaseModel, Generic[StateT]):
         ] + [
             judge.reward_name for judge in self.judges if _requires_runtime(judge.score)
         ]
+
+    def restore_offline(
+        self,
+        trace: "Trace",
+        prior_rewards: "Mapping[str, float]",
+        prior_metrics: "Mapping[str, float]",
+    ) -> None:
+        """Pre-fill an offline re-score with the source run's runtime-only values: called
+        by `replay` after clearing the prior scores and BEFORE `score`, so runtime-dependent
+        entries survive — and trace-only signals that read them (e.g. a `@reward` reading a
+        runtime `@metric`'s entry) see them while re-scoring. Restores exactly the keys the
+        source run's runtime-requiring signals recorded (`info["offline_keys"]` — source-run
+        truth, so it works even on a `WireTask` fallback that carries no behavior); traces
+        predating that map fall back to the signal names (`offline_skipped`). A judge's
+        entries restore only while that judge is still attached — a removed judge leaves no
+        stale entry."""
+        recorded = (
+            trace.info.get("offline_keys") if isinstance(trace.info, dict) else None
+        )
+        if isinstance(recorded, Mapping):
+            attached = {
+                judge.reward_name
+                for judge in self.judges
+                if _requires_runtime(judge.score)
+            }
+            keys = [
+                key
+                for signal_keys in recorded.get("signals", {}).values()
+                for key in signal_keys
+            ] + [
+                key
+                for name, judge_keys in recorded.get("judges", {}).items()
+                if name in attached
+                for key in judge_keys
+            ]
+        else:
+            keys = self.offline_skipped()
+        for key in keys:
+            if key in prior_rewards and key not in trace.rewards:
+                trace.rewards[key] = prior_rewards[key]
+            if key in prior_metrics and key not in trace.metrics:
+                trace.metrics[key] = prior_metrics[key]
 
     async def score_group(self, traces: "list[Trace]") -> None:
         """Score a group of rollouts of this task: run every `@group_reward` over all

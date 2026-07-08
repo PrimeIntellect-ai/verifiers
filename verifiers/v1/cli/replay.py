@@ -118,25 +118,6 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                     trace.info.pop("judge", None)
                 prior_rewards, prior_metrics = trace.rewards, trace.metrics
                 trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
-
-                def restore_runtime_only() -> None:
-                    # Runtime-dependent signals can't re-run offline; keep what the source
-                    # run recorded for exactly those instead of dropping their scores. The
-                    # eval stamped each such signal's actual recorded keys into
-                    # `info["offline_keys"]` (a Mapping-returning signal records under its
-                    # own keys); traces predating it fall back to the signal name.
-                    produced = (
-                        trace.info.get("offline_keys", {})
-                        if isinstance(trace.info, dict)
-                        else {}
-                    )
-                    for name in trace.task.offline_skipped():
-                        for key in produced.get(name, [name]):
-                            if key in prior_rewards and key not in trace.rewards:
-                                trace.rewards[key] = prior_rewards[key]
-                            if key in prior_metrics and key not in trace.metrics:
-                                trace.metrics[key] = prior_metrics[key]
-
                 try:
                     if taskset.judges:
                         # The task carries its judges (`Task.judges`): attach the replay
@@ -145,14 +126,14 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                         trace.task = trace.task.model_copy(
                             update={"judges": tuple(taskset.judges)}
                         )
+                    # Pre-fill the runtime-only values the offline `score` can't recompute
+                    # BEFORE scoring — so trace-only signals that read them (e.g. a
+                    # `@reward` reading a runtime `@metric`'s entry) see them, and a failed
+                    # re-score still persists them.
+                    trace.task.restore_offline(trace, prior_rewards, prior_metrics)
                     await trace.task.score(trace)
-                    restore_runtime_only()
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
-                    # A failed re-score (e.g. a judge error) still must not lose the source
-                    # run's runtime-only scores — the trace is persisted either way, with
-                    # the failure recorded on it.
-                    restore_runtime_only()
                     st.state, st.detail = "error", type(exc).__name__
                     trace.capture_error(
                         exc
