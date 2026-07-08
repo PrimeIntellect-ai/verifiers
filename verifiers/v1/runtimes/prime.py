@@ -47,6 +47,9 @@ class PrimeConfig(BaseConfig):
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
     disk: float = 5.0
     """Disk in GB."""
+    idle_timeout_minutes: int | None = 60
+    """Delete the sandbox after this many minutes with no activity (None disables it). Defaults
+    to 1h so a leaked sandbox self-terminates well before its 24h max lifetime."""
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
@@ -85,6 +88,7 @@ class PrimeRuntime(Runtime):
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
             "timeout_minutes": 24 * 60,  # Maximum lifetime of any sandbox.
+            "idle_timeout_minutes": self.config.idle_timeout_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
