@@ -73,10 +73,27 @@ _RESERVED_NAMES = frozenset(
         "score",
         "score_group",
         "offline_skipped",
+        "restore_offline",
         "prompt_text",
         "task_class",
     }
 )
+
+# Decorator tags (see `mark` in decorators.py) whose methods a field must not shadow
+# either: field values live in the instance `__dict__` and win over class-level
+# functions, so `discover_decorated` would silently skip the signal.
+_SIGNAL_MARKS = ("reward", "metric", "group_reward", "stop")
+
+
+def _signal_names(cls: type) -> frozenset[str]:
+    """Names of all `@reward`/`@metric`/`@group_reward`/`@stop` methods anywhere in
+    `cls`'s MRO — including inherited ones a subclass field could shadow."""
+    return frozenset(
+        name
+        for klass in cls.__mro__
+        for name, attr in vars(klass).items()
+        if callable(attr) and any(hasattr(attr, mark) for mark in _SIGNAL_MARKS)
+    )
 
 
 def _class_path(cls: type) -> str:
@@ -207,6 +224,14 @@ class Task(StrictBaseModel, Generic[StateT]):
                 f"{cls.__name__} declares field(s) {sorted(reserved)} that would shadow "
                 f"the Task method(s) of the same name — rename the field(s) "
                 f"(e.g. `user` -> `user_config`)"
+            )
+        shadowed = _signal_names(cls) & cls.model_fields.keys()
+        if shadowed:
+            raise TypeError(
+                f"{cls.__name__} declares field(s) {sorted(shadowed)} that would shadow "
+                f"the inherited @reward/@metric/@group_reward/@stop method(s) of the "
+                f"same name — the signal(s) would silently stop running; rename the "
+                f"field(s)"
             )
 
     @property
