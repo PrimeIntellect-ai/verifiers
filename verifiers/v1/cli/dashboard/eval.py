@@ -182,7 +182,7 @@ def overrides(
     return segments
 
 
-def Overview(config: EvalConfig, push: "PushState | None" = None) -> Table:
+def Overview(config: EvalConfig) -> Table:
     sampling = ", ".join(
         f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items()
     )
@@ -209,17 +209,22 @@ def Overview(config: EvalConfig, push: "PushState | None" = None) -> Table:
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
     grid.add_row("output", Text(str(output_path(config)), overflow="fold"))
-    # --push status: dim while the run finishes + uploads, then the viewer URL (green) or the
-    # failure (red). Present only when the upload runs behind this dashboard (see `run_eval`).
-    if push is not None:
-        if not push.done:
-            value = Text("pushing traces after run completes", style="dim")
-        elif push.url:
-            value = Text(push.url, style="green", overflow="fold")
-        else:
-            value = Text("failed", style="red")
-        grid.add_row("push", value)
     return grid
+
+
+def _push_footer(push: "PushState | None") -> Group | None:
+    """The `--push` status line under the rollouts, shown once the run finishes and the upload
+    begins: dim `Pushing traces...` while it runs, then green `Traces pushed (<url>)` or red
+    `Trace push failed (<err>)`. `None` (no line) until the upload starts and when `--push` is off."""
+    if push is None or not push.started:
+        return None
+    if not push.done:
+        line = Text("Pushing traces...", style="dim")
+    elif push.url:
+        line = Text(f"Traces pushed ({push.url})", style="green", overflow="fold")
+    else:
+        line = Text(f"Trace push failed ({push.error})", style="red", overflow="fold")
+    return Group(Rule(style="dim"), line)
 
 
 def Progress(
@@ -595,16 +600,17 @@ def _render(
     now = time.time()
     warning = _warning(config)
     # `{warning}\n\n{overview}` — the caution sits at the very top, blank line, then the overview.
-    header = (
-        Group(warning, Text(""), Overview(config, push))
-        if warning
-        else Overview(config, push)
-    )
-    # Measure the fixed top (header + progress + rule) so the rollout rows fill the rest of the
-    # screen; page through them (timer, or the left/right arrows) when they'd overflow (rich would
-    # otherwise truncate).
+    header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
+    # The --push status line appears under the rollouts once the upload starts (None during the run
+    # / when off). Measure the fixed top (header + progress + rule) and the footer so the rollout
+    # rows fill what's left; page through them (timer / arrows) when they'd overflow (else rich
+    # truncates).
+    footer = _push_footer(push)
     top = Group(header, Progress(rollouts, start, finished=finished), Rule(style="dim"))
-    rows_per_page = max(1, _CONSOLE.size.height - len(_CONSOLE.render_lines(top)) - 1)
+    reserved = len(_CONSOLE.render_lines(top))
+    if footer is not None:
+        reserved += len(_CONSOLE.render_lines(footer))
+    rows_per_page = max(1, _CONSOLE.size.height - reserved - 1)
     page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, pager, now)
     progress = Progress(
         rollouts,
@@ -612,12 +618,15 @@ def _render(
         page=(index + 1, count) if count > 1 else None,
         finished=finished,
     )
-    return Group(
+    parts = [
         header,
         progress,
         Rule(style="dim"),
         Rows(page_groups, now, config.harness.runtime.type),
-    )
+    ]
+    if footer is not None:
+        parts.append(footer)
+    return Group(*parts)
 
 
 @contextlib.asynccontextmanager
@@ -632,8 +641,8 @@ async def dashboard(
     arrows page through rollout rows when they overflow the screen. On resume, `finished` carries
     the kept on-disk rollouts (reloaded as finished traces) so the counts and scores cover the
     whole run, not just this session's re-run rollouts. `push` is the shared `--push` status the
-    overview renders (dim pending -> green URL / red failed), updated by the caller when the
-    inline upload lands."""
+    view renders as a line under the rollouts once the upload starts (dim -> green URL / red error),
+    updated by the caller as the inline upload runs and lands."""
     pager = Pager()
     async with live_view(
         lambda: _render(rollouts, config, start, pager, finished, push),

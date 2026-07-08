@@ -28,13 +28,16 @@ DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
 
 @dataclass
 class PushState:
-    """Live status of the push, shared with the v1 `--rich` dashboard so its overview can show a
-    dim pending note while the run finishes and uploads, then resolve to the viewer URL (green) or
-    `failed` (red). `done` flips true once the upload attempt returns; `url` is set only on a
-    successful upload. Set from `push_traces`'s return value — the upload itself stays stateless."""
+    """Live status of the push, shared with the v1 `--rich` dashboard so it can show a status line
+    under the rollouts once the run finishes and the upload begins: dim while uploading, then the
+    viewer URL (green) or the error (red). `started` flips true when the upload begins (the caller
+    sets it), `done` when it returns; `url` is set on success and `error` on a skip/failure. No line
+    is shown until `started`. Populated by `push_traces` (pass the state in)."""
 
-    url: str | None = None
+    started: bool = False
     done: bool = False
+    url: str | None = None
+    error: str | None = None
 
 
 def _creds() -> tuple[str | None, str, str, str | None]:
@@ -57,17 +60,29 @@ def _creds() -> tuple[str | None, str, str, str | None]:
     return api_key, base, frontend, team_id
 
 
-def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
-    """Upload a finished run to the platform; return the viewer URL (None if skipped).
+def push_traces(
+    traces: list[Trace], config: EvalConfig, state: "PushState | None" = None
+) -> str | None:
+    """Upload a finished run to the platform; return the viewer URL (None if skipped/failed).
 
     Resolves the env (get-or-create) by name so a local run uploads without a prior
-    `prime env push`, then create evaluation -> push samples -> finalize."""
+    `prime env push`, then create evaluation -> push samples -> finalize. When `state` is given
+    (the v1 `--rich` path), record the outcome on it (`url` on success, `error` on skip/failure,
+    `done` when finished) so the dashboard's status line resolves."""
+
+    def finish(url: str | None = None, error: str | None = None) -> str | None:
+        if state is not None:
+            state.url = url
+            state.error = error
+            state.done = True
+        return url
+
     api_key, base, frontend, team_id = _creds()
     if not api_key:
         logger.warning(
             "--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload"
         )
-        return None
+        return finish(error="no PRIME_API_KEY (run `prime login`)")
 
     def compute_metrics() -> dict[str, Any]:
         """Run-level aggregates as v0's `GenerateMetadata`: `avg_reward` (mean over all traces),
@@ -138,8 +153,8 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
             post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
     except Exception as e:
         logger.warning("--push: upload failed (%s: %s); skipping", type(e).__name__, e)
-        return None
+        return finish(error=f"{type(e).__name__}: {e}")
 
     url = f"{frontend}/dashboard/evaluations/{eval_id}"
     logger.info("--push: uploaded %d samples -> %s", len(samples), url)
-    return url
+    return finish(url=url)
