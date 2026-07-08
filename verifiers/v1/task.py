@@ -384,6 +384,10 @@ class Task(StrictBaseModel, Generic[StateT]):
                 # merge their keys, not overwrite each other's. Signals and judges are
                 # recorded separately — on restore, a signal's keys are intrinsic to the
                 # task, while a judge's only apply if that judge is still attached.
+                # Only *returned* keys are attributable: signals run concurrently, so a
+                # direct `record_metric` write can't be traced to its writer — `replay`
+                # restores source metrics wholesale instead (fill-if-missing, after
+                # re-scoring).
                 signals: dict[str, list[str]] = {}
                 for fn, result in (
                     *zip(metrics, metric_results),
@@ -431,10 +435,13 @@ class Task(StrictBaseModel, Generic[StateT]):
         entries survive — and trace-only signals that read them (e.g. a `@reward` reading a
         runtime `@metric`'s entry) see them while re-scoring. Restores exactly the keys the
         source run's runtime-requiring signals recorded (`info["offline_keys"]` — source-run
-        truth, so it works even on a `WireTask` fallback that carries no behavior); traces
+        truth, so it works even on a `WireTask` fallback that carries no behavior), plus
+        `@group_reward` keys (no group context offline — see `score_group`); traces
         predating that map fall back to the signal names (`offline_skipped`). A judge's
         entries restore only while that judge is still attached — a removed judge leaves no
-        stale entry."""
+        stale entry. This covers rewards and *returned* metric keys; metrics recorded by
+        direct `record_metric` writes are unattributable and are restored by `replay`
+        itself, wholesale, after re-scoring (fill-if-missing)."""
         recorded = (
             trace.info.get("offline_keys") if isinstance(trace.info, dict) else None
         )
@@ -444,18 +451,26 @@ class Task(StrictBaseModel, Generic[StateT]):
                 for judge in self.judges
                 if _requires_runtime(judge.score)
             }
-            keys = [
-                key
-                for signal_keys in recorded.get("signals", {}).values()
-                for key in signal_keys
-            ] + [
-                key
-                for name, judge_keys in recorded.get("judges", {}).items()
-                if name in attached
-                for key in judge_keys
-            ]
+            keys = (
+                [
+                    key
+                    for signal_keys in recorded.get("signals", {}).values()
+                    for key in signal_keys
+                ]
+                + [
+                    key
+                    for name, judge_keys in recorded.get("judges", {}).items()
+                    if name in attached
+                    for key in judge_keys
+                ]
+                + list(recorded.get("group", []))
+            )
         else:
-            keys = self.offline_skipped()
+            # Group rewards join the fallback too: like the runtime-requiring signals,
+            # an offline re-score can't recompute them (they need the whole group).
+            keys = self.offline_skipped() + [
+                fn.__name__ for fn in discover_decorated(self, "group_reward")
+            ]
         for key in keys:
             if key in prior_rewards and key not in trace.rewards:
                 trace.rewards[key] = prior_rewards[key]
@@ -488,6 +503,13 @@ class Task(StrictBaseModel, Generic[StateT]):
                 weight = getattr(fn, "_vf_weight", 1.0)
                 for trace, score in zip(traces, scores):
                     trace.record_reward(fn.__name__, score, weight)
+            # An offline re-score (`replay`) has no group context, so group rewards can
+            # never be recomputed: record their keys for `restore_offline`. Merges into
+            # the map `score` stamped (each rollout scores before the group does).
+            group_keys = [fn.__name__ for fn in rewards]
+            for trace in traces:
+                if isinstance(trace.info, dict):
+                    trace.info.setdefault("offline_keys", {})["group"] = group_keys
 
 
 class WireTask(Task):

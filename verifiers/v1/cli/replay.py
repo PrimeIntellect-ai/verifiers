@@ -3,8 +3,10 @@
 Offline sibling of `eval`: loads a finished run's saved traces and re-runs **scoring only**, no
 runtime. The run's own `config.toml` is the base; CLI flags / `@ file.toml` layer on top (e.g. a
 different judge model). Signals needing a `runtime` (in-sandbox verifiers like a SWE `solved`
-reward) are skipped and left as the source recorded them; config-plugged judges and trace-only
-`@reward`/`@metric`s re-run. Rollouts that errored during generation (`stop_condition == "error"`)
+reward) are skipped and left as the source recorded them — group rewards likewise (no group
+context offline); config-plugged judges and trace-only `@reward`/`@metric`s re-run. Metrics the
+re-score doesn't re-record (harness metrics, a skipped signal's direct writes) keep their source
+values. Rollouts that errored during generation (`stop_condition == "error"`)
 were never scored by eval, so they're copied through unchanged rather than re-scored on a broken
 transcript. `--num-rescores`/`-r` re-scores each trace N times to sample judge variance. Results go
 to a fresh output dir, so the source run is never overwritten.
@@ -144,6 +146,14 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                             trace.task.idx,
                             exc_info=True,
                         )
+                # Source metrics the re-score didn't re-record survive wholesale — harness
+                # metrics and direct `record_metric` writes by skipped runtime signals are
+                # unattributable to a producer (`Task.restore_offline` covers only returned
+                # keys). Fill-if-missing: everything re-recorded above keeps its fresh
+                # value. Rewards get no such sweep — they stay attributed, so a removed
+                # judge's entry is not resurrected into the reward sum.
+                for name, value in prior_metrics.items():
+                    trace.metrics.setdefault(name, value)
                 st.end = time.time()
         if not config.rich:
             logger.info(
