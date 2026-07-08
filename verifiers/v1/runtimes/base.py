@@ -180,13 +180,25 @@ class Runtime(ABC):
 
         global _drain_reported
         _STOPPING[self] = time.time()
+        aborted = False
         try:
             await run_shielded(self.teardown(), interrupted=interrupted)
+        except (KeyboardInterrupt, SystemExit):
+            aborted = (
+                True  # a user abort cut the drain short (run_shielded propagates it)
+            )
+            raise
         finally:
             _STOPPING.pop(self, None)
             if _drain_reported and not _STOPPING:
                 _drain_reported = False
-                logger.warning("all in-flight teardowns finished")
+                if aborted:
+                    logger.warning(
+                        "teardown drain aborted — leftover resources are freed "
+                        "best-effort at exit"
+                    )
+                else:
+                    logger.warning("all in-flight teardowns finished")
 
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown
