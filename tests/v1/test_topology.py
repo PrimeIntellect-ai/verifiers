@@ -1,9 +1,9 @@
-"""Topology tests: config narrowing, agent loading, and instance semantics (stubbed rollouts).
+"""Topology tests: config narrowing, agent loading, and instance semantics.
 
-The unit tests stub `TopologyRunner.rollout` with a canned-reply rollout, so the whole
-imperative surface — forward trace→task arrows, fan-out, parent links, declared instance
-judgement, `go` failure capture — runs without a model or a runtime. The `e2e`-marked test
-runs the `echo-chain-v1` fixture topology live (skipped without a key), mirroring `test_e2e`.
+The unit tests stub `vf.Agent.run` with a canned reply, so the explicit-agent topology
+surface — forward trace→task arrows, fan-out, parent links, declared instance judgement,
+`go` failure capture — runs without a model or a runtime. The `e2e`-marked test runs the
+`echo-chain-v1` fixture topology live (skipped without a key), mirroring `test_e2e`.
 """
 
 import json
@@ -34,29 +34,38 @@ def echoing_trace(task: vf.Task, reply: str) -> Trace:
     return trace
 
 
-class EchoingRollout:
-    """Stands in for `Rollout`: replies with the echo task's own answer and scores like the
-    echo task would, so a topology's `go` runs its real logic."""
+@pytest.fixture
+def stub_agent_run(monkeypatch) -> None:
+    """Run topology instances through real `TopologyRunner.serving`, but replace the
+    executable agent's rollout work with a tiny deterministic trace."""
 
-    def __init__(self, task: vf.Task) -> None:
-        self.task = task
-
-    async def run(self) -> Trace:
-        trace = echoing_trace(self.task, getattr(self.task, "answer", "ok"))
+    async def fake_agent_run(
+        self, task, *, parents=(), runtime=None, ctx=None, services=None, retry=None
+    ):
+        trace = echoing_trace(task, getattr(task, "answer", "ok"))
         trace.record_reward("echoed", 1.0)
+        self.stamp(
+            trace,
+            parents=parents,
+            runtime=runtime,
+            ctx=ctx or self.ctx,
+            borrowed=runtime is not None,
+        )
         return trace
+
+    monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
+
+
+async def run_stubbed_instance(env: TopologyRunner, task: vf.Task) -> AgentGraph:
+    async with env.serving(vf.ModelContext(model="org/model", client=object())):
+        return await env.run_instance(task)
 
 
 @pytest.fixture
-def echo_chain_env(monkeypatch) -> TopologyRunner:
-    """A loaded echo-chain topology whose episodes run against `EchoingRollout` (no model,
-    no runtime, no interception)."""
+def echo_chain_env(stub_agent_run) -> TopologyRunner:
+    """A loaded echo-chain topology whose agents return canned traces."""
     config = EvalConfig(topology={"id": "echo-chain-v1"}, rich=False)
-    env = TopologyRunner(config.topology, config)
-    monkeypatch.setattr(
-        TopologyRunner, "rollout", lambda self, agent, task: EchoingRollout(task)
-    )
-    return env
+    return TopologyRunner(config.topology, config)
 
 
 def test_llm_judge_config_narrows_typed_agents():
@@ -203,7 +212,7 @@ async def test_run_instance_links_and_defers(echo_chain_env):
     """One stubbed instance: completion-ordered traces, parent links, agent names, and the
     declared backward-arrow reward landing on the upstream trace at instance end."""
     seed = echo_chain_env.topology.load_tasks()[0]
-    graph = await echo_chain_env.run_instance(seed)
+    graph = await run_stubbed_instance(echo_chain_env, seed)
     assert graph.error is None
     assert graph.topology == "echo-chain-v1"
     first, second = graph.traces
@@ -220,52 +229,7 @@ async def test_run_instance_links_and_defers(echo_chain_env):
     assert second.rewards == {"echoed": 1.0}
 
 
-async def test_explicit_agents_record_into_topology_graph(monkeypatch):
-    """The new `run.agent(name).run(task)` surface still records the same graph links and
-    trainability stamps as the compatibility `run.rollout(name, task)` wrapper."""
-    import echo_chain_v1
-
-    config = EvalConfig(topology={"id": "echo-chain-v1"}, rich=False)
-    env = TopologyRunner(config.topology, config)
-
-    async def explicit_go(self, task, run):
-        first = await run.agent("first").run(task)
-        derived = type(task)(
-            idx=task.idx,
-            prompt=f"echo {task.answer}",
-            answer=task.answer,
-        )
-        await run.agent("second").run(derived, parents=[first])
-
-    async def fake_agent_run(
-        self, task, *, parents=(), runtime=None, ctx=None, services=None, retry=None
-    ):
-        trace = echoing_trace(task, getattr(task, "answer", "ok"))
-        trace.record_reward("echoed", 1.0)
-        self.stamp(
-            trace,
-            parents=parents,
-            runtime=None,
-            ctx=ctx or self.ctx,
-            borrowed=runtime is not None,
-        )
-        return trace
-
-    monkeypatch.setattr(echo_chain_v1.EchoChainTopology, "go", explicit_go)
-    monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
-    seed = env.topology.load_tasks()[0]
-    async with env.serving(vf.ModelContext(model="org/model", client=object())):
-        graph = await env.run_instance(seed)
-
-    first, second = graph.traces
-    assert (first.agent, second.agent) == ("first", "second")
-    assert first.parents == [] and second.parents == [first.id]
-    assert first.trainable and second.trainable
-    assert first.info["agent"]["model"] == "org/model"
-    assert graph.children(first, agent="second") == [second]
-
-
-async def test_declared_judgement_scores_the_instance(monkeypatch):
+async def test_declared_judgement_scores_the_instance(stub_agent_run):
     """`Topology.score` runs the declared @metric/@reward methods once per matching trace
     after `go` returns — metrics before rewards (`difficulty` reads the `solve_rate`
     metric), and over every trace in scope even when the instance ended early (the stub
@@ -274,10 +238,7 @@ async def test_declared_judgement_scores_the_instance(monkeypatch):
     scoring — task rewards run inside real rollouts."""
     config = EvalConfig(topology={"id": "proposer-solver-v1"}, rich=False)
     env = TopologyRunner(config.topology, config)
-    monkeypatch.setattr(
-        TopologyRunner, "rollout", lambda self, agent, task: EchoingRollout(task)
-    )
-    graph = await env.run_instance(env.topology.load_tasks()[0])
+    graph = await run_stubbed_instance(env, env.topology.load_tasks()[0])
     (proposer,) = graph.traces  # malformed proposal → no solver fan-out
     assert proposer.metrics == {"solve_rate": 0.0}
     assert proposer.rewards == {"echoed": 1.0, "difficulty": 0.0}
@@ -289,11 +250,13 @@ async def test_go_failure_is_captured_on_graph(echo_chain_env, monkeypatch):
     cls = type(echo_chain_env.topology)
 
     async def exploding_go(self, task, run):
-        await run.rollout("first", task)
+        await run.agent("first").run(task)
         raise RuntimeError("boom")
 
     monkeypatch.setattr(cls, "go", exploding_go)
-    graph = await echo_chain_env.run_instance(echo_chain_env.topology.load_tasks()[0])
+    graph = await run_stubbed_instance(
+        echo_chain_env, echo_chain_env.topology.load_tasks()[0]
+    )
     assert graph.error is not None
     assert graph.error.type == "TopologyError"
     assert "boom" in graph.error.message
@@ -380,7 +343,7 @@ async def test_agentic_judge_task_uploads_the_trace():
     assert json.loads(written[TRACE_PATH]) == payload
 
 
-async def test_writer_editors_fan_in_and_shared_verdict(monkeypatch):
+async def test_writer_editors_fan_in_and_shared_verdict(monkeypatch, stub_agent_run):
     """The rounds + fan-in example, stubbed: editors fan out over the draft, the revision
     is linked under the draft AND every editor trace, and one (stubbed) judge call puts the
     same `improvement` reward on every trace of the instance."""
@@ -390,16 +353,13 @@ async def test_writer_editors_fan_in_and_shared_verdict(monkeypatch):
         topology={"id": "writer-editors-v1", "num_editors": 2}, rich=False
     )
     env = TopologyRunner(config.topology, config)
-    monkeypatch.setattr(
-        TopologyRunner, "rollout", lambda self, agent, task: EchoingRollout(task)
-    )
 
     async def stub_evaluate(self, *, trace=None, **fields):
         assert {"brief", "first", "final"} <= fields.keys()
         return vf.JudgeResponse(text="SCORE: 8", parsed=0.8)
 
     monkeypatch.setattr(ImprovementJudge, "evaluate", stub_evaluate)
-    graph = await env.run_instance(env.topology.load_tasks()[0])
+    graph = await run_stubbed_instance(env, env.topology.load_tasks()[0])
     assert graph.error is None
     draft, edit_a, edit_b, revision = graph.traces
     assert [t.agent for t in graph.traces] == ["writer", "editor", "editor", "writer"]

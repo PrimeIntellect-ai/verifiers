@@ -838,20 +838,26 @@ class SolverTask(vf.Task):
 ## The interaction pattern — `go`
 
 `go` is plain imperative Python over a `TopologyRun`; interaction patterns are code, not a
-DSL. `run.rollout(agent, task, parents=...)` runs one episode and links it into the agent
-graph; `run.gather(agent, tasks, parents=...)` fans out; loops are rounds; awaiting several
-traces before building the next task is fan-in:
+DSL. `run.agent(name).run(task, parents=...)` runs one episode and links it into the
+agent graph; `asyncio.gather` fans out; loops are rounds; awaiting several traces before
+building the next task is fan-in:
 
 ```python
     async def go(self, task: vf.Task, run: vf.TopologyRun) -> None:
-        proposer = await run.rollout("proposer", task)
+        proposer = await run.agent("proposer").run(task)
         # Forward arrow: read the proposal straight off the trace, pure host-side.
         question = parse_labeled(proposer, "QUESTION")
         answer = parse_number(parse_labeled(proposer, "ANSWER") or "")
         if not question or answer is None:
             return  # malformed proposal — `well_formed` scored it; nothing to solve
         derived = SolverTask(idx=task.idx, prompt=SOLVE_PROMPT.format(question=question), answer=answer)
-        await run.gather("solver", [derived] * self.config.num_solvers, parents=[proposer])
+        solver = run.agent("solver")
+        await asyncio.gather(
+            *(
+                solver.run(derived, parents=[proposer])
+                for _ in range(self.config.num_solvers)
+            )
+        )
 ```
 
 ## Topology rewards — declared, cross-agent judgement
@@ -889,9 +895,7 @@ The contract, chosen to fail loudly and stay predictable:
   on the graph — episodes stay as data, siblings unaffected.
 
 `trace.record_reward(...)` inside `go` still works as the escape hatch for exotic shapes
-(e.g. a mid-round adjustment), and `run.score_group(traces)` runs the shared task's
-`@group_reward`s over a fan-out when it is a classic group (n rollouts of one derived
-task, scored comparatively) — but the declared methods are the norm.
+(e.g. a mid-round adjustment), but the declared methods are the norm.
 
 The forward arrow stays in `go`: construct the downstream agent's typed `Task` from an
 upstream trace — its typed task, `last_reply`, `transcript`, or `trace.info`. This is pure

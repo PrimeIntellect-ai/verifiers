@@ -24,6 +24,7 @@ The asymmetric-capability shape, one self-contained package:
     neither trivial nor impossible score highest.
 """
 
+import asyncio
 import re
 from typing import ClassVar
 
@@ -211,7 +212,7 @@ class ProposerSolverTopology(vf.Topology[ProposerSolverConfig]):
     async def go(self, task: vf.Task, run: vf.TopologyRun) -> None:
         """Control flow only: propose, read the committed submission off the trace (pure
         host-side), then fan the solvers out over the derived puzzle."""
-        proposer = await run.rollout("proposer", task)
+        proposer = await run.agent("proposer").run(task)
         submission = proposer.info.get("submission")
         if not isinstance(submission, dict):
             return  # proposer never committed — `well_formed` scored it; nothing to solve
@@ -226,8 +227,12 @@ class ProposerSolverTopology(vf.Topology[ProposerSolverConfig]):
             code=code,
             input=input,
         )
-        await run.gather(
-            "solver", [derived] * self.config.num_solvers, parents=[proposer]
+        solver = run.agent("solver")
+        await asyncio.gather(
+            *(
+                solver.run(derived, parents=[proposer])
+                for _ in range(self.config.num_solvers)
+            )
         )
 
     @vf.metric(agent="proposer")

@@ -91,9 +91,8 @@ class AgenticJudgeTopology(LLMJudgeTopology, Topology[AgenticJudgeConfig]):
     what the judge is handed — differs."""
 
     async def go(self, task: Task, run: TopologyRun) -> None:
-        solver = await run.rollout("solver", task)
-        await run.rollout(
-            "judge",
+        solver = await run.agent("solver").run(task)
+        await run.agent("judge").run(
             AgenticJudgeTask.for_trace(task, solver, self.config.prompt),
             parents=[solver],
         )

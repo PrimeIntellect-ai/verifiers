@@ -29,7 +29,7 @@ class EchoChainConfig(vf.TopologyConfig):
 
 class EchoChainTopology(vf.Topology[EchoChainConfig]):
     async def go(self, task: EchoTask, run: vf.TopologyRun) -> None:
-        first = await run.rollout("first", task)
+        first = await run.agent("first").run(task)
         # Forward arrow: the second agent must echo the same phrase — a task derived
         # from (and linked under) the first trace.
         derived = EchoTask(
@@ -40,7 +40,7 @@ class EchoChainTopology(vf.Topology[EchoChainConfig]):
             ),
             answer=task.answer,
         )
-        await run.rollout("second", derived, parents=[first])
+        await run.agent("second").run(derived, parents=[first])
 
     @vf.reward(agent="first")
     async def relay(self, trace: vf.Trace, graph: vf.AgentGraph) -> float:

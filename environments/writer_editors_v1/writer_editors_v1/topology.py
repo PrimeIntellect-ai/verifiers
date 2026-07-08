@@ -4,8 +4,8 @@ The rounds + fan-in shape, one self-contained package:
 
   - **Rounds are a loop in `go`**: each round, the current draft goes out to the editors
     and comes back revised — `num_rounds` cycles, plain Python.
-  - **Fan-out**: `run.gather("editor", [critique] * num_editors, parents=[draft])` — every
-    editor critiques the same draft, concurrently.
+  - **Fan-out**: `asyncio.gather(*(run.agent("editor").run(critique, parents=[draft])
+    for _ in range(num_editors)))` — every editor critiques the same draft, concurrently.
   - **Fan-in**: the revision task is built from *all* the editors' traces at once, and the
     revised trace is linked under every one of them (`parents=[draft, *edits]`).
   - **One verdict, every trace**: a single `vf.Judge` call per instance compares the first
@@ -14,6 +14,7 @@ The rounds + fan-in shape, one self-contained package:
     improved, which is only measurable after the instance completes.
 """
 
+import asyncio
 import logging
 
 from pydantic import SerializeAsAny
@@ -174,7 +175,9 @@ class WriterEditorsTopology(vf.Topology[WriterEditorsConfig]):
     async def go(self, task: DraftTask, run: vf.TopologyRun) -> None:
         """Draft, then `num_rounds` critique→revise cycles: editors fan out over the
         current draft, their feedback fans back in to one revision task."""
-        draft = await run.rollout("writer", task)
+        writer = run.agent("writer")
+        editor = run.agent("editor")
+        draft = await writer.run(task)
         for _ in range(self.config.num_rounds):
             if not draft.last_reply:
                 return  # nothing to edit (errored or empty draft)
@@ -182,8 +185,13 @@ class WriterEditorsTopology(vf.Topology[WriterEditorsConfig]):
                 idx=task.idx,
                 prompt=CRITIQUE_PROMPT.format(brief=task.brief, draft=draft.last_reply),
             )
-            edits = await run.gather(
-                "editor", [critique] * self.config.num_editors, parents=[draft]
+            edits = list(
+                await asyncio.gather(
+                    *(
+                        editor.run(critique, parents=[draft])
+                        for _ in range(self.config.num_editors)
+                    )
+                )
             )
             feedback = "\n\n".join(
                 f"Editor {i + 1}:\n{edit.last_reply}"
@@ -192,8 +200,7 @@ class WriterEditorsTopology(vf.Topology[WriterEditorsConfig]):
             )
             if not feedback:
                 return  # every editor failed — nothing to revise from
-            draft = await run.rollout(
-                "writer",
+            draft = await writer.run(
                 ReviseTask(
                     idx=task.idx,
                     prompt=REVISE_PROMPT.format(

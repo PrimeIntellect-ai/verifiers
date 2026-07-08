@@ -43,10 +43,6 @@ from verifiers.v1.env import (
 )
 from verifiers.v1.errors import TopologyError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.interception import InterceptionPool
-from verifiers.v1.mcp import SharedServers
-from verifiers.v1.retries import run_with_retry
-from verifiers.v1.rollout import Rollout
 from verifiers.v1.services import RunServices
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
@@ -366,8 +362,9 @@ class Topology(Generic[ConfigT]):
 
     async def go(self, task: Task, run: "TopologyRun") -> None:
         """Run one topology instance from seed `task`: the *control flow only* — which
-        episodes run, in what order, with what tasks: `await run.rollout(agent, task,
-        parents=...)` per episode, `run.gather` for fan-out, loops for rounds, and
+        episodes run, in what order, with what tasks:
+        `await run.agent(name).run(task, parents=...)` per episode,
+        `asyncio.gather` for fan-out, loops for rounds, and
         `trace.info[...] = ...` to annotate provenance. The forward arrow lives here —
         construct the next agent's typed `Task` from an upstream trace (its typed task,
         `last_reply`, `transcript`, or what its `finalize` peeled into `trace.info`).
@@ -461,55 +458,6 @@ class TopologyRun:
         await trim_memory_periodically()
         return trace
 
-    async def rollout(
-        self, agent: str, task: Task, parents: Sequence[Parent] = ()
-    ) -> Trace:
-        """Run one episode — `agent` consuming `task` — and return its trace, linked under
-        `parents` in the agent graph. Bounded by the eval's rollout concurrency and retried
-        per its whole-rollout retry policy. Never raises on a failed episode: the error is
-        data on the returned trace (`trace.error`)."""
-        binding = self.env.agent(agent)
-        rollout = self.env.rollout(binding, task)
-        async with self._semaphore or contextlib.nullcontext():
-            trace = await run_with_retry(rollout, self.env.config.retries.rollout)
-        executable = self.env._agents.get(agent)
-        if executable is None:
-            trace.agent = binding.name
-            trace.parents = [
-                parent.id if isinstance(parent, Trace) else parent for parent in parents
-            ]
-            trace.trainable = binding.config.trainable
-        else:
-            executable.stamp(
-                trace,
-                parents=parents,
-                runtime=rollout.runtime,
-                ctx=rollout.ctx,
-                borrowed=False,
-            )
-        self.graph.add(trace)
-        # hand freed per-turn request bodies (base64 images) back to the OS
-        await trim_memory_periodically()
-        return trace
-
-    async def gather(
-        self, agent: str, tasks: Sequence[Task], parents: Sequence[Parent] = ()
-    ) -> list[Trace]:
-        """Fan out: run `agent` over `tasks` concurrently and return the traces aligned to
-        `tasks` (`[task] * n` samples one task n times). Fan-in is just Python: await the
-        batch, then read what you need off the traces."""
-        return list(
-            await asyncio.gather(
-                *(self.rollout(agent, task, parents) for task in tasks)
-            )
-        )
-
-    async def score_group(self, traces: list[Trace]) -> None:
-        """Run the shared task's `@group_reward`s across `traces` — for a fan-out that is a
-        classic group (n rollouts of one derived task, scored comparatively)."""
-        if traces:
-            await traces[0].task.score_group(traces)
-
 
 class TopologyRunner:
     """The topology-level composition and resolver — the multi-agent counterpart of
@@ -536,14 +484,9 @@ class TopologyRunner:
                 "it. A topology wanting a config-driven source *inside* a custom "
                 "`load_tasks` declares its own factory field, not the built-in `taskset` slot."
             )
-        self._ctxs: dict[str, ModelContext] = {}
-        self._pools: dict[str, InterceptionPool] = {}
-        self._services: RunServices | None = None
-        self._shared: SharedServers | None = None
         self._agents: dict[str, ExecutableAgent] = {}
-        """Run-level serving resources, live only inside `serving()`: one model context
-        and one interception pool per agent (an agent's harness may run in its own runtime,
-        against its own model/client), plus the lazy shared tool-server registry."""
+        """Executable agents, live only inside `serving()`: one per topology agent slot,
+        bound to its model context and the serving scope's shared resources."""
 
     def agent(self, name: str) -> AgentBinding:
         """The named agent, with an actionable error for a typo in `go`."""
@@ -568,35 +511,30 @@ class TopologyRunner:
 
     @contextlib.asynccontextmanager
     async def serving(self, ctx: ModelContext):
-        """Hold the run-level serving resources for the duration of a topology eval: per
-        agent, a `ModelContext` (`ctx` with the agent's model/client/sampling overrides
-        applied) and an interception pool — pools are deduped by the harness runtime they
-        tunnel to, so two agents on identical runtimes share servers + tunnels — plus the
-        lazy shared tool-server registry. Clients built for an override are closed on
-        exit. Everything is built into locals and published atomically, so a failure
-        mid-enter never leaves the runner pointing at torn-down resources. Build
-        instances inside this context."""
+        """Hold the run-level serving resources for the duration of a topology eval: one
+        `ModelContext` per agent (`ctx` with the agent's model/client/sampling overrides
+        applied), plus one shared `RunServices` scope for MCP servers and lazy interception
+        pools. Clients built for an override are closed on exit. Everything is built into
+        locals and published atomically, so a failure mid-enter never leaves the runner
+        pointing at torn-down resources. Build instances inside this context."""
         async with contextlib.AsyncExitStack() as stack:
             services = await stack.enter_async_context(
                 RunServices(self.config.multiplex)
             )
-            ctxs: dict[str, ModelContext] = {}
-            pools: dict[str, InterceptionPool] = {}
             agents: dict[str, ExecutableAgent] = {}
             for name, agent in self.topology.agents.items():
                 client = ctx.client
                 if agent.config.client is not None:
                     client = resolve_client(agent.config.client)
                     stack.push_async_callback(client.close)
-                ctxs[name] = ModelContext(
+                agent_ctx = ModelContext(
                     model=agent.config.model or ctx.model,
                     client=client,
                     sampling=agent.config.sampling or ctx.sampling,
                 )
-                pools[name] = await services.pool_for(agent.harness.config.runtime)
                 agents[name] = ExecutableAgent(
                     agent.harness,
-                    ctxs[name],
+                    agent_ctx,
                     agent.harness.config.runtime,
                     name=name,
                     trainable=agent.config.trainable,
@@ -605,30 +543,11 @@ class TopologyRunner:
                     multiplex=self.config.multiplex,
                     services=services,
                 )
-            self._ctxs = ctxs
-            self._pools = pools
-            self._services = services
-            self._shared = services.shared
             self._agents = agents
             try:
                 yield
             finally:
-                self._ctxs = {}
-                self._pools = {}
-                self._services = None
-                self._shared = None
                 self._agents = {}
-
-    def rollout(self, agent: AgentBinding, task: Task) -> Rollout:
-        """Resolve one episode — `task` run by `agent` — into a `Rollout` wired to the
-        agent's runtime, context, and interception pool, under the eval-level timeouts and
-        limits (task overrides apply as usual). The executable `Agent` validates the task
-        × harness × runtime pairing before any runtime spins up."""
-        return self.executable_agent(agent.name).rollout(
-            task,
-            shared=self._shared,
-            interception=self._pools.get(agent.name),
-        )
 
     async def run_instance(
         self, task: Task, semaphore: asyncio.Semaphore | None = None

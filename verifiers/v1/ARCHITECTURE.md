@@ -177,20 +177,21 @@ too, and seeds aren't special.
 ## Topologies — composing episodes across agents
 
 A **`Topology`** (`topology.py`) is a surface over which agents interact: it declares which
-agents exist and, as plain imperative code, how their episodes compose. An **`Agent`** is
-nothing but a name + a harness + routing (model / client / `trainable`), declared as typed
-`AgentConfig` fields on the topology's config (so every agent is CLI-addressable:
-`--topology.judge.model ...`) — it carries nothing task-side, because tasks carry their own
-behavior. An *episode* — one agent consuming one task and producing one trace — is just a
-`Rollout`; nothing about a task or harness is topology-aware. Seeds come from the config's
-`tasks` factory (`--topology.taskset.id gsm8k-v1`) or a `load_tasks` override — exclusive-or,
-enforced at load (a slot that could be silently ignored is refused); downstream tasks
-are minted in `go` (question and verifier in one typed object — the task class travels with
-the instance).
+agents exist and, as plain imperative code, how their episodes compose. A topology declares
+typed `AgentConfig` fields (so every agent is CLI-addressable:
+`--topology.judge.model ...`); at serving time each field becomes a public `Agent`
+(harness + model context + runtime policy + `trainable`). The agent carries nothing
+task-side, because tasks carry their own behavior. An *episode* — one agent consuming one
+task and producing one trace — is still just a `Rollout`; nothing about a task or harness is
+topology-aware. Seeds come from the config's `tasks` factory
+(`--topology.taskset.id gsm8k-v1`) or a `load_tasks` override — exclusive-or, enforced at
+load (a slot that could be silently ignored is refused); downstream tasks are minted in
+`go` (question and verifier in one typed object — the task class travels with the instance).
 
-`Topology.go(task, run)` runs one instance: `await run.rollout(agent, task, parents=...)` per
-episode, `run.gather` for fan-out, Python loops for rounds, plain `await`s for fan-in. The two
-cross-agent contracts are deliberately explicit code, not machinery:
+`Topology.go(task, run)` runs one instance:
+`await run.agent(name).run(task, parents=...)` per episode, `asyncio.gather` for fan-out,
+Python loops for rounds, plain `await`s for fan-in. The two cross-agent contracts are
+deliberately explicit code, not machinery:
 
 - **forward (trace → task)** — pure host-side construction of the next agent's typed `Task`
   from an upstream trace (its typed task, `last_reply`, `transcript`, or what the taskset's

@@ -152,9 +152,9 @@ class LLMJudgeConfig(TopologyConfig):
 
 class LLMJudgeTopology(Topology[LLMJudgeConfig]):
     async def go(self, task: Task, run: TopologyRun) -> None:
-        solver = await run.rollout("solver", task)
-        await run.rollout(
-            "judge", JudgeTask.for_attempt(task, solver), parents=[solver]
+        solver = await run.agent("solver").run(task)
+        await run.agent("judge").run(
+            JudgeTask.for_attempt(task, solver), parents=[solver]
         )
 
     @metric(agent="solver")
