@@ -104,6 +104,8 @@ class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
         return [SearchToolset(self.config.tools)]
 ```
 
+The tools the harness advertises to the model (yours, plus any harness-local ones like `bash`) are recorded on `trace.tool_defs` and persist to `traces.jsonl`, so downstream consumers (e.g. tool-use SFT in prime-rl) can rebuild the exact prompt the model saw.
+
 ## Using Judges
 
 If your reward is semantic, use an LLM judge.

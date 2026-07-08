@@ -32,6 +32,7 @@ from verifiers.v1.types import (
     AssistantMessage,
     Messages,
     StrictBaseModel,
+    Tool,
     ToolMessage,
     Usage,
     content_text,
@@ -231,6 +232,14 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """The message graph — one node per distinct message, linked to its predecessor (see
     `graph`). The ground truth; `branches` is a view over it. Stores each message once, so
     size is linear (not quadratic) in turns."""
+    tool_defs: list[Tool] | None = None
+    """The function tools advertised to the model, captured off the intercepted request on
+    every model turn (last writer wins) — ground truth for what the model saw, wherever the
+    harness sourced its tools (local, MCP, framework built-ins). None when no call advertised
+    tools. The full advertised list, not just the tools called: tool-use SFT must re-render
+    the prompt the model was conditioned on (prime-rl reads this as its `tool_defs` column).
+    A single trace-level snapshot, not per-node: tools that change mid-rollout collapse to
+    the last set advertised (per-node capture would repeat the list on every record line)."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
     """Per-`@reward`-function contributions, with each function's weight applied."""

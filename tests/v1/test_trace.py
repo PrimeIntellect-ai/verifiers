@@ -82,3 +82,38 @@ def test_wire_trace_round_trip():
 
     # the env-server wire form (a plain model_dump) loads too
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
+
+
+def test_tool_defs_round_trip():
+    # `tool_defs` (the tools advertised to the model, captured by the interception server)
+    # persists like `info`: through `to_record()` (the traces.jsonl line) and back through
+    # `WireTrace` — prime-rl reads it off the record to build a tool-use SFT tools column.
+    tool = vf.Tool(
+        name="echo_back",
+        description="Echo a message back, stamped.",
+        parameters={
+            "type": "object",
+            "properties": {"message": {"type": "string"}},
+            "required": ["message"],
+        },
+    )
+    tr = vf.Trace(task=vf.Task(idx=0, prompt="q"), tool_defs=[tool])
+
+    record = tr.to_record()  # JSON-serializable (what traces.jsonl carries)
+    assert json.loads(json.dumps(record["tool_defs"])) == [
+        {
+            "name": "echo_back",
+            "description": "Echo a message back, stamped.",
+            "parameters": tool.parameters,
+            "strict": None,
+        }
+    ]
+
+    rt = vf.WireTrace.model_validate(record)
+    assert rt.tool_defs is not None
+    assert rt.tool_defs[0] == tool
+
+    # a pre-tool_defs dump (no key) still loads: the field defaults to None
+    legacy = vf.Trace(task=vf.Task(idx=1, prompt="q")).to_record()
+    legacy.pop("tool_defs")
+    assert vf.WireTrace.model_validate(legacy).tool_defs is None

@@ -273,7 +273,14 @@ class InterceptionServer:
         # trace (the renderer re-derives its own from the body it's handed). A user simulator
         # extends both each turn (`dialect.extend` for the wire, `prompt` for the trace).
         prompt: Messages
-        prompt, _ = dialect.parse_request(body)
+        prompt, tools = dialect.parse_request(body)
+        if tools is not None:
+            # Persist the advertised tools on the trace (see `Trace.tool_defs`): the request is
+            # the ground truth of what the model saw, and this is the one choke point every
+            # harness's calls flow through. Only a tools-bearing request updates it, so a
+            # trailing tool-less call (e.g. a summarization turn) can't erase the schemas the
+            # recorded tool calls need.
+            session.trace.tool_defs = tools
         # A task with no prompt has its conversation opened by the user simulator: before the
         # first model call, seed the simulator's opening user turn(s) into both the wire request
         # and the trace prompt, so the model answers the user rather than an empty prompt. Guarded
