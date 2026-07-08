@@ -285,6 +285,11 @@ class Environment:
 
         A task with `@group_reward`s compares its rollouts, so it needs >=2 of
         them — refuse `n < 2` there (rather than silently scoring a group of one)."""
+        # Capability checks are by value: `tools()`/`user()` read the task's fields, so
+        # an override may yield nothing for this row — a class-override check would be
+        # cheaper but wrongly reject those. The short-circuit means the calls only run
+        # when the harness lacks the capability, and they construct (never launch) the
+        # declared servers; the real per-rollout instances are built in `Rollout.run`.
         if not self.harness.SUPPORTS_MCP and task.tools():
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not support MCP tools, but task "
@@ -398,7 +403,9 @@ class Environment:
         corpus is built once, not per rollout. No-op ({}) when none are shared. A shared server
         must be task-agnostic: its `setup` gets no task (so it can't silently serve one task's
         data to every rollout); calling `tools()` here only builds the toolset instances. Every
-        task is swept — a mixed list may expose shared tools on any of its types — deduped by
+        task is swept — one task class per taskset, but `tools()` reads the instance's fields,
+        so rows can expose different servers (a representative-task check would miss them; the
+        sweep is by value, runs once per eval, and constructs without launching) — deduped by
         server name (same name = the same task-agnostic server, started once). A shared
         server on a host runtime is bridged to the host once (a tunnel) when the harness runs
         remotely, so an in-sandbox harness can still reach it (see `serve_shared`)."""
