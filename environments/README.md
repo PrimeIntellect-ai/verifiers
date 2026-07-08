@@ -35,9 +35,6 @@ This folder contains installable example environments that showcase common usage
 - **PythonEnv (ipython-style REPL)**
   - **math_python**: Solve math problems using Python in a sandbox environment.
 
-### GymEnv (external gym environments)
-- **gem_wordle**: Multi-turn Wordle game powered by the GEM framework; models must guess a 5-letter word using `\boxed{}` format.
-
 ### Experimental environments
 - **MCPEnv (MCP server integration)**
   - **mcp_search_env**: Example environment demonstrating `vf.MCPEnv` for Model Context Protocol server integration.
@@ -52,8 +49,6 @@ This folder contains installable example environments that showcase common usage
 
 - **HarborEnv / CliAgentEnv (agent sandboxes)**
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
-  - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
-  - **hello_mcp_harbor**: Smallest runnable `HarborEnv` exercising framework-managed MCP server lifecycle (FastMCP `get_secret` server + OpenCode agent).
 
 - **Taskset/Harness v1**
   - **bfcl_v3**: BFCL v3 function-calling eval using task-local dynamic tool schemas and v1 rewards.
@@ -90,10 +85,9 @@ This folder contains installable example environments that showcase common usage
 - **JudgeRubric end-to-end**: `continuation_quality`, `toxicity_explanation`, `self_reward`
 - **ToolEnv with real tools**: `wiki_search`, `math_python`
 - **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
-- **GymEnv integration**: `gem_wordle`
 - **OpenEnv integration (gym + MCP)**: `openenv_textarena`, `openenv_echo`
-- **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
-- **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
+- **CLI agent sandboxes**: `opencode_harbor`
+- **MCP integration**: `mcp_search_env`
 - **Taskset/Harness v1**: use this pattern for new environments that need reusable tasksets, reusable harnesses, framework programs, endpoint interception, or sandboxed Python/command programs. Examples include `dspy_rlm`, `openai_agents_env`, `langchain_deep_agents_wikispeedia`, `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, `opencode_harbor`, `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, and `wordle-v1`.
   - `opencode_harbor` uses the packaged `HarborTaskset` + `OpenCode` boundary from `tasksets` and `harnesses`.
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
