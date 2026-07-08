@@ -99,5 +99,5 @@ def push_traces(traces: list[Trace], config: EvalConfig) -> str | None:
         post(f"/evaluations/{eval_id}/finalize", {"metrics": metrics})
 
     url = f"{frontend}/dashboard/evaluations/{eval_id}"
-    logger.info("--push: uploaded %d samples -> %s", len(samples), url)
+    logger.info("--push: uploaded %d samples (evaluation_id=%s)", len(samples), eval_id)
     return url
