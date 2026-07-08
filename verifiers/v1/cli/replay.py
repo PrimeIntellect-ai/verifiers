@@ -2,11 +2,11 @@
 
 Offline sibling of `eval`: loads a finished run's saved traces and re-runs **scoring only**, no
 runtime. The run's own `config.toml` is the base; CLI flags / `@ file.toml` layer on top (e.g. a
-different judge model). Signals needing a `runtime` (in-sandbox verifiers like a SWE `solved`
-reward) are skipped and left as the source recorded them — group rewards likewise (no group
-context offline); config-plugged judges and trace-only `@reward`/`@metric`s re-run. Metrics the
-re-score doesn't re-record (harness metrics, a skipped signal's direct writes) keep their source
-values. Rollouts that errored during generation (`stop_condition == "error"`)
+different judge model). Config-plugged judges and trace-only `@reward`/`@metric`s re-run;
+everything an offline re-score can't recompute keeps its source-recorded value — runtime-needing
+signals (in-sandbox verifiers like a SWE `solved` reward), group rewards (no group context),
+harness metrics. Decided per entry from the trace's recorded provenance (`Trace.score_log`, see
+`Task.prune_offline`). Rollouts that errored during generation (`stop_condition == "error"`)
 were never scored by eval, so they're copied through unchanged rather than re-scored on a broken
 transcript. `--num-rescores`/`-r` re-scores each trace N times to sample judge variance. Results go
 to a fresh output dir, so the source run is never overwritten.
@@ -114,11 +114,9 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 st.state, st.detail, st.end = "skipped", "rollout errored", time.time()
             else:
                 st.state = "running"
-                # Clear prior scores so a changed/removed judge leaves no stale (double-summed) entry.
                 if isinstance(trace.info, dict):
                     trace.info.pop("judge", None)
-                prior_rewards, prior_metrics = trace.rewards, trace.metrics
-                trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
+                trace.extra_usage = []
                 try:
                     if taskset.judges:
                         # The task carries its judges (`Task.judges`): attach the replay
@@ -127,11 +125,10 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                         trace.task = trace.task.model_copy(
                             update={"judges": tuple(taskset.judges)}
                         )
-                    # Pre-fill the runtime-only values the offline `score` can't recompute
-                    # BEFORE scoring — so trace-only signals that read them (e.g. a
-                    # `@reward` reading a runtime `@metric`'s entry) see them, and a failed
-                    # re-score still persists them.
-                    trace.task.restore_offline(trace, prior_rewards, prior_metrics)
+                    # Selectively clear what the offline `score` recomputes; keep what it
+                    # can't (per the trace's recorded provenance) — kept entries are in
+                    # place during re-scoring and survive a failed one.
+                    trace.task.prune_offline(trace)
                     await trace.task.score(trace)
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
@@ -145,14 +142,6 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                             trace.task.idx,
                             exc_info=True,
                         )
-                # Source metrics the re-score didn't re-record survive wholesale — harness
-                # metrics and direct `record_metric` writes by skipped runtime signals are
-                # unattributable to a producer (`Task.restore_offline` covers only returned
-                # keys). Fill-if-missing: everything re-recorded above keeps its fresh
-                # value. Rewards get no such sweep — they stay attributed, so a removed
-                # judge's entry is not resurrected into the reward sum.
-                for name, value in prior_metrics.items():
-                    trace.metrics.setdefault(name, value)
                 st.end = time.time()
         if not config.rich:
             logger.info(

@@ -27,9 +27,39 @@ runtime is recorded per rollout as a `@metric` first.
 """
 
 import inspect
-from typing import Any, Callable, TypeVar, overload
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Callable, Literal, NamedTuple, TypeVar, overload
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+class ScoreSource(NamedTuple):
+    """Provenance of a score write: what kind of producer recorded it, that producer's
+    name, and whether it needs a live runtime — i.e. whether an offline re-score
+    (`replay`) can recompute the entry or must keep the recorded value."""
+
+    origin: Literal["signal", "judge", "group", "harness", "other"]
+    name: str
+    requires_runtime: bool
+
+
+SCORE_SOURCE: ContextVar[ScoreSource | None] = ContextVar("score_source", default=None)
+"""The producer currently executing, if any. The scoring drivers set it around each
+signal/judge invocation (`scoring_source`), so `record_reward`/`record_metric` calls
+from *inside* a handler's body — side-effect writes, which can't be attributed any
+other way under concurrent execution — still carry their producer. Each asyncio task
+gets its own copy of the context, so concurrently-gathered handlers don't bleed."""
+
+
+@contextmanager
+def scoring_source(source: ScoreSource):
+    """Attribute the score writes in this context to `source`."""
+    token = SCORE_SOURCE.set(source)
+    try:
+        yield
+    finally:
+        SCORE_SOURCE.reset(token)
 
 
 def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:

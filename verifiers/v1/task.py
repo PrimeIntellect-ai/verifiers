@@ -40,7 +40,12 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Generic, TypeVar
 from pydantic import ConfigDict, Field, GetPydanticSchema
 from pydantic_core import core_schema
 
-from verifiers.v1.decorators import discover_decorated, invoke
+from verifiers.v1.decorators import (
+    ScoreSource,
+    discover_decorated,
+    invoke,
+    scoring_source,
+)
 from verifiers.v1.errors import TasksetError, boundary
 from verifiers.v1.judge import Judge
 from verifiers.v1.state import StateT
@@ -67,7 +72,7 @@ _RESERVED_NAMES = frozenset(
         "score",
         "score_group",
         "offline_skipped",
-        "restore_offline",
+        "prune_offline",
         "prompt_text",
     }
 )
@@ -294,31 +299,50 @@ class Task(StrictBaseModel, Generic[StateT]):
             # A signal that *requires* a runtime can't run without one, so skip it when replaying.
             return runtime is not None or not _requires_runtime(fn)
 
+        def signal_source(fn) -> ScoreSource:
+            return ScoreSource("signal", fn.__name__, _requires_runtime(fn))
+
+        def judge_source(judge: Judge) -> ScoreSource:
+            return ScoreSource(
+                "judge", judge.reward_name, _requires_runtime(judge.score)
+            )
+
+        async def run(fn, source: ScoreSource):
+            # The scoring context attributes any write the handler makes *inside* its
+            # body (`trace.record_metric(...)` side effects) — each gathered handler
+            # runs in its own asyncio task, so contexts don't bleed.
+            with scoring_source(source):
+                return await invoke(fn, available)
+
         async with boundary(TasksetError, f"task {type(self).__name__} scoring"):
             metrics = [fn for fn in discover_decorated(self, "metric") if can_run(fn)]
             metric_results = (
-                [await invoke(fn, available) for fn in metrics]
+                [await run(fn, signal_source(fn)) for fn in metrics]
                 if len(metrics) < 2
-                else await asyncio.gather(*(invoke(fn, available) for fn in metrics))
+                else await asyncio.gather(
+                    *(run(fn, signal_source(fn)) for fn in metrics)
+                )
             )
             for fn, result in zip(metrics, metric_results):
                 if isinstance(result, Mapping):
-                    trace.record_metrics(result)
+                    trace.record_metrics(result, signal_source(fn))
                 else:
-                    trace.record_metric(fn.__name__, result)
+                    trace.record_metric(fn.__name__, result, signal_source(fn))
             rewards = [fn for fn in discover_decorated(self, "reward") if can_run(fn)]
             reward_results = (
-                [await invoke(fn, available) for fn in rewards]
+                [await run(fn, signal_source(fn)) for fn in rewards]
                 if len(rewards) < 2
-                else await asyncio.gather(*(invoke(fn, available) for fn in rewards))
+                else await asyncio.gather(
+                    *(run(fn, signal_source(fn)) for fn in rewards)
+                )
             )
             for fn, result in zip(rewards, reward_results):
                 weight = getattr(fn, "_vf_weight", 1.0)
                 if isinstance(result, Mapping):
                     for name, value in result.items():
-                        trace.record_reward(name, value, weight)
+                        trace.record_reward(name, value, weight, signal_source(fn))
                 else:
-                    trace.record_reward(fn.__name__, result, weight)
+                    trace.record_reward(fn.__name__, result, weight, signal_source(fn))
             runnable_judges = [judge for judge in judges if can_run(judge.score)]
             if runtime is None:
                 # Exactly the signals `can_run` filtered out above — those requiring a runtime
@@ -331,54 +355,31 @@ class Task(StrictBaseModel, Generic[StateT]):
                         skipped,
                     )
             judge_results = (
-                [await invoke(judge.score, available) for judge in runnable_judges]
+                [
+                    await run(judge.score, judge_source(judge))
+                    for judge in runnable_judges
+                ]
                 if len(runnable_judges) < 2
                 else await asyncio.gather(
-                    *(invoke(judge.score, available) for judge in runnable_judges)
+                    *(
+                        run(judge.score, judge_source(judge))
+                        for judge in runnable_judges
+                    )
                 )
             )
             for judge, result in zip(runnable_judges, judge_results):
                 if isinstance(result, Mapping):
                     for name, value in result.items():
-                        trace.record_reward(name, value, judge.config.weight)
+                        trace.record_reward(
+                            name, value, judge.config.weight, judge_source(judge)
+                        )
                 else:
-                    trace.record_reward(judge.reward_name, result, judge.config.weight)
-            if runtime is not None and isinstance(trace.info, dict):
-                # Map each runtime-requiring signal to the reward/metric keys it actually
-                # produced — a Mapping result records under its own keys, not the method
-                # name — so an offline re-score (`replay`) can restore exactly these
-                # (`offline_skipped` names the signals; this maps them to their keys).
-                def keys(result, fallback: str) -> list[str]:
-                    return list(result) if isinstance(result, Mapping) else [fallback]
-
-                # Grouped (not a dict-comprehension union): same-named signals must
-                # merge their keys, not overwrite each other's. Signals and judges are
-                # recorded separately — on restore, a signal's keys are intrinsic to the
-                # task, while a judge's only apply if that judge is still attached.
-                # Only *returned* keys are attributable: signals run concurrently, so a
-                # direct `record_metric` write can't be traced to its writer — `replay`
-                # restores source metrics wholesale instead (fill-if-missing, after
-                # re-scoring).
-                signals: dict[str, list[str]] = {}
-                for fn, result in (
-                    *zip(metrics, metric_results),
-                    *zip(rewards, reward_results),
-                ):
-                    if _requires_runtime(fn):
-                        signals.setdefault(fn.__name__, []).extend(
-                            keys(result, fn.__name__)
-                        )
-                judge_keys: dict[str, list[str]] = {}
-                for judge, result in zip(runnable_judges, judge_results):
-                    if _requires_runtime(judge.score):
-                        judge_keys.setdefault(judge.reward_name, []).extend(
-                            keys(result, judge.reward_name)
-                        )
-                if signals or judge_keys:
-                    trace.info["offline_keys"] = {
-                        "signals": signals,
-                        "judges": judge_keys,
-                    }
+                    trace.record_reward(
+                        judge.reward_name,
+                        result,
+                        judge.config.weight,
+                        judge_source(judge),
+                    )
 
     def offline_skipped(self) -> list[str]:
         """The names of the signals `score` skips when re-scoring without a runtime (they
@@ -395,58 +396,43 @@ class Task(StrictBaseModel, Generic[StateT]):
             judge.reward_name for judge in self.judges if _requires_runtime(judge.score)
         ]
 
-    def restore_offline(
-        self,
-        trace: "Trace",
-        prior_rewards: "Mapping[str, float]",
-        prior_metrics: "Mapping[str, float]",
-    ) -> None:
-        """Pre-fill an offline re-score with the source run's runtime-only values: called
-        by `replay` after clearing the prior scores and BEFORE `score`, so runtime-dependent
-        entries survive — and trace-only signals that read them (e.g. a `@reward` reading a
-        runtime `@metric`'s entry) see them while re-scoring. Restores exactly the keys the
-        source run's runtime-requiring signals recorded (`info["offline_keys"]` — source-run
-        truth, so it works even on a `WireTask` fallback that carries no behavior), plus
-        `@group_reward` keys (no group context offline — see `score_group`); traces
-        predating that map fall back to the signal names (`offline_skipped`). A judge's
-        entries restore only while that judge is still attached — a removed judge leaves no
-        stale entry. This covers rewards and *returned* metric keys; metrics recorded by
-        direct `record_metric` writes are unattributable and are restored by `replay`
-        itself, wholesale, after re-scoring (fill-if-missing)."""
-        recorded = (
-            trace.info.get("offline_keys") if isinstance(trace.info, dict) else None
-        )
-        if isinstance(recorded, Mapping):
-            attached = {
-                judge.reward_name
-                for judge in self.judges
-                if _requires_runtime(judge.score)
-            }
-            keys = (
-                [
-                    key
-                    for signal_keys in recorded.get("signals", {}).values()
-                    for key in signal_keys
-                ]
-                + [
-                    key
-                    for name, judge_keys in recorded.get("judges", {}).items()
-                    if name in attached
-                    for key in judge_keys
-                ]
-                + list(recorded.get("group", []))
-            )
-        else:
-            # Group rewards join the fallback too: like the runtime-requiring signals,
-            # an offline re-score can't recompute them (they need the whole group).
-            keys = self.offline_skipped() + [
-                fn.__name__ for fn in discover_decorated(self, "group_reward")
-            ]
-        for key in keys:
-            if key in prior_rewards and key not in trace.rewards:
-                trace.rewards[key] = prior_rewards[key]
-            if key in prior_metrics and key not in trace.metrics:
-                trace.metrics[key] = prior_metrics[key]
+    def prune_offline(self, trace: "Trace") -> None:
+        """Prepare a saved trace for an offline re-score (`replay`, after attaching this
+        run's judges): drop the `rewards`/`metrics` entries the re-score will recompute
+        and keep the rest — decided per entry from the trace's recorded provenance
+        (`Trace.score_log`). Kept: entries whose producer can't run offline — runtime-
+        requiring signals (source-run truth, so a `WireTask` fallback keeps them without
+        the subclass's behavior), attached runtime-requiring judges, `@group_reward`s
+        (no group context offline), harness metrics, and direct writes made outside any
+        scoring context. Cleared: trace-only signals and judges (they re-record — and a
+        removed judge's entries simply stay cleared, leaving no stale value). Kept
+        entries are in place *during* re-scoring, so trace-only signals that read them
+        (e.g. a `@reward` reading a runtime `@metric`'s entry) see them. Traces
+        predating the log fall back to keeping the `offline_skipped` + `@group_reward`
+        names."""
+        attached = {
+            judge.reward_name for judge in self.judges if _requires_runtime(judge.score)
+        }
+        latest = {(record.kind, record.key): record for record in trace.score_log}
+        # Pre-provenance traces: keep by name — the runtime-requiring signal/judge names
+        # plus group rewards (an offline re-score can't recompute those either).
+        fallback = set(self.offline_skipped()) | {
+            fn.__name__ for fn in discover_decorated(self, "group_reward")
+        }
+
+        def keep(kind: str, key: str) -> bool:
+            record = latest.get((kind, key))
+            if record is None:
+                return key in fallback
+            if record.origin == "signal":
+                return record.requires_runtime
+            if record.origin == "judge":
+                return record.requires_runtime and record.name in attached
+            return True  # group / harness / other: offline re-scoring can't recompute
+
+        trace.rewards = {k: v for k, v in trace.rewards.items() if keep("reward", k)}
+        trace.metrics = {k: v for k, v in trace.metrics.items() if keep("metric", k)}
+        trace.score_log = [r for r in trace.score_log if keep(r.kind, r.key)]
 
     async def score_group(self, traces: "list[Trace]") -> None:
         """Score a group of rollouts of this task: run every `@group_reward` over all
@@ -459,11 +445,16 @@ class Task(StrictBaseModel, Generic[StateT]):
         if not rewards:
             return
         available = {"task": self, "traces": traces}
+
+        async def run(fn):
+            with scoring_source(ScoreSource("group", fn.__name__, True)):
+                return await invoke(fn, available)
+
         async with boundary(TasksetError, f"task {type(self).__name__} group scoring"):
             reward_results = (
-                [await invoke(fn, available) for fn in rewards]
+                [await run(fn) for fn in rewards]
                 if len(rewards) < 2
-                else await asyncio.gather(*(invoke(fn, available) for fn in rewards))
+                else await asyncio.gather(*(run(fn) for fn in rewards))
             )
             for fn, scores in zip(rewards, reward_results):
                 if len(scores) != len(traces):
@@ -472,15 +463,9 @@ class Task(StrictBaseModel, Generic[StateT]):
                         f"for {len(traces)} rollout(s); it must return one per trace"
                     )
                 weight = getattr(fn, "_vf_weight", 1.0)
+                source = ScoreSource("group", fn.__name__, True)
                 for trace, score in zip(traces, scores):
-                    trace.record_reward(fn.__name__, score, weight)
-            # An offline re-score (`replay`) has no group context, so group rewards can
-            # never be recomputed: record their keys for `restore_offline`. Merges into
-            # the map `score` stamped (each rollout scores before the group does).
-            group_keys = [fn.__name__ for fn in rewards]
-            for trace in traces:
-                if isinstance(trace.info, dict):
-                    trace.info.setdefault("offline_keys", {})["group"] = group_keys
+                    trace.record_reward(fn.__name__, score, weight, source)
 
 
 class WireTask(Task):

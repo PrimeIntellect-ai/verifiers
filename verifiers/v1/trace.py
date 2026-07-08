@@ -13,7 +13,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
 
 import numpy as np
 from pydantic import Field, PrivateAttr
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from verifiers.v1.judge import JudgeResponse
 
 from verifiers.v1 import graph
+from verifiers.v1.decorators import SCORE_SOURCE, ScoreSource
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.state import State, StateT
@@ -69,6 +70,24 @@ class Error(StrictBaseModel):
     type: str
     message: str
     traceback: str | None = None
+
+
+class ScoreRecord(StrictBaseModel):
+    """One write to `Trace.rewards`/`Trace.metrics`, with its provenance: which producer
+    recorded the key and whether it needs a live runtime. Appended by `record_reward`/
+    `record_metric` (the source comes from the caller, or from the scoring context —
+    `SCORE_SOURCE` — for writes made inside a handler's body). `replay` reads the log to
+    decide, per entry, whether an offline re-score recomputes it or must keep the
+    recorded value (`Task.prune_offline`)."""
+
+    kind: Literal["reward", "metric"]
+    key: str
+    value: float
+    origin: Literal["signal", "judge", "group", "harness", "other"] = "other"
+    name: str = ""
+    """The producer's name — the signal method, the judge's reward name — `""` for a
+    direct write outside any scoring context."""
+    requires_runtime: bool = False
 
 
 class Branch(StrictBaseModel):
@@ -229,6 +248,12 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """Per-`@reward`-function contributions, with each function's weight applied."""
     metrics: dict[str, float] = Field(default_factory=dict)
     """Per-`@metric`-function values (unweighted; not summed into the reward)."""
+    score_log: list[ScoreRecord] = Field(default_factory=list)
+    """Provenance of every `rewards`/`metrics` write (append-only, oldest first; the last
+    record per key is current). `rewards`/`metrics` stay the plain float views that
+    signals and consumers read; this log is what offline tooling decides from — `replay`
+    keeps exactly the entries whose producer can't re-run without a runtime (see
+    `Task.prune_offline`)."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Free-form, JSON-serializable scratch space for taskset-specific metadata that is neither
     a reward nor a metric — anything an author wants to scrape off the live runtime and persist
@@ -408,21 +433,45 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         messages = branches[-1].messages if branches else []
         return [m for m in messages if isinstance(m, ToolMessage)]
 
-    def record_metric(self, name: str, value: float) -> None:
-        """Record a single `@metric` result under `name`. Warns if it overrides an
-        existing metric (a name collision, e.g. an harness and a task metric sharing
-        a name) — last writer wins, but loudly."""
+    def record_metric(
+        self, name: str, value: float, source: ScoreSource | None = None
+    ) -> None:
+        """Record a single `@metric` result under `name`, logging its provenance
+        (`source`, or the ambient scoring context for writes made inside a handler's
+        body, else "other") into `score_log`. Warns if it overrides an existing metric
+        (a name collision, e.g. an harness and a task metric sharing a name) — last
+        writer wins, but loudly."""
         if name in self.metrics:
             logger.warning(
                 "metric %r overridden: %s -> %s", name, self.metrics[name], value
             )
         self.metrics[name] = float(value)
+        self._log_score("metric", name, float(value), source)
 
-    def record_metrics(self, values: "Mapping[str, float]") -> None:
+    def record_metrics(
+        self, values: "Mapping[str, float]", source: ScoreSource | None = None
+    ) -> None:
         """Merge a family of `@metric` results (so one method can report several,
         e.g. an harness's depth/calls/tokens). Each key warns on override as above."""
         for name, value in values.items():
-            self.record_metric(name, value)
+            self.record_metric(name, value, source)
+
+    def _log_score(
+        self, kind: str, key: str, value: float, source: ScoreSource | None
+    ) -> None:
+        origin, name, requires_runtime = (
+            source or SCORE_SOURCE.get() or ScoreSource("other", "", False)
+        )
+        self.score_log.append(
+            ScoreRecord(
+                kind=kind,  # type: ignore[arg-type]
+                key=key,
+                value=value,
+                origin=origin,
+                name=name,
+                requires_runtime=requires_runtime,
+            )
+        )
 
     def record_judge(self, response: "JudgeResponse") -> None:
         """Persist a judge call (`Judge.evaluate` / `Judge.complete` is pure): append the typed
@@ -432,16 +481,24 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         if response.usage is not None:
             self.extra_usage.append(response.usage)
 
-    def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
+    def record_reward(
+        self,
+        name: str,
+        value: float,
+        weight: float = 1.0,
+        source: ScoreSource | None = None,
+    ) -> None:
         """Record a `@reward`/`@group_reward` contribution under `name` (weight
-        applied; summed into `reward`). Warns on override — a per-rollout reward and
-        a group reward sharing a name would otherwise silently clobber."""
+        applied; summed into `reward`), logging its provenance like `record_metric`.
+        Warns on override — a per-rollout reward and a group reward sharing a name
+        would otherwise silently clobber."""
         contribution = float(value) * float(weight)
         if name in self.rewards:
             logger.warning(
                 "reward %r overridden: %s -> %s", name, self.rewards[name], contribution
             )
         self.rewards[name] = contribution
+        self._log_score("reward", name, contribution, source)
 
     def stop(self, condition: str = "done") -> None:
         self.is_completed = True

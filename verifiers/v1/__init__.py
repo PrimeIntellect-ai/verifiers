@@ -15,7 +15,15 @@ from verifiers.v1.clients import (
     ModelContext,
     resolve_client,
 )
-from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
+from verifiers.v1.decorators import (
+    ScoreSource,
+    group_reward,
+    metric,
+    reward,
+    scoring_source,
+    stop,
+    tool,
+)
 from verifiers.v1.env import (
     ElasticPoolConfig,
     EnvConfig,
@@ -97,6 +105,7 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     Branch,
     Error,
+    ScoreRecord,
     TimeSpan,
     Timing,
     Trace,
@@ -152,6 +161,9 @@ __all__ = [
     "TaskResources",
     "TaskTimeout",
     "Trace",
+    "ScoreRecord",
+    "ScoreSource",
+    "scoring_source",
     "WireTrace",
     "State",
     "StateT",

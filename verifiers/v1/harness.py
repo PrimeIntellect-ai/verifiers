@@ -17,7 +17,12 @@ from pydantic import Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.decorators import discover_decorated, invoke
+from verifiers.v1.decorators import (
+    ScoreSource,
+    discover_decorated,
+    invoke,
+    scoring_source,
+)
 from verifiers.v1.errors import HarnessError, boundary
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import (
@@ -161,17 +166,27 @@ class Harness(ABC, Generic[ConfigT]):
         No-op for an harness with no `@metric`s."""
         available = {"task": trace.task, "trace": trace, "runtime": runtime}
         fns = discover_decorated(self, "metric")
+
+        # Harness metrics run against the live runtime; an offline re-score (`replay`)
+        # has no harness, so their entries are always kept there.
+        def source(fn) -> ScoreSource:
+            return ScoreSource("harness", fn.__name__, True)
+
+        async def run(fn):
+            with scoring_source(source(fn)):
+                return await invoke(fn, available)
+
         async with boundary(HarnessError, f"harness {self.config.id!r} metric"):
             results = (
-                [await invoke(fn, available) for fn in fns]
+                [await run(fn) for fn in fns]
                 if len(fns) < 2
-                else await asyncio.gather(*(invoke(fn, available) for fn in fns))
+                else await asyncio.gather(*(run(fn) for fn in fns))
             )
         for fn, result in zip(fns, results):
             if isinstance(result, Mapping):
-                trace.record_metrics(result)
+                trace.record_metrics(result, source(fn))
             else:
-                trace.record_metric(fn.__name__, result)
+                trace.record_metric(fn.__name__, result, source(fn))
 
     @abstractmethod
     async def launch(
