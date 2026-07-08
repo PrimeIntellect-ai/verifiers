@@ -1,8 +1,8 @@
 """Push a finished eval run to the Prime Intellect platform (`uv run eval`, `--no-push` to skip).
 
-On by default. Converts each in-memory v1 `Trace` to the platform's sample schema
-(`verifiers.v1.samples.trace_to_sample`, shared with the prime-rl monitor) and uploads the
-run over the `/evaluations/` API (create -> push samples -> finalize) — the same contract
+On by default. Converts each in-memory v1 `Trace` to the platform's (v0) eval-sample schema
+(`trace_to_sample`) and uploads the run over the `/evaluations/` API (create -> push samples ->
+finalize) — the same contract
 `prime eval push` uploads a saved run through, done inline at the end of a run rather than
 later from disk. Auth + base URL come from `$PRIME_API_KEY` / `~/.prime/config.json`
 (written by `prime login`), like the rest of the CLI.
@@ -17,7 +17,6 @@ import httpx
 
 from verifiers.utils.client_utils import load_prime_config
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.samples import trace_to_sample
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -38,6 +37,56 @@ class PushState:
     done: bool = False
     url: str | None = None
     error: str | None = None
+
+
+def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
+    """One rollout -> the platform's sample dict (the "old" v0 eval-sample format).
+
+    The conversation is the unit — no prompt/completion split (meaningless mid-branch):
+    `completion` is the final branch's messages and `trajectory` carries one message list per
+    branch. `rollout_number` is this rollout's 1-based index within its task's group (callers that
+    don't group rollouts can leave it at the default)."""
+
+    def dump(messages):
+        return [m.model_dump(mode="json", exclude_none=True) for m in messages]
+
+    task = trace.task.model_dump(mode="json", exclude_none=True)
+    branches = trace.branches
+    sample = {
+        "sample_id": trace.id,
+        "example_id": trace.task.idx,
+        "rollout_number": rollout_number,
+        "task": task,
+        "prompt": [],
+        "completion": dump(branches[-1].messages) if branches else [],
+        "answer": task.get("answer"),
+        "reward": trace.reward,
+        "timing": trace.timing.model_dump(mode="json", exclude_none=True),
+        "is_completed": trace.is_completed,
+        "is_truncated": trace.is_truncated,
+        "metrics": trace.metrics,
+        "error": trace.error.model_dump(mode="json", exclude_none=True)
+        if trace.error
+        else None,
+        "stop_condition": trace.stop_condition,
+        "trajectory": [
+            {
+                "messages": dump(branch.messages),
+                "num_input_tokens": branch.num_input_tokens,
+                "num_output_tokens": branch.num_output_tokens,
+            }
+            for branch in branches
+        ],
+        "token_usage": trace.usage.model_dump(mode="json", exclude_none=True)
+        if trace.usage
+        else None,
+        "info": dict(trace.info) or None,
+    }
+    # Flatten each sub-reward onto the sample as a top-level key, the way v0's `state_to_output`
+    # does. Env metrics stay in the nested `metrics` field.
+    for name, value in trace.rewards.items():
+        sample.setdefault(name, value)
+    return sample
 
 
 def _creds() -> tuple[str | None, str, str, str | None]:
