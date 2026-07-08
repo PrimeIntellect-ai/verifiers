@@ -248,4 +248,5 @@ type (read off the class's `Taskset[TaskT, ConfigT]` / `Harness[ConfigT]` / `Jud
 ConfigT]` generic) — so the typed CLI/TOML surfaces each plugin's own fields without the core
 knowing them ahead of time. Judges are the lightweight third kind: attached to any eval via the
 base `TasksetConfig.judges` (built-ins under `verifiers/v1/judges`), built once by the taskset
-loader, and run by `Task.score` after the task's own rewards.
+loader, attached to each task (`Task.judges`), and run by `Task.score` after the task's own
+rewards.

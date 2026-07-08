@@ -21,7 +21,6 @@ from enum import StrEnum
 from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.judge import Judge
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
@@ -70,7 +69,6 @@ class Rollout:
         harness: Harness,
         ctx: ModelContext,
         runtime_config: RuntimeConfig,
-        judges: list[Judge] | None = None,
         setup_timeout: float | None = None,
         harness_timeout: float | None = None,
         finalize_timeout: float | None = None,
@@ -80,9 +78,6 @@ class Rollout:
         interception: InterceptionPool | None = None,
     ) -> None:
         self.task = task
-        self.judges = judges or []
-        """Config-plugged judges (built by the loader from `TasksetConfig.judges`), passed
-        into `task.score` after the task's own `@reward`s."""
         self.harness = harness
         self.ctx = ctx
         self.runtime_config = runtime_config
@@ -260,7 +255,7 @@ class Rollout:
                 # method types its own failures; only a timeout is attributed here.
                 await asyncio.wait_for(
                     asyncio.gather(
-                        self.task.score(trace, runtime, judges=self.judges),
+                        self.task.score(trace, runtime),
                         self.harness.score(trace, runtime),
                     ),
                     self.scoring_timeout,

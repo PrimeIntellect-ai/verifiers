@@ -34,6 +34,7 @@ class EvalConfig(EnvServerConfig):
     """How many tasks to evaluate (None = all)."""
     num_rollouts: int = Field(
         1,
+        ge=1,
         validation_alias=AliasChoices(
             "group_size", "rollouts_per_example", "num_rollouts", "r"
         ),

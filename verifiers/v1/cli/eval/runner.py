@@ -46,14 +46,14 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # session's re-run rollouts. Only the --rich dashboard reads them, so skip the load otherwise.
     finished: list[Trace] = []
     if config.resume is not None:
-        # Group scoring is per task type (a loaded list may mix them): resume must plan
-        # whole-group re-runs iff any task in the run group-scores.
-        group = any(
-            discover_decorated(task, "group_reward")
-            for task in {type(t): t for t in tasks}.values()
-        )
+        # A group-scored task's episode must be re-run whole (its `@group_reward`s
+        # compare all its rollouts); other tasks only re-run what's missing. Decided per
+        # task, since a loaded list may mix group-scored and plain task types.
+        group_idxs = {
+            task.idx for task in tasks if discover_decorated(task, "group_reward")
+        }
         keep, owed = resume.plan(
-            out, [t.idx for t in tasks], config.num_rollouts, group
+            out, [t.idx for t in tasks], config.num_rollouts, group_idxs
         )
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
@@ -168,8 +168,13 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             idxs = idxs[: config.num_tasks]
         out = output_path(config)
         if config.resume is not None:
+            # The env-server reports group scoring run-wide (not per task), so plan
+            # all-or-nothing here.
             keep, owed = resume.plan(
-                out, idxs, config.num_rollouts, info.requires_group_scoring
+                out,
+                idxs,
+                config.num_rollouts,
+                set(idxs) if info.requires_group_scoring else set(),
             )
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))

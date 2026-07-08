@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 
 class Episode:
     def __init__(self, rollouts: list[Rollout], retry: RolloutRetryConfig) -> None:
+        if not rollouts:
+            raise ValueError("an episode needs at least one rollout (n >= 1)")
         self.rollouts = rollouts
         self.task = rollouts[0].task
         """The shared task — every rollout in an episode samples the same one; its

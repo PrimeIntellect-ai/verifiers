@@ -34,7 +34,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
-from verifiers.v1.mcp import serve_shared
+from verifiers.v1.mcp import Toolset, serve_shared
 
 
 class TimeoutConfig(BaseConfig):
@@ -284,13 +284,13 @@ class Environment:
 
         A task with `@group_reward`s compares its rollouts, so it needs >=2 of
         them — refuse `n < 2` there (rather than silently scoring a group of one)."""
-        if not self.harness.SUPPORTS_MCP and type(task).tools is not Task.tools:
+        if not self.harness.SUPPORTS_MCP and task.tools():
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not support MCP tools, but task "
                 f"{task.idx!r} ({type(task).__name__}) exposes tool servers (MCP). Run it with "
                 f"a harness that supports MCP (e.g. --harness.id default), or use tasks without tools."
             )
-        if not self.harness.SUPPORTS_USER_SIM and type(task).user is not Task.user:
+        if not self.harness.SUPPORTS_USER_SIM and task.user() is not None:
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not drive a user simulator, but task "
                 f"{task.idx!r} ({type(task).__name__}) defines one (Task.user). Run it with a "
@@ -342,13 +342,16 @@ class Environment:
             else task.timeout.scoring
         )
         retries = self.config.retries
+        if self.taskset.judges:
+            # The task carries its judges (see `Task.judges`): attach the config-plugged
+            # ones here, on a copy — the loaded task stays pristine.
+            task = task.model_copy(update={"judges": tuple(self.taskset.judges)})
         rollouts = [
             Rollout(
                 task=task,
                 harness=self.harness,
                 ctx=ctx,
                 runtime_config=runtime_config,
-                judges=self.taskset.judges,
                 setup_timeout=setup_timeout,
                 harness_timeout=harness_timeout,
                 finalize_timeout=finalize_timeout,
@@ -393,13 +396,21 @@ class Environment:
         own `runtime`) and yield `{name: url}` to inject into every rollout — so an expensive
         corpus is built once, not per rollout. No-op ({}) when none are shared. A shared server
         must be task-agnostic: its `setup` gets no task (so it can't silently serve one task's
-        data to every rollout); `tools(tasks[0])` here only builds the toolset instances. A shared
+        data to every rollout); calling `tools()` here only builds the toolset instances. Every
+        task is swept — a mixed list may expose shared tools on any of its types — deduped by
+        server name (same name = the same task-agnostic server, started once). A shared
         server on a host runtime is bridged to the host once (a tunnel) when the harness runs
         remotely, so an in-sandbox harness can still reach it (see `serve_shared`)."""
-        servers = tasks[0].tools() if tasks else []
-        if not any(server.config.shared for server in servers):
+        servers: dict[str, Toolset] = {}
+        for task in tasks:
+            for server in task.tools():
+                if server.config.shared and server.server_name not in servers:
+                    servers[server.server_name] = server
+        if not servers:
             yield {}
             return
         harness_is_local = runtime_is_local(self.harness.config.runtime)
-        async with serve_shared(servers, harness_is_local=harness_is_local) as urls:
+        async with serve_shared(
+            list(servers.values()), harness_is_local=harness_is_local
+        ) as urls:
             yield urls

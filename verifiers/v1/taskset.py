@@ -106,8 +106,9 @@ class Taskset(Generic[TaskT, ConfigT]):
     @cached_property
     def judges(self) -> list[Judge]:
         """The plugged judges, built once from `config.judges` (each entry resolved by its
-        `id` — see `JudgeConfig` / `verifiers.v1.judges`) and passed into `Task.score` after
-        the task's decorated rewards."""
+        `id` — see `JudgeConfig` / `verifiers.v1.judges`). Attached to each task
+        (`Task.judges`) by the scoring caller — the Environment at episode time, `replay`
+        before re-scoring; `Task.score` runs them after the task's decorated rewards."""
         from verifiers.v1.loaders import load_judge
 
         return [load_judge(entry) for entry in self.config.judges]

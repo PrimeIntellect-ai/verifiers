@@ -451,12 +451,14 @@ async def test_error_attribution(monkeypatch, tmp_path):
     )
     # model failure: empty reply -> judge skipped, reward 0.0, NO error
     trace = make_trace(reply="", task_cls=JudgedTask)
-    await trace.task.score(trace, runtime=None, judges=taskset.judges)
+    trace.task = trace.task.model_copy(update={"judges": tuple(taskset.judges)})
+    await trace.task.score(trace, runtime=None)
     assert trace.rewards["reference"] == 0.0
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
     trace = make_trace(task_cls=JudgedTask)
+    trace.task = trace.task.model_copy(update={"judges": tuple(taskset.judges)})
     with pytest.raises(vf.TasksetError, match="no yes/no verdict"):
-        await trace.task.score(trace, runtime=None, judges=taskset.judges)
+        await trace.task.score(trace, runtime=None)
     assert "reference" not in trace.rewards
     assert len(trace.info["judge"]) == 1  # the billed call is still recorded
 
@@ -623,7 +625,8 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     )
     taskset = JudgedTaskset(cfg)
     trace = make_trace(task_cls=JudgedTask)
-    await trace.task.score(trace, runtime=None, judges=taskset.judges)
+    trace.task = trace.task.model_copy(update={"judges": tuple(taskset.judges)})
+    await trace.task.score(trace, runtime=None)
     assert trace.rewards["own"] == 0.25  # decorated rewards still run
     assert (
         trace.rewards["reference"] == 0.5

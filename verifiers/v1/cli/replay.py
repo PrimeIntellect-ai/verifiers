@@ -70,7 +70,9 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     # the real Task type. A task that can't be rebuilt from the wire (a load-time-only field
     # excluded from serialization, like harbor's `task_dir`) stays a `WireTask`: judges and
     # the base task's trace-only signals still run, the subclass's own `@reward`s don't
-    # (runtime-dependent ones would be skipped offline anyway).
+    # (runtime-dependent ones would be skipped offline anyway). The wire records no concrete
+    # class either, so a taskset whose `load()` yields multiple Task subtypes replays every
+    # row as the taskset's declared task type — subtype-only signals don't run.
     for trace in traces:
         try:
             trace.task = task_cls.model_validate(trace.task.model_dump())
@@ -113,9 +115,24 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 # Clear prior scores so a changed/removed judge leaves no stale (double-summed) entry.
                 if isinstance(trace.info, dict):
                     trace.info.pop("judge", None)
+                prior_rewards, prior_metrics = trace.rewards, trace.metrics
                 trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
                 try:
-                    await trace.task.score(trace, judges=taskset.judges)
+                    if taskset.judges:
+                        # The task carries its judges (`Task.judges`): attach the replay
+                        # config's here, after the per-rescore deep copies — judges hold
+                        # live clients, which must not be deep-copied.
+                        trace.task = trace.task.model_copy(
+                            update={"judges": tuple(taskset.judges)}
+                        )
+                    await trace.task.score(trace)
+                    # Runtime-dependent signals can't re-run offline; keep what the source
+                    # run recorded for exactly those instead of dropping their scores.
+                    for name in trace.task.offline_skipped():
+                        if name in prior_rewards and name not in trace.rewards:
+                            trace.rewards[name] = prior_rewards[name]
+                        if name in prior_metrics and name not in trace.metrics:
+                            trace.metrics[name] = prior_metrics[name]
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
                     st.state, st.detail = "error", type(exc).__name__

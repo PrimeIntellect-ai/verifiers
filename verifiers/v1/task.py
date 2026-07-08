@@ -14,9 +14,9 @@ tasks; nothing above them branches on a type field.
 
 It is the single judgement authority, scored at two granularities (execution lives
 in the Rollout — per-rollout — and the Episode — group — which call these):
-  - `score` runs `@reward`/`@metric` — plus any config-plugged judges (passed in
-    by the caller from `TasksetConfig.judges`, see `verifiers.v1.judge`) — over
-    one trace (in its live runtime).
+  - `score` runs `@reward`/`@metric` — plus the task's attached config-plugged
+    judges (the `judges` field, from `TasksetConfig.judges`; see
+    `verifiers.v1.judge`) — over one trace (in its live runtime).
   - `score_group` runs `@group_reward` over all the rollouts of this task at once —
     pairwise/preference rewards that compare samples.
 
@@ -32,23 +32,49 @@ via `task_type(taskset_id)` first.
 import asyncio
 import inspect
 import logging
-from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Annotated, ClassVar, Generic, TypeVar
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field, GetPydanticSchema
+from pydantic_core import core_schema
 
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import TasksetError, boundary
+from verifiers.v1.judge import Judge
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, StrictBaseModel, content_text
 
 if TYPE_CHECKING:
-    from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset, User
     from verifiers.v1.runtimes import Runtime
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
+# Method/property names on `Task` that a subclass must not redeclare as pydantic fields:
+# the field value would shadow the bound method on the instance, so framework calls like
+# `task.tools()` would call the data. Enforced at class definition
+# (`Task.__pydantic_init_subclass__`).
+_RESERVED_NAMES = frozenset(
+    {
+        "tools",
+        "user",
+        "setup",
+        "finalize",
+        "validate",
+        "score",
+        "score_group",
+        "prompt_text",
+    }
+)
+
+
+def _requires_runtime(fn) -> bool:
+    """A signal with a default-less `runtime` parameter can't run without a live runtime.
+    A `runtime` parameter with a default (e.g. `runtime=None`) is optional — `invoke`
+    just omits it — so those still run offline."""
+    param = inspect.signature(fn).parameters.get("runtime")
+    return param is not None and param.default is inspect.Parameter.empty
 
 
 class TaskResources(StrictBaseModel):
@@ -129,6 +155,27 @@ class Task(StrictBaseModel, Generic[StateT]):
     """Optional per-task timeout overrides, one per rollout stage (merge with the eval's `timeout`)."""
     resources: TaskResources = TaskResources()
     """Optional runtime resources this task requests (applied where supported)."""
+    judges: Annotated[
+        tuple[Judge, ...],
+        # Judge is a plain class; validate/serialize as "any" without opening the whole
+        # model to arbitrary types. Never serialized (excluded), so the wire is unchanged.
+        GetPydanticSchema(lambda _source, _handler: core_schema.any_schema()),
+    ] = Field(default=(), exclude=True, repr=False)
+    """The config-plugged judges (built from `TasksetConfig.judges`), attached by the
+    scoring caller — the `Environment` at episode time, `replay` before re-scoring.
+    `score` runs them after the task's own `@reward`s. Excluded from serialization:
+    judges are runtime objects, plugged back in from config on every run."""
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        reserved = _RESERVED_NAMES & cls.model_fields.keys()
+        if reserved:
+            raise TypeError(
+                f"{cls.__name__} declares field(s) {sorted(reserved)} that would shadow "
+                f"the Task method(s) of the same name — rename the field(s) "
+                f"(e.g. `user` -> `user_config`)"
+            )
 
     @property
     def prompt_text(self) -> str:
@@ -194,10 +241,9 @@ class Task(StrictBaseModel, Generic[StateT]):
         self,
         trace: "Trace",
         runtime: "Runtime | None" = None,
-        judges: "Sequence[Judge]" = (),
     ) -> None:
-        """Score one rollout: run all `@metric`, then `@reward`, then the given config-plugged
-        `judges` (built by the loader from `TasksetConfig.judges`) over its trace, concurrently
+        """Score one rollout: run all `@metric`, then `@reward`, then the attached
+        config-plugged `judges` (see the `judges` field) over its trace, concurrently
         within each phase. Each metric is recorded in `trace.metrics` (a number, or a mapping
         merged in); each reward and judge verdict (weighted — likewise a number or a mapping
         merged in) in `trace.rewards`, which `trace.reward` sums. Signals declare what they
@@ -211,18 +257,14 @@ class Task(StrictBaseModel, Generic[StateT]):
         judges (which grade from the trace) still run, overwriting their own keys and leaving the
         skipped signals' previously-recorded values untouched. With a runtime present (the eval
         path) nothing is skipped."""
+        judges = self.judges
         available = {"task": self, "trace": trace}
         if runtime is not None:
             available["runtime"] = runtime
 
         def can_run(fn) -> bool:
             # A signal that *requires* a runtime can't run without one, so skip it when replaying.
-            # A `runtime` parameter with a default (e.g. `runtime=None`) is optional — `invoke`
-            # just omits it — so those still run offline.
-            if runtime is not None:
-                return True
-            param = inspect.signature(fn).parameters.get("runtime")
-            return param is None or param.default is not inspect.Parameter.empty
+            return runtime is not None or not _requires_runtime(fn)
 
         async with boundary(TasksetError, f"task {type(self).__name__} scoring"):
             metrics = [fn for fn in discover_decorated(self, "metric") if can_run(fn)]
@@ -254,14 +296,9 @@ class Task(StrictBaseModel, Generic[StateT]):
                 # Exactly the signals `can_run` filtered out above — those requiring a runtime
                 # (a `runtime` param with no default). Signals whose `runtime` has a default run
                 # offline and are not reported as skipped.
-                skipped = [
-                    fn.__name__
-                    for fn in (
-                        *discover_decorated(self, "metric"),
-                        *discover_decorated(self, "reward"),
-                    )
-                    if not can_run(fn)
-                ] + [j.reward_name for j in judges if not can_run(j.score)]
+                skipped = self.offline_skipped() + [
+                    j.reward_name for j in judges if not can_run(j.score)
+                ]
                 if skipped:
                     logger.info(
                         "score: no runtime — skipped runtime-dependent signals: %s",
@@ -281,6 +318,20 @@ class Task(StrictBaseModel, Generic[StateT]):
                 else:
                     trace.record_reward(judge.reward_name, result, judge.config.weight)
 
+    def offline_skipped(self) -> list[str]:
+        """The names of this task's `@metric`/`@reward` signals that `score` skips when
+        re-scoring without a runtime (they declare a default-less `runtime` parameter).
+        Lets an offline consumer (`replay`) preserve their previously recorded values
+        instead of dropping them."""
+        return [
+            fn.__name__
+            for fn in (
+                *discover_decorated(self, "metric"),
+                *discover_decorated(self, "reward"),
+            )
+            if _requires_runtime(fn)
+        ]
+
     async def score_group(self, traces: "list[Trace]") -> None:
         """Score a group of rollouts of this task: run every `@group_reward` over all
         the traces at once (pairwise/preference rewards), each returning one score per
@@ -299,6 +350,11 @@ class Task(StrictBaseModel, Generic[StateT]):
                 else await asyncio.gather(*(invoke(fn, available) for fn in rewards))
             )
             for fn, scores in zip(rewards, reward_results):
+                if len(scores) != len(traces):
+                    raise ValueError(
+                        f"@group_reward {fn.__name__} returned {len(scores)} score(s) "
+                        f"for {len(traces)} rollout(s); it must return one per trace"
+                    )
                 weight = getattr(fn, "_vf_weight", 1.0)
                 for trace, score in zip(traces, scores):
                     trace.record_reward(fn.__name__, score, weight)
