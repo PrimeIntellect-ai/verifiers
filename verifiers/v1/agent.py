@@ -221,7 +221,7 @@ class Agent:
         """Record agent provenance on a finished trace."""
         if self.name is not None:
             trace.agent = self.name
-        trace.parents = _parent_ids(parents) or list(trace.task.sources)
+        trace.parents = _parent_ids(parents)
         trace.trainable = self.trainable
         trace.info["agent"] = {
             "name": self.name,

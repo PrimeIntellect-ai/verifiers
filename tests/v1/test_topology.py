@@ -186,6 +186,11 @@ def test_unknown_agent_is_refused(echo_chain_env):
         echo_chain_env.agent("thrid")
 
 
+async def test_run_instance_requires_serving(echo_chain_env):
+    with pytest.raises(RuntimeError, match="inside TopologyRunner.serving"):
+        await echo_chain_env.run_instance(echo_chain_env.topology.load_tasks()[0])
+
+
 def test_topology_reward_scopes_validated_at_load():
     """Declared judgement fails loudly when the topology loads: a typo'd agent scope and
     a missing scope are both refused before anything runs."""

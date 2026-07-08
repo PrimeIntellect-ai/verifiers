@@ -113,11 +113,6 @@ class Task(StrictBaseModel):
     """Optional per-task timeout overrides, one per rollout stage (merge with the eval's `timeout`)."""
     resources: TaskResources = TaskResources()
     """Optional runtime resources this task requests (applied where supported)."""
-    sources: tuple[str, ...] = ()
-    """Trace ids this task was derived from. Plain agent programs may stamp lineage here;
-    `Agent.run(parents=...)` remains the canonical explicit graph edge."""
-    relation: str | None = None
-    """Free-form relationship to `sources` (for example "judges" or "solves")."""
 
     @property
     def prompt_text(self) -> str:

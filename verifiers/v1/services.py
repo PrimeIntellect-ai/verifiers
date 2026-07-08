@@ -6,6 +6,7 @@ pools. An in-process eval enters one for the command; an env-server worker enter
 for its lifetime; a topology enters one while its instances run.
 """
 
+import asyncio
 import contextlib
 
 from verifiers.v1.interception import InterceptionPool
@@ -26,6 +27,7 @@ class RunServices:
         self.shared: SharedServers | None = None
         self._stack = contextlib.AsyncExitStack()
         self._pools: dict[tuple[str, bool], InterceptionPool] = {}
+        self._pool_locks: dict[tuple[str, bool], asyncio.Lock] = {}
 
     async def __aenter__(self) -> "RunServices":
         await self._stack.__aenter__()
@@ -35,6 +37,7 @@ class RunServices:
     async def __aexit__(self, *exc) -> None:
         self.shared = None
         self._pools = {}
+        self._pool_locks = {}
         await self._stack.__aexit__(*exc)
 
     async def pool_for(self, runtime_config: RuntimeConfig) -> InterceptionPool:
@@ -43,9 +46,18 @@ class RunServices:
             raise RuntimeError("RunServices must be entered before use")
         key = (runtime_config.type, runtime_is_local(runtime_config))
         pool = self._pools.get(key)
-        if pool is None:
+        if pool is not None:
+            return pool
+        lock = self._pool_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._pool_locks[key] = lock
+        async with lock:
+            pool = self._pools.get(key)
+            if pool is not None:
+                return pool
             pool = await self._stack.enter_async_context(
                 InterceptionPool(runtime_config, self.multiplex)
             )
             self._pools[key] = pool
-        return pool
+            return pool

@@ -319,7 +319,6 @@ class Environment:
         validate_pairing(taskset_task_type(type(self.taskset)), self.harness)
         self.limits = config.limits
         self._warned_resources: set[tuple[str, str]] = set()
-        self._services: RunServices | None = None
         self._shared: SharedServers | None = None
         self._interception: InterceptionPool | None = None
         """Run-level serving resources, live only inside `serving()`: the lazy shared
@@ -376,19 +375,10 @@ class Environment:
         eval runners (in-process and env-server) on one serving path. Build episodes inside
         this context; the resources are torn down on exit."""
         async with RunServices(self.config.multiplex) as services:
-            self._services = services
             self._shared = services.shared
             self._interception = await services.pool_for(self.harness.config.runtime)
             try:
                 yield
             finally:
-                self._services = None
                 self._shared = None
                 self._interception = None
-
-    def interception_pool(self) -> InterceptionPool:
-        """The shared interception pool for this env's rollouts — one server (+ tunnel
-        behind a remote runtime) per `multiplex` rollouts, grown on demand. Built here,
-        where the harness runtime and `multiplex` live; the caller (eval runner / env
-        server) enters it for the run and tears it down. Pass it to `Episode.run`."""
-        return InterceptionPool(self.harness.config.runtime, self.config.multiplex)

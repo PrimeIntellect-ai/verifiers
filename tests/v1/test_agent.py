@@ -31,7 +31,7 @@ async def test_agent_run_stamps_lineage_and_borrowed_runtime(monkeypatch):
         trainable=False,
     )
     parent = vf.Trace(task=vf.Task(idx=0, prompt="seed"))
-    task = vf.Task(idx=1, prompt="judge", sources=("source-trace",))
+    task = vf.Task(idx=1, prompt="judge")
 
     trace = await agent.run(task, parents=[parent], runtime=FakeRuntime())
     assert trace.agent == "judge"
@@ -45,7 +45,7 @@ async def test_agent_run_stamps_lineage_and_borrowed_runtime(monkeypatch):
     }
 
     trace = await agent.run(task)
-    assert trace.parents == ["source-trace"]
+    assert trace.parents == []
     assert trace.info["agent"]["runtime"]["borrowed"] is False
 
 

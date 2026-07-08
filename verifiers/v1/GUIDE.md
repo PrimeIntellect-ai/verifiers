@@ -775,9 +775,16 @@ config — the field *name* is the agent's name, and every agent is CLI-addressa
 (`--topology.solver.harness.id rlm`, `--topology.judge.model <id>`):
 
 ```python
+from pydantic import SerializeAsAny
+
+
+class DirectAgentConfig(vf.AgentConfig):
+    harness: SerializeAsAny[vf.HarnessConfig] = vf.HarnessConfig(id="direct")
+
+
 class ProposerSolverConfig(vf.TopologyConfig):
-    proposer: vf.AgentConfig = vf.AgentConfig(harness={"id": "direct"})
-    solver: vf.AgentConfig = vf.AgentConfig(harness={"id": "direct"})
+    proposer: DirectAgentConfig = DirectAgentConfig()
+    solver: DirectAgentConfig = DirectAgentConfig()
     num_solvers: int = 4
 ```
 
@@ -788,11 +795,12 @@ config). Subclass it to pin typed per-agent defaults — the `llm-judge` topolog
 the `direct` harness and `trainable=False`. The tasks an agent consumes (each carrying its own
 behavior) arrive per episode, from the topology's seeds or constructed in `go`.
 
-`Agent(name, config)` is the one constructor. The default `load_agents` builds one per
-`AgentConfig` field, in declaration order; override it only to compose agents
-programmatically. Loading also validates the topology's declared judgement
-(`@reward(agent=...)` / `@metric(agent=...)`) against the agents, so a typo'd or missing agent
-scope fails at load time, not mid-eval.
+An `AgentConfig` field is the one declaration form. The default `load_agents` builds one
+`AgentBinding` per field, in declaration order; override it only to compose agents
+programmatically. At serving time those bindings become executable `vf.Agent`s with the
+active model context and shared run services. Loading also validates the topology's declared
+judgement (`@reward(agent=...)` / `@metric(agent=...)`) against the agents, so a typo'd or
+missing agent scope fails at load time, not mid-eval.
 
 ## Seed tasks
 

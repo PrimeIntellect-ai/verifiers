@@ -5,10 +5,10 @@ into a multi-agent interaction: which agents exist, how one agent's trace become
 downstream agent's task, and how rewards flow backwards once downstream agents have run.
 Each episode is an ordinary `Rollout` (same lifecycle, same error model, same trace), and
 tasks are the whole task-side contract — their classes carry the behavior — so a topology
-declares named agent bindings, then executes public `Agent` objects against tasks.
+declares named agent bindings, then executes topology-bound agents against tasks.
 
 The interaction pattern is plain imperative Python in `go` — not a DSL: a loop is rounds,
-`gather` (or `asyncio.gather` over `rollout` calls) is fan-out, and awaiting several traces
+`asyncio.gather` over `run.agent(...).run(...)` calls is fan-out, and awaiting several traces
 before building the next task is fan-in. `go` owns *control flow only*, including the
 forward arrow (trace → next task, pure host-side construction); judgement — including the
 backward arrow, a reward derived from downstream episodes — is declared as
@@ -43,6 +43,7 @@ from verifiers.v1.env import (
 )
 from verifiers.v1.errors import TopologyError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.runtimes import Runtime
 from verifiers.v1.services import RunServices
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
@@ -64,6 +65,15 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             merged[key] = value
     return merged
+
+
+def _merge_sampling(
+    base: SamplingConfig, override: SamplingConfig | None
+) -> SamplingConfig:
+    """Agent sampling overrides layer onto the run sampling, field by field."""
+    if override is None:
+        return base
+    return base.model_copy(update=override.model_dump(exclude_none=True))
 
 
 class AgentConfig(BaseConfig):
@@ -95,7 +105,7 @@ class AgentConfig(BaseConfig):
     runs against the train client. Per-agent routing lives here, not in extra interception
     machinery — sessions are already per-rollout."""
     sampling: SamplingConfig | None = None
-    """Sampling override for this agent (None = the eval's sampling)."""
+    """Sampling overrides for this agent, layered over the eval's sampling."""
     trainable: bool = True
     """Whether this agent's traces are training samples — stamped onto `Trace.trainable`
     so a trainer can filter without consulting the topology config."""
@@ -176,8 +186,8 @@ ConfigT = TypeVar("ConfigT", bound=TopologyConfig)
 class AgentBinding:
     """A topology-registered agent slot: name + config + loaded harness.
 
-    The executable value exposed inside `Topology.go` is the public `vf.Agent`; this
-    binding is the config-side declaration a topology loads and validates.
+    The value exposed inside `Topology.go` is a topology-bound `TopologyAgent`; this
+    binding is the config-side declaration a topology loads and validates before serving.
     """
 
     def __init__(
@@ -255,7 +265,7 @@ class Topology(Generic[ConfigT]):
     """Generic over its config type, so `self.config` is fully typed in subclasses.
     Subclass: declare `AgentConfig` fields on your config, implement `go` (control flow)
     and `@vf.reward(agent=...)`/`@vf.metric(agent=...)` methods (judgement). Seeds come
-    from the config's `tasks` factory, or override `load_tasks` to construct them."""
+    from the config's `taskset` slot, or override `load_tasks` to construct them."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
@@ -388,8 +398,7 @@ class TopologyAgent:
         self._run = run
         self.name = name
 
-    @property
-    def agent(self) -> ExecutableAgent:
+    def _executable(self) -> ExecutableAgent:
         return self._run.env.executable_agent(self.name)
 
     @property
@@ -398,17 +407,17 @@ class TopologyAgent:
 
     @property
     def harness(self) -> Harness:
-        return self.agent.harness
+        return self._executable().harness
 
     def provision(self, task: Task | None = None):
-        return self.agent.provision(task)
+        return self._executable().provision(task)
 
     async def run(
         self,
         task: Task,
         *,
         parents: Sequence[Parent] = (),
-        runtime=None,
+        runtime: Runtime | None = None,
         ctx: ModelContext | None = None,
     ) -> Trace:
         return await self._run.run_agent(
@@ -431,7 +440,7 @@ class TopologyRun:
         self._semaphore = semaphore
 
     def agent(self, name: str) -> TopologyAgent:
-        """The registered executable agent named `name`, bound to this graph."""
+        """The registered agent named `name`, bound to this graph."""
         self.env.agent(name)  # validate spelling with the existing actionable error
         return TopologyAgent(self, name)
 
@@ -441,7 +450,7 @@ class TopologyRun:
         task: Task,
         *,
         parents: Sequence[Parent] = (),
-        runtime=None,
+        runtime: Runtime | None = None,
         ctx: ModelContext | None = None,
     ) -> Trace:
         """Run a topology-bound explicit agent and record its trace in this graph."""
@@ -517,6 +526,8 @@ class TopologyRunner:
         pools. Clients built for an override are closed on exit. Everything is built into
         locals and published atomically, so a failure mid-enter never leaves the runner
         pointing at torn-down resources. Build instances inside this context."""
+        if self._agents:
+            raise RuntimeError("TopologyRunner.serving() is already active")
         async with contextlib.AsyncExitStack() as stack:
             services = await stack.enter_async_context(
                 RunServices(self.config.multiplex)
@@ -530,7 +541,7 @@ class TopologyRunner:
                 agent_ctx = ModelContext(
                     model=agent.config.model or ctx.model,
                     client=client,
-                    sampling=agent.config.sampling or ctx.sampling,
+                    sampling=_merge_sampling(ctx.sampling, agent.config.sampling),
                 )
                 agents[name] = ExecutableAgent(
                     agent.harness,
@@ -557,6 +568,10 @@ class TopologyRunner:
         topology-authored code is classified (`TopologyError`) and captured on the graph,
         never raised: episodes already completed remain data, and sibling instances keep
         running (mirrors `Rollout.run`'s a-bad-rollout-is-data stance one level up)."""
+        if not self._agents:
+            raise RuntimeError(
+                "TopologyRunner.run_instance() must be called inside TopologyRunner.serving(ctx)"
+            )
         run = TopologyRun(self, semaphore)
         try:
             async with boundary(
