@@ -25,7 +25,33 @@ from contextlib import AsyncExitStack
 from pathlib import Path
 
 import httpx
-from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APIResponseValidationError,
+    APITimeoutError,
+    AsyncOpenAI,
+    InternalServerError,
+    NotFoundError,
+    RateLimitError,
+)
+from pydantic import ValidationError
+
+# Transient errors that corrupt a model response before the interception server
+# commits the turn — safe to retry because the turn was never recorded (mirrors
+# rlm-harness PR #111). Legitimate 4xx (auth, bad request) are NOT included.
+_RETRYABLE: tuple[type[BaseException], ...] = (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    NotFoundError,
+    RateLimitError,
+    APIResponseValidationError,
+    ValidationError,
+    ConnectionResetError,
+)
+
+# Widely-spaced delays (seconds) between attempts; total ~5 min wall budget.
+_RETRY_DELAYS: tuple[int, ...] = (15, 30, 60, 90, 120)
 
 SERPER_URL = "https://google.serper.dev/search"
 
@@ -184,6 +210,18 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
 async def chat(
     client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
 ):
+    # Retry on transient corruption (malformed/reset responses) that fails
+    # before the interception server commits the turn — so a single bad
+    # response on a flaky tunnel doesn't crash the whole rollout. Legitimate
+    # 4xx (auth, bad request) are not in _RETRYABLE and fail fast.
+    for delay in _RETRY_DELAYS:
+        try:
+            completion = await client.chat.completions.create(
+                model=model, messages=messages, tools=tools or None
+            )
+            return completion.choices[0].message
+        except _RETRYABLE:
+            await asyncio.sleep(delay)
     completion = await client.chat.completions.create(
         model=model, messages=messages, tools=tools or None
     )
@@ -265,9 +303,11 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
-    # No client-side retries: re-sending a request whose turn the interception already committed
-    # re-samples it and forks the trace into an extra dead-end branch. A generous timeout lets a
-    # slow turn finish instead of timing out and re-sending; genuine failures surface as error rows.
+    # The SDK's own retries stay off (max_retries=0): re-sending a request whose turn the
+    # interception server already committed re-samples it and forks the trace into an extra
+    # dead-end branch. But transient corruption that fails *before* the turn is committed
+    # (malformed/reset responses on a flaky tunnel) is retried in `chat()` via _RETRYABLE —
+    # safe because the turn was never recorded. A generous timeout lets a slow turn finish.
     client = AsyncOpenAI(
         base_url=args.base_url, api_key=args.api_key, timeout=1800.0, max_retries=0
     )
