@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, Literal
 
+from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
@@ -22,6 +23,9 @@ from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime, par
 from verifiers.v1.runtimes.limiters import creation_limiter
 
 logger = logging.getLogger(__name__)
+
+MAX_LIFETIME_MINUTES = 24 * 60
+"""Prime's fixed cap on any sandbox's total lifetime; the idle timeout must fit within it."""
 
 
 class PrimeConfig(BaseConfig):
@@ -54,6 +58,16 @@ class PrimeConfig(BaseConfig):
     """Pace sandbox creation to this many per minute, enforced host-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
     and globally — see limiters.TUNNEL_LIMITER.)"""
+
+    @model_validator(mode="after")
+    def _validate_idle_timeout(self) -> "PrimeConfig":
+        max_seconds = MAX_LIFETIME_MINUTES * 60
+        if self.idle_timeout is not None and self.idle_timeout > max_seconds:
+            raise ValueError(
+                f"idle_timeout ({self.idle_timeout}s) must not exceed the "
+                f"{max_seconds}s ({MAX_LIFETIME_MINUTES // 60}h) max sandbox lifetime"
+            )
+        return self
 
 
 class PrimeRuntime(Runtime):
@@ -94,7 +108,7 @@ class PrimeRuntime(Runtime):
             "memory_gb": self.config.memory,
             "disk_size_gb": self.config.disk,
             "gpu_count": gpu_count,
-            "timeout_minutes": 24 * 60,  # Maximum lifetime of any sandbox.
+            "timeout_minutes": MAX_LIFETIME_MINUTES,
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
