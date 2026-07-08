@@ -12,6 +12,18 @@ from typing import Any
 
 from verifiers.v1.trace import Trace
 
+# The platform promotes a numeric sample field to a per-rollout reward column only when its
+# name ends in one of these (the v0 reward-function naming convention); any other field folds
+# into the sample's `info`.
+_REWARD_COLUMN_SUFFIXES = ("reward", "reward_func", "score")
+
+
+def reward_column_name(name: str) -> str:
+    """A reward-function name in the form the platform renders as a per-rollout column: v0
+    reward functions already end in `_reward_func`; give any v1 name that lacks a recognized
+    suffix one so it lands as a column instead of buried in `info`."""
+    return name if name.endswith(_REWARD_COLUMN_SUFFIXES) else f"{name}_reward_func"
+
 
 def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
     """One rollout -> the platform's sample dict (the "old" v0 eval-sample format).
@@ -24,15 +36,7 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
 
     task = trace.task.model_dump(mode="json", exclude_none=True)
     branches = trace.branches
-    # The platform stores a fixed set of sample columns and folds everything else into `info`;
-    # per-rollout sub-rewards / metrics are read back from `info["reward_signals"]`, so the
-    # per-reward-function and metric breakdown goes there (a flat top-level key would just be
-    # buried in `info` unread).
-    info = dict(trace.info)
-    reward_signals = {**trace.rewards, **trace.metrics}
-    if reward_signals:
-        info["reward_signals"] = reward_signals
-    return {
+    sample = {
         "sample_id": trace.id,
         "example_id": trace.task.idx,
         "rollout_number": rollout_number,
@@ -61,5 +65,11 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
         "token_usage": trace.usage.model_dump(mode="json", exclude_none=True)
         if trace.usage
         else None,
-        "info": info or None,
+        "info": dict(trace.info) or None,
     }
+    # Flatten each sub-reward onto the sample as a top-level `*_reward_func`/`*_score` key so the
+    # platform renders it as a per-rollout reward column. Env metrics stay in the nested `metrics`
+    # field (they aren't reward columns — the platform keeps them inside `info`, as it does for v0).
+    for name, value in trace.rewards.items():
+        sample.setdefault(reward_column_name(name), value)
+    return sample
