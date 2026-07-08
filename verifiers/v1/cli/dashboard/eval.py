@@ -513,9 +513,10 @@ class Pager:
     whenever everything fits on one page, so paging re-anchors and re-opens on page 1 if rollouts
     overflow again after a resize. `count` (the page count, set each render by `_paginate`) gates the
     arrows: they're inert while a single page fits, so a stray press before rollouts overflow can't
-    switch off auto-advance or offset the starting page once paging begins. The chosen page is
-    clamped to `count` (it can shrink on a resize; it otherwise only grows, as rollouts are never
-    removed)."""
+    switch off auto-advance or offset the starting page once paging begins. The arrows wrap around
+    (left on the first page lands on the last, right on the last lands on the first), so the pages
+    form a circle rather than dead-ending. The chosen page is still clamped to `count` between
+    presses (it can shrink on a resize; it otherwise only grows, as rollouts are never removed)."""
 
     def __init__(self) -> None:
         self.page = 0
@@ -526,7 +527,7 @@ class Pager:
     def on_key(self, key: str) -> None:
         if key in ("left", "right") and self.count > 1:
             self.manual = True
-            self.page += 1 if key == "right" else -1
+            self.page = (self.page + (1 if key == "right" else -1)) % self.count
 
     def index(self, now: float) -> int:
         # Track the auto page while it drives, so the first arrow continues from what's on screen
