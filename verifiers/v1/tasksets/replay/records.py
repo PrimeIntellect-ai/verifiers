@@ -7,10 +7,11 @@ the new task's prompt plus enough metadata to filter, label, and restore it. The
 assembles seeds into tasks; nothing here touches config or I/O beyond record/index file reading.
 
 Record files may ship with a derived sibling index (prime-rl writes ``index_<env>.jsonl`` next
-to each ``train_rollouts_<env>.jsonl``): one row per record line with selection fields
+to each ``train_rollouts_<env>.jsonl``): one ``index_row`` per record line with selection fields
 (``task_name``, ``reward``, ``branches``, ...) and the line's byte span (``offset``, ``len``).
-``read_index`` / ``select_index_rows`` / ``iter_indexed_records`` let a consumer filter records
-index-side and parse only the survivors; a missing index means full parse.
+``iter_selected_records`` lets a consumer filter records index-side and parse only the
+survivors; a missing index means full parse. ``index_path`` / ``index_row`` are the writer's
+half of that contract.
 
 Sandbox snapshots: a producer that snapshots the rollout's sandbox records the refs in
 ``trace.info["snapshots"]`` (``SNAPSHOTS_INFO_KEY``), keyed by the index (in ``trace.nodes``)
@@ -24,8 +25,10 @@ builder drops anchors without a ref.
 
 import json
 import re
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from glob import glob
+from itertools import accumulate
 from pathlib import Path
 from random import Random
 from typing import NamedTuple
@@ -33,6 +36,10 @@ from typing import NamedTuple
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages, UserMessage
+
+REPLAYED_PREFIXES = ("continue:", "recheck:")
+"""Task-name prefixes marking a replayed task's own output — a record whose task name carries
+one never seeds again, so replay doesn't compound on itself."""
 
 RECHECK_PROMPT = (
     "Carefully check your work above. Re-verify the reasoning and the final answer against the "
@@ -87,60 +94,75 @@ def iter_records(paths: Iterable[Path]) -> Iterator[dict]:
                     ) from e
 
 
-def read_index(record_path: Path) -> list[dict] | None:
-    """The record file's sibling index rows (``index_<env>.jsonl`` next to
-    ``train_rollouts_<env>.jsonl`` / ``eval_rollouts_<env>.jsonl``), or None when the filename
-    doesn't follow that convention or no index exists — the caller then full-parses the
-    records. Each row describes one record line: selection fields plus its byte span."""
+def index_path(record_path: Path) -> Path | None:
+    """The sibling index file a record file's name derives: ``index_<env>.jsonl`` next to
+    ``train_rollouts_<env>.jsonl`` / ``eval_rollouts_<env>.jsonl``, or None when the filename
+    doesn't follow that convention. Pure filename derivation — the writer's output path and the
+    reader's lookup; existence is the reader's concern."""
     name = record_path.name
     for prefix in ("train_rollouts_", "eval_rollouts_"):
         if name.startswith(prefix):
-            index_path = record_path.with_name("index_" + name[len(prefix) :])
-            break
-    else:
-        return None
-    if not index_path.exists():
-        return None
-    with open(index_path) as lines:
-        return [json.loads(line) for line in lines if line.strip()]
+            return record_path.with_name("index_" + name[len(prefix) :])
+    return None
 
 
-def select_index_rows(
-    rows: list[dict],
+def index_row(trace: Trace, *, offset: int, length: int, **extra) -> dict:
+    """One index line for a record: the fields ``iter_selected_records`` filters on —
+    ``task_name``, ``reward``, ``branches`` — plus the record line's byte span (``offset``,
+    ``len``); those five are required. The rest is informational provenance for pool tooling
+    and lineage: ``trace``, ``task_idx``, ``turns``, ``stop``, and whatever the writer adds via
+    ``extra`` (prime-rl records ``step`` and ``policy_version``)."""
+    return {
+        "trace": trace.id,
+        "task_idx": trace.task.idx,
+        "task_name": trace.task.name,
+        "reward": trace.reward,
+        "branches": trace.num_branches,
+        "turns": trace.num_turns,
+        "stop": trace.stop_condition,
+        "offset": offset,
+        "len": length,
+        **extra,
+    }
+
+
+def iter_selected_records(
+    path: Path,
+    skipped: dict[str, int],
+    *,
     min_reward: float | None = None,
     max_reward: float | None = None,
     min_branches: int = 1,
-) -> tuple[list[dict], dict[str, int]]:
-    """Index-side record selection: drop rows whose record could never seed — already-replayed
-    task names (``continue:``/``recheck:``), rewards outside ``[min_reward, max_reward]``, and
-    branch counts below ``min_branches`` (2 when only compacted rollouts can seed) — before any
-    record line is parsed. Returns the surviving rows in order and the skip counts, keyed like
-    the taskset's skip reasons."""
-    skipped = {"replayed": 0, "source_reward": 0, "no_seed": 0}
-    selected: list[dict] = []
-    for row in rows:
-        name = row.get("task_name") or ""
-        if isinstance(name, str) and name.startswith(("continue:", "recheck:")):
-            skipped["replayed"] += 1
-            continue
-        reward = row["reward"]
-        if (min_reward is not None and reward < min_reward) or (
-            max_reward is not None and reward > max_reward
-        ):
-            skipped["source_reward"] += 1
-            continue
-        if row["branches"] < min_branches:
-            skipped["no_seed"] += 1
-            continue
-        selected.append(row)
-    return selected, skipped
-
-
-def iter_indexed_records(path: Path, rows: Iterable[dict]) -> Iterator[dict]:
-    """The record dicts at the given index rows' byte spans (``offset``/``len``), in row
-    order — the record file is opened once and only the selected spans are read and parsed."""
-    with open(path, "rb") as records:
-        for row in rows:
+) -> Iterator[dict]:
+    """The record dicts of one JSONL file, index-selected when a sibling index exists: rows
+    whose record could never seed — already-replayed task names (``REPLAYED_PREFIXES``),
+    rewards outside ``[min_reward, max_reward]``, branch counts below ``min_branches`` (2 when
+    only compacted rollouts can seed) — are counted into ``skipped`` (the taskset's skip-reason
+    keys, updated in place) and never parsed; only the surviving byte spans are read. Without
+    an index every record line is yielded — the caller's parse-side checks filter then (they
+    run on index survivors too, guarding stale indexes)."""
+    index = index_path(path)
+    if index is None or not index.exists():
+        yield from iter_records([path])
+        return
+    with open(index) as rows, open(path, "rb") as records:
+        for line in rows:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            name = row.get("task_name") or ""
+            if isinstance(name, str) and name.startswith(REPLAYED_PREFIXES):
+                skipped["replayed"] += 1
+                continue
+            reward = row["reward"]
+            if (min_reward is not None and reward < min_reward) or (
+                max_reward is not None and reward > max_reward
+            ):
+                skipped["source_reward"] += 1
+                continue
+            if row["branches"] < min_branches:
+                skipped["no_seed"] += 1
+                continue
             records.seek(row["offset"])
             yield json.loads(records.read(row["len"]))
 
@@ -242,10 +264,13 @@ def tool_call_seeds(
     harness re-emits it), so they need a message-seeding harness (``default``/``null``). Empty
     when the trace has no valid point."""
     snapshots = node_snapshots(trace)
-    candidates: list[tuple[list[MessageNode], int]] = []
+    candidates: list[tuple[list[MessageNode], int, int]] = []
     seen: set[int] = set()
     for branch in trace.branches:
         nodes = branch.nodes
+        # Prefix sums of the recorded token counts, so each anchor's estimate is O(1) — with
+        # `max_anchors = None` a long trace can anchor at every tool run.
+        recorded = list(accumulate((len(node.token_ids) for node in nodes), initial=0))
         for end, node in enumerate(nodes):
             if node.message.role != "tool" or id(node) in seen:
                 continue
@@ -263,26 +288,26 @@ def tool_call_seeds(
             answered = {nodes[i].message.tool_call_id for i in range(start, end + 1)}
             if {call.id for call in issuer.tool_calls} != answered:
                 continue
-            candidates.append((nodes, end))
+            candidates.append((nodes, end, recorded[end + 1]))
     if max_anchors is not None and max_anchors < len(candidates):
         keep = sorted(rng.sample(range(len(candidates)), max_anchors))
         candidates = [candidates[i] for i in keep]
     seeds: list[Seed] = []
-    names: set[str] = set()
-    for nodes, end in candidates:
-        messages = [node.message for node in nodes[: end + 1]]
+    ordinals: Counter[str] = Counter()
+    for nodes, end, tokens in candidates:
+        prefix = nodes[: end + 1]
+        messages = [node.message for node in prefix]
         if messages[0].role == "system":
             messages = messages[1:]
         base = f"continue:{trace.id[:8]}:tool-call{end}"
-        name, ordinal = base, 1
-        while name in names:  # two branches can anchor at the same in-branch index
-            name, ordinal = f"{base}-{ordinal}", ordinal + 1
-        names.add(name)
+        # Two branches can anchor at the same in-branch index: an ordinal disambiguates.
+        ordinal = ordinals[base]
+        ordinals[base] += 1
         seeds.append(
             Seed(
                 prompt=messages,
-                name=name,
-                tokens=estimate_tokens(nodes[: end + 1]),
+                name=f"{base}-{ordinal}" if ordinal else base,
+                tokens=tokens or estimate_tokens(prefix),
                 snapshot=snapshots.get(id(nodes[end])),
             )
         )

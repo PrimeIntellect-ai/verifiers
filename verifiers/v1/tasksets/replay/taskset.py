@@ -38,12 +38,11 @@ the source run so the rebuilt system prompt and tool inventory match the seeded 
 
 import logging
 import random
-from collections.abc import Iterable
 from functools import cached_property
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import SerializeAsAny, ValidationError, model_validator
+from pydantic import Field, SerializeAsAny, ValidationError, model_validator
 
 from verifiers.v1.loaders import (
     load_taskset,
@@ -58,14 +57,12 @@ from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.tasksets.replay.records import (
     RECHECK_PROMPT,
+    REPLAYED_PREFIXES,
     Seed,
     compaction_seeds,
     expand_records,
-    iter_indexed_records,
-    iter_records,
-    read_index,
+    iter_selected_records,
     recheck_seed,
-    select_index_rows,
     tool_call_seeds,
 )
 from verifiers.v1.trace import Trace
@@ -115,7 +112,7 @@ class ReplayConfig(TasksetConfig):
     prompt (any harness; only rollouts that compacted become sources); ``tool-call`` seeds the
     conversation through drawn tool results (needs a message-seeding harness)."""
 
-    max_anchors: int | None = 1
+    max_anchors: Annotated[int, Field(ge=1)] | None = 1
     """Resume points per source rollout for ``continue`` with ``anchor = "tool-call"``: that
     many valid anchors drawn deterministically, kept in trajectory order — None seeds every
     valid anchor. ``compaction`` always seeds every restart."""
@@ -157,8 +154,6 @@ class ReplayConfig(TasksetConfig):
             raise ValueError(
                 "replay requires `source.id` — the taskset the records came from"
             )
-        if self.max_anchors is not None and self.max_anchors < 1:
-            raise ValueError("`max_anchors` must be None or >= 1")
         # Compare against the default rather than `model_fields_set`: a dumped resolved config
         # writes every field explicitly, and must re-validate cleanly.
         if self.mode == "recheck" and self.anchor != "compaction":
@@ -250,26 +245,20 @@ class ReplayTaskset(Taskset[Task, ReplayConfig]):
             else 1
         )
         for path in new_paths:
-            index = read_index(Path(path))
-            if index is None:
-                records: Iterable[dict] = iter_records([Path(path)])
-            else:
-                # Index-selected loading: filter on the recorded task name / reward /
-                # branch count first, then read and parse only the surviving byte spans.
-                # The parsed-record checks below still run on every survivor — the index
-                # can't validate task types or node contents.
-                rows, index_skipped = select_index_rows(
-                    index,
-                    min_reward=self.config.min_source_reward,
-                    max_reward=self.config.max_source_reward,
-                    min_branches=min_branches,
-                )
-                for reason, count in index_skipped.items():
-                    skipped[reason] += count
-                records = iter_indexed_records(Path(path), rows)
+            # Index-selected when a sibling index exists: filter on the recorded task name /
+            # reward / branch count first, then read and parse only the surviving byte spans.
+            # The parsed-record checks below still run on every record — a missing index
+            # means full parse, and the index can't validate task types or node contents.
+            records = iter_selected_records(
+                Path(path),
+                skipped,
+                min_reward=self.config.min_source_reward,
+                max_reward=self.config.max_source_reward,
+                min_branches=min_branches,
+            )
             for record in records:
                 name = (record.get("task") or {}).get("name") or ""
-                if isinstance(name, str) and name.startswith(("continue:", "recheck:")):
+                if isinstance(name, str) and name.startswith(REPLAYED_PREFIXES):
                     # This taskset's own output — don't compound seeds.
                     skipped["replayed"] += 1
                     continue

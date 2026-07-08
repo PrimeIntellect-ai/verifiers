@@ -11,7 +11,8 @@ from verifiers.v1 import graph
 from verifiers.v1.loaders import load_taskset, taskset_config_type
 from verifiers.v1.tasksets.replay import (
     compaction_seeds,
-    read_index,
+    index_path,
+    index_row,
     recheck_seed,
     tool_call_seeds,
 )
@@ -166,10 +167,9 @@ def test_tool_call_seeds_draw_a_deterministic_subset_in_trajectory_order():
     )
 
 
-def test_tool_call_seeds_single_draw_is_deterministic():
+def test_tool_call_seeds_single_draw_comes_from_the_full_candidate_set():
     trace = _compacted_trace()
     (seed,) = tool_call_seeds(trace, Random("salt"))
-    assert [seed] == tool_call_seeds(trace, Random("salt"))
     every = tool_call_seeds(trace, Random("salt"), max_anchors=None)
     assert seed.prompt in [s.prompt for s in every]
     # Both branches anchor at in-branch index 3: names disambiguate with an ordinal.
@@ -299,15 +299,25 @@ def test_replay_config_narrows_source_and_survives_dump_round_trip():
         )
 
 
-def _replay_taskset(tmp_path, source: dict, trace: vf.Trace):
-    (tmp_path / "records.jsonl").write_text(json.dumps(trace.to_record()) + "\n")
+def _echo_trace(idx: int, reward: float, name: str | None = None) -> vf.Trace:
+    from echo_v1 import EchoTask
+
+    trace = vf.Trace(task=EchoTask(idx=idx, prompt="say hi", answer="hi", name=name))
+    graph.prepare_turn(trace, [SYSTEM, vf.UserMessage(content="say hi")]).commit(
+        _reply(_assistant("hi" if reward else "no"))
+    )
+    trace.record_reward("solved", reward, 1.0)
+    return trace
+
+
+def _load_replay(records: str, **overrides):
     return load_taskset(
         taskset_config_type("replay").model_validate(
             {
                 "id": "replay",
-                "records": str(tmp_path / "records.jsonl"),
-                "mode": "recheck",
-                "source": source,
+                "records": records,
+                "source": {"id": "echo-v1"},
+                **overrides,
             }
         )
     )
@@ -322,7 +332,9 @@ def test_capabilities_state_and_typed_tasks_delegate_to_the_source(tmp_path):
     graph.prepare_turn(trace, [SYSTEM, vf.UserMessage(content="say ping")]).commit(
         _reply(_assistant("ping"))
     )
-    taskset = _replay_taskset(tmp_path, {"id": "echo-v1"}, trace)
+    records = tmp_path / "records.jsonl"
+    records.write_text(json.dumps(trace.to_record()) + "\n")
+    taskset = _load_replay(str(records), mode="recheck")
     # The harness-capability gate and the rollout's state type must see the source's, not the
     # wrapper's delegating stubs.
     assert taskset.defines_tools is False
@@ -342,10 +354,16 @@ def test_capabilities_state_and_typed_tasks_delegate_to_the_source(tmp_path):
     graph.prepare_turn(tool_trace, [SYSTEM, vf.UserMessage(content="say ping")]).commit(
         _reply(_assistant("ping"))
     )
-    tool_replay = _replay_taskset(tmp_path, {"id": "echo-tool-v1"}, tool_trace)
+    records.write_text(json.dumps(tool_trace.to_record()) + "\n")
+    tool_replay = _load_replay(
+        str(records), mode="recheck", source={"id": "echo-tool-v1"}
+    )
     assert tool_replay.defines_tools is True
 
-    user_sim_replay = _replay_taskset(tmp_path, {"id": "echo-user-sim-v1"}, trace)
+    records.write_text(json.dumps(trace.to_record()) + "\n")
+    user_sim_replay = _load_replay(
+        str(records), mode="recheck", source={"id": "echo-user-sim-v1"}
+    )
     assert user_sim_replay.defines_user is True
     assert user_sim_replay.state_type() is EchoUserSimState
 
@@ -399,58 +417,10 @@ def test_records_are_followed_and_appended_across_reloads(tmp_path):
     assert len(taskset.reload_tasks()) == 2
 
 
-def test_source_reward_filter_selects_incorrect_attempts(tmp_path):
-    from echo_v1 import EchoTask
-
-    def record(idx: int, reward: float) -> str:
-        trace = vf.Trace(task=EchoTask(idx=idx, prompt="say hi", answer="hi"))
-        graph.prepare_turn(trace, [SYSTEM, vf.UserMessage(content="say hi")]).commit(
-            _reply(_assistant("hi" if reward else "no"))
-        )
-        trace.record_reward("solved", reward, 1.0)
-        return json.dumps(trace.to_record()) + "\n"
-
-    (tmp_path / "r.jsonl").write_text(record(0, 1.0) + record(1, 0.0))
-    taskset = load_taskset(
-        taskset_config_type("replay").model_validate(
-            {
-                "id": "replay",
-                "records": str(tmp_path / "r.jsonl"),
-                "mode": "recheck",
-                "max_source_reward": 0.5,
-                "source": {"id": "echo-v1"},
-            }
-        )
-    )
-    tasks = taskset.load_tasks()
-    assert len(tasks) == 1  # only the incorrect (reward-0) attempt is rechecked
-
-
-def _echo_trace(idx: int, reward: float, name: str | None = None) -> vf.Trace:
-    from echo_v1 import EchoTask
-
-    trace = vf.Trace(task=EchoTask(idx=idx, prompt="say hi", answer="hi", name=name))
-    graph.prepare_turn(trace, [SYSTEM, vf.UserMessage(content="say hi")]).commit(
-        _reply(_assistant("hi" if reward else "no"))
-    )
-    trace.record_reward("solved", reward, 1.0)
-    return trace
-
-
 def _index_row(trace: vf.Trace) -> dict:
-    """The selection fields prime-rl records for one `index_<env>.jsonl` row (the byte span is
-    filled in by `_write_indexed_records` from the line actually written)."""
-    return {
-        "trace": trace.id,
-        "task_idx": trace.task.idx,
-        "task_name": trace.task.name,
-        "reward": trace.reward,
-        "policy_version": 0,
-        "step": 1,
-        "branches": trace.num_branches,
-        "turns": trace.num_turns,
-        "stop": trace.stop_condition,
-    }
+    """One `index_<env>.jsonl` row as prime-rl records it (the placeholder byte span is
+    replaced by `_write_indexed_records` with the span of the line actually written)."""
+    return index_row(trace, offset=0, length=0, policy_version=0, step=1)
 
 
 def _write_indexed_records(dir_path: Path, entries: list[tuple[str, dict]]) -> str:
@@ -470,19 +440,6 @@ def _write_indexed_records(dir_path: Path, entries: list[tuple[str, dict]]) -> s
     return str(dir_path / "train_rollouts_echo.jsonl")
 
 
-def _load_replay(records: str, **overrides):
-    return load_taskset(
-        taskset_config_type("replay").model_validate(
-            {
-                "id": "replay",
-                "records": records,
-                "source": {"id": "echo-v1"},
-                **overrides,
-            }
-        )
-    )
-
-
 def test_index_selected_loading_matches_full_parse(tmp_path):
     traces = [
         _echo_trace(0, 1.0),
@@ -494,9 +451,9 @@ def test_index_selected_loading_matches_full_parse(tmp_path):
     (tmp_path / "plain").mkdir()
     plain = tmp_path / "plain" / "train_rollouts_echo.jsonl"
     plain.write_text("".join(line for line, _ in entries))
-    assert read_index(Path(indexed)) is not None
-    assert read_index(plain) is None  # no sibling index: full parse
-    assert read_index(plain.with_name("records.jsonl")) is None  # unrecognized filename
+    assert index_path(Path(indexed)).exists()
+    assert not index_path(plain).exists()  # no sibling index: full parse
+    assert index_path(plain.with_name("records.jsonl")) is None  # unrecognized filename
 
     config = {"mode": "recheck", "max_source_reward": 0.5}
     with_index = _load_replay(indexed, **config).load_tasks()
