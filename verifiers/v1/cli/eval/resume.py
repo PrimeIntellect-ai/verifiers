@@ -30,9 +30,7 @@ def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
     for i, arg in enumerate(argv):
         if arg == "--resume":
             if i + 1 >= len(argv):
-                raise SystemExit(
-                    "--resume needs an output dir: uv run eval --resume <dir>"
-                )
+                raise SystemExit("--resume needs an output dir: uv run eval --resume <dir>")
             return Path(argv[i + 1]), argv[:i] + argv[i + 2 :]
         if arg.startswith("--resume="):
             return Path(arg.split("=", 1)[1]), argv[:i] + argv[i + 1 :]
@@ -44,9 +42,7 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
     output dir so the resumed rollouts append to the same `results.jsonl`."""
     config_path = resume_dir / "config.toml"
     if not config_path.exists():
-        raise SystemExit(
-            f"--resume: no config.toml in {resume_dir} - not an eval output dir"
-        )
+        raise SystemExit(f"--resume: no config.toml in {resume_dir} - not an eval output dir")
     config = EvalConfig.model_validate(tomllib.loads(config_path.read_text()))
     config.resume = resume_dir
     config.output_dir = resume_dir
@@ -132,7 +128,4 @@ def load_kept(resume_dir: Path, taskset: Taskset) -> list[Trace]:
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:
     """The message shown (and then exit 0 - the run is already complete) when every selected
     rollout already completed without error."""
-    return (
-        f"nothing to resume in {resume_dir}: all {num_tasks}x{num_rollouts} rollouts "
-        f"already completed without error"
-    )
+    return f"nothing to resume in {resume_dir}: all {num_tasks}x{num_rollouts} rollouts already completed without error"

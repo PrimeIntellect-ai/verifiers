@@ -66,9 +66,7 @@ _MARK_WIDTH = max(len(label) for label in _MARK_LABEL.values())
 # Each label padded to a common width and bracketed, so the `[ ]` line up in a column down the
 # left edge (label left-aligned inside) — the current phase reads at a glance. `escape` keeps the
 # brackets literal: Rich parses `[label]` in a cell as markup and would otherwise drop it.
-_MARK = {
-    state: escape(f"[{label:<{_MARK_WIDTH}}]") for state, label in _MARK_LABEL.items()
-}
+_MARK = {state: escape(f"[{label:<{_MARK_WIDTH}}]") for state, label in _MARK_LABEL.items()}
 
 
 def _limits(config: EvalConfig) -> list[str]:
@@ -82,9 +80,7 @@ def _limits(config: EvalConfig) -> list[str]:
     if config.max_total_tokens:
         toks.append(f"total≤{config.max_total_tokens}")
     return [
-        f"≤{config.max_concurrent} concurrent"
-        if config.max_concurrent
-        else "no concurrency cap",
+        f"≤{config.max_concurrent} concurrent" if config.max_concurrent else "no concurrency cap",
         f"{config.max_turns} turns" if config.max_turns else "no turn cap",
         f"{', '.join(toks)} tokens" if toks else "no token cap",
     ]
@@ -94,9 +90,7 @@ def _timeouts(config: EvalConfig) -> list[str]:
     """Per-stage rollout timeouts for the overview, each stage enumerated (unset → 'no <stage>
     timeout')."""
     return [
-        f"{stage} {v:g}s"
-        if (v := getattr(config.timeout, stage))
-        else f"no {stage} timeout"
+        f"{stage} {v:g}s" if (v := getattr(config.timeout, stage)) else f"no {stage} timeout"
         for stage in ("setup", "rollout", "finalize", "scoring")
     ]
 
@@ -109,11 +103,7 @@ def _aligned(rows: list[list[str]]) -> list[str]:
         for i, seg in enumerate(row):
             widths[i] = max(widths.get(i, 0), len(seg))
     return [
-        "  ·  ".join(
-            seg.ljust(widths[i]) if i < len(row) - 1 else seg
-            for i, seg in enumerate(row)
-        )
-        for row in rows
+        "  ·  ".join(seg.ljust(widths[i]) if i < len(row) - 1 else seg for i, seg in enumerate(row)) for row in rows
     ]
 
 
@@ -149,14 +139,10 @@ def overrides(
         value = getattr(config, field)
         # `get_default` returns `PydanticUndefined` for a required field, so it always reads as set.
         field_def = (
-            fields[field].get_default(call_default_factory=True)
-            if default is None
-            else getattr(default, field, None)
+            fields[field].get_default(call_default_factory=True) if default is None else getattr(default, field, None)
         )
         if isinstance(value, BaseModel):  # nested config: flatten as `field.<sub>`
-            child_skip = frozenset(
-                s[len(field) + 1 :] for s in skip if s.startswith(f"{field}.")
-            )
+            child_skip = frozenset(s[len(field) + 1 :] for s in skip if s.startswith(f"{field}."))
             # A switched discriminator (e.g. subprocess→docker) is an override the per-field diff
             # misses — within the new class `type` equals its own default — so surface it.
             class_changed = type(value) is not type(field_def)
@@ -169,9 +155,7 @@ def overrides(
             # A switched class is a new shape, so diff against its own defaults, not the instance.
             segments.extend(
                 f"{field}.{seg}"
-                for seg in overrides(
-                    value, default=None if class_changed else field_def, skip=child_skip
-                )
+                for seg in overrides(value, default=None if class_changed else field_def, skip=child_skip)
             )
         elif value != field_def:
             segments.append(f"{field}={format_override(value)}")
@@ -179,9 +163,7 @@ def overrides(
 
 
 def Overview(config: EvalConfig) -> Table:
-    sampling = ", ".join(
-        f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items()
-    )
+    sampling = ", ".join(f"{k}={v}" for k, v in config.sampling.model_dump(exclude_none=True).items())
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim")
     grid.add_column()
@@ -197,9 +179,7 @@ def Overview(config: EvalConfig) -> Table:
     # here), but only for the harness — a taskset's `user.runtime.type` has no other display.
     if taskset_over := overrides(config.taskset, skip=frozenset({"id"})):
         grid.add_row("taskset", escape("  ·  ".join(taskset_over)))
-    if harness_over := overrides(
-        config.harness, skip=frozenset({"id", "runtime.type"})
-    ):
+    if harness_over := overrides(config.harness, skip=frozenset({"id", "runtime.type"})):
         grid.add_row("harness", escape("  ·  ".join(harness_over)))
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
@@ -217,18 +197,13 @@ def Progress(
     # On resume, `finished` holds the kept on-disk rollouts (reloaded as finished traces); count
     # them alongside this session's so progress, reward, err, and the breakdown cover the whole
     # run. `rollouts` is only this session's (owed) work, so the total adds the kept ones back.
-    done = (finished or []) + [
-        r.trace for r in rollouts if r.phase == Phase.DONE
-    ]  # fully scored
+    done = (finished or []) + [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
     total = len(finished or []) + len(rollouts)
     # Headline reward = mean over non-errored; when any errored, `format_mean` appends the
     # global avg (errored count as 0) in parens. `err` is the share that errored.
     reward = format_mean(done, lambda t: t.reward)
     err = f"{sum(t.has_error for t in done) / len(done):.2f}" if done else "—"
-    stats = (
-        f"{len(done)}/{total} · {format_time(time.time() - start)} · "
-        f"reward {reward} · err {err}"
-    )
+    stats = f"{len(done)}/{total} · {format_time(time.time() - start)} · reward {reward} · err {err}"
     if page is not None:  # overflowing — show which page, and that the arrows page
         stats += f"  (page {page[0]}/{page[1]} ◄ ►)"
     row = Table.grid(expand=True, padding=(0, 1))
@@ -268,9 +243,7 @@ def _breakdown(done: list[Trace]) -> Table | None:
             continue
         segments = []
         for name in names:
-            mean = format_mean(
-                done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0)
-            )
+            mean = format_mean(done, lambda t, n=name, s=source: getattr(t, s).get(n, 0.0))
             segments.append(f"{name} {mean}")
         grid.add_row(label, "  ·  ".join(segments))
 
@@ -309,14 +282,7 @@ def _breakdown(done: list[Trace]) -> Table | None:
             if span.end:  # phase was timed for this rollout
                 phase_secs[phase] = phase_secs.get(phase, 0.0) + span.duration
                 phase_count[phase] = phase_count.get(phase, 0) + 1
-    if (
-        total_in
-        or total_out
-        or have_cost
-        or have_cached
-        or have_reasoning
-        or have_judge
-    ):
+    if total_in or total_out or have_cost or have_cached or have_reasoning or have_judge:
         tokens = f"{format_count(total_in)}/{format_count(total_out)} tokens"
         details = []
         if have_cached:
@@ -327,9 +293,7 @@ def _breakdown(done: list[Trace]) -> Table | None:
             tokens += f" ({', '.join(details)})"
         usage = [tokens]
         if have_judge:
-            usage.append(
-                f"+ {format_count(total_judge_in)}/{format_count(total_judge_out)} judge"
-            )
+            usage.append(f"+ {format_count(total_judge_in)}/{format_count(total_judge_out)} judge")
         if have_cost:
             cost = format_cost_usd(total_cost)
             if total_judge_cost:
@@ -372,9 +336,7 @@ def _tokens(trace: Trace) -> tuple[int, int, int | None, int | None, int]:
 def _started(rollout: Rollout) -> float:
     # Sort key: when a rollout began (its setup start). A still-pending rollout has no trace
     # yet, so it sorts last (+inf) — behind everything already in flight, in task order.
-    return (
-        rollout.trace.timing.setup.start if rollout.trace is not None else float("inf")
-    )
+    return rollout.trace.timing.setup.start if rollout.trace is not None else float("inf")
 
 
 def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
@@ -408,9 +370,7 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
             t = rollout.trace
             task = rollout.task
             label = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
-            if (
-                t is None
-            ):  # queued behind the concurrency cap — only its task is known yet
+            if t is None:  # queued behind the concurrency cap — only its task is known yet
                 rows.append(
                     (
                         _brace(i, len(group)),
@@ -428,15 +388,11 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
                     stop = ""  # error shown instead
                 else:
                     stop = t.stop_condition or ""
-                    if (
-                        t.is_truncated
-                    ):  # flag a clipped rollout next to its stop condition
+                    if t.is_truncated:  # flag a clipped rollout next to its stop condition
                         stop = f"{stop} (truncated)".strip()
             else:
                 state, result, stop = rollout.phase, "", ""
-            descriptor = (
-                rollout.runtime.descriptor if rollout.runtime is not None else None
-            )
+            descriptor = rollout.runtime.descriptor if rollout.runtime is not None else None
             runtime = f"{runtime_type}({descriptor})" if descriptor else runtime_type
             turns = t.num_turns
             start = t.timing.setup.start
@@ -612,7 +568,5 @@ async def dashboard(
     the kept on-disk rollouts (reloaded as finished traces) so the counts and scores cover the
     whole run, not just this session's re-run rollouts."""
     pager = Pager()
-    async with live_view(
-        lambda: _render(rollouts, config, start, pager, finished), on_key=pager.on_key
-    ):
+    async with live_view(lambda: _render(rollouts, config, start, pager, finished), on_key=pager.on_key):
         yield

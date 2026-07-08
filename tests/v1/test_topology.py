@@ -24,12 +24,8 @@ from verifiers.v1.types import AssistantMessage, UserMessage
 def echoing_trace(task: vf.Task, reply: str) -> Trace:
     """A minimal completed trace: one user turn, one sampled assistant reply."""
     trace = Trace(task=task)
-    trace.nodes.append(
-        MessageNode(parent=None, message=UserMessage(content=str(task.prompt)))
-    )
-    trace.nodes.append(
-        MessageNode(parent=0, message=AssistantMessage(content=reply), sampled=True)
-    )
+    trace.nodes.append(MessageNode(parent=None, message=UserMessage(content=str(task.prompt))))
+    trace.nodes.append(MessageNode(parent=0, message=AssistantMessage(content=reply), sampled=True))
     trace.stop("agent_completed")
     return trace
 
@@ -53,9 +49,7 @@ def echo_chain_env(monkeypatch) -> TopologyRunner:
     no runtime, no interception)."""
     config = EvalConfig(topology={"id": "echo-chain-v1"}, rich=False)
     env = TopologyRunner(config.topology, config)
-    monkeypatch.setattr(
-        TopologyRunner, "rollout", lambda self, agent, task: EchoingRollout(task)
-    )
+    monkeypatch.setattr(TopologyRunner, "rollout", lambda self, agent, task: EchoingRollout(task))
     return env
 
 
@@ -63,9 +57,7 @@ def test_llm_judge_config_narrows_typed_agents():
     """`--topology.id llm-judge` narrows to `LLMJudgeConfig`; the seed factory narrows by
     id, and the judge keeps its pinned defaults (direct harness, non-trainable) unless
     overridden."""
-    config = EvalConfig(
-        topology={"id": "llm-judge", "taskset": {"id": "echo-v1"}}, rich=False
-    )
+    config = EvalConfig(topology={"id": "llm-judge", "taskset": {"id": "echo-v1"}}, rich=False)
     assert type(config.topology).__name__ == "LLMJudgeConfig"
     assert type(config.topology.taskset).__name__ == "EchoConfig"
     assert config.topology.solver.harness.id == "default"
@@ -100,10 +92,7 @@ def test_pinned_harness_survives_sibling_and_partial_overrides():
     assert judge.harness.runtime.type == "docker"
     # (c) a base-typed pin (null) is a value pin — bare construction keeps it
     assert echo_chain_v1.NullAgentConfig().harness.id == "null"
-    assert (
-        echo_chain_v1.NullAgentConfig.model_validate({"model": "org/x"}).harness.id
-        == "null"
-    )
+    assert echo_chain_v1.NullAgentConfig.model_validate({"model": "org/x"}).harness.id == "null"
 
 
 def test_pinned_agent_harness_still_swaps_by_id():
@@ -165,9 +154,7 @@ def test_topology_without_seeds_is_refused():
 def test_seed_slot_is_exclusive_with_load_tasks_override():
     """The seed contract is XOR: proposer-solver overrides `load_tasks` (self-seeding), so
     passing `--topology.taskset.id` — which would be silently ignored — is refused at load."""
-    config = EvalConfig(
-        topology={"id": "proposer-solver-v1", "taskset": {"id": "echo-v1"}}, rich=False
-    )
+    config = EvalConfig(topology={"id": "proposer-solver-v1", "taskset": {"id": "echo-v1"}}, rich=False)
     with pytest.raises(ValueError, match="constructs its own seeds"):
         TopologyRunner(config.topology, config)
 
@@ -237,9 +224,7 @@ async def test_explicit_agents_record_into_topology_graph(monkeypatch):
         )
         await run.agent("second").run(derived, parents=[first])
 
-    async def fake_agent_run(
-        self, task, *, parents=(), runtime=None, ctx=None, services=None, retry=None
-    ):
+    async def fake_agent_run(self, task, *, parents=(), runtime=None, ctx=None, services=None, retry=None):
         trace = echoing_trace(task, getattr(task, "answer", "ok"))
         trace.record_reward("echoed", 1.0)
         self.stamp(
@@ -274,9 +259,7 @@ async def test_declared_judgement_scores_the_instance(monkeypatch):
     scoring — task rewards run inside real rollouts."""
     config = EvalConfig(topology={"id": "proposer-solver-v1"}, rich=False)
     env = TopologyRunner(config.topology, config)
-    monkeypatch.setattr(
-        TopologyRunner, "rollout", lambda self, agent, task: EchoingRollout(task)
-    )
+    monkeypatch.setattr(TopologyRunner, "rollout", lambda self, agent, task: EchoingRollout(task))
     graph = await env.run_instance(env.topology.load_tasks()[0])
     (proposer,) = graph.traces  # malformed proposal → no solver fan-out
     assert proposer.metrics == {"solve_rate": 0.0}
@@ -302,9 +285,7 @@ async def test_go_failure_is_captured_on_graph(echo_chain_env, monkeypatch):
 
 def test_eval_config_rejects_topology_with_taskset():
     with pytest.raises(ValueError, match="drop `--taskset.id`"):
-        EvalConfig(
-            topology={"id": "echo-chain-v1"}, taskset={"id": "echo-v1"}, rich=False
-        )
+        EvalConfig(topology={"id": "echo-chain-v1"}, taskset={"id": "echo-v1"}, rich=False)
 
 
 def test_eval_config_rejects_topology_with_server():
@@ -386,13 +367,9 @@ async def test_writer_editors_fan_in_and_shared_verdict(monkeypatch):
     same `improvement` reward on every trace of the instance."""
     from writer_editors_v1.topology import ImprovementJudge
 
-    config = EvalConfig(
-        topology={"id": "writer-editors-v1", "num_editors": 2}, rich=False
-    )
+    config = EvalConfig(topology={"id": "writer-editors-v1", "num_editors": 2}, rich=False)
     env = TopologyRunner(config.topology, config)
-    monkeypatch.setattr(
-        TopologyRunner, "rollout", lambda self, agent, task: EchoingRollout(task)
-    )
+    monkeypatch.setattr(TopologyRunner, "rollout", lambda self, agent, task: EchoingRollout(task))
 
     async def stub_evaluate(self, *, trace=None, **fields):
         assert {"brief", "first", "final"} <= fields.keys()

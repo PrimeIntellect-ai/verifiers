@@ -75,9 +75,7 @@ class ElasticPoolConfig(BaseConfig):
 
 
 # Discriminated on `type` so the CLI selects with `--pool.type static|elastic`.
-PoolConfig = Annotated[
-    StaticPoolConfig | ElasticPoolConfig, Field(discriminator="type")
-]
+PoolConfig = Annotated[StaticPoolConfig | ElasticPoolConfig, Field(discriminator="type")]
 
 
 def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
@@ -186,9 +184,7 @@ class EnvServerConfig(EnvConfig):
 logger = logging.getLogger(__name__)
 
 
-def validate_pairing(
-    task_cls: type[Task], harness: "Harness", runtime_config: RuntimeConfig | None = None
-) -> None:
+def validate_pairing(task_cls: type[Task], harness: "Harness", runtime_config: RuntimeConfig | None = None) -> None:
     """Refuse an incompatible task × harness pair up front: MCP tools / a user simulator
     under a harness that can't drive them, or a container-only task class on the subprocess
     runtime. Also warns when a code-running harness executes on the local host. Class-level
@@ -230,18 +226,12 @@ def validate_pairing(
         )
 
 
-def resolve_stage_timeouts(
-    timeout: TimeoutConfig, task: Task, runtime_config: RuntimeConfig
-) -> TimeoutConfig:
+def resolve_stage_timeouts(timeout: TimeoutConfig, task: Task, runtime_config: RuntimeConfig) -> TimeoutConfig:
     """Resolve a task's per-stage wall-clock budgets into a concrete `TimeoutConfig`:
     cli/toml > task > default (None = no limit), with remote sandbox lifetimes capping the
     harness stage at 24 hours. Shared by `Environment.episode` and the topology's rollouts."""
     harness = timeout.rollout if timeout.rollout is not None else task.timeout.harness
-    if (
-        harness is not None
-        and harness > 24 * 60 * 60
-        and not runtime_is_local(runtime_config)
-    ):
+    if harness is not None and harness > 24 * 60 * 60 and not runtime_is_local(runtime_config):
         logger.warning(
             "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
             "maximum lifetime of 24 hours; capping it at 24 hours",
@@ -253,12 +243,8 @@ def resolve_stage_timeouts(
     return TimeoutConfig(
         setup=timeout.setup if timeout.setup is not None else task.timeout.setup,
         rollout=harness,
-        finalize=timeout.finalize
-        if timeout.finalize is not None
-        else task.timeout.finalize,
-        scoring=timeout.scoring
-        if timeout.scoring is not None
-        else task.timeout.scoring,
+        finalize=timeout.finalize if timeout.finalize is not None else task.timeout.finalize,
+        scoring=timeout.scoring if timeout.scoring is not None else task.timeout.scoring,
     )
 
 
@@ -280,11 +266,7 @@ def resolve_runtime_config(
             )
         updates["image"] = task.image
     workdir_spec = type(config).model_fields.get("workdir")
-    if (
-        task.workdir is not None
-        and workdir_spec is not None
-        and getattr(config, "workdir") == workdir_spec.default
-    ):
+    if task.workdir is not None and workdir_spec is not None and getattr(config, "workdir") == workdir_spec.default:
         updates["workdir"] = task.workdir
     for field, value in task.resources.model_dump(exclude_none=True).items():
         spec = type(config).model_fields.get(field)
@@ -297,9 +279,7 @@ def resolve_runtime_config(
                     config.type,
                     field,
                 )
-        elif (
-            getattr(config, field) == spec.default
-        ):  # still the default → task may set it
+        elif getattr(config, field) == spec.default:  # still the default → task may set it
             updates[field] = value
         # else: cli/toml changed it from the default → it wins over the task
     return config.model_copy(update=updates) if updates else config
@@ -327,9 +307,7 @@ class Environment:
     def runtime_for(self, task: Task) -> RuntimeConfig:
         """Resolve the runtime config for a task off the harness's runtime (see
         `resolve_runtime_config`)."""
-        return resolve_runtime_config(
-            self.harness.config.runtime, task, self._warned_resources
-        )
+        return resolve_runtime_config(self.harness.config.runtime, task, self._warned_resources)
 
     def episode(self, task: Task, ctx: ModelContext, n: int = 1) -> Episode:
         """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime

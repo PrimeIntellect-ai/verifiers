@@ -98,9 +98,7 @@ class PrimeRuntime(Runtime):
         # prime's idle timeout is in whole minutes; convert from the seconds config surface
         # (floored to the SDK's 1-minute minimum).
         idle_minutes = (
-            max(1, math.ceil(self.config.idle_timeout / 60))
-            if self.config.idle_timeout is not None
-            else None
+            max(1, math.ceil(self.config.idle_timeout / 60)) if self.config.idle_timeout is not None else None
         )
         options = {
             "cpu_cores": self.config.cpu,
@@ -114,10 +112,7 @@ class PrimeRuntime(Runtime):
         }
         try:
             async with (
-                creation_limiter(
-                    (self.config.creates_per_min or 0) / 60, "prime-sandbox"
-                )
-                or contextlib.nullcontext()
+                creation_limiter((self.config.creates_per_min or 0) / 60, "prime-sandbox") or contextlib.nullcontext()
             ):
                 sandbox = await self._client.create(
                     CreateSandboxRequest(
@@ -132,15 +127,9 @@ class PrimeRuntime(Runtime):
                 )
             self._sandbox_id = sandbox.id
             await self._client.wait_for_creation(self._sandbox_id)
-            logger.info(
-                "prime: sandbox %s up (image=%s)", self._sandbox_id, self.config.image
-            )
-            await self._client.run_background_job(
-                self._sandbox_id, f"mkdir -p {shlex.quote(self.config.workdir)}"
-            )
-        except (
-            Exception
-        ) as e:  # provisioning failure is one rollout's problem, not the eval's
+            logger.info("prime: sandbox %s up (image=%s)", self._sandbox_id, self.config.image)
+            await self._client.run_background_job(self._sandbox_id, f"mkdir -p {shlex.quote(self.config.workdir)}")
+        except Exception as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
@@ -160,9 +149,7 @@ class PrimeRuntime(Runtime):
                     break
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 3)
-        except (
-            Exception
-        ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
+        except Exception as e:  # a sandbox/API failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime exec failed: {e}") from e
         return ProgramResult(
             exit_code=result.exit_code or 0,
@@ -187,32 +174,22 @@ class PrimeRuntime(Runtime):
         logger.info("prime: exposed sandbox port %d at %s", port, exposed.url)
         return exposed.url.rstrip("/")
 
-    async def run_background(
-        self, argv: list[str], env: dict[str, str], log: str
-    ) -> None:
+    async def run_background(self, argv: list[str], env: dict[str, str], log: str) -> None:
         # `&` backgrounds inside the sandbox; the job returns immediately, the process
         # lives until the sandbox is deleted in stop().
         inner = f"nohup {shlex.join(argv)} > {shlex.quote(log)} 2>&1 &"
         result = await self.run(["sh", "-c", inner], env)
         if result.exit_code != 0:
-            raise SandboxError(
-                f"prime background launch failed: {result.stderr.strip()}"
-            )
+            raise SandboxError(f"prime background launch failed: {result.stderr.strip()}")
 
     async def read(self, path: str) -> bytes:
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
-        target = (
-            path
-            if path.startswith("/")
-            else f"{self.config.workdir.rstrip('/')}/{path}"
-        )
+        target = path if path.startswith("/") else f"{self.config.workdir.rstrip('/')}/{path}"
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
-                await self._client.download_file(
-                    self._sandbox_id, target, str(download)
-                )
+                await self._client.download_file(self._sandbox_id, target, str(download))
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
@@ -223,19 +200,13 @@ class PrimeRuntime(Runtime):
         # fails with ENAMETOOLONG). The upload does NOT run in the workdir, so resolve a
         # relative path against it (and mkdir its parent) — otherwise the sidecar writes
         # it somewhere unwritable ("Operation not permitted").
-        target = (
-            path
-            if path.startswith("/")
-            else f"{self.config.workdir.rstrip('/')}/{path}"
-        )
+        target = path if path.startswith("/") else f"{self.config.workdir.rstrip('/')}/{path}"
         await self.run(
             ["sh", "-c", f"mkdir -p {shlex.quote(str(PurePosixPath(target).parent))}"],
             {},
         )
         try:
-            await self._client.upload_bytes(
-                self._sandbox_id, target, data, filename=PurePosixPath(target).name
-            )
+            await self._client.upload_bytes(self._sandbox_id, target, data, filename=PurePosixPath(target).name)
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
 
@@ -256,14 +227,10 @@ class PrimeRuntime(Runtime):
         client, self._client = self._client, None  # `_client` is the idempotency guard
         if client is None:
             return
-        if (
-            self._sandbox_id is not None
-        ):  # kept (not nulled) so descriptor survives teardown
+        if self._sandbox_id is not None:  # kept (not nulled) so descriptor survives teardown
             try:
                 await client.delete(self._sandbox_id)
             except Exception as e:
-                logger.warning(
-                    "prime: failed to delete sandbox %s: %s", self._sandbox_id, e
-                )
+                logger.warning("prime: failed to delete sandbox %s: %s", self._sandbox_id, e)
         with contextlib.suppress(Exception):
             await client.aclose()

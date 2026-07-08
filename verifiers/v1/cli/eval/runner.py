@@ -18,9 +18,7 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
-_SHUFFLE_SEED = (
-    0  # fixed so `--shuffle` samples the same tasks every run (reproducible)
-)
+_SHUFFLE_SEED = 0  # fixed so `--shuffle` samples the same tasks every run (reproducible)
 
 
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
@@ -33,9 +31,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.
-    semaphore = (
-        asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-    )
+    semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     out = output_path(config)
     # Write config.toml up front, then persist each trace as it completes (so the results are
     # durable mid-run, not only at the end). On resume, keep the saved config + good traces and
@@ -48,9 +44,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     finished: list[Trace] = []
     if config.resume is not None:
         group = requires_group_scoring(tasks)
-        keep, owed = resume.plan(
-            out, [t.idx for t in tasks], config.num_rollouts, group
-        )
+        keep, owed = resume.plan(out, [t.idx for t in tasks], config.num_rollouts, group)
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
@@ -85,20 +79,11 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # one each. Build episodes inside `serving` so each rollout is wired to those resources
     # at construction.
     async with env.serving():
-        episodes = [
-            env.episode(task, ctx, n=owed[task.idx] if owed else config.num_rollouts)
-            for task in tasks
-        ]
+        episodes = [env.episode(task, ctx, n=owed[task.idx] if owed else config.num_rollouts) for task in tasks]
         rollouts = [rollout for episode in episodes for rollout in episode.rollouts]
-        display = (
-            dashboard(rollouts, config, start, finished=finished)
-            if config.rich
-            else contextlib.nullcontext()
-        )
+        display = dashboard(rollouts, config, start, finished=finished) if config.rich else contextlib.nullcontext()
         async with display:
-            results = await asyncio.gather(
-                *(episode.run(semaphore, on_complete) for episode in episodes)
-            )
+            results = await asyncio.gather(*(episode.run(semaphore, on_complete) for episode in episodes))
     traces = [trace for episode_traces in results for trace in episode_traces]
     await client.close()
     return traces
@@ -117,9 +102,7 @@ async def run_topology_eval(env: TopologyRunner, config: EvalConfig) -> list[Tra
         random.Random(_SHUFFLE_SEED).shuffle(tasks)
     tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
-    semaphore = (
-        asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-    )
+    semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     out = output_path(config)
     save_config(config, out)
     logger.info(
@@ -138,9 +121,7 @@ async def run_topology_eval(env: TopologyRunner, config: EvalConfig) -> list[Tra
         return graph.traces
 
     async with env.serving(ctx):
-        instances = [
-            run_instance(task) for task in tasks for _ in range(config.num_rollouts)
-        ]
+        instances = [run_instance(task) for task in tasks for _ in range(config.num_rollouts)]
         results = await asyncio.gather(*instances)
     traces = [trace for instance_traces in results for trace in instance_traces]
     await client.close()
@@ -207,9 +188,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             idxs = idxs[: config.num_tasks]
         out = output_path(config)
         if config.resume is not None:
-            keep, owed = resume.plan(
-                out, idxs, config.num_rollouts, info.requires_group_scoring
-            )
+            keep, owed = resume.plan(out, idxs, config.num_rollouts, info.requires_group_scoring)
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
                 raise SystemExit(0)
@@ -237,9 +216,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
             # max_concurrent is a rollout resource bound, not a request-throughput target.
             # A group is indivisible, so one oversized group must still be allowed to run.
             request_concurrency = max(1, request_concurrency // config.num_rollouts)
-        semaphore = (
-            asyncio.Semaphore(request_concurrency) if request_concurrency else None
-        )
+        semaphore = asyncio.Semaphore(request_concurrency) if request_concurrency else None
         write_lock = asyncio.Lock()
 
         async def run_group_unit(idx: int) -> list[Trace]:

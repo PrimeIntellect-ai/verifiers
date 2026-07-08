@@ -44,8 +44,6 @@ class RunServices:
         key = (runtime_config.type, runtime_is_local(runtime_config))
         pool = self._pools.get(key)
         if pool is None:
-            pool = await self._stack.enter_async_context(
-                InterceptionPool(runtime_config, self.multiplex)
-            )
+            pool = await self._stack.enter_async_context(InterceptionPool(runtime_config, self.multiplex))
             self._pools[key] = pool
         return pool
