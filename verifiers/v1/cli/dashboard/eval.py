@@ -204,7 +204,7 @@ def Overview(config: EvalConfig) -> Table:
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
-    grid.add_row("output", str(output_path(config)))
+    grid.add_row("output", Text(str(output_path(config)), overflow="fold"))
     return grid
 
 
