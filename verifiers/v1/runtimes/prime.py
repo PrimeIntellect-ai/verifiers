@@ -25,7 +25,7 @@ from verifiers.v1.runtimes.limiters import creation_limiter
 logger = logging.getLogger(__name__)
 
 MAX_LIFETIME = 24 * 60 * 60
-"""Prime's fixed cap (seconds) on any sandbox's total lifetime; the idle timeout must fit within it."""
+"""Prime's fixed cap (seconds) on any sandbox's total lifetime."""
 
 
 class PrimeConfig(BaseConfig):
