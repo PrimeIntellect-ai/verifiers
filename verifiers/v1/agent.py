@@ -192,7 +192,9 @@ class Agent:
         services = services if services is not None else self._services
         runtime_config = self.runtime_for(task, runtime)
         shared = services.shared if services is not None else None
-        interception = await services.pool_for(runtime_config) if services is not None else None
+        interception = (
+            await services.pool_for(runtime_config) if services is not None else None
+        )
         attempt = _AgentAttempt(
             self,
             task,

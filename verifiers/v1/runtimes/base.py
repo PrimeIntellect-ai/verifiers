@@ -181,11 +181,15 @@ class Runtime(ABC):
         still retry individual safe transport operations underneath `run`."""
         return await self.run(argv, env)
 
-    async def run_background(self, argv: list[str], env: dict[str, str], log: str) -> None:
+    async def run_background(
+        self, argv: list[str], env: dict[str, str], log: str
+    ) -> None:
         """Start `argv` as a background process in the runtime (combined output to
         `log`, a path in the workspace) and return immediately. It runs until `stop()`
         tears the runtime down. Used to host a tool server colocated with the harness."""
-        raise NotImplementedError(f"{type(self).__name__} does not support run_background")
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support run_background"
+        )
 
     async def prepare_uv_script(
         self,
@@ -211,8 +215,12 @@ class Runtime(ABC):
                     )
                     result = await self.run(["sh", "-c", command], env or {})
                     if result.exit_code != 0:
-                        raise RuntimeError(f"failed to prepare uv script: {result.stderr.strip()[-2000:]}")
-                    self._uv_interpreters[digest] = result.stdout.strip().splitlines()[-1]
+                        raise RuntimeError(
+                            f"failed to prepare uv script: {result.stderr.strip()[-2000:]}"
+                        )
+                    self._uv_interpreters[digest] = result.stdout.strip().splitlines()[
+                        -1
+                    ]
         interpreter = self._uv_interpreters[digest]
         venv = str(PurePosixPath(interpreter).parent.parent)
         command = (
@@ -290,7 +298,9 @@ class Runtime(ABC):
 TunnelT = TypeVar("TunnelT")
 
 
-async def open_tunnel(start: Callable[[], Awaitable[TunnelT]], what: str, *, retries: int = 3) -> TunnelT:
+async def open_tunnel(
+    start: Callable[[], Awaitable[TunnelT]], what: str, *, retries: int = 3
+) -> TunnelT:
     """Open the host interception-server tunnel via `start`, retrying transient failures and raise
     `TunnelError` if it still fails. Tunnel creation is network-bound and globally rate-capped
     (`prime_tunnel` — 512/min shared across runtimes), so a transient failure is common and worth a
@@ -323,7 +333,9 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
 
     async def _start() -> tuple[Tunnel, str]:
         tunnel = Tunnel(local_port=port, labels=labels or None)
-        async with TUNNEL_LIMITER:  # shared prime_tunnel rate (512/min, runtime-independent)
+        async with (
+            TUNNEL_LIMITER
+        ):  # shared prime_tunnel rate (512/min, runtime-independent)
             return tunnel, str(await tunnel.start()).rstrip("/")
 
     tunnel, url = await open_tunnel(_start, f"host tunnel (port {port})")
@@ -349,7 +361,9 @@ framework driving a user sim) — see `reachable_url`."""
 
 
 @contextlib.asynccontextmanager
-async def reachable_url(service, port: int, *, consumer=None, consumer_is_local: bool = True):
+async def reachable_url(
+    service, port: int, *, consumer=None, consumer_is_local: bool = True
+):
     """Yield a URL for the service at (`service`, `port`) reachable from its consumer — the single
     place tool / user / interception reachability is decided, over the two primitives `expose`
     (publish *out* of a runtime) and `host_endpoint` (reach *into* the host from a runtime).
@@ -367,7 +381,9 @@ async def reachable_url(service, port: int, *, consumer=None, consumer_is_local:
     is_local = consumer.is_local if consumer is not None else consumer_is_local
     if service is consumer:  # colocated in the consumer's runtime (or host -> host)
         yield f"http://127.0.0.1:{port}"
-    elif service is not HOST and not service.is_local:  # in a sandbox → it publishes its own port
+    elif (
+        service is not HOST and not service.is_local
+    ):  # in a sandbox → it publishes its own port
         yield await service.expose(port)
     else:  # on the host network → reach it from wherever the consumer runs
         async with host_endpoint(port, is_local) as url:

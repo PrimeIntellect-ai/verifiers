@@ -190,7 +190,9 @@ class Rollout:
             if owns_runtime:
                 await runtime.start()
             setup_deadline = (
-                None if self.setup_timeout is None else asyncio.get_running_loop().time() + self.setup_timeout
+                None
+                if self.setup_timeout is None
+                else asyncio.get_running_loop().time() + self.setup_timeout
             )
             available = {"task": task, "trace": trace, "runtime": runtime}
             async with (
@@ -203,7 +205,9 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
-            async with self._serve_interception(self.interception, runtime, session) as (
+            async with self._serve_interception(
+                self.interception, runtime, session
+            ) as (
                 endpoint,
                 secret,
                 state_port,
@@ -249,7 +253,9 @@ class Rollout:
                     # (like max_turns), even if its last call had failed.
                     try:
                         await asyncio.wait_for(
-                            self.harness.run(ctx, trace, runtime, endpoint, secret, urls),
+                            self.harness.run(
+                                ctx, trace, runtime, endpoint, secret, urls
+                            ),
                             self.harness_timeout,
                         )
                     except TimeoutError:
@@ -266,10 +272,14 @@ class Rollout:
             trace.timing.finalize.start = now
             self.phase = Phase.FINALIZE  # post-run task work, before scoring
             async with boundary(TaskError, "task finalize"):
-                await asyncio.wait_for(invoke(task.finalize, available), self.finalize_timeout)
+                await asyncio.wait_for(
+                    invoke(task.finalize, available), self.finalize_timeout
+                )
             now = time.time()
             trace.timing.finalize.end = now
-            self.phase = Phase.SCORING  # per-rollout scoring; the Episode marks DONE after group scoring
+            self.phase = (
+                Phase.SCORING
+            )  # per-rollout scoring; the Episode marks DONE after group scoring
             trace.timing.scoring.start = now
             async with boundary(TaskError, "scoring"):
                 # Per-rollout scoring: task + harness, concurrently, both with the live
@@ -307,7 +317,9 @@ class Rollout:
                 try:
                     await runtime.stop()
                 except Exception:
-                    logger.warning("runtime teardown failed (rollout %s)", trace.id, exc_info=True)
+                    logger.warning(
+                        "runtime teardown failed (rollout %s)", trace.id, exc_info=True
+                    )
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,
