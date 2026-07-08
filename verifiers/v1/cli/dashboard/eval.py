@@ -214,14 +214,14 @@ def Overview(config: EvalConfig) -> Table:
 
 def _push_footer(push: "PushState | None") -> Group | None:
     """The `--push` status line under the rollouts, shown once the run finishes and the upload
-    begins: dim `Pushing traces...` while it runs, then green `Traces pushed (<url>)` or red
+    begins: dim `Pushing traces...` while it runs, then white `Traces pushed (<url>)` or red
     `Trace push failed (<err>)`. `None` (no line) until the upload starts and when `--push` is off."""
     if push is None or not push.started:
         return None
     if not push.done:
         line = Text("Pushing traces...", style="dim")
     elif push.url:
-        line = Text(f"Traces pushed ({push.url})", style="green", overflow="fold")
+        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
     else:
         line = Text(f"Trace push failed ({push.error})", style="red", overflow="fold")
     return Group(Rule(style="dim"), line)
@@ -641,7 +641,7 @@ async def dashboard(
     arrows page through rollout rows when they overflow the screen. On resume, `finished` carries
     the kept on-disk rollouts (reloaded as finished traces) so the counts and scores cover the
     whole run, not just this session's re-run rollouts. `push` is the shared `--push` status the
-    view renders as a line under the rollouts once the upload starts (dim -> green URL / red error),
+    view renders as a line under the rollouts once the upload starts (dim -> white URL / red error),
     updated by the caller as the inline upload runs and lands."""
     pager = Pager()
     async with live_view(
