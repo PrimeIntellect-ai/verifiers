@@ -1,5 +1,7 @@
 # Training
 
+<Warning>v0 is considered deprecated and will be fully removed in a future release.</Warning>
+
 This section covers how to use Verifiers environments for RL training with our Hosted Training platform, our open-source `prime-rl` trainer, or other supported libraries.
 
 ## Table of Contents

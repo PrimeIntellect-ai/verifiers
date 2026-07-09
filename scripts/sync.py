@@ -109,7 +109,7 @@ def compile_agents(*, check: bool = False) -> bool:
 
 
 def compile_environment_guides(*, check: bool = False) -> bool:
-    envs_body = read_without_title(ROOT / "docs" / "environments.md")
+    envs_body = read_without_title(ROOT / "docs" / "v1" / "environments.md")
     repo_envs_agents = combine_sections(
         [
             "# environments/AGENTS.md",

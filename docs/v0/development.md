@@ -1,5 +1,7 @@
 # Development & Testing
 
+<Warning>v0 is considered deprecated and will be fully removed in a future release.</Warning>
+
 This guide covers setup, testing, and contributing to the verifiers package.
 
 ## Table of Contents

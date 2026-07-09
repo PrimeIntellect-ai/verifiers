@@ -1,5 +1,7 @@
 # API Reference
 
+<Warning>v0 is considered deprecated and will be fully removed in a future release.</Warning>
+
 ## Table of Contents
 
 - [Type Aliases](#type-aliases)

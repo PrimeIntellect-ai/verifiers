@@ -1,5 +1,7 @@
 # Environments
 
+<Warning>v0 is considered deprecated and will be fully removed in a future release.</Warning>
+
 This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template.
 
 ## Table of Contents

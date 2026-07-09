@@ -1,5 +1,7 @@
 # FAQs
 
+<Warning>v0 is considered deprecated and will be fully removed in a future release.</Warning>
+
 ## Getting Started
 
 ### How do I quickly test my environment?

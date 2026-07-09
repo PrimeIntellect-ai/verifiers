@@ -1,5 +1,7 @@
 # Evaluation
 
+<Warning>v0 is considered deprecated and will be fully removed in a future release.</Warning>
+
 This section explains how to run evaluations with Verifiers environments. See [Environments](environments.md) for information on building your own environments.
 
 ## Table of Contents

@@ -1,10 +1,4 @@
-# environments/AGENTS.md
-
-<!-- Generated for repository development workflows. Do not edit directly. -->
-
-This file mirrors the "Environments" documentation page.
-
----
+# Building Environments
 
 To scaffold an environment, run the following:
 ```bash
