@@ -2,9 +2,8 @@
 
 The v1 tool fixture for the e2e matrix. The taskset declares an `EchoToolset` (`vf.Toolset`)
 with one `@vf.tool` method whose placement is CLI-tunable (`--taskset.task.tools.colocated`,
-`--taskset.task.tools.shared`, `--taskset.task.tools.runtime.type`): it runs colocated in the harness's
-runtime, shared once per eval, or in its own runtime, and the harness must reach it wherever it
-lives. The tool stamps its output with a token the prompt never reveals, so the reward is
+`--taskset.task.tools.runtime.type`): it runs colocated in the harness's runtime or in its own
+runtime, and the harness must reach it wherever it lives. The tool stamps its output with a token the prompt never reveals, so the reward is
 1.0 only if the model actually called the tool — trivial when the infra works, impossible when
 it doesn't. The tool is task-agnostic, so it works in `shared` placement too.
 """

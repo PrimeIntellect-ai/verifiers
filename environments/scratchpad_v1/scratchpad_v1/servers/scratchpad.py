@@ -1,6 +1,6 @@
 """A SHARED, writable tool server that exercises per-rollout state isolation.
 
-It is built once for the whole eval (`shared=True`) but written to by every rollout: `roundtrip`
+It is built once for the whole eval (taskset-scoped, `Taskset.tools`) but written to by every rollout: `roundtrip`
 stores a word and reads it back. Each rollout's write lands in its own `self.state` — the per-rollout
 shared-state channel the framework tags onto a shared server's URL — so concurrent rollouts never see
 each other's word even though they share one process. `roundtrip` sleeps between the write and the
@@ -17,7 +17,7 @@ class ScratchpadState(vf.State):
     slot: str = ""
 
 
-class ScratchpadToolsetConfig(vf.ToolsetConfig):
+class ScratchpadToolsetConfig(vf.SharedToolsetConfig):
     setup_seconds: float = 0.0
     """Simulated expensive one-time `setup` cost (a shared server pays it once for the whole eval)."""
 

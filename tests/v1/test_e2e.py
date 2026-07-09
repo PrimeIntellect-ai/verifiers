@@ -137,11 +137,11 @@ async def test_shared_tool_isolation(
     rollouts (two distinct words on the ONE shared instance) both scoring 1.0 proves the per-rollout
     `self.state` channel keeps them isolated with no cross-rollout corruption.
 
-    Placement is fixed to `shared`, so only the own-runtime cases of `tool_runtime` apply (the
-    colocated/shared params have no distinct runtime to fan — skipped). Runs through the env-server
-    pool (`run_v1_server`, prime-rl's path), where serving the one shared instance is the server's
-    job."""
-    # colocated / shared placement has no distinct own runtime to fan here
+    Sharing is structural (`ScratchpadTaskset.tools`), so only the own-runtime cases of
+    `tool_runtime` apply (the colocated param has no meaning for a taskset-scoped server —
+    skipped). Runs through the env-server pool (`run_v1_server`, prime-rl's path), where
+    serving the one shared instance is the server's job."""
+    # colocated placement has no meaning for a taskset-scoped (shared) server
     tool_rt = tool_runtime.get("runtime", {}).get("type")
     if tool_rt is None:
         pytest.skip("shared-isolation fans the tool's own runtime; this case has none")
@@ -159,14 +159,9 @@ async def test_shared_tool_isolation(
         num_tasks=2,  # two distinct words, run concurrently against the one shared server
         n=1,
         max_turns=4,
-        taskset_overrides={
-            "task": {
-                "tools": {
-                    "shared": True,
-                    **tool_runtime,  # the shared tool's own runtime ({"runtime": {"type": ...}})
-                }
-            }
-        },
+        # the shared tool is taskset-scoped, so its runtime knob lives at the taskset
+        # level ({"runtime": {"type": ...}}), not under `task`
+        taskset_overrides={"tools": tool_runtime},
     )
     assert len(traces) == 2
     for trace in traces:

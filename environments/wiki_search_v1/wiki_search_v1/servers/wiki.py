@@ -3,7 +3,7 @@ import verifiers.v1 as vf
 DATASET = "willcb/rare-wiki-pages"
 
 
-class WikiSearchToolset(vf.Toolset[vf.ToolsetConfig]):
+class WikiSearchToolset(vf.Toolset[vf.SharedToolsetConfig]):
     """Read-only search/view/read over the wiki corpus. The corpus + chroma index (expensive) are
     built once in `setup`, in the server process. Every tool call is a read."""
 

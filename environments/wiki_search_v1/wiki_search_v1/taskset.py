@@ -53,10 +53,6 @@ class WikiSearchTaskConfig(vf.TaskConfig):
     judges: vf.Judges = [
         vf.ReferenceJudgeConfig(prompt=JUDGE_PROMPT, question_field="question")
     ]
-    # SHARED: the chroma corpus is expensive, so one instance serves the whole eval (its own
-    # runtime), reused across rollouts rather than rebuilt per rollout. CLI-tunable, e.g.
-    # `--taskset.task.tools.shared false` or `--taskset.task.tools.runtime.type docker`.
-    tools: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
 
 
 class TriviaTaskData(vf.TaskData):
@@ -67,16 +63,22 @@ class TriviaTaskData(vf.TaskData):
 
 
 class TriviaTask(vf.Task[TriviaTaskData, vf.State, WikiSearchTaskConfig]):
-    tools = (WikiSearchToolset,)
-    # Built with the task config's `tools` field (SHARED by default; placement stays
-    # CLI-tunable), resolved by `Task.server_config`.
+    pass
 
 
 class WikiSearchConfig(vf.TasksetConfig):
+    # The chroma corpus is expensive, so the toolset is TASKSET-scoped: one shared server
+    # for the whole eval (its own runtime), reused across rollouts rather than rebuilt per
+    # rollout. Its knobs live at the taskset level: `--taskset.tools.runtime.type docker`.
+    tools: vf.SharedToolsetConfig = vf.SharedToolsetConfig()
     task: WikiSearchTaskConfig = WikiSearchTaskConfig()
 
 
 class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
+    tools = (WikiSearchToolset,)
+    # Declared on the TASKSET: shared scope is structural (one eval-level server),
+    # built with `WikiSearchConfig.tools` via `Taskset.server_config`.
+
     def load(self) -> list[TriviaTaskData]:
         from datasets import load_dataset
 

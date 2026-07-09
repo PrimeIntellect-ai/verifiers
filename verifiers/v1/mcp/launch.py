@@ -19,6 +19,7 @@ import sys
 import tarfile
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -280,22 +281,8 @@ async def serve(
     in-sandbox when colocated, else the tool runtime's `expose` (its published URL) or, for a
     host-side tool reached by an in-sandbox harness, a `host_endpoint` tunnel to the host port."""
     cfg = server.config
-    shared = getattr(cfg, "shared", False)
-    if shared and task is not None:
-        raise ValueError(
-            f"shared server {server.server_name!r} was launched with a task, but a `shared` server "
-            "is built once for the whole eval and must be task-agnostic — it receives no task. "
-            "Drop `shared` to run it per-rollout (with the task), or make its `setup` task-independent."
-        )
-    if shared and type(server).setup_task is not ServerBase.setup_task:
-        logger.warning(
-            "shared server %r overrides `setup_task`, but `setup_task` is NEVER called for a shared "
-            "server (it's built once, task-agnostic) — its per-task logic will not run. Move "
-            "task-agnostic work into `setup`, or drop `shared` to run it per-rollout.",
-            server.server_name,
-        )
     async with contextlib.AsyncExitStack() as stack:
-        if cfg.colocated and harness_runtime is not None:
+        if getattr(cfg, "colocated", False) and harness_runtime is not None:
             runtime = harness_runtime
         else:
             runtime = make_runtime(cfg.runtime)
@@ -343,30 +330,51 @@ async def serve(
         yield f"{base.rstrip('/')}/mcp"
 
 
+@dataclass(frozen=True)
+class SharedToolServer:
+    """One live taskset-scoped (shared) server, as the rollouts see it: its eval-level
+    `url` plus whether its runtime is `local` (host-reachable) — which decides whether a
+    rollout must bridge its state channel to reach a REMOTE shared server (see
+    `serve_tools`)."""
+
+    url: str
+    local: bool
+
+
 @contextlib.asynccontextmanager
 async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
-    """Start the SHARED tool servers (placement `shared`) ONCE for a whole eval, each in its OWN
-    `runtime`, and yield `{name: url}` reachable by every rollout's harness. Reachability mirrors a
-    per-rollout tool, but there's no single harness runtime to read locality off — the caller
-    (`Environment.shared_tools`) passes the harness runtime's `harness_is_local`, so a host tool gets
-    one host bridge (tunnel) when the harness runs remotely, and a remote tool runtime publishes its
-    own URL. Torn down when the eval ends. A shared server is task-agnostic, so its `setup` gets no
-    task (`serve(toolset, None)`)."""
-    urls: dict[str, str] = {}
+    """Start the taskset-scoped (shared) tool servers ONCE for a whole eval, each in its OWN
+    `runtime`, and yield `{name: SharedToolServer}` reachable by every rollout's harness.
+    Reachability mirrors a per-rollout tool, but there's no single harness runtime to read
+    locality off — the caller (`Environment.shared_tools`) passes the harness runtime's
+    `harness_is_local`, so a host tool gets one host bridge (tunnel) when the harness runs
+    remotely, and a remote tool runtime publishes its own URL. Torn down when the eval ends.
+    A shared server is task-agnostic — the taskset carries no per-row data — so its `setup`
+    gets no task (`serve(toolset, None)`) and `setup_task` is never called."""
+    servers: dict[str, SharedToolServer] = {}
     async with contextlib.AsyncExitStack() as stack:
         for toolset in toolsets:
             cfg = toolset.config
-            if not cfg.shared:
-                continue
             name = toolset.server_name
-            if cfg.url:  # already running remotely
-                urls[name] = cfg.url
+            if type(toolset).setup_task is not ServerBase.setup_task:
+                logger.warning(
+                    "shared server %r overrides `setup_task`, but `setup_task` is NEVER "
+                    "called for a taskset-scoped server (it's built once, task-agnostic) — "
+                    "its per-task logic will not run. Move task-agnostic work into `setup`, "
+                    "or declare it on `Task.tools` to run it per-rollout.",
+                    name,
+                )
+            if cfg.url:  # already running remotely; nothing launched, nothing to bridge
+                servers[name] = SharedToolServer(url=cfg.url, local=True)
             else:
-                urls[name] = await stack.enter_async_context(
+                url = await stack.enter_async_context(
                     serve(toolset, None, harness_is_local=harness_is_local)
                 )
-            logger.info("shared tool server '%s': %s", name, urls[name])
-        yield urls
+                servers[name] = SharedToolServer(
+                    url=url, local=runtime_is_local(cfg.runtime)
+                )
+            logger.info("shared tool server '%s': %s", name, servers[name].url)
+        yield servers
 
 
 def _shared_url_for_rollout(url: str, state_base: str | None, state_secret: str) -> str:
@@ -390,47 +398,43 @@ async def serve_tools(
     toolsets: list[Toolset],
     harness_runtime: Runtime,
     task,
-    shared_urls: dict[str, str] | None = None,
+    shared: dict[str, SharedToolServer] | None = None,
     *,
     state_port: int | None = None,
     state_secret: str = "",
     state_base: str | None = None,
 ):
-    """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches. A `shared`
-    toolset reuses the eval-level instance in `shared_urls`; the rest are launched by `serve`
-    (placement off each one's `config`, the rollout's `task` for its `setup`) — so different
-    servers can run in different runtimes. `state_port`/`state_secret` wire each per-rollout server to
-    the interception server's shared-state channel; `state_base` (its reachable URL for this rollout)
-    wires a `shared` server, which can't take a per-process channel, via its per-request URL tag."""
-    shared_urls = shared_urls or {}
+    """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
+    task-scoped `toolsets` are launched by `serve` (placement off each one's `config`, the
+    rollout's `task` for its `setup`), and the taskset-scoped `shared` servers — already
+    running eval-level (see `serve_shared`) — join under their per-rollout state tag.
+    `state_port`/`state_secret` wire each per-rollout server to the interception server's
+    shared-state channel; `state_base` (its reachable URL for this rollout) wires a shared
+    server, which can't take a per-process channel, via its per-request URL tag."""
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
+        for name, server in (shared or {}).items():
+            tool_state_base = state_base
+            # `state_base` is the HARNESS-facing interception URL — host loopback when the harness
+            # is local, which a REMOTE shared tool can't reach. Bridge the interception's state
+            # port to a host tunnel the remote tool CAN reach (per-rollout, torn down with this
+            # scope). A remote harness already made `state_base` a public tunnel, so reuse it.
+            if state_base and harness_runtime.is_local and not server.local:
+                tool_state_base = await stack.enter_async_context(
+                    reachable_url(HOST, state_port, consumer_is_local=False)
+                )
+            urls[name] = _shared_url_for_rollout(
+                server.url, tool_state_base, state_secret
+            )
+            # log the untagged base, NOT urls[name] — the per-rollout tag carries the rollout's
+            # bearer secret (`vf_state_secret`), which must not reach a log sink
+            logger.info("tool server '%s' (shared): %s", name, server.url)
         for toolset in toolsets:
             name = toolset.server_name
             cfg = toolset.config
             if cfg.url:  # already running remotely
                 urls[name] = cfg.url
                 logger.info("tool server '%s' (remote): %s", name, cfg.url)
-            elif name in shared_urls:  # one shared instance, started eval-level
-                tool_state_base = state_base
-                # `state_base` is the HARNESS-facing interception URL — host loopback when the harness
-                # is local, which a REMOTE shared tool can't reach. Bridge the interception's state
-                # port to a host tunnel the remote tool CAN reach (per-rollout, torn down with this
-                # scope). A remote harness already made `state_base` a public tunnel, so reuse it.
-                if (
-                    state_base
-                    and harness_runtime.is_local
-                    and not runtime_is_local(cfg.runtime)
-                ):
-                    tool_state_base = await stack.enter_async_context(
-                        reachable_url(HOST, state_port, consumer_is_local=False)
-                    )
-                urls[name] = _shared_url_for_rollout(
-                    shared_urls[name], tool_state_base, state_secret
-                )
-                # log the untagged base, NOT urls[name] — the per-rollout tag carries the rollout's
-                # bearer secret (`vf_state_secret`), which must not reach a log sink
-                logger.info("tool server '%s' (shared): %s", name, shared_urls[name])
             else:
                 urls[name] = await stack.enter_async_context(
                     serve(

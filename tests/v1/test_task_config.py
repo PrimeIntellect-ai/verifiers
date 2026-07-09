@@ -122,7 +122,7 @@ DATA = PlainData(idx=0, prompt="p")
 
 def test_server_config_exact_type_match_wins() -> None:
     class Config(vf.TaskConfig):
-        tools: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
+        tools: vf.ToolsetConfig = vf.ToolsetConfig(colocated=True)
         custom: CustomToolsetConfig = CustomToolsetConfig()  # subclass: not exact
 
     class PairedTask(vf.Task[PlainData, vf.State, Config]):
@@ -131,7 +131,7 @@ def test_server_config_exact_type_match_wins() -> None:
     task = PairedTask(DATA)
     assert task.server_config(PairToolset) is task.config.tools
     (server,) = task.tool_servers()
-    assert isinstance(server, PairToolset) and server.config.shared
+    assert isinstance(server, PairToolset) and server.config.colocated
 
 
 def test_server_config_unique_isinstance_match() -> None:
@@ -164,3 +164,29 @@ def test_server_config_ambiguity_raises() -> None:
 
     with pytest.raises(TaskError, match="ambiguous"):
         PairedTask(DATA).server_config(PairToolset)
+
+
+# ---- taskset-scoped (shared) tools ----------------------------------------------
+
+
+class SharedCorpusToolset(vf.Toolset[vf.SharedToolsetConfig]):
+    TOOL_PREFIX = "corpus"
+
+
+def test_taskset_scoped_tools_build_from_the_taskset_config() -> None:
+    class Config(vf.TasksetConfig):
+        tools: vf.SharedToolsetConfig = vf.SharedToolsetConfig(url="http://corpus")
+        task: PlainTaskConfig = PlainTaskConfig()
+
+    class SharedTaskset(vf.Taskset[PlainTask, Config]):
+        tools = (SharedCorpusToolset,)
+
+        def load(self) -> list[PlainData]:
+            return [PlainData(idx=0, prompt="p")]
+
+    taskset = SharedTaskset(Config(id="x"))
+    (server,) = taskset.tool_servers()
+    assert isinstance(server, SharedCorpusToolset)
+    assert server.config is taskset.config.tools  # exact-type match, taskset level
+    # scope is the registration site: the tasks themselves declare no tools
+    assert taskset.tasks()[0].tool_servers() == []

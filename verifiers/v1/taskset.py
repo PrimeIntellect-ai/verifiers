@@ -15,7 +15,7 @@ taskset — `tasks()` constructs it, so replay can rebuild every saved row as th
 declared type's data and re-wrap it.
 """
 
-from typing import Generic, get_args, get_origin
+from typing import TYPE_CHECKING, ClassVar, Generic, get_args, get_origin
 
 from verifiers.v1.errors import TaskError
 from verifiers.v1.judge import check_judges
@@ -26,9 +26,15 @@ from verifiers.v1.task import (
     TaskData,
     TaskT,
     TasksetConfig,
+    resolve_server_config,
     task_config_cls,
     task_data_cls,
 )
+
+if TYPE_CHECKING:
+    from pydantic_config import BaseConfig
+
+    from verifiers.v1.mcp import Toolset
 
 __all__ = ["ConfigT", "TaskConfig", "Taskset", "TasksetConfig"]
 
@@ -39,8 +45,29 @@ class Taskset(Generic[TaskT, ConfigT]):
     Subclass: implement `load`, returning the rows as the task's declared `TaskData` —
     `tasks()` constructs the declared `Task` around each row with `config.task`."""
 
+    tools: "ClassVar[tuple[type[Toolset], ...]]" = ()
+    """TASKSET-scoped (shared) tool server classes: each is launched ONCE per eval by the
+    Environment and reached by every rollout — for an expensive, task-agnostic resource (a
+    corpus, an index) built once. Declarative like `Task.tools`, but the scope is the
+    registration site: taskset = eval-wide, task = per-rollout. A shared toolset declares a
+    `SharedToolsetConfig` (no `colocated` — there's no single harness runtime), resolved off
+    the TASKSET config's fields by `server_config` (so its knobs live at `--taskset.*`, not
+    `--taskset.task.*`); it never receives a task (`setup_task` is not called)."""
+
     def __init__(self, config: ConfigT) -> None:
         self.config = config
+
+    def server_config(self, server_cls: type) -> "BaseConfig":
+        """The config a `tools` entry is built with, resolved off `self.config` (the
+        taskset config; see `resolve_server_config`). Override to pair explicitly."""
+        return resolve_server_config(type(self).__name__, self.config, server_cls)
+
+    def tool_servers(self) -> "list[Toolset]":
+        """Build this taskset's shared tool servers: one instance per class in `tools`,
+        each constructed with `server_config(cls)`. Called once per eval by
+        `Environment.shared_tools`; a Toolset instance is a launcher spec — the server
+        itself runs as its own process (see `verifiers.v1.mcp`)."""
+        return [cls(self.server_config(cls)) for cls in type(self).tools]
 
     def load(self) -> "list[TaskData]":
         raise NotImplementedError

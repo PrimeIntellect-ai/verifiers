@@ -116,12 +116,19 @@ around it.
 Some environments require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`).
 Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
 
-Declare the toolset classes on the task (remember the bootstrapping with `uv run init MY_ENV -T`):
+Where you register a toolset decides its **scope** — per rollout, or shared across the eval:
+
+- **On the Task** (`Task.tools`): one server per rollout, in the harness's runtime
+  (`colocated`) or its own (`vf.ToolsetConfig`). For tools that see per-task data.
+- **On the Taskset** (`Taskset.tools`): ONE server for the whole eval, shared by every
+  rollout (`vf.SharedToolsetConfig` — own runtime or a remote `url`, no `colocated`). For
+  an expensive, task-agnostic resource (a corpus, an index) built once. Per-rollout writes
+  stay isolated via `self.state`.
 
 ```python
 DATABASE = None
 
-class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
+class SearchToolset(vf.Toolset[vf.ToolsetConfig]):          # task-scoped
     TOOL_PREFIX = "search"
 
     @vf.tool
@@ -129,25 +136,29 @@ class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
         """Search the task corpus."""
         return DATABASE.search(text)
 
-# User-configurable knobs (placement: colocated / shared / own runtime)
+class CorpusToolset(vf.Toolset[vf.SharedToolsetConfig]):    # taskset-scoped (shared)
+    TOOL_PREFIX = "corpus"
+    ...
+
 class SearchTaskConfig(vf.TaskConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()             # --taskset.task.tools.*
 
 class SearchTask(vf.Task[vf.State, SearchTaskConfig]):
-    tools = (SearchToolset,)
+    tools = (SearchToolset,)                                 # per rollout
 
 class SearchConfig(vf.TasksetConfig):
+    tools: vf.SharedToolsetConfig = vf.SharedToolsetConfig() # --taskset.tools.*
     task: SearchTaskConfig = SearchTaskConfig()
 
 class SearchTaskset(vf.Taskset[SearchTask, SearchConfig]):
-    ...
+    tools = (CorpusToolset,)                                 # once per eval
 ```
 
-The framework builds each declared server with the matching config off the task's config —
-the field whose type is the server's declared config type (here `SearchTaskConfig.tools`,
-i.e. `--taskset.task.tools.*`), falling back to a default-constructed one. Override
-`Task.server_config` if you need explicit pairing (e.g. two servers sharing one config
-type). User simulators follow the same pattern: `user = MyUser` on the task, a
+The framework builds each declared server with the matching config off the declaring
+scope's config — the field whose type is the server's declared config type, falling back
+to a default-constructed one. Override `server_config` (on `Task` or `Taskset`) if you
+need explicit pairing (e.g. two servers sharing one config type). User simulators are
+task-scoped only — they drive one rollout's conversation: `user = MyUser` on the task, a
 `vf.UserConfig` field on the task config.
 
 ## Using Judges

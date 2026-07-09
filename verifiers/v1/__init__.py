@@ -90,6 +90,7 @@ from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTa
 from verifiers.v1.taskset import TaskConfig, Taskset, TasksetConfig
 from verifiers.v1.mcp import (
     Toolset,
+    SharedToolsetConfig,
     ToolsetConfig,
     User,
     UserConfig,
@@ -243,6 +244,7 @@ __all__ = [
     "verify_boxed_math_answer",
     # mcp
     "Toolset",
+    "SharedToolsetConfig",
     "ToolsetConfig",
     # user simulator
     "User",

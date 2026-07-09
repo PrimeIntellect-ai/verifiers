@@ -286,6 +286,37 @@ def task_config_cls(cls: type) -> type[TaskConfig]:
     return _generic_arg(cls, TaskConfig, TaskConfig)
 
 
+def resolve_server_config(
+    owner: str, config: BaseConfig, server_cls: type
+) -> BaseConfig:
+    """The config a declared server class is built with, resolved off `config`'s fields:
+    the field whose value is exactly the server's declared config type
+    (`Toolset[MyConfig]` / `User[MyConfig]`), else the unique field whose value
+    isinstance-matches it, else a default-constructed one. Two matching fields raise —
+    the `server_config` methods (`Task` / `Taskset`) are the override points for explicit
+    pairing. `owner` names the declaring class in errors."""
+    cfg_cls = server_cls._config_cls()
+    values = {name: getattr(config, name) for name in type(config).model_fields}
+    matched = [name for name, v in values.items() if type(v) is cfg_cls]
+    if not matched:
+        matched = [name for name, v in values.items() if isinstance(v, cfg_cls)]
+    if len(matched) > 1:
+        raise TaskError(
+            f"{owner}: ambiguous config for {server_cls.__name__} — config fields "
+            f"{matched} all match {cfg_cls.__name__}; override `server_config` to pair "
+            f"them explicitly"
+        )
+    if matched:
+        return values[matched[0]]
+    try:
+        return cfg_cls()
+    except Exception as exc:
+        raise TaskError(
+            f"{owner}: no {cfg_cls.__name__} to build {server_cls.__name__} with — add a "
+            f"{cfg_cls.__name__} field to the config, or pass `config=...` at construction"
+        ) from exc
+
+
 class Task(Generic[DataT, StateT, TaskConfigT]):
     """The task's behavior half: hooks, server declarations, and `@reward`/`@metric`
     scoring over one row's `TaskData`. A plain class — subclass per dataset and
@@ -308,11 +339,12 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
     inside a per-task image (e.g. a SWE repo sandbox)."""
 
     tools: "ClassVar[tuple[type[Toolset], ...]]" = ()
-    """Tool server classes exposing this task's tools to the model — `vf.Toolset`s
-    (classes with `@vf.tool` methods). Declarative: name the classes; the framework
-    builds each instance with the config `server_config` resolves off `self.config`
-    (placement / runtime; a remote `url` for an already-running server). Empty by
-    default."""
+    """TASK-scoped tool server classes exposing this task's tools to the model —
+    `vf.Toolset`s (classes with `@vf.tool` methods), each launched per rollout (its
+    `ToolsetConfig`: colocated in the harness's runtime, or its own). Declarative: name
+    the classes; the framework builds each instance with the config `server_config`
+    resolves off `self.config`. Empty by default. An eval-wide server is declared on
+    `Taskset.tools` instead — scope is where you register, not a flag."""
 
     user: "ClassVar[type[User] | None]" = None
     """The task's user simulator class — structurally a tool server (an MCP server
@@ -357,36 +389,10 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
 
     def server_config(self, server_cls: type) -> BaseConfig:
         """The config a declared server class (`tools` / `user`) is built with, resolved
-        off `self.config`: the field whose value is exactly the server's declared config
-        type (`Toolset[MyConfig]` / `User[MyConfig]`), else the unique field whose value
-        isinstance-matches it, else a default-constructed one (a task config without a
-        matching field). Two matching fields raise — override this method to pair
-        explicitly (the escape hatch for exotic setups, e.g. two servers sharing one
-        config type)."""
-        cfg_cls = server_cls._config_cls()
-        values = {
-            name: getattr(self.config, name) for name in type(self.config).model_fields
-        }
-        matched = [name for name, v in values.items() if type(v) is cfg_cls]
-        if not matched:
-            matched = [name for name, v in values.items() if isinstance(v, cfg_cls)]
-        if len(matched) > 1:
-            raise TaskError(
-                f"{type(self).__name__}: ambiguous config for {server_cls.__name__} — "
-                f"task config fields {matched} all match {cfg_cls.__name__}; "
-                f"override `server_config` to pair them explicitly"
-            )
-        if matched:
-            return values[matched[0]]
-        try:
-            return cfg_cls()
-        except Exception as exc:
-            raise TaskError(
-                f"{type(self).__name__}: no {cfg_cls.__name__} to build "
-                f"{server_cls.__name__} with — add a {cfg_cls.__name__} field to the "
-                f"task config (`TasksetConfig.task`), or pass `config=...` when "
-                f"constructing the task"
-            ) from exc
+        off `self.config` (see `resolve_server_config`: exact type match, else unique
+        isinstance match, else default-constructed). Override to pair explicitly (the
+        escape hatch for exotic setups, e.g. two servers sharing one config type)."""
+        return resolve_server_config(type(self).__name__, self.config, server_cls)
 
     def tool_servers(self) -> "list[Toolset]":
         """Build this task's tool servers: one instance per class in `tools`, each

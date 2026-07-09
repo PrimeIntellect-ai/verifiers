@@ -19,7 +19,7 @@ Every matrix value carries a pytest mark, so subsets select with `-m`:
     uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
 
-Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placements `colocated` / `shared`,
+Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placement `colocated`,
 harnesses `null` / `default` / `rlm` / `kimi_code` / `codex`. A mark is applied per axis, so it
 selects every case touching that value on ANY axis; for one exact combination use `-k` on the test
 id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`). prime/modal provision real remote
@@ -82,12 +82,13 @@ def user_runtime(request) -> dict:
     return {"colocated": False, "runtime": {"type": request.param}}
 
 
-# The tool server's runtime: inside the harness's runtime (`colocated`), shared once per eval, or its
-# own runtime per rollout; this fans the tool test across all of them, each carrying its
-# placement/runtime mark (colocated/shared use the host subprocess runtime).
+# The tool server's runtime: inside the harness's runtime (`colocated`) or its own runtime
+# per rollout; this fans the tool test across all of them, each carrying its placement/runtime
+# mark (colocated uses the host subprocess runtime). Eval-wide sharing is a different SCOPE
+# (a `Taskset.tools` declaration), not a placement flag — its e2e coverage is
+# `test_shared_tool_isolation`, which fans the shared server's own runtime off this fixture.
 TOOL_RUNTIMES = [
     pytest.param("colocated", marks=pytest.mark.colocated, id="with-tool-colocated"),
-    pytest.param("shared", marks=pytest.mark.shared, id="with-tool-shared"),
     pytest.param(
         "subprocess", marks=pytest.mark.subprocess, id="with-tool-in-subprocess"
     ),
@@ -100,11 +101,9 @@ TOOL_RUNTIMES = [
 @pytest.fixture(params=TOOL_RUNTIMES)
 def tool_runtime(request) -> dict:
     """A `taskset.task.tools` override placing the tool server: `colocated` (inside the harness's
-    runtime), `shared` (one instance for the whole eval), or its own runtime, by type."""
+    runtime) or its own runtime, by type."""
     if request.param == "colocated":
         return {"colocated": True}
-    if request.param == "shared":
-        return {"shared": True}
     return {"runtime": {"type": request.param}}
 
 

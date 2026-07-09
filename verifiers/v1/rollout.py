@@ -41,7 +41,7 @@ from verifiers.v1.runtimes import (
     make_runtime,
     reachable_url,
 )
-from verifiers.v1.mcp import serve_tools, serve_user
+from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
@@ -74,7 +74,7 @@ class Rollout:
         finalize_timeout: float | None = None,
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
-        shared_urls: dict[str, str] | None = None,
+        shared_tools: dict[str, SharedToolServer] | None = None,
         interception: InterceptionPool | None = None,
     ) -> None:
         self.task = task
@@ -86,7 +86,7 @@ class Rollout:
         self.finalize_timeout = finalize_timeout
         self.scoring_timeout = scoring_timeout
         self.limits = limits or RolloutLimits()
-        self.shared_urls = shared_urls or {}
+        self.shared_tools = shared_tools or {}
         """Eval-level shared tool servers ({name: url}) to reuse instead of starting per rollout;
         the eval-level interception pool. Both injected by `Environment.episode` from the active
         `Environment.serving` context — so a rollout always has them and no runner has to thread
@@ -137,7 +137,7 @@ class Rollout:
         the trace (a bad rollout is data, not a crash), runs per-rollout scoring while
         the runtime is live, then tears the runtime down in a `finally`. Reuses the
         eval-level shared tool servers / interception pool injected at construction (see
-        `self.shared_urls` / `self.interception`)."""
+        `self.shared_tools` / `self.interception`)."""
         # The trace carries the DATA (the wire half); behavior stays on `self.task`.
         trace: Trace = Trace(task=self.task.data, state=state_cls(type(self.task))())
         self.trace = trace  # expose for the --rich dashboard
@@ -192,7 +192,7 @@ class Rollout:
                         tool_servers,
                         runtime,
                         self.task,
-                        shared_urls=self.shared_urls,
+                        shared=self.shared_tools,
                         state_port=state_port,
                         state_secret=secret,
                         state_base=state_base,

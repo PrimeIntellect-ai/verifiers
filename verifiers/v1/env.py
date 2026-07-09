@@ -34,7 +34,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import TasksetConfig
-from verifiers.v1.mcp import Toolset, serve_shared
+from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 
 class TimeoutConfig(BaseConfig):
@@ -261,7 +261,7 @@ class Environment:
             max_total_tokens=config.max_total_tokens,
         )
         self._warned_resources: set[tuple[str, str]] = set()
-        self._shared_urls: dict[str, str] = {}
+        self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: InterceptionPool | None = None
         """Eval-level serving resources, live only inside `serving()`: shared tool servers
         ({name: url}) and the interception pool. `episode()` injects them into every rollout
@@ -287,7 +287,9 @@ class Environment:
         # Capability checks read the class-level declarations (`Task.tools` / `Task.user`)
         # — declarative, so nothing is constructed; the real per-rollout instances are
         # built in `Rollout.run`.
-        if not self.harness.SUPPORTS_MCP and type(task).tools:
+        if not self.harness.SUPPORTS_MCP and (
+            type(task).tools or type(self.taskset).tools
+        ):
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not support MCP tools, but task "
                 f"{task.data.idx!r} ({type(task).__name__}) exposes tool servers (MCP). Run it with "
@@ -358,7 +360,7 @@ class Environment:
                 finalize_timeout=finalize_timeout,
                 scoring_timeout=scoring_timeout,
                 limits=self.limits,
-                shared_urls=self._shared_urls,
+                shared_tools=self._shared_tools,
                 interception=self._interception,
             )
             for _ in range(n)
@@ -366,22 +368,22 @@ class Environment:
         return Episode(rollouts, retry=retries.rollout)
 
     @contextlib.asynccontextmanager
-    async def serving(self, tasks: list[Task]):
+    async def serving(self, tasks: list[Task] | None = None):
         """Hold the env-level serving resources for the duration of an eval: the shared tool
         servers (built once, see `shared_tools`) and the interception pool. Stash them so
         every `episode()` built inside this context injects them into its rollouts — that's
         what keeps both eval runners (in-process and env-server) on one serving path. Build
         episodes inside this context; the resources are torn down on exit."""
         async with (
-            self.shared_tools(tasks) as shared_urls,
+            self.shared_tools() as shared,
             self.interception_pool() as interception,
         ):
-            self._shared_urls = shared_urls
+            self._shared_tools = shared
             self._interception = interception
             try:
                 yield
             finally:
-                self._shared_urls = {}
+                self._shared_tools = {}
                 self._interception = None
 
     def interception_pool(self) -> InterceptionPool:
@@ -392,41 +394,19 @@ class Environment:
         return InterceptionPool(self.harness.config.runtime, self.config.multiplex)
 
     @contextlib.asynccontextmanager
-    async def shared_tools(self, tasks: list[Task]):
-        """Start any tool servers whose placement is `shared` ONCE for the eval (each in its
-        own `runtime`) and yield `{name: url}` to inject into every rollout — so an expensive
-        corpus is built once, not per rollout. No-op ({}) when none are shared. A shared server
-        must be task-agnostic: its `setup` gets no task (so it can't silently serve one task's
-        data to every rollout); calling `tool_servers()` here only builds the toolset instances.
-        Every task is swept — declarations are class-level and one class per taskset, but a
-        `server_config` override can still vary a server's config per row (the sweep is cheap,
-        runs once per eval, and constructs without launching) — deduped by server name (same
-        name = the same task-agnostic server, started once). A shared server on a host runtime
-        is bridged to the host once (a tunnel) when the harness runs remotely, so an in-sandbox
-        harness can still reach it (see `serve_shared`)."""
-        servers: dict[str, Toolset] = {}
-        for task in tasks:
-            for server in task.tool_servers():
-                if not server.config.shared:
-                    continue
-                seen = servers.get(server.server_name)
-                if seen is None:
-                    servers[server.server_name] = server
-                # The name is the routing key (`shared_urls[name]`), so same-named shared
-                # servers must be the same server — refuse to silently route two different
-                # ones to whichever started.
-                elif type(seen) is not type(server) or seen.config != server.config:
-                    raise ValueError(
-                        f"shared tool server name {server.server_name!r} is claimed by two "
-                        f"different servers ({type(seen).__name__} / {type(server).__name__}); "
-                        f"every rollout routes to one eval-level server per name, so "
-                        f"same-named shared servers must be identical — rename one"
-                    )
+    async def shared_tools(self):
+        """Start the taskset-scoped (shared) tool servers ONCE for the eval — the classes
+        declared on `Taskset.tools`, each in its own `runtime` — and yield
+        `{name: SharedToolServer}` to inject into every rollout, so an expensive corpus is
+        built once, not per rollout. No-op ({}) when the taskset declares none. Sharing is
+        structural: the taskset carries no per-row data, so a shared server is
+        task-agnostic by construction (its `setup` gets no task). A shared server on a host
+        runtime is bridged to the host once (a tunnel) when the harness runs remotely, so
+        an in-sandbox harness can still reach it (see `serve_shared`)."""
+        servers = self.taskset.tool_servers()
         if not servers:
             yield {}
             return
         harness_is_local = runtime_is_local(self.harness.config.runtime)
-        async with serve_shared(
-            list(servers.values()), harness_is_local=harness_is_local
-        ) as urls:
-            yield urls
+        async with serve_shared(servers, harness_is_local=harness_is_local) as shared:
+            yield shared
