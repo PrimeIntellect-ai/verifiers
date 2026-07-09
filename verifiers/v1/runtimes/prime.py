@@ -102,10 +102,11 @@ class PrimeRuntime(Runtime):
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
         # prime's idle timeout is in whole minutes; convert from the seconds config surface
-        # (floored to the SDK's 1-minute minimum).
+        # (floored to the SDK's 1-minute minimum). VM sandboxes don't support an idle timeout
+        # (the API 422s on it), so it's dropped there rather than failing every VM rollout.
         idle_minutes = (
             max(1, math.ceil(self.config.idle_timeout / 60))
-            if self.config.idle_timeout is not None
+            if self.config.idle_timeout is not None and not self.config.vm
             else None
         )
         options = {
