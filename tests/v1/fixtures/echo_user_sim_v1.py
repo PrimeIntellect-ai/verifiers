@@ -45,8 +45,13 @@ class EchoUserSimUser(vf.User[vf.UserConfig, EchoUserSimState]):
         return [{"role": "user", "content": self.phrases[self.turns]}]
 
 
-class EchoUserSimTask(vf.Task[EchoUserSimState, EchoUserSimTaskConfig]):
+class EchoUserSimData(vf.TaskData):
     phrases: list[str]
+
+
+class EchoUserSimTask(
+    vf.Task[EchoUserSimData, EchoUserSimState, EchoUserSimTaskConfig]
+):
     user = EchoUserSimUser
     # Built with the task config's `user` field (placement stays CLI-tunable via
     # --taskset.task.user.*), resolved by `Task.server_config`.
@@ -58,7 +63,7 @@ class EchoUserSimTask(vf.Task[EchoUserSimState, EchoUserSimTaskConfig]):
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
         replies = [m.content for m in trace.assistant_messages]
-        phrases = self.phrases
+        phrases = self.data.phrases
         if len(replies) < len(phrases):
             return 0.0
         matched = sum(_key(p) in _key(r or "") for r, p in zip(replies, phrases))
@@ -66,9 +71,9 @@ class EchoUserSimTask(vf.Task[EchoUserSimState, EchoUserSimTaskConfig]):
 
 
 class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
-    def load(self) -> list[EchoUserSimTask]:
+    def load(self) -> list[EchoUserSimData]:
         return [
-            EchoUserSimTask(
+            EchoUserSimData(
                 idx=0,
                 prompt=self.config.phrases[0],
                 system_prompt=SYSTEM,

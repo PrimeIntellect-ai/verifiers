@@ -59,10 +59,14 @@ class WikiSearchTaskConfig(vf.TaskConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
 
 
-class TriviaTask(vf.Task[vf.State, WikiSearchTaskConfig]):
+class TriviaTaskData(vf.TaskData):
     question: str
     answer: str
+    # `question`/`answer` feed the plugged reference judge (it reads them off the row by
+    # field name: `question_field`/`answer_field`).
 
+
+class TriviaTask(vf.Task[TriviaTaskData, vf.State, WikiSearchTaskConfig]):
     tools = (WikiSearchToolset,)
     # Built with the task config's `tools` field (SHARED by default; placement stays
     # CLI-tunable), resolved by `Task.server_config`.
@@ -73,12 +77,12 @@ class WikiSearchConfig(vf.TasksetConfig):
 
 
 class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
-    def load(self) -> list[TriviaTask]:
+    def load(self) -> list[TriviaTaskData]:
         from datasets import load_dataset
 
         rows = load_dataset(QUESTIONS_DATASET, split="train")
         return [
-            TriviaTask(
+            TriviaTaskData(
                 idx=i,
                 question=row["question"],
                 answer=str(row["answer"]),

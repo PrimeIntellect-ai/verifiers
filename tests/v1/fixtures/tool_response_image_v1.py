@@ -41,9 +41,9 @@ class ToolResponseImageTask(vf.Task):
 
 
 class ToolResponseImageTaskset(vf.Taskset[ToolResponseImageTask, vf.TasksetConfig]):
-    def load(self) -> list[ToolResponseImageTask]:
+    def load(self) -> list[vf.TaskData]:
         return [
-            ToolResponseImageTask(
+            vf.TaskData(
                 idx=0,
                 prompt=(
                     "Call the `vision_snapshot` tool exactly once. After it returns, "

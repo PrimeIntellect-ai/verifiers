@@ -20,34 +20,37 @@ However, for most environments, a task subclass plus a thin taskset loader is en
 
 ## A minimal environment
 
-A `vf.Task` carries a single problem's data *and* its behavior — the `@vf.reward` /
-`@vf.metric` scoring methods, lifecycle hooks, and tool/user declarations all live on the
-task subclass and read the task's own fields off `self`. The `vf.Taskset` is just the
-loader: config in, typed tasks out, one concrete task type per taskset.
+A task is split into data and behavior. `vf.TaskData` is one row's pure data — the wire
+shape saved on every trace; subclass it to add typed fields (the reference answer, ground
+truths). `vf.Task` is the behavior — `@vf.reward` / `@vf.metric` scoring methods, lifecycle
+hooks, and tool/user declarations — reading the row off `self.data`. The `vf.Taskset` is
+the loader: `load()` returns the data rows, and the framework wraps each in the declared
+task type (one task type per taskset).
 
 ```python
 import verifiers.v1 as vf
 
 
-# A task defines a single problem: its data fields plus how it is scored.
-class AdditionTask(vf.Task):
+# One row's data: the wire shape (what traces store).
+class AdditionData(vf.TaskData):
     answer: int
 
-    # @vf.reward denotes a scoring function. It receives whatever it declares by
-    # parameter name (`trace`, `runtime`); `self` is the task, so your fields are
-    # right there. The trace contains the whole message graph, including function
-    # calls and user messages.
+
+# The behavior: how a row is scored. @vf.reward receives whatever it declares by
+# parameter name (`trace`, `runtime`); the row is `self.data`. The trace contains
+# the whole message graph, including function calls and user messages.
+class AdditionTask(vf.Task[AdditionData]):
     @vf.reward
     async def exact_match(self, trace: vf.Trace) -> float:
-        return float(trace.last_reply == str(self.answer))
+        return float(trace.last_reply == str(self.data.answer))
 
 
-# The taskset is the loader. It needs a vf.TasksetConfig, which can be empty.
+# The taskset is the loader: it yields the data rows.
 class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
-    def load(self) -> list[AdditionTask]:
+    def load(self) -> list[AdditionData]:
         # Load the dataset, in this case we build it on the initial load
         return [
-            AdditionTask(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i)
+            AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i)
             for i in range(100)
         ]
 
@@ -70,9 +73,9 @@ class AdditionConfig(vf.TasksetConfig):
     num_tasks: int = 100
 
 class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
-    def load(self) -> list[AdditionTask]:
+    def load(self) -> list[AdditionData]:
         return [
-            AdditionTask(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i)
+            AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i)
             for i in range(self.config.num_tasks) # <- re-use the value here
         ]
 ```
@@ -81,16 +84,14 @@ Common usages for `vf.TasksetConfig` are **load-time** settings: splits (e.g., t
 dataset names, sample counts, rng seeds.
 
 Knobs the *task itself* reads — scoring parameters, judge endpoints, server placement — go
-on a `vf.TaskConfig`, nested on the taskset config under `task` and stamped onto every
-loaded row. The task reads them off `self.config`, typed by parameterizing the task:
+on a `vf.TaskConfig`, nested on the taskset config under `task` and passed to every
+constructed task. The task reads them off `self.config`, typed by parameterizing the task:
 
 ```python
 class AdditionTaskConfig(vf.TaskConfig):
     tolerance: float = 0.0
 
-class AdditionTask(vf.Task[vf.State, AdditionTaskConfig]):
-    answer: int
-
+class AdditionTask(vf.Task[AdditionData, vf.State, AdditionTaskConfig]):
     @vf.reward
     async def exact_match(self, trace: vf.Trace) -> float:
         tolerance = self.config.tolerance  # a config knob, not a per-row field
@@ -101,11 +102,14 @@ class AdditionConfig(vf.TasksetConfig):
     task: AdditionTaskConfig = AdditionTaskConfig()   # task-facing: --taskset.task.tolerance
 ```
 
-The boundary: per-row data (the question, the reference answer) lives on task fields;
+The boundary: per-row data (the question, the reference answer) lives on `TaskData` fields;
 values uniform across the taskset live on the config — load-time ones directly on the
-`TasksetConfig`, task-facing ones under `task`. A task can also be constructed directly
-with a config (`AdditionTask(idx=0, prompt=..., config=AdditionTaskConfig(...))`) — omitted,
-it defaults to the declared type's defaults, so a standalone task works out of the box.
+`TasksetConfig`, task-facing ones under `task`. A task can also be constructed directly —
+`AdditionTask(data, config=AdditionTaskConfig(...))`, or `AdditionTask.from_trace(trace)`
+to derive one from a finished rollout — and an omitted config defaults to the declared
+type's defaults, so a standalone task works out of the box. Only the data rides the wire:
+`trace.task` is the `TaskData`, and behavior re-attaches by constructing the task class
+around it.
 
 ## Adding Tools
 

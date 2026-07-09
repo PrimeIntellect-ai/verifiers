@@ -94,12 +94,16 @@ class ColorCodewordConfig(vf.TasksetConfig):
     task: ColorCodewordTaskConfig = ColorCodewordTaskConfig()
 
 
-class ColorCodewordTask(vf.Task[ColorCodewordState, ColorCodewordTaskConfig]):
+class ColorCodewordTaskData(vf.TaskData):
     answer: str
     """The full expected codeword (one letter per square shown, in order)."""
     info: dict
     """The episode the user simulator replays: `colors_per_turn` and `max_turns`."""
 
+
+class ColorCodewordTask(
+    vf.Task[ColorCodewordTaskData, ColorCodewordState, ColorCodewordTaskConfig]
+):
     user = ColorCodewordUser
     # Built with the task config's `user` field (placement stays CLI-tunable via
     # --taskset.task.user.*), resolved by `Task.server_config`.
@@ -112,28 +116,28 @@ class ColorCodewordTask(vf.Task[ColorCodewordState, ColorCodewordTaskConfig]):
     async def exact_match(self, trace: vf.Trace) -> float:
         responses = trace.assistant_messages
         last = (responses[-1].content if responses else "") or ""
-        return 1.0 if extract_codeword(last) == self.answer else 0.0
+        return 1.0 if extract_codeword(last) == self.data.answer else 0.0
 
     @vf.metric
     async def partial_match(self, trace: vf.Trace) -> float:
-        if not self.answer:
+        if not self.data.answer:
             return 0.0
         responses = trace.assistant_messages
         last = (responses[-1].content if responses else "") or ""
         extracted = extract_codeword(last)
-        return sum(1 for a, b in zip(self.answer, extracted) if a == b) / len(
-            self.answer
+        return sum(1 for a, b in zip(self.data.answer, extracted) if a == b) / len(
+            self.data.answer
         )
 
 
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
-    def load(self) -> list[ColorCodewordTask]:
+    def load(self) -> list[ColorCodewordTaskData]:
         c = self.config
         rng = random.Random(SEED)
         colors = list(COLOR_MAP)
         color_urls = {color: color_data_url(color) for color in colors}
         length = c.images_per_turn * MAX_TURNS
-        tasks: list[ColorCodewordTask] = []
+        tasks: list[ColorCodewordTaskData] = []
         for idx in range(c.num_examples):
             sequence = [rng.choice(colors) for _ in range(length)]
             answer = "".join(COLOR_MAP[col] for col in sequence)
@@ -148,7 +152,7 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
                 for col in turn0
             ] + [vf.TextContentPart(text=text)]
             tasks.append(
-                ColorCodewordTask(
+                ColorCodewordTaskData(
                     idx=idx,
                     prompt=[vf.UserMessage(content=parts)],
                     system_prompt=SYSTEM_PROMPT,

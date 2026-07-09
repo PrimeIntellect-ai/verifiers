@@ -14,14 +14,18 @@ in which case `JudgeResponse.parsed` is the validated pydantic object.
         def parse(self, response: vf.JudgeResponse[bool]) -> bool:
             return response.text.strip().lower().startswith("yes")
 
-    class MyTask(vf.Task[vf.State, MyConfig]):
+    class MyData(vf.TaskData):
         answer: str
 
+    class MyTask(vf.Task[MyData, vf.State, MyConfig]):
         @vf.reward
         async def correct(self, trace) -> float:
             judge = CorrectnessJudge(self.config.judge)  # config.judge: vf.JudgeConfig
             result = await judge.evaluate(
-                trace=trace, question=self.prompt_text, answer=self.answer, response=...
+                trace=trace,
+                question=self.data.prompt_text,
+                answer=self.data.answer,
+                response=...,
             )
             return float(result.parsed)
 
@@ -58,7 +62,7 @@ from verifiers.v1.utils.install import env_name
 from verifiers.v1.types import ID, Messages, SamplingConfig, StrictBaseModel, Usage
 
 if TYPE_CHECKING:
-    from verifiers.v1.task import Task
+    from verifiers.v1.task import TaskData
     from verifiers.v1.trace import Trace
 
 ParsedT = TypeVar("ParsedT")
@@ -170,7 +174,7 @@ JudgeView = Literal["last_reply", "full_trace"]
 The type of the built-ins' `view` field; resolve it with `judge_response`."""
 
 
-def judge_question(task: "Task", question_field: str) -> str:
+def judge_question(task: "TaskData", question_field: str) -> str:
     """The text a judge prompt's `{question}` gets: the task field named by `question_field`
     (raising on a missing field, like `answer_field`), or — when unset — the whole task
     prompt rendered as text (`Task.prompt_text`)."""
@@ -272,7 +276,9 @@ class Judge(Generic[ParsedT, ConfigT]):
             )
         return template.format(**fields)
 
-    async def score(self, task: "Task", trace: "Trace") -> float | Mapping[str, float]:
+    async def score(
+        self, task: "TaskData", trace: "Trace"
+    ) -> float | Mapping[str, float]:
         """The plugged-judge contract: grade one finished rollout, returning a verdict that
         `Task.score` records into `trace.rewards` under `config.reward_name` with
         `config.weight` (a mapping records each entry under its own key, like a `@reward`).

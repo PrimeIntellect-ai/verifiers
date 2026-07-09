@@ -33,7 +33,7 @@ class CounterTaskConfig(vf.TaskConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig()
 
 
-class CounterTask(vf.Task[CounterState, CounterTaskConfig]):
+class CounterTask(vf.Task[vf.TaskData, CounterState, CounterTaskConfig]):
     tools = (CounterToolset,)
     # Built with the task config's `tools` field (placement stays CLI-tunable via
     # --taskset.task.tools.*), resolved by `Task.server_config`.
@@ -50,9 +50,9 @@ class CounterConfig(vf.TasksetConfig):
 
 
 class CounterTaskset(vf.Taskset[CounterTask, CounterConfig]):
-    def load(self) -> list[CounterTask]:
+    def load(self) -> list[vf.TaskData]:
         return [
-            CounterTask(
+            vf.TaskData(
                 idx=0,
                 prompt=(
                     f"Call the `counter_bump` tool {TARGET} times, one call per turn — wait for "

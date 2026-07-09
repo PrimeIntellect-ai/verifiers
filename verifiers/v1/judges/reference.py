@@ -32,7 +32,7 @@ from verifiers.v1.judge import (
     judge_response,
     judge_verdict,
 )
-from verifiers.v1.task import Task
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID
 
@@ -85,7 +85,7 @@ class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
             judge_verdict(response.text, self.config.choices) == self.config.choices[0]
         )
 
-    async def score(self, task: Task, trace: Trace) -> float:
+    async def score(self, task: TaskData, trace: Trace) -> float:
         answer = getattr(task, self.config.answer_field, None)
         if answer is None:
             raise ValueError(

@@ -403,7 +403,7 @@ def _groups(rollouts: list[Rollout]) -> list[list[Rollout]]:
     # and shown too — as `[pending]`. Finished ones stay (never removed).
     by_task: dict[int, list[Rollout]] = {}
     for rollout in rollouts:
-        by_task.setdefault(rollout.task.idx, []).append(rollout)
+        by_task.setdefault(rollout.task.data.idx, []).append(rollout)
     groups = list(by_task.values())
     for group in groups:
         group.sort(key=_started)
@@ -425,7 +425,7 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
     for group in groups:
         for i, rollout in enumerate(group):
             t = rollout.trace
-            task = rollout.task
+            task = rollout.task.data
             label = f"name={task.name[:32]}" if task.name else f"idx={task.idx}"
             if (
                 t is None

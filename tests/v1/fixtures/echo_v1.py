@@ -22,10 +22,12 @@ def lenient_match(answer: str, text: str) -> bool:
     return _key(answer) in _key(text)
 
 
-class EchoTask(vf.Task):
+class EchoData(vf.TaskData):
     answer: str
     """The phrase the model should echo back."""
 
+
+class EchoTask(vf.Task[EchoData]):
     @vf.stop
     async def single_turn(self, trace: vf.Trace) -> bool:
         return trace.num_turns >= 1
@@ -33,7 +35,7 @@ class EchoTask(vf.Task):
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
         reply = trace.assistant_messages[-1].content if trace.assistant_messages else ""
-        return float(lenient_match(self.answer, reply or ""))
+        return float(lenient_match(self.data.answer, reply or ""))
 
 
 class EchoConfig(vf.TasksetConfig):
@@ -41,11 +43,11 @@ class EchoConfig(vf.TasksetConfig):
 
 
 class EchoTaskset(vf.Taskset[EchoTask, EchoConfig]):
-    def load(self) -> list[EchoTask]:
+    def load(self) -> list[EchoData]:
         return [
             # Keep coding-agent harnesses on the direct-response path instead of
             # spending this single-turn smoke task on a tool call.
-            EchoTask(
+            EchoData(
                 idx=i,
                 prompt=(
                     "Do not call tools or execute code. Reply immediately and include "

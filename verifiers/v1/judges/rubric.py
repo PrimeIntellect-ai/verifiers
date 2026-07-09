@@ -44,7 +44,7 @@ from verifiers.v1.judge import (
     judge_question,
     judge_response,
 )
-from verifiers.v1.task import Task
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID, StrictBaseModel
 
@@ -211,7 +211,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         return criteria
 
     async def grade_batch(
-        self, task: Task, trace: Trace, batch: list[Criterion]
+        self, task: TaskData, trace: Trace, batch: list[Criterion]
     ) -> dict[str, float]:
         """Grade one batch of criteria in a single judge call — structured output, or plain-text
         JSON when `structured_output` is off (which avoids flaky structured decoding). Returns
@@ -285,7 +285,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             scores[v.name] = normalize_choice(v.verdict, choices)
         return scores
 
-    async def score(self, task: Task, trace: Trace) -> float:
+    async def score(self, task: TaskData, trace: Trace) -> float:
         criteria = self.criteria
         # Split into batches of `max_criteria` (None = one batch of all), then grade the batches
         # concurrently (one judge call each) and merge.

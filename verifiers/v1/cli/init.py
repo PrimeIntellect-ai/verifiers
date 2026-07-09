@@ -76,12 +76,12 @@ def _init_py(pkg: str, prefix: str, add_harness: bool) -> str:
 
 
 def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str:
-    """The taskset module skeleton — the task's behavior (`@reward`, tool/user declarations) on
-    the `Task` subclass, and a thin `Taskset` with `load` to fill in. Each enabled piece
-    (tool/user) adds its import, a class-level declaration on the task, and a field on the
-    task's config (`vf.TaskConfig`, nested under `TasksetConfig.task` and read as
-    `self.config` — the framework builds each declared server with the matching config
-    field; see `Task.server_config`)."""
+    """The taskset module skeleton — the row's data on a `TaskData` subclass, the behavior
+    (`@reward`, tool/user declarations) on the `Task` subclass, and a thin `Taskset` whose
+    `load` returns the data rows. Each enabled piece (tool/user) adds its import, a
+    class-level declaration on the task, and a field on the task's config (`vf.TaskConfig`,
+    nested under `TasksetConfig.task` and read as `self.config` — the framework builds each
+    declared server with the matching config field; see `Task.server_config`)."""
     imports = "import verifiers.v1 as vf"
     local_imports: list[str] = []
     task_config_fields = ""
@@ -114,8 +114,12 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str
 {imports}
 
 
-class {prefix}Task(vf.Task):
-    """A single task. Add task-specific fields here (e.g. a reference answer)."""
+class {prefix}Data(vf.TaskData):
+    """One row's data. Add task-specific fields here (e.g. a reference answer)."""
+
+
+class {prefix}Task(vf.Task[{prefix}Data]):
+    """The task's behavior: rewards and hooks, reading the row off `self.data`."""
 
     @vf.reward(weight=1.0)
     async def reward(self, trace: vf.Trace) -> float:
@@ -128,22 +132,27 @@ class {prefix}Config(vf.TasksetConfig):
 
 
 class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
-    def load(self) -> list[{prefix}Task]:
+    def load(self) -> list[{prefix}Data]:
         raise NotImplementedError(
-            "Return this taskset's tasks, e.g. "
-            "[{prefix}Task(idx=i, prompt=...) for i in range(self.config.num_tasks)]."
+            "Return this taskset's rows, e.g. "
+            "[{prefix}Data(idx=i, prompt=...) for i in range(self.config.num_tasks)]."
         )
 '''
     return f'''\
 {imports}
 
 
+class {prefix}Data(vf.TaskData):
+    """One row's data. Add task-specific fields here (e.g. a reference answer)."""
+
+
 class {prefix}TaskConfig(vf.TaskConfig):
     """Knobs the task reads (`self.config`) — under `--taskset.task.*`."""{task_config_fields}
 
 
-class {prefix}Task(vf.Task[{state}, {prefix}TaskConfig]):
-    """A single task. Add task-specific fields here (e.g. a reference answer)."""{task_decls}
+class {prefix}Task(vf.Task[{prefix}Data, {state}, {prefix}TaskConfig]):
+    """The task's behavior: rewards, hooks, and server declarations, reading the row
+    off `self.data` and the knobs off `self.config`."""{task_decls}
 {methods_block}
     @vf.reward(weight=1.0)
     async def reward(self, trace: vf.Trace) -> float:
@@ -157,10 +166,10 @@ class {prefix}Config(vf.TasksetConfig):
 
 
 class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
-    def load(self) -> list[{prefix}Task]:
+    def load(self) -> list[{prefix}Data]:
         raise NotImplementedError(
-            "Return this taskset's tasks, e.g. "
-            "[{prefix}Task(idx=i, prompt=...) for i in range(self.config.num_tasks)]."
+            "Return this taskset's rows, e.g. "
+            "[{prefix}Data(idx=i, prompt=...) for i in range(self.config.num_tasks)]."
         )
 '''
 

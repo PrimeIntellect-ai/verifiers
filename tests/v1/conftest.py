@@ -75,7 +75,7 @@ USER_RUNTIMES = [
 
 @pytest.fixture(params=USER_RUNTIMES)
 def user_runtime(request) -> dict:
-    """A `taskset.user` override placing the user simulator: `colocated` (inside the harness's
+    """A `taskset.task.user` override placing the user simulator: `colocated` (inside the harness's
     runtime) or its own runtime, by type."""
     if request.param == "colocated":
         return {"colocated": True}
@@ -99,7 +99,7 @@ TOOL_RUNTIMES = [
 
 @pytest.fixture(params=TOOL_RUNTIMES)
 def tool_runtime(request) -> dict:
-    """A `taskset.tools` override placing the tool server: `colocated` (inside the harness's
+    """A `taskset.task.tools` override placing the tool server: `colocated` (inside the harness's
     runtime), `shared` (one instance for the whole eval), or its own runtime, by type."""
     if request.param == "colocated":
         return {"colocated": True}

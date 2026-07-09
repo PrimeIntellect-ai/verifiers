@@ -29,7 +29,7 @@ from verifiers.v1.serve.types import (
     RunRolloutRequest,
     RunRolloutResponse,
 )
-from verifiers.v1.task import WireTask
+from verifiers.v1.task import WireTaskData
 from verifiers.v1 import graph
 from verifiers.v1.trace import Error, TimeSpan, Timing, Trace
 from verifiers.v1.types import (
@@ -228,7 +228,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         else:
             error = Error(type="Error", message=str(raw_error), traceback=None)
 
-    trace: Trace = Trace[WireTask](
+    trace: Trace = Trace[WireTaskData](
         task=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
         rewards={"reward": float(out.get("reward") or 0.0)},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
@@ -249,10 +249,10 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     return trace
 
 
-def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTask:
+def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTaskData:
     """Carry the v0 prompt's meta onto the v1 task: the system message becomes
     ``system_prompt``, the user message(s) become ``prompt``, and the reference
-    ``answer`` rides along as a taskset-extra field (``WireTask`` allows extras)."""
+    ``answer`` rides along as a taskset-extra field (``WireTaskData`` allows extras)."""
     system_prompt: str | None = None
     user_texts: list[str] = []
     for m in prompt or []:
@@ -264,7 +264,7 @@ def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTask:
         elif m.get("role") == "user":
             user_texts.append(_text(m.get("content")))
     extra = {"answer": answer} if answer else {}
-    return WireTask(
+    return WireTaskData(
         idx=task_idx,
         prompt="\n\n".join(user_texts),
         system_prompt=system_prompt,

@@ -35,9 +35,13 @@ class ScratchpadTaskConfig(vf.TaskConfig):
     tools: ScratchpadToolsetConfig = ScratchpadToolsetConfig(shared=True)
 
 
-class ScratchpadTask(vf.Task[ScratchpadState, ScratchpadTaskConfig]):
+class ScratchpadTaskData(vf.TaskData):
     word: str
 
+
+class ScratchpadTask(
+    vf.Task[ScratchpadTaskData, ScratchpadState, ScratchpadTaskConfig]
+):
     tools = (ScratchpadToolset,)
     # Built with the task config's `tools` field (a `ScratchpadToolsetConfig`, matched
     # by exact type; SHARED by default, CLI-tunable via --taskset.task.tools.*), resolved
@@ -51,7 +55,7 @@ class ScratchpadTask(vf.Task[ScratchpadState, ScratchpadTaskConfig]):
     @vf.reward(weight=1.0)
     async def isolated(self, trace: vf.Trace) -> float:
         answer = trace.last_reply
-        return float(self.word in (answer or ""))
+        return float(self.data.word in (answer or ""))
 
 
 class ScratchpadConfig(vf.TasksetConfig):
@@ -59,9 +63,9 @@ class ScratchpadConfig(vf.TasksetConfig):
 
 
 class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig]):
-    def load(self) -> list[ScratchpadTask]:
+    def load(self) -> list[ScratchpadTaskData]:
         return [
-            ScratchpadTask(
+            ScratchpadTaskData(
                 idx=i,
                 word=w,
                 prompt=INSTRUCTION.format(word=w),

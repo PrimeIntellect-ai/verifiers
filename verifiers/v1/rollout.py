@@ -138,7 +138,8 @@ class Rollout:
         the runtime is live, then tears the runtime down in a `finally`. Reuses the
         eval-level shared tool servers / interception pool injected at construction (see
         `self.shared_urls` / `self.interception`)."""
-        trace: Trace = Trace(task=self.task, state=state_cls(type(self.task))())
+        # The trace carries the DATA (the wire half); behavior stays on `self.task`.
+        trace: Trace = Trace(task=self.task.data, state=state_cls(type(self.task))())
         self.trace = trace  # expose for the --rich dashboard
         self.phase = Phase.SETUP  # leaving the queue: provisioning starts now
         trace.timing.setup.start = time.time()
@@ -154,7 +155,7 @@ class Rollout:
         logger.info(
             "rollout start: id=%s task=%s harness=%s runtime=%s",
             trace.id,
-            self.task.idx,
+            self.task.data.idx,
             self.harness.config.name,
             self.runtime_config.type,
         )
@@ -205,7 +206,7 @@ class Rollout:
                         state_base=state_base,
                     ) as session.user,
                 ):
-                    if self.task.prompt is None and session.user is None:
+                    if self.task.data.prompt is None and session.user is None:
                         raise TaskError(
                             "task has no prompt and no user simulator to open the "
                             "conversation; set task.prompt or declare a simulator "
@@ -293,7 +294,7 @@ class Rollout:
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,
-            self.task.idx,
+            self.task.data.idx,
             trace.reward,
             trace.num_turns,
             trace.error.type if trace.error else trace.stop_condition,

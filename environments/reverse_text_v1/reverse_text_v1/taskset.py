@@ -17,10 +17,12 @@ SYSTEM = (
 _TAG = re.compile(r"<reversed_text>(.*?)</reversed_text>", re.DOTALL)
 
 
-class ReverseTextTask(vf.Task):
+class ReverseTextData(vf.TaskData):
     answer: str
     """The ground-truth reversal of the prompt text."""
 
+
+class ReverseTextTask(vf.Task[ReverseTextData]):
     @vf.stop
     async def single_turn(self, trace: vf.Trace) -> bool:
         # Reverse-text is single-turn: refuse a second turn so the model answers once.
@@ -31,7 +33,7 @@ class ReverseTextTask(vf.Task):
         completion = trace.last_reply
         match = _TAG.search(completion or "")
         response = match.group(1).strip() if match else ""
-        return SequenceMatcher(None, response, self.answer).ratio()
+        return SequenceMatcher(None, response, self.data.answer).ratio()
 
 
 class ReverseTextConfig(vf.TasksetConfig):
@@ -40,12 +42,12 @@ class ReverseTextConfig(vf.TasksetConfig):
 
 
 class ReverseTextTaskset(vf.Taskset[ReverseTextTask, ReverseTextConfig]):
-    def load(self) -> list[ReverseTextTask]:
+    def load(self) -> list[ReverseTextData]:
         from datasets import load_dataset
 
         rows = load_dataset(self.config.dataset_name, split=self.config.dataset_split)
         return [
-            ReverseTextTask(
+            ReverseTextData(
                 idx=i,
                 prompt=row["prompt"],
                 system_prompt=SYSTEM,

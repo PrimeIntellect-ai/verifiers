@@ -25,17 +25,19 @@ def lenient_match(answer: str, text: str) -> bool:
     return _key(answer) in _key(text)
 
 
-class EchoAgenticTask(vf.Task):
+class EchoAgenticData(vf.TaskData):
     answer: str
     """The phrase the model should write into the file."""
 
+
+class EchoAgenticTask(vf.Task[EchoAgenticData]):
     @vf.reward(weight=1.0)
     async def wrote_phrase(self, runtime: Runtime) -> float:
         try:
             content = (await runtime.read(TARGET)).decode(errors="replace")
         except (SandboxError, OSError, ValueError):
             return 0.0  # the model never wrote the file
-        return float(lenient_match(self.answer, content))
+        return float(lenient_match(self.data.answer, content))
 
 
 class EchoAgenticConfig(vf.TasksetConfig):
@@ -43,10 +45,10 @@ class EchoAgenticConfig(vf.TasksetConfig):
 
 
 class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
-    def load(self) -> list[EchoAgenticTask]:
+    def load(self) -> list[EchoAgenticData]:
         phrase = self.config.phrase
         return [
-            EchoAgenticTask(
+            EchoAgenticData(
                 idx=0,
                 prompt=(
                     f"Use the bash tool to write exactly the text '{phrase}' to a file named "

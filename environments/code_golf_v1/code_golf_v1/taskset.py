@@ -34,10 +34,12 @@ def extract_program(trace: vf.Trace) -> str:
     return (match.group(1) if match else text or "").strip()
 
 
-class CodeGolfTask(vf.Task):
+class CodeGolfData(vf.TaskData):
     expected: str
     """The exact stdout the program must produce."""
 
+
+class CodeGolfTask(vf.Task[CodeGolfData]):
     @vf.metric
     async def evaluate(self, trace: vf.Trace, runtime: vf.Runtime) -> dict[str, float]:
         """Run the program once in the rollout's runtime; record correctness + latency."""
@@ -48,7 +50,9 @@ class CodeGolfTask(vf.Task):
         start = time.perf_counter()
         result = await runtime.run(["python3", "solution.py"], {})
         latency = time.perf_counter() - start
-        passed = float(result.exit_code == 0 and result.stdout.strip() == self.expected)
+        passed = float(
+            result.exit_code == 0 and result.stdout.strip() == self.data.expected
+        )
         return {"passed": passed, "latency": latency}
 
     @vf.reward
@@ -82,9 +86,9 @@ class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
         ("reverse-str", "the string HELLO reversed", "OLLEH"),
     ]
 
-    def load(self) -> list[CodeGolfTask]:
+    def load(self) -> list[CodeGolfData]:
         return [
-            CodeGolfTask(
+            CodeGolfData(
                 idx=i,
                 name=name,
                 prompt=f"{SYSTEM}\n\nPrint {description}.",

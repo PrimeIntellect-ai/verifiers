@@ -23,7 +23,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.decorators import reward
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.state import State
-from verifiers.v1.task import Task, TaskResources
+from verifiers.v1.task import Task, TaskData, TaskResources
 from verifiers.v1.taskset import TaskConfig, Taskset, TasksetConfig
 from verifiers.v1.tasksets.lean.scoring import (
     build_starter_file,
@@ -75,9 +75,7 @@ class LeanConfig(TasksetConfig):
     task: LeanTaskConfig = LeanTaskConfig()
 
 
-class LeanTask(Task[State, LeanTaskConfig]):
-    NEEDS_CONTAINER = True
-
+class LeanData(TaskData):
     formal_statement: str
     header: str = ""
     imports: str = "import Mathlib"
@@ -87,8 +85,12 @@ class LeanTask(Task[State, LeanTaskConfig]):
     protected_signature: str = ""
     # Gold proof body (replaces ``  sorry``); "" when the dataset ships no gold.
     formal_proof: str = ""
-    # Sandbox layout + compile budget are config knobs: read off `self.config`
-    # (LeanTaskConfig), not baked into per-row fields.
+
+
+class LeanTask(Task[LeanData, State, LeanTaskConfig]):
+    NEEDS_CONTAINER = True
+    # The row is `self.data` (LeanData); the sandbox layout + compile budget are
+    # config knobs, read off `self.config` (LeanTaskConfig).
 
     async def _compile(self, runtime: Runtime) -> tuple[bool, str, int]:
         """Run ``lake env lean`` on the proof file; returns (compiled, output, exit_code)."""
@@ -104,10 +106,10 @@ class LeanTask(Task[State, LeanTaskConfig]):
     async def setup(self, runtime: Runtime) -> None:
         """Plant the ``sorry`` starter file in the sandbox before the agent runs."""
         content = build_starter_file(
-            self.formal_statement,
-            header=self.header,
-            imports=self.imports,
-            normalize=self.normalize_mathlib_imports,
+            self.data.formal_statement,
+            header=self.data.header,
+            imports=self.data.imports,
+            normalize=self.data.normalize_mathlib_imports,
         )
         await runtime.write(self.config.proof_file_path, content.encode())
 
@@ -132,8 +134,8 @@ class LeanTask(Task[State, LeanTaskConfig]):
             "utf-8", "replace"
         )
 
-        expected_sig = self.protected_signature or expected_protected_signature(
-            self.formal_statement
+        expected_sig = self.data.protected_signature or expected_protected_signature(
+            self.data.formal_statement
         )
         if expected_sig and not protected_signature_substring_present(
             current, expected_sig
@@ -159,14 +161,14 @@ class LeanTask(Task[State, LeanTaskConfig]):
         it ``invalid`` would both swamp the report on statement-only datasets and
         mask the rows whose gold actually fails on a sparse-gold dataset.
         """
-        gold = (self.formal_proof or "").rstrip()
+        gold = (self.data.formal_proof or "").rstrip()
         if not gold:
             return True
         content = build_starter_file(
-            self.formal_statement,
-            header=self.header,
-            imports=self.imports,
-            normalize=self.normalize_mathlib_imports,
+            self.data.formal_statement,
+            header=self.data.header,
+            imports=self.data.imports,
+            normalize=self.data.normalize_mathlib_imports,
             proof_body=gold,
         )
         await runtime.write(self.config.proof_file_path, content.encode())
@@ -175,7 +177,7 @@ class LeanTask(Task[State, LeanTaskConfig]):
 
 
 class LeanTaskset(Taskset[LeanTask, LeanConfig]):
-    def load(self) -> list[LeanTask]:
+    def load(self) -> list[LeanData]:
         from datasets import load_dataset
 
         config = self.config
@@ -205,7 +207,7 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                 )
 
         resources = TaskResources(cpu=4, memory=4, disk=10)
-        tasks: list[LeanTask] = []
+        tasks: list[LeanData] = []
         for index, row in enumerate(raw):
             # Skip degenerate rows with no statement: there's nothing to prove, and
             # an empty statement collapses the pinned signature to just ``:= by``,
@@ -221,7 +223,7 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
             gold = row.get(ds.proof_column) or ""
             name = row.get(ds.name_column)
             tasks.append(
-                LeanTask(
+                LeanData(
                     idx=index,
                     name=str(name) if name else f"task_{index:05d}",
                     prompt=self._build_prompt(formal_statement, header),

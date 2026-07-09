@@ -61,8 +61,8 @@ class User(ServerBase[ConfigT, StateT]):
                     self.state.deal_closed = True   # the task's @vf.stop ends it on this
                 return [{"role": "user", "content": reply}]
 
-        class HagglerTask(vf.Task[HagglerState]):
-            user = HagglerUser   # built with the taskset config's UserConfig field
+        class HagglerTask(vf.Task[vf.TaskData, HagglerState]):
+            user = HagglerUser   # built with the task config's UserConfig field
 
             @vf.stop
             async def deal_closed(self, trace) -> bool:

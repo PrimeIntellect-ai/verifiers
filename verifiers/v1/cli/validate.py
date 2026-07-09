@@ -81,8 +81,8 @@ def _row(
     task, mode: str, valid: bool, exc: BaseException | None, start: float
 ) -> ResultRow:
     return {
-        "index": task.idx,
-        "name": task.name,
+        "index": task.data.idx,
+        "name": task.data.name,
         "mode": mode,
         "valid": bool(valid),
         "reason": _classify(valid, exc),
@@ -97,10 +97,12 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
     start = time.time()
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
-        name=f"validate-gold-{task.idx}-{uuid4().hex[:8]}",
+        name=f"validate-gold-{task.data.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
-        config.timeout.setup if config.timeout.setup is not None else task.timeout.setup
+        config.timeout.setup
+        if config.timeout.setup is not None
+        else task.data.timeout.setup
     )
     valid, exc = False, None
     try:
@@ -117,7 +119,9 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
         try:
             await runtime.stop()
         except Exception:
-            logger.warning("runtime teardown failed (task %s)", task.idx, exc_info=True)
+            logger.warning(
+                "runtime teardown failed (task %s)", task.data.idx, exc_info=True
+            )
     return _row(task, "gold", valid, exc, start)
 
 
@@ -126,10 +130,12 @@ async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
     start = time.time()
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
-        name=f"validate-setup-{task.idx}-{uuid4().hex[:8]}",
+        name=f"validate-setup-{task.data.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
-        config.timeout.setup if config.timeout.setup is not None else task.timeout.setup
+        config.timeout.setup
+        if config.timeout.setup is not None
+        else task.data.timeout.setup
     )
     valid, exc = False, None
     try:
@@ -146,7 +152,9 @@ async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
         try:
             await runtime.stop()
         except Exception:
-            logger.warning("runtime teardown failed (task %s)", task.idx, exc_info=True)
+            logger.warning(
+                "runtime teardown failed (task %s)", task.data.idx, exc_info=True
+            )
     return _row(task, "setup", valid, exc, start)
 
 
@@ -176,8 +184,8 @@ async def _run_all(task: Task, config: ValidateConfig) -> ResultRow:
     rows = [gold, setup]
     error, error_type = _all_error(rows)
     return {
-        "index": task.idx,
-        "name": task.name,
+        "index": task.data.idx,
+        "name": task.data.name,
         "mode": "all",
         "valid": all(row["valid"] for row in rows),
         "reason": _all_reason(rows),
@@ -228,7 +236,7 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     state_by_idx = {s.idx: s for s in states}
 
     async def _one(task) -> dict:
-        st = state_by_idx[task.idx]
+        st = state_by_idx[task.data.idx]
         async with sem or contextlib.nullcontext():
             st.start = time.time()
             st.state = "running"

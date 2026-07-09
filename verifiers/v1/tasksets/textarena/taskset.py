@@ -127,10 +127,13 @@ class TextArenaConfig(vf.TasksetConfig):
     task: TextArenaTaskConfig = TextArenaTaskConfig()
 
 
-class TextArenaTask(vf.Task[TextArenaState, TextArenaTaskConfig]):
+class TextArenaData(vf.TaskData):
     info: dict
     """What the user simulator needs to set up the game: the `game` id and the RNG `seed`
     that reproduces the exact episode this task's prompt was built from."""
+
+
+class TextArenaTask(vf.Task[TextArenaData, TextArenaState, TextArenaTaskConfig]):
     user = TextArenaUser
     # Built with the task config's `user` field (resolved by `Task.server_config`);
     # colocated is required — see `TextArenaTaskConfig.user`.
@@ -151,7 +154,7 @@ class TextArenaTask(vf.Task[TextArenaState, TextArenaTaskConfig]):
 
 
 class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
-    def load(self) -> list[TextArenaTask]:
+    def load(self) -> list[TextArenaData]:
         # One task per RNG seed; the simulator re-seeds to reproduce the same episode. Games
         # that embed the per-episode setup in the prompt (WordLadder's start/target,
         # WordSearch's grid) need the prompt built under each seed; games whose prompt
@@ -169,7 +172,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         first = observation(0)
         seed_specific = observation(1) != first
         return [
-            TextArenaTask(
+            TextArenaData(
                 idx=i,
                 name=f"{self.config.game}#{i}",
                 prompt=observation(i) if seed_specific else first,

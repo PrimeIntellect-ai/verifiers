@@ -37,7 +37,7 @@ from verifiers.v1.cli.output import (
 from verifiers.v1.configs.replay import ReplayConfig
 from verifiers.v1.judge import judge_key
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import WireTask
+from verifiers.v1.task import Task, WireTaskData, task_data_cls
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.logging import setup_logging
 
@@ -73,32 +73,28 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     logger.debug("replay config:\n%s", config.model_dump_json(indent=2))
     taskset = vf.load_taskset(config.taskset)
     task_cls = vf.task_type(config.taskset.id)
-    # `WireTask` reads any taskset's saved task without a runtime or its Task type (see WireTask).
-    traces = read_traces(source, Trace[WireTask, state_cls(task_cls)])
+    data_cls = task_data_cls(task_cls)
+    # `WireTaskData` reads any taskset's saved task without a runtime or its Task type (see WireTaskData).
+    traces = read_traces(source, Trace[WireTaskData, state_cls(task_cls)])
     if config.num_traces is not None:
         traces = traces[: config.num_traces]
-    # A `WireTask` carries the data but none of the taskset's behavior, so re-scoring
-    # needs the real Task type — the taskset's declared one, which every saved row is
-    # (`Taskset.tasks` enforces one task type per taskset). A task that can't be rebuilt
-    # from the wire (a load-time-only field excluded from serialization, like harbor's
-    # `task_dir`) stays a `WireTask`: judges and the base task's trace-only signals still
-    # run, the subclass's own `@reward`s don't (runtime-dependent ones would be skipped
-    # offline anyway).
+    # `trace.task` is pure data; re-scoring with the taskset's behavior needs the declared
+    # `TaskData` type — which every saved row is (`Taskset.tasks` constructs one task type).
+    # A row that can't be rebuilt from the wire (a load-time-only field excluded from
+    # serialization, like harbor's `task_dir`) stays a `WireTaskData` and is scored by the
+    # base `Task` (judges + base signals only; the subclass's own `@reward`s don't run —
+    # runtime-dependent ones would be skipped offline anyway).
     for trace in traces:
         try:
-            trace.task = task_cls.model_validate(trace.task.model_dump())
+            trace.task = data_cls.model_validate(trace.task.model_dump())
         except Exception:
             logger.warning(
                 "replay: can't rebuild %s from the saved task %s; re-scoring it as a "
-                "plain WireTask (judges + base-task signals only)",
-                task_cls.__name__,
+                "plain WireTaskData (judges + base-task signals only)",
+                data_cls.__name__,
                 trace.task.idx,
                 exc_info=True,
             )
-        # The task config never rides the wire (an excluded field), so re-stamp it: the
-        # replay config layers the source run's `config.toml` under any CLI overrides, so
-        # hooks re-score under the source knobs by default, re-tunable per replay.
-        trace.task = trace.task.model_copy(update={"config": config.taskset.task})
     if plugged := tuple(taskset.config.task.judges):
         # The replay config's judges override each task's recorded ones by reward key
         # (tune a judge, re-score) and newly-plugged ones join. A judge only on the
@@ -141,13 +137,19 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                     trace.info.pop("judge", None)
                 prior_rewards, prior_metrics = trace.rewards, trace.metrics
                 trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
+                # The behavior wrapper around the saved row: the declared Task for a
+                # rebuilt row, the base Task (judges + base signals) for a WireTaskData
+                # fallback; the replay config's task subtree supplies the knobs.
+                task = (task_cls if isinstance(trace.task, data_cls) else Task)(
+                    trace.task, config=config.taskset.task
+                )
                 try:
                     # Pre-fill the runtime-only values the offline `score` can't recompute
                     # BEFORE scoring — so trace-only signals that read them (e.g. a
                     # `@reward` reading a runtime `@metric`'s entry) see them, and a failed
                     # re-score still persists them.
-                    trace.task.restore_offline(trace, prior_rewards, prior_metrics)
-                    await trace.task.score(trace)
+                    task.restore_offline(trace, prior_rewards, prior_metrics)
+                    await task.score(trace)
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
                     st.state, st.detail = "error", type(exc).__name__

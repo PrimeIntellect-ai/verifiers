@@ -25,10 +25,12 @@ class DeepWikiTaskConfig(vf.TaskConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig(url=DEEPWIKI_URL)
 
 
-class DeepWikiTask(vf.Task[vf.State, DeepWikiTaskConfig]):
+class DeepWikiTaskData(vf.TaskData):
     answer: str
     """The language the repo is written in (must appear in the model's reply)."""
 
+
+class DeepWikiTask(vf.Task[DeepWikiTaskData, vf.State, DeepWikiTaskConfig]):
     tools = (DeepWikiToolset,)
     # Built with the task config's `tools` field (where the toolset points; stays
     # CLI-tunable via --taskset.task.tools.*), resolved by `Task.server_config`.
@@ -36,7 +38,7 @@ class DeepWikiTask(vf.Task[vf.State, DeepWikiTaskConfig]):
     @vf.reward(weight=1.0)
     async def answered(self, trace: vf.Trace) -> float:
         last = trace.last_reply
-        return float(self.answer.lower() in (last or "").lower())
+        return float(self.data.answer.lower() in (last or "").lower())
 
 
 class DeepWikiConfig(vf.TasksetConfig):
@@ -44,9 +46,9 @@ class DeepWikiConfig(vf.TasksetConfig):
 
 
 class DeepWikiTaskset(vf.Taskset[DeepWikiTask, DeepWikiConfig]):
-    def load(self) -> list[DeepWikiTask]:
+    def load(self) -> list[DeepWikiTaskData]:
         return [
-            DeepWikiTask(
+            DeepWikiTaskData(
                 idx=i,
                 name=repo,
                 prompt=(

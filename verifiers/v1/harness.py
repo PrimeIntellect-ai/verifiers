@@ -26,7 +26,7 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
 )
-from verifiers.v1.task import Task
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID, Messages
 
@@ -92,7 +92,9 @@ class Harness(ABC, Generic[ConfigT]):
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
-    def resolve_prompt(self, task: Task) -> tuple[str | None, str | Messages | None]:
+    def resolve_prompt(
+        self, task: TaskData
+    ) -> tuple[str | None, str | Messages | None]:
         """Resolve `(system_prompt, prompt)` for this harness. If the harness
         appends the system prompt natively, returns it separately; otherwise folds it into
         the user prompt (warning that it isn't sent as a system message). A `Messages`

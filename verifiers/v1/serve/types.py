@@ -5,7 +5,7 @@ from typing import ClassVar
 from pydantic import BaseModel, field_serializer
 
 from verifiers.v1.clients.config import ClientConfig
-from verifiers.v1.task import WireTask
+from verifiers.v1.task import WireTaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import SamplingConfig
 
@@ -53,13 +53,13 @@ class RunRolloutRequest(BaseRequest):
 
 
 class RunRolloutResponse(BaseResponse):
-    trace: Trace[WireTask] | None = None
-    """A typed `Trace` with a non-strict `WireTask` (taskset-specific task fields ride in
+    trace: Trace[WireTaskData] | None = None
+    """A typed `Trace` with a non-strict `WireTaskData` (taskset-specific task fields ride in
     `model_extra`), so the server needn't assume the caller imports the taskset. A caller
     that *does* import it upgrades via `Trace[task_type(taskset_id)].model_validate(...)`."""
 
     @field_serializer("trace")
-    def _ser_trace(self, trace: "Trace[WireTask] | None") -> dict | None:
+    def _ser_trace(self, trace: "Trace[WireTaskData] | None") -> dict | None:
         return trace.model_dump() if trace is not None else None
 
 
@@ -73,9 +73,11 @@ class RunGroupRequest(BaseRequest):
 
 
 class RunGroupResponse(BaseResponse):
-    traces: list[Trace[WireTask]] | None = None
-    """Typed `Trace`s with non-strict `WireTask`, like `RunRolloutResponse.trace`."""
+    traces: list[Trace[WireTaskData]] | None = None
+    """Typed `Trace`s with non-strict `WireTaskData`, like `RunRolloutResponse.trace`."""
 
     @field_serializer("traces")
-    def _ser_traces(self, traces: "list[Trace[WireTask]] | None") -> list[dict] | None:
+    def _ser_traces(
+        self, traces: "list[Trace[WireTaskData]] | None"
+    ) -> list[dict] | None:
         return [t.model_dump() for t in traces] if traces is not None else None

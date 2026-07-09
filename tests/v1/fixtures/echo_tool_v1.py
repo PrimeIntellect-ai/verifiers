@@ -28,7 +28,7 @@ class EchoToolTaskConfig(vf.TaskConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig()
 
 
-class EchoToolTask(vf.Task[vf.State, EchoToolTaskConfig]):
+class EchoToolTask(vf.Task[vf.TaskData, vf.State, EchoToolTaskConfig]):
     tools = (EchoToolset,)
     # Built with the task config's `tools` field (placement stays CLI-tunable via
     # --taskset.task.tools.*), resolved by `Task.server_config`.
@@ -46,9 +46,9 @@ class EchoToolConfig(vf.TasksetConfig):
 
 
 class EchoToolTaskset(vf.Taskset[EchoToolTask, EchoToolConfig]):
-    def load(self) -> list[EchoToolTask]:
+    def load(self) -> list[vf.TaskData]:
         return [
-            EchoToolTask(
+            vf.TaskData(
                 idx=0,
                 prompt=(
                     f'Call the `echo_back` tool with the message "{PHRASE}", then reply '

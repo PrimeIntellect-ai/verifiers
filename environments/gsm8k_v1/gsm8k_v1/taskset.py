@@ -20,15 +20,17 @@ SYSTEM = (
 VERIFY = (Path(__file__).parent / "verify.py").read_bytes()
 
 
-class GSM8KTask(vf.Task):
+class GSM8KData(vf.TaskData):
     answer: str
     """The ground-truth final answer (the value after GSM8K's `####`)."""
 
+
+class GSM8KTask(vf.Task[GSM8KData]):
     @vf.reward(weight=1.0)
     async def correct(self, trace: vf.Trace, runtime: vf.Runtime) -> float:
         prediction = trace.last_reply
         result = await runtime.run_uv_script(
-            VERIFY, args=[self.answer, prediction or ""]
+            VERIFY, args=[self.data.answer, prediction or ""]
         )
         if result.exit_code != 0:
             raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
@@ -40,7 +42,7 @@ class GSM8KTask(vf.Task):
         answer as a well-formed `#### N` prediction and require a 1.0 score — catching rows the
         verifier can't parse or grade (the model-free counterpart of the `correct` reward)."""
         result = await runtime.run_uv_script(
-            VERIFY, args=[self.answer, f"#### {self.answer}"]
+            VERIFY, args=[self.data.answer, f"#### {self.data.answer}"]
         )
         if result.exit_code != 0:
             raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
@@ -53,12 +55,12 @@ class GSM8KConfig(vf.TasksetConfig):
 
 
 class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
-    def load(self) -> list[GSM8KTask]:
+    def load(self) -> list[GSM8KData]:
         from datasets import load_dataset
 
         rows = load_dataset("openai/gsm8k", "main", split=self.config.split)
         return [
-            GSM8KTask(
+            GSM8KData(
                 idx=i,
                 prompt=f"{SYSTEM}\n\n{row['question']}",
                 answer=row["answer"].split("####")[-1].strip(),

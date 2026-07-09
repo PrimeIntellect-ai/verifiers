@@ -58,7 +58,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
-        tasks = [task for task in tasks if owed.get(task.idx)]
+        tasks = [task for task in tasks if owed.get(task.data.idx)]
         resume.rewrite_results(out, keep)
         if config.rich:
             finished = resume.load_kept(out)
@@ -90,7 +90,9 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # episodes inside `serving` so each rollout is wired to those resources at construction.
     async with env.serving(tasks):
         episodes = [
-            env.episode(task, ctx, n=owed[task.idx] if owed else config.num_rollouts)
+            env.episode(
+                task, ctx, n=owed[task.data.idx] if owed else config.num_rollouts
+            )
             for task in tasks
         ]
         rollouts = [rollout for episode in episodes for rollout in episode.rollouts]

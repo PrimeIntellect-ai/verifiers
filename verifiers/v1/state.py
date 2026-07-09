@@ -7,7 +7,7 @@ free-form artifact bag persisted to `traces.jsonl` — `state` is transient runt
 game progress, an end-of-trajectory flag): never written to disk or sent over the wire.
 
 The base `State` is empty — the framework holds no opinion about its contents. Subclass it to declare
-typed fields, then parameterize the task (`Task[MyState]`) and any stateful server
+typed fields, then parameterize the task (`Task[MyData, MyState]`) and any stateful server
 (`Toolset[Config, MyState]` / `User[Config, MyState]`) to type it. To end a trajectory from state,
 add your own flag and a `@vf.stop` that checks it (e.g. `user_finished`) — see the user-sim examples.
 """
@@ -34,7 +34,7 @@ StateT = TypeVar("StateT", bound=State, default=State)
 
 
 def state_cls(cls: type) -> type[State]:
-    """The `State` subclass a class parameterizes — `Task[MyState]`,
+    """The `State` subclass a class parameterizes — `Task[MyData, MyState]`,
     `Toolset[Config, MyState]`, `User[Config, MyState]` — read off its generic bases, walking the MRO
     so a further subclass inherits it. Falls back to the base `State` when none is given (the common
     case: an env that doesn't customize state, written without the generic param). A pydantic generic

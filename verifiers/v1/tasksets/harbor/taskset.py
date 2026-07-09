@@ -34,7 +34,7 @@ from pydantic import Field
 from verifiers.v1.decorators import reward
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import Task, TaskResources, TaskTimeout
+from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.types import StrictBaseModel
 
@@ -76,12 +76,11 @@ class Author(StrictBaseModel):
     email: str | None = None
 
 
-class HarborTask(Task):
-    """A Harbor task. The base fields carry instruction.md (`prompt`), the
+class HarborData(TaskData):
+    """A Harbor row. The base fields carry instruction.md (`prompt`), the
     resolved container `image`, the `harness_timeout`/`scoring_timeout`/`resources`
     (from task.toml's [harness]/[verifier]/[environment]), and [task].name/description;
-    the rest mirror [metadata]. Scoring (`solved`) stages the task's harbor verifier
-    into the live runtime and reads back the reward it writes."""
+    the rest mirror [metadata]."""
 
     keywords: list[str] = []
     authors: list[Author] = []
@@ -95,12 +94,19 @@ class HarborTask(Task):
     Resolved against the host environment at scoring time, like `harbor run` — so a
     verifier that needs judge API keys or configuration actually receives them."""
 
+
+class HarborTask(Task[HarborData]):
+    """Harbor behavior: `solved` stages the row's harbor verifier into the live
+    runtime and reads back the reward it writes."""
+
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime) -> float:
         # Stage the task's tests into the live runtime, run its harbor verifier, and
         # read back the reward it writes — runtime-opaque (write/run/read hide whether
         # that's the host fs or across a container boundary), so it scores under any harness.
-        await runtime.write("/tmp/tests.tgz", make_tar(Path(self.task_dir) / "tests"))
+        await runtime.write(
+            "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
+        )
         await runtime.run(
             [
                 "sh",
@@ -109,7 +115,9 @@ class HarborTask(Task):
             ],
             {},
         )
-        await runtime.run(["sh", "-c", "cd /tests && bash test.sh"], verifier_env(self))
+        await runtime.run(
+            ["sh", "-c", "cd /tests && bash test.sh"], verifier_env(self.data)
+        )
         try:
             reward = (await runtime.read("/logs/verifier/reward.txt")).decode().strip()
             return float(reward or 0)
@@ -255,7 +263,7 @@ def parse_resources(env: dict, multiplier: float = 1.0) -> TaskResources:
     )
 
 
-def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborTask:
+def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
     """Read a harbor task dir (task.toml + instruction.md) into a typed task,
     handling both the [task].authors and legacy [metadata].author_name layouts."""
     config = tomllib.loads((task_dir / "task.toml").read_text())
@@ -265,7 +273,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
         authors = [Author(name=meta["author_name"], email=meta.get("author_email"))]
     harness_timeout = config.get("agent", {}).get("timeout_sec")
     scoring_timeout = config.get("verifier", {}).get("timeout_sec")
-    return HarborTask(
+    return HarborData(
         idx=idx,
         name=task.get("name") or task_dir.name,
         description=task.get("description"),
@@ -297,7 +305,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborT
     )
 
 
-def verifier_env(task: HarborTask) -> dict[str, str]:
+def verifier_env(task: HarborData) -> dict[str, str]:
     """The env a task's verifier runs with: its [verifier.env] templates resolved against
     the host environment (`${VAR}` / `${VAR:-default}`, harbor's own semantics). Resolution
     is deferred to scoring time so resolved secrets never land on the serialized task."""
@@ -323,7 +331,7 @@ def make_tar(directory: Path) -> bytes:
 
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
-    def load(self) -> list[HarborTask]:
+    def load(self) -> list[HarborData]:
         root = dataset_dir(self.config)
         task_dirs = [
             toml_path.parent

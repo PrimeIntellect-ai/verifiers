@@ -1,34 +1,43 @@
-"""The task: one problem to solve — its data AND its behavior.
+"""The task, split into data and behavior.
 
-A `Task` is a frozen pydantic model that carries everything a rollout needs: the
-typed, task-specific data fields (the reference answer, ground truths, images, ...)
-and the per-task behavior — runtime prep (`setup`/`finalize`), tools (`tools`), a
-user simulator (`user`), well-formedness (`validate`), and judgement (`@reward`/
-`@metric`/`@group_reward` methods, run by `score`/`score_group`). Subclass `Task`
-per dataset; the `Taskset` is just the loader that yields these (see
-`verifiers.v1.taskset`).
+`TaskData` is the wire half: a frozen pydantic model carrying everything a rollout's
+row IS — the base fields (prompt, image, timeouts, judges) plus your typed,
+task-specific fields (the reference answer, ground truths, ...). It is what rides on
+`trace.task`, what `traces.jsonl` stores, and what tool/user servers receive over the
+`/task` channel. Subclass it per dataset.
 
-Because behavior lives on the task, verification never branches on a type field —
-each dataset's task class carries its own. A taskset yields one concrete task type
-(`Taskset.tasks` enforces it); instances still differ per row through their fields,
-which the hooks and signals read off `self`.
+`Task` is the behavior half: a plain class owning runtime prep (`setup`/`finalize`),
+server declarations (`tools`/`user`), well-formedness (`validate`), and judgement
+(`@reward`/`@metric`/`@group_reward` methods, run by `score`/`score_group`). It wraps
+a `TaskData` plus a `TaskConfig`, both plain constructor arguments:
 
-It is the single judgement authority, scored at two granularities (execution lives
-in the Rollout — per-rollout — and the Episode — group — which call these):
-  - `score` runs `@reward`/`@metric` — plus the task's plugged judges (built from
-    the `judges` field's configs; see `verifiers.v1.judge`) — over one trace (in
-    its live runtime).
+    task = MyTask(data)                        # config defaults to the declared type's
+    task = MyTask(data, config=MyTaskConfig()) # or is injected, like Taskset/Harness/Judge
+    task = MyTask.from_trace(trace)            # or derived from a finished rollout
+
+Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]` (all three
+default) — hooks and signals read the row off `self.data` and the knobs off
+`self.config`. Because behavior lives on the task class, verification never branches
+on a type field; a taskset yields one task type (`Taskset.tasks` constructs it), and
+instances differ per row through their data.
+
+The task is the single judgement authority, scored at two granularities (execution
+lives in the Rollout — per-rollout — and the Episode — group — which call these):
+  - `score` runs `@metric`/`@reward` — plus the plugged judges built from
+    `data.judges` (see `verifiers.v1.judge`) — over one trace (in its live runtime).
   - `score_group` runs `@group_reward` over all the rollouts of this task at once —
     pairwise/preference rewards that compare samples.
 
-Tasks are frozen and shared across their rollouts (a group's `n` samples hold the
-same instance), so hook and scoring methods must not stash per-rollout state on
-`self` — that lives on the trace (`trace.state`, typed via `Task[MyState]`).
+A Task instance is shared across its rollouts (a group's `n` samples hold the same
+instance), so hooks and scoring methods must not stash per-rollout state on `self` —
+that lives on the trace (`trace.state`, typed via the `Task[..., MyState, ...]`
+param).
 
-Scoring after deserialization needs the real class: a `WireTask` carries the data
-but none of the behavior, so a consumer that re-scores (e.g. `replay`) upgrades it
-first — to the taskset's declared task type, which every row is guaranteed to be
-(`Taskset.tasks` enforces the one-type contract at load).
+On the wire only the data travels: a saved `trace.task` reads back as `WireTaskData`
+(extra fields preserved) without importing the taskset; a consumer that re-scores
+(e.g. `replay`) rebuilds the declared `TaskData` type and wraps it in the declared
+`Task` — which every row is guaranteed to be, since `Taskset.tasks` constructs one
+task type.
 """
 
 import asyncio
@@ -37,7 +46,7 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, Self, get_args
 
-from pydantic import ConfigDict, Field, SerializeAsAny, model_validator
+from pydantic import ConfigDict, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
@@ -103,17 +112,18 @@ class TaskTimeout(StrictBaseModel):
 class TaskConfig(BaseConfig):
     """Rollout/scoring-time knobs the task reads off `self.config` — server placement
     (`ToolsetConfig`/`UserConfig` fields), judge endpoints, scoring parameters. Subclass to
-    add your task's knobs; every field needs a default (a task constructed outside a taskset
-    — e.g. `Task.from_trace` — falls back to a default-constructed config). Load-time knobs
-    (dataset, split, seed) belong on `TasksetConfig` instead — the task never needs them."""
+    add your task's knobs; every field needs a default (a task constructed without one —
+    e.g. via `Task.from_trace` — falls back to a default-constructed config). Load-time
+    knobs (dataset, split, seed) belong on `TasksetConfig` instead — the task never needs
+    them."""
 
     judges: Judges = []
     """Config-plugged judges, each resolved by `id` — a built-in (`reference`, `rubric`), a local
     package, or a hub `org/name[@version]` package exporting a `Judge` subclass: grading plugged
     into any taskset/harness pair from the eval config alone, no taskset code. `Taskset.tasks()`
-    appends these to every row's own `Task.judges`, and `Task.score` runs them after the task's
-    `@reward`s. Each entry records its verdict in `trace.rewards` under its `name` with its
-    `weight` (see `JudgeConfig`). Set via `--taskset.task.judges`."""
+    appends these to every row's own `TaskData.judges`, and `Task.score` runs them after the
+    task's `@reward`s. Each entry records its verdict in `trace.rewards` under its `name` with
+    its `weight` (see `JudgeConfig`). Set via `--taskset.task.judges`."""
 
     @model_validator(mode="before")
     @classmethod
@@ -138,15 +148,15 @@ class TasksetConfig(BaseConfig):
     """Base taskset config: load-time knobs (dataset, split, seed, ...) plus the task's own
     config under `task`. Subclass to add task-generation knobs; narrow `task` to your
     `TaskConfig` subclass when the task reads knobs (`task: MyTaskConfig = MyTaskConfig()`),
-    so `--taskset.task.*` flags validate against it. `tasks()` attaches `config.task` to
-    every loaded row."""
+    so `--taskset.task.*` flags validate against it. `tasks()` constructs every task with
+    `config.task`."""
 
     id: ID = ""
     """The taskset id, which selects this taskset: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
     `ID`). Set via `--taskset.id`."""
     task: SerializeAsAny[TaskConfig] = TaskConfig()
-    """The task-facing config, attached to every loaded row (`Task.config`): server
+    """The task-facing config, passed to every constructed task (`Task.config`): server
     placement, judges, scoring knobs. Everything under `--taskset.task.*`."""
 
     @property
@@ -155,39 +165,14 @@ class TasksetConfig(BaseConfig):
         return env_name(self.id)
 
 
-ConfigT = TypeVar("ConfigT", bound=TasksetConfig, default=TasksetConfig)
-TaskConfigT = TypeVar("TaskConfigT", bound=TaskConfig, default=TaskConfig)
-
-
-def task_config_cls(cls: type) -> type[TaskConfig]:
-    """The `TaskConfig` subclass a task class parameterizes — `Task[MyState, MyConfig]` —
-    read off its generic bases, walking the MRO so a further subclass inherits it. Falls
-    back to the base `TaskConfig` when none is given. Mirrors `state_cls`: a pydantic
-    generic parametrizes into a real class, so args live in
-    `__pydantic_generic_metadata__` rather than `__orig_bases__`; check both."""
-    for klass in getattr(cls, "__mro__", [cls]):
-        meta = getattr(klass, "__pydantic_generic_metadata__", None) or {}
-        for base in (*meta.get("args", ()), *getattr(klass, "__orig_bases__", ())):
-            for arg in (base, *get_args(base)):
-                if isinstance(arg, type) and issubclass(arg, TaskConfig):
-                    return arg
-    return TaskConfig
-
-
-class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
-    """A single problem to solve: typed data fields plus the per-task behavior (hooks,
-    tools, `@reward`/`@metric` scoring). Subclass per dataset; parameterize the state
-    type via `Task[MyState]` when tool/user servers or scoring share typed per-rollout
-    state (defaults to the empty base `State`), and the config type via
-    `Task[MyState, MyTaskConfig]` when hooks read config knobs off `self.config`
-    (defaults to the base `TaskConfig`)."""
+class TaskData(StrictBaseModel):
+    """The task's wire half: one row's pure data, a frozen pydantic model. Subclass per
+    dataset to add typed, task-specific fields (the reference answer, ground truths,
+    per-row metadata) next to the base fields below. This is what `trace.task` holds,
+    what `traces.jsonl` stores, and what tool/user servers receive over the `/task`
+    channel — behavior lives on `Task`, which wraps this (`self.data`)."""
 
     model_config = ConfigDict(frozen=True)
-
-    NEEDS_CONTAINER: ClassVar[bool] = False
-    """Whether this task only runs in a container runtime (docker/prime). When True the
-    Environment refuses the subprocess runtime — for tasks whose work only makes sense
-    inside a per-task image (e.g. a SWE repo sandbox)."""
 
     idx: int
     """Stable integer index of this example within its taskset."""
@@ -221,46 +206,12 @@ class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
     """Optional runtime resources this task requests (applied where supported)."""
     judges: tuple[SerializeAsAny[JudgeConfig], ...] = ()
     """The task's plugged judges, as configs — data, so they ride the wire like every
-    other field and a saved trace records exactly what judged it. `score` builds the
+    other field and a saved trace records exactly what judged it. `Task.score` builds the
     runtime `Judge`s from them (`plugged_judges`) and runs them after the task's own
     `@reward`s, each verdict recorded under its reward key with its `weight`.
     `Taskset.tasks()` appends the eval's `TaskConfig.judges` to every row at load;
     a `load()` can also give rows their own (e.g. a per-row rubric), and a subclass
     can declare class-wide defaults."""
-
-    config: TaskConfigT = Field(default=None, exclude=True, repr=False)  # type: ignore[assignment]
-    """The task's config — the knobs hooks, rewards, and server building read (server
-    placement, judge endpoints, scoring parameters), injected at construction like any
-    other argument (mirroring `Taskset(config)` / `Harness(config)` / `Judge(config)`)
-    but excluded from serialization: it never rides the wire. Omitted, it defaults to
-    the declared type's defaults (`Task[..., MyTaskConfig]`), so a task constructed
-    anywhere is complete out of the box; `Taskset.tasks()` stamps every loaded row
-    with the eval's `TasksetConfig.task` (and `replay` re-stamps after a wire rebuild),
-    so loaded tasks always carry the run's config."""
-
-    def model_post_init(self, context, /) -> None:
-        # An omitted config defaults to the *declared* type's defaults — resolved off the
-        # generic, so it can't be a field default. Frozen model: set via object.__setattr__.
-        if self.config is None:
-            try:
-                object.__setattr__(self, "config", task_config_cls(type(self))())
-            except Exception as exc:
-                raise TaskError(
-                    f"{type(self).__name__} was built without a config and its "
-                    f"{task_config_cls(type(self)).__name__} can't be default-"
-                    f"constructed — pass `config=...`"
-                ) from exc
-
-    @classmethod
-    def from_trace(cls, trace: "Trace", *, config: TaskConfig | None = None) -> Self:
-        """Derive a task from a rollout's trace — the constructor for tasks that are not
-        loaded from a taskset (e.g. a multi-agent step spawning a follow-up task from a
-        finished trajectory). Rebuilds `cls` from the trace's task data; the config is the
-        explicit `config` if given, else inherited from the parent task — so a derived
-        task is complete out of the box and its servers/judges stay tunable by whoever
-        spawns it."""
-        task = cls.model_validate(trace.task.model_dump())
-        return task.model_copy(update={"config": config or trace.task.config})
 
     @model_validator(mode="before")
     @classmethod
@@ -279,14 +230,6 @@ class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
         check_judges(self.judges)
         return self
 
-    def plugged_judges(self) -> "list[Judge]":
-        """The runtime `Judge` objects for this task's `judges` configs, built fresh per
-        call — a judge is a cheap value (its HTTP client is opened per call inside
-        `Judge.complete` and closed when it returns), so nothing is shared or cached."""
-        from verifiers.v1.loaders import load_judge
-
-        return [load_judge(config) for config in self.judges]
-
     @property
     def prompt_text(self) -> str:
         """The prompt as plain text — `prompt` itself when it's a `str`, the joined text
@@ -298,14 +241,78 @@ class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
         texts = [content_text(message.content) for message in self.prompt or []]
         return "\n\n".join(text for text in texts if text)
 
-    # ---- per-task behavior ---------------------------------------------------
+
+class WireTaskData(TaskData):
+    """A `TaskData` that accepts (and preserves) taskset-specific extra fields. Lets a
+    `Trace` be typed on the wire — `Trace[WireTaskData]` — without importing the taskset,
+    since the real `TaskData` subclass's extra fields land in `model_extra` instead of
+    being rejected. A caller that re-scores rebuilds the real type via
+    `task_data_cls(task_type(taskset_id))` first."""
+
+    model_config = ConfigDict(extra="allow")
+
+
+# No `default=`: an unparameterized `Trace`'s `task` field must serialize duck-typed
+# (a defaulted TypeVar narrows pydantic's serialization to the base `TaskData`, silently
+# dropping subclass fields from the wire).
+DataT = TypeVar("DataT", bound=TaskData)
+ConfigT = TypeVar("ConfigT", bound=TasksetConfig, default=TasksetConfig)
+TaskConfigT = TypeVar("TaskConfigT", bound=TaskConfig, default=TaskConfig)
+
+
+def _generic_arg(cls: type, base: type, default: type) -> type:
+    """The `base` subclass a task class parameterizes — `Task[MyData, MyState, MyConfig]` —
+    read off its generic bases, walking the MRO so a further subclass inherits it. Falls
+    back to `default` when none is given. Mirrors `state_cls` (which reads the same
+    generic for the `State` param)."""
+    for klass in getattr(cls, "__mro__", [cls]):
+        meta = getattr(klass, "__pydantic_generic_metadata__", None) or {}
+        for orig in (*meta.get("args", ()), *getattr(klass, "__orig_bases__", ())):
+            for arg in (orig, *get_args(orig)):
+                if isinstance(arg, type) and issubclass(arg, base):
+                    return arg
+    return default
+
+
+def task_data_cls(cls: type) -> type[TaskData]:
+    """The `TaskData` subclass a task class declares (`Task[MyData, ...]`); the base
+    `TaskData` when none is given."""
+    return _generic_arg(cls, TaskData, TaskData)
+
+
+def task_config_cls(cls: type) -> type[TaskConfig]:
+    """The `TaskConfig` subclass a task class declares (`Task[..., MyConfig]`); the base
+    `TaskConfig` when none is given."""
+    return _generic_arg(cls, TaskConfig, TaskConfig)
+
+
+class Task(Generic[DataT, StateT, TaskConfigT]):
+    """The task's behavior half: hooks, server declarations, and `@reward`/`@metric`
+    scoring over one row's `TaskData`. A plain class — subclass per dataset and
+    parameterize `Task[MyData, MyState, MyConfig]` (all three default) so `self.data`,
+    `trace.state`, and `self.config` are typed. Constructed from its two inputs like
+    every other plugin (`Taskset(config)` / `Harness(config)` / `Judge(config)`):
+
+        MyTask(data)                         # config = the declared type's defaults
+        MyTask(data, config=MyTaskConfig())  # or injected
+        MyTask.from_trace(trace)             # or derived from a finished rollout
+
+    `Taskset.tasks()` constructs one per loaded row with the eval's `TasksetConfig.task`.
+    Hooks and signals read the row off `self.data` and the knobs off `self.config`; one
+    instance is shared across a group's rollouts, so per-rollout state lives on
+    `trace.state`, never on `self`."""
+
+    NEEDS_CONTAINER: ClassVar[bool] = False
+    """Whether this task only runs in a container runtime (docker/prime). When True the
+    Environment refuses the subprocess runtime — for tasks whose work only makes sense
+    inside a per-task image (e.g. a SWE repo sandbox)."""
 
     tools: "ClassVar[tuple[type[Toolset], ...]]" = ()
     """Tool server classes exposing this task's tools to the model — `vf.Toolset`s
     (classes with `@vf.tool` methods). Declarative: name the classes; the framework
-    builds each instance with the config `server_config` resolves off the attached
-    `TaskConfig` (placement / runtime; a remote `url` for an already-running
-    server). Empty by default."""
+    builds each instance with the config `server_config` resolves off `self.config`
+    (placement / runtime; a remote `url` for an already-running server). Empty by
+    default."""
 
     user: "ClassVar[type[User] | None]" = None
     """The task's user simulator class — structurally a tool server (an MCP server
@@ -314,14 +321,48 @@ class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
     reply as a user turn. Declarative like `tools`; None by default — set it to make
     the task a simulated multi-turn conversation (e.g. a TextArena game)."""
 
+    def __init__(self, data: DataT, config: TaskConfigT | None = None) -> None:
+        self.data = data
+        if config is None:
+            # Default to the *declared* config type's defaults, so a task constructed
+            # anywhere is complete out of the box; a config that can't default fails
+            # eagerly, at construction.
+            try:
+                config = task_config_cls(type(self))()  # type: ignore[assignment]
+            except Exception as exc:
+                raise TaskError(
+                    f"{type(self).__name__} was built without a config and its "
+                    f"{task_config_cls(type(self)).__name__} can't be default-"
+                    f"constructed — pass `config=...`"
+                ) from exc
+        self.config = config
+
+    @classmethod
+    def from_trace(cls, trace: "Trace", *, config: "TaskConfigT | None" = None) -> Self:
+        """Derive a task from a rollout's trace — the constructor for tasks that are not
+        loaded from a taskset (e.g. a multi-agent step spawning a follow-up task from a
+        finished trajectory). Rebuilds the declared `TaskData` from the trace's saved row;
+        the config is the explicit `config` if given, else the declared type's defaults
+        (the trace carries data only — configs come from whoever spawns the task)."""
+        data = task_data_cls(cls).model_validate(trace.task.model_dump())
+        return cls(data, config=config)  # type: ignore[arg-type]
+
+    def plugged_judges(self) -> "list[Judge]":
+        """The runtime `Judge` objects for this row's `data.judges` configs, built fresh
+        per call — a judge is a cheap value (its HTTP client is opened per call inside
+        `Judge.complete` and closed when it returns), so nothing is shared or cached."""
+        from verifiers.v1.loaders import load_judge
+
+        return [load_judge(config) for config in self.data.judges]
+
     def server_config(self, server_cls: type) -> BaseConfig:
         """The config a declared server class (`tools` / `user`) is built with, resolved
-        off the attached `TaskConfig`: the field whose value is exactly the server's
-        declared config type (`Toolset[MyConfig]` / `User[MyConfig]`), else the unique
-        field whose value isinstance-matches it, else a default-constructed one (an
-        unattached task, or a task config without a matching field). Two matching fields
-        raise — override this method to pair explicitly (the escape hatch for exotic
-        setups, e.g. two servers sharing one config type)."""
+        off `self.config`: the field whose value is exactly the server's declared config
+        type (`Toolset[MyConfig]` / `User[MyConfig]`), else the unique field whose value
+        isinstance-matches it, else a default-constructed one (a task config without a
+        matching field). Two matching fields raise — override this method to pair
+        explicitly (the escape hatch for exotic setups, e.g. two servers sharing one
+        config type)."""
         cfg_cls = server_cls._config_cls()
         values = {
             name: getattr(self.config, name) for name in type(self.config).model_fields
@@ -343,8 +384,8 @@ class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
             raise TaskError(
                 f"{type(self).__name__}: no {cfg_cls.__name__} to build "
                 f"{server_cls.__name__} with — add a {cfg_cls.__name__} field to the "
-                f"task config (`TasksetConfig.task`, stamped onto every row at load), "
-                f"or pass `config=...` when constructing the task"
+                f"task config (`TasksetConfig.task`), or pass `config=...` when "
+                f"constructing the task"
             ) from exc
 
     def tool_servers(self) -> "list[Toolset]":
@@ -363,7 +404,8 @@ class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
     async def setup(self, trace: "Trace", runtime: "Runtime") -> None:
         """Prepare the live runtime for this task, after `runtime.start()` and before the
         harness runs. No-op by default; override to run per-task setup in the runtime (e.g.
-        a SWE row checking out its base commit). Errors propagate and fail the rollout.
+        a SWE row checking out its base commit — read the row off `self.data`). Errors
+        propagate and fail the rollout.
 
         Like the scoring hooks, `setup` declares the inputs it needs *by parameter name* and
         the framework injects them: any subset of `trace`, `runtime`. The trace (and its
@@ -398,14 +440,14 @@ class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
         trace: "Trace",
         runtime: "Runtime | None" = None,
     ) -> None:
-        """Score one rollout: run all `@metric`, then `@reward`, then the task's plugged
-        `judges` (see the `judges` field) over its trace, concurrently
-        within each phase. Each metric is recorded in `trace.metrics` (a number, or a mapping
-        merged in); each reward and judge verdict (weighted — likewise a number or a mapping
-        merged in) in `trace.rewards`, which `trace.reward` sums. Signals declare what they
-        need — `trace`, `runtime` (`self` is the task) — so a reward is either a pure function
-        of the trace or runs read/write/exec in that (still-live) runtime, e.g. a verifier
-        script.
+        """Score one rollout: run all `@metric`, then `@reward`, then the plugged judges
+        (see `TaskData.judges`) over its trace, concurrently within each phase. Each
+        metric is recorded in `trace.metrics` (a number, or a mapping merged in); each
+        reward and judge verdict (weighted — likewise a number or a mapping merged in) in
+        `trace.rewards`, which `trace.reward` sums. Signals declare what they need —
+        `trace`, `runtime` (`self` is the task; the row is `self.data`) — so a reward is
+        either a pure function of the trace or runs read/write/exec in that (still-live)
+        runtime, e.g. a verifier script.
 
         `runtime` may be `None` — the offline path taken by `replay`, which re-scores a saved
         trace with no live runtime. Signals that declare a `runtime` parameter are then skipped
@@ -414,7 +456,9 @@ class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
         skipped signals' previously-recorded values untouched. With a runtime present (the eval
         path) nothing is skipped."""
         judges = self.plugged_judges()
-        available = {"task": self, "trace": trace}
+        # Judges receive the row (`task`): they read reference fields and `prompt_text`
+        # off the data, never the behavior.
+        available = {"task": self.data, "trace": trace}
         if runtime is not None:
             available["runtime"] = runtime
 
@@ -538,7 +582,7 @@ class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
         entries survive — and trace-only signals that read them (e.g. a `@reward` reading a
         runtime `@metric`'s entry) see them while re-scoring. Restores exactly the keys the
         source run's runtime-requiring signals recorded (`info["offline_keys"]` — source-run
-        truth, so it works even on a `WireTask` fallback that carries no behavior), plus
+        truth, so it works even on a base-`Task` fallback that carries no behavior), plus
         `@group_reward` keys (no group context offline — see `score_group`); traces
         predating that map fall back to the signal names (`offline_skipped`). A judge's
         entries restore only while that judge is still attached — a removed judge leaves no
@@ -590,7 +634,7 @@ class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
         rewards = discover_decorated(self, "group_reward")
         if not rewards:
             return
-        available = {"task": self, "traces": traces}
+        available = {"task": self.data, "traces": traces}
         async with boundary(TaskError, f"task {type(self).__name__} group scoring"):
             reward_results = (
                 [await invoke(fn, available) for fn in rewards]
@@ -613,16 +657,6 @@ class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
             for trace in traces:
                 if isinstance(trace.info, dict):
                     trace.info.setdefault("offline_keys", {})["group"] = group_keys
-
-
-class WireTask(Task):
-    """A `Task` that accepts (and preserves) taskset-specific extra fields. Lets a `Trace`
-    be typed on the wire — `Trace[WireTask]` — without importing the taskset, since the real
-    `Task` subclass's extra fields land in `model_extra` instead of being rejected. It carries
-    the data but none of the subclass's behavior (no hooks, no `@reward`s) — a caller that
-    re-scores upgrades to the real type via `task_type(taskset_id)` first."""
-
-    model_config = ConfigDict(extra="allow")
 
 
 TaskT = TypeVar("TaskT", bound=Task)

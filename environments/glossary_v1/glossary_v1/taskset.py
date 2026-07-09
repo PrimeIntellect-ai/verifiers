@@ -16,10 +16,12 @@ class GlossaryTaskConfig(vf.TaskConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig()
 
 
-class GlossaryTask(vf.Task[vf.State, GlossaryTaskConfig]):
+class GlossaryTaskData(vf.TaskData):
     answer: str
     """The fact the `lookup` tool returns for this task's entity."""
 
+
+class GlossaryTask(vf.Task[GlossaryTaskData, vf.State, GlossaryTaskConfig]):
     tools = (GlossaryToolset,)
     # Built with the task config's `tools` field (placement stays CLI-tunable via
     # --taskset.task.tools.*), resolved by `Task.server_config`.
@@ -28,7 +30,7 @@ class GlossaryTask(vf.Task[vf.State, GlossaryTaskConfig]):
     async def looked_up(self, trace: vf.Trace) -> float:
         # The fact only reaches the answer if the model called the MCP tool.
         last = trace.last_reply
-        return float(self.answer.lower() in (last or "").lower())
+        return float(self.data.answer.lower() in (last or "").lower())
 
 
 class GlossaryConfig(vf.TasksetConfig):
@@ -36,9 +38,9 @@ class GlossaryConfig(vf.TasksetConfig):
 
 
 class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
-    def load(self) -> list[GlossaryTask]:
+    def load(self) -> list[GlossaryTaskData]:
         return [
-            GlossaryTask(
+            GlossaryTaskData(
                 idx=i,
                 name=entity.title(),
                 prompt=(

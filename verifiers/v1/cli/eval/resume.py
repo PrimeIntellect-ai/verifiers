@@ -19,7 +19,7 @@ from pydantic_core import from_json
 from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, read_traces
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.state import State
-from verifiers.v1.task import WireTask
+from verifiers.v1.task import WireTaskData
 from verifiers.v1.trace import Trace
 
 
@@ -123,10 +123,10 @@ def rewrite_results(resume_dir: Path, keep: list[int]) -> None:
 def load_kept(resume_dir: Path) -> list[Trace]:
     """Reload the kept (good) traces as finished `Trace`s, so a resumed run's live dashboard counts
     them toward the whole run (progress, reward, err, and the usage/time breakdown). Call *after*
-    `rewrite_results`, which leaves only the kept rows on disk. `WireTask` reads any taskset's saved
+    `rewrite_results`, which leaves only the kept rows on disk. `WireTaskData` reads any taskset's saved
     task without a runtime or its `Task` type (mirrors `replay`); these traces are display-only, so
     no task upgrade is needed."""
-    return read_traces(resume_dir, Trace[WireTask, State])
+    return read_traces(resume_dir, Trace[WireTaskData, State])
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:

@@ -52,15 +52,21 @@ class AlphabetSortConfig(vf.TasksetConfig):
     task: AlphabetSortTaskConfig = AlphabetSortTaskConfig()
 
 
-class AlphabetSortTask(vf.Task[AlphabetSortState, AlphabetSortTaskConfig]):
+class AlphabetSortTaskData(vf.TaskData):
     info: dict
     """The pre-generated episode: the `user_turns` the simulator reveals one by one (the opening
     sort prompt, then the follow-ups), the per-turn `ground_truths` the reward grades against,
-    and `num_turns`. The task itself carries no prompt — the simulator opens the conversation."""
+    and `num_turns`. The row itself carries no prompt — the simulator opens the conversation."""
+
+
+class AlphabetSortTask(
+    vf.Task[AlphabetSortTaskData, AlphabetSortState, AlphabetSortTaskConfig]
+):
     user = AlphabetSortUser
     # Built with the task config's `user` field (placement stays CLI-tunable via
     # --taskset.task.user.*), resolved by `Task.server_config`. The scoring knobs
-    # (`similarity_power`, `power_per_turn`) are read off `self.config` too.
+    # (`similarity_power`, `power_per_turn`) are read off `self.config`; the episode
+    # off `self.data`.
 
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:
@@ -68,8 +74,8 @@ class AlphabetSortTask(vf.Task[AlphabetSortState, AlphabetSortTaskConfig]):
 
     @vf.reward(weight=1.0)
     async def sort_similarity(self, trace: vf.Trace) -> float:
-        ground_truths = self.info["ground_truths"]
-        num_turns = self.info["num_turns"]
+        ground_truths = self.data.info["ground_truths"]
+        num_turns = self.data.info["num_turns"]
         responses = [m.content or "" for m in trace.assistant_messages]
         scores = []
         for t in range(num_turns):
@@ -104,14 +110,14 @@ class AlphabetSortTask(vf.Task[AlphabetSortState, AlphabetSortTaskConfig]):
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
-    def load(self) -> list[AlphabetSortTask]:
+    def load(self) -> list[AlphabetSortTaskData]:
         c = self.config
         assert 1 <= c.min_turns <= c.max_turns, "need 1 <= min_turns <= max_turns"
         assert 1 <= c.min_names_per_turn <= c.max_names_per_turn, (
             "need 1 <= min_names_per_turn <= max_names_per_turn"
         )
         rng = random.Random(SEED)
-        tasks: list[AlphabetSortTask] = []
+        tasks: list[AlphabetSortTaskData] = []
         for entry in load_dataset(DATASET, split=c.split):
             names = list(dict.fromkeys(n.replace(" ", "") for n in entry["names"]))
             counts = [
@@ -178,9 +184,9 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
                 follow_ups.append(prompt)
 
             tasks.append(
-                AlphabetSortTask(
+                AlphabetSortTaskData(
                     idx=len(tasks),
-                    # No prompt on the task: the simulator opens with the sort prompt, then the
+                    # No prompt on the row: the simulator opens with the sort prompt, then the
                     # follow-ups — one user turn per `user_turns` entry.
                     prompt=None,
                     info={

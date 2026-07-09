@@ -8,9 +8,8 @@ Execution lives one level down: an `Episode` runs `n` `Rollout`s of a task and s
 (per-rollout `@reward`/`@metric`, then cross-rollout `@group_reward`); each `Rollout`
 runs one trajectory. The task's `@reward`/`@metric` get the rollout's runtime
 (read/exec inside it), so a task scores correctly under any harness; `@group_reward`s
-compare a task's rollouts. Harness capability checks (tools, user sim, container) are
-per task, by value — one task class per taskset, but its instances can still differ
-row to row (`tools()`/`user()` read the task's fields).
+compare a task's rollouts. Harness capability checks (tools, user sim, container) read
+the class-level declarations (`Task.tools` / `Task.user`) — one task class per taskset.
 """
 
 import contextlib
@@ -197,21 +196,21 @@ def resolve_runtime_config(
     by `Environment.runtime_for` (rollouts) and the `validate` entrypoint."""
     config = base
     updates: dict = {}
-    if task.image is not None:
+    if task.data.image is not None:
         if isinstance(config, SubprocessConfig):
             raise ValueError(
-                f"task {task.idx!r} requires image {task.image!r}, but the subprocess "
+                f"task {task.data.idx!r} requires image {task.data.image!r}, but the subprocess "
                 "runtime has no container; use the docker or prime runtime"
             )
-        updates["image"] = task.image
+        updates["image"] = task.data.image
     workdir_spec = type(config).model_fields.get("workdir")
     if (
-        task.workdir is not None
+        task.data.workdir is not None
         and workdir_spec is not None
         and getattr(config, "workdir") == workdir_spec.default
     ):
-        updates["workdir"] = task.workdir
-    for field, value in task.resources.model_dump(exclude_none=True).items():
+        updates["workdir"] = task.data.workdir
+    for field, value in task.data.resources.model_dump(exclude_none=True).items():
         spec = type(config).model_fields.get(field)
         if spec is None:
             key = (config.type, field)
@@ -291,36 +290,38 @@ class Environment:
         if not self.harness.SUPPORTS_MCP and type(task).tools:
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not support MCP tools, but task "
-                f"{task.idx!r} ({type(task).__name__}) exposes tool servers (MCP). Run it with "
+                f"{task.data.idx!r} ({type(task).__name__}) exposes tool servers (MCP). Run it with "
                 f"a harness that supports MCP (e.g. --harness.id default), or use tasks without tools."
             )
         if not self.harness.SUPPORTS_USER_SIM and type(task).user is not None:
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not drive a user simulator, but task "
-                f"{task.idx!r} ({type(task).__name__}) defines one (Task.user). Run it with a "
+                f"{task.data.idx!r} ({type(task).__name__}) defines one (Task.user). Run it with a "
                 f"harness that supports user simulation (e.g. --harness.id default), or use tasks without one."
             )
         if task.NEEDS_CONTAINER and isinstance(
             self.harness.config.runtime, SubprocessConfig
         ):
             raise ValueError(
-                f"Task {task.idx!r} ({type(task).__name__}) needs a container runtime "
+                f"Task {task.data.idx!r} ({type(task).__name__}) needs a container runtime "
                 "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
                 "use --harness.runtime.type docker or prime."
             )
         if n < 2 and discover_decorated(task, "group_reward"):
             raise ValueError(
-                f"task {task.idx!r} defines @group_reward(s), which compare a task's rollouts "
+                f"task {task.data.idx!r} defines @group_reward(s), which compare a task's rollouts "
                 f"and need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
             )
         runtime_config = self.runtime_for(task)
         setup_timeout = (
-            self.setup_timeout if self.setup_timeout is not None else task.timeout.setup
+            self.setup_timeout
+            if self.setup_timeout is not None
+            else task.data.timeout.setup
         )
         harness_timeout = (
             self.harness_timeout
             if self.harness_timeout is not None
-            else task.timeout.harness
+            else task.data.timeout.harness
         )
         if (
             harness_timeout is not None
@@ -330,7 +331,7 @@ class Environment:
             logger.warning(
                 "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
                 "maximum lifetime of 24 hours; capping it at 24 hours",
-                task.idx,
+                task.data.idx,
                 harness_timeout / (60 * 60),
                 runtime_config.type,
             )
@@ -338,12 +339,12 @@ class Environment:
         finalize_timeout = (
             self.finalize_timeout
             if self.finalize_timeout is not None
-            else task.timeout.finalize
+            else task.data.timeout.finalize
         )
         scoring_timeout = (
             self.scoring_timeout
             if self.scoring_timeout is not None
-            else task.timeout.scoring
+            else task.data.timeout.scoring
         )
         retries = self.config.retries
         rollouts = [

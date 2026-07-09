@@ -1,6 +1,6 @@
 """The trace: the full record of one rollout.
 
-A `Trace[TaskT]` carries the typed task plus everything produced during a
+A `Trace[DataT]` carries the typed task data plus everything produced during a
 rollout (conversation, per-turn responses, reward, metrics, timing, error). It is
 the canonical full data dump — written to disk (`traces.jsonl`) and consumed by
 the platform (visualization) and prime-rl (training). Environments subclass it to
@@ -27,7 +27,7 @@ from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import TaskT, WireTask
+from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -214,12 +214,12 @@ that the env-server wire carries fine but JSON cannot — `model_dump(mode="json
 Lives with the schema it excludes so a new tensor field can't silently start crashing dumps."""
 
 
-class Trace(StrictBaseModel, Generic[TaskT, StateT]):
+class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """The full record of one rollout. Subclass to add typed fields."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     """Unique id for this rollout, auto-generated per trace."""
-    task: TaskT
+    task: DataT
     """The (immutable) task being solved — fully typed, flows into scoring."""
     runtime: RuntimeInfo | None = None
     """Where the rollout ran: the runtime's full config plus the provisioned resource's `id`
@@ -248,7 +248,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """Transient per-rollout runtime state (see `verifiers.v1.state.State`): shared with the tool/user
     servers as `self.state` (synced over the interception server) and read+written by scoring. Runtime
     scratch (counters, game progress, end-of-trajectory flags) — excluded from every dump (`model_dump`
-    / `to_record`), unlike `info` which persists. Type it via `Task[MyState]`; defaults
+    / `to_record`), unlike `info` which persists. Type it via `Task[..., MyState, ...]`; defaults
     to the base `State`."""
 
     extra_usage: list[Usage] = Field(default_factory=list)
@@ -485,8 +485,8 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
 
 TraceT = TypeVar("TraceT", bound=Trace)  # type: ignore[type-arg]
 
-WireTrace = Trace[WireTask]
+WireTrace = Trace[WireTaskData]
 """A `Trace` typed for loading a dump without the originating taskset: taskset-specific task fields
-ride in `task.model_extra` (`WireTask` allows extras); `state` is never serialized so it needs no
+ride in `task.model_extra` (`WireTaskData` allows extras); `state` is never serialized so it needs no
 permissive type. The dump is plain pydantic (no derived computed fields), so load it directly:
 `WireTrace.model_validate(json.loads(line))`."""

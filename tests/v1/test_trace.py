@@ -10,8 +10,8 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 
-class MyTask(vf.Task):
-    answer: str = ""  # a taskset-specific field WireTask must absorb
+class MyTask(vf.TaskData):
+    answer: str = ""  # a taskset-specific field WireTaskData must absorb
 
 
 class MyState(vf.State):
@@ -20,7 +20,7 @@ class MyState(vf.State):
 
 def test_bare_trace_round_trip():
     # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
-    tr = vf.Trace(task=vf.Task(idx=3, prompt="hello"))
+    tr = vf.Trace(task=vf.TaskData(idx=3, prompt="hello"))
     rt = vf.Trace.model_validate(tr.model_dump())
     assert rt.id == tr.id
     assert rt.task.idx == 3 and rt.task.prompt == "hello"
@@ -78,7 +78,7 @@ def test_wire_trace_round_trip():
     assert rt.info == {"build": "ok"}
     assert rt.task.model_extra == {
         "answer": "a"
-    }  # taskset extras preserved on WireTask
+    }  # taskset extras preserved on WireTaskData
 
     # the env-server wire form (a plain model_dump) loads too
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2

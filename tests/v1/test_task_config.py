@@ -1,9 +1,10 @@
-"""The task config: constructor injection, `Taskset.tasks()` stamping, and `server_config`.
+"""Task construction: data + config in, `Taskset.tasks()` assembly, and `server_config`.
 
-Pins the behaviors the wiring relies on: `config` is a regular (excluded) field — injected
-at construction like `Taskset(config)` / `Judge(config)`, defaulted to the declared type's
-defaults, stamped by `tasks()` from `TasksetConfig.task`, never serialized (which is why
-`replay` re-stamps after rebuilding tasks from the wire), and inherited by `from_trace`.
+Pins the behaviors the split relies on: a `Task` is a plain class built from its two
+inputs (`MyTask(data, config=...)` — config defaults to the declared type's defaults),
+`tasks()` wraps every loaded `TaskData` row in the declared Task with `TasksetConfig.task`,
+only the data rides the wire (`trace.task`), and `from_trace` rebuilds the declared data
+type (configs come from whoever spawns the task).
 """
 
 import pytest
@@ -13,11 +14,15 @@ from verifiers.v1.errors import TaskError
 from verifiers.v1.trace import Trace
 
 
+class PlainData(vf.TaskData):
+    answer: str = ""
+
+
 class PlainTaskConfig(vf.TaskConfig):
     greeting: str = "hi"
 
 
-class PlainTask(vf.Task[vf.State, PlainTaskConfig]):
+class PlainTask(vf.Task[PlainData, vf.State, PlainTaskConfig]):
     pass
 
 
@@ -26,15 +31,16 @@ class PlainConfig(vf.TasksetConfig):
 
 
 class PlainTaskset(vf.Taskset[PlainTask, PlainConfig]):
-    def load(self) -> list[PlainTask]:
-        return [PlainTask(idx=i, prompt="p") for i in range(2)]
+    def load(self) -> list[PlainData]:
+        return [PlainData(idx=i, prompt="p") for i in range(2)]
 
 
-def test_config_is_injected_or_defaults() -> None:
-    assert (
-        PlainTask(idx=0, prompt="p").config.greeting == "hi"
-    )  # declared-type defaults
-    task = PlainTask(idx=0, prompt="p", config=PlainTaskConfig(greeting="yo"))
+def test_task_is_built_from_data_and_config() -> None:
+    data = PlainData(idx=0, prompt="p", answer="42")
+    task = PlainTask(data)
+    assert task.data is data
+    assert task.config.greeting == "hi"  # declared-type defaults
+    task = PlainTask(data, config=PlainTaskConfig(greeting="yo"))
     assert task.config.greeting == "yo"
 
 
@@ -42,23 +48,34 @@ def test_undefaultable_config_fails_at_construction() -> None:
     class NeedsValue(vf.TaskConfig):
         required: str
 
-    class NeedyTask(vf.Task[vf.State, NeedsValue]):
+    class NeedyTask(vf.Task[PlainData, vf.State, NeedsValue]):
         pass
 
+    data = PlainData(idx=0, prompt="p")
     with pytest.raises(TaskError, match="pass `config=...`"):
-        NeedyTask(idx=0, prompt="p")
-    needy = NeedyTask(idx=0, prompt="p", config=NeedsValue(required="x"))
-    assert needy.config.required == "x"
+        NeedyTask(data)
+    assert NeedyTask(data, config=NeedsValue(required="x")).config.required == "x"
 
 
-def test_tasks_stamps_the_config_task_subtree() -> None:
+def test_tasks_constructs_the_declared_type() -> None:
     taskset = PlainTaskset(PlainConfig(id="plain", task=PlainTaskConfig(greeting="yo")))
     tasks = taskset.tasks()
+    assert all(type(task) is PlainTask for task in tasks)
     assert all(task.config is taskset.config.task for task in tasks)
-    assert tasks[0].config.greeting == "yo"
+    assert [task.data.idx for task in tasks] == [0, 1]
 
 
-def test_tasks_rejects_a_mismatched_task_config() -> None:
+def test_tasks_rejects_mismatched_rows_and_config() -> None:
+    class OtherData(vf.TaskData):
+        pass
+
+    class WrongRows(PlainTaskset):
+        def load(self) -> list[vf.TaskData]:
+            return [OtherData(idx=0, prompt="p")]
+
+    with pytest.raises(TaskError, match="one task type"):
+        WrongRows(PlainConfig(id="plain")).tasks()
+
     class OtherConfig(vf.TasksetConfig):
         pass  # `task` stays the base TaskConfig — not the declared PlainTaskConfig
 
@@ -66,22 +83,21 @@ def test_tasks_rejects_a_mismatched_task_config() -> None:
         PlainTaskset(OtherConfig(id="plain")).tasks()
 
 
-def test_config_never_rides_the_wire() -> None:
-    task = PlainTask(idx=0, prompt="p", config=PlainTaskConfig(greeting="yo"))
-    dump = task.model_dump()
-    assert "config" not in dump
-    rebuilt = PlainTask.model_validate(dump)  # replay's rebuild path
-    assert rebuilt.config.greeting == "hi"  # back to defaults...
-    restamped = rebuilt.model_copy(
-        update={"config": task.config}
-    )  # ...until re-stamped
-    assert restamped.config.greeting == "yo"
+def test_only_the_data_rides_the_wire() -> None:
+    task = PlainTaskset(PlainConfig(id="plain")).tasks()[0]
+    trace = Trace(task=task.data, state=vf.State())
+    dump = trace.model_dump()
+    assert dump["task"] == task.data.model_dump()  # pure data — no behavior, no config
+    rebuilt = PlainData.model_validate(dump["task"])  # replay's rebuild path
+    assert rebuilt == task.data
 
 
-def test_from_trace_inherits_or_overrides_the_config() -> None:
-    parent = PlainTask(idx=0, prompt="p", config=PlainTaskConfig(greeting="yo"))
-    trace = Trace(task=parent, state=vf.State())
-    assert PlainTask.from_trace(trace).config.greeting == "yo"  # inherited
+def test_from_trace_rebuilds_the_declared_data() -> None:
+    data = PlainData(idx=0, prompt="p", answer="42")
+    trace = Trace(task=data, state=vf.State())
+    derived = PlainTask.from_trace(trace)
+    assert derived.data == data
+    assert derived.config.greeting == "hi"  # data-only trace: config from the defaults
     override = PlainTaskConfig(greeting="hey")
     assert PlainTask.from_trace(trace, config=override).config is override
 
@@ -101,15 +117,18 @@ class CustomToolset(vf.Toolset[CustomToolsetConfig]):
     TOOL_PREFIX = "custom"
 
 
+DATA = PlainData(idx=0, prompt="p")
+
+
 def test_server_config_exact_type_match_wins() -> None:
     class Config(vf.TaskConfig):
         tools: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
         custom: CustomToolsetConfig = CustomToolsetConfig()  # subclass: not exact
 
-    class PairedTask(vf.Task[vf.State, Config]):
+    class PairedTask(vf.Task[PlainData, vf.State, Config]):
         tools = (PairToolset,)
 
-    task = PairedTask(idx=0, prompt="p")
+    task = PairedTask(DATA)
     assert task.server_config(PairToolset) is task.config.tools
     (server,) = task.tool_servers()
     assert isinstance(server, PairToolset) and server.config.shared
@@ -119,12 +138,12 @@ def test_server_config_unique_isinstance_match() -> None:
     class Config(vf.TaskConfig):
         custom: CustomToolsetConfig = CustomToolsetConfig(corpus="wiki")
 
-    class PairedTask(vf.Task[vf.State, Config]):
+    class PairedTask(vf.Task[PlainData, vf.State, Config]):
         tools = (PairToolset,)
 
     # PairToolset declares the base ToolsetConfig; the subclass instance is the
     # unique isinstance match.
-    task = PairedTask(idx=0, prompt="p")
+    task = PairedTask(DATA)
     assert task.server_config(PairToolset) is task.config.custom
 
 
@@ -132,9 +151,7 @@ def test_server_config_defaults_when_nothing_matches() -> None:
     class PairedTask(vf.Task):
         tools = (PairToolset,)
 
-    assert (
-        PairedTask(idx=0, prompt="p").server_config(PairToolset) == vf.ToolsetConfig()
-    )
+    assert PairedTask(DATA).server_config(PairToolset) == vf.ToolsetConfig()
 
 
 def test_server_config_ambiguity_raises() -> None:
@@ -142,8 +159,8 @@ def test_server_config_ambiguity_raises() -> None:
         first: vf.ToolsetConfig = vf.ToolsetConfig()
         second: vf.ToolsetConfig = vf.ToolsetConfig()
 
-    class PairedTask(vf.Task[vf.State, Config]):
+    class PairedTask(vf.Task[PlainData, vf.State, Config]):
         tools = (PairToolset,)
 
     with pytest.raises(TaskError, match="ambiguous"):
-        PairedTask(idx=0, prompt="p").server_config(PairToolset)
+        PairedTask(DATA).server_config(PairToolset)

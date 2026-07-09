@@ -61,7 +61,7 @@ def output_path(config: DebugConfig) -> Path:
 
 
 def task_info(task) -> dict[str, Any]:
-    return {"idx": task.idx, "name": task.name, "workdir": task.workdir}
+    return {"idx": task.data.idx, "name": task.data.name, "workdir": task.data.workdir}
 
 
 def runtime_info(runtime: Runtime) -> dict[str, Any]:
@@ -214,10 +214,12 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
     cancelled = False
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
-        name=f"debug-{task.idx}-{uuid4().hex[:8]}",
+        name=f"debug-{task.data.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
-        config.timeout.setup if config.timeout.setup is not None else task.timeout.setup
+        config.timeout.setup
+        if config.timeout.setup is not None
+        else task.data.timeout.setup
     )
     try:
         trace.timing.setup.start = time.time()
@@ -253,7 +255,9 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
             # persist the trace — absorb it here; the caller re-raises after appending
             cancelled = True
         except Exception:
-            logger.warning("runtime teardown failed (task %s)", task.idx, exc_info=True)
+            logger.warning(
+                "runtime teardown failed (task %s)", task.data.idx, exc_info=True
+            )
     return trace, cancelled
 
 
@@ -292,7 +296,7 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
         detail = f" - {info['error']}" if info.get("error") else ""
         logger.info(
             "idx=%s ok=%s reason=%s%s",
-            task.idx,
+            task.data.idx,
             info["ok"],
             info["reason"],
             detail,

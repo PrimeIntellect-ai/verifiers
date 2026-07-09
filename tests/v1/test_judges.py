@@ -25,14 +25,14 @@ text = "The response is polite."
 """
 
 
-class QATask(vf.Task):
+class QAData(vf.TaskData):
     answer: str = ""
 
 
 def make_trace(
     reply: str = "It is Paris.",
     answer: str = "Paris",
-    task_cls: type[QATask] = QATask,
+    task_cls: type[QAData] = QAData,
 ) -> vf.Trace:
     return vf.Trace(
         task=task_cls(idx=0, prompt="Capital of France?", answer=answer),
@@ -192,7 +192,7 @@ def test_reward_name_fallback():
 
 async def test_base_judge_score_raises():
     with pytest.raises(NotImplementedError, match="implements no `score`"):
-        await vf.Judge().score(task=QATask(idx=0, prompt="q"), trace=make_trace())
+        await vf.Judge().score(task=QAData(idx=0, prompt="q"), trace=make_trace())
 
 
 # --- reference --------------------------------------------------------------------------------
@@ -230,7 +230,7 @@ async def test_reference_score_messages_prompt(fake_judge_model):
     # A Messages-form prompt still reaches the judge as text (via Task.prompt_text).
     from verifiers.v1.types import TextContentPart, UserMessage as UM
 
-    task = QATask(
+    task = QAData(
         idx=0,
         prompt=[UM(content=[TextContentPart(text="Capital of France?")])],
         answer="Paris",
@@ -250,7 +250,7 @@ async def test_reference_score_messages_prompt(fake_judge_model):
 
 async def test_reference_question_field(fake_judge_model):
     # question_field points {question} at a dedicated task field instead of the full prompt.
-    class FieldTask(vf.Task):
+    class FieldTask(vf.TaskData):
         question: str = ""
         answer: str = ""
 
@@ -285,7 +285,7 @@ def full_trace_fixture() -> vf.Trace:
     from verifiers.v1.types import ToolCall, ToolMessage
 
     return vf.Trace(
-        task=QATask(idx=0, prompt="Capital of France?", answer="Paris"),
+        task=QAData(idx=0, prompt="Capital of France?", answer="Paris"),
         nodes=[
             MessageNode(
                 parent=None,
@@ -398,7 +398,7 @@ async def test_reference_empty_response_short_circuits(fake_judge_model):
 
 async def test_reference_list_answer(fake_judge_model):
     # A list-valued answer field is judged as multiple acceptable answers, one per line.
-    class MultiTask(vf.Task):
+    class MultiTask(vf.TaskData):
         aliases: list[str] = []
 
     task = MultiTask(idx=0, prompt="q?", aliases=["Paris", "Lutetia"])
@@ -450,19 +450,19 @@ async def test_error_attribution(monkeypatch, tmp_path):
         JudgedConfig.model_validate({"task": {"judges": [{"id": "reference"}]}})
     )
     # model failure: empty reply -> judge skipped, reward 0.0, NO error
-    trace = make_trace(reply="", task_cls=JudgedTask)
+    trace = make_trace(reply="")
     trace.task = trace.task.model_copy(
         update={"judges": tuple(taskset.config.task.judges)}
     )
-    await trace.task.score(trace, runtime=None)
+    await JudgedTask(trace.task).score(trace, runtime=None)
     assert trace.rewards["reference"] == 0.0
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
-    trace = make_trace(task_cls=JudgedTask)
+    trace = make_trace()
     trace.task = trace.task.model_copy(
         update={"judges": tuple(taskset.config.task.judges)}
     )
     with pytest.raises(vf.TaskError, match="no yes/no verdict"):
-        await trace.task.score(trace, runtime=None)
+        await JudgedTask(trace.task).score(trace, runtime=None)
     assert "reference" not in trace.rewards
     assert len(trace.info["judge"]) == 1  # the billed call is still recorded
 
@@ -601,7 +601,7 @@ async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model):
 # --- Task.score integration -------------------------------------------------------------
 
 
-class JudgedTask(QATask):
+class JudgedTask(vf.Task[QAData]):
     @vf.reward
     async def own(self, trace) -> float:
         return 0.25
@@ -612,7 +612,7 @@ class JudgedConfig(vf.TasksetConfig):
 
 
 class JudgedTaskset(vf.Taskset[JudgedTask, JudgedConfig]):
-    def load(self) -> list[JudgedTask]:
+    def load(self) -> list[QAData]:
         return []
 
 
@@ -630,11 +630,11 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
         }
     )
     taskset = JudgedTaskset(cfg)
-    trace = make_trace(task_cls=JudgedTask)
+    trace = make_trace()
     trace.task = trace.task.model_copy(
         update={"judges": tuple(taskset.config.task.judges)}
     )
-    await trace.task.score(trace, runtime=None)
+    await JudgedTask(trace.task).score(trace, runtime=None)
     assert trace.rewards["own"] == 0.25  # decorated rewards still run
     assert (
         trace.rewards["reference"] == 0.5
@@ -646,6 +646,6 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
 
 
 async def test_task_without_judges_scores_as_before():
-    trace = make_trace(task_cls=JudgedTask)
-    await trace.task.score(trace, runtime=None)
+    trace = make_trace()
+    await JudgedTask(trace.task).score(trace, runtime=None)
     assert trace.rewards == {"own": 0.25}

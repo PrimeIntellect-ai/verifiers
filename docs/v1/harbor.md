@@ -5,7 +5,7 @@ verifiers offers built-in support for Harbor via the `HarborTaskset` class. Crea
 
 ```python
 import verifiers.v1 as vf
-from verifiers.v1.tasksets.harbor import HarborConfig, HarborTask, HarborTaskset
+from verifiers.v1.tasksets.harbor import HarborConfig, HarborData, HarborTask, HarborTaskset
 
 # Set the dataset to the same name as registered in the Harbor registry
 class TerminalBench2Config(HarborConfig):
@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Literal
 
 import verifiers.v1 as vf
-from verifiers.v1.tasksets.harbor import HarborConfig, HarborTask, HarborTaskset
+from verifiers.v1.tasksets.harbor import HarborConfig, HarborData, HarborTask, HarborTaskset
 
 class OpenThoughtsTBLiteConfig(HarborConfig):
     dataset: Literal["openthoughts/openthoughts-tblite"] = "openthoughts/openthoughts-tblite"
@@ -34,11 +34,11 @@ class OpenThoughtsTBLiteConfig(HarborConfig):
 
 
 class OpenThoughtsTBLiteTaskset(HarborTaskset, vf.Taskset[HarborTask, OpenThoughtsTBLiteConfig]):
-    def load(self) -> list[HarborTask]:
+    def load(self) -> list[HarborData]:
         # Use the public image instead to avoid building the image at runtime
         return [
-            task.model_copy(update={"image": IMAGE_TEMPLATE.format(task=Path(task.task_dir).name)})
-            for task in super().load()
+            row.model_copy(update={"image": IMAGE_TEMPLATE.format(task=Path(row.task_dir).name)})
+            for row in super().load()
         ]
 ```
 
