@@ -33,11 +33,11 @@ Any PR that adds or modifies core user-facing functionality as described in `doc
 - `docs/v1/overview.md`
 - `docs/v1/environments.md`
 - `docs/v1/evaluation.md`
-- `docs/v0/training.md`
-- `docs/v0/reference.md`
-- `docs/v0/faqs.md`
+- `docs/training.md`
+- `docs/reference.md`
+- `docs/faqs.md`
 
-Notable information which should be available for reference, but does not neatly map to a specific documentation section, should be mentioned in `docs/v0/faqs.md`.
+Notable information which should be available for reference, but does not neatly map to a specific documentation section, should be mentioned in `docs/faqs.md`.
 
 If such changes are detected without a corresponding documentation update, request that the author add an entry.
 
@@ -80,8 +80,8 @@ This includes changes to command contracts, defaults, or behavior in:
 - `docs/v1/overview.md`
 - `docs/v1/environments.md`
 - `docs/v1/evaluation.md`
-- `docs/v0/training.md`
-- `docs/v0/faqs.md`
+- `docs/training.md`
+- `docs/faqs.md`
 - `docs/prime_cli_verifiers_unification_design.md`
 - `verifiers/scripts/*.py`
 - `verifiers/cli/plugins/prime.py`

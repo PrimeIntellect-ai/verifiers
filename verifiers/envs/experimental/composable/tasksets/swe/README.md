@@ -6,7 +6,7 @@
   they are not known to be available there yet.
 - Validation: ✅ means the taskset has a linked `prime-data` PR and was
   validated with
-  [`SandboxDebugEnv`](../../../../../../docs/v0/environments.md#integrations-and-experimental-environments),
+  [`SandboxDebugEnv`](../../../../../../docs/environments.md#integrations-and-experimental-environments),
   — not yet complete.
 
 ## Progress

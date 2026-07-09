@@ -5,30 +5,12 @@
       "group": "Verifiers",
       "pages": [
         "overview",
-        {
-          "group": "Verifiers v1",
-          "pages": [
-            "v1/overview",
-            "v1/getting_started",
-            "v1/architecture",
-            "v1/environments",
-            "v1/evaluation",
-            "v1/harnesses",
-            "v1/harbor"
-          ]
-        },
-        {
-          "group": "Legacy (v0)",
-          "pages": [
-            "v0/overview",
-            "v0/environments",
-            "v0/evaluation",
-            "v0/training",
-            "v0/development",
-            "v0/reference",
-            "v0/faqs"
-          ]
-        }
+        "environments",
+        "evaluation",
+        "training",
+        "development",
+        "reference",
+        "faqs"
       ]
     }
   ]

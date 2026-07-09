@@ -23,7 +23,7 @@ Or with pip/uv pip:
 uv pip install -e ".[browser]"
 ```
 
-When you publish an environment that uses `BrowserEnv`, list `verifiers[browser]` in that package’s `pyproject.toml` `dependencies` so installs from the [Environments Hub](https://app.primeintellect.ai/dashboard/environments) pull the extra. Validate required variables early in `load_environment()` with `vf.ensure_keys([...])` (see [Required API Keys](../../../../docs/v0/environments.md#required-api-keys) in the Verifiers environments guide).
+When you publish an environment that uses `BrowserEnv`, list `verifiers[browser]` in that package’s `pyproject.toml` `dependencies` so installs from the [Environments Hub](https://app.primeintellect.ai/dashboard/environments) pull the extra. Validate required variables early in `load_environment()` with `vf.ensure_keys([...])` (see [Required API Keys](../../../../docs/environments.md#required-api-keys) in the Verifiers environments guide).
 
 ## Required credentials
 

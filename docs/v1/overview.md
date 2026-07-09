@@ -37,4 +37,4 @@ A trace records the message graph, rewards, metrics, errors, etc. When using ver
 - [Evaluation](evaluation.md) — How to run said environments
 - [Harnesses](harnesses.md) — How to build custom harnesses
 
-For the documentation for legacy environments, go to [the v0 documentation](../v0/overview.md).
+For the documentation for legacy environments, go to [the v0 documentation](../overview.md).
