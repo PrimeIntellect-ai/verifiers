@@ -14,7 +14,7 @@ An environment combines a _taskset_ and a _harness_. Often, it is sufficient to 
 
 ## Taskset
 
-A taskset is a collection of tasks, i.e., the _what_. A task is a prompt, a set of files, etc. A taskset also defines the scoring mechanism (known as reward).
+A taskset is a collection of tasks, i.e., the _what_. A task is a prompt, a set of files, etc. — and it carries its own scoring (rewards, metrics) and lifecycle hooks: each dataset's task class defines how it is graded. The taskset is the loader that yields them; every taskset yields exactly one task type.
 
 ## Harness
 

@@ -34,11 +34,11 @@ class OpenThoughtsTBLiteConfig(HarborConfig):
 
 
 class OpenThoughtsTBLiteTaskset(HarborTaskset, vf.Taskset[HarborTask, OpenThoughtsTBLiteConfig]):
-    def load_tasks(self) -> list[HarborTask]:
+    def load(self) -> list[HarborTask]:
         # Use the public image instead to avoid building the image at runtime
         return [
             task.model_copy(update={"image": IMAGE_TEMPLATE.format(task=Path(task.task_dir).name)})
-            for task in super().load_tasks()
+            for task in super().load()
         ]
 ```
 

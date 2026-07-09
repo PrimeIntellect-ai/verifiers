@@ -14,43 +14,51 @@ There are optional flags:
 - `-H`, `--add-harness` — also scaffold a custom `vf.Harness` at `harness.py`, selectable via `--harness.id <name>`
   - In general, you should build your environments so that any of the built-in harnesses work. There are few reasons to build a custom harness.
 
-However, for most environments, building a taskset should be enough.
+However, for most environments, a task subclass plus a thin taskset loader is enough.
 
 > For a production-scale catalog of benchmark environments, see the companion [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) repository.
 
 ## A minimal environment
 
+A `vf.Task` carries a single problem's data *and* its behavior — the `@vf.reward` /
+`@vf.metric` scoring methods, lifecycle hooks, and tool/user declarations all live on the
+task subclass and read the task's own fields off `self`. The `vf.Taskset` is just the
+loader: config in, typed tasks out, one concrete task type per taskset.
+
 ```python
-import verifiers.v1 as vf 
+import verifiers.v1 as vf
 
 
-# A task defines a single problem and is defined as a subclass of vf.Task
+# A task defines a single problem: its data fields plus how it is scored.
 class AdditionTask(vf.Task):
     answer: int
 
+    # @vf.reward denotes a scoring function. It receives whatever it declares by
+    # parameter name (`trace`, `runtime`); `self` is the task, so your fields are
+    # right there. The trace contains the whole message graph, including function
+    # calls and user messages.
+    @vf.reward
+    async def exact_match(self, trace: vf.Trace) -> float:
+        return float(trace.last_reply == str(self.answer))
 
-# The taskset defines the dataset (collection of tasks) and needs a vf.TasksetConfig, which can be empty.
+
+# The taskset is the loader. It needs a vf.TasksetConfig, which can be empty.
 class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
-    def load_tasks(self) -> list[AdditionTask]:
-        # Load the dataset, in this case we built it on the initial load
+    def load(self) -> list[AdditionTask]:
+        # Load the dataset, in this case we build it on the initial load
         return [
             AdditionTask(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i)
             for i in range(100)
         ]
-
-    # @vf.reward denotes the scoring function for the environment.
-    # It needs the actual task (defined earlier) as well as the trace, which contains the whole message graph, including function calls, user messages etc.
-    # It returns the reward for the rollout based on this function.
-    @vf.reward
-    async def exact_match(self, task: AdditionTask, trace: vf.Trace) -> float:
-        return float(trace.last_reply == str(task.answer))
 
 
 # Export the Taskset for verifiers to find it when loading
 __all__ = ["AdditionTaskset"]
 ```
 
-You can also use `@vf.metric` to record non-scored values and `@vf.group_reward` for group rewards, which might be useful for training.
+You can also use `@vf.metric` to record non-scored values, `@vf.group_reward` for group
+rewards (comparing a task's rollouts, useful for training), and `@vf.stop` for stop
+conditions. Lifecycle hooks (`setup`, `finalize`, `validate`) are methods on the task too.
 
 ## Making values configurable
 
@@ -62,21 +70,39 @@ class AdditionConfig(vf.TasksetConfig):
     num_tasks: int = 100
 
 class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
-    def load_tasks(self) -> list[AdditionTask]:
+    def load(self) -> list[AdditionTask]:
         return [
             AdditionTask(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i)
             for i in range(self.config.num_tasks) # <- re-use the value here
         ]
-
 ```
+
 Common usages for `vf.TasksetConfig` are settings like splits (e.g., train/test), difficulty settings, judge model names, etc.
+
+The config is also attached to every loaded task, so scoring methods and hooks can read
+taskset-level knobs off `self.config` — typed by parameterizing the task
+(`vf.Task[vf.State, AdditionConfig]`):
+
+```python
+class AdditionTask(vf.Task[vf.State, AdditionConfig]):
+    answer: int
+
+    @vf.reward
+    async def exact_match(self, trace: vf.Trace) -> float:
+        tolerance = self.config.tolerance  # a taskset-level knob, not a per-row field
+        ...
+```
+
+Per-row data (the question, the reference answer) stays on task fields; values that are
+uniform across the taskset belong on the config.
 
 ## Adding Tools
 
 Some environments require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`).
 Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
 
-You can create them like this (remember the bootstrapping with `uv run init MY_ENV -T`):
+Declare the toolset classes on the task (remember the bootstrapping with `uv run init MY_ENV -T`):
+
 ```python
 DATABASE = None
 
@@ -88,15 +114,23 @@ class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
         """Search the task corpus."""
         return DATABASE.search(text)
 
-# User-configurable knobs
+class SearchTask(vf.Task):
+    tools = (SearchToolset,)
+
+# User-configurable knobs (placement: colocated / shared / own runtime)
 class SearchConfig(vf.TasksetConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig()
 
-class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
-    # Launch the tools during setup
-    def tools(self, task: vf.Task) -> list[vf.Toolset]:
-        return [SearchToolset(self.config.tools)]
+class SearchTaskset(vf.Taskset[SearchTask, SearchConfig]):
+    ...
 ```
+
+The framework builds each declared server with the matching config off the attached taskset
+config — the field whose type is the server's declared config type (here
+`SearchConfig.tools`), falling back to a default-constructed one. Override
+`Task.server_config` if you need explicit pairing (e.g. two servers sharing one config
+type). User simulators follow the same pattern: `user = MyUser` on the task, a
+`vf.UserConfig` field on the taskset config.
 
 ## Using Judges
 
@@ -104,10 +138,6 @@ If your reward is semantic, use an LLM judge.
 
 ```python
 import verifiers.v1 as vf
-from functools import cached_property
-
-class Task(vf.Task):
-    answer: str
 
 class CorrectnessJudge(vf.Judge[bool]):
     # The rubric for the judge
@@ -126,26 +156,32 @@ class Config(vf.TasksetConfig):
     judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
 
 
-class JudgeTraceTaskset(vf.Taskset[Task, Config]):
-    # Build the judge lazily from config — no Taskset.__init__ override needed.
-    @cached_property
-    def judge(self) -> CorrectnessJudge:
-        return CorrectnessJudge(self.config.judge)
-
-    def load_tasks(self) -> list[Task]:
-        return [Task(idx=0, prompt="What is 2+2?", answer="4")]
+class JudgedTask(vf.Task[vf.State, Config]):
+    answer: str
 
     @vf.reward()
-    async def correct(self, task, trace) -> float:
-        result = await self.judge.evaluate(
-            trace=trace, 
-            question=task.prompt, 
-            answer=task.answer, 
+    async def correct(self, trace: vf.Trace) -> float:
+        judge = CorrectnessJudge(self.config.judge)  # config knobs stay CLI-tunable
+        result = await judge.evaluate(
+            trace=trace,
+            question=self.prompt,
+            answer=self.answer,
             # give the last assistant message to the judge
-            response=trace.last_reply
+            response=trace.last_reply,
         )
         return 1.0 if result.parsed else 0.0
+
+
+class JudgeTraceTaskset(vf.Taskset[JudgedTask, Config]):
+    def load(self) -> list[JudgedTask]:
+        return [JudgedTask(idx=0, prompt="What is 2+2?", answer="4")]
 ```
 
 To override the judge model, set `taskset.judge.model` in your config (it is a string).
 Sampling knobs live under `taskset.judge.sampling` — e.g. `taskset.judge.sampling.max_tokens`.
+
+Judges can also be plugged **from config alone** — no judge-calling code: the base
+`TasksetConfig.judges` list attaches judge plugins (built-ins like `reference` / `rubric`,
+or hub packages) to every task at load, and `Task.score` runs them after the task's own
+`@reward`s. Each task records its judges' configs on the wire (`Task.judges`), so a saved
+trace shows exactly what judged it.
