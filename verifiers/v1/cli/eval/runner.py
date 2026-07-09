@@ -107,7 +107,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
     """Eval through the env-server worker pool (`--num-workers > 0`). Spawns the pool
     (works for v1 and the v0 bridge), then drives rollouts by task idx over an
     `EnvClient` — the same path prime-rl trains through, so it exercises the
-    router + workers end-to-end. Output matches `run_eval` (config.toml + results.jsonl)."""
+    router + workers end-to-end. Output matches `run_eval` (config.toml + traces.jsonl)."""
     import multiprocessing as mp
     from functools import partial
 

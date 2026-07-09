@@ -1,6 +1,6 @@
 """Resume an interrupted eval: re-run only the rollouts a previous run didn't finish.
 
-A run writes `config.toml` + `results.jsonl` into its output dir. `--resume <dir>` reloads
+A run writes `config.toml` + `traces.jsonl` into its output dir. `--resume <dir>` reloads
 that config verbatim (so it takes no other flags) and writes back into the same dir, running
 only the rollouts still owed: the *missing* ones (never written — the run was interrupted) and
 the *errored* ones (written with an error). Good rollouts are kept; errored ones are dropped
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from pydantic_core import from_json
 
-from verifiers.v1.cli.output import read_traces
+from verifiers.v1.cli.output import TRACES_FILE, read_traces
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import WireTask
@@ -41,7 +41,7 @@ def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
 
 def load_resume_config(resume_dir: Path) -> EvalConfig:
     """Rebuild the run's `EvalConfig` from its saved `config.toml`, pointed back at its own
-    output dir so the resumed rollouts append to the same `results.jsonl`."""
+    output dir so the resumed rollouts append to the same `traces.jsonl`."""
     config_path = resume_dir / "config.toml"
     if not config_path.exists():
         raise SystemExit(
@@ -81,7 +81,7 @@ def plan(
     # Retain only the offsets resume can reuse; trace payloads stay on disk.
     selected = set(selected_idxs)
     by_idx: dict[int, list[int]] = defaultdict(list)
-    for offset, idx, errored in _read_results(resume_dir / "results.jsonl"):
+    for offset, idx, errored in _read_results(resume_dir / TRACES_FILE):
         if idx in selected and not errored and len(by_idx[idx]) < num_rollouts:
             by_idx[idx].append(offset)
     keep: list[int] = []
@@ -102,9 +102,9 @@ def plan(
 
 
 def rewrite_results(resume_dir: Path, keep: list[int]) -> None:
-    """Replace `results.jsonl` with just the kept (good) traces; resumed rollouts append. Via a
+    """Replace `traces.jsonl` with just the kept (good) traces; resumed rollouts append. Via a
     temp file + atomic rename, so an interrupted resume can't corrupt the prior good results."""
-    path = resume_dir / "results.jsonl"
+    path = resume_dir / TRACES_FILE
     tmp = path.with_suffix(".jsonl.tmp")
     if not keep:
         tmp.write_bytes(b"")

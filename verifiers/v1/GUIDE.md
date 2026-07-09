@@ -369,7 +369,7 @@ Good to know:
 - **What lands on the trace:** the weighted verdict in `trace.rewards[<reward key>]`; rubric's
   raw per-criterion verdicts in `trace.metrics`; every call's `JudgeResponse` in
   `trace.info["judge"]` with its tokens + cost in `trace.extra_usage` (shown as `+judge` in the
-  dashboard). All persisted to `results.jsonl`.
+  dashboard). All persisted to `traces.jsonl`.
 
 Writing your own pluggable judge is the same recipe as any plugin: a package exporting a `Judge`
 subclass via `__all__` that implements `score` — declare any subset of `task` / `trace` / `runtime`
@@ -468,7 +468,7 @@ class SWETaskset(vf.Taskset[SWETask, SWEConfig]):
 `trace.info` is a free-form, **JSON-serializable** dict for per-rollout artifacts that are neither a
 reward nor a metric — the diff above, captured logs, command output, file paths. Write to it from
 `finalize` or a `@reward`/`@metric` by assigning into the dict; it is persisted with the trace
-(dumped to `results.jsonl` and sent over the wire), so every value must be JSON-serializable — a
+(dumped to `traces.jsonl` and sent over the wire), so every value must be JSON-serializable — a
 non-serializable value fails the trace dump rather than being silently dropped.
 
 ```python
@@ -815,7 +815,7 @@ client-side so each node carries the exact `token_ids` / `mask` / `logprobs` (th
 — point it at a vLLM engine with `--client.base-url`.
 
 **What it writes** (into `--output-dir`, default `outputs/<taskset>--<model>--<harness>/<uuid>`):
-`config.toml` (the resolved config, re-runnable via `@ config.toml`), `results.jsonl` (one full
+`config.toml` (the resolved config, re-runnable via `@ config.toml`), `traces.jsonl` (one full
 trace per line, appended as each rollout finishes — durable mid-run), and `eval.log`.
 
 **`--dry-run`** writes `config.toml` and exits (resolve + validate, no run). **`--resume
@@ -869,7 +869,7 @@ uv run debug swebench-v1 -n 1 --runtime.type prime --script-path ./inspect.sh
 | `--runtime.type` | `docker` | runtime for setup + the debug action |
 | `--timeout.setup` / `--timeout.total` | None | per-task wall-clock caps for `setup` and the debug action |
 | `-n`/`--num-tasks`, `-s`/`--shuffle`, `-c`/`--max-concurrent` (128) | | task selection + concurrency |
-| `-o`/`--output-dir` | fresh debug run dir | where `config.toml` and `results.jsonl` are written |
+| `-o`/`--output-dir` | fresh debug run dir | where `config.toml` and `traces.jsonl` are written |
 
 Each saved trace has command/script metadata, exit status, elapsed time, timeout/error fields,
 and the full stdout/stderr under `trace.info["debug"]`.

@@ -57,7 +57,7 @@ class EvalConfig(EnvServerConfig):
     output_dir: Path | None = Field(
         None, validation_alias=AliasChoices("output_dir", "o")
     )
-    """Where to write the run (config.toml + results.jsonl). None = a fresh per-run dir
+    """Where to write the run (config.toml + traces.jsonl). None = a fresh per-run dir
     under `outputs/<env>--<model>--<harness>/<uuid>` (so runs never overwrite each other)."""
     resume: Path | None = Field(None, exclude=True)
     """Set by `--resume <dir>`: re-run only the rollouts a previous run left missing or

@@ -46,7 +46,7 @@ class DebugConfig(BaseConfig):
     output_dir: Path | None = Field(
         None, validation_alias=AliasChoices("output_dir", "o")
     )
-    """Where to write `config.toml` and `results.jsonl`. None = a fresh per-run dir."""
+    """Where to write `config.toml` and `traces.jsonl`. None = a fresh per-run dir."""
 
     @property
     def name(self) -> str:
