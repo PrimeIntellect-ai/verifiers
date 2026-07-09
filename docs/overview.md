@@ -6,5 +6,5 @@ verifiers is a framework for defining tasks, running agents and harnesses, scori
 
 The documentation is split into two sections:
 
-- **[Verifiers v1](v1/overview.md)** — The current documentation for verifiers v1 (`verifiers.v1`), built around tasksets, harnesses, and traces. This is what new environments should target.
+- **[verifiers v1](v1/overview.md)** — The current documentation for verifiers v1 (`verifiers.v1`), built around tasksets, harnesses, and traces. This is what new environments should target.
 - **[Legacy (v0)](v0/overview.md)** — The documentation for legacy verifiers v0 environments (`import verifiers as vf`). v0 is considered deprecated and will be fully removed in a future release.
