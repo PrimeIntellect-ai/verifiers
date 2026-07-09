@@ -17,7 +17,7 @@ a row of any other class would silently lose its own behavior there).
 
 from typing import Generic, get_args, get_origin
 
-from verifiers.v1.errors import TasksetError
+from verifiers.v1.errors import TaskError
 from verifiers.v1.judge import check_judges
 from verifiers.v1.task import ConfigT, Task, TaskT, TasksetConfig
 
@@ -61,12 +61,12 @@ class Taskset(Generic[TaskT, ConfigT]):
         kinds = {type(task) for task in tasks}
         if declared is not Task:
             if wrong := sorted(cls.__name__ for cls in kinds - {declared}):
-                raise TasksetError(
+                raise TaskError(
                     f"{type(self).__name__} declares task type {declared.__name__} "
                     f"but loaded {wrong} — a taskset yields one task type"
                 )
         elif len(kinds) > 1:
-            raise TasksetError(
+            raise TaskError(
                 f"{type(self).__name__} loaded mixed task types "
                 f"{sorted(cls.__name__ for cls in kinds)} — a taskset yields one task type"
             )

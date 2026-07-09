@@ -39,7 +39,7 @@ from verifiers.v1 import graph
 from verifiers.v1.errors import (
     OverlongPromptError,
     RolloutError,
-    TasksetError,
+    TaskError,
     UserError,
 )
 from verifiers.v1.trace import Trace
@@ -312,7 +312,7 @@ class InterceptionServer:
                 return self._fail(
                     session,
                     dialect,
-                    TasksetError(f"@stop failed: {type(e).__name__}: {e}"),
+                    TaskError(f"@stop failed: {type(e).__name__}: {e}"),
                 )
             if refused is not None:
                 # Refuse the first model call to halt the harness; once a simulated
@@ -420,7 +420,7 @@ class InterceptionServer:
             return self._fail(session, dialect, e)
         except Exception as e:
             return self._fail(
-                session, dialect, TasksetError(f"@stop failed: {type(e).__name__}: {e}")
+                session, dialect, TaskError(f"@stop failed: {type(e).__name__}: {e}")
             )
         if refused is not None:
             return web.json_response(

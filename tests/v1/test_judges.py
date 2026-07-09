@@ -431,7 +431,7 @@ async def test_reference_choices(fake_judge_model):
 
 async def test_error_attribution(monkeypatch, tmp_path):
     # The policy: a MODEL failure scores 0.0; a JUDGE failure errors the rollout (raises
-    # out of Task.score as a TasksetError) so training skips the sample instead of
+    # out of Task.score as a TaskError) so training skips the sample instead of
     # punishing the model for a broken judge.
     async def gibberish_judge(
         self, messages, *, trace=None, schema=None, parse=None, **s
@@ -457,7 +457,7 @@ async def test_error_attribution(monkeypatch, tmp_path):
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
     trace = make_trace(task_cls=JudgedTask)
     trace.task = trace.task.model_copy(update={"judges": tuple(taskset.config.judges)})
-    with pytest.raises(vf.TasksetError, match="no yes/no verdict"):
+    with pytest.raises(vf.TaskError, match="no yes/no verdict"):
         await trace.task.score(trace, runtime=None)
     assert "reference" not in trace.rewards
     assert len(trace.info["judge"]) == 1  # the billed call is still recorded

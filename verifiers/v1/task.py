@@ -42,7 +42,7 @@ from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
 from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.errors import TasksetError, boundary
+from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.judge import JudgeConfig, Judges, check_judges, resolve_judges
 from verifiers.v1.state import StateT
 from verifiers.v1.types import ID, Messages, StrictBaseModel, content_text
@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
+
 
 def _requires_runtime(fn) -> bool:
     """A signal with a default-less `runtime` parameter can't run without a live runtime.
@@ -207,7 +208,7 @@ class Task(StrictBaseModel, Generic[StateT, ConfigT]):
         toolset's placement, ...). Attached by `Taskset.tasks()`; a standalone task (built
         outside a taskset) gets one via `attach_config`."""
         if self._config is None:
-            raise TasksetError(
+            raise TaskError(
                 f"{type(self).__name__} has no taskset config attached — tasks from "
                 f"`Taskset.tasks()` get it automatically; attach one to a standalone "
                 f"task with `task.attach_config(config)`"
@@ -291,7 +292,7 @@ class Task(StrictBaseModel, Generic[StateT, ConfigT]):
             if not matched:
                 matched = [name for name, v in values.items() if isinstance(v, cfg_cls)]
             if len(matched) > 1:
-                raise TasksetError(
+                raise TaskError(
                     f"{type(self).__name__}: ambiguous config for {server_cls.__name__} — "
                     f"taskset config fields {matched} all match {cfg_cls.__name__}; "
                     f"override `server_config` to pair them explicitly"
@@ -301,7 +302,7 @@ class Task(StrictBaseModel, Generic[StateT, ConfigT]):
         try:
             return cfg_cls()
         except Exception as exc:
-            raise TasksetError(
+            raise TaskError(
                 f"{type(self).__name__}: no {cfg_cls.__name__} to build "
                 f"{server_cls.__name__} with — add a {cfg_cls.__name__} field to the "
                 f"taskset config (attached to every task at load), or attach a config "
@@ -383,7 +384,7 @@ class Task(StrictBaseModel, Generic[StateT, ConfigT]):
             # A signal that *requires* a runtime can't run without one, so skip it when replaying.
             return runtime is not None or not _requires_runtime(fn)
 
-        async with boundary(TasksetError, f"task {type(self).__name__} scoring"):
+        async with boundary(TaskError, f"task {type(self).__name__} scoring"):
             metrics = [fn for fn in discover_decorated(self, "metric") if can_run(fn)]
             metric_results = (
                 [await invoke(fn, available) for fn in metrics]
@@ -552,7 +553,7 @@ class Task(StrictBaseModel, Generic[StateT, ConfigT]):
         if not rewards:
             return
         available = {"task": self, "traces": traces}
-        async with boundary(TasksetError, f"task {type(self).__name__} group scoring"):
+        async with boundary(TaskError, f"task {type(self).__name__} group scoring"):
             reward_results = (
                 [await invoke(fn, available) for fn in rewards]
                 if len(rewards) < 2

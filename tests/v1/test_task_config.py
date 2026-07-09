@@ -11,7 +11,7 @@ import copy
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.errors import TasksetError
+from verifiers.v1.errors import TaskError
 
 
 class PlainTask(vf.Task):
@@ -36,7 +36,7 @@ def test_tasks_attaches_the_taskset_config() -> None:
 
 def test_unattached_config_raises_with_the_remedy() -> None:
     task = PlainTask(idx=0, prompt="p")
-    with pytest.raises(TasksetError, match="attach_config"):
+    with pytest.raises(TaskError, match="attach_config"):
         _ = task.config
 
 
@@ -47,7 +47,7 @@ def test_attachment_survives_copies_but_not_the_wire() -> None:
     assert task.model_copy(deep=True).config == config  # replay rescore copies
     assert copy.deepcopy(task).config == config
     rebuilt = PlainTask.model_validate(task.model_dump())  # the wire drops it...
-    with pytest.raises(TasksetError):
+    with pytest.raises(TaskError):
         _ = rebuilt.config
     assert rebuilt.attach_config(config).config is config  # ...and replay re-attaches
 
@@ -96,7 +96,9 @@ def test_server_config_defaults_when_nothing_matches() -> None:
     task = PairedTask(idx=0, prompt="p").attach_config(vf.TasksetConfig(id="x"))
     assert task.server_config(PairToolset) == vf.ToolsetConfig()
     # ... and for a standalone task with no config attached at all.
-    assert PairedTask(idx=0, prompt="p").server_config(PairToolset) == vf.ToolsetConfig()
+    assert (
+        PairedTask(idx=0, prompt="p").server_config(PairToolset) == vf.ToolsetConfig()
+    )
 
 
 def test_server_config_ambiguity_raises() -> None:
@@ -105,5 +107,5 @@ def test_server_config_ambiguity_raises() -> None:
         second: vf.ToolsetConfig = vf.ToolsetConfig()
 
     task = PairedTask(idx=0, prompt="p").attach_config(Config(id="x"))
-    with pytest.raises(TasksetError, match="ambiguous"):
+    with pytest.raises(TaskError, match="ambiguous"):
         task.server_config(PairToolset)

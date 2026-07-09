@@ -24,7 +24,7 @@ from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
-    TasksetError,
+    TaskError,
     ToolsetError,
     boundary,
 )
@@ -167,7 +167,7 @@ class Rollout:
                 else asyncio.get_running_loop().time() + self.setup_timeout
             )
             async with (
-                boundary(TasksetError, "task setup"),
+                boundary(TaskError, "task setup"),
                 asyncio.timeout_at(setup_deadline),
             ):
                 await invoke(self.task.setup, {"trace": trace, "runtime": runtime})
@@ -206,7 +206,7 @@ class Rollout:
                     ) as session.user,
                 ):
                     if self.task.prompt is None and session.user is None:
-                        raise TasksetError(
+                        raise TaskError(
                             "task has no prompt and no user simulator to open the "
                             "conversation; set task.prompt or declare a simulator "
                             "class on Task.user"
@@ -241,7 +241,7 @@ class Rollout:
             trace.timing.generation.end = now
             trace.timing.finalize.start = now
             self.phase = Phase.FINALIZE  # post-run task work, before scoring
-            async with boundary(TasksetError, "task finalize"):
+            async with boundary(TaskError, "task finalize"):
                 await asyncio.wait_for(
                     invoke(self.task.finalize, {"trace": trace, "runtime": runtime}),
                     self.finalize_timeout,
@@ -252,7 +252,7 @@ class Rollout:
                 Phase.SCORING
             )  # per-rollout scoring; the Episode marks DONE after group scoring
             trace.timing.scoring.start = now
-            async with boundary(TasksetError, "scoring"):
+            async with boundary(TaskError, "scoring"):
                 # Per-rollout scoring: task + harness, concurrently, both with the live
                 # runtime. (Cross-rollout `@group_reward`s run later, in the Episode.) Each
                 # method types its own failures; only a timeout is attributed here.

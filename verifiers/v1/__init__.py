@@ -32,7 +32,7 @@ from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
     SandboxError,
-    TasksetError,
+    TaskError,
     ToolsetError,
     TunnelError,
     UserError,
@@ -175,7 +175,7 @@ __all__ = [
     "ToolsetError",
     "UserError",
     "SandboxError",
-    "TasksetError",
+    "TaskError",
     "InterceptionError",
     "TunnelError",
     # clients
