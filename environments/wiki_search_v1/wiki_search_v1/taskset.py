@@ -49,11 +49,10 @@ NUM_QUESTIONS = 20
 class TriviaTask(vf.Task):
     question: str
     answer: str
-    tools_config: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
-    """How the wiki toolset is placed (baked from the taskset config at load)."""
 
-    def tools(self) -> list[vf.Toolset]:
-        return [WikiSearchToolset(self.tools_config)]
+    tools = (WikiSearchToolset,)
+    # Built with the taskset config's `tools` field (SHARED by default; placement stays
+    # CLI-tunable), resolved by `Task.server_config`.
 
 
 class WikiSearchConfig(vf.TasksetConfig):
@@ -80,7 +79,6 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
                 question=row["question"],
                 answer=str(row["answer"]),
                 prompt=f"{SYSTEM}\n\nQuestion: {row['question']}",
-                tools_config=self.config.tools,
             )
             for i, row in enumerate(rows.select(range(min(NUM_QUESTIONS, len(rows)))))
         ]

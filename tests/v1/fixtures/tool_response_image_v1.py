@@ -27,8 +27,8 @@ class VisionToolset(vf.Toolset[vf.ToolsetConfig]):
 
 
 class ToolResponseImageTask(vf.Task):
-    def tools(self) -> list[vf.Toolset]:
-        return [VisionToolset(vf.ToolsetConfig())]
+    tools = (VisionToolset,)
+    # No ToolsetConfig field on the taskset config -> `server_config` default-constructs one.
 
     @vf.reward(weight=1.0)
     async def preserved_image_tool_result(self, trace: vf.Trace) -> float:

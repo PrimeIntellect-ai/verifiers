@@ -182,7 +182,7 @@ class Rollout:
                 state_base,
             ):
                 async with boundary(ToolsetError, "building tool servers"):
-                    tool_servers = self.task.tools()
+                    tool_servers = self.task.tool_servers()
                 async with (
                     serve_tools(
                         tool_servers,
@@ -194,7 +194,7 @@ class Rollout:
                         state_base=state_base,
                     ) as urls,
                     serve_user(
-                        self.task.user(),
+                        self.task.user_server(),
                         self.task,
                         harness_runtime=runtime,
                         state_port=state_port,
@@ -205,8 +205,8 @@ class Rollout:
                     if self.task.prompt is None and session.user is None:
                         raise TasksetError(
                             "task has no prompt and no user simulator to open the "
-                            "conversation; set task.prompt or have Task.user return "
-                            "a simulator"
+                            "conversation; set task.prompt or declare a simulator "
+                            "class on Task.user"
                         )
                     # setup done — the harness is now driving
                     now = time.time()

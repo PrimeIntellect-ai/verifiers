@@ -43,12 +43,9 @@ class EchoUserSimUser(vf.User[vf.UserConfig, EchoUserSimState]):
 
 class EchoUserSimTask(vf.Task[EchoUserSimState]):
     phrases: list[str]
-    user_config: vf.UserConfig = vf.UserConfig()
-    """User-sim placement (baked from the taskset config at load); a field named `user`
-    would shadow the method."""
-
-    def user(self) -> vf.User:
-        return EchoUserSimUser(self.user_config)
+    user = EchoUserSimUser
+    # Built with the taskset config's `user` field (placement stays CLI-tunable),
+    # resolved by `Task.server_config`.
 
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:
@@ -72,7 +69,6 @@ class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
                 prompt=self.config.phrases[0],
                 system_prompt=SYSTEM,
                 phrases=self.config.phrases,
-                user_config=self.config.user,
             )
         ]
 

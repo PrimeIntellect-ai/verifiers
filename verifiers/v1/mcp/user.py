@@ -62,8 +62,7 @@ class User(ServerBase[ConfigT, StateT]):
                 return [{"role": "user", "content": reply}]
 
         class HagglerTask(vf.Task[HagglerState]):
-            def user(self) -> vf.User:
-                return HagglerUser(self.user_config)
+            user = HagglerUser   # built with the taskset config's UserConfig field
 
             @vf.stop
             async def deal_closed(self, trace) -> bool:

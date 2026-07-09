@@ -285,18 +285,16 @@ class Environment:
 
         A task with `@group_reward`s compares its rollouts, so it needs >=2 of
         them — refuse `n < 2` there (rather than silently scoring a group of one)."""
-        # Capability checks are by value: `tools()`/`user()` read the task's fields, so
-        # an override may yield nothing for this row — a class-override check would be
-        # cheaper but wrongly reject those. The short-circuit means the calls only run
-        # when the harness lacks the capability, and they construct (never launch) the
-        # declared servers; the real per-rollout instances are built in `Rollout.run`.
-        if not self.harness.SUPPORTS_MCP and task.tools():
+        # Capability checks read the class-level declarations (`Task.tools` / `Task.user`)
+        # — declarative, so nothing is constructed; the real per-rollout instances are
+        # built in `Rollout.run`.
+        if not self.harness.SUPPORTS_MCP and type(task).tools:
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not support MCP tools, but task "
                 f"{task.idx!r} ({type(task).__name__}) exposes tool servers (MCP). Run it with "
                 f"a harness that supports MCP (e.g. --harness.id default), or use tasks without tools."
             )
-        if not self.harness.SUPPORTS_USER_SIM and task.user() is not None:
+        if not self.harness.SUPPORTS_USER_SIM and type(task).user is not None:
             raise ValueError(
                 f"Harness {self.harness.config.id!r} does not drive a user simulator, but task "
                 f"{task.idx!r} ({type(task).__name__}) defines one (Task.user). Run it with a "
@@ -398,16 +396,16 @@ class Environment:
         own `runtime`) and yield `{name: url}` to inject into every rollout — so an expensive
         corpus is built once, not per rollout. No-op ({}) when none are shared. A shared server
         must be task-agnostic: its `setup` gets no task (so it can't silently serve one task's
-        data to every rollout); calling `tools()` here only builds the toolset instances. Every
-        task is swept — one task class per taskset, but `tools()` reads the instance's fields,
-        so rows can expose different servers (a representative-task check would miss them; the
-        sweep is by value, runs once per eval, and constructs without launching) — deduped by
-        server name (same name = the same task-agnostic server, started once). A shared
-        server on a host runtime is bridged to the host once (a tunnel) when the harness runs
-        remotely, so an in-sandbox harness can still reach it (see `serve_shared`)."""
+        data to every rollout); calling `tool_servers()` here only builds the toolset instances.
+        Every task is swept — declarations are class-level and one class per taskset, but a
+        `server_config` override can still vary a server's config per row (the sweep is cheap,
+        runs once per eval, and constructs without launching) — deduped by server name (same
+        name = the same task-agnostic server, started once). A shared server on a host runtime
+        is bridged to the host once (a tunnel) when the harness runs remotely, so an in-sandbox
+        harness can still reach it (see `serve_shared`)."""
         servers: dict[str, Toolset] = {}
         for task in tasks:
-            for server in task.tools():
+            for server in task.tool_servers():
                 if not server.config.shared:
                     continue
                 seen = servers.get(server.server_name)

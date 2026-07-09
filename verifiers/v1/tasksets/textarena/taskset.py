@@ -127,12 +127,9 @@ class TextArenaTask(vf.Task[TextArenaState]):
     info: dict
     """What the user simulator needs to set up the game: the `game` id and the RNG `seed`
     that reproduces the exact episode this task's prompt was built from."""
-    user_config: vf.UserConfig = vf.UserConfig(colocated=True)
-    """How the game-engine user simulator is placed (baked from the taskset config at load);
-    colocated is required — see `TextArenaConfig.user`."""
-
-    def user(self) -> vf.User:
-        return TextArenaUser(self.user_config)
+    user = TextArenaUser
+    # Built with the taskset config's `user` field (resolved by `Task.server_config`);
+    # colocated is required — see `TextArenaConfig.user`.
 
     @vf.stop
     async def game_over(self, trace: vf.Trace) -> bool:
@@ -174,7 +171,6 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
                 prompt=observation(i) if seed_specific else first,
                 system_prompt=SYSTEM_PROMPT,
                 info={"game": self.config.game, "seed": i},
-                user_config=self.config.user,
             )
             for i in range(self.config.num_tasks)
         ]

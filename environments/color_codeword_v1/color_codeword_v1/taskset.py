@@ -95,11 +95,10 @@ class ColorCodewordTask(vf.Task[ColorCodewordState]):
     """The full expected codeword (one letter per square shown, in order)."""
     info: dict
     """The episode the user simulator replays: `colors_per_turn` and `max_turns`."""
-    user_config: vf.UserConfig = vf.UserConfig()
-    """How the turn-injecting user simulator is placed (baked from the taskset config at load)."""
 
-    def user(self) -> vf.User:
-        return ColorCodewordUser(self.user_config)
+    user = ColorCodewordUser
+    # Built with the taskset config's `user` field (placement stays CLI-tunable),
+    # resolved by `Task.server_config`.
 
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:
@@ -151,7 +150,6 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
                     system_prompt=SYSTEM_PROMPT,
                     answer=answer,
                     info={"colors_per_turn": colors_per_turn, "max_turns": MAX_TURNS},
-                    user_config=c.user,
                 )
             )
         return tasks

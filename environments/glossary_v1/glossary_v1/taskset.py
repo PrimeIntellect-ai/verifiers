@@ -15,11 +15,10 @@ from glossary_v1.servers.facts import FACTS, GlossaryToolset
 class GlossaryTask(vf.Task):
     answer: str
     """The fact the `lookup` tool returns for this task's entity."""
-    tools_config: vf.ToolsetConfig = vf.ToolsetConfig()
-    """How the facts toolset is placed (baked from the taskset config at load)."""
 
-    def tools(self) -> list[vf.Toolset]:
-        return [GlossaryToolset(self.tools_config)]
+    tools = (GlossaryToolset,)
+    # Built with the taskset config's `tools` field (placement stays CLI-tunable),
+    # resolved by `Task.server_config`.
 
     @vf.reward(weight=1.0)
     async def looked_up(self, trace: vf.Trace) -> float:
@@ -43,7 +42,6 @@ class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
                     "reply with exactly what it returns inside <answer></answer> tags."
                 ),
                 answer=fact,
-                tools_config=self.config.tools,
             )
             for i, (entity, fact) in enumerate(FACTS.items())
         ]

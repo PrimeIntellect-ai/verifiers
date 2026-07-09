@@ -22,6 +22,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import reward
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskResources
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.tasksets.lean.scoring import (
@@ -41,7 +42,33 @@ PROOF_FILE_PATH = "/tmp/proof.lean"
 DEFAULT_SYSTEM_PROMPT = "You are an expert Lean 4 theorem prover working with Mathlib."
 
 
-class LeanTask(Task):
+class LeanDatasetConfig(BaseConfig):
+    """Which HuggingFace dataset to load and how to read its columns."""
+
+    name: str
+    """HuggingFace dataset id (required; each per-dataset package sets it)."""
+    split: str = "train"
+    subset: str | None = None
+    statement_column: str = "formal_statement"
+    header_column: str | None = None
+    imports_column: str | None = None
+    name_column: str | None = None
+    proof_column: str | None = None
+    """Column holding the gold proof body (used by ``validate``); None = no gold."""
+    normalize_mathlib_imports: bool = False
+
+
+class LeanConfig(TasksetConfig):
+    dataset: LeanDatasetConfig
+    docker_image: str = DEFAULT_DOCKER_IMAGE
+    lean_project_path: str = LEAN_PROJECT_PATH
+    proof_file_path: str = PROOF_FILE_PATH
+    compile_timeout: int = 300
+    """Per-compile ``timeout`` wrapper (seconds), bounding each ``lake env lean``."""
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+
+
+class LeanTask(Task[State, LeanConfig]):
     NEEDS_CONTAINER = True
 
     formal_statement: str
@@ -53,17 +80,15 @@ class LeanTask(Task):
     protected_signature: str = ""
     # Gold proof body (replaces ``  sorry``); "" when the dataset ships no gold.
     formal_proof: str = ""
-    # Sandbox layout + compile budget, baked from the taskset config at load so the
-    # task's hooks and reward are self-contained.
-    lean_project_path: str = LEAN_PROJECT_PATH
-    proof_file_path: str = PROOF_FILE_PATH
-    compile_timeout: int = 300
+    # Sandbox layout + compile budget are taskset-level knobs: read off the attached
+    # `self.config` (LeanConfig), not baked into per-row fields.
 
     async def _compile(self, runtime: Runtime) -> tuple[bool, str, int]:
         """Run ``lake env lean`` on the proof file; returns (compiled, output, exit_code)."""
         cmd = (
-            f"cd {shlex.quote(self.lean_project_path)} && "
-            f"timeout {self.compile_timeout} lake env lean {shlex.quote(self.proof_file_path)} 2>&1; "
+            f"cd {shlex.quote(self.config.lean_project_path)} && "
+            f"timeout {self.config.compile_timeout} lake env lean "
+            f"{shlex.quote(self.config.proof_file_path)} 2>&1; "
             "echo EXIT_CODE:$?"
         )
         result = await runtime.run(["bash", "-lc", cmd], {})
@@ -77,7 +102,7 @@ class LeanTask(Task):
             imports=self.imports,
             normalize=self.normalize_mathlib_imports,
         )
-        await runtime.write(self.proof_file_path, content.encode())
+        await runtime.write(self.config.proof_file_path, content.encode())
 
     @reward(weight=1.0)
     async def lean_compiled(self, trace: Trace, runtime: Runtime) -> float:
@@ -96,7 +121,9 @@ class LeanTask(Task):
         # propagate as a scoring error rather than swallow an infra/sandbox failure
         # into a false-negative 0. (The prime runtime collapses every read error
         # into SandboxError, so there's no file-not-found type to narrow to.)
-        current = (await runtime.read(self.proof_file_path)).decode("utf-8", "replace")
+        current = (await runtime.read(self.config.proof_file_path)).decode(
+            "utf-8", "replace"
+        )
 
         expected_sig = self.protected_signature or expected_protected_signature(
             self.formal_statement
@@ -135,35 +162,9 @@ class LeanTask(Task):
             normalize=self.normalize_mathlib_imports,
             proof_body=gold,
         )
-        await runtime.write(self.proof_file_path, content.encode())
+        await runtime.write(self.config.proof_file_path, content.encode())
         compiled, _, _ = await self._compile(runtime)
         return compiled
-
-
-class LeanDatasetConfig(BaseConfig):
-    """Which HuggingFace dataset to load and how to read its columns."""
-
-    name: str
-    """HuggingFace dataset id (required; each per-dataset package sets it)."""
-    split: str = "train"
-    subset: str | None = None
-    statement_column: str = "formal_statement"
-    header_column: str | None = None
-    imports_column: str | None = None
-    name_column: str | None = None
-    proof_column: str | None = None
-    """Column holding the gold proof body (used by ``validate``); None = no gold."""
-    normalize_mathlib_imports: bool = False
-
-
-class LeanConfig(TasksetConfig):
-    dataset: LeanDatasetConfig
-    docker_image: str = DEFAULT_DOCKER_IMAGE
-    lean_project_path: str = LEAN_PROJECT_PATH
-    proof_file_path: str = PROOF_FILE_PATH
-    compile_timeout: int = 300
-    """Per-compile ``timeout`` wrapper (seconds), bounding each ``lake env lean``."""
-    system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
 
 class LeanTaskset(Taskset[LeanTask, LeanConfig]):
@@ -227,9 +228,6 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                     normalize_mathlib_imports=ds.normalize_mathlib_imports,
                     protected_signature=expected_protected_signature(formal_statement),
                     formal_proof=gold,
-                    lean_project_path=config.lean_project_path,
-                    proof_file_path=config.proof_file_path,
-                    compile_timeout=config.compile_timeout,
                 )
             )
         return tasks

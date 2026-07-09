@@ -76,39 +76,30 @@ def _init_py(pkg: str, prefix: str, add_harness: bool) -> str:
 
 
 def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str:
-    """The taskset module skeleton — the task's behavior (`@reward`, tool/user wiring) on the
-    `Task` subclass, and a thin `Taskset` with `load` to fill in. Each enabled piece
-    (tool/user) adds its import, a baked task field, its config field, and a wiring method."""
+    """The taskset module skeleton — the task's behavior (`@reward`, tool/user declarations) on
+    the `Task` subclass, and a thin `Taskset` with `load` to fill in. Each enabled piece
+    (tool/user) adds its import, a class-level declaration on the task, and a config field
+    (the framework builds each declared server with the matching config field — see
+    `Task.server_config`)."""
     imports = "import verifiers.v1 as vf"
     local_imports: list[str] = []
     config_extra = ""
-    task_fields = ""
+    task_decls = ""
     task_methods: list[str] = []
     # a user simulator carries per-rollout state and a stop condition, so the task is typed with
     # its `State` subclass (`vf.Task[MyState]`); without one it stays on the default `State`.
     task_base = "vf.Task"
-    load_kwargs = ""
     if add_tool:
         local_imports.append(f"from {pkg}.servers.tool import {prefix}Toolset")
         config_extra += "\n    tools: vf.ToolsetConfig = vf.ToolsetConfig()"
-        task_fields += "\n    tools_config: vf.ToolsetConfig = vf.ToolsetConfig()"
-        load_kwargs += ", tools_config=self.config.tools"
-        task_methods.append(
-            f"    def tools(self) -> list[vf.Toolset]:\n"
-            f"        return [{prefix}Toolset(self.tools_config)]"
-        )
+        task_decls += f"\n    tools = ({prefix}Toolset,)"
     if add_user:
         local_imports.append(
             f"from {pkg}.servers.user import {prefix}State, {prefix}User"
         )
         config_extra += "\n    user: vf.UserConfig = vf.UserConfig()"
-        task_fields += "\n    user_config: vf.UserConfig = vf.UserConfig()"
-        load_kwargs += ", user_config=self.config.user"
+        task_decls += f"\n    user = {prefix}User"
         task_base = f"vf.Task[{prefix}State]"
-        task_methods.append(
-            f"    def user(self) -> vf.User:\n"
-            f"        return {prefix}User(self.user_config)"
-        )
         task_methods.append(
             "    @vf.stop\n"
             "    async def user_done(self, trace: vf.Trace) -> bool:\n"
@@ -122,7 +113,7 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str
 
 
 class {prefix}Task({task_base}):
-    """A single task. Add task-specific fields here (e.g. a reference answer)."""{task_fields}
+    """A single task. Add task-specific fields here (e.g. a reference answer)."""{task_decls}
 {methods_block}
     @vf.reward(weight=1.0)
     async def reward(self, trace: vf.Trace) -> float:
@@ -138,7 +129,7 @@ class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
     def load(self) -> list[{prefix}Task]:
         raise NotImplementedError(
             "Return this taskset's tasks, e.g. "
-            "[{prefix}Task(idx=i, prompt=...{load_kwargs}) for i in range(self.config.num_tasks)]."
+            "[{prefix}Task(idx=i, prompt=...) for i in range(self.config.num_tasks)]."
         )
 '''
 
@@ -221,11 +212,11 @@ def _readme(
     ]
     if add_tool:
         layout.append(
-            f"- `{pkg}/servers/tool.py` — a `vf.Toolset` tool server, wired in via `Task.tools()`."
+            f"- `{pkg}/servers/tool.py` — a `vf.Toolset` tool server, declared on `Task.tools`."
         )
     if add_user:
         layout.append(
-            f"- `{pkg}/servers/user.py` — a `vf.User` simulator, wired in via `Task.user()`."
+            f"- `{pkg}/servers/user.py` — a `vf.User` simulator, declared on `Task.user`."
         )
     if add_harness:
         layout.append(

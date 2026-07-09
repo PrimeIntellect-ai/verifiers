@@ -48,28 +48,22 @@ class AlphabetSortConfig(vf.TasksetConfig):
     user: vf.UserConfig = vf.UserConfig()
 
 
-class AlphabetSortTask(vf.Task[AlphabetSortState]):
+class AlphabetSortTask(vf.Task[AlphabetSortState, AlphabetSortConfig]):
     info: dict
     """The pre-generated episode: the `user_turns` the simulator reveals one by one (the opening
     sort prompt, then the follow-ups), the per-turn `ground_truths` the reward grades against,
     and `num_turns`. The task itself carries no prompt — the simulator opens the conversation."""
-    user_config: vf.UserConfig = vf.UserConfig()
-    """How the episode-replaying user simulator is placed (baked from the taskset config at load)."""
-    similarity_power: int = 4
-    """Exponent applied to each turn's sequence-similarity score (baked from the taskset config)."""
-    power_per_turn: bool = True
-    """Power-scale each turn then average (True), or average raw similarities then power once
-    (False) — baked from the taskset config."""
-
-    def user(self) -> vf.User:
-        return AlphabetSortUser(self.user_config)
+    user = AlphabetSortUser
+    # Built with the taskset config's `user` field (placement stays CLI-tunable),
+    # resolved by `Task.server_config`. The scoring knobs (`similarity_power`,
+    # `power_per_turn`) are read off the attached `self.config` too.
 
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:
         return trace.state.user_finished
 
     @vf.reward(weight=1.0)
-    async def alphabet_sort(self, trace: vf.Trace) -> float:
+    async def sort_similarity(self, trace: vf.Trace) -> float:
         ground_truths = self.info["ground_truths"]
         num_turns = self.info["num_turns"]
         responses = [m.content or "" for m in trace.assistant_messages]
@@ -90,7 +84,9 @@ class AlphabetSortTask(vf.Task[AlphabetSortState]):
                     else 0.0
                 )
                 attempts.append(
-                    sim**self.similarity_power if self.power_per_turn else sim
+                    sim**self.config.similarity_power
+                    if self.config.power_per_turn
+                    else sim
                 )
             if not attempts:
                 scores.append(0.0)
@@ -100,7 +96,7 @@ class AlphabetSortTask(vf.Task[AlphabetSortState]):
                 improved = all(b > a for a, b in zip(attempts, attempts[1:]))
                 scores.append(attempts[-1] if improved else 0.0)
         avg = sum(scores) / num_turns if num_turns else 0.0
-        return avg if self.power_per_turn else avg**self.similarity_power
+        return avg if self.config.power_per_turn else avg**self.config.similarity_power
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
@@ -188,9 +184,6 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
                         "ground_truths": ground_truths,
                         "num_turns": len(turns),
                     },
-                    user_config=c.user,
-                    similarity_power=c.similarity_power,
-                    power_per_turn=c.power_per_turn,
                 )
             )
         return tasks

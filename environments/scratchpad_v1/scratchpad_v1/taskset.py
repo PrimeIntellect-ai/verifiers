@@ -30,11 +30,10 @@ INSTRUCTION = (
 
 class ScratchpadTask(vf.Task[ScratchpadState]):
     word: str
-    tools_config: ScratchpadToolsetConfig = ScratchpadToolsetConfig(shared=True)
-    """How the scratchpad toolset is placed (baked from the taskset config at load)."""
 
-    def tools(self) -> list[vf.Toolset]:
-        return [ScratchpadToolset(self.tools_config)]
+    tools = (ScratchpadToolset,)
+    # Built with the taskset config's `tools` field (a `ScratchpadToolsetConfig`, matched
+    # by exact type; SHARED by default, CLI-tunable), resolved by `Task.server_config`.
 
     @vf.stop
     async def done(self, trace: vf.Trace) -> bool:
@@ -61,7 +60,6 @@ class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig]):
                 idx=i,
                 word=w,
                 prompt=INSTRUCTION.format(word=w),
-                tools_config=self.config.tools,
             )
             for i, w in enumerate(WORDS)
         ]

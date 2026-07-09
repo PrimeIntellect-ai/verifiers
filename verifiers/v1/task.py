@@ -56,43 +56,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Method/property names on `Task` that a subclass must not redeclare as pydantic fields:
-# the field value would shadow the bound method on the instance, so framework calls like
-# `task.tools()` would call the data. Enforced at class definition
-# (`Task.__pydantic_init_subclass__`).
-_RESERVED_NAMES = frozenset(
-    {
-        "tools",
-        "user",
-        "setup",
-        "finalize",
-        "validate",
-        "score",
-        "score_group",
-        "offline_skipped",
-        "restore_offline",
-        "plugged_judges",
-        "prompt_text",
-    }
-)
-
-# Decorator tags (see `mark` in decorators.py) whose methods a field must not shadow
-# either: field values live in the instance `__dict__` and win over class-level
-# functions, so `discover_decorated` would silently skip the signal.
-_SIGNAL_MARKS = ("reward", "metric", "group_reward", "stop")
-
-
-def _signal_names(cls: type) -> frozenset[str]:
-    """Names of all `@reward`/`@metric`/`@group_reward`/`@stop` methods anywhere in
-    `cls`'s MRO — including inherited ones a subclass field could shadow."""
-    return frozenset(
-        name
-        for klass in cls.__mro__
-        for name, attr in vars(klass).items()
-        if callable(attr) and any(hasattr(attr, mark) for mark in _SIGNAL_MARKS)
-    )
-
-
 def _requires_runtime(fn) -> bool:
     """A signal with a default-less `runtime` parameter can't run without a live runtime.
     A `runtime` parameter with a default (e.g. `runtime=None`) is optional — `invoke`
@@ -282,25 +245,6 @@ class Task(StrictBaseModel, Generic[StateT, ConfigT]):
 
         return [judge_for(config) for config in self.judges]
 
-    @classmethod
-    def __pydantic_init_subclass__(cls, **kwargs) -> None:
-        super().__pydantic_init_subclass__(**kwargs)
-        reserved = _RESERVED_NAMES & cls.model_fields.keys()
-        if reserved:
-            raise TypeError(
-                f"{cls.__name__} declares field(s) {sorted(reserved)} that would shadow "
-                f"the Task method(s) of the same name — rename the field(s) "
-                f"(e.g. `user` -> `user_config`)"
-            )
-        shadowed = _signal_names(cls) & cls.model_fields.keys()
-        if shadowed:
-            raise TypeError(
-                f"{cls.__name__} declares field(s) {sorted(shadowed)} that would shadow "
-                f"the inherited @reward/@metric/@group_reward/@stop method(s) of the "
-                f"same name — the signal(s) would silently stop running; rename the "
-                f"field(s)"
-            )
-
     @property
     def prompt_text(self) -> str:
         """The prompt as plain text — `prompt` itself when it's a `str`, the joined text
@@ -314,19 +258,68 @@ class Task(StrictBaseModel, Generic[StateT, ConfigT]):
 
     # ---- per-task behavior ---------------------------------------------------
 
-    def tools(self) -> "list[Toolset]":
-        """Tool servers exposing this task's tools to the model — `vf.Toolset`s (classes with
-        `@vf.tool` methods), each carrying its `config` (placement / runtime; a remote `url`
-        for an already-running server). Empty by default; override to give the task tools."""
-        return []
+    tools: "ClassVar[tuple[type[Toolset], ...]]" = ()
+    """Tool server classes exposing this task's tools to the model — `vf.Toolset`s
+    (classes with `@vf.tool` methods). Declarative: name the classes; the framework
+    builds each instance with the config `server_config` resolves off the attached
+    taskset config (placement / runtime; a remote `url` for an already-running
+    server). Empty by default."""
 
-    def user(self) -> "User | None":
-        """A user simulator for this task — structurally a tool server (an MCP server
-        with a runtime), but driven by the framework, not exposed to the model. After
-        each model turn the interception server calls its `respond` tool and injects the
-        reply as a user turn. None by default; override to make the task a simulated
-        multi-turn conversation (e.g. a TextArena game)."""
-        return None
+    user: "ClassVar[type[User] | None]" = None
+    """The task's user simulator class — structurally a tool server (an MCP server
+    with a runtime), but driven by the framework, not exposed to the model. After
+    each model turn the interception server calls its `respond` tool and injects the
+    reply as a user turn. Declarative like `tools`; None by default — set it to make
+    the task a simulated multi-turn conversation (e.g. a TextArena game)."""
+
+    def server_config(self, server_cls: type) -> BaseConfig:
+        """The config a declared server class (`tools` / `user`) is built with, resolved
+        off the attached taskset config: the field whose value is exactly the server's
+        declared config type (`Toolset[MyConfig]` / `User[MyConfig]`), else the unique
+        field whose value isinstance-matches it, else a default-constructed one (a
+        standalone task, or a config type whose fields all default). Two matching fields
+        raise — override this method to pair explicitly (the escape hatch for exotic
+        setups, e.g. two servers sharing one config type)."""
+        cfg_cls = server_cls._config_cls()
+        matched: list[str] = []
+        if self._config is not None:
+            values = {
+                name: getattr(self._config, name)
+                for name in type(self._config).model_fields
+            }
+            matched = [name for name, v in values.items() if type(v) is cfg_cls]
+            if not matched:
+                matched = [name for name, v in values.items() if isinstance(v, cfg_cls)]
+            if len(matched) > 1:
+                raise TasksetError(
+                    f"{type(self).__name__}: ambiguous config for {server_cls.__name__} — "
+                    f"taskset config fields {matched} all match {cfg_cls.__name__}; "
+                    f"override `server_config` to pair them explicitly"
+                )
+            if matched:
+                return values[matched[0]]
+        try:
+            return cfg_cls()
+        except Exception as exc:
+            raise TasksetError(
+                f"{type(self).__name__}: no {cfg_cls.__name__} to build "
+                f"{server_cls.__name__} with — add a {cfg_cls.__name__} field to the "
+                f"taskset config (attached to every task at load), or attach a config "
+                f"to a standalone task via `attach_config`"
+            ) from exc
+
+    def tool_servers(self) -> "list[Toolset]":
+        """Build this task's tool servers: one instance per class in `tools`, each
+        constructed with `server_config(cls)`. Called by the framework per rollout (and
+        once per eval for `shared` placements); a Toolset instance is a launcher spec —
+        the server itself runs as its own process (see `verifiers.v1.mcp`)."""
+        return [cls(self.server_config(cls)) for cls in type(self).tools]
+
+    def user_server(self) -> "User | None":
+        """Build this task's user simulator from the `user` declaration (None when the
+        task doesn't declare one), constructed like a tool server."""
+        cls = type(self).user
+        return cls(self.server_config(cls)) if cls is not None else None
 
     async def setup(self, trace: "Trace", runtime: "Runtime") -> None:
         """Prepare the live runtime for this task, after `runtime.start()` and before the

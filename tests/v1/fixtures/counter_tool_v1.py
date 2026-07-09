@@ -30,12 +30,9 @@ class CounterToolset(vf.Toolset[vf.ToolsetConfig, CounterState]):
 
 
 class CounterTask(vf.Task[CounterState]):
-    tools_config: vf.ToolsetConfig = vf.ToolsetConfig()
-    """Toolset placement (baked from the taskset config at load); a field named `tools`
-    would shadow the method."""
-
-    def tools(self) -> list[vf.Toolset]:
-        return [CounterToolset(self.tools_config)]
+    tools = (CounterToolset,)
+    # Built with the taskset config's `tools` field (placement stays CLI-tunable),
+    # resolved by `Task.server_config`.
 
     @vf.reward(weight=1.0)
     async def counted(self, trace: vf.Trace) -> float:
@@ -58,7 +55,6 @@ class CounterTaskset(vf.Taskset[CounterTask, CounterConfig]):
                     "each result before the next. After the last result, reply with "
                     "<answer>done</answer>."
                 ),
-                tools_config=self.config.tools,
             )
         ]
 

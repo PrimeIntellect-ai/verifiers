@@ -25,12 +25,9 @@ class EchoToolset(vf.Toolset[vf.ToolsetConfig]):
 
 
 class EchoToolTask(vf.Task):
-    tools_config: vf.ToolsetConfig = vf.ToolsetConfig()
-    """Toolset placement (baked from the taskset config at load); a field named `tools`
-    would shadow the method."""
-
-    def tools(self) -> list[vf.Toolset]:
-        return [EchoToolset(self.tools_config)]
+    tools = (EchoToolset,)
+    # Built with the taskset config's `tools` field (placement stays CLI-tunable),
+    # resolved by `Task.server_config`.
 
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
@@ -53,7 +50,6 @@ class EchoToolTaskset(vf.Taskset[EchoToolTask, EchoToolConfig]):
                     f'Call the `echo_back` tool with the message "{PHRASE}", then reply '
                     "with exactly what it returns inside <answer></answer> tags."
                 ),
-                tools_config=self.config.tools,
             )
         ]
 
