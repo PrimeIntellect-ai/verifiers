@@ -15,7 +15,12 @@ from typing import Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.base import ProgramResult, Runtime, parse_gpu
+from verifiers.v1.runtimes.base import (
+    BaseRuntimeInfo,
+    ProgramResult,
+    Runtime,
+    parse_gpu,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,10 @@ class DockerConfig(BaseConfig):
     disk: float | None = None
     """Advisory disk request in GB. Docker has no portable per-container size limit, so
     this is accepted (so a task can declare it without a warning) but not enforced."""
+
+
+class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
+    """`DockerConfig` + the resolved `id` — docker's short container id."""
 
 
 async def docker(*args: str) -> ProgramResult:
@@ -59,13 +68,9 @@ class DockerRuntime(Runtime):
     def __init__(self, config: DockerConfig, name: str | None = None) -> None:
         super().__init__(name)
         self.config = config
+        self.info = DockerRuntimeInfo(**config.model_dump())
         self._container: str | None = None  # our `--name` (used for exec/rm)
-        self._container_id: str | None = None  # docker's short id (for display)
         self._stopped = False
-
-    @property
-    def descriptor(self) -> str | None:
-        return self._container_id
 
     async def start(self) -> None:
         try:
@@ -111,7 +116,7 @@ class DockerRuntime(Runtime):
         )
         if run.exit_code != 0:
             raise SandboxError(f"docker run failed: {run.stderr.strip()}")
-        self._container_id = run.stdout.strip()[
+        self.info.id = run.stdout.strip()[
             :12
         ]  # `docker run -d` prints the container id
         logger.info(

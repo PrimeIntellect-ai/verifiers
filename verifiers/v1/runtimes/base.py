@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar, TypeVar
 
+from pydantic_config import BaseConfig
+
 from verifiers.v1.retries import retrying
 from verifiers.v1.utils.aio import run_shielded
 
@@ -106,12 +108,30 @@ def cleanup_at_exit() -> None:
             runtime.cleanup()
 
 
+class BaseRuntimeInfo(BaseConfig):
+    """Runtime metadata persisted with the rollout (`Trace.runtime`): each runtime's info class
+    inherits its full config — every knob the runtime ran with — and adds the provisioned
+    resource's `id`. Built with the runtime and shared by reference with the trace, so fields
+    land there the moment they're known: the config at creation, `id` once `start()` has
+    provisioned the resource. `RuntimeInfo` (the discriminated union over the concrete info
+    types) is what a dumped trace round-trips through."""
+
+    id: str | None = None
+    """The provisioned resource's identifier (None until the runtime is up): the subprocess
+    workdir, the docker container id, the prime/modal sandbox id."""
+
+
 class Runtime(ABC):
     is_local: ClassVar[bool] = True
     """Whether this runtime shares the host network — a program inside it reaches a host service
     at localhost (no tunnel) and a service inside it is reachable at localhost. True for
     subprocess / docker(--network host); remote runtimes (modal/prime) override to False (they
     need a tunnel each way: `host_endpoint` inward, `expose` outward)."""
+
+    info: BaseRuntimeInfo
+    """This runtime's trace-facing metadata (see `BaseRuntimeInfo`): the full config plus the
+    resolved resource `id`. Each runtime constructs its own info type in `__init__` and fills
+    `id` in `start()`."""
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
@@ -131,9 +151,9 @@ class Runtime(ABC):
 
     @property
     def descriptor(self) -> str | None:
-        """A short resolved id for display (None until provisioned). Overridden per
-        runtime: subprocess workdir, docker image, prime sandbox id."""
-        return None
+        """A short resolved id for display (None until provisioned): the runtime's `info.id` —
+        subprocess workdir, docker container id, prime/modal sandbox id."""
+        return self.info.id
 
     # --- lifecycle ---
 

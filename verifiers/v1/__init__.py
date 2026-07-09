@@ -82,6 +82,7 @@ from verifiers.v1.runtimes import (
     ProgramResult,
     Runtime,
     RuntimeConfig,
+    RuntimeInfo,
     SubprocessConfig,
 )
 from verifiers.v1.state import State, StateT
@@ -191,6 +192,7 @@ __all__ = [
     "ModelContext",
     "Runtime",
     "RuntimeConfig",
+    "RuntimeInfo",
     "ProgramResult",
     "SubprocessConfig",
     "DockerConfig",
