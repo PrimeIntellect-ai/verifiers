@@ -23,7 +23,13 @@ from pydantic_config import cli
 
 import verifiers.v1 as vf
 from verifiers.v1.cli.dashboard.replay import ReplayProgress, replay_dashboard
-from verifiers.v1.cli.output import append_trace, read_traces, save_config, write_config
+from verifiers.v1.cli.output import (
+    CONFIG_FILE,
+    append_trace,
+    read_traces,
+    save_config,
+    write_config,
+)
 from verifiers.v1.configs.replay import ReplayConfig
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import WireTask
@@ -138,7 +144,7 @@ def main(argv: list[str] | None = None) -> None:
         cli(ReplayConfig)  # full, typed pydantic-config option help
         return
     source = Path(argv.pop(0))  # the finished run dir to replay
-    config_path = source / "config.toml"
+    config_path = source / CONFIG_FILE
     if not config_path.exists():
         raise SystemExit(f"{USAGE}\nno config.toml in {source}")
 

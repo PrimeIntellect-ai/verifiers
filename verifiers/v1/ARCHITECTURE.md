@@ -69,7 +69,7 @@ several. A branch *is* a training sample: concatenating its nodes' `token_ids` r
 end to end: each surviving context window is just another root→leaf path.
 
 `Trace.to_record()` (`trace.py`) is the JSON record dump (`model_dump(mode="json")`) for
-`results.jsonl` / W&B tables, minus the per-node training tensors (`MessageNode.multi_modal_data`,
+`traces.jsonl` / W&B tables, minus the per-node training tensors (`MessageNode.multi_modal_data`,
 `routed_experts`, via `_NODE_DUMP_EXCLUDE`): those hold raw numpy bytes that can't round-trip JSON
 (the dump raises `UnicodeDecodeError` on real expert ids) and bloat every line. Computed views
 (`reward`, `branches`, `num_turns`, per-span `duration`) are pydantic properties, so they're never
