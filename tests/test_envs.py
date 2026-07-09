@@ -26,7 +26,6 @@ SKIPPED_ENVS = [
     # Requires BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID, and running CUA server
     "browser_cua_example",
     # Uses prime-tunnel which is still experimental and has low usage limits
-    "terminus_harbor",
     "opencode_harbor",
 ]
 

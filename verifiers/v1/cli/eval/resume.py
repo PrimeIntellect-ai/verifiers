@@ -1,6 +1,6 @@
 """Resume an interrupted eval: re-run only the rollouts a previous run didn't finish.
 
-A run writes `config.toml` + `results.jsonl` into its output dir. `--resume <dir>` reloads
+A run writes `config.toml` + `traces.jsonl` into its output dir. `--resume <dir>` reloads
 that config verbatim (so it takes no other flags) and writes back into the same dir, running
 only the rollouts still owed: the *missing* ones (never written — the run was interrupted) and
 the *errored* ones (written with an error). Good rollouts are kept; errored ones are dropped
@@ -16,7 +16,12 @@ from pathlib import Path
 
 from pydantic_core import from_json
 
+from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, read_traces
 from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.state import state_cls
+from verifiers.v1.task import WireTask
+from verifiers.v1.taskset import Taskset
+from verifiers.v1.trace import Trace
 
 
 def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
@@ -36,8 +41,8 @@ def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
 
 def load_resume_config(resume_dir: Path) -> EvalConfig:
     """Rebuild the run's `EvalConfig` from its saved `config.toml`, pointed back at its own
-    output dir so the resumed rollouts append to the same `results.jsonl`."""
-    config_path = resume_dir / "config.toml"
+    output dir so the resumed rollouts append to the same `traces.jsonl`."""
+    config_path = resume_dir / CONFIG_FILE
     if not config_path.exists():
         raise SystemExit(
             f"--resume: no config.toml in {resume_dir} - not an eval output dir"
@@ -76,7 +81,7 @@ def plan(
     # Retain only the offsets resume can reuse; trace payloads stay on disk.
     selected = set(selected_idxs)
     by_idx: dict[int, list[int]] = defaultdict(list)
-    for offset, idx, errored in _read_results(resume_dir / "results.jsonl"):
+    for offset, idx, errored in _read_results(resume_dir / TRACES_FILE):
         if idx in selected and not errored and len(by_idx[idx]) < num_rollouts:
             by_idx[idx].append(offset)
     keep: list[int] = []
@@ -97,9 +102,9 @@ def plan(
 
 
 def rewrite_results(resume_dir: Path, keep: list[int]) -> None:
-    """Replace `results.jsonl` with just the kept (good) traces; resumed rollouts append. Via a
+    """Replace `traces.jsonl` with just the kept (good) traces; resumed rollouts append. Via a
     temp file + atomic rename, so an interrupted resume can't corrupt the prior good results."""
-    path = resume_dir / "results.jsonl"
+    path = resume_dir / TRACES_FILE
     tmp = path.with_suffix(".jsonl.tmp")
     if not keep:
         tmp.write_bytes(b"")
@@ -114,6 +119,14 @@ def rewrite_results(resume_dir: Path, keep: list[int]) -> None:
             if not raw.endswith(b"\n"):
                 output.write(b"\n")
     tmp.replace(path)
+
+
+def load_kept(resume_dir: Path, taskset: Taskset) -> list[Trace]:
+    """Reload the kept (good) traces as finished `Trace`s, so a resumed run's live dashboard counts
+    them toward the whole run (progress, reward, err, and the usage/time breakdown). Call *after*
+    `rewrite_results`, which leaves only the kept rows on disk. `WireTask` reads any taskset's saved
+    task without a runtime or its `Task` type (mirrors `replay`)."""
+    return read_traces(resume_dir, Trace[WireTask, state_cls(type(taskset))])
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:

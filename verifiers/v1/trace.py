@@ -2,7 +2,7 @@
 
 A `Trace[TaskT]` carries the typed task plus everything produced during a
 rollout (conversation, per-turn responses, reward, metrics, timing, error). It is
-the canonical full data dump — written to disk (`results.jsonl`) and consumed by
+the canonical full data dump — written to disk (`traces.jsonl`) and consumed by
 the platform (visualization) and prime-rl (training). Environments subclass it to
 add typed scratch/result fields. The rollout mutates it directly; this replaces
 v1's 600-line `dict`-subclass `State` and its dual "contract version" machinery.
@@ -33,6 +33,7 @@ from verifiers.v1.types import (
     StrictBaseModel,
     ToolMessage,
     Usage,
+    content_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -233,7 +234,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     a reward nor a metric — anything an author wants to scrape off the live runtime and persist
     with the trace (captured logs, command output, container/runtime state, artifact paths).
     Populate it from the runtime in `finalize` (or a `@reward`/`@metric`) by assigning into the
-    dict (`trace.info["build_log"] = ...`); it round-trips through the wire to `results.jsonl`.
+    dict (`trace.info["build_log"] = ...`); it round-trips through the wire to `traces.jsonl`.
     Use `metrics` for numbers that aggregate, this for everything else. Values must be
     JSON-serializable — a non-serializable value fails the trace dump rather than being dropped."""
     state: StateT = Field(default_factory=State, exclude=True)
@@ -374,6 +375,32 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         return (msgs[-1].content or "").strip() if msgs else ""
 
     @property
+    def transcript(self) -> str:
+        """The rollout's final branch as a plain-text transcript — one `[role]` block per
+        message with its text content (image parts dropped), assistant tool calls as
+        `[tool_call name(arguments)]` lines, and tool results under `[tool <name>]`.
+        Reasoning content is excluded. What a built-in judge with `view="full_trace"`
+        grades (vs. the default `last_reply`)."""
+        branches = self.branches
+        blocks: list[str] = []
+        for message in branches[-1].messages if branches else []:
+            lines = [f"[{message.role}]"]
+            if isinstance(message, AssistantMessage):
+                if message.content:
+                    lines.append(message.content)
+                lines.extend(
+                    f"[tool_call {call.name}({call.arguments})]"
+                    for call in message.tool_calls or []
+                )
+            else:
+                if isinstance(message, ToolMessage) and message.name:
+                    lines[0] = f"[{message.role} {message.name}]"
+                if text := content_text(message.content):
+                    lines.append(text)
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
+
+    @property
     def tool_messages(self) -> list[ToolMessage]:
         """The tool results in the latest full context — the main (last) branch's
         conversation. For a linear rollout that's every tool result."""
@@ -437,7 +464,7 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
         self.stop("error")
 
     def to_record(self) -> dict[str, Any]:
-        """A JSON-serializable record of this rollout for `results.jsonl` / W&B tables.
+        """A JSON-serializable record of this rollout for `traces.jsonl` / W&B tables.
 
         `model_dump(mode="json")` minus the per-node training tensors (`_NODE_DUMP_EXCLUDE`):
         those carry raw numpy bytes that JSON can't encode (the plain dump raises

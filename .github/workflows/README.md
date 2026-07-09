@@ -35,7 +35,6 @@ This directory contains automated workflows for the verifiers project.
 
 **Workflows**:
 - `publish-verifiers.yml` publishes `verifiers` with trusted publishing. On every push to `main` it builds and publishes a pre-release (`skip-existing`), and on a pushed `vX.Y.Z` tag (or manual dispatch) it publishes that stable release and creates a GitHub release.
-- `publish-verifiers-rl.yml` publishes `verifiers-rl` from `verifiers-rl-v*` tags.
 
 ## Setting Up
 

@@ -18,7 +18,7 @@ from typing import Literal
 from pydantic import model_validator
 
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import metric
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -115,7 +115,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
 
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
@@ -140,7 +140,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             env["RLM_MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
-        return await runtime.run_program([RLM_BIN, prompt], env)
+        return await runtime.run_program([RLM_BIN, "--", prompt], env)
 
     @metric
     async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:

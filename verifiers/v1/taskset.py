@@ -7,7 +7,8 @@ decorated methods. All task framing lives in each task's user prompt (baked in b
 
 It is the single judgement authority, scored at two granularities (execution lives in
 the Rollout — per-rollout — and the Episode — group — which call these):
-  - `score` runs `@reward`/`@metric` over one trace (in its live runtime).
+  - `score` runs `@reward`/`@metric` — plus any config-plugged judges (`config.judges`,
+    see `verifiers.v1.judge`) — over one trace (in its live runtime).
   - `score_group` runs `@group_reward` over all the rollouts of one task at once —
     pairwise/preference rewards that compare samples.
 
@@ -16,14 +17,19 @@ For a heterogeneous taskset (different verification per task), have a single
 """
 
 import asyncio
+import inspect
+import logging
 from collections.abc import Mapping
+from functools import cached_property
 from typing import ClassVar, Generic, TypeVar
 
+from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import TasksetError, boundary
-from verifiers.v1.types import EnvId
+from verifiers.v1.judge import Judge, Judges
+from verifiers.v1.types import ID
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.mcp import Toolset, User
@@ -31,19 +37,70 @@ from verifiers.v1.state import StateT
 from verifiers.v1.task import TaskT
 from verifiers.v1.trace import Trace
 
+logger = logging.getLogger(__name__)
+
 
 class TasksetConfig(BaseConfig):
     """Base taskset config. Subclass to add task-generation knobs."""
 
-    id: EnvId = ""
+    id: ID = ""
     """The taskset id, which selects this taskset: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
-    `EnvId`). Set via `--taskset.id`."""
+    `ID`). Set via `--taskset.id`."""
+    judges: Judges = []
+    """Config-plugged judges, each resolved by `id` — a built-in (`reference`, `rubric`), a local
+    package, or a hub `org/name[@version]` package exporting a `Judge` subclass — and run by
+    `score` after the taskset's own `@reward`s: grading plugged into any taskset/harness pair
+    from the eval config alone, no taskset code. Each entry records its verdict in
+    `trace.rewards` under its `name` with its `weight` (see `JudgeConfig`)."""
 
     @property
     def name(self) -> str:
         """The taskset's package name (the id with any org / version stripped)."""
         return env_name(self.id)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_judges(cls, data):
+        """Narrow each `judges` entry to the config type its `id` resolves to (mirrors
+        `EnvConfig._resolve_plugins`), so judge-specific fields (e.g. rubric's `path`)
+        validate against the real config instead of being rejected by the base type."""
+        if not isinstance(data, dict) or not data.get("judges"):
+            return data
+        from verifiers.v1.loaders import judge_config_type
+
+        entries = []
+        for entry in data["judges"]:
+            raw = entry.model_dump() if isinstance(entry, BaseConfig) else dict(entry)
+            if not raw.get("id"):
+                raise ValueError(
+                    "each `judges` entry needs an `id` (a judge plugin: `reference`, "
+                    "`rubric`, a local package, or a hub `org/name` package)"
+                )
+            entries.append(judge_config_type(raw["id"]).model_validate(raw))
+        data["judges"] = entries
+        return data
+
+    @model_validator(mode="after")
+    def _check_judges(self) -> "TasksetConfig":
+        """Validate the resolved `judges` — after the before-hook so class-level *defaults*
+        (which never pass through it, e.g. a taskset config pre-plugging a judge) are held
+        to the same rules: an `id` on every entry, and no two entries sharing a reward key
+        (the second would clobber the first's verdict)."""
+        names = []
+        for entry in self.judges:
+            if not entry.id:
+                raise ValueError(
+                    "each `judges` entry needs an `id` (a judge plugin: `reference`, "
+                    "`rubric`, a local package, or a hub `org/name` package)"
+                )
+            names.append(entry.name or env_name(entry.id))
+        if duplicates := {name for name in names if names.count(name) > 1}:
+            raise ValueError(
+                f"`judges` entries share a reward key {sorted(duplicates)}; set a "
+                "distinct `name` on each to keep both verdicts"
+            )
+        return self
 
 
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
@@ -65,6 +122,15 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
 
     def load_tasks(self) -> list[TaskT]:
         raise NotImplementedError
+
+    @cached_property
+    def judges(self) -> list[Judge]:
+        """The plugged judges, built once from `config.judges` (each entry resolved by its
+        `id` — see `JudgeConfig` / `verifiers.v1.judges`) and run by `score` after the
+        decorated rewards."""
+        from verifiers.v1.loaders import load_judge
+
+        return [load_judge(entry) for entry in self.config.judges]
 
     def tools(self, task: TaskT) -> list[Toolset]:
         """Tool servers exposing this task's tools to the model — `vf.Toolset`s (classes with
@@ -110,17 +176,36 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
         records the reason (the raised error's message)."""
         return True
 
-    async def score(self, trace: Trace, runtime: Runtime) -> None:
-        """Score one rollout: run all `@metric` then `@reward` over its trace,
-        concurrently within each phase. Each metric is recorded in `trace.metrics`
-        (a number, or a mapping merged in); each reward (weighted — likewise a number or a
-        mapping merged in) in `trace.rewards`, which `trace.reward` sums. Signals declare
-        what they need — `task`, `trace`,
+    async def score(self, trace: Trace, runtime: Runtime | None = None) -> None:
+        """Score one rollout: run all `@metric`, then `@reward`, then the config-plugged
+        `judges` over its trace, concurrently within each phase. Each metric is recorded in
+        `trace.metrics` (a number, or a mapping merged in); each reward and judge verdict
+        (weighted — likewise a number or a mapping merged in) in `trace.rewards`, which
+        `trace.reward` sums. Signals declare what they need — `task`, `trace`,
         `runtime` — so a reward is either a pure function of the trace or runs
-        read/write/exec in that (still-live) runtime, e.g. a verifier script."""
-        available = {"task": trace.task, "trace": trace, "runtime": runtime}
+        read/write/exec in that (still-live) runtime, e.g. a verifier script.
+
+        `runtime` may be `None` — the offline path taken by `replay`, which re-scores a saved
+        trace with no live runtime. Signals that declare a `runtime` parameter are then skipped
+        (they can't run without one) and logged; trace-only `@metric`/`@reward`s and the plugged
+        judges (which grade from the trace) still run, overwriting their own keys and leaving the
+        skipped signals' previously-recorded values untouched. With a runtime present (the eval
+        path) nothing is skipped."""
+        available = {"task": trace.task, "trace": trace}
+        if runtime is not None:
+            available["runtime"] = runtime
+
+        def can_run(fn) -> bool:
+            # A signal that *requires* a runtime can't run without one, so skip it when replaying.
+            # A `runtime` parameter with a default (e.g. `runtime=None`) is optional — `invoke`
+            # just omits it — so those still run offline.
+            if runtime is not None:
+                return True
+            param = inspect.signature(fn).parameters.get("runtime")
+            return param is None or param.default is not inspect.Parameter.empty
+
         async with boundary(TasksetError, f"taskset {type(self).__name__} scoring"):
-            metrics = discover_decorated(self, "metric")
+            metrics = [fn for fn in discover_decorated(self, "metric") if can_run(fn)]
             metric_results = (
                 [await invoke(fn, available) for fn in metrics]
                 if len(metrics) < 2
@@ -131,7 +216,7 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
                     trace.record_metrics(result)
                 else:
                     trace.record_metric(fn.__name__, result)
-            rewards = discover_decorated(self, "reward")
+            rewards = [fn for fn in discover_decorated(self, "reward") if can_run(fn)]
             reward_results = (
                 [await invoke(fn, available) for fn in rewards]
                 if len(rewards) < 2
@@ -144,6 +229,37 @@ class Taskset(Generic[TaskT, ConfigT, StateT]):
                         trace.record_reward(name, value, weight)
                 else:
                     trace.record_reward(fn.__name__, result, weight)
+            judges = [judge for judge in self.judges if can_run(judge.score)]
+            if runtime is None:
+                # Exactly the signals `can_run` filtered out above — those requiring a runtime
+                # (a `runtime` param with no default). Signals whose `runtime` has a default run
+                # offline and are not reported as skipped.
+                skipped = [
+                    fn.__name__
+                    for fn in (
+                        *discover_decorated(self, "metric"),
+                        *discover_decorated(self, "reward"),
+                    )
+                    if not can_run(fn)
+                ] + [j.reward_name for j in self.judges if not can_run(j.score)]
+                if skipped:
+                    logger.info(
+                        "score: no runtime — skipped runtime-dependent signals: %s",
+                        skipped,
+                    )
+            judge_results = (
+                [await invoke(judge.score, available) for judge in judges]
+                if len(judges) < 2
+                else await asyncio.gather(
+                    *(invoke(judge.score, available) for judge in judges)
+                )
+            )
+            for judge, result in zip(judges, judge_results):
+                if isinstance(result, Mapping):
+                    for name, value in result.items():
+                        trace.record_reward(name, value, judge.config.weight)
+                else:
+                    trace.record_reward(judge.reward_name, result, judge.config.weight)
 
     async def score_group(self, traces: list[Trace]) -> None:
         """Score a group of rollouts of one task: run every `@group_reward` over all

@@ -16,10 +16,11 @@ from collections.abc import Mapping
 import re
 
 import httpx
+from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
-from verifiers.v1.dialects import ChatDialect, Dialect
+from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, SamplingConfig
@@ -95,8 +96,18 @@ class EvalClient(Client):
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
         )
-        raw = from_json(resp.content)
-        response = dialect.parse_response(dialect.validate_response(raw))
+        # A corrupted response (e.g. an HTML error page or a truncated body on a
+        # flaky tunnel) surfaces as a JSON parse failure or a schema validation
+        # failure — map these to a retryable 502 so the harness SDK retries the
+        # call instead of crashing the whole rollout on one bad response.
+        try:
+            raw = from_json(resp.content)
+            response = dialect.parse_response(dialect.validate_response(raw))
+        except (ValueError, ValidationError) as e:
+            raise model_error(
+                f"malformed upstream response: {type(e).__name__}: {e}",
+                status_code=502,
+            ) from e
         response.raw = raw  # the program gets the provider's bytes back 1:1
         return response
 
@@ -108,11 +119,11 @@ class EvalClient(Client):
     ) -> httpx.Headers:
         """Build provider headers from the intercepted request.
 
-        Preserve provider feature headers such as `openai-beta`, discard localhost auth and
-        transport framing, then apply endpoint-configured headers, session routing, and real
-        provider auth.
+        Preserve provider feature headers such as `openai-beta` / `anthropic-beta`,
+        discard localhost auth and transport framing, then apply endpoint-configured headers,
+        session routing, and real provider auth.
         """
-        headers = httpx.Headers(incoming if isinstance(dialect, ChatDialect) else None)
+        headers = httpx.Headers(incoming)
         connection = headers.pop("connection", "")
         for name in _BLOCKED_REQUEST_HEADERS | set(
             map(str.strip, connection.lower().split(","))
@@ -144,6 +155,8 @@ class EvalClient(Client):
         except httpx.TimeoutException as e:
             raise model_error(str(e), status_code=504) from e
         except httpx.HTTPError as e:
+            raise model_error(str(e), status_code=503) from e
+        except ConnectionResetError as e:
             raise model_error(str(e), status_code=503) from e
         if not stream:
             try:
@@ -205,12 +218,18 @@ class EvalClient(Client):
             close=resp.aclose,
         )
 
-    async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
+    async def relay_aux(
+        self,
+        dialect: Dialect,
+        route: str,
+        body: dict,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict:
         # A side request (e.g. count_tokens): relay its native JSON and return the provider JSON.
         resp = await self._request(
             self.base_url + route,
             body,
-            self._headers(dialect, None, None),
+            self._headers(dialect, headers, None),
         )
         return from_json(resp.content)
 

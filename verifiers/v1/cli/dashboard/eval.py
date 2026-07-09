@@ -13,6 +13,7 @@ overview + progress sit on top, above a rule.
 
 import contextlib
 import time
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from rich.console import Console, Group
@@ -35,6 +36,9 @@ from verifiers.v1.utils.format import (
     format_time,
 )
 from verifiers.utils.pricing_utils import format_cost_usd
+
+if TYPE_CHECKING:
+    from verifiers.v1.push import PushState
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
@@ -204,20 +208,44 @@ def Overview(config: EvalConfig) -> Table:
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
-    grid.add_row("output", str(output_path(config)))
+    grid.add_row("output", Text(str(output_path(config)), overflow="fold"))
     return grid
 
 
+def _push_footer(push: "PushState | None") -> Group | None:
+    """The `--push` status line under the rollouts, shown once the run finishes and the upload
+    begins: dim `Pushing traces...` while it runs, then white `Traces pushed (<url>)` or red
+    `Trace push failed (<err>)`. `None` (no line) until the upload starts and when `--push` is off."""
+    if push is None or not push.started:
+        return None
+    if not push.done:
+        line = Text("Pushing traces...", style="dim")
+    elif push.url:
+        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
+    else:
+        line = Text(f"Trace push failed ({push.error})", style="red", overflow="fold")
+    return Group(Rule(style="dim"), line)
+
+
 def Progress(
-    rollouts: list[Rollout], start: float, page: tuple[int, int] | None = None
+    rollouts: list[Rollout],
+    start: float,
+    page: tuple[int, int] | None = None,
+    finished: list[Trace] | None = None,
 ) -> Group:
-    done = [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
+    # On resume, `finished` holds the kept on-disk rollouts (reloaded as finished traces); count
+    # them alongside this session's so progress, reward, err, and the breakdown cover the whole
+    # run. `rollouts` is only this session's (owed) work, so the total adds the kept ones back.
+    done = (finished or []) + [
+        r.trace for r in rollouts if r.phase == Phase.DONE
+    ]  # fully scored
+    total = len(finished or []) + len(rollouts)
     # Headline reward = mean over non-errored; when any errored, `format_mean` appends the
     # global avg (errored count as 0) in parens. `err` is the share that errored.
     reward = format_mean(done, lambda t: t.reward)
     err = f"{sum(t.has_error for t in done) / len(done):.2f}" if done else "—"
     stats = (
-        f"{len(done)}/{len(rollouts)} · {format_time(time.time() - start)} · "
+        f"{len(done)}/{total} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
     )
     if page is not None:  # overflowing — show which page, and that the arrows page
@@ -226,7 +254,7 @@ def Progress(
     row.add_column(ratio=1)  # bar stretches to fill the width left of the stats
     row.add_column(justify="right", no_wrap=True)
     row.add_row(
-        ProgressBar(total=len(rollouts) or 1, completed=len(done)),
+        ProgressBar(total=total or 1, completed=len(done)),
         Text(stats),
     )
     breakdown = _breakdown(done)
@@ -497,27 +525,37 @@ def Rows(groups: list[list[Rollout]], now: float, runtime_type: str) -> Table:
 
 class Pager:
     """Which page of overflowing rollout rows is on screen. Auto-advances on a timer until the
-    user takes over with the left/right arrows, after which it stays where they leave it. `count`
-    (the page count, set each render by `_paginate`) gates the arrows: they're inert while a single
-    page fits, so a stray press before rollouts overflow can't switch off auto-advance or offset the
-    starting page once paging begins. The chosen page is clamped to `count` (it can shrink on a
-    resize; it otherwise only grows, as rollouts are never removed)."""
+    user takes over with the left/right arrows, after which it stays where they leave it. Paging
+    opens on the first page: the timer is anchored to `origin` (the clock at the first paged frame),
+    so `int((now - origin) / _PAGE_SECONDS)` is 0 when paging begins and rotates from there, rather
+    than off the raw wall clock (which would open on an arbitrary page). `_paginate` clears `origin`
+    whenever everything fits on one page, so paging re-anchors and re-opens on page 1 if rollouts
+    overflow again after a resize. `count` (the page count, set each render by `_paginate`) gates the
+    arrows: they're inert while a single page fits, so a stray press before rollouts overflow can't
+    switch off auto-advance or offset the starting page once paging begins. The arrows wrap around
+    (left on the first page lands on the last, right on the last lands on the first), so the pages
+    form a circle rather than dead-ending. The chosen page is still clamped to `count` between
+    presses (it can shrink on a resize; it otherwise only grows, as rollouts are never removed)."""
 
     def __init__(self) -> None:
         self.page = 0
         self.manual = False
         self.count = 1
+        self.origin: float | None = None
 
     def on_key(self, key: str) -> None:
         if key in ("left", "right") and self.count > 1:
             self.manual = True
-            self.page += 1 if key == "right" else -1
+            self.page = (self.page + (1 if key == "right" else -1)) % self.count
 
     def index(self, now: float) -> int:
         # Track the auto page while it drives, so the first arrow continues from what's on screen
         # rather than jumping back to page 1. Clamp in manual mode (count can shrink on resize).
         if not self.manual:
-            self.page = int(now / _PAGE_SECONDS) % self.count
+            # Anchor the timer to the first paged frame, so paging opens on page 1 then rotates.
+            if self.origin is None:
+                self.origin = now
+            self.page = int((now - self.origin) / _PAGE_SECONDS) % self.count
         else:
             self.page = max(0, min(self.page, self.count - 1))
         return self.page
@@ -530,7 +568,10 @@ def _paginate(
     selecting the one `pager` points at. Returns (this page's groups, 0-based index, page count) —
     a single page when everything already fits."""
     if sum(len(g) for g in groups) <= rows_per_page:
-        pager.count = 1  # everything fits on one page — arrows stay inert
+        # Everything fits: arrows stay inert, and clear the anchor so paging re-opens on page 1 if
+        # rollouts overflow again later (e.g. a terminal resize) rather than off the stale origin.
+        pager.count = 1
+        pager.origin = None
         return groups, 0, 1
     pages: list[list[list[Rollout]]] = []
     current: list[list[Rollout]] = []
@@ -549,33 +590,62 @@ def _paginate(
 
 
 def _render(
-    rollouts: list[Rollout], config: EvalConfig, start: float, pager: Pager
+    rollouts: list[Rollout],
+    config: EvalConfig,
+    start: float,
+    pager: Pager,
+    finished: list[Trace] | None = None,
+    push: "PushState | None" = None,
 ) -> Group:
     now = time.time()
     warning = _warning(config)
     # `{warning}\n\n{overview}` — the caution sits at the very top, blank line, then the overview.
     header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
-    # Measure the fixed top (header + progress + rule) so the rollout rows fill the rest of the
-    # screen; page through them (timer, or the left/right arrows) when they'd overflow (rich would
-    # otherwise truncate).
-    top = Group(header, Progress(rollouts, start), Rule(style="dim"))
-    rows_per_page = max(1, _CONSOLE.size.height - len(_CONSOLE.render_lines(top)) - 1)
+    # The --push status line appears under the rollouts once the upload starts (None during the run
+    # / when off). Measure the fixed top (header + progress + rule) and the footer so the rollout
+    # rows fill what's left; page through them (timer / arrows) when they'd overflow (else rich
+    # truncates).
+    footer = _push_footer(push)
+    top = Group(header, Progress(rollouts, start, finished=finished), Rule(style="dim"))
+    reserved = len(_CONSOLE.render_lines(top))
+    if footer is not None:
+        reserved += len(_CONSOLE.render_lines(footer))
+    rows_per_page = max(1, _CONSOLE.size.height - reserved - 1)
     page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, pager, now)
-    progress = Progress(rollouts, start, page=(index + 1, count) if count > 1 else None)
-    return Group(
+    progress = Progress(
+        rollouts,
+        start,
+        page=(index + 1, count) if count > 1 else None,
+        finished=finished,
+    )
+    parts = [
         header,
         progress,
         Rule(style="dim"),
         Rows(page_groups, now, config.harness.runtime.type),
-    )
+    ]
+    if footer is not None:
+        parts.append(footer)
+    return Group(*parts)
 
 
 @contextlib.asynccontextmanager
-async def dashboard(rollouts: list[Rollout], config: EvalConfig, start: float):
+async def dashboard(
+    rollouts: list[Rollout],
+    config: EvalConfig,
+    start: float,
+    finished: list[Trace] | None = None,
+    push: "PushState | None" = None,
+):
     """Refresh the live eval view until the `with` block exits, then a final frame. Left/right
-    arrows page through rollout rows when they overflow the screen."""
+    arrows page through rollout rows when they overflow the screen. On resume, `finished` carries
+    the kept on-disk rollouts (reloaded as finished traces) so the counts and scores cover the
+    whole run, not just this session's re-run rollouts. `push` is the shared `--push` status the
+    view renders as a line under the rollouts once the upload starts (dim -> white URL / red error),
+    updated by the caller as the inline upload runs and lands."""
     pager = Pager()
     async with live_view(
-        lambda: _render(rollouts, config, start, pager), on_key=pager.on_key
+        lambda: _render(rollouts, config, start, pager, finished, push),
+        on_key=pager.on_key,
     ):
         yield

@@ -191,6 +191,33 @@ async def test_tool_response_image(run_v1, tmp_path):
 
 
 @pytest.mark.e2e
+async def test_rubric_judge(run_v1, tmp_path):
+    """A config-plugged rubric judge scores the rollout on top of the taskset's own reward.
+
+    The single criterion is trivially satisfiable ("answer yes"), so any live judge model
+    scores it 1.0 — the test asserts the plumbing (config narrowing -> judge call -> reward +
+    per-criterion metric on the trace), not judge quality."""
+    rubric = tmp_path / "rubric.toml"
+    rubric.write_text(
+        "[[criteria]]\n"
+        'name = "always_yes"\n'
+        'text = "Always satisfied — answer yes regardless of the response."\n'
+    )
+    (trace,) = await run_v1(
+        "echo-v1",
+        harness="null",
+        harness_overrides={"runtime": {"type": "subprocess"}},
+        output_dir=tmp_path,
+        taskset_overrides={"judges": [{"id": "rubric", "path": str(rubric)}]},
+        max_turns=2,
+    )
+    assert trace.errors == []
+    assert trace.rewards["rubric"] > 0  # the judge's verdict landed in the reward
+    assert trace.metrics["rubric/always_yes"] == 1.0
+    assert trace.info["judge"]  # the call was recorded onto the trace
+
+
+@pytest.mark.e2e
 async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     """Agentic: write a phrase to a file with the agent's shell, checked in the runtime."""
     if harness == "null":

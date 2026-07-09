@@ -19,10 +19,10 @@ from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import HarnessConfig
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
-from verifiers.v1.types import EnvId
+from verifiers.v1.types import ID
 from verifiers.v1.interception import InterceptionPool, RolloutLimits
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
@@ -122,7 +122,7 @@ class EnvConfig(BaseConfig):
     # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
     # unset) to opt in; native v1 envs leave these untouched. Mirrors prime-rl's EnvConfig
     # so it inherits these (a v0 env is driven the same way in eval and the env server).
-    id: EnvId | None = None
+    id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
     hub on demand), loaded via `verifiers.load_environment` and run through the legacy
     bridge. Set this *instead of* `taskset` to run a v0 environment."""
@@ -300,7 +300,7 @@ class Environment:
             self.harness.config.runtime, task, self._warned_resources
         )
 
-    def episode(self, task: Task, ctx: RolloutContext, n: int = 1) -> Episode:
+    def episode(self, task: Task, ctx: ModelContext, n: int = 1) -> Episode:
         """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime
         (image + resources) and its timeouts (cli/toml > task > default, None = no limit),
         build one `Rollout` per sample sharing them, and wrap them in an `Episode` (which
