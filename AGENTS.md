@@ -30,7 +30,7 @@ Use this guidance when contributing to the `verifiers` repository itself.
 
 - Ensure that `uv` is installed, see [uv docs](https://docs.astral.sh/uv/getting-started/installation/) for further information.
 - Always run `uv run pre-commit install` before making any changes.
-- Run the documented contributor checks for touched areas: `uv run ruff check --fix .`, `uv run pytest tests/`, and `uv run pre-commit run --all-files` as needed. (See `docs/development.md`.)
+- Run the documented contributor checks for touched areas: `uv run ruff check --fix .`, `uv run pytest tests/`, and `uv run pre-commit run --all-files` as needed. (See `docs/v0/development.md`.)
 - The documentation (in `docs/`, `skills/`, `configs/`) is intentionally kept minimal. Do not touch them unless your changes break with these assumptions.
 - verifiers has two API surfaces under `verifiers/`: `verifiers/v1`, which is referred to as "v1", while the rest is "legacy". Unless specifically requested, always use and assume v1.
 - verifiers v1 uses Pydantic objects everywhere, so you should, too, when working in v1. Mimic the style of the existing code.

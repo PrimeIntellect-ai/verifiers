@@ -27,7 +27,7 @@ Often, the user does not want nor need a custom reusable harness, as verifiers o
 
 ## Re-use existing abstractions first
 
-For some common tasks, there are existing, pre-built tasksets in the `verifiers.v1.tasksets` folder. These come with batteries included and should always be preferred. The most notable inclusion is the `HarborTaskset`, which allows the creation of Harbor-based tasksets within a few LoC (also see docs/harbor.md).
+For some common tasks, there are existing, pre-built tasksets in the `verifiers.v1.tasksets` folder. These come with batteries included and should always be preferred. The most notable inclusion is the `HarborTaskset`, which allows the creation of Harbor-based tasksets within a few LoC (also see docs/v1/harbor.md).
 
 ## Custom task images
 
