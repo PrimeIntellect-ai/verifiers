@@ -105,6 +105,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "-c",
             f"model_providers.{PROVIDER}.requires_openai_auth=false",
             *tool_config,
+            "--",
             prompt,
         ]
         return await runtime.run_program(argv, env)
