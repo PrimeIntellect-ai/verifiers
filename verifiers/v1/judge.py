@@ -14,14 +14,19 @@ in which case `JudgeResponse.parsed` is the validated pydantic object.
         def parse(self, response: vf.JudgeResponse[bool]) -> bool:
             return response.text.strip().lower().startswith("yes")
 
-    self.judge = CorrectnessJudge(self.config.judge)  # self.config.judge: vf.JudgeConfig
+    class MyTask(vf.Task[vf.State, MyConfig]):
+        answer: str
 
-    @vf.reward
-    async def correct(self, task, trace) -> float:
-        result = await self.judge.evaluate(
-            trace=trace, question=task.question, answer=task.answer, response=...
-        )
-        return float(result.parsed)
+        @vf.reward
+        async def correct(self, trace) -> float:
+            judge = CorrectnessJudge(self.config.judge)  # config.judge: vf.JudgeConfig
+            result = await judge.evaluate(
+                trace=trace, question=self.prompt_text, answer=self.answer, response=...
+            )
+            return float(result.parsed)
+
+A judge is cheap to construct (the HTTP client is opened per call, inside `complete`, and
+closed when the call returns), so build it where you use it.
 
 Passing `trace=` records the call onto it — a typed record appended to `trace.info["judge"]` and
 the call's tokens + cost added to `trace.extra_usage` (kept separate from the agent's `trace.usage`),
@@ -43,7 +48,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Generic, Literal, cast, get_args
 
-from openai import AsyncOpenAI
 from pydantic import BaseModel, SerializeAsAny, model_validator
 from typing_extensions import TypeVar
 
@@ -241,7 +245,6 @@ class Judge(Generic[ParsedT, ConfigT]):
 
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = cast(ConfigT, config or judge_config_cls(type(self))())
-        self.client: AsyncOpenAI = build_async_openai(self.config)
         if self.config.prompt_file is not None:
             # Read eagerly so a bad path fails at construction, not mid-eval; shadows the
             # class `prompt` for this instance (`config.prompt` is None — they're exclusive).
@@ -314,33 +317,37 @@ class Judge(Generic[ParsedT, ConfigT]):
 
         response: JudgeResponse[Any] | None = None
         try:
-            if schema is not None:
-                completion = await self.client.beta.chat.completions.parse(
-                    response_format=schema, **kwargs
-                )
-                choice = completion.choices[0]
-                response = JudgeResponse(
-                    text=choice.message.content or "",
-                    parsed=choice.message.parsed,
-                    usage=Usage.from_openai(completion.usage),
-                )
-                if choice.message.refusal is not None:
-                    raise RuntimeError(
-                        f"judge refused structured output: {choice.message.refusal}"
+            # A fresh client per call, closed deterministically — no leaked sockets, no
+            # process-level sharing. Construction is milliseconds and the extra TLS
+            # handshake is noise next to the judge's LLM call.
+            async with build_async_openai(self.config) as client:
+                if schema is not None:
+                    completion = await client.beta.chat.completions.parse(
+                        response_format=schema, **kwargs
                     )
-                if response.parsed is None:
-                    # No refusal but no object either — e.g. a truncated/malformed reply. Surface it
-                    # rather than returning a None verdict callers read as a (falsy) failure.
-                    raise RuntimeError(
-                        f"judge returned no parseable structured output "
-                        f"(finish_reason={choice.finish_reason})"
+                    choice = completion.choices[0]
+                    response = JudgeResponse(
+                        text=choice.message.content or "",
+                        parsed=choice.message.parsed,
+                        usage=Usage.from_openai(completion.usage),
                     )
-            else:
-                completion = await self.client.chat.completions.create(**kwargs)
-                response = JudgeResponse(
-                    text=completion.choices[0].message.content or "",
-                    usage=Usage.from_openai(completion.usage),
-                )
+                    if choice.message.refusal is not None:
+                        raise RuntimeError(
+                            f"judge refused structured output: {choice.message.refusal}"
+                        )
+                    if response.parsed is None:
+                        # No refusal but no object either — e.g. a truncated/malformed reply. Surface it
+                        # rather than returning a None verdict callers read as a (falsy) failure.
+                        raise RuntimeError(
+                            f"judge returned no parseable structured output "
+                            f"(finish_reason={choice.finish_reason})"
+                        )
+                else:
+                    completion = await client.chat.completions.create(**kwargs)
+                    response = JudgeResponse(
+                        text=completion.choices[0].message.content or "",
+                        usage=Usage.from_openai(completion.usage),
+                    )
             if parse is not None:
                 response.parsed = parse(response)
             return response

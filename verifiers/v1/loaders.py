@@ -165,21 +165,10 @@ def load_harness(config: HarnessConfig) -> Harness:
 
 
 def load_judge(config: JudgeConfig) -> Judge:
-    """Build a plugged judge for a config by dispatching on its `id` (the judge id)."""
+    """Build a plugged judge for a config by dispatching on its `id` (the judge id).
+    Judges are cheap, throwaway values — the HTTP client is opened per call inside
+    `Judge.complete` and closed when it returns — so there's nothing to share or cache."""
     return judge_class(config.id)(config)
-
-
-_judges: dict[str, Judge] = {}
-
-
-def judge_for(config: JudgeConfig) -> Judge:
-    """The shared `Judge` instance for a plugged-judge config — built once per distinct
-    config per process (a judge holds an HTTP client, so the tasks that share a config
-    share the instance; `Task.plugged_judges` resolves through this)."""
-    key = config.model_dump_json()
-    if key not in _judges:
-        _judges[key] = load_judge(config)
-    return _judges[key]
 
 
 def taskset_config_type(taskset_id: str) -> type[TasksetConfig]:

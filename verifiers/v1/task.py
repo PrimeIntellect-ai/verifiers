@@ -239,12 +239,12 @@ class Task(StrictBaseModel, Generic[StateT, ConfigT]):
         return self
 
     def plugged_judges(self) -> "list[Judge]":
-        """The runtime `Judge` objects for this task's `judges` configs — shared per
-        distinct config across the process (a judge holds an HTTP client), see
-        `loaders.judge_for`."""
-        from verifiers.v1.loaders import judge_for
+        """The runtime `Judge` objects for this task's `judges` configs, built fresh per
+        call — a judge is a cheap value (its HTTP client is opened per call inside
+        `Judge.complete` and closed when it returns), so nothing is shared or cached."""
+        from verifiers.v1.loaders import load_judge
 
-        return [judge_for(config) for config in self.judges]
+        return [load_judge(config) for config in self.judges]
 
     @property
     def prompt_text(self) -> str:
