@@ -13,21 +13,34 @@ from pydantic import Field
 
 from verifiers.v1.runtimes.base import (
     HOST,
+    BaseRuntimeInfo,
     ProgramResult,
     Runtime,
     host_endpoint,
     reachable_url,
     register,
 )
-from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime
-from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime
-from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime
-from verifiers.v1.runtimes.subprocess import SubprocessConfig, SubprocessRuntime
+from verifiers.v1.runtimes.docker import DockerConfig, DockerRuntime, DockerRuntimeInfo
+from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime, ModalRuntimeInfo
+from verifiers.v1.runtimes.prime import PrimeConfig, PrimeRuntime, PrimeRuntimeInfo
+from verifiers.v1.runtimes.subprocess import (
+    SubprocessConfig,
+    SubprocessRuntime,
+    SubprocessRuntimeInfo,
+)
 
 RuntimeConfig = Annotated[
     SubprocessConfig | DockerConfig | PrimeConfig | ModalConfig,
     Field(discriminator="type"),
 ]
+
+RuntimeInfo = Annotated[
+    SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | ModalRuntimeInfo,
+    Field(discriminator="type"),
+]
+"""What a rollout's runtime looked like, as trace data: each runtime's info type is its full
+config plus the provisioned resource's `id` (see `BaseRuntimeInfo`). The discriminated union
+is `Trace.runtime`'s type, so a dumped trace round-trips to the exact info class."""
 
 
 def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
@@ -58,6 +71,8 @@ __all__ = [
     "ProgramResult",
     "Runtime",
     "RuntimeConfig",
+    "RuntimeInfo",
+    "BaseRuntimeInfo",
     "make_runtime",
     "runtime_is_local",
     "host_endpoint",
@@ -65,10 +80,14 @@ __all__ = [
     "HOST",
     "SubprocessConfig",
     "SubprocessRuntime",
+    "SubprocessRuntimeInfo",
     "DockerConfig",
     "DockerRuntime",
+    "DockerRuntimeInfo",
     "PrimeConfig",
     "PrimeRuntime",
+    "PrimeRuntimeInfo",
     "ModalConfig",
     "ModalRuntime",
+    "ModalRuntimeInfo",
 ]

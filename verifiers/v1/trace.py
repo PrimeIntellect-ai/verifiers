@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import TaskT, WireTask
 from verifiers.v1.types import (
@@ -220,6 +221,12 @@ class Trace(StrictBaseModel, Generic[TaskT, StateT]):
     """Unique id for this rollout, auto-generated per trace."""
     task: TaskT
     """The (immutable) task being solved — fully typed, flows into scoring."""
+    runtime: RuntimeInfo | None = None
+    """Where the rollout ran: the runtime's full config plus the provisioned resource's `id`
+    (subprocess workdir / docker container id / prime or modal sandbox id). The rollout assigns
+    the live runtime's `info` object the moment it makes the runtime, so the config is recorded
+    from the start and `id` appears as soon as the runtime is up. None only for traces created
+    outside a rollout."""
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph — one node per distinct message, linked to its predecessor (see
     `graph`). The ground truth; `branches` is a view over it. Stores each message once, so

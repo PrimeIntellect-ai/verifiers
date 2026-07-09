@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.runtimes.base import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import BaseRuntimeInfo, ProgramResult, Runtime
 
 # A local subprocess inherits the host environment EXCEPT any var whose name
 # contains "API_KEY" — so it can never reach a real provider with the host's API
@@ -33,6 +33,10 @@ class SubprocessConfig(BaseConfig):
     type: Literal["subprocess"] = "subprocess"
 
 
+class SubprocessRuntimeInfo(SubprocessConfig, BaseRuntimeInfo):
+    """`SubprocessConfig` + the resolved `id` — the `/tmp/<name>` workspace path."""
+
+
 class SubprocessRuntime(Runtime):
     """Runs the program as a local subprocess in a unique /tmp workspace."""
 
@@ -45,16 +49,14 @@ class SubprocessRuntime(Runtime):
         self._uv_interpreters = self._interpreters
         self._uv_script_locks = self._locks
         self.config = config
+        self.info = SubprocessRuntimeInfo(**config.model_dump())
         self.workdir: Path | None = None
         self._background: list[asyncio.subprocess.Process] = []
-
-    @property
-    def descriptor(self) -> str | None:
-        return self.workdir.name if self.workdir else None
 
     async def start(self) -> None:
         self.workdir = Path("/tmp") / self.name
         self.workdir.mkdir()
+        self.info.id = str(self.workdir)
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
