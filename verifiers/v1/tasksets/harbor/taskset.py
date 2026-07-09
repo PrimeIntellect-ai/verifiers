@@ -331,7 +331,7 @@ def make_tar(directory: Path) -> bytes:
 
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
-    def load(self) -> list[HarborData]:
+    def load(self) -> list[HarborTask]:
         root = dataset_dir(self.config)
         task_dirs = [
             toml_path.parent
@@ -344,6 +344,6 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
         if not task_dirs:
             raise ValueError(f"no harbor tasks found in {root}")
         return [
-            parse_task(task_dir, idx, self.config)
+            HarborTask(parse_task(task_dir, idx, self.config), self.config.task)
             for idx, task_dir in enumerate(task_dirs)
         ]

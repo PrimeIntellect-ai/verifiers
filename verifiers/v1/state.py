@@ -37,13 +37,10 @@ def state_cls(cls: type) -> type[State]:
     """The `State` subclass a class parameterizes — `Task[MyData, MyState]`,
     `Toolset[Config, MyState]`, `User[Config, MyState]` — read off its generic bases, walking the MRO
     so a further subclass inherits it. Falls back to the base `State` when none is given (the common
-    case: an env that doesn't customize state, written without the generic param). A pydantic generic
-    (`Task[MyState]`) parametrizes into a real class, not a typing alias, so its args live in
-    `__pydantic_generic_metadata__` rather than `__orig_bases__`; check both."""
+    case: an env that doesn't customize state, written without the generic param)."""
     for klass in getattr(cls, "__mro__", [cls]):
-        meta = getattr(klass, "__pydantic_generic_metadata__", None) or {}
-        for base in (*meta.get("args", ()), *getattr(klass, "__orig_bases__", ())):
-            for arg in (base, *get_args(base)):
+        for base in getattr(klass, "__orig_bases__", ()):
+            for arg in get_args(base):
                 if isinstance(arg, type) and issubclass(arg, State):
                     return arg
     return State

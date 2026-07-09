@@ -451,18 +451,12 @@ async def test_error_attribution(monkeypatch, tmp_path):
     )
     # model failure: empty reply -> judge skipped, reward 0.0, NO error
     trace = make_trace(reply="")
-    trace.task = trace.task.model_copy(
-        update={"judges": tuple(taskset.config.task.judges)}
-    )
-    await JudgedTask(trace.task).score(trace, runtime=None)
+    await JudgedTask(trace.task, taskset.config.task).score(trace, runtime=None)
     assert trace.rewards["reference"] == 0.0
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
     trace = make_trace()
-    trace.task = trace.task.model_copy(
-        update={"judges": tuple(taskset.config.task.judges)}
-    )
     with pytest.raises(vf.TaskError, match="no yes/no verdict"):
-        await JudgedTask(trace.task).score(trace, runtime=None)
+        await JudgedTask(trace.task, taskset.config.task).score(trace, runtime=None)
     assert "reference" not in trace.rewards
     assert len(trace.info["judge"]) == 1  # the billed call is still recorded
 
@@ -612,7 +606,7 @@ class JudgedConfig(vf.TasksetConfig):
 
 
 class JudgedTaskset(vf.Taskset[JudgedTask, JudgedConfig]):
-    def load(self) -> list[QAData]:
+    def load(self) -> list[JudgedTask]:
         return []
 
 
@@ -631,10 +625,7 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     )
     taskset = JudgedTaskset(cfg)
     trace = make_trace()
-    trace.task = trace.task.model_copy(
-        update={"judges": tuple(taskset.config.task.judges)}
-    )
-    await JudgedTask(trace.task).score(trace, runtime=None)
+    await JudgedTask(trace.task, taskset.config.task).score(trace, runtime=None)
     assert trace.rewards["own"] == 0.25  # decorated rewards still run
     assert (
         trace.rewards["reference"] == 0.5

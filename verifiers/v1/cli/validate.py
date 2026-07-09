@@ -106,7 +106,7 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
     )
     valid, exc = False, None
     try:
-        trace = Trace(task=task, state=state_cls(type(task))())
+        trace = Trace(task=task.data, state=state_cls(type(task))())
         await runtime.start()
         await asyncio.wait_for(
             invoke(task.setup, {"trace": trace, "runtime": runtime}),
@@ -139,7 +139,7 @@ async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
     )
     valid, exc = False, None
     try:
-        trace = Trace(task=task, state=state_cls(type(task))())
+        trace = Trace(task=task.data, state=state_cls(type(task))())
         await runtime.start()
         await asyncio.wait_for(
             invoke(task.setup, {"trace": trace, "runtime": runtime}),
@@ -209,13 +209,13 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     """Run each task's `validate` hook with bounded concurrency, showing progress live. Returns
     the result rows in memory — nothing is persisted."""
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.tasks()
+    tasks = taskset.load()
     if config.shuffle:
         random.Random(0).shuffle(tasks)
     if config.num_tasks is not None:
         tasks = tasks[: config.num_tasks]
     if isinstance(config.runtime, vf.SubprocessConfig) and any(
-        type(t).NEEDS_CONTAINER or t.image for t in tasks
+        type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):
         raise SystemExit(
             "taskset needs a container runtime to validate - pass --runtime.type docker (or prime)"
@@ -232,7 +232,7 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     )
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-    states = [TaskProgress(idx=t.idx, name=t.name) for t in tasks]
+    states = [TaskProgress(idx=t.data.idx, name=t.data.name) for t in tasks]
     state_by_idx = {s.idx: s for s in states}
 
     async def _one(task) -> dict:

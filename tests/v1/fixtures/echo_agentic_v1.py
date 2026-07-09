@@ -45,17 +45,20 @@ class EchoAgenticConfig(vf.TasksetConfig):
 
 
 class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
-    def load(self) -> list[EchoAgenticData]:
+    def load(self) -> list[EchoAgenticTask]:
         phrase = self.config.phrase
         return [
-            EchoAgenticData(
-                idx=0,
-                prompt=(
-                    f"Use the bash tool to write exactly the text '{phrase}' to a file named "
-                    f"{TARGET} in the current directory, then finish."
+            EchoAgenticTask(
+                EchoAgenticData(
+                    idx=0,
+                    prompt=(
+                        f"Use the bash tool to write exactly the text '{phrase}' to a file "
+                        f"named {TARGET} in the current directory, then finish."
+                    ),
+                    system_prompt=SYSTEM,
+                    answer=phrase,
                 ),
-                system_prompt=SYSTEM,
-                answer=phrase,
+                self.config.task,
             )
         ]
 

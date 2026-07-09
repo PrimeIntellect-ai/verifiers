@@ -154,7 +154,7 @@ class TextArenaTask(vf.Task[TextArenaData, TextArenaState, TextArenaTaskConfig])
 
 
 class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
-    def load(self) -> list[TextArenaData]:
+    def load(self) -> list[TextArenaTask]:
         # One task per RNG seed; the simulator re-seeds to reproduce the same episode. Games
         # that embed the per-episode setup in the prompt (WordLadder's start/target,
         # WordSearch's grid) need the prompt built under each seed; games whose prompt
@@ -172,12 +172,15 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         first = observation(0)
         seed_specific = observation(1) != first
         return [
-            TextArenaData(
-                idx=i,
-                name=f"{self.config.game}#{i}",
-                prompt=observation(i) if seed_specific else first,
-                system_prompt=SYSTEM_PROMPT,
-                info={"game": self.config.game, "seed": i},
+            TextArenaTask(
+                TextArenaData(
+                    idx=i,
+                    name=f"{self.config.game}#{i}",
+                    prompt=observation(i) if seed_specific else first,
+                    system_prompt=SYSTEM_PROMPT,
+                    info={"game": self.config.game, "seed": i},
+                ),
+                self.config.task,
             )
             for i in range(self.config.num_tasks)
         ]

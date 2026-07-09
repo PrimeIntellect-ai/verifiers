@@ -41,15 +41,18 @@ class ToolResponseImageTask(vf.Task):
 
 
 class ToolResponseImageTaskset(vf.Taskset[ToolResponseImageTask, vf.TasksetConfig]):
-    def load(self) -> list[vf.TaskData]:
+    def load(self) -> list[ToolResponseImageTask]:
         return [
-            vf.TaskData(
-                idx=0,
-                prompt=(
-                    "Call the `vision_snapshot` tool exactly once. After it returns, "
-                    "reply with exactly `done`."
+            ToolResponseImageTask(
+                vf.TaskData(
+                    idx=0,
+                    prompt=(
+                        "Call the `vision_snapshot` tool exactly once. After it returns, "
+                        "reply with exactly `done`."
+                    ),
+                    system_prompt=SYSTEM,
                 ),
-                system_prompt=SYSTEM,
+                self.config.task,
             )
         ]
 

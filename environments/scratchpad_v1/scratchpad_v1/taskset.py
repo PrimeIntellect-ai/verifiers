@@ -57,12 +57,15 @@ class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig]):
     # Declared on the TASKSET: shared scope is structural (one eval-level server), built
     # with `ScratchpadConfig.tools` (exact-type match) via `Taskset.server_config`.
 
-    def load(self) -> list[ScratchpadTaskData]:
+    def load(self) -> list[ScratchpadTask]:
         return [
-            ScratchpadTaskData(
-                idx=i,
-                word=w,
-                prompt=INSTRUCTION.format(word=w),
+            ScratchpadTask(
+                ScratchpadTaskData(
+                    idx=i,
+                    word=w,
+                    prompt=INSTRUCTION.format(word=w),
+                ),
+                self.config.task,
             )
             for i, w in enumerate(WORDS)
         ]

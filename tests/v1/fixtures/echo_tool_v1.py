@@ -45,14 +45,17 @@ class EchoToolConfig(vf.TasksetConfig):
 
 
 class EchoToolTaskset(vf.Taskset[EchoToolTask, EchoToolConfig]):
-    def load(self) -> list[vf.TaskData]:
+    def load(self) -> list[EchoToolTask]:
         return [
-            vf.TaskData(
-                idx=0,
-                prompt=(
-                    f'Call the `echo_back` tool with the message "{PHRASE}", then reply '
-                    "with exactly what it returns inside <answer></answer> tags."
+            EchoToolTask(
+                vf.TaskData(
+                    idx=0,
+                    prompt=(
+                        f'Call the `echo_back` tool with the message "{PHRASE}", then reply '
+                        "with exactly what it returns inside <answer></answer> tags."
+                    ),
                 ),
+                self.config.task,
             )
         ]
 

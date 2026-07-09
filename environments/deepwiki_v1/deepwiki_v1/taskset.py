@@ -46,17 +46,20 @@ class DeepWikiConfig(vf.TasksetConfig):
 
 
 class DeepWikiTaskset(vf.Taskset[DeepWikiTask, DeepWikiConfig]):
-    def load(self) -> list[DeepWikiTaskData]:
+    def load(self) -> list[DeepWikiTask]:
         return [
-            DeepWikiTaskData(
-                idx=i,
-                name=repo,
-                prompt=(
-                    f"Use the `deepwiki_ask_question` tool to ask what programming "
-                    f'language the "{repo}" GitHub repository is primarily written in. '
-                    "Then reply with just the language name."
+            DeepWikiTask(
+                DeepWikiTaskData(
+                    idx=i,
+                    name=repo,
+                    prompt=(
+                        f"Use the `deepwiki_ask_question` tool to ask what programming "
+                        f'language the "{repo}" GitHub repository is primarily written in. '
+                        "Then reply with just the language name."
+                    ),
+                    answer=language,
                 ),
-                answer=language,
+                self.config.task,
             )
             for i, (repo, language) in enumerate(TASKS)
         ]

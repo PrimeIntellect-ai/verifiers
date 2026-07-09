@@ -14,7 +14,7 @@ There are optional flags:
 - `-H`, `--add-harness` — also scaffold a custom `vf.Harness` at `harness.py`, selectable via `--harness.id <name>`
   - In general, you should build your environments so that any of the built-in harnesses work. There are few reasons to build a custom harness.
 
-However, for most environments, a task subclass plus a thin taskset loader is enough.
+However, for most environments, building a taskset should be enough.
 
 > For a production-scale catalog of benchmark environments, see the companion [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) repository.
 
@@ -24,8 +24,8 @@ A task is split into data and behavior. `vf.TaskData` is one row's pure data —
 shape saved on every trace; subclass it to add typed fields (the reference answer, ground
 truths). `vf.Task` is the behavior — `@vf.reward` / `@vf.metric` scoring methods, lifecycle
 hooks, and tool/user declarations — reading the row off `self.data`. The `vf.Taskset` is
-the loader: `load()` returns the data rows, and the framework wraps each in the declared
-task type (one task type per taskset).
+the loader: its `load()` builds each row's data and constructs the task around it (one
+task type per taskset).
 
 ```python
 import verifiers.v1 as vf
@@ -45,12 +45,15 @@ class AdditionTask(vf.Task[AdditionData]):
         return float(trace.last_reply == str(self.data.answer))
 
 
-# The taskset is the loader: it yields the data rows.
+# The taskset is the loader: it builds the tasks from their rows.
 class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
-    def load(self) -> list[AdditionData]:
+    def load(self) -> list[AdditionTask]:
         # Load the dataset, in this case we build it on the initial load
         return [
-            AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i)
+            AdditionTask(
+                AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i),
+                self.config.task,
+            )
             for i in range(100)
         ]
 
@@ -73,9 +76,12 @@ class AdditionConfig(vf.TasksetConfig):
     num_tasks: int = 100
 
 class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
-    def load(self) -> list[AdditionData]:
+    def load(self) -> list[AdditionTask]:
         return [
-            AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i)
+            AdditionTask(
+                AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i),
+                self.config.task,
+            )
             for i in range(self.config.num_tasks) # <- re-use the value here
         ]
 ```
@@ -143,7 +149,7 @@ class CorpusToolset(vf.Toolset[vf.SharedToolsetConfig]):    # taskset-scoped (sh
 class SearchTaskConfig(vf.TaskConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig()             # --taskset.task.tools.*
 
-class SearchTask(vf.Task[vf.State, SearchTaskConfig]):
+class SearchTask(vf.Task[vf.TaskData, vf.State, SearchTaskConfig]):
     tools = (SearchToolset,)                                 # per rollout
 
 class SearchConfig(vf.TasksetConfig):
@@ -215,7 +221,8 @@ Sampling knobs live under `taskset.task.judge.sampling` — e.g.
 `taskset.task.judge.sampling.max_tokens`.
 
 Judges can also be plugged **from config alone** — no judge-calling code: the base
-`TaskConfig.judges` list (`--taskset.task.judges`) attaches judge plugins (built-ins like
-`reference` / `rubric`, or hub packages) to every task at load, and `Task.score` runs them
-after the task's own `@reward`s. Each task records its judges' configs on the wire
-(`Task.judges`), so a saved trace shows exactly what judged it.
+`TaskConfig.judges` list (`--taskset.task.judges`) plugs judge plugins (built-ins like
+`reference` / `rubric`, or hub packages) into every task, and `Task.score` resolves and
+runs them after the task's own `@reward`s. Judges are config, never row data — the run's
+`config.toml` records what judged it, and `replay`'s layered config re-runs (or re-tunes)
+exactly those judges.

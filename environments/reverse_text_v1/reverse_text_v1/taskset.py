@@ -42,16 +42,19 @@ class ReverseTextConfig(vf.TasksetConfig):
 
 
 class ReverseTextTaskset(vf.Taskset[ReverseTextTask, ReverseTextConfig]):
-    def load(self) -> list[ReverseTextData]:
+    def load(self) -> list[ReverseTextTask]:
         from datasets import load_dataset
 
         rows = load_dataset(self.config.dataset_name, split=self.config.dataset_split)
         return [
-            ReverseTextData(
-                idx=i,
-                prompt=row["prompt"],
-                system_prompt=SYSTEM,
-                answer=row["prompt"][::-1],
+            ReverseTextTask(
+                ReverseTextData(
+                    idx=i,
+                    prompt=row["prompt"],
+                    system_prompt=SYSTEM,
+                    answer=row["prompt"][::-1],
+                ),
+                self.config.task,
             )
             for i, row in enumerate(rows)
         ]

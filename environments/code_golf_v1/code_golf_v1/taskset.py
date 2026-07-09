@@ -86,13 +86,16 @@ class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
         ("reverse-str", "the string HELLO reversed", "OLLEH"),
     ]
 
-    def load(self) -> list[CodeGolfData]:
+    def load(self) -> list[CodeGolfTask]:
         return [
-            CodeGolfData(
-                idx=i,
-                name=name,
-                prompt=f"{SYSTEM}\n\nPrint {description}.",
-                expected=expected,
+            CodeGolfTask(
+                CodeGolfData(
+                    idx=i,
+                    name=name,
+                    prompt=f"{SYSTEM}\n\nPrint {description}.",
+                    expected=expected,
+                ),
+                self.config.task,
             )
             for i, (name, description, expected) in enumerate(self.SPECS)
         ]

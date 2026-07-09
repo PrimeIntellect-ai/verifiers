@@ -4,9 +4,8 @@ Offline sibling of `eval`: loads a finished run's saved traces and re-runs **sco
 runtime. The run's own `config.toml` is the base; CLI flags / `@ file.toml` layer on top (e.g. a
 different judge model). Signals needing a `runtime` (in-sandbox verifiers like a SWE `solved`
 reward) are skipped and left as the source recorded them — group rewards likewise (no group
-context offline); the tasks' recorded judges and trace-only `@reward`/`@metric`s re-run, and a
-judge plugged in the replay config overrides a recorded one with the same reward key (tune a
-judge, re-score) or joins as a new one. Metrics the
+context offline); the config's judges and trace-only `@reward`/`@metric`s re-run (judges are
+config, so the layered replay config decides exactly what judges). Metrics the
 re-score doesn't re-record (harness metrics, a skipped signal's direct writes) keep their source
 values. Rollouts that errored during generation (`stop_condition == "error"`)
 were never scored by eval, so they're copied through unchanged rather than re-scored on a broken
@@ -35,7 +34,6 @@ from verifiers.v1.cli.output import (
     write_config,
 )
 from verifiers.v1.configs.replay import ReplayConfig
-from verifiers.v1.judge import judge_key
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, WireTaskData, task_data_cls
 from verifiers.v1.trace import Trace
@@ -71,7 +69,6 @@ def output_dir(config: ReplayConfig) -> Path:
 
 async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trace]:
     logger.debug("replay config:\n%s", config.model_dump_json(indent=2))
-    taskset = vf.load_taskset(config.taskset)
     task_cls = vf.task_type(config.taskset.id)
     data_cls = task_data_cls(task_cls)
     # `WireTaskData` reads any taskset's saved task without a runtime or its Task type (see WireTaskData).
@@ -95,15 +92,10 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 trace.task.idx,
                 exc_info=True,
             )
-    if plugged := tuple(taskset.config.task.judges):
-        # The replay config's judges override each task's recorded ones by reward key
-        # (tune a judge, re-score) and newly-plugged ones join. A judge only on the
-        # recorded task (e.g. a per-row rubric) still re-runs as recorded — the trace
-        # carries it; dropping a judge takes an explicit config entry, not silence.
-        keys = {judge_key(entry) for entry in plugged}
-        for trace in traces:
-            kept = tuple(c for c in trace.task.judges if judge_key(c) not in keys)
-            trace.task = trace.task.model_copy(update={"judges": (*kept, *plugged)})
+    # Judges are config, not wire data: `Task.score` resolves them from the replay
+    # config's `taskset.task.judges` (the source run's config.toml layered under any CLI
+    # overrides) — so a re-tuned judge overrides the recorded run's and a newly-plugged
+    # one joins, with no trace surgery.
     # `num_rescores` re-scores each trace that many times, each on its own copy.
     work = [t.model_copy(deep=True) for t in traces for _ in range(config.num_rescores)]
 

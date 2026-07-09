@@ -131,13 +131,13 @@ class ColorCodewordTask(
 
 
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
-    def load(self) -> list[ColorCodewordTaskData]:
+    def load(self) -> list[ColorCodewordTask]:
         c = self.config
         rng = random.Random(SEED)
         colors = list(COLOR_MAP)
         color_urls = {color: color_data_url(color) for color in colors}
         length = c.images_per_turn * MAX_TURNS
-        tasks: list[ColorCodewordTaskData] = []
+        tasks: list[ColorCodewordTask] = []
         for idx in range(c.num_examples):
             sequence = [rng.choice(colors) for _ in range(length)]
             answer = "".join(COLOR_MAP[col] for col in sequence)
@@ -152,12 +152,18 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
                 for col in turn0
             ] + [vf.TextContentPart(text=text)]
             tasks.append(
-                ColorCodewordTaskData(
-                    idx=idx,
-                    prompt=[vf.UserMessage(content=parts)],
-                    system_prompt=SYSTEM_PROMPT,
-                    answer=answer,
-                    info={"colors_per_turn": colors_per_turn, "max_turns": MAX_TURNS},
+                ColorCodewordTask(
+                    ColorCodewordTaskData(
+                        idx=idx,
+                        prompt=[vf.UserMessage(content=parts)],
+                        system_prompt=SYSTEM_PROMPT,
+                        answer=answer,
+                        info={
+                            "colors_per_turn": colors_per_turn,
+                            "max_turns": MAX_TURNS,
+                        },
+                    ),
+                    c.task,
                 )
             )
         return tasks

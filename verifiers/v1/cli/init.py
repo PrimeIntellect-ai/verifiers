@@ -78,7 +78,7 @@ def _init_py(pkg: str, prefix: str, add_harness: bool) -> str:
 def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str:
     """The taskset module skeleton — the row's data on a `TaskData` subclass, the behavior
     (`@reward`, tool/user declarations) on the `Task` subclass, and a thin `Taskset` whose
-    `load` returns the data rows. Each enabled piece (tool/user) adds its import, a
+    `load` constructs the tasks (`Task(Data(...), self.config.task)`). Each enabled piece (tool/user) adds its import, a
     class-level declaration on the task, and a field on the task's config (`vf.TaskConfig`,
     nested under `TasksetConfig.task` and read as `self.config` — the framework builds each
     declared server with the matching config field; see `Task.server_config`)."""
@@ -132,10 +132,11 @@ class {prefix}Config(vf.TasksetConfig):
 
 
 class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
-    def load(self) -> list[{prefix}Data]:
+    def load(self) -> list[{prefix}Task]:
         raise NotImplementedError(
-            "Return this taskset's rows, e.g. "
-            "[{prefix}Data(idx=i, prompt=...) for i in range(self.config.num_tasks)]."
+            "Return this taskset's tasks, e.g. "
+            "[{prefix}Task({prefix}Data(idx=i, prompt=...), self.config.task) "
+            "for i in range(self.config.num_tasks)]."
         )
 '''
     return f'''\
@@ -166,10 +167,11 @@ class {prefix}Config(vf.TasksetConfig):
 
 
 class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
-    def load(self) -> list[{prefix}Data]:
+    def load(self) -> list[{prefix}Task]:
         raise NotImplementedError(
-            "Return this taskset's rows, e.g. "
-            "[{prefix}Data(idx=i, prompt=...) for i in range(self.config.num_tasks)]."
+            "Return this taskset's tasks, e.g. "
+            "[{prefix}Task({prefix}Data(idx=i, prompt=...), self.config.task) "
+            "for i in range(self.config.num_tasks)]."
         )
 '''
 

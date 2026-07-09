@@ -177,7 +177,7 @@ class LeanTask(Task[LeanData, State, LeanTaskConfig]):
 
 
 class LeanTaskset(Taskset[LeanTask, LeanConfig]):
-    def load(self) -> list[LeanData]:
+    def load(self) -> list[LeanTask]:
         from datasets import load_dataset
 
         config = self.config
@@ -207,7 +207,7 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                 )
 
         resources = TaskResources(cpu=4, memory=4, disk=10)
-        tasks: list[LeanData] = []
+        tasks: list[LeanTask] = []
         for index, row in enumerate(raw):
             # Skip degenerate rows with no statement: there's nothing to prove, and
             # an empty statement collapses the pinned signature to just ``:= by``,
@@ -223,20 +223,25 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
             gold = row.get(ds.proof_column) or ""
             name = row.get(ds.name_column)
             tasks.append(
-                LeanData(
-                    idx=index,
-                    name=str(name) if name else f"task_{index:05d}",
-                    prompt=self._build_prompt(formal_statement, header),
-                    system_prompt=config.system_prompt,
-                    image=config.docker_image,
-                    workdir=config.task.lean_project_path,
-                    resources=resources,
-                    formal_statement=formal_statement,
-                    header=header,
-                    imports=imports,
-                    normalize_mathlib_imports=ds.normalize_mathlib_imports,
-                    protected_signature=expected_protected_signature(formal_statement),
-                    formal_proof=gold,
+                LeanTask(
+                    LeanData(
+                        idx=index,
+                        name=str(name) if name else f"task_{index:05d}",
+                        prompt=self._build_prompt(formal_statement, header),
+                        system_prompt=config.system_prompt,
+                        image=config.docker_image,
+                        workdir=config.task.lean_project_path,
+                        resources=resources,
+                        formal_statement=formal_statement,
+                        header=header,
+                        imports=imports,
+                        normalize_mathlib_imports=ds.normalize_mathlib_imports,
+                        protected_signature=expected_protected_signature(
+                            formal_statement
+                        ),
+                        formal_proof=gold,
+                    ),
+                    self.config.task,
                 )
             )
         return tasks

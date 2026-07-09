@@ -8,6 +8,8 @@ add typed scratch/result fields. The rollout mutates it directly; this replaces
 v1's 600-line `dict`-subclass `State` and its dual "contract version" machinery.
 """
 
+from __future__ import annotations
+
 import logging
 import time
 import traceback
@@ -282,7 +284,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     def has_error(self) -> bool:
         return bool(self.errors)
 
-    def _last_assistant(self) -> "MessageNode | None":
+    def _last_assistant(self) -> MessageNode | None:
         """The most recent sampled (model-produced) node, or None for a trace with no
         responses."""
         return next((n for n in reversed(self.nodes) if n.sampled), None)
@@ -425,13 +427,13 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
             )
         self.metrics[name] = float(value)
 
-    def record_metrics(self, values: "Mapping[str, float]") -> None:
+    def record_metrics(self, values: Mapping[str, float]) -> None:
         """Merge a family of `@metric` results (so one method can report several,
         e.g. an harness's depth/calls/tokens). Each key warns on override as above."""
         for name, value in values.items():
             self.record_metric(name, value)
 
-    def record_judge(self, response: "JudgeResponse") -> None:
+    def record_judge(self, response: JudgeResponse) -> None:
         """Persist a judge call (`Judge.evaluate` / `Judge.complete` is pure): append the typed
         response to `info["judge"]` for debugging and fold its tokens + cost into `extra_usage`
         (→ `usage`)."""

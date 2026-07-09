@@ -73,7 +73,7 @@ class AlphabetSortTask(
         return trace.state.user_finished
 
     @vf.reward(weight=1.0)
-    async def sort_similarity(self, trace: vf.Trace) -> float:
+    async def similarity(self, trace: vf.Trace) -> float:
         ground_truths = self.data.info["ground_truths"]
         num_turns = self.data.info["num_turns"]
         responses = [m.content or "" for m in trace.assistant_messages]
@@ -110,14 +110,14 @@ class AlphabetSortTask(
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
-    def load(self) -> list[AlphabetSortTaskData]:
+    def load(self) -> list[AlphabetSortTask]:
         c = self.config
         assert 1 <= c.min_turns <= c.max_turns, "need 1 <= min_turns <= max_turns"
         assert 1 <= c.min_names_per_turn <= c.max_names_per_turn, (
             "need 1 <= min_names_per_turn <= max_names_per_turn"
         )
         rng = random.Random(SEED)
-        tasks: list[AlphabetSortTaskData] = []
+        tasks: list[AlphabetSortTask] = []
         for entry in load_dataset(DATASET, split=c.split):
             names = list(dict.fromkeys(n.replace(" ", "") for n in entry["names"]))
             counts = [
@@ -184,16 +184,19 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
                 follow_ups.append(prompt)
 
             tasks.append(
-                AlphabetSortTaskData(
-                    idx=len(tasks),
-                    # No prompt on the row: the simulator opens with the sort prompt, then the
-                    # follow-ups — one user turn per `user_turns` entry.
-                    prompt=None,
-                    info={
-                        "user_turns": [initial_prompt, *follow_ups],
-                        "ground_truths": ground_truths,
-                        "num_turns": len(turns),
-                    },
+                AlphabetSortTask(
+                    AlphabetSortTaskData(
+                        idx=len(tasks),
+                        # No prompt on the row: the simulator opens with the sort prompt, then
+                        # the follow-ups — one user turn per `user_turns` entry.
+                        prompt=None,
+                        info={
+                            "user_turns": [initial_prompt, *follow_ups],
+                            "ground_truths": ground_truths,
+                            "num_turns": len(turns),
+                        },
+                    ),
+                    c.task,
                 )
             )
         return tasks

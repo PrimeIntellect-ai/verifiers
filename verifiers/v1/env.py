@@ -92,7 +92,8 @@ class EnvConfig(BaseConfig):
     """The rollout's two peers: the taskset (data + scoring) and the harness (which
     program drives it, and where it runs — `harness.runtime`). Both are chosen at eval
     time, not by the env — only `taskset` is narrowed per env (to its config type,
-    inferred from `load_taskset`). Tool-server placement lives on `Task.tools`."""
+    inferred from `load_taskset`). Tool servers are declared on `Task.tools` (per rollout)
+    or `Taskset.tools` (shared, once per eval)."""
 
     # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, DefaultHarnessConfig);
     # without it model_dump() narrows to the base type and drops the subclass fields, so the

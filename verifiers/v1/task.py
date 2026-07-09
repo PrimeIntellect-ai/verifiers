@@ -18,13 +18,13 @@ a `TaskData` plus a `TaskConfig`, both plain constructor arguments:
 Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]` (all three
 default) — hooks and signals read the row off `self.data` and the knobs off
 `self.config`. Because behavior lives on the task class, verification never branches
-on a type field; a taskset yields one task type (`Taskset.tasks` constructs it), and
+on a type field; a taskset yields one task type (its `load` constructs it), and
 instances differ per row through their data.
 
 The task is the single judgement authority, scored at two granularities (execution
 lives in the Rollout — per-rollout — and the Episode — group — which call these):
-  - `score` runs `@metric`/`@reward` — plus the plugged judges built from
-    `data.judges` (see `verifiers.v1.judge`) — over one trace (in its live runtime).
+  - `score` runs `@metric`/`@reward` — plus the plugged judges resolved from
+    `config.judges` (see `verifiers.v1.judge`) — over one trace (in its live runtime).
   - `score_group` runs `@group_reward` over all the rollouts of this task at once —
     pairwise/preference rewards that compare samples.
 
@@ -36,9 +36,10 @@ param).
 On the wire only the data travels: a saved `trace.task` reads back as `WireTaskData`
 (extra fields preserved) without importing the taskset; a consumer that re-scores
 (e.g. `replay`) rebuilds the declared `TaskData` type and wraps it in the declared
-`Task` — which every row is guaranteed to be, since `Taskset.tasks` constructs one
-task type.
+`Task` — one task type per taskset.
 """
+
+from __future__ import annotations
 
 import asyncio
 import inspect
@@ -46,16 +47,15 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, Self, get_args
 
-from pydantic import ConfigDict, SerializeAsAny, model_validator
+from pydantic import ConfigDict, model_validator
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.judge import JudgeConfig, Judges, check_judges, resolve_judges
+from verifiers.v1.judge import Judges, check_judges, resolve_judges
 from verifiers.v1.state import StateT
-from verifiers.v1.types import ID, Messages, StrictBaseModel, content_text
-from verifiers.v1.utils.install import env_name
+from verifiers.v1.types import Messages, StrictBaseModel, content_text
 
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
@@ -120,10 +120,10 @@ class TaskConfig(BaseConfig):
     judges: Judges = []
     """Config-plugged judges, each resolved by `id` — a built-in (`reference`, `rubric`), a local
     package, or a hub `org/name[@version]` package exporting a `Judge` subclass: grading plugged
-    into any taskset/harness pair from the eval config alone, no taskset code. `Taskset.tasks()`
-    appends these to every row's own `TaskData.judges`, and `Task.score` runs them after the
-    task's `@reward`s. Each entry records its verdict in `trace.rewards` under its `name` with
-    its `weight` (see `JudgeConfig`). Set via `--taskset.task.judges`."""
+    into any taskset/harness pair from the eval config alone, no taskset code. `Task.score`
+    resolves and runs them after the task's `@reward`s; each entry records its verdict in
+    `trace.rewards` under its `name` with its `weight` (see `JudgeConfig`). Set via
+    `--taskset.task.judges`."""
 
     @model_validator(mode="before")
     @classmethod
@@ -136,33 +136,12 @@ class TaskConfig(BaseConfig):
         return data
 
     @model_validator(mode="after")
-    def _check_judges(self) -> "TaskConfig":
+    def _check_judges(self) -> TaskConfig:
         """Validate the resolved `judges` — after the before-hook so class-level *defaults*
         (which never pass through it, e.g. a taskset config pre-plugging a judge) are held
         to the same rules (see `judge.check_judges`)."""
         check_judges(self.judges)
         return self
-
-
-class TasksetConfig(BaseConfig):
-    """Base taskset config: load-time knobs (dataset, split, seed, ...) plus the task's own
-    config under `task`. Subclass to add task-generation knobs; narrow `task` to your
-    `TaskConfig` subclass when the task reads knobs (`task: MyTaskConfig = MyTaskConfig()`),
-    so `--taskset.task.*` flags validate against it. `tasks()` constructs every task with
-    `config.task`."""
-
-    id: ID = ""
-    """The taskset id, which selects this taskset: a local package, or an
-    `org/name[@version]` package installed on demand from the Environments Hub (see
-    `ID`). Set via `--taskset.id`."""
-    task: SerializeAsAny[TaskConfig] = TaskConfig()
-    """The task-facing config, passed to every constructed task (`Task.config`): server
-    placement, judges, scoring knobs. Everything under `--taskset.task.*`."""
-
-    @property
-    def name(self) -> str:
-        """The taskset's package name (the id with any org / version stripped)."""
-        return env_name(self.id)
 
 
 class TaskData(StrictBaseModel):
@@ -204,31 +183,6 @@ class TaskData(StrictBaseModel):
     """Optional per-task timeout overrides, one per rollout stage (merge with the eval's `timeout`)."""
     resources: TaskResources = TaskResources()
     """Optional runtime resources this task requests (applied where supported)."""
-    judges: tuple[SerializeAsAny[JudgeConfig], ...] = ()
-    """The task's plugged judges, as configs — data, so they ride the wire like every
-    other field and a saved trace records exactly what judged it. `Task.score` builds the
-    runtime `Judge`s from them (`plugged_judges`) and runs them after the task's own
-    `@reward`s, each verdict recorded under its reward key with its `weight`.
-    `Taskset.tasks()` appends the eval's `TaskConfig.judges` to every row at load;
-    a `load()` can also give rows their own (e.g. a per-row rubric), and a subclass
-    can declare class-wide defaults."""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_judges(cls, data):
-        """Narrow `judges` entries to the config type their `id` resolves to (see
-        `judge.resolve_judges`) — wire rows arrive as plain dicts, and the base type
-        would reject judge-specific fields (e.g. rubric's `path`)."""
-        if isinstance(data, dict) and data.get("judges"):
-            data["judges"] = resolve_judges(data["judges"])
-        return data
-
-    @model_validator(mode="after")
-    def _check_judges(self) -> Self:
-        """Hold `judges` — including class-level defaults, which skip the before-hook —
-        to the plugged rules (an `id` on every entry, distinct reward keys)."""
-        check_judges(self.judges)
-        return self
 
     @property
     def prompt_text(self) -> str:
@@ -256,8 +210,7 @@ class WireTaskData(TaskData):
 # (a defaulted TypeVar narrows pydantic's serialization to the base `TaskData`, silently
 # dropping subclass fields from the wire).
 DataT = TypeVar("DataT", bound=TaskData)
-ConfigT = TypeVar("ConfigT", bound=TasksetConfig, default=TasksetConfig)
-TaskConfigT = TypeVar("TaskConfigT", bound=TaskConfig, default=TaskConfig)
+ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
 
 
 def _generic_arg(cls: type, base: type, default: type) -> type:
@@ -266,9 +219,8 @@ def _generic_arg(cls: type, base: type, default: type) -> type:
     back to `default` when none is given. Mirrors `state_cls` (which reads the same
     generic for the `State` param)."""
     for klass in getattr(cls, "__mro__", [cls]):
-        meta = getattr(klass, "__pydantic_generic_metadata__", None) or {}
-        for orig in (*meta.get("args", ()), *getattr(klass, "__orig_bases__", ())):
-            for arg in (orig, *get_args(orig)):
+        for orig in getattr(klass, "__orig_bases__", ()):
+            for arg in get_args(orig):
                 if isinstance(arg, type) and issubclass(arg, base):
                     return arg
     return default
@@ -317,7 +269,7 @@ def resolve_server_config(
         ) from exc
 
 
-class Task(Generic[DataT, StateT, TaskConfigT]):
+class Task(Generic[DataT, StateT, ConfigT]):
     """The task's behavior half: hooks, server declarations, and `@reward`/`@metric`
     scoring over one row's `TaskData`. A plain class — subclass per dataset and
     parameterize `Task[MyData, MyState, MyConfig]` (all three default) so `self.data`,
@@ -328,7 +280,7 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
         MyTask(data, config=MyTaskConfig())  # or injected
         MyTask.from_trace(trace)             # or derived from a finished rollout
 
-    `Taskset.tasks()` constructs one per loaded row with the eval's `TasksetConfig.task`.
+    A taskset's `load()` constructs one per row with the eval's `TasksetConfig.task`.
     Hooks and signals read the row off `self.data` and the knobs off `self.config`; one
     instance is shared across a group's rollouts, so per-rollout state lives on
     `trace.state`, never on `self`."""
@@ -338,7 +290,7 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
     Environment refuses the subprocess runtime — for tasks whose work only makes sense
     inside a per-task image (e.g. a SWE repo sandbox)."""
 
-    tools: "ClassVar[tuple[type[Toolset], ...]]" = ()
+    tools: ClassVar[tuple[type[Toolset], ...]] = ()
     """TASK-scoped tool server classes exposing this task's tools to the model —
     `vf.Toolset`s (classes with `@vf.tool` methods), each launched per rollout (its
     `ToolsetConfig`: colocated in the harness's runtime, or its own). Declarative: name
@@ -346,14 +298,14 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
     resolves off `self.config`. Empty by default. An eval-wide server is declared on
     `Taskset.tools` instead — scope is where you register, not a flag."""
 
-    user: "ClassVar[type[User] | None]" = None
+    user: ClassVar[type[User] | None] = None
     """The task's user simulator class — structurally a tool server (an MCP server
     with a runtime), but driven by the framework, not exposed to the model. After
     each model turn the interception server calls its `respond` tool and injects the
     reply as a user turn. Declarative like `tools`; None by default — set it to make
     the task a simulated multi-turn conversation (e.g. a TextArena game)."""
 
-    def __init__(self, data: DataT, config: TaskConfigT | None = None) -> None:
+    def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
         if config is None:
             # Default to the *declared* config type's defaults, so a task constructed
@@ -370,7 +322,7 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
         self.config = config
 
     @classmethod
-    def from_trace(cls, trace: "Trace", *, config: "TaskConfigT | None" = None) -> Self:
+    def from_trace(cls, trace: Trace, *, config: ConfigT | None = None) -> Self:
         """Derive a task from a rollout's trace — the constructor for tasks that are not
         loaded from a taskset (e.g. a multi-agent step spawning a follow-up task from a
         finished trajectory). Rebuilds the declared `TaskData` from the trace's saved row;
@@ -379,13 +331,15 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
         data = task_data_cls(cls).model_validate(trace.task.model_dump())
         return cls(data, config=config)  # type: ignore[arg-type]
 
-    def plugged_judges(self) -> "list[Judge]":
-        """The runtime `Judge` objects for this row's `data.judges` configs, built fresh
-        per call — a judge is a cheap value (its HTTP client is opened per call inside
-        `Judge.complete` and closed when it returns), so nothing is shared or cached."""
+    def plugged_judges(self) -> list[Judge]:
+        """The runtime `Judge` objects for this task's plugged judges — resolved from
+        `config.judges` alone (`--taskset.task.judges`; judges are config, never row
+        data). Built fresh per call — a judge is a cheap value (its HTTP client is
+        opened per call inside `Judge.complete` and closed when it returns), so nothing
+        is shared or cached."""
         from verifiers.v1.loaders import load_judge
 
-        return [load_judge(config) for config in self.data.judges]
+        return [load_judge(config) for config in self.config.judges]
 
     def server_config(self, server_cls: type) -> BaseConfig:
         """The config a declared server class (`tools` / `user`) is built with, resolved
@@ -394,20 +348,20 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
         escape hatch for exotic setups, e.g. two servers sharing one config type)."""
         return resolve_server_config(type(self).__name__, self.config, server_cls)
 
-    def tool_servers(self) -> "list[Toolset]":
+    def tool_servers(self) -> list[Toolset]:
         """Build this task's tool servers: one instance per class in `tools`, each
         constructed with `server_config(cls)`. Called by the framework per rollout (and
         once per eval for `shared` placements); a Toolset instance is a launcher spec —
         the server itself runs as its own process (see `verifiers.v1.mcp`)."""
         return [cls(self.server_config(cls)) for cls in type(self).tools]
 
-    def user_server(self) -> "User | None":
+    def user_server(self) -> User | None:
         """Build this task's user simulator from the `user` declaration (None when the
         task doesn't declare one), constructed like a tool server."""
         cls = type(self).user
         return cls(self.server_config(cls)) if cls is not None else None
 
-    async def setup(self, trace: "Trace", runtime: "Runtime") -> None:
+    async def setup(self, trace: Trace, runtime: Runtime) -> None:
         """Prepare the live runtime for this task, after `runtime.start()` and before the
         harness runs. No-op by default; override to run per-task setup in the runtime (e.g.
         a SWE row checking out its base commit — read the row off `self.data`). Errors
@@ -420,7 +374,7 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
         `setup(self, runtime)` both work."""
         return None
 
-    async def finalize(self, trace: "Trace", runtime: "Runtime") -> None:
+    async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         """Post-process the live runtime after the harness finishes, before scoring. No-op
         by default; override to do per-rollout work the rewards depend on — apply/commit the
         agent's diff, run a build, snapshot state, scrape runtime artifacts into `trace.info`.
@@ -429,7 +383,7 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
         Errors propagate and fail the rollout."""
         return None
 
-    async def validate(self, runtime: "Runtime") -> bool:
+    async def validate(self, runtime: Runtime) -> bool:
         """Check the task is well-formed and solvable, independent of any model rollout — run
         by the `validate` entrypoint, never during a rollout. Valid (True) by default;
         override to assert the ground truth holds (e.g. a SWE row applying its gold patch and
@@ -443,11 +397,11 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
 
     async def score(
         self,
-        trace: "Trace",
-        runtime: "Runtime | None" = None,
+        trace: Trace,
+        runtime: Runtime | None = None,
     ) -> None:
         """Score one rollout: run all `@metric`, then `@reward`, then the plugged judges
-        (see `TaskData.judges`) over its trace, concurrently within each phase. Each
+        (see `TaskConfig.judges`) over its trace, concurrently within each phase. Each
         metric is recorded in `trace.metrics` (a number, or a mapping merged in); each
         reward and judge verdict (weighted — likewise a number or a mapping merged in) in
         `trace.rewards`, which `trace.reward` sums. Signals declare what they need —
@@ -579,9 +533,9 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
 
     def restore_offline(
         self,
-        trace: "Trace",
-        prior_rewards: "Mapping[str, float]",
-        prior_metrics: "Mapping[str, float]",
+        trace: Trace,
+        prior_rewards: Mapping[str, float],
+        prior_metrics: Mapping[str, float],
     ) -> None:
         """Pre-fill an offline re-score with the source run's runtime-only values: called
         by `replay` after clearing the prior scores and BEFORE `score`, so runtime-dependent
@@ -630,7 +584,7 @@ class Task(Generic[DataT, StateT, TaskConfigT]):
             if key in prior_metrics and key not in trace.metrics:
                 trace.metrics[key] = prior_metrics[key]
 
-    async def score_group(self, traces: "list[Trace]") -> None:
+    async def score_group(self, traces: list[Trace]) -> None:
         """Score a group of rollouts of this task: run every `@group_reward` over all
         the traces at once (pairwise/preference rewards), each returning one score per
         trace, aligned to `traces`. A group reward declares what it needs — `traces`

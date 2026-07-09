@@ -55,7 +55,7 @@ class EnvServer:
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
         # Load tasks once; the index range is fixed for the server's lifetime.
-        self.tasks = self.env.taskset.tasks()
+        self.tasks = self.env.taskset.load()
         # One task type per taskset (`Taskset.tasks` enforces it), so group scoring is a
         # run-wide property.
         self.requires_group_scoring = bool(self.tasks) and bool(

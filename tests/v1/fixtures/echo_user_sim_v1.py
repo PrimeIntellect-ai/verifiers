@@ -71,13 +71,16 @@ class EchoUserSimTask(
 
 
 class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
-    def load(self) -> list[EchoUserSimData]:
+    def load(self) -> list[EchoUserSimTask]:
         return [
-            EchoUserSimData(
-                idx=0,
-                prompt=self.config.phrases[0],
-                system_prompt=SYSTEM,
-                phrases=self.config.phrases,
+            EchoUserSimTask(
+                EchoUserSimData(
+                    idx=0,
+                    prompt=self.config.phrases[0],
+                    system_prompt=SYSTEM,
+                    phrases=self.config.phrases,
+                ),
+                self.config.task,
             )
         ]
 

@@ -50,15 +50,18 @@ class CounterConfig(vf.TasksetConfig):
 
 
 class CounterTaskset(vf.Taskset[CounterTask, CounterConfig]):
-    def load(self) -> list[vf.TaskData]:
+    def load(self) -> list[CounterTask]:
         return [
-            vf.TaskData(
-                idx=0,
-                prompt=(
-                    f"Call the `counter_bump` tool {TARGET} times, one call per turn — wait for "
-                    "each result before the next. After the last result, reply with "
-                    "<answer>done</answer>."
+            CounterTask(
+                vf.TaskData(
+                    idx=0,
+                    prompt=(
+                        f"Call the `counter_bump` tool {TARGET} times, one call per turn — wait "
+                        "for each result before the next. After the last result, reply with "
+                        "<answer>done</answer>."
+                    ),
                 ),
+                self.config.task,
             )
         ]
 

@@ -55,15 +55,18 @@ class GSM8KConfig(vf.TasksetConfig):
 
 
 class GSM8KTaskset(vf.Taskset[GSM8KTask, GSM8KConfig]):
-    def load(self) -> list[GSM8KData]:
+    def load(self) -> list[GSM8KTask]:
         from datasets import load_dataset
 
         rows = load_dataset("openai/gsm8k", "main", split=self.config.split)
         return [
-            GSM8KData(
-                idx=i,
-                prompt=f"{SYSTEM}\n\n{row['question']}",
-                answer=row["answer"].split("####")[-1].strip(),
+            GSM8KTask(
+                GSM8KData(
+                    idx=i,
+                    prompt=f"{SYSTEM}\n\n{row['question']}",
+                    answer=row["answer"].split("####")[-1].strip(),
+                ),
+                self.config.task,
             )
             for i, row in enumerate(rows)
         ]

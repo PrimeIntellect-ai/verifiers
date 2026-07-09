@@ -43,18 +43,21 @@ class EchoConfig(vf.TasksetConfig):
 
 
 class EchoTaskset(vf.Taskset[EchoTask, EchoConfig]):
-    def load(self) -> list[EchoData]:
+    def load(self) -> list[EchoTask]:
         return [
             # Keep coding-agent harnesses on the direct-response path instead of
             # spending this single-turn smoke task on a tool call.
-            EchoData(
-                idx=i,
-                prompt=(
-                    "Do not call tools or execute code. Reply immediately and include "
-                    f"this exact phrase in your final response: {phrase}"
+            EchoTask(
+                EchoData(
+                    idx=i,
+                    prompt=(
+                        "Do not call tools or execute code. Reply immediately and include "
+                        f"this exact phrase in your final response: {phrase}"
+                    ),
+                    system_prompt=SYSTEM,
+                    answer=phrase,
                 ),
-                system_prompt=SYSTEM,
-                answer=phrase,
+                self.config.task,
             )
             for i, phrase in enumerate(self.config.phrases)
         ]

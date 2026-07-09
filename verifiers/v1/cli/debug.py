@@ -204,7 +204,7 @@ async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
 
 
 async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
-    trace = Trace(task=task, state=state_cls(type(task))())
+    trace = Trace(task=task.data, state=state_cls(type(task))())
     debug = {
         "task": task_info(task),
         "action": "command" if config.command is not None else "script",
@@ -263,13 +263,13 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
 
 async def run_debug(config: DebugConfig) -> list[Trace]:
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.tasks()
+    tasks = taskset.load()
     if config.shuffle:
         random.Random(0).shuffle(tasks)
     if config.num_tasks is not None:
         tasks = tasks[: config.num_tasks]
     if isinstance(config.runtime, vf.SubprocessConfig) and any(
-        type(t).NEEDS_CONTAINER or t.image for t in tasks
+        type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):
         raise SystemExit(
             "taskset needs a container runtime to debug - pass --runtime.type docker (or prime)"

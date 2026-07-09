@@ -79,16 +79,19 @@ class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
     # Declared on the TASKSET: shared scope is structural (one eval-level server),
     # built with `WikiSearchConfig.tools` via `Taskset.server_config`.
 
-    def load(self) -> list[TriviaTaskData]:
+    def load(self) -> list[TriviaTask]:
         from datasets import load_dataset
 
         rows = load_dataset(QUESTIONS_DATASET, split="train")
         return [
-            TriviaTaskData(
-                idx=i,
-                question=row["question"],
-                answer=str(row["answer"]),
-                prompt=f"{SYSTEM}\n\nQuestion: {row['question']}",
+            TriviaTask(
+                TriviaTaskData(
+                    idx=i,
+                    question=row["question"],
+                    answer=str(row["answer"]),
+                    prompt=f"{SYSTEM}\n\nQuestion: {row['question']}",
+                ),
+                self.config.task,
             )
             for i, row in enumerate(rows.select(range(min(NUM_QUESTIONS, len(rows)))))
         ]

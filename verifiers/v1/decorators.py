@@ -43,7 +43,10 @@ def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
         for name, fn in vars(klass).items()
         if callable(fn) and hasattr(fn, attr)
     }
-    methods = [getattr(obj, name) for name in names]
+    # Re-check the mark on the resolved attribute: an undecorated subclass override of a
+    # decorated base method must NOT run as a signal (the base's mark found the name, but
+    # the override is what getattr binds).
+    methods = [method for name in names if hasattr(method := getattr(obj, name), attr)]
     priority_attr = f"{attr}_priority"
     methods.sort(key=lambda m: (-getattr(m, priority_attr, 0), m.__name__))
     return methods

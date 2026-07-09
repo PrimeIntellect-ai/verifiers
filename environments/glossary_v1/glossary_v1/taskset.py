@@ -38,16 +38,19 @@ class GlossaryConfig(vf.TasksetConfig):
 
 
 class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
-    def load(self) -> list[GlossaryTaskData]:
+    def load(self) -> list[GlossaryTask]:
         return [
-            GlossaryTaskData(
-                idx=i,
-                name=entity.title(),
-                prompt=(
-                    f'Use the `facts_lookup` tool to look up "{entity.title()}", then '
-                    "reply with exactly what it returns inside <answer></answer> tags."
+            GlossaryTask(
+                GlossaryTaskData(
+                    idx=i,
+                    name=entity.title(),
+                    prompt=(
+                        f'Use the `facts_lookup` tool to look up "{entity.title()}", then '
+                        "reply with exactly what it returns inside <answer></answer> tags."
+                    ),
+                    answer=fact,
                 ),
-                answer=fact,
+                self.config.task,
             )
             for i, (entity, fact) in enumerate(FACTS.items())
         ]
