@@ -1,11 +1,11 @@
 """The taskset: a thin loader that yields typed tasks.
 
-A `Taskset` is the data half of an environment: config in, tasks out. It resolves its
-config at load time and bakes the result into each task's fields, so tasks come out
-self-contained — everything a rollout needs (prompt, image, ground truths, scoring
-knobs) rides on the task. All per-task behavior — runtime prep, tools, user
-simulation, `@reward`/`@metric` scoring — lives on the `Task` subclass it yields
-(see `verifiers.v1.task`).
+A `Taskset` is the data half of an environment: config in, tasks out. Per-row data
+(prompt, image, ground truths) rides on each task's fields; taskset-level knobs stay
+on the config, which `tasks()` attaches to every row so hooks and rewards read them
+off `self.config`. All per-task behavior — runtime prep, tools, user simulation,
+`@reward`/`@metric` scoring — lives on the `Task` subclass it yields (see
+`verifiers.v1.task`).
 
 The class stays generic over its task and config types (`Taskset[TaskT, ConfigT]`)
 so the loaders can read them: `taskset_config_type` narrows `--taskset.*` CLI/toml
@@ -15,65 +15,20 @@ one concrete task type (replay rebuilds every saved row as the declared `TaskT`,
 a row of any other class would silently lose its own behavior there).
 """
 
-from typing import Generic, TypeVar, get_args, get_origin
-
-from pydantic import model_validator
-from pydantic_config import BaseConfig
+from typing import Generic, get_args, get_origin
 
 from verifiers.v1.errors import TasksetError
-from verifiers.v1.judge import Judges, check_judges, resolve_judges
-from verifiers.v1.task import Task, TaskT
-from verifiers.v1.types import ID
-from verifiers.v1.utils.install import env_name
+from verifiers.v1.judge import check_judges
+from verifiers.v1.task import ConfigT, Task, TaskT, TasksetConfig
 
-
-class TasksetConfig(BaseConfig):
-    """Base taskset config. Subclass to add task-generation knobs."""
-
-    id: ID = ""
-    """The taskset id, which selects this taskset: a local package, or an
-    `org/name[@version]` package installed on demand from the Environments Hub (see
-    `ID`). Set via `--taskset.id`."""
-    judges: Judges = []
-    """Config-plugged judges, each resolved by `id` — a built-in (`reference`, `rubric`), a local
-    package, or a hub `org/name[@version]` package exporting a `Judge` subclass: grading plugged
-    into any taskset/harness pair from the eval config alone, no taskset code. `tasks()` appends
-    these to every row's own `Task.judges`, and `Task.score` runs them after the task's
-    `@reward`s. Each entry records its verdict in `trace.rewards` under its `name` with its
-    `weight` (see `JudgeConfig`)."""
-
-    @property
-    def name(self) -> str:
-        """The taskset's package name (the id with any org / version stripped)."""
-        return env_name(self.id)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_judges(cls, data):
-        """Narrow each `judges` entry to the config type its `id` resolves to (see
-        `judge.resolve_judges`), so judge-specific fields (e.g. rubric's `path`)
-        validate against the real config instead of being rejected by the base type."""
-        if isinstance(data, dict) and data.get("judges"):
-            data["judges"] = resolve_judges(data["judges"])
-        return data
-
-    @model_validator(mode="after")
-    def _check_judges(self) -> "TasksetConfig":
-        """Validate the resolved `judges` — after the before-hook so class-level *defaults*
-        (which never pass through it, e.g. a taskset config pre-plugging a judge) are held
-        to the same rules (see `judge.check_judges`)."""
-        check_judges(self.judges)
-        return self
-
-
-ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
+__all__ = ["ConfigT", "Taskset", "TasksetConfig"]
 
 
 class Taskset(Generic[TaskT, ConfigT]):
     """Generic over its task and config types, so `self.config` and `load` are fully
     typed (and the loaders can narrow CLI flags / type the wire trace off the generics).
-    Subclass: implement `load` — resolve config there and bake the results into task
-    fields, so each task carries everything its hooks and rewards need."""
+    Subclass: implement `load` — per-row data goes in task fields; taskset-level knobs
+    stay on the config, which `tasks()` attaches to every row (`Task.config`)."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
@@ -125,4 +80,8 @@ class Taskset(Generic[TaskT, ConfigT]):
                 check_judges(merged)
                 baked.append(task.model_copy(update={"judges": merged}))
             tasks = baked
+        for task in tasks:
+            # Attach the taskset config so hooks can read taskset-level knobs off
+            # `self.config` (a private attr — never serialized; `replay` re-attaches).
+            task.attach_config(self.config)
         return tasks

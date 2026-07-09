@@ -35,15 +35,18 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, Generic, Self, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, Self
 
-from pydantic import ConfigDict, SerializeAsAny, model_validator
+from pydantic import ConfigDict, PrivateAttr, SerializeAsAny, model_validator
+from pydantic_config import BaseConfig
+from typing_extensions import TypeVar
 
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import TasksetError, boundary
-from verifiers.v1.judge import JudgeConfig, check_judges, resolve_judges
+from verifiers.v1.judge import JudgeConfig, Judges, check_judges, resolve_judges
 from verifiers.v1.state import StateT
-from verifiers.v1.types import Messages, StrictBaseModel, content_text
+from verifiers.v1.types import ID, Messages, StrictBaseModel, content_text
+from verifiers.v1.utils.install import env_name
 
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
@@ -133,11 +136,55 @@ class TaskTimeout(StrictBaseModel):
     """Verify + rewards/metrics."""
 
 
-class Task(StrictBaseModel, Generic[StateT]):
+class TasksetConfig(BaseConfig):
+    """Base taskset config. Subclass to add task-generation knobs."""
+
+    id: ID = ""
+    """The taskset id, which selects this taskset: a local package, or an
+    `org/name[@version]` package installed on demand from the Environments Hub (see
+    `ID`). Set via `--taskset.id`."""
+    judges: Judges = []
+    """Config-plugged judges, each resolved by `id` — a built-in (`reference`, `rubric`), a local
+    package, or a hub `org/name[@version]` package exporting a `Judge` subclass: grading plugged
+    into any taskset/harness pair from the eval config alone, no taskset code. `tasks()` appends
+    these to every row's own `Task.judges`, and `Task.score` runs them after the task's
+    `@reward`s. Each entry records its verdict in `trace.rewards` under its `name` with its
+    `weight` (see `JudgeConfig`)."""
+
+    @property
+    def name(self) -> str:
+        """The taskset's package name (the id with any org / version stripped)."""
+        return env_name(self.id)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_judges(cls, data):
+        """Narrow each `judges` entry to the config type its `id` resolves to (see
+        `judge.resolve_judges`), so judge-specific fields (e.g. rubric's `path`)
+        validate against the real config instead of being rejected by the base type."""
+        if isinstance(data, dict) and data.get("judges"):
+            data["judges"] = resolve_judges(data["judges"])
+        return data
+
+    @model_validator(mode="after")
+    def _check_judges(self) -> "TasksetConfig":
+        """Validate the resolved `judges` — after the before-hook so class-level *defaults*
+        (which never pass through it, e.g. a taskset config pre-plugging a judge) are held
+        to the same rules (see `judge.check_judges`)."""
+        check_judges(self.judges)
+        return self
+
+
+ConfigT = TypeVar("ConfigT", bound=TasksetConfig, default=TasksetConfig)
+
+
+class Task(StrictBaseModel, Generic[StateT, ConfigT]):
     """A single problem to solve: typed data fields plus the per-task behavior (hooks,
     tools, `@reward`/`@metric` scoring). Subclass per dataset; parameterize the state
     type via `Task[MyState]` when tool/user servers or scoring share typed per-rollout
-    state (defaults to the empty base `State`)."""
+    state (defaults to the empty base `State`), and the config type via
+    `Task[MyState, MyConfig]` when hooks read taskset-level knobs off `self.config`
+    (defaults to the base `TasksetConfig`)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -184,6 +231,31 @@ class Task(StrictBaseModel, Generic[StateT]):
     `Taskset.tasks()` appends the eval's `TasksetConfig.judges` to every row at load;
     a `load()` can also give rows their own (e.g. a per-row rubric), and a subclass
     can declare class-wide defaults."""
+
+    _config: TasksetConfig | None = PrivateAttr(default=None)
+    """The taskset config this task was loaded under — attached by `Taskset.tasks()`
+    (and re-attached by `replay` after a wire rebuild), never serialized. Read it via
+    the `config` property."""
+
+    @property
+    def config(self) -> ConfigT:
+        """The taskset config this task was loaded under, typed by the `Task[..., ConfigT]`
+        generic — taskset-level knobs the hooks read (`self.config.compile_timeout`, a
+        toolset's placement, ...). Attached by `Taskset.tasks()`; a standalone task (built
+        outside a taskset) gets one via `attach_config`."""
+        if self._config is None:
+            raise TasksetError(
+                f"{type(self).__name__} has no taskset config attached — tasks from "
+                f"`Taskset.tasks()` get it automatically; attach one to a standalone "
+                f"task with `task.attach_config(config)`"
+            )
+        return self._config  # type: ignore[return-value]
+
+    def attach_config(self, config: TasksetConfig) -> Self:
+        """Attach the taskset config this task should read its knobs from (private, so it
+        never rides the wire; assignment works on the frozen model). Returns the task."""
+        self._config = config
+        return self
 
     @model_validator(mode="before")
     @classmethod

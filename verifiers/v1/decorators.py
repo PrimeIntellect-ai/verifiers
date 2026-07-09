@@ -33,12 +33,17 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
-    """Bound methods on `obj` tagged with `attr`, sorted by priority then name."""
-    methods = [
-        method
-        for _, method in inspect.getmembers(obj, predicate=inspect.ismethod)
-        if hasattr(method, attr)
-    ]
+    """Bound methods on `obj` tagged with `attr`, sorted by priority then name. Scans the
+    class MRO for tagged functions (not `inspect.getmembers(obj)`, which evaluates every
+    descriptor — e.g. a property like `Task.config` that raises until attached) and binds
+    each through `getattr`, so the most-derived override wins."""
+    names = {
+        name
+        for klass in type(obj).__mro__
+        for name, fn in vars(klass).items()
+        if callable(fn) and hasattr(fn, attr)
+    }
+    methods = [getattr(obj, name) for name in names]
     priority_attr = f"{attr}_priority"
     methods.sort(key=lambda m: (-getattr(m, priority_attr, 0), m.__name__))
     return methods

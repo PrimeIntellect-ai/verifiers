@@ -95,6 +95,10 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 trace.task.idx,
                 exc_info=True,
             )
+        # The config never rides the wire (a private attr), so re-attach it: the replay
+        # config layers the source run's `config.toml` under any CLI overrides, so hooks
+        # re-score under the source knobs by default, re-tunable per replay.
+        trace.task.attach_config(config.taskset)
     if plugged := tuple(taskset.config.judges):
         # The replay config's judges override each task's recorded ones by reward key
         # (tune a judge, re-score) and newly-plugged ones join. A judge only on the
