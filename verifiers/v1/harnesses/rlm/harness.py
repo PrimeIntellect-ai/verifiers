@@ -140,7 +140,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             env["RLM_MCP_CONFIG"] = json.dumps(
                 {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
             )
-        return await runtime.run_program([RLM_BIN, prompt], env)
+        return await runtime.run_program([RLM_BIN, "--", prompt], env)
 
     @metric
     async def rlm(self, trace: Trace, runtime: Runtime) -> dict[str, float]:
