@@ -78,28 +78,29 @@ def _init_py(pkg: str, prefix: str, add_harness: bool) -> str:
 def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str:
     """The taskset module skeleton — the task's behavior (`@reward`, tool/user declarations) on
     the `Task` subclass, and a thin `Taskset` with `load` to fill in. Each enabled piece
-    (tool/user) adds its import, a class-level declaration on the task, and a config field
-    (the framework builds each declared server with the matching config field — see
-    `Task.server_config`)."""
+    (tool/user) adds its import, a class-level declaration on the task, and a field on the
+    task's config (`vf.TaskConfig`, nested under `TasksetConfig.task` and read as
+    `self.config` — the framework builds each declared server with the matching config
+    field; see `Task.server_config`)."""
     imports = "import verifiers.v1 as vf"
     local_imports: list[str] = []
-    config_extra = ""
+    task_config_fields = ""
     task_decls = ""
     task_methods: list[str] = []
     # a user simulator carries per-rollout state and a stop condition, so the task is typed with
-    # its `State` subclass (`vf.Task[MyState]`); without one it stays on the default `State`.
-    task_base = "vf.Task"
+    # its `State` subclass (`vf.Task[MyState, ...]`); without one it stays on the default `State`.
+    state = "vf.State"
     if add_tool:
         local_imports.append(f"from {pkg}.servers.tool import {prefix}Toolset")
-        config_extra += "\n    tools: vf.ToolsetConfig = vf.ToolsetConfig()"
+        task_config_fields += "\n    tools: vf.ToolsetConfig = vf.ToolsetConfig()"
         task_decls += f"\n    tools = ({prefix}Toolset,)"
     if add_user:
         local_imports.append(
             f"from {pkg}.servers.user import {prefix}State, {prefix}User"
         )
-        config_extra += "\n    user: vf.UserConfig = vf.UserConfig()"
+        task_config_fields += "\n    user: vf.UserConfig = vf.UserConfig()"
         task_decls += f"\n    user = {prefix}User"
-        task_base = f"vf.Task[{prefix}State]"
+        state = f"{prefix}State"
         task_methods.append(
             "    @vf.stop\n"
             "    async def user_done(self, trace: vf.Trace) -> bool:\n"
@@ -108,11 +109,40 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str
     if local_imports:
         imports += "\n\n" + "\n".join(local_imports)
     methods_block = "".join(f"\n{m}\n" for m in task_methods)
+    if not (add_tool or add_user):
+        return f'''\
+{imports}
+
+
+class {prefix}Task(vf.Task):
+    """A single task. Add task-specific fields here (e.g. a reference answer)."""
+
+    @vf.reward(weight=1.0)
+    async def reward(self, trace: vf.Trace) -> float:
+        raise NotImplementedError("Score the rollout and return a float (e.g. in [0, 1]).")
+
+
+class {prefix}Config(vf.TasksetConfig):
+    num_tasks: int = 5
+    """How many tasks to build."""
+
+
+class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
+    def load(self) -> list[{prefix}Task]:
+        raise NotImplementedError(
+            "Return this taskset's tasks, e.g. "
+            "[{prefix}Task(idx=i, prompt=...) for i in range(self.config.num_tasks)]."
+        )
+'''
     return f'''\
 {imports}
 
 
-class {prefix}Task({task_base}):
+class {prefix}TaskConfig(vf.TaskConfig):
+    """Knobs the task reads (`self.config`) — under `--taskset.task.*`."""{task_config_fields}
+
+
+class {prefix}Task(vf.Task[{state}, {prefix}TaskConfig]):
     """A single task. Add task-specific fields here (e.g. a reference answer)."""{task_decls}
 {methods_block}
     @vf.reward(weight=1.0)
@@ -122,7 +152,8 @@ class {prefix}Task({task_base}):
 
 class {prefix}Config(vf.TasksetConfig):
     num_tasks: int = 5
-    """How many tasks to build."""{config_extra}
+    """How many tasks to build."""
+    task: {prefix}TaskConfig = {prefix}TaskConfig()
 
 
 class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):

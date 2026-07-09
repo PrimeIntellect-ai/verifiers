@@ -82,23 +82,27 @@ def extract_codeword(text: str) -> str:
     )
 
 
+class ColorCodewordTaskConfig(vf.TaskConfig):
+    user: vf.UserConfig = vf.UserConfig()
+
+
 class ColorCodewordConfig(vf.TasksetConfig):
     num_examples: int = 1000
     """Number of synthetic episodes to generate."""
     images_per_turn: int = Field(2, ge=1)
     """Colored squares shown per turn."""
-    user: vf.UserConfig = vf.UserConfig()
+    task: ColorCodewordTaskConfig = ColorCodewordTaskConfig()
 
 
-class ColorCodewordTask(vf.Task[ColorCodewordState]):
+class ColorCodewordTask(vf.Task[ColorCodewordState, ColorCodewordTaskConfig]):
     answer: str
     """The full expected codeword (one letter per square shown, in order)."""
     info: dict
     """The episode the user simulator replays: `colors_per_turn` and `max_turns`."""
 
     user = ColorCodewordUser
-    # Built with the taskset config's `user` field (placement stays CLI-tunable),
-    # resolved by `Task.server_config`.
+    # Built with the task config's `user` field (placement stays CLI-tunable via
+    # --taskset.task.user.*), resolved by `Task.server_config`.
 
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:

@@ -1,11 +1,12 @@
 """The taskset: a thin loader that yields typed tasks.
 
 A `Taskset` is the data half of an environment: config in, tasks out. Per-row data
-(prompt, image, ground truths) rides on each task's fields; taskset-level knobs stay
-on the config, which `tasks()` attaches to every row so hooks and rewards read them
-off `self.config`. All per-task behavior — runtime prep, tools, user simulation,
-`@reward`/`@metric` scoring — lives on the `Task` subclass it yields (see
-`verifiers.v1.task`).
+(prompt, image, ground truths) rides on each task's fields; load-time knobs (dataset,
+split, seed) live on the taskset config; the task-facing knobs live under its `task`
+subtree (`TasksetConfig.task`, a `TaskConfig`), which `tasks()` attaches to every row
+so hooks and rewards read them off `self.config`. All per-task behavior — runtime
+prep, tools, user simulation, `@reward`/`@metric` scoring — lives on the `Task`
+subclass it yields (see `verifiers.v1.task`).
 
 The class stays generic over its task and config types (`Taskset[TaskT, ConfigT]`)
 so the loaders can read them: `taskset_config_type` narrows `--taskset.*` CLI/toml
@@ -19,16 +20,24 @@ from typing import Generic, get_args, get_origin
 
 from verifiers.v1.errors import TaskError
 from verifiers.v1.judge import check_judges
-from verifiers.v1.task import ConfigT, Task, TaskT, TasksetConfig
+from verifiers.v1.task import (
+    ConfigT,
+    Task,
+    TaskConfig,
+    TaskT,
+    TasksetConfig,
+    task_config_cls,
+)
 
-__all__ = ["ConfigT", "Taskset", "TasksetConfig"]
+__all__ = ["ConfigT", "TaskConfig", "Taskset", "TasksetConfig"]
 
 
 class Taskset(Generic[TaskT, ConfigT]):
     """Generic over its task and config types, so `self.config` and `load` are fully
     typed (and the loaders can narrow CLI flags / type the wire trace off the generics).
-    Subclass: implement `load` — per-row data goes in task fields; taskset-level knobs
-    stay on the config, which `tasks()` attaches to every row (`Task.config`)."""
+    Subclass: implement `load` — per-row data goes in task fields; load-time knobs on
+    the taskset config; task-facing knobs under its `task` subtree, which `tasks()`
+    attaches to every row (`Task.config`)."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
@@ -70,18 +79,29 @@ class Taskset(Generic[TaskT, ConfigT]):
                 f"{type(self).__name__} loaded mixed task types "
                 f"{sorted(cls.__name__ for cls in kinds)} — a taskset yields one task type"
             )
-        if plugged := tuple(self.config.judges):
-            # Bake the config-plugged judges onto every row, after any judges the task
-            # already carries (a shared reward key raises) — so a loaded task is complete
-            # and `Task.score` reads only `task.judges`.
-            baked = []
-            for task in tasks:
+        # The config the tasks read (`Task.config`) is the taskset config's `task`
+        # subtree; hold it to the task type's declared TaskConfig so a mismatched
+        # narrowing fails at load, not as an AttributeError mid-rollout.
+        task_config = self.config.task
+        declared_config = task_config_cls(declared)
+        if not isinstance(task_config, declared_config):
+            raise TaskError(
+                f"{type(self.config).__name__}.task is a {type(task_config).__name__}, "
+                f"but {declared.__name__} declares {declared_config.__name__} — narrow "
+                f"the config field (`task: {declared_config.__name__} = "
+                f"{declared_config.__name__}()`)"
+            )
+        # Stamp every row with the eval's task config (hooks read `self.config`; excluded
+        # from the wire — `replay` re-stamps) and bake the config-plugged judges onto it,
+        # after any judges the task already carries (a shared reward key raises) — so a
+        # loaded task is complete and `Task.score` reads only `task.judges`.
+        plugged = tuple(task_config.judges)
+        stamped = []
+        for task in tasks:
+            update: dict = {"config": task_config}
+            if plugged:
                 merged = (*task.judges, *plugged)
                 check_judges(merged)
-                baked.append(task.model_copy(update={"judges": merged}))
-            tasks = baked
-        for task in tasks:
-            # Attach the taskset config so hooks can read taskset-level knobs off
-            # `self.config` (a private attr — never serialized; `replay` re-attaches).
-            task.attach_config(self.config)
-        return tasks
+                update["judges"] = merged
+            stamped.append(task.model_copy(update=update))
+        return stamped

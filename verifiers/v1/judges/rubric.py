@@ -10,7 +10,7 @@ is also recorded as a `<name>/<criterion>` metric. Criterion weights come from t
 are overridable from config (`weights`); the aggregate weighs into `trace.reward` via the judge's
 `weight`:
 
-    [[env.taskset.judges]]
+    [[env.taskset.task.judges]]
     id = "rubric"
     path = "rubrics/quality.toml"
     weight = 0.5

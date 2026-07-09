@@ -1,4 +1,4 @@
-"""Built-in judges, resolved by id (a `taskset.judges` entry's `id`) as
+"""Built-in judges, resolved by id (a `taskset.task.judges` entry's `id`) as
 `verifiers.v1.judges.<id>`.
 
 A judge plugin is a module exporting its `Judge` subclass via `__all__` (exactly like a taskset

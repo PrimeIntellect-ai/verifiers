@@ -27,7 +27,7 @@ class ReplayConfig(BaseConfig):
     """Auto-generated run id — the leaf of the output dir, so replays never overwrite."""
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     """The taskset, selected by `--taskset.id` (narrowed to its config type). Its
-    `taskset.judges` override the tasks' recorded judges by reward key (and new ones
+    `taskset.task.judges` override the tasks' recorded judges by reward key (and new ones
     join); set them via `@ file.toml` / dotted flags."""
     num_traces: int | None = Field(
         None, validation_alias=AliasChoices("num_traces", "n")
@@ -61,7 +61,7 @@ class ReplayConfig(BaseConfig):
     @classmethod
     def _resolve_taskset(cls, data):
         """Narrow the generic `taskset` to its specific config type by `id` (mirrors
-        `ValidateConfig`), so `taskset.judges` and other taskset fields validate typed."""
+        `ValidateConfig`), so `taskset.task.judges` and other taskset fields validate typed."""
         from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
 
         narrow_plugin_field(data, "taskset", taskset_config_type)

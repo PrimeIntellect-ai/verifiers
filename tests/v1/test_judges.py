@@ -1,4 +1,4 @@
-"""Pluggable judges: plugin resolution, base-`TasksetConfig.judges` narrowing, the built-in
+"""Pluggable judges: plugin resolution, base-`TaskConfig.judges` narrowing, the built-in
 `reference` / `rubric` judges, and `Task.score` running plugged judges after the decorated
 rewards. Judge model calls are faked at `Judge.complete` — no network."""
 
@@ -118,7 +118,7 @@ def test_taskset_config_narrows_judges(tmp_path):
     # and survive model_dump (SerializeAsAny), which the env-server wire depends on.
     rubric = tmp_path / "rubric.toml"
     rubric.write_text(RUBRIC_TOML)
-    cfg = vf.TasksetConfig.model_validate(
+    cfg = vf.TaskConfig.model_validate(
         {
             "judges": [
                 {"id": "reference", "answer_field": "gold", "weight": 0.5},
@@ -134,29 +134,29 @@ def test_taskset_config_narrows_judges(tmp_path):
     assert isinstance(rubric_cfg, vf.RubricJudgeConfig) and rubric_cfg.name == "quality"
     assert cfg.model_dump()["judges"][0]["answer_field"] == "gold"
     # a round-trip through the dump re-narrows to the same types
-    again = vf.TasksetConfig.model_validate(cfg.model_dump())
+    again = vf.TaskConfig.model_validate(cfg.model_dump())
     assert isinstance(again.judges[0], vf.ReferenceJudgeConfig)
 
 
 def test_judges_entry_requires_id():
     with pytest.raises(ValueError, match="needs an `id`"):
-        vf.TasksetConfig.model_validate({"judges": [{"weight": 1.0}]})
+        vf.TaskConfig.model_validate({"judges": [{"weight": 1.0}]})
 
 
 def test_rubric_config_requires_path():
     # `path` is a required Path field: a plugged rubric judge without one fails at config time.
     with pytest.raises(ValueError, match="path"):
-        vf.TasksetConfig.model_validate({"judges": [{"id": "rubric"}]})
+        vf.TaskConfig.model_validate({"judges": [{"id": "rubric"}]})
 
 
 def test_judges_reject_shared_reward_keys():
     # Ids may repeat (same plugin, two configs) — what must be unique is the derived reward
     # key (`name`, else the id's package name), checked at config time.
     with pytest.raises(ValueError, match="share a reward key"):
-        vf.TasksetConfig.model_validate(
+        vf.TaskConfig.model_validate(
             {"judges": [{"id": "reference"}, {"id": "reference"}]}
         )
-    cfg = vf.TasksetConfig.model_validate(
+    cfg = vf.TaskConfig.model_validate(
         {
             "judges": [
                 {"id": "reference", "name": "strict"},
@@ -167,7 +167,7 @@ def test_judges_reject_shared_reward_keys():
     assert [judge.name for judge in cfg.judges] == ["strict", "lenient"]
 
     # class-level DEFAULTS are held to the same rule (they bypass the before-hook)
-    class TwoDefaults(vf.TasksetConfig):
+    class TwoDefaults(vf.TaskConfig):
         judges: vf.Judges = [vf.ReferenceJudgeConfig(), vf.ReferenceJudgeConfig()]
 
     with pytest.raises(ValueError, match="share a reward key"):
@@ -447,16 +447,20 @@ async def test_error_attribution(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Judge, "complete", gibberish_judge)
     taskset = JudgedTaskset(
-        JudgedConfig.model_validate({"judges": [{"id": "reference"}]})
+        JudgedConfig.model_validate({"task": {"judges": [{"id": "reference"}]}})
     )
     # model failure: empty reply -> judge skipped, reward 0.0, NO error
     trace = make_trace(reply="", task_cls=JudgedTask)
-    trace.task = trace.task.model_copy(update={"judges": tuple(taskset.config.judges)})
+    trace.task = trace.task.model_copy(
+        update={"judges": tuple(taskset.config.task.judges)}
+    )
     await trace.task.score(trace, runtime=None)
     assert trace.rewards["reference"] == 0.0
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
     trace = make_trace(task_cls=JudgedTask)
-    trace.task = trace.task.model_copy(update={"judges": tuple(taskset.config.judges)})
+    trace.task = trace.task.model_copy(
+        update={"judges": tuple(taskset.config.task.judges)}
+    )
     with pytest.raises(vf.TaskError, match="no yes/no verdict"):
         await trace.task.score(trace, runtime=None)
     assert "reference" not in trace.rewards
@@ -617,15 +621,19 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     rubric.write_text(RUBRIC_TOML)
     cfg = JudgedConfig.model_validate(
         {
-            "judges": [
-                {"id": "reference", "weight": 0.5},
-                {"id": "rubric", "path": str(rubric), "name": "quality"},
-            ]
+            "task": {
+                "judges": [
+                    {"id": "reference", "weight": 0.5},
+                    {"id": "rubric", "path": str(rubric), "name": "quality"},
+                ]
+            }
         }
     )
     taskset = JudgedTaskset(cfg)
     trace = make_trace(task_cls=JudgedTask)
-    trace.task = trace.task.model_copy(update={"judges": tuple(taskset.config.judges)})
+    trace.task = trace.task.model_copy(
+        update={"judges": tuple(taskset.config.task.judges)}
+    )
     await trace.task.score(trace, runtime=None)
     assert trace.rewards["own"] == 0.25  # decorated rewards still run
     assert (

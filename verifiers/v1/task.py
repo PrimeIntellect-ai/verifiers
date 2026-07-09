@@ -35,9 +35,9 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, Generic, Self
+from typing import TYPE_CHECKING, ClassVar, Generic, Self, get_args
 
-from pydantic import ConfigDict, PrivateAttr, SerializeAsAny, model_validator
+from pydantic import ConfigDict, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
@@ -100,25 +100,20 @@ class TaskTimeout(StrictBaseModel):
     """Verify + rewards/metrics."""
 
 
-class TasksetConfig(BaseConfig):
-    """Base taskset config. Subclass to add task-generation knobs."""
+class TaskConfig(BaseConfig):
+    """Rollout/scoring-time knobs the task reads off `self.config` — server placement
+    (`ToolsetConfig`/`UserConfig` fields), judge endpoints, scoring parameters. Subclass to
+    add your task's knobs; every field needs a default (a task constructed outside a taskset
+    — e.g. `Task.from_trace` — falls back to a default-constructed config). Load-time knobs
+    (dataset, split, seed) belong on `TasksetConfig` instead — the task never needs them."""
 
-    id: ID = ""
-    """The taskset id, which selects this taskset: a local package, or an
-    `org/name[@version]` package installed on demand from the Environments Hub (see
-    `ID`). Set via `--taskset.id`."""
     judges: Judges = []
     """Config-plugged judges, each resolved by `id` — a built-in (`reference`, `rubric`), a local
     package, or a hub `org/name[@version]` package exporting a `Judge` subclass: grading plugged
-    into any taskset/harness pair from the eval config alone, no taskset code. `tasks()` appends
-    these to every row's own `Task.judges`, and `Task.score` runs them after the task's
+    into any taskset/harness pair from the eval config alone, no taskset code. `Taskset.tasks()`
+    appends these to every row's own `Task.judges`, and `Task.score` runs them after the task's
     `@reward`s. Each entry records its verdict in `trace.rewards` under its `name` with its
-    `weight` (see `JudgeConfig`)."""
-
-    @property
-    def name(self) -> str:
-        """The taskset's package name (the id with any org / version stripped)."""
-        return env_name(self.id)
+    `weight` (see `JudgeConfig`). Set via `--taskset.task.judges`."""
 
     @model_validator(mode="before")
     @classmethod
@@ -131,7 +126,7 @@ class TasksetConfig(BaseConfig):
         return data
 
     @model_validator(mode="after")
-    def _check_judges(self) -> "TasksetConfig":
+    def _check_judges(self) -> "TaskConfig":
         """Validate the resolved `judges` — after the before-hook so class-level *defaults*
         (which never pass through it, e.g. a taskset config pre-plugging a judge) are held
         to the same rules (see `judge.check_judges`)."""
@@ -139,16 +134,53 @@ class TasksetConfig(BaseConfig):
         return self
 
 
+class TasksetConfig(BaseConfig):
+    """Base taskset config: load-time knobs (dataset, split, seed, ...) plus the task's own
+    config under `task`. Subclass to add task-generation knobs; narrow `task` to your
+    `TaskConfig` subclass when the task reads knobs (`task: MyTaskConfig = MyTaskConfig()`),
+    so `--taskset.task.*` flags validate against it. `tasks()` attaches `config.task` to
+    every loaded row."""
+
+    id: ID = ""
+    """The taskset id, which selects this taskset: a local package, or an
+    `org/name[@version]` package installed on demand from the Environments Hub (see
+    `ID`). Set via `--taskset.id`."""
+    task: SerializeAsAny[TaskConfig] = TaskConfig()
+    """The task-facing config, attached to every loaded row (`Task.config`): server
+    placement, judges, scoring knobs. Everything under `--taskset.task.*`."""
+
+    @property
+    def name(self) -> str:
+        """The taskset's package name (the id with any org / version stripped)."""
+        return env_name(self.id)
+
+
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig, default=TasksetConfig)
+TaskConfigT = TypeVar("TaskConfigT", bound=TaskConfig, default=TaskConfig)
 
 
-class Task(StrictBaseModel, Generic[StateT, ConfigT]):
+def task_config_cls(cls: type) -> type[TaskConfig]:
+    """The `TaskConfig` subclass a task class parameterizes — `Task[MyState, MyConfig]` —
+    read off its generic bases, walking the MRO so a further subclass inherits it. Falls
+    back to the base `TaskConfig` when none is given. Mirrors `state_cls`: a pydantic
+    generic parametrizes into a real class, so args live in
+    `__pydantic_generic_metadata__` rather than `__orig_bases__`; check both."""
+    for klass in getattr(cls, "__mro__", [cls]):
+        meta = getattr(klass, "__pydantic_generic_metadata__", None) or {}
+        for base in (*meta.get("args", ()), *getattr(klass, "__orig_bases__", ())):
+            for arg in (base, *get_args(base)):
+                if isinstance(arg, type) and issubclass(arg, TaskConfig):
+                    return arg
+    return TaskConfig
+
+
+class Task(StrictBaseModel, Generic[StateT, TaskConfigT]):
     """A single problem to solve: typed data fields plus the per-task behavior (hooks,
     tools, `@reward`/`@metric` scoring). Subclass per dataset; parameterize the state
     type via `Task[MyState]` when tool/user servers or scoring share typed per-rollout
     state (defaults to the empty base `State`), and the config type via
-    `Task[MyState, MyConfig]` when hooks read taskset-level knobs off `self.config`
-    (defaults to the base `TasksetConfig`)."""
+    `Task[MyState, MyTaskConfig]` when hooks read config knobs off `self.config`
+    (defaults to the base `TaskConfig`)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -192,34 +224,43 @@ class Task(StrictBaseModel, Generic[StateT, ConfigT]):
     other field and a saved trace records exactly what judged it. `score` builds the
     runtime `Judge`s from them (`plugged_judges`) and runs them after the task's own
     `@reward`s, each verdict recorded under its reward key with its `weight`.
-    `Taskset.tasks()` appends the eval's `TasksetConfig.judges` to every row at load;
+    `Taskset.tasks()` appends the eval's `TaskConfig.judges` to every row at load;
     a `load()` can also give rows their own (e.g. a per-row rubric), and a subclass
     can declare class-wide defaults."""
 
-    _config: TasksetConfig | None = PrivateAttr(default=None)
-    """The taskset config this task was loaded under — attached by `Taskset.tasks()`
-    (and re-attached by `replay` after a wire rebuild), never serialized. Read it via
-    the `config` property."""
+    config: TaskConfigT = Field(default=None, exclude=True, repr=False)  # type: ignore[assignment]
+    """The task's config — the knobs hooks, rewards, and server building read (server
+    placement, judge endpoints, scoring parameters), injected at construction like any
+    other argument (mirroring `Taskset(config)` / `Harness(config)` / `Judge(config)`)
+    but excluded from serialization: it never rides the wire. Omitted, it defaults to
+    the declared type's defaults (`Task[..., MyTaskConfig]`), so a task constructed
+    anywhere is complete out of the box; `Taskset.tasks()` stamps every loaded row
+    with the eval's `TasksetConfig.task` (and `replay` re-stamps after a wire rebuild),
+    so loaded tasks always carry the run's config."""
 
-    @property
-    def config(self) -> ConfigT:
-        """The taskset config this task was loaded under, typed by the `Task[..., ConfigT]`
-        generic — taskset-level knobs the hooks read (`self.config.compile_timeout`, a
-        toolset's placement, ...). Attached by `Taskset.tasks()`; a standalone task (built
-        outside a taskset) gets one via `attach_config`."""
-        if self._config is None:
-            raise TaskError(
-                f"{type(self).__name__} has no taskset config attached — tasks from "
-                f"`Taskset.tasks()` get it automatically; attach one to a standalone "
-                f"task with `task.attach_config(config)`"
-            )
-        return self._config  # type: ignore[return-value]
+    def model_post_init(self, context, /) -> None:
+        # An omitted config defaults to the *declared* type's defaults — resolved off the
+        # generic, so it can't be a field default. Frozen model: set via object.__setattr__.
+        if self.config is None:
+            try:
+                object.__setattr__(self, "config", task_config_cls(type(self))())
+            except Exception as exc:
+                raise TaskError(
+                    f"{type(self).__name__} was built without a config and its "
+                    f"{task_config_cls(type(self)).__name__} can't be default-"
+                    f"constructed — pass `config=...`"
+                ) from exc
 
-    def attach_config(self, config: TasksetConfig) -> Self:
-        """Attach the taskset config this task should read its knobs from (private, so it
-        never rides the wire; assignment works on the frozen model). Returns the task."""
-        self._config = config
-        return self
+    @classmethod
+    def from_trace(cls, trace: "Trace", *, config: TaskConfig | None = None) -> Self:
+        """Derive a task from a rollout's trace — the constructor for tasks that are not
+        loaded from a taskset (e.g. a multi-agent step spawning a follow-up task from a
+        finished trajectory). Rebuilds `cls` from the trace's task data; the config is the
+        explicit `config` if given, else inherited from the parent task — so a derived
+        task is complete out of the box and its servers/judges stay tunable by whoever
+        spawns it."""
+        task = cls.model_validate(trace.task.model_dump())
+        return task.model_copy(update={"config": config or trace.task.config})
 
     @model_validator(mode="before")
     @classmethod
@@ -263,7 +304,7 @@ class Task(StrictBaseModel, Generic[StateT, ConfigT]):
     """Tool server classes exposing this task's tools to the model — `vf.Toolset`s
     (classes with `@vf.tool` methods). Declarative: name the classes; the framework
     builds each instance with the config `server_config` resolves off the attached
-    taskset config (placement / runtime; a remote `url` for an already-running
+    `TaskConfig` (placement / runtime; a remote `url` for an already-running
     server). Empty by default."""
 
     user: "ClassVar[type[User] | None]" = None
@@ -275,38 +316,35 @@ class Task(StrictBaseModel, Generic[StateT, ConfigT]):
 
     def server_config(self, server_cls: type) -> BaseConfig:
         """The config a declared server class (`tools` / `user`) is built with, resolved
-        off the attached taskset config: the field whose value is exactly the server's
+        off the attached `TaskConfig`: the field whose value is exactly the server's
         declared config type (`Toolset[MyConfig]` / `User[MyConfig]`), else the unique
-        field whose value isinstance-matches it, else a default-constructed one (a
-        standalone task, or a config type whose fields all default). Two matching fields
+        field whose value isinstance-matches it, else a default-constructed one (an
+        unattached task, or a task config without a matching field). Two matching fields
         raise — override this method to pair explicitly (the escape hatch for exotic
         setups, e.g. two servers sharing one config type)."""
         cfg_cls = server_cls._config_cls()
-        matched: list[str] = []
-        if self._config is not None:
-            values = {
-                name: getattr(self._config, name)
-                for name in type(self._config).model_fields
-            }
-            matched = [name for name, v in values.items() if type(v) is cfg_cls]
-            if not matched:
-                matched = [name for name, v in values.items() if isinstance(v, cfg_cls)]
-            if len(matched) > 1:
-                raise TaskError(
-                    f"{type(self).__name__}: ambiguous config for {server_cls.__name__} — "
-                    f"taskset config fields {matched} all match {cfg_cls.__name__}; "
-                    f"override `server_config` to pair them explicitly"
-                )
-            if matched:
-                return values[matched[0]]
+        values = {
+            name: getattr(self.config, name) for name in type(self.config).model_fields
+        }
+        matched = [name for name, v in values.items() if type(v) is cfg_cls]
+        if not matched:
+            matched = [name for name, v in values.items() if isinstance(v, cfg_cls)]
+        if len(matched) > 1:
+            raise TaskError(
+                f"{type(self).__name__}: ambiguous config for {server_cls.__name__} — "
+                f"task config fields {matched} all match {cfg_cls.__name__}; "
+                f"override `server_config` to pair them explicitly"
+            )
+        if matched:
+            return values[matched[0]]
         try:
             return cfg_cls()
         except Exception as exc:
             raise TaskError(
                 f"{type(self).__name__}: no {cfg_cls.__name__} to build "
                 f"{server_cls.__name__} with — add a {cfg_cls.__name__} field to the "
-                f"taskset config (attached to every task at load), or attach a config "
-                f"to a standalone task via `attach_config`"
+                f"task config (`TasksetConfig.task`, stamped onto every row at load), "
+                f"or pass `config=...` when constructing the task"
             ) from exc
 
     def tool_servers(self) -> "list[Toolset]":

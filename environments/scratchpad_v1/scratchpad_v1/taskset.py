@@ -28,12 +28,20 @@ INSTRUCTION = (
 )
 
 
-class ScratchpadTask(vf.Task[ScratchpadState]):
+class ScratchpadTaskConfig(vf.TaskConfig):
+    # SHARED + writable: one instance for the whole eval (a stand-in for an expensive build), reused
+    # across rollouts. Each rollout's writes are isolated via `self.state` (the per-rollout
+    # shared-state channel) — the per-rollout isolation a writable shared server needs.
+    tools: ScratchpadToolsetConfig = ScratchpadToolsetConfig(shared=True)
+
+
+class ScratchpadTask(vf.Task[ScratchpadState, ScratchpadTaskConfig]):
     word: str
 
     tools = (ScratchpadToolset,)
-    # Built with the taskset config's `tools` field (a `ScratchpadToolsetConfig`, matched
-    # by exact type; SHARED by default, CLI-tunable), resolved by `Task.server_config`.
+    # Built with the task config's `tools` field (a `ScratchpadToolsetConfig`, matched
+    # by exact type; SHARED by default, CLI-tunable via --taskset.task.tools.*), resolved
+    # by `Task.server_config`.
 
     @vf.stop
     async def done(self, trace: vf.Trace) -> bool:
@@ -47,10 +55,7 @@ class ScratchpadTask(vf.Task[ScratchpadState]):
 
 
 class ScratchpadConfig(vf.TasksetConfig):
-    # SHARED + writable: one instance for the whole eval (a stand-in for an expensive build), reused
-    # across rollouts. Each rollout's writes are isolated via `self.state` (the per-rollout
-    # shared-state channel) — the per-rollout isolation a writable shared server needs.
-    tools: ScratchpadToolsetConfig = ScratchpadToolsetConfig(shared=True)
+    task: ScratchpadTaskConfig = ScratchpadTaskConfig()
 
 
 class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig]):

@@ -55,7 +55,7 @@ async def test_user(run_v1, harness_runtime, user_runtime, tmp_path):
         harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=6,
-        taskset_overrides={"user": user_runtime},
+        taskset_overrides={"task": {"user": user_runtime}},
     )
     assert trace.errors == []
     assert trace.num_turns >= 2  # genuinely multi-turn
@@ -87,7 +87,7 @@ async def test_tool(run_v1, run_v1_server, harness_runtime, tool_runtime, tmp_pa
         harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=6,
-        taskset_overrides={"tools": tool_runtime},
+        taskset_overrides={"task": {"tools": tool_runtime}},
     )
     assert trace.errors == []
     assert trace.num_turns >= 2  # tool call + answer
@@ -118,7 +118,7 @@ async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
         harness_overrides={"runtime": {"type": harness_runtime}},
         output_dir=tmp_path,
         max_turns=8,
-        taskset_overrides={"tools": tool_runtime},
+        taskset_overrides={"task": {"tools": tool_runtime}},
     )
     assert trace.errors == []
     assert trace.num_turns >= 2  # at least two tool calls accumulated
@@ -160,9 +160,11 @@ async def test_shared_tool_isolation(
         n=1,
         max_turns=4,
         taskset_overrides={
-            "tools": {
-                "shared": True,
-                **tool_runtime,  # the shared tool's own runtime ({"runtime": {"type": ...}})
+            "task": {
+                "tools": {
+                    "shared": True,
+                    **tool_runtime,  # the shared tool's own runtime ({"runtime": {"type": ...}})
+                }
             }
         },
     )
@@ -208,7 +210,7 @@ async def test_rubric_judge(run_v1, tmp_path):
         harness="null",
         harness_overrides={"runtime": {"type": "subprocess"}},
         output_dir=tmp_path,
-        taskset_overrides={"judges": [{"id": "rubric", "path": str(rubric)}]},
+        taskset_overrides={"task": {"judges": [{"id": "rubric", "path": str(rubric)}]}},
         max_turns=2,
     )
     assert trace.errors == []

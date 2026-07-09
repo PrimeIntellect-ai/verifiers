@@ -29,10 +29,14 @@ class CounterToolset(vf.Toolset[vf.ToolsetConfig, CounterState]):
         return f"count={self.state.count}"
 
 
-class CounterTask(vf.Task[CounterState]):
+class CounterTaskConfig(vf.TaskConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+
+
+class CounterTask(vf.Task[CounterState, CounterTaskConfig]):
     tools = (CounterToolset,)
-    # Built with the taskset config's `tools` field (placement stays CLI-tunable),
-    # resolved by `Task.server_config`.
+    # Built with the task config's `tools` field (placement stays CLI-tunable via
+    # --taskset.task.tools.*), resolved by `Task.server_config`.
 
     @vf.reward(weight=1.0)
     async def counted(self, trace: vf.Trace) -> float:
@@ -42,7 +46,7 @@ class CounterTask(vf.Task[CounterState]):
 
 
 class CounterConfig(vf.TasksetConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    task: CounterTaskConfig = CounterTaskConfig()
 
 
 class CounterTaskset(vf.Taskset[CounterTask, CounterConfig]):

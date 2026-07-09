@@ -24,7 +24,7 @@ from verifiers.v1.decorators import reward
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskResources
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.taskset import TaskConfig, Taskset, TasksetConfig
 from verifiers.v1.tasksets.lean.scoring import (
     build_starter_file,
     expected_protected_signature,
@@ -58,17 +58,24 @@ class LeanDatasetConfig(BaseConfig):
     normalize_mathlib_imports: bool = False
 
 
-class LeanConfig(TasksetConfig):
-    dataset: LeanDatasetConfig
-    docker_image: str = DEFAULT_DOCKER_IMAGE
+class LeanTaskConfig(TaskConfig):
+    """The knobs lean's hooks and reward read (``self.config``): the sandbox layout and
+    the compile budget. Everything under ``--taskset.task.*``."""
+
     lean_project_path: str = LEAN_PROJECT_PATH
     proof_file_path: str = PROOF_FILE_PATH
     compile_timeout: int = 300
     """Per-compile ``timeout`` wrapper (seconds), bounding each ``lake env lean``."""
+
+
+class LeanConfig(TasksetConfig):
+    dataset: LeanDatasetConfig
+    docker_image: str = DEFAULT_DOCKER_IMAGE
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    task: LeanTaskConfig = LeanTaskConfig()
 
 
-class LeanTask(Task[State, LeanConfig]):
+class LeanTask(Task[State, LeanTaskConfig]):
     NEEDS_CONTAINER = True
 
     formal_statement: str
@@ -80,8 +87,8 @@ class LeanTask(Task[State, LeanConfig]):
     protected_signature: str = ""
     # Gold proof body (replaces ``  sorry``); "" when the dataset ships no gold.
     formal_proof: str = ""
-    # Sandbox layout + compile budget are taskset-level knobs: read off the attached
-    # `self.config` (LeanConfig), not baked into per-row fields.
+    # Sandbox layout + compile budget are config knobs: read off `self.config`
+    # (LeanTaskConfig), not baked into per-row fields.
 
     async def _compile(self, runtime: Runtime) -> tuple[bool, str, int]:
         """Run ``lake env lean`` on the proof file; returns (compiled, output, exit_code)."""
@@ -220,7 +227,7 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
                     prompt=self._build_prompt(formal_statement, header),
                     system_prompt=config.system_prompt,
                     image=config.docker_image,
-                    workdir=config.lean_project_path,
+                    workdir=config.task.lean_project_path,
                     resources=resources,
                     formal_statement=formal_statement,
                     header=header,
@@ -236,9 +243,9 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
         cfg = self.config
         block = (
             "Prove the following Lean 4 theorem. A starter proof file is at "
-            f"`{cfg.proof_file_path}` with the theorem statement and a `sorry` "
+            f"`{cfg.task.proof_file_path}` with the theorem statement and a `sorry` "
             "placeholder already in place. Edit it and compile with "
-            f"`cd {cfg.lean_project_path} && lake env lean {cfg.proof_file_path}`.\n\n"
+            f"`cd {cfg.task.lean_project_path} && lake env lean {cfg.task.proof_file_path}`.\n\n"
             f"```lean\n{formal_statement}\n```"
         )
         if header:

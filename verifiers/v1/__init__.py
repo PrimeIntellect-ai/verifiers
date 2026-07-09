@@ -87,7 +87,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
-from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.taskset import TaskConfig, Taskset, TasksetConfig
 from verifiers.v1.mcp import (
     Toolset,
     ToolsetConfig,
@@ -185,6 +185,7 @@ __all__ = [
     "resolve_client",
     # taskset / harness / runtime / environment
     "Taskset",
+    "TaskConfig",
     "TasksetConfig",
     "BaseConfig",
     "Harness",

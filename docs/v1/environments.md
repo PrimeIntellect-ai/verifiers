@@ -77,24 +77,35 @@ class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
         ]
 ```
 
-Common usages for `vf.TasksetConfig` are settings like splits (e.g., train/test), difficulty settings, judge model names, etc.
+Common usages for `vf.TasksetConfig` are **load-time** settings: splits (e.g., train/test),
+dataset names, sample counts, rng seeds.
 
-The config is also attached to every loaded task, so scoring methods and hooks can read
-taskset-level knobs off `self.config` — typed by parameterizing the task
-(`vf.Task[vf.State, AdditionConfig]`):
+Knobs the *task itself* reads — scoring parameters, judge endpoints, server placement — go
+on a `vf.TaskConfig`, nested on the taskset config under `task` and stamped onto every
+loaded row. The task reads them off `self.config`, typed by parameterizing the task:
 
 ```python
-class AdditionTask(vf.Task[vf.State, AdditionConfig]):
+class AdditionTaskConfig(vf.TaskConfig):
+    tolerance: float = 0.0
+
+class AdditionTask(vf.Task[vf.State, AdditionTaskConfig]):
     answer: int
 
     @vf.reward
     async def exact_match(self, trace: vf.Trace) -> float:
-        tolerance = self.config.tolerance  # a taskset-level knob, not a per-row field
+        tolerance = self.config.tolerance  # a config knob, not a per-row field
         ...
+
+class AdditionConfig(vf.TasksetConfig):
+    num_tasks: int = 100                              # load-time: --taskset.num-tasks
+    task: AdditionTaskConfig = AdditionTaskConfig()   # task-facing: --taskset.task.tolerance
 ```
 
-Per-row data (the question, the reference answer) stays on task fields; values that are
-uniform across the taskset belong on the config.
+The boundary: per-row data (the question, the reference answer) lives on task fields;
+values uniform across the taskset live on the config — load-time ones directly on the
+`TasksetConfig`, task-facing ones under `task`. A task can also be constructed directly
+with a config (`AdditionTask(idx=0, prompt=..., config=AdditionTaskConfig(...))`) — omitted,
+it defaults to the declared type's defaults, so a standalone task works out of the box.
 
 ## Adding Tools
 
@@ -114,23 +125,26 @@ class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
         """Search the task corpus."""
         return DATABASE.search(text)
 
-class SearchTask(vf.Task):
+# User-configurable knobs (placement: colocated / shared / own runtime)
+class SearchTaskConfig(vf.TaskConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+
+class SearchTask(vf.Task[vf.State, SearchTaskConfig]):
     tools = (SearchToolset,)
 
-# User-configurable knobs (placement: colocated / shared / own runtime)
 class SearchConfig(vf.TasksetConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    task: SearchTaskConfig = SearchTaskConfig()
 
 class SearchTaskset(vf.Taskset[SearchTask, SearchConfig]):
     ...
 ```
 
-The framework builds each declared server with the matching config off the attached taskset
-config — the field whose type is the server's declared config type (here
-`SearchConfig.tools`), falling back to a default-constructed one. Override
+The framework builds each declared server with the matching config off the task's config —
+the field whose type is the server's declared config type (here `SearchTaskConfig.tools`,
+i.e. `--taskset.task.tools.*`), falling back to a default-constructed one. Override
 `Task.server_config` if you need explicit pairing (e.g. two servers sharing one config
 type). User simulators follow the same pattern: `user = MyUser` on the task, a
-`vf.UserConfig` field on the taskset config.
+`vf.UserConfig` field on the task config.
 
 ## Using Judges
 
@@ -151,7 +165,7 @@ class CorrectnessJudge(vf.Judge[bool]):
         return "yes" in response.text
 
 
-class Config(vf.TasksetConfig):
+class Config(vf.TaskConfig):
     # The judge inherits base_url and api keys from the client config (env vars, with the Prime CLI config as a fallback)
     judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
 
@@ -172,16 +186,21 @@ class JudgedTask(vf.Task[vf.State, Config]):
         return 1.0 if result.parsed else 0.0
 
 
-class JudgeTraceTaskset(vf.Taskset[JudgedTask, Config]):
+class SetConfig(vf.TasksetConfig):
+    task: Config = Config()
+
+
+class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
     def load(self) -> list[JudgedTask]:
         return [JudgedTask(idx=0, prompt="What is 2+2?", answer="4")]
 ```
 
-To override the judge model, set `taskset.judge.model` in your config (it is a string).
-Sampling knobs live under `taskset.judge.sampling` — e.g. `taskset.judge.sampling.max_tokens`.
+To override the judge model, set `taskset.task.judge.model` in your config (it is a string).
+Sampling knobs live under `taskset.task.judge.sampling` — e.g.
+`taskset.task.judge.sampling.max_tokens`.
 
 Judges can also be plugged **from config alone** — no judge-calling code: the base
-`TasksetConfig.judges` list attaches judge plugins (built-ins like `reference` / `rubric`,
-or hub packages) to every task at load, and `Task.score` runs them after the task's own
-`@reward`s. Each task records its judges' configs on the wire (`Task.judges`), so a saved
-trace shows exactly what judged it.
+`TaskConfig.judges` list (`--taskset.task.judges`) attaches judge plugins (built-ins like
+`reference` / `rubric`, or hub packages) to every task at load, and `Task.score` runs them
+after the task's own `@reward`s. Each task records its judges' configs on the wire
+(`Task.judges`), so a saved trace shows exactly what judged it.

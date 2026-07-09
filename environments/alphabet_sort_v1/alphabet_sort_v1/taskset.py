@@ -30,6 +30,14 @@ DATASET = "kalomaze/alphabetic-arxiv-authors-it1"
 SEED = 1337420
 
 
+class AlphabetSortTaskConfig(vf.TaskConfig):
+    similarity_power: int = 4
+    """Exponent applied to each turn's sequence-similarity score (higher = sharper penalty)."""
+    power_per_turn: bool = True
+    """Power-scale each turn then average (True), or average raw similarities then power once (False)."""
+    user: vf.UserConfig = vf.UserConfig()
+
+
 class AlphabetSortConfig(vf.TasksetConfig):
     min_turns: int = 1
     """Minimum number of turns (assistant sorts) per episode."""
@@ -39,24 +47,20 @@ class AlphabetSortConfig(vf.TasksetConfig):
     """Minimum number of names introduced on each turn."""
     max_names_per_turn: int = 5
     """Maximum number of names introduced on each turn."""
-    similarity_power: int = 4
-    """Exponent applied to each turn's sequence-similarity score (higher = sharper penalty)."""
-    power_per_turn: bool = True
-    """Power-scale each turn then average (True), or average raw similarities then power once (False)."""
     split: Literal["train"] = "train"
     """Split of the source author-names dataset to build the episodes from."""
-    user: vf.UserConfig = vf.UserConfig()
+    task: AlphabetSortTaskConfig = AlphabetSortTaskConfig()
 
 
-class AlphabetSortTask(vf.Task[AlphabetSortState, AlphabetSortConfig]):
+class AlphabetSortTask(vf.Task[AlphabetSortState, AlphabetSortTaskConfig]):
     info: dict
     """The pre-generated episode: the `user_turns` the simulator reveals one by one (the opening
     sort prompt, then the follow-ups), the per-turn `ground_truths` the reward grades against,
     and `num_turns`. The task itself carries no prompt — the simulator opens the conversation."""
     user = AlphabetSortUser
-    # Built with the taskset config's `user` field (placement stays CLI-tunable),
-    # resolved by `Task.server_config`. The scoring knobs (`similarity_power`,
-    # `power_per_turn`) are read off the attached `self.config` too.
+    # Built with the task config's `user` field (placement stays CLI-tunable via
+    # --taskset.task.user.*), resolved by `Task.server_config`. The scoring knobs
+    # (`similarity_power`, `power_per_turn`) are read off `self.config` too.
 
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:

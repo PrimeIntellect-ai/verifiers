@@ -5,7 +5,7 @@ scores 1/0. The reference answer is read off the task by field name (`answer_fie
 `"answer"`; a list-valued field is judged as multiple acceptable answers), so it plugs into
 any taskset that carries one — no taskset code:
 
-    [[env.taskset.judges]]
+    [[env.taskset.task.judges]]
     id = "reference"
     answer_field = "answer"
 

@@ -12,13 +12,17 @@ import verifiers.v1 as vf
 from glossary_v1.servers.facts import FACTS, GlossaryToolset
 
 
-class GlossaryTask(vf.Task):
+class GlossaryTaskConfig(vf.TaskConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+
+
+class GlossaryTask(vf.Task[vf.State, GlossaryTaskConfig]):
     answer: str
     """The fact the `lookup` tool returns for this task's entity."""
 
     tools = (GlossaryToolset,)
-    # Built with the taskset config's `tools` field (placement stays CLI-tunable),
-    # resolved by `Task.server_config`.
+    # Built with the task config's `tools` field (placement stays CLI-tunable via
+    # --taskset.task.tools.*), resolved by `Task.server_config`.
 
     @vf.reward(weight=1.0)
     async def looked_up(self, trace: vf.Trace) -> float:
@@ -28,7 +32,7 @@ class GlossaryTask(vf.Task):
 
 
 class GlossaryConfig(vf.TasksetConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    task: GlossaryTaskConfig = GlossaryTaskConfig()
 
 
 class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):

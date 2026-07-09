@@ -46,26 +46,30 @@ QUESTIONS_DATASET = "willcb/wiki-trivia-questions-v4"
 NUM_QUESTIONS = 20
 
 
-class TriviaTask(vf.Task):
-    question: str
-    answer: str
-
-    tools = (WikiSearchToolset,)
-    # Built with the taskset config's `tools` field (SHARED by default; placement stays
-    # CLI-tunable), resolved by `Task.server_config`.
-
-
-class WikiSearchConfig(vf.TasksetConfig):
+class WikiSearchTaskConfig(vf.TaskConfig):
     # The built-in reference judge, plugged by default with this env's prompt (which also
-    # requires coherence). Fully eval-tunable: `--taskset.judges.0.model ...`, or replaced
-    # wholesale from the TOML's `[[taskset.judges]]`.
+    # requires coherence). Fully eval-tunable: `--taskset.task.judges.0.model ...`, or
+    # replaced wholesale from the TOML's `[[taskset.task.judges]]`.
     judges: vf.Judges = [
         vf.ReferenceJudgeConfig(prompt=JUDGE_PROMPT, question_field="question")
     ]
     # SHARED: the chroma corpus is expensive, so one instance serves the whole eval (its own
     # runtime), reused across rollouts rather than rebuilt per rollout. CLI-tunable, e.g.
-    # `--taskset.tools.shared false` or `--taskset.tools.runtime.type docker`.
+    # `--taskset.task.tools.shared false` or `--taskset.task.tools.runtime.type docker`.
     tools: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
+
+
+class TriviaTask(vf.Task[vf.State, WikiSearchTaskConfig]):
+    question: str
+    answer: str
+
+    tools = (WikiSearchToolset,)
+    # Built with the task config's `tools` field (SHARED by default; placement stays
+    # CLI-tunable), resolved by `Task.server_config`.
+
+
+class WikiSearchConfig(vf.TasksetConfig):
+    task: WikiSearchTaskConfig = WikiSearchTaskConfig()
 
 
 class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):

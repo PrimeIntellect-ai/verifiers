@@ -57,7 +57,7 @@ class TextArenaUser(vf.User[vf.UserConfig, TextArenaState]):
                 "textarena's user simulator must be colocated: it hands the game outcome to scoring "
                 "by writing OUTCOME_FILE into the harness's runtime workspace that `game_reward` reads "
                 "back, so a non-colocated user (its own workspace) would always score 0. Set "
-                "`--taskset.user.colocated true` (the default)."
+                "`--taskset.task.user.colocated true` (the default)."
             )
         import nltk
 
@@ -104,6 +104,13 @@ class TextArenaUser(vf.User[vf.UserConfig, TextArenaState]):
         return [{"role": "user", "content": self._latest_feedback(str(observation))}]
 
 
+class TextArenaTaskConfig(vf.TaskConfig):
+    user: vf.UserConfig = vf.UserConfig(colocated=True)
+    """Colocated is required, not a default: the simulator hands the game outcome to scoring by
+    writing `OUTCOME_FILE` into the runtime workspace that `game_reward` reads back, so it must share
+    the harness's runtime/workdir (a non-colocated user runs in its own workspace → reward always 0)."""
+
+
 class TextArenaConfig(vf.TasksetConfig):
     game: Literal[
         "Wordle-v0",
@@ -117,19 +124,16 @@ class TextArenaConfig(vf.TasksetConfig):
     target), and WordSearch (find words in a grid)."""
     num_tasks: int = 1000
     """How many seeded episodes to generate; the eval/orchestrator selects from these."""
-    user: vf.UserConfig = vf.UserConfig(colocated=True)
-    """Colocated is required, not a default: the simulator hands the game outcome to scoring by
-    writing `OUTCOME_FILE` into the runtime workspace that `game_reward` reads back, so it must share
-    the harness's runtime/workdir (a non-colocated user runs in its own workspace → reward always 0)."""
+    task: TextArenaTaskConfig = TextArenaTaskConfig()
 
 
-class TextArenaTask(vf.Task[TextArenaState]):
+class TextArenaTask(vf.Task[TextArenaState, TextArenaTaskConfig]):
     info: dict
     """What the user simulator needs to set up the game: the `game` id and the RNG `seed`
     that reproduces the exact episode this task's prompt was built from."""
     user = TextArenaUser
-    # Built with the taskset config's `user` field (resolved by `Task.server_config`);
-    # colocated is required — see `TextArenaConfig.user`.
+    # Built with the task config's `user` field (resolved by `Task.server_config`);
+    # colocated is required — see `TextArenaTaskConfig.user`.
 
     @vf.stop
     async def game_over(self, trace: vf.Trace) -> bool:

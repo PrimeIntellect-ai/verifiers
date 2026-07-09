@@ -95,11 +95,11 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 trace.task.idx,
                 exc_info=True,
             )
-        # The config never rides the wire (a private attr), so re-attach it: the replay
-        # config layers the source run's `config.toml` under any CLI overrides, so hooks
-        # re-score under the source knobs by default, re-tunable per replay.
-        trace.task.attach_config(config.taskset)
-    if plugged := tuple(taskset.config.judges):
+        # The task config never rides the wire (an excluded field), so re-stamp it: the
+        # replay config layers the source run's `config.toml` under any CLI overrides, so
+        # hooks re-score under the source knobs by default, re-tunable per replay.
+        trace.task = trace.task.model_copy(update={"config": config.taskset.task})
+    if plugged := tuple(taskset.config.task.judges):
         # The replay config's judges override each task's recorded ones by reward key
         # (tune a judge, re-score) and newly-plugged ones join. A judge only on the
         # recorded task (e.g. a per-row rubric) still re-runs as recorded — the trace

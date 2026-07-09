@@ -37,7 +37,7 @@ for a pure call (e.g. in tests).
 A judge can also be *plugged* rather than called from task code: a judge with an `id` and a
 `score` implementation is a plugin (like a taskset or harness — see `verifiers.v1.judges` for the
 built-ins and `verifiers.v1.loaders` for resolution). Its config lives on the task (`Task.judges`
-— per row, per task class, or appended to every row from the base `TasksetConfig.judges` at
+— per row, per task class, or appended to every row from the base `TaskConfig.judges` at
 load), and `Task.score` builds and runs it after the task's own `@reward`s.
 """
 
@@ -77,7 +77,7 @@ class JudgeConfig(BaseClientConfig):
 
     id: ID = ""
     """The judge id, which selects a judge plugin for a config-plugged judge (see
-    `TasksetConfig.judges`): a built-in (`reference`, `rubric`), a local package, or an
+    `TaskConfig.judges`): a built-in (`reference`, `rubric`), a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see `ID`).
     Empty for a judge the task builds and calls itself."""
     name: str = ""
@@ -104,7 +104,7 @@ class JudgeConfig(BaseClientConfig):
 
 
 Judges = list[SerializeAsAny[JudgeConfig]]
-"""The type of `TasksetConfig.judges` — a list of plugged-judge configs, each resolved by its
+"""The type of `TaskConfig.judges` — a list of plugged-judge configs, each resolved by its
 `id`. `SerializeAsAny` keeps the resolved subclasses' fields through `model_dump` (the
 env-server wire). Use it to give a taskset config a default judge:
 `judges: vf.Judges = [vf.ReferenceJudgeConfig()]` (the built-ins pin their own `id`)."""
@@ -230,7 +230,7 @@ class Judge(Generic[ParsedT, ConfigT]):
     `prompt` template and use the defaults — then call `evaluate(**fields)`. Set `schema` to opt
     into structured outputs. Generic over the verdict and (optionally) the config type —
     `Judge[bool]` for a code-level judge, `Judge[float, MyJudgeConfig]` to also narrow
-    `self.config` (which is how a plugged judge declares its config for `--taskset.judges`
+    `self.config` (which is how a plugged judge declares its config for `--taskset.task.judges`
     narrowing; see `judge_config_cls`). A pluggable judge additionally implements `score`.
     """
 
@@ -279,10 +279,10 @@ class Judge(Generic[ParsedT, ConfigT]):
         Like the scoring hooks, an override declares the inputs it needs *by parameter name*
         and the framework injects them: any subset of `task`, `trace`, `runtime`. Not
         implemented on the base class — only a judge that implements `score` can be plugged
-        via `TasksetConfig.judges`; code-level judges just call `evaluate` from a `@reward`."""
+        via `TaskConfig.judges`; code-level judges just call `evaluate` from a `@reward`."""
         raise NotImplementedError(
             f"{type(self).__name__} implements no `score`, so it can't be plugged via "
-            "`taskset.judges`; implement `score` (see verifiers.v1.judges for examples) or "
+            "`taskset.task.judges`; implement `score` (see verifiers.v1.judges for examples) or "
             "call it from a task `@reward` instead."
         )
 
