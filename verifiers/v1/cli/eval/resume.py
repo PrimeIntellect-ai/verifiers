@@ -1,27 +1,27 @@
-"""Resume an interrupted eval: re-run only the rollouts a previous run didn't finish.
+"""Resume an interrupted eval: reload its finished rollouts and run only the rest.
 
 A run writes `config.toml` + `traces.jsonl` into its output dir. `--resume <dir>` reloads
-that config verbatim (so it takes no other flags) and writes back into the same dir, running
-only the rollouts still owed: the *missing* ones (never written — the run was interrupted) and
-the *errored* ones (written with an error). Good rollouts are kept; errored ones are dropped
-and redone. A group-scored taskset is resumed a whole task at a time (its rollouts are scored
-together), so any task that isn't fully complete is redone from scratch.
+that config verbatim (so it takes no other flags) and writes back into the same dir. `load`
+brings the good saved rollouts back into memory and re-runs only what's still owed: the
+*missing* rollouts (never written — the run was interrupted) and the *errored* ones (written
+with an error; dropped and redone). The loaded traces rejoin the run everywhere — counted,
+displayed, pushed, and printed alongside this session's — so a resumed run picks up exactly
+where the interrupted one stopped. A group-scored taskset is resumed a whole task at a time
+(its rollouts are scored together), so any task that isn't fully complete is redone from
+scratch.
 """
 
 import json
 import tomllib
 from collections import defaultdict
-from collections.abc import Iterator
 from pathlib import Path
 
 from pydantic_core import from_json
 
-from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, read_traces
+from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.state import state_cls
-from verifiers.v1.task import WireTask
-from verifiers.v1.taskset import Taskset
-from verifiers.v1.trace import Trace
+from verifiers.v1.rollout import Phase, Rollout
+from verifiers.v1.trace import Trace, WireTrace
 
 
 def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
@@ -53,80 +53,61 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
     return config
 
 
-def _read_results(results_path: Path) -> Iterator[tuple[int, int, bool]]:
-    """Stream `(file reference, task idx, errored)` without retaining decoded traces."""
-    if not results_path.exists():
-        return
-    with results_path.open("rb") as results:
-        while True:
-            offset = results.tell()
-            line = results.readline()
-            if not line:
-                break
-            if line.strip():
+class Finished(Rollout):
+    """A finished rollout reloaded from a previous session (see `load`): carries just the
+    surface the dashboard reads (`trace`/`task`/`phase`/`runtime`), so a resumed run's kept
+    rollouts render exactly like this session's."""
+
+    def __init__(self, trace: Trace) -> None:
+        self.trace = trace
+        self.task = trace.task
+        self.phase = Phase.DONE
+        self.runtime = None
+
+
+def load(
+    resume_dir: Path, selected_idxs: list[int], num_rollouts: int, group: bool
+) -> tuple[list[Trace], dict[int, int]]:
+    """Load the good saved rollouts back into memory as finished traces and diff them against
+    the run's target (`num_rollouts` per selected task): returns (the kept traces, rollouts
+    owed per task idx). An errored trace is dropped and re-run; a group-scored task is kept
+    only if fully complete, else its whole group is redone. Rewrites `traces.jsonl` to just
+    the kept rows — verbatim, via a temp file + atomic rename, so an interrupted resume can't
+    corrupt the prior good results — and the resumed rollouts then append. `WireTrace` reads
+    any taskset's saved traces without importing it."""
+    path = resume_dir / TRACES_FILE
+    selected = set(selected_idxs)
+    good: dict[int, list[bytes]] = defaultdict(list)
+    if path.exists():
+        with path.open("rb") as results:
+            for line in results:
+                if not line.strip():
+                    continue
                 try:
                     row = from_json(line)
                 except ValueError:
                     row = json.loads(line)
-                yield offset, row["task"]["idx"], bool(row.get("errors"))
-
-
-def plan(
-    resume_dir: Path, selected_idxs: list[int], num_rollouts: int, group: bool
-) -> tuple[list[int], dict[int, int]]:
-    """Diff the saved results against the run's target (`num_rollouts` per selected task).
-    Returns (byte offsets of rows to keep, rollouts owed per task idx). An errored trace is
-    dropped and re-run; a group-scored task is kept only if fully complete, else its whole group
-    is redone."""
-    # Retain only the offsets resume can reuse; trace payloads stay on disk.
-    selected = set(selected_idxs)
-    by_idx: dict[int, list[int]] = defaultdict(list)
-    for offset, idx, errored in _read_results(resume_dir / TRACES_FILE):
-        if idx in selected and not errored and len(by_idx[idx]) < num_rollouts:
-            by_idx[idx].append(offset)
-    keep: list[int] = []
+                idx = row["task"]["idx"]
+                if (
+                    idx in selected
+                    and not row.get("errors")
+                    and len(good[idx]) < num_rollouts
+                ):
+                    good[idx].append(line if line.endswith(b"\n") else line + b"\n")
+    keep: list[bytes] = []
     owed: dict[int, int] = {}
     for idx in selected_idxs:
-        good = by_idx.get(idx, [])
-        if group:
-            if len(good) >= num_rollouts:
-                keep.extend(good)
-            else:
-                owed[idx] = num_rollouts  # re-run the whole group; keep none of it
-        else:
-            keep.extend(good)
-            missing = num_rollouts - len(good)
-            if missing:
-                owed[idx] = missing
-    return keep, owed
-
-
-def rewrite_results(resume_dir: Path, keep: list[int]) -> None:
-    """Replace `traces.jsonl` with just the kept (good) traces; resumed rollouts append. Via a
-    temp file + atomic rename, so an interrupted resume can't corrupt the prior good results."""
-    path = resume_dir / TRACES_FILE
+        rows = good.get(idx, [])
+        if group and len(rows) < num_rollouts:
+            owed[idx] = num_rollouts  # re-run the whole group; keep none of it
+            continue
+        keep.extend(rows)
+        if missing := num_rollouts - len(rows):
+            owed[idx] = missing
     tmp = path.with_suffix(".jsonl.tmp")
-    if not keep:
-        tmp.write_bytes(b"")
-        tmp.replace(path)
-        return
-    # Re-read retained rows by offset while building the atomic replacement.
-    with path.open("rb") as results, tmp.open("wb") as output:
-        for offset in keep:
-            results.seek(offset)
-            raw = results.readline()
-            output.write(raw)
-            if not raw.endswith(b"\n"):
-                output.write(b"\n")
+    tmp.write_bytes(b"".join(keep))
     tmp.replace(path)
-
-
-def load_kept(resume_dir: Path, taskset: Taskset) -> list[Trace]:
-    """Reload the kept (good) traces as finished `Trace`s, so a resumed run's live dashboard counts
-    them toward the whole run (progress, reward, err, and the usage/time breakdown). Call *after*
-    `rewrite_results`, which leaves only the kept rows on disk. `WireTask` reads any taskset's saved
-    task without a runtime or its `Task` type (mirrors `replay`)."""
-    return read_traces(resume_dir, Trace[WireTask, state_cls(type(taskset))])
+    return [WireTrace.model_validate_json(line) for line in keep], owed
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:
