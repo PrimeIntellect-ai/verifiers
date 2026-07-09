@@ -149,6 +149,9 @@ class Rollout:
             self.runtime_config, name=trace.id
         )  # ref set first → always tearable-down; named after the rollout for traceability
         runtime = self.runtime
+        # The live info object, shared by reference: the trace carries the full runtime config
+        # from the start, and the resource `id` lands on it the moment start() provisions.
+        trace.runtime = runtime.info
         ctx = self.ctx
         stops = discover_decorated(self.taskset, "stop")
         logger.info(

@@ -17,7 +17,12 @@ from typing import ClassVar, Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime
+from verifiers.v1.runtimes.base import (
+    SERVICE_PORT,
+    BaseRuntimeInfo,
+    ProgramResult,
+    Runtime,
+)
 from verifiers.v1.runtimes.limiters import creation_limiter
 
 logger = logging.getLogger(__name__)
@@ -50,6 +55,10 @@ class ModalConfig(BaseConfig):
     env-server worker process (None/<= 0 disables it)."""
 
 
+class ModalRuntimeInfo(ModalConfig, BaseRuntimeInfo):
+    """`ModalConfig` + the resolved `id` — the modal sandbox object id."""
+
+
 class ModalRuntime(Runtime):
     """Runs the program in a Modal sandbox; the server is reached via a tunnel."""
 
@@ -58,12 +67,8 @@ class ModalRuntime(Runtime):
     def __init__(self, config: ModalConfig, name: str | None = None) -> None:
         super().__init__(name)
         self.config = config
+        self.info = ModalRuntimeInfo(**config.model_dump())
         self._sandbox = None
-        self._sandbox_id: str | None = None
-
-    @property
-    def descriptor(self) -> str | None:
-        return self._sandbox_id
 
     @property
     def published_port(self) -> int | None:
@@ -101,9 +106,9 @@ class ModalRuntime(Runtime):
                     timeout=24 * 60 * 60,  # Maximum lifetime of any sandbox.
                     encrypted_ports=[SERVICE_PORT],
                 )
-            self._sandbox_id = self._sandbox.object_id
+            self.info.id = self._sandbox.object_id
             logger.info(
-                "modal: sandbox %s up (image=%s)", self._sandbox_id, self.config.image
+                "modal: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
             await self._sandbox.filesystem.make_directory.aio(self.config.workdir)
         except (
@@ -185,7 +190,7 @@ class ModalRuntime(Runtime):
         # the sandbox via Modal's sync API so the costly resource isn't left to its max-lifetime.
         # Idempotent — the async `stop` handles the normal path, and a second terminate is a no-op.
         sandbox, self._sandbox = self._sandbox, None
-        if sandbox is not None:  # `_sandbox_id` kept so descriptor survives teardown
+        if sandbox is not None:  # `info.id` kept so descriptor survives teardown
             with contextlib.suppress(Exception):
                 sandbox.terminate()
 
@@ -202,7 +207,5 @@ class ModalRuntime(Runtime):
         try:
             await sandbox.terminate.aio()
         except Exception as e:
-            logger.warning(
-                "modal: failed to terminate sandbox %s: %s", self._sandbox_id, e
-            )
+            logger.warning("modal: failed to terminate sandbox %s: %s", self.info.id, e)
         self._sandbox = None

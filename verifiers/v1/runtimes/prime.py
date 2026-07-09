@@ -19,7 +19,13 @@ from pydantic import model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult, Runtime, parse_gpu
+from verifiers.v1.runtimes.base import (
+    SERVICE_PORT,
+    BaseRuntimeInfo,
+    ProgramResult,
+    Runtime,
+    parse_gpu,
+)
 from verifiers.v1.runtimes.limiters import creation_limiter
 
 logger = logging.getLogger(__name__)
@@ -69,6 +75,10 @@ class PrimeConfig(BaseConfig):
         return self
 
 
+class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
+    """`PrimeConfig` + the resolved `id` — the prime sandbox id."""
+
+
 class PrimeRuntime(Runtime):
     """Runs the program in a Prime sandbox; the server is reached via a tunnel."""
 
@@ -77,12 +87,8 @@ class PrimeRuntime(Runtime):
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         super().__init__(name)
         self.config = config
+        self.info = PrimeRuntimeInfo(**config.model_dump())
         self._client = None
-        self._sandbox_id: str | None = None
-
-    @property
-    def descriptor(self) -> str | None:
-        return self._sandbox_id
 
     @property
     def published_port(self) -> int | None:
@@ -96,10 +102,11 @@ class PrimeRuntime(Runtime):
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
         # prime's idle timeout is in whole minutes; convert from the seconds config surface
-        # (floored to the SDK's 1-minute minimum).
+        # (floored to the SDK's 1-minute minimum). VM sandboxes don't support an idle timeout
+        # (the API 422s on it), so it's dropped there rather than failing every VM rollout.
         idle_minutes = (
             max(1, math.ceil(self.config.idle_timeout / 60))
-            if self.config.idle_timeout is not None
+            if self.config.idle_timeout is not None and not self.config.vm
             else None
         )
         options = {
@@ -130,13 +137,13 @@ class PrimeRuntime(Runtime):
                         **{k: v for k, v in options.items() if v is not None},
                     )
                 )
-            self._sandbox_id = sandbox.id
-            await self._client.wait_for_creation(self._sandbox_id)
+            self.info.id = sandbox.id
+            await self._client.wait_for_creation(self.info.id)
             logger.info(
-                "prime: sandbox %s up (image=%s)", self._sandbox_id, self.config.image
+                "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
             await self._client.run_background_job(
-                self._sandbox_id, f"mkdir -p {shlex.quote(self.config.workdir)}"
+                self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
         except (
             Exception
@@ -148,14 +155,14 @@ class PrimeRuntime(Runtime):
             # Poll directly so the rollout stage owns the execution timeout; the SDK helper
             # otherwise imposes its own 15-minute limit.
             job = await self._client.start_background_job(
-                self._sandbox_id,
+                self.info.id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
                 env=env,
             )
             delay = 0.1
             while True:
-                result = await self._client.get_background_job(self._sandbox_id, job)
+                result = await self._client.get_background_job(self.info.id, job)
                 if result.completed:
                     break
                 await asyncio.sleep(delay)
@@ -177,7 +184,7 @@ class PrimeRuntime(Runtime):
         # backend default, which lands in us-central) 400 it; `us` supports it. TODO: re-enable the
         # prime cases in the e2e `skip_if_unexposable` guard once prime exposes ports in any region.
         try:
-            exposed = await self._client.expose(self._sandbox_id, port)
+            exposed = await self._client.expose(self.info.id, port)
         except Exception as e:  # surface prime's exposure constraints actionably
             raise SandboxError(
                 "prime port exposure failed — port exposure isn't supported in this sandbox's "
@@ -210,9 +217,7 @@ class PrimeRuntime(Runtime):
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
-                await self._client.download_file(
-                    self._sandbox_id, target, str(download)
-                )
+                await self._client.download_file(self.info.id, target, str(download))
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
@@ -234,7 +239,7 @@ class PrimeRuntime(Runtime):
         )
         try:
             await self._client.upload_bytes(
-                self._sandbox_id, target, data, filename=PurePosixPath(target).name
+                self.info.id, target, data, filename=PurePosixPath(target).name
             )
         except Exception as e:
             raise SandboxError(f"write {path!r}: {e}") from e
@@ -243,12 +248,12 @@ class PrimeRuntime(Runtime):
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
         # the sandbox via the sync client, so the costly resource isn't left to its max-lifetime.
         # Idempotent — the async `stop` deletes it on the normal path, a second delete 404s.
-        if self._sandbox_id is not None:
+        if self.info.id is not None:
             from prime_sandboxes import SandboxClient
             from prime_sandboxes.core import APIClient
 
             with contextlib.suppress(Exception):
-                SandboxClient(APIClient()).delete(self._sandbox_id)
+                SandboxClient(APIClient()).delete(self.info.id)
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
@@ -257,13 +262,13 @@ class PrimeRuntime(Runtime):
         if client is None:
             return
         if (
-            self._sandbox_id is not None
+            self.info.id is not None
         ):  # kept (not nulled) so descriptor survives teardown
             try:
-                await client.delete(self._sandbox_id)
+                await client.delete(self.info.id)
             except Exception as e:
                 logger.warning(
-                    "prime: failed to delete sandbox %s: %s", self._sandbox_id, e
+                    "prime: failed to delete sandbox %s: %s", self.info.id, e
                 )
         with contextlib.suppress(Exception):
             await client.aclose()
