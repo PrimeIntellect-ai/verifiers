@@ -90,17 +90,27 @@ class RetryConfig(BaseConfig):
     """Retries of the whole rollout, on a captured retryable error."""
 
 
+def error_type_selected(
+    error_type: str, include: list[str], exclude: list[str]
+) -> bool:
+    """Whether an error's exception type name is selected by an `include`/`exclude` pair: an
+    excluded type is never selected (`exclude` wins), a non-empty `include` selects only listed
+    types, and an empty `include` selects everything not excluded. The shared rule behind both
+    retry (`should_retry`) and `--prune` error-type matching, so the two stay parallel."""
+    if error_type in exclude:
+        return False
+    if include:
+        return error_type in include
+    return True
+
+
 def should_retry(trace: Trace, retry: RolloutRetryConfig) -> bool:
     """Whether a finished rollout should be retried: it ended with an error whose
     exception type is included (and not excluded)."""
     error = trace.error
     if error is None:
         return False
-    if error.type in retry.exclude:
-        return False
-    if retry.include:
-        return error.type in retry.include
-    return True
+    return error_type_selected(error.type, retry.include, retry.exclude)
 
 
 async def run_with_retry(
