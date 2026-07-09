@@ -234,6 +234,16 @@ class RoutedExperts(TypedDict):
     start: int
 
 
+class KeptTokens(TypedDict):
+    """The raw kept-set sampling masks a `generate` response carries for sampling-mask
+    replay: base64 `ids` (int32, every kept-set concatenated) and base64 `counts` (int32,
+    kept-set size per completion token; 0 = no usable mask). Kept opaque (`Any`) so
+    pydantic never validates the encoded blobs."""
+
+    ids: Any
+    counts: Any
+
+
 class TurnTokens(StrictBaseModel):
     """Token ids + sampling logprobs for one response, for training. Populated by the
     renderer client (client-side tokenization) or the chat client (parsed from vLLM's
@@ -258,6 +268,11 @@ class TurnTokens(StrictBaseModel):
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
     routed_experts: RoutedExperts | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): the kept-set sampling masks from `generate` (token ids
+    # surviving top-p/top-k truncation, per completion token), attributed to the assistant
+    # node by the turn's `commit`, then dropped. None unless the engine ran with
+    # `enable_return_kept_tokens`.
+    kept_tokens: KeptTokens | None = Field(default=None, exclude=True)
 
 
 class Response(StrictBaseModel):

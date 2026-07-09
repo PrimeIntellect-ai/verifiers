@@ -166,6 +166,43 @@ class Branch(StrictBaseModel):
         return merged if merged.shape[0] == total else None
 
     @property
+    def kept_tokens(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """The branch's kept-set sampling masks as `(ids, counts)`: `counts` is int32 aligned
+        1:1 with `token_ids` (kept-set size where the token was sampled with a captured mask,
+        0 on non-sampled tokens and positions without one), `ids` is the flat int32
+        concatenation of every kept set in position order (`ids.sum() == counts.sum()` rows).
+        Per-token semantics are safe under partial coverage — a 0 count just means the trainer
+        falls back to full-vocab logprobs there — so unlike `routed_experts` this is not
+        all-or-nothing. None when no node carries kept-set data (the rollout ran without
+        `enable_return_kept_tokens`)."""
+        if all(n.kept_token_counts is None for n in self.nodes):
+            return None
+        ids_parts: list[np.ndarray] = []
+        counts_parts: list[np.ndarray] = []
+        for node in self.nodes:
+            mask = node.mask
+            counts = np.zeros(len(mask), dtype=np.int32)
+            node_counts = node.kept_token_counts
+            if node_counts is not None and len(node_counts):
+                sampled_positions = np.nonzero(mask)[0]
+                if len(sampled_positions) == len(node_counts):
+                    counts[sampled_positions] = node_counts
+                    if node.kept_token_ids is not None:
+                        ids_parts.append(node.kept_token_ids)
+                else:
+                    counts[:] = 0
+            counts_parts.append(counts)
+        counts = np.concatenate(counts_parts) if counts_parts else np.zeros(0, dtype=np.int32)
+        ids = (
+            np.concatenate(ids_parts).astype(np.int32, copy=False)
+            if ids_parts
+            else np.zeros(0, dtype=np.int32)
+        )
+        if int(counts.sum()) != len(ids):
+            return None
+        return ids, counts
+
+    @property
     def num_total_tokens(self) -> int:
         """This branch's full sequence length (final-turn prompt + every completion)."""
         return sum(len(n.token_ids) for n in self.nodes)
@@ -204,7 +241,14 @@ class Branch(StrictBaseModel):
 
 
 _NODE_DUMP_EXCLUDE: dict = {
-    "nodes": {"__all__": {"multi_modal_data", "routed_experts"}}
+    "nodes": {
+        "__all__": {
+            "multi_modal_data",
+            "routed_experts",
+            "kept_token_ids",
+            "kept_token_counts",
+        }
+    }
 }
 """The per-node fields `Trace.to_record` strips from a JSON dump: the multimodal `mm_kwargs`
 carrier and the router-replay `routed_experts` array. Both hold raw numpy bytes (msgpack `bin`)

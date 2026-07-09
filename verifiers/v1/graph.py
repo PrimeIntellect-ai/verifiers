@@ -111,6 +111,16 @@ class MessageNode(StrictBaseModel):
     the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
+    kept_token_ids: np.ndarray | None = None
+    """This node's kept-set sampling masks, flat int32 — the token ids that survived top-p/
+    top-k truncation when each of this node's sampled tokens was drawn, concatenated in
+    position order (row boundaries in `kept_token_counts`). Assistant nodes only, attributed
+    from the turn's `generate` payload by `_attribute_kept_tokens`; `Branch.kept_tokens`
+    concatenates these along the path into the trainer's sampling-mask-replay input. Rides the
+    wire as a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
+    kept_token_counts: np.ndarray | None = None
+    """Kept-set size per sampled token (int32, aligned with `logprobs`); 0 = no usable mask
+    for that position (the trainer falls back to full-vocab logprobs there)."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
@@ -171,6 +181,20 @@ class MessageNode(StrictBaseModel):
         if isinstance(value, dict) and value.get("__nd__"):
             return _decode_ndarray(value)
         raise TypeError(f"cannot build routed_experts from {type(value).__name__}")
+
+    @field_serializer("kept_token_ids", "kept_token_counts")
+    def serialize_kept_tokens(self, kt: np.ndarray | None) -> dict | None:
+        """int32 kept-set arrays -> raw-bytes `__nd__` dicts so they ride the wire."""
+        return None if kt is None else _encode_ndarray(kt)
+
+    @field_validator("kept_token_ids", "kept_token_counts", mode="before")
+    @classmethod
+    def deserialize_kept_tokens(cls, value: Any) -> np.ndarray | None:
+        if value is None or isinstance(value, np.ndarray):
+            return value
+        if isinstance(value, dict) and value.get("__nd__"):
+            return _decode_ndarray(value)
+        raise TypeError(f"cannot build kept tokens from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -426,6 +450,24 @@ def _attribute_routed_experts(
         off = end
 
 
+def _attribute_kept_tokens(trace: Trace, assistant_id: int, payload: Any) -> None:
+    """Attach this turn's kept-set sampling masks to the assistant node. The `generate`
+    payload covers exactly the turn's completion tokens (kept sets exist only where sampling
+    happened), which all live on the assistant node — no path arithmetic needed. A payload
+    whose counts don't line up with the node's sampled tokens (or whose ids don't sum to the
+    counts) is dropped rather than misaligned."""
+    if payload is None:
+        return
+    counts = np.frombuffer(binascii.a2b_base64(payload["counts"]), dtype=np.int32)
+    ids = np.frombuffer(binascii.a2b_base64(payload["ids"]), dtype=np.int32)
+    node = trace.nodes[assistant_id]
+    if len(counts) != sum(node.mask) or int(counts.sum()) != len(ids):
+        return
+    # Own the buffers — the payload views reference the turn's response bytes.
+    node.kept_token_ids = ids.copy()
+    node.kept_token_counts = counts.copy()
+
+
 def _commit_turn(turn: PendingTurn, response: Response) -> None:
     """Insert one prepared model turn into the graph.
 
@@ -539,6 +581,12 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.
     _attribute_routed_experts(
         trace, new_node_ids, path_len, tokens.routed_experts if tokens else None
+    )
+
+    # Attribute this turn's kept-set sampling masks onto the assistant node (they are
+    # completion-aligned, so only the sampled node carries them).
+    _attribute_kept_tokens(
+        trace, assistant_id, tokens.kept_tokens if tokens else None
     )
 
 
