@@ -13,6 +13,7 @@ overview + progress sit on top, above a rule.
 
 import contextlib
 import time
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from rich.console import Console, Group
@@ -35,6 +36,9 @@ from verifiers.v1.utils.format import (
     format_time,
 )
 from verifiers.utils.pricing_utils import format_cost_usd
+
+if TYPE_CHECKING:
+    from verifiers.v1.push import PushState
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
@@ -204,8 +208,23 @@ def Overview(config: EvalConfig) -> Table:
     limits, timeouts = _aligned([_limits(config), _timeouts(config)])
     grid.add_row("limits", limits)
     grid.add_row("timeouts", timeouts)
-    grid.add_row("output", str(output_path(config)))
+    grid.add_row("output", Text(str(output_path(config)), overflow="fold"))
     return grid
+
+
+def _push_footer(push: "PushState | None") -> Group | None:
+    """The `--push` status line under the rollouts, shown once the run finishes and the upload
+    begins: dim `Pushing traces...` while it runs, then white `Traces pushed (<url>)` or red
+    `Trace push failed (<err>)`. `None` (no line) until the upload starts and when `--push` is off."""
+    if push is None or not push.started:
+        return None
+    if not push.done:
+        line = Text("Pushing traces...", style="dim")
+    elif push.url:
+        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
+    else:
+        line = Text(f"Trace push failed ({push.error})", style="red", overflow="fold")
+    return Group(Rule(style="dim"), line)
 
 
 def Progress(
@@ -513,9 +532,10 @@ class Pager:
     whenever everything fits on one page, so paging re-anchors and re-opens on page 1 if rollouts
     overflow again after a resize. `count` (the page count, set each render by `_paginate`) gates the
     arrows: they're inert while a single page fits, so a stray press before rollouts overflow can't
-    switch off auto-advance or offset the starting page once paging begins. The chosen page is
-    clamped to `count` (it can shrink on a resize; it otherwise only grows, as rollouts are never
-    removed)."""
+    switch off auto-advance or offset the starting page once paging begins. The arrows wrap around
+    (left on the first page lands on the last, right on the last lands on the first), so the pages
+    form a circle rather than dead-ending. The chosen page is still clamped to `count` between
+    presses (it can shrink on a resize; it otherwise only grows, as rollouts are never removed)."""
 
     def __init__(self) -> None:
         self.page = 0
@@ -526,7 +546,7 @@ class Pager:
     def on_key(self, key: str) -> None:
         if key in ("left", "right") and self.count > 1:
             self.manual = True
-            self.page += 1 if key == "right" else -1
+            self.page = (self.page + (1 if key == "right" else -1)) % self.count
 
     def index(self, now: float) -> int:
         # Track the auto page while it drives, so the first arrow continues from what's on screen
@@ -575,16 +595,22 @@ def _render(
     start: float,
     pager: Pager,
     finished: list[Trace] | None = None,
+    push: "PushState | None" = None,
 ) -> Group:
     now = time.time()
     warning = _warning(config)
     # `{warning}\n\n{overview}` — the caution sits at the very top, blank line, then the overview.
     header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
-    # Measure the fixed top (header + progress + rule) so the rollout rows fill the rest of the
-    # screen; page through them (timer, or the left/right arrows) when they'd overflow (rich would
-    # otherwise truncate).
+    # The --push status line appears under the rollouts once the upload starts (None during the run
+    # / when off). Measure the fixed top (header + progress + rule) and the footer so the rollout
+    # rows fill what's left; page through them (timer / arrows) when they'd overflow (else rich
+    # truncates).
+    footer = _push_footer(push)
     top = Group(header, Progress(rollouts, start, finished=finished), Rule(style="dim"))
-    rows_per_page = max(1, _CONSOLE.size.height - len(_CONSOLE.render_lines(top)) - 1)
+    reserved = len(_CONSOLE.render_lines(top))
+    if footer is not None:
+        reserved += len(_CONSOLE.render_lines(footer))
+    rows_per_page = max(1, _CONSOLE.size.height - reserved - 1)
     page_groups, index, count = _paginate(_groups(rollouts), rows_per_page, pager, now)
     progress = Progress(
         rollouts,
@@ -592,12 +618,15 @@ def _render(
         page=(index + 1, count) if count > 1 else None,
         finished=finished,
     )
-    return Group(
+    parts = [
         header,
         progress,
         Rule(style="dim"),
         Rows(page_groups, now, config.harness.runtime.type),
-    )
+    ]
+    if footer is not None:
+        parts.append(footer)
+    return Group(*parts)
 
 
 @contextlib.asynccontextmanager
@@ -606,13 +635,17 @@ async def dashboard(
     config: EvalConfig,
     start: float,
     finished: list[Trace] | None = None,
+    push: "PushState | None" = None,
 ):
     """Refresh the live eval view until the `with` block exits, then a final frame. Left/right
     arrows page through rollout rows when they overflow the screen. On resume, `finished` carries
     the kept on-disk rollouts (reloaded as finished traces) so the counts and scores cover the
-    whole run, not just this session's re-run rollouts."""
+    whole run, not just this session's re-run rollouts. `push` is the shared `--push` status the
+    view renders as a line under the rollouts once the upload starts (dim -> white URL / red error),
+    updated by the caller as the inline upload runs and lands."""
     pager = Pager()
     async with live_view(
-        lambda: _render(rollouts, config, start, pager, finished), on_key=pager.on_key
+        lambda: _render(rollouts, config, start, pager, finished, push),
+        on_key=pager.on_key,
     ):
         yield

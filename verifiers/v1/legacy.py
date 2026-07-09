@@ -435,7 +435,7 @@ async def run_legacy_eval(config) -> list[Trace]:
 
     Loads the v0 env, runs `num_rollouts` per task with bounded concurrency, maps each v0
     `RolloutOutput` to a v1 `Trace` (`rollout_output_to_trace`), persists results as they
-    land (the same `results.jsonl` / `config.toml` a native run writes), and returns the
+    land (the same `traces.jsonl` / `config.toml` a native run writes), and returns the
     traces. The v0 env is run directly (`env.run_rollout`, no env server), so this needs no
     runtime / interception server. All v0 specifics live here; the CLI only branches on
     `config.is_legacy`."""

@@ -55,10 +55,14 @@ class EvalConfig(EnvServerConfig):
     server: bool = False
     """Drive rollouts through the env-server worker pool (sized by `--pool.*`) instead of
     in-process — the path prime-rl trains through. Incompatible with `--rich`."""
+    push: bool = True
+    """Upload the finished run to the Prime Intellect platform (the private Evaluations
+    tab) at the end of the eval. On by default; disable with `--no-push`. Needs
+    `$PRIME_API_KEY` or `prime login`."""
     output_dir: Path | None = Field(
         None, validation_alias=AliasChoices("output_dir", "o")
     )
-    """Where to write the run (config.toml + results.jsonl). None = a fresh per-run dir
+    """Where to write the run (config.toml + traces.jsonl). None = a fresh per-run dir
     under `outputs/<env>--<model>--<harness>/<uuid>` (so runs never overwrite each other)."""
     resume: Path | None = Field(None, exclude=True)
     """Set by `--resume <dir>`: re-run only the rollouts a previous run left missing or

@@ -94,8 +94,17 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             for task in tasks
         ]
         rollouts = [rollout for episode in episodes for rollout in episode.rollouts]
+        # --push in the live dashboard: share a status the dashboard renders as a line under the
+        # rollouts once the run finishes and the upload begins (dim -> green URL / red error), and
+        # do the upload inline below so it resolves on screen. Only the rich path has a dashboard;
+        # every other path uploads (+ logs the URL) from `main`.
+        push_state = None
+        if config.push and config.rich:
+            from verifiers.v1.push import PushState
+
+            push_state = PushState()
         display = (
-            dashboard(rollouts, config, start, finished=finished)
+            dashboard(rollouts, config, start, finished=finished, push=push_state)
             if config.rich
             else contextlib.nullcontext()
         )
@@ -103,7 +112,14 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             results = await asyncio.gather(
                 *(episode.run(semaphore, on_complete) for episode in episodes)
             )
-    traces = [trace for episode_traces in results for trace in episode_traces]
+            traces = [trace for episode_traces in results for trace in episode_traces]
+            if (
+                push_state is not None
+            ):  # upload off the event loop so the view keeps refreshing
+                from verifiers.v1.push import push_traces
+
+                push_state.started = True
+                await asyncio.to_thread(push_traces, traces, config, push_state)
     await client.close()
     return traces
 
@@ -112,7 +128,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
     """Eval through the env-server worker pool (`--num-workers > 0`). Spawns the pool
     (works for v1 and the v0 bridge), then drives rollouts by task idx over an
     `EnvClient` — the same path prime-rl trains through, so it exercises the
-    router + workers end-to-end. Output matches `run_eval` (config.toml + results.jsonl)."""
+    router + workers end-to-end. Output matches `run_eval` (config.toml + traces.jsonl)."""
     import multiprocessing as mp
     from functools import partial
 

@@ -3,7 +3,7 @@
 `Trace.state` is a typed, mutable `State` that a rollout's tool servers (`@vf.tool`) and user
 simulator (`respond`) read+write as `self.state` (synced over the interception server per call), and
 that `@reward`/`@metric`/`finalize` read+write directly off the trace. Unlike `Trace.info` — the
-free-form artifact bag persisted to `results.jsonl` — `state` is transient runtime scratch (counters,
+free-form artifact bag persisted to `traces.jsonl` — `state` is transient runtime scratch (counters,
 game progress, an end-of-trajectory flag): never written to disk or sent over the wire.
 
 The base `State` is empty — the framework holds no opinion about its contents. Subclass it to declare
