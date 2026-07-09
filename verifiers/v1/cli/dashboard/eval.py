@@ -231,15 +231,11 @@ def Progress(
     rollouts: list[Rollout],
     start: float,
     page: tuple[int, int] | None = None,
-    finished: list[Trace] | None = None,
 ) -> Group:
-    # On resume, `finished` holds the kept on-disk rollouts (reloaded as finished traces); count
-    # them alongside this session's so progress, reward, err, and the breakdown cover the whole
-    # run. `rollouts` is only this session's (owed) work, so the total adds the kept ones back.
-    done = (finished or []) + [
-        r.trace for r in rollouts if r.phase == Phase.DONE
-    ]  # fully scored
-    total = len(finished or []) + len(rollouts)
+    # On resume, `rollouts` includes the previous session's kept rollouts (as `Finished`), so
+    # progress, reward, err, and the breakdown cover the whole run, not just this session's.
+    done = [r.trace for r in rollouts if r.phase == Phase.DONE]  # fully scored
+    total = len(rollouts)
     # Headline reward = mean over non-errored; when any errored, `format_mean` appends the
     # global avg (errored count as 0) in parens. `err` is the share that errored.
     reward = format_mean(done, lambda t: t.reward)
@@ -594,7 +590,6 @@ def _render(
     config: EvalConfig,
     start: float,
     pager: Pager,
-    finished: list[Trace] | None = None,
     push: "PushState | None" = None,
 ) -> Group:
     now = time.time()
@@ -606,7 +601,7 @@ def _render(
     # rows fill what's left; page through them (timer / arrows) when they'd overflow (else rich
     # truncates).
     footer = _push_footer(push)
-    top = Group(header, Progress(rollouts, start, finished=finished), Rule(style="dim"))
+    top = Group(header, Progress(rollouts, start), Rule(style="dim"))
     reserved = len(_CONSOLE.render_lines(top))
     if footer is not None:
         reserved += len(_CONSOLE.render_lines(footer))
@@ -616,7 +611,6 @@ def _render(
         rollouts,
         start,
         page=(index + 1, count) if count > 1 else None,
-        finished=finished,
     )
     parts = [
         header,
@@ -634,18 +628,17 @@ async def dashboard(
     rollouts: list[Rollout],
     config: EvalConfig,
     start: float,
-    finished: list[Trace] | None = None,
     push: "PushState | None" = None,
 ):
     """Refresh the live eval view until the `with` block exits, then a final frame. Left/right
-    arrows page through rollout rows when they overflow the screen. On resume, `finished` carries
-    the kept on-disk rollouts (reloaded as finished traces) so the counts and scores cover the
-    whole run, not just this session's re-run rollouts. `push` is the shared `--push` status the
-    view renders as a line under the rollouts once the upload starts (dim -> white URL / red error),
-    updated by the caller as the inline upload runs and lands."""
+    arrows page through rollout rows when they overflow the screen. On resume, `rollouts`
+    includes the previous session's kept rollouts (as finished ones), so the rows, counts, and
+    scores cover the whole run, not just this session's re-run rollouts. `push` is the shared
+    `--push` status the view renders as a line under the rollouts once the upload starts (dim ->
+    white URL / red error), updated by the caller as the inline upload runs and lands."""
     pager = Pager()
     async with live_view(
-        lambda: _render(rollouts, config, start, pager, finished, push),
+        lambda: _render(rollouts, config, start, pager, push),
         on_key=pager.on_key,
     ):
         yield

@@ -37,31 +37,25 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     )
     out = output_path(config)
     # Write config.toml up front, then persist each trace as it completes (so the results are
-    # durable mid-run, not only at the end). On resume, keep the saved config + good traces and
-    # run only the owed rollouts. One lock serializes worker-thread appends from concurrent
-    # rollouts while keeping large trace serialization off the event loop.
+    # durable mid-run, not only at the end). One lock serializes worker-thread appends from
+    # concurrent rollouts while keeping large trace serialization off the event loop.
     owed: dict[str, int] | None = None
-    # On resume, the kept (good) on-disk rollouts, reloaded as finished traces so the live
-    # dashboard counts the whole run (progress, reward, err, usage/time) rather than only this
-    # session's re-run rollouts. Only the --rich dashboard reads them, so skip the load otherwise.
+    # On resume, the kept (good) on-disk rollouts rejoin the run as finished traces: displayed,
+    # returned, pushed, and printed alongside this session's, with only the owed rollouts re-run
+    # — so the resumed run is indistinguishable from one that was never interrupted.
     finished: list[Trace] = []
     if config.resume is not None:
         # A group-scored task's episode must be re-run whole (its `@group_reward`s
         # compare all its rollouts); other tasks only re-run what's missing. One task
         # type per taskset, so group scoring is a run-wide property.
-        group_scored = bool(tasks) and bool(
-            discover_decorated(tasks[0], "group_reward")
-        )
-        keep, owed = resume.plan(
-            out, [t.idx for t in tasks], config.num_rollouts, group_scored
+        group = bool(tasks) and bool(discover_decorated(tasks[0], "group_reward"))
+        finished, owed = resume.load(
+            out, [t.data.idx for t in tasks], config.num_rollouts, group
         )
         if not owed:  # already complete - report it and exit successfully
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
         tasks = [task for task in tasks if owed.get(task.data.idx)]
-        resume.rewrite_results(out, keep)
-        if config.rich:
-            finished = resume.load_kept(out)
         logger.info(
             "resuming %s: %d task(s), %d rollout(s) owed",
             out,
@@ -95,7 +89,9 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             )
             for task in tasks
         ]
-        rollouts = [rollout for episode in episodes for rollout in episode.rollouts]
+        rollouts = [resume.Finished(trace) for trace in finished] + [
+            rollout for episode in episodes for rollout in episode.rollouts
+        ]
         # --push in the live dashboard: share a status the dashboard renders as a line under the
         # rollouts once the run finishes and the upload begins (dim -> green URL / red error), and
         # do the upload inline below so it resolves on screen. Only the rich path has a dashboard;
@@ -106,7 +102,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
 
             push_state = PushState()
         display = (
-            dashboard(rollouts, config, start, finished=finished, push=push_state)
+            dashboard(rollouts, config, start, push=push_state)
             if config.rich
             else contextlib.nullcontext()
         )
@@ -114,7 +110,9 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
             results = await asyncio.gather(
                 *(episode.run(semaphore, on_complete) for episode in episodes)
             )
-            traces = [trace for episode_traces in results for trace in episode_traces]
+            traces = finished + [
+                trace for episode_traces in results for trace in episode_traces
+            ]
             if (
                 push_state is not None
             ):  # upload off the event loop so the view keeps refreshing
@@ -186,12 +184,12 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         if config.num_tasks is not None:
             idxs = idxs[: config.num_tasks]
         out = output_path(config)
+        finished: list[Trace] = []
         if config.resume is not None:
-            keep, owed = resume.plan(out, idxs, config.num_rollouts, group_scored)
+            finished, owed = resume.load(out, idxs, config.num_rollouts, group_scored)
             if not owed:  # already complete - report it and exit successfully
                 print(resume.nothing_to_resume_msg(out, len(idxs), config.num_rollouts))
                 raise SystemExit(0)
-            resume.rewrite_results(out, keep)
             idxs = [idx for idx in idxs if owed.get(idx)]
             logger.info(
                 "resuming %s: %d task(s), %d rollout(s) owed",
@@ -255,7 +253,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         )
         results = await asyncio.gather(*units)
         await client.close()
-        return [trace for unit_traces in results for trace in unit_traces]
+        return finished + [trace for unit_traces in results for trace in unit_traces]
     finally:
         proc.terminate()
         with contextlib.suppress(Exception):
