@@ -42,7 +42,7 @@ class OpenThoughtsTBLiteTaskset(HarborTaskset, vf.Taskset[HarborTask, OpenThough
         ]
 ```
 
-To create & re-use images for your environments, you can use `prime images push` from the Prime CLI ([Documentation](https://docs.primeintellect.ai/sandboxes/images)) for the given Dockerfiles.
+To create & re-use images for your environments, build the Dockerfile with Docker and push it to a registry, then set the resulting image reference as the task's `image` field.
 
 ## Additional features
 

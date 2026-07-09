@@ -9,7 +9,7 @@ This file mirrors the "Environments" documentation page.
 
 To scaffold an environment, run the following:
 ```bash
-prime env init <MY_ENV_NAME>
+uv run init <MY_ENV_NAME>
 ```
 
 There are optional flags:
@@ -83,7 +83,7 @@ Common usages for `vf.TasksetConfig` are settings like splits (e.g., train/test)
 Some environments require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`).
 Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
 
-You can create them like this (remember the bootstrapping with `prime env init MY_ENV -T`):
+You can create them like this (remember the bootstrapping with `uv run init MY_ENV -T`):
 ```python
 DATABASE = None
 
@@ -129,7 +129,7 @@ class CorrectnessJudge(vf.Judge[bool]):
 
 
 class Config(vf.TasksetConfig):
-    # The judge by default inherits base_url and api keys from the prime config
+    # The judge inherits base_url and api keys from the client config (env vars, with the Prime CLI config as a fallback)
     judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
 
 

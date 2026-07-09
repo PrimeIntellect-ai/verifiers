@@ -1,0 +1,485 @@
+# Evaluation
+
+<Warning>v0 is considered deprecated and will be fully removed in a future release.</Warning>
+
+This section explains how to run evaluations with Verifiers environments. See [Environments](environments.md) for information on building your own environments.
+
+## Table of Contents
+- [Basic Usage](#basic-usage)
+- [Hosted Evaluations](#hosted-evaluations)
+- [Command Reference](#command-reference)
+  - [Environment Selection](#environment-selection)
+  - [Model Configuration](#model-configuration)
+  - [Sampling Parameters](#sampling-parameters)
+  - [Evaluation Scope](#evaluation-scope)
+  - [Concurrency](#concurrency)
+  - [Output and Saving](#output-and-saving)
+  - [Resuming Evaluations](#resuming-evaluations)
+- [Environment Defaults](#environment-defaults)
+- [Multi-Environment Evaluation](#multi-environment-evaluation)
+  - [TOML Configuration](#toml-configuration)
+  - [Ablation Sweeps](#ablation-sweeps)
+  - [Configuration Precedence](#configuration-precedence)
+
+Use `prime eval` to execute rollouts against any supported model provider and report aggregate metrics. Supported providers include OpenAI-compatible APIs (the default) and the Anthropic Messages API (via `--api-client-type anthropic_messages`).
+
+## Basic Usage
+
+Run evaluations directly against a local or Hub environment:
+
+```bash
+prime eval run my-env -m openai/gpt-4.1-mini -n 10
+```
+
+`prime eval` resolves and installs the environment when needed, imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
+
+## Hosted Evaluations
+
+You can also run evaluations on Prime-managed infrastructure with `prime eval run --hosted`. Hosted evaluations require an environment that has already been published to the Environments Hub, and they are useful when you want Prime to manage execution, monitor logs remotely, or run against a shared Hub environment slug instead of a local package.
+
+```bash
+prime env push my-env
+prime eval run my-env --hosted
+prime eval run my-env --hosted --follow
+```
+
+Hosted runs also support TOML configs:
+
+```bash
+prime eval run configs/eval/benchmark-hosted.toml --hosted
+```
+
+For the full hosted workflow and hosted-only flags such as `--follow`, `--timeout-minutes`, `--allow-sandbox-access`, and `--custom-secrets`, see the official [Hosted Evaluations](https://docs.primeintellect.ai/tutorials-environments/hosted-evaluations) guide.
+
+## Command Reference
+
+### Environment Selection
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `env_id_or_path` | (positional) | — | Environment ID(s) or path to TOML config |
+| `--env-args` | `-a` | `{}` | JSON object passed to `load_environment()` |
+| `--extra-env-kwargs` | `-x` | `{}` | JSON object passed to environment constructor |
+| `--timeout` | — | `None` | Per-rollout wall-clock timeout in seconds. Wins over equivalent values in `--extra-env-kwargs` or TOML `[eval.extra_env_kwargs]`. Bounds generation only — scoring is not bounded. |
+| `--env-dir-path` | `-p` | `./environments` | Base path for saving output files |
+
+The positional argument accepts two formats:
+- **Single environment**: `gsm8k` — evaluates one environment
+- **TOML config path**: `configs/eval/benchmark.toml` — evaluates multiple environments defined in the config file
+
+Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported after `prime eval run` resolves the environment package.
+
+For legacy or direct-constructor environments, the `--env-args` flag passes
+arguments to your `load_environment()` function:
+
+```bash
+prime eval run my-env -a '{"difficulty": "hard", "num_examples": 100}'
+```
+
+The `--extra-env-kwargs` flag passes arguments directly to the environment constructor, useful for overriding defaults like `max_turns` which may not be exposed via `load_environment()`:
+
+```bash
+prime eval run my-env -x '{"max_turns": 20}'
+```
+
+For per-rollout wall-clock timeouts, use the dedicated `--timeout` flag. It **wins over** equivalent values set via `--extra-env-kwargs` or TOML's `[eval.extra_env_kwargs]`:
+
+```bash
+prime eval run my-env --timeout 600
+```
+
+When the timeout fires, the rollout is marked `timed_out=True` with `stop_condition="timeout_reached"` and ends cleanly through the same finalize path as a normal completion (timing, completion rendering, and cleanup handlers all run). `is_truncated` is **not** set on timeout — that field tracks model-output truncation (token caps), not wall-clock pressure. Note that `--timeout` bounds the **generation** phase only — scoring (reward function execution) is not bounded by this flag.
+
+The same key works in TOML configs as a top-level entry of an `[[eval]]` table:
+
+```toml
+[[eval]]
+id = "my-env"
+timeout = 600
+```
+
+#### Executor autoscaling
+
+Thread-pool executors are automatically sized to match the evaluation concurrency. During `prime eval run`, if `concurrency` is not explicitly provided via `--extra-env-kwargs`, it is computed from the concurrency level (`max_concurrent`, or `num_examples * rollouts_per_example` when unlimited) using `recommended_max_workers()`. This value is passed to `Environment.set_concurrency()`, which resizes both the default event-loop executor and all registered executors.
+
+To override the automatic value:
+
+```bash
+prime eval run my-env -x '{"concurrency": 256}'
+```
+
+You can also call `set_concurrency()` directly at runtime:
+
+```python
+env.set_concurrency(256)
+```
+
+### Model Configuration
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
+| `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
+| `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
+| `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_completions`, `openai_chat_completions`, `openai_chat_completions_token`, `openai_responses`, `renderer`, `anthropic_messages`, or `nemorl_chat_completions` |
+| `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to TOML endpoints registry |
+| `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
+| `--header-from-state` | — | framework session id | Per-request header whose value is read from rollout state (`Name: state_key`), repeatable |
+
+For convenience, define model endpoints in `./configs/endpoints.toml` to avoid repeating URL and key flags.
+
+```toml
+[[endpoint]]
+endpoint_id = "gpt-4.1-mini"
+model = "gpt-4.1-mini"
+url = "https://api.openai.com/v1"
+key = "OPENAI_API_KEY"
+
+[[endpoint]]
+endpoint_id = "qwen3-235b-i"
+model = "qwen/qwen3-235b-a22b-instruct-2507"
+url = "https://api.pinference.ai/api/v1"
+key = "PRIME_API_KEY"
+
+[[endpoint]]
+endpoint_id = "claude-sonnet"
+model = "claude-sonnet-4-5-20250929"
+url = "https://api.anthropic.com"
+key = "ANTHROPIC_API_KEY"
+api_client_type = "anthropic_messages"
+```
+
+Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly, and `"openai_responses"` for OpenAI-compatible Responses endpoints.
+
+Optional HTTP headers for inference requests use a short TOML key `headers` (inline table). The alias `extra_headers` is accepted with the same shape; do not set both on one row.
+
+```toml
+[[endpoint]]
+endpoint_id = "my-proxy"
+model = "gpt-4.1-mini"
+url = "https://api.example/v1"
+key = "OPENAI_API_KEY"
+headers = { "X-Custom-Header" = "value" }
+```
+
+In `[[eval]]` TOML configs you can set extra headers as `headers = { ... }` and/or as a list `header = ["Name: Value", ...]` (same form as repeated `--header`). Merge order is: registry row, then the `headers` table, then each `header` / `--header` line, with later entries overriding the same name.
+
+For per-request headers that need to vary per rollout, use `headers_from_state = { "X-Name" = "state_key" }` and/or `header_from_state = ["X-Name: state_key", ...]` (same form as repeated `--header-from-state`). The value for each request is resolved at send time as `state[state_key]`. If unset, Verifiers supplies a framework-managed `X-Session-ID`.
+
+To define equivalent replicas, add multiple `[[endpoint]]` entries with the same `endpoint_id`.
+
+Then use the alias directly:
+
+```bash
+prime eval run my-env -m qwen3-235b-i
+```
+
+If the model name is in the registry, those values are used by default, but you can override them with `--api-base-url` and/or `--api-key-var`. If the model name isn't found, the CLI flags are used (falling back to defaults when omitted).
+
+In other words, `-m/--model` is treated as an endpoint alias lookup when present in the registry, and otherwise treated as a literal model id.
+
+When using eval TOML configs, you can set `endpoint_id` in `[[eval]]` sections to resolve from the endpoint registry. `endpoint_id` is only supported when `endpoints_path` points to a TOML registry file.
+
+### Sampling Parameters
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--max-tokens` | `-t` | model default | Maximum tokens to generate |
+| `--temperature` | `-T` | model default | Sampling temperature |
+| `--sampling-args` | `-S` | — | JSON object for additional sampling parameters |
+
+The `--sampling-args` flag accepts any parameters supported by the model's API:
+
+```bash
+prime eval run my-env -S '{"temperature": 0.7, "top_p": 0.9}'
+```
+
+In eval TOML configs, put generation parameters under `[sampling]`:
+
+```toml
+[sampling]
+max_tokens = 1024
+temperature = 0.7
+reasoning_effort = "medium"
+enable_thinking = true
+
+[[eval]]
+id = "my-env"
+```
+
+`reasoning_effort` and `enable_thinking` stay in `sampling_args` and are also
+mirrored into `extra_body.chat_template_kwargs` for OpenAI-compatible servers
+that read chat template options there. Keeping the top-level values lets the
+client translate them for the selected provider.
+
+### Evaluation Scope
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--num-examples` | `-n` | 5 | Number of dataset examples to evaluate |
+| `--rollouts-per-example` | `-r` | 3 | Rollouts per example (for pass@k, variance) |
+| `--shuffle` | — | false | Shuffle the evaluation dataset before selecting examples |
+| `--shuffle-seed` | — | 0 when shuffled | Seed used with `--shuffle` |
+
+Multiple rollouts per example enable metrics like pass@k and help measure variance. The total number of rollouts is `num_examples × rollouts_per_example`.
+
+When `--shuffle` is enabled, Verifiers shuffles the full evaluation dataset first, then selects `--num-examples`, then repeats each selected example according to `--rollouts-per-example`. This applies to standard environments and composable tasksets because it happens in the shared evaluation input-selection layer.
+
+### Concurrency
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--max-concurrent` | `-c` | 32 | Maximum concurrent requests |
+| `--max-concurrent-generation` | — | same as `-c` | Concurrent generation requests |
+| `--max-concurrent-scoring` | — | same as `-c` | Concurrent scoring requests |
+| `--no-interleave-scoring` | `-N` | false | Disable interleaved scoring |
+| `--independent-scoring` | `-i` | false | Score each rollout individually instead of by group |
+| `--max-retries` | — | 0 | Retries per rollout on transient `InfraError` |
+| `--num-workers` | `-w` | `auto` | Number of env server worker processes (`auto` = concurrency ÷ 256, minimum 1) |
+
+By default, scoring runs interleaved with generation. Use `--no-interleave-scoring` to score all rollouts after generation completes.
+
+The `--max-retries` flag enables automatic retry with exponential backoff when rollouts fail due to transient infrastructure errors (e.g., sandbox timeouts, API failures).
+
+The `--num-workers` flag controls how many worker processes the env server spawns. Each worker owns its own environment instance and runs rollouts independently. The default `auto` scales with concurrency.
+
+### Display
+
+When evaluating multiple environments, the display shows an overview panel at the top with a compact status line per environment, and a detail panel below with full progress, metrics, and logs for one environment at a time. Use the **left/right arrow keys** to switch between environments. The overview scrolls to keep the selected environment visible and is capped at half the terminal height.
+
+When an eval runs against a Prime Inference endpoint and the model id has pricing available from `prime inference models`, token usage rows also show the estimated total USD cost as `cost (all)`. Cost appears after the final input/output token metrics in the live display and in the final summary. If pricing or token usage is unavailable, the cost field is omitted.
+
+### Output and Saving
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--verbose` | `-v` | false | Enable debug logging |
+| `--fullscreen` | `-f` | false | Use alternate screen buffer (fullscreen) for the Rich display |
+| `--disable-tui` | `-d` | false | Disable Rich display; use normal logging and tqdm progress |
+| `--abbreviated-summary` | `-A` | false | Abbreviated summary: show settings and stats, skip example prompts |
+| `--output-dir` | `-o` | — | Custom output directory for evaluation results and logs |
+| `--save-results` | `-s` | false | Save results to disk |
+| `--resume [PATH]` | `-R` | — | Resume from a previous run (auto-detect latest matching incomplete run if PATH omitted) |
+| `--state-columns` | `-C` | — | Extra state columns to save (comma-separated) |
+| `--save-to-hf-hub` | `-H` | false | Push results to Hugging Face Hub |
+| `--hf-hub-dataset-name` | `-D` | — | Dataset name for HF Hub |
+| `--heartbeat-url` | — | — | Heartbeat URL for uptime monitoring |
+
+By default, results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`. Use `--output-dir` to override the base output directory — when set, results (and logs) are saved under `{output_dir}/evals/{env_id}--{model}/{run_id}/` instead. The directory contains:
+
+- `results.jsonl` — rollout outputs, one per line
+- `metadata.json` — evaluation configuration and aggregate metrics
+
+When Prime Inference pricing is available for the evaluated model, `metadata.json` includes a `cost` object with total-run `input_usd`, `output_usd`, and `total_usd`. The field is omitted for unpriced models, third-party providers, unavailable pricing, or missing usage.
+
+### Resuming Evaluations
+
+Long-running evaluations can be interrupted and resumed using checkpointing. When `--save-results` is enabled, results are saved incrementally after each completed group of rollouts. Use `--resume` to continue from where you left off. Pass a path to resume a specific run, or omit the path to auto-detect the latest incomplete matching run.
+
+**Running with checkpoints:**
+
+```bash
+prime eval run my-env -n 1000 -s
+```
+
+With `-s` (save results) enabled, partial results are written to disk after each group completes. If the evaluation is interrupted, the output directory will contain all completed rollouts up until the interruption.
+
+**Resuming from a checkpoint:**
+
+```bash
+prime eval run my-env -n 1000 -s --resume ./environments/my_env/outputs/evals/my-env--openai--gpt-4.1-mini/abc12345
+```
+
+When a resume path is provided, it must point to a valid evaluation results directory containing both `results.jsonl` and `metadata.json`. With `--resume` and no path, verifiers scans the environment/model output directory and picks the most recent incomplete run matching `env_id`, `model`, `rollouts_per_example`, `shuffle`, and `shuffle_seed` where saved `num_examples` is less than or equal to the current run. When resuming:
+
+1. Existing completed rollouts are loaded from the checkpoint
+2. Remaining rollouts are computed based on the example ids and group size
+3. Only incomplete rollouts are executed
+4. New results are appended to the existing checkpoint
+
+If all rollouts are already complete, the evaluation returns immediately with the existing results.
+
+**Configuration compatibility:**
+
+When resuming, the current run configuration should match the original run. Mismatches in parameters like `--model`, `--env-args`, `--rollouts-per-example`, `--shuffle`, or `--shuffle-seed` can lead to undefined behavior. For reliable results, resume with the same configuration used to create the checkpoint, only increasing `--num-examples` if you need additional rollouts beyond the original target.
+
+**Example workflow:**
+
+```bash
+# Start a large evaluation with checkpointing
+prime eval run math-python -n 500 -r 3 -s
+
+# If interrupted, find the run directory
+ls ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/
+
+# Resume from the checkpoint
+prime eval run math-python -n 500 -r 3 -s \
+  --resume ./environments/math_python/outputs/evals/math-python--openai--gpt-4.1-mini/abc12345
+```
+
+The `--state-columns` flag allows saving environment-specific state fields that your environment stores during rollouts:
+
+```bash
+prime eval run my-env -s -C "judge_response,parsed_answer"
+```
+
+## Environment Defaults
+
+Environments can specify default evaluation parameters in their `pyproject.toml` (See [Developing Environments](environments.md#developing-environments)):
+
+```toml
+[tool.verifiers.eval]
+num_examples = 100
+rollouts_per_example = 5
+```
+
+These defaults are used when higher-priority sources don't specify a value. The full priority order is:
+
+1. TOML per-environment settings (when using a config file)
+2. CLI flags
+3. Environment defaults (from `pyproject.toml`)
+4. Global defaults
+
+See [Configuration Precedence](#configuration-precedence) for more details on multi-environment evaluation.
+
+## Multi-Environment Evaluation
+
+You can evaluate multiple environments using `prime eval` with a TOML configuration file. This is useful for running comprehensive benchmark suites.
+
+### TOML Configuration
+
+For multi-environment evals or fine-grained control over settings, use a TOML configuration file. When using a config file, CLI arguments are ignored.
+
+```bash
+prime eval run configs/eval/my-benchmark.toml
+```
+
+The TOML file uses `[[eval]]` sections to define each evaluation. You can also specify global defaults at the top:
+
+```toml
+# configs/eval/my-benchmark.toml
+
+# Global defaults (optional)
+model = "openai/gpt-4.1-mini"
+num_examples = 50
+
+[[eval]]
+id = "gsm8k"
+name = "gsm8k-baseline"
+num_examples = 100  # overrides global default
+rollouts_per_example = 5
+
+[[eval]]
+id = "alphabet-sort"
+# Uses global num_examples (50)
+rollouts_per_example = 3
+
+[[eval]]
+id = "math-python"
+# Uses global defaults and built-in defaults for unspecified values
+```
+
+A minimal config requires only a single `[[eval]]` section:
+
+```toml
+[[eval]]
+id = "gsm8k"
+```
+
+Each `[[eval]]` section usually contains an `id` field. `env_id` is accepted as
+a legacy alias and normalizes to the same internal field. All other fields are
+optional:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Environment module name |
+| `name` | string | Optional eval label for display and saved result paths |
+| `args` | table | Arguments passed to `load_environment()` |
+| `num_examples` | integer | Number of dataset examples to evaluate |
+| `rollouts_per_example` | integer | Rollouts per example |
+| `shuffle` | boolean | Shuffle the evaluation dataset before selecting examples |
+| `shuffle_seed` | integer | Seed used when `shuffle = true` |
+| `extra_env_kwargs` | table | Arguments passed to environment constructor |
+| `model` | string | Model to evaluate |
+| `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
+| `sampling` | table | Shorthand for `sampling_args` generation parameters |
+
+Use `name` to run the same environment more than once with different args:
+
+```toml
+[[eval]]
+id = "reverse-text"
+name = "reverse-text-short"
+
+[eval.args]
+max_length = 32
+
+[[eval]]
+id = "reverse-text"
+name = "reverse-text-long"
+
+[eval.args]
+max_length = 256
+```
+
+Example with legacy environment args:
+
+```toml
+[[eval]]
+id = "math-python"
+num_examples = 50
+
+[eval.args]
+difficulty = "hard"
+split = "test"
+```
+
+The legacy inline `sampling_args = { ... }` spelling is still accepted and
+normalizes the same way as `[sampling]` / `[eval.sampling]`.
+
+### Ablation Sweeps
+
+Use `[[ablation]]` blocks to automatically generate eval configs from a cartesian product of parameter values. This is useful for hyperparameter sweeps and ablation studies without manually writing each combination.
+
+```toml
+# Global defaults apply to all evals and ablations
+model = "openai/gpt-4.1-mini"
+num_examples = 50
+
+# Sweep temperature × difficulty → 6 eval configs
+# split is fixed across all combinations
+[[ablation]]
+id = "my-env"
+args = {split = "test"}
+
+[ablation.sweep]
+temperature = [0.0, 0.5, 1.0]
+
+[ablation.sweep.args]
+difficulty = ["easy", "hard"]
+```
+
+- **Fixed fields** in the `[[ablation]]` block (like `id`) apply to all expanded configs
+- **`[ablation.sweep]`** keys are lists of values crossed as a cartesian product
+- **`[ablation.sweep.args]`** keys are swept and merged into environment args
+- **Fixed `args`** can be set alongside swept ones (e.g. `args = {split = "test"}` keeps `split` fixed while sweeping other env args). The same key cannot appear in both fixed and swept args.
+- Multiple `[[ablation]]` blocks are independent (no cross-product between blocks)
+- `[[ablation]]` and `[[eval]]` blocks can coexist in the same config file
+- `id` can be a fixed field or a sweep key (e.g. `id = ["env-a", "env-b"]`), but note that all swept envs must accept the same `args` — use separate `[[ablation]]` blocks for envs with different argument schemas
+
+Use `--abbreviated-summary` (`-A`) to get a compact summary focused on settings and stats, which is useful when comparing many ablation runs.
+
+### Configuration Precedence
+
+When using a **config file**, CLI arguments are ignored. Settings are resolved as:
+
+1. **TOML per-eval settings** — Values specified in `[[eval]]` sections
+2. **TOML global settings** — Values at the top of the config file
+3. **Environment defaults** — Values from the environment's `pyproject.toml`
+4. **Built-in defaults** — (`num_examples=5`, `rollouts_per_example=3`)
+
+When using **CLI only** (no config file), settings are resolved as:
+
+1. **CLI arguments** — Flags passed on the command line
+2. **Environment defaults** — Values from the environment's `pyproject.toml`
+3. **Built-in defaults** — (`num_examples=5`, `rollouts_per_example=3`)

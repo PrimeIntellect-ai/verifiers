@@ -8,9 +8,21 @@
         "getting_started",
         "architecture",
         "environments",
-        "evaluations",
+        "evaluation",
         "harnesses",
         "harbor"
+      ]
+    },
+    {
+      "group": "Legacy (v0)",
+      "pages": [
+        "v0/overview",
+        "v0/environments",
+        "v0/evaluation",
+        "v0/training",
+        "v0/development",
+        "v0/reference",
+        "v0/faqs"
       ]
     }
   ]
