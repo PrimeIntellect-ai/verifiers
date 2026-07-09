@@ -16,7 +16,7 @@ from pathlib import Path
 
 from pydantic_core import from_json
 
-from verifiers.v1.cli.output import TRACES_FILE, read_traces
+from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE, read_traces
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import WireTask
@@ -42,7 +42,7 @@ def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
 def load_resume_config(resume_dir: Path) -> EvalConfig:
     """Rebuild the run's `EvalConfig` from its saved `config.toml`, pointed back at its own
     output dir so the resumed rollouts append to the same `traces.jsonl`."""
-    config_path = resume_dir / "config.toml"
+    config_path = resume_dir / CONFIG_FILE
     if not config_path.exists():
         raise SystemExit(
             f"--resume: no config.toml in {resume_dir} - not an eval output dir"

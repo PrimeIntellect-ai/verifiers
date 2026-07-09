@@ -25,6 +25,9 @@ from verifiers.v1.utils.aio import run_shielded
 TRACES_FILE = "traces.jsonl"
 """Filename each run's full per-rollout traces are written to (one JSON trace per line)."""
 
+CONFIG_FILE = "config.toml"
+"""Filename a run's resolved config is written to (re-runnable via `@ config.toml`)."""
+
 
 def output_path(config: EvalConfig) -> Path:
     """Where this run writes: `outputs/<taskset>--<model>--<harness>/<uuid>` (or the explicit
@@ -41,7 +44,7 @@ def write_config(config: BaseModel, results_dir: Path) -> Path:
     nulls TOML can't represent."""
     results_dir.mkdir(parents=True, exist_ok=True)
     toml = tomli_w.dumps(config.model_dump(mode="json", exclude_none=True))
-    config_path = results_dir / "config.toml"
+    config_path = results_dir / CONFIG_FILE
     config_path.write_text(toml)
     return config_path
 
