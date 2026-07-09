@@ -112,15 +112,12 @@ class MessageNode(StrictBaseModel):
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
     kept_token_ids: np.ndarray | None = None
-    """This node's kept-set sampling masks, flat int32 — the token ids that survived top-p/
-    top-k truncation when each of this node's sampled tokens was drawn, concatenated in
-    position order (row boundaries in `kept_token_counts`). Assistant nodes only, attributed
-    from the turn's `generate` payload by `_attribute_kept_tokens`; `Branch.kept_tokens`
-    concatenates these along the path into the trainer's sampling-mask-replay input. Rides the
-    wire as a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
+    """Kept-set sampling masks for this node's sampled tokens, flat int32 in position
+    order (row boundaries in `kept_token_counts`). Assistant nodes only; consumed via
+    `Branch.kept_tokens` for sampling-mask-replay training. Rides the wire as a
+    raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
     kept_token_counts: np.ndarray | None = None
-    """Kept-set size per sampled token (int32, aligned with `logprobs`); 0 = no usable mask
-    for that position (the trainer falls back to full-vocab logprobs there)."""
+    """Kept-set size per sampled token (int32, aligned with `logprobs`); 0 = no mask."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
@@ -437,11 +434,9 @@ def _attribute_routed_experts(
 
 
 def _attribute_kept_tokens(trace: Trace, assistant_id: int, payload: Any) -> None:
-    """Attach this turn's kept-set sampling masks to the assistant node. The `generate`
-    payload covers exactly the turn's completion tokens (kept sets exist only where sampling
-    happened), which all live on the assistant node — no path arithmetic needed. A payload
-    whose counts don't line up with the node's sampled tokens (or whose ids don't sum to the
-    counts) is dropped rather than misaligned."""
+    """Attach this turn's kept-set sampling masks to the assistant node (the payload
+    covers exactly the turn's completion tokens, so no path arithmetic). A payload
+    that doesn't line up with the node's sampled tokens is dropped, not misaligned."""
     if payload is None:
         return
     counts = np.frombuffer(binascii.a2b_base64(payload["counts"]), dtype=np.int32)

@@ -167,14 +167,10 @@ class Branch(StrictBaseModel):
 
     @property
     def kept_tokens(self) -> tuple[np.ndarray, np.ndarray] | None:
-        """The branch's kept-set sampling masks as `(ids, counts)`: `counts` is int32 aligned
-        1:1 with `token_ids` (kept-set size where the token was sampled with a captured mask,
-        0 on non-sampled tokens and positions without one), `ids` is the flat int32
-        concatenation of every kept set in position order (`ids.sum() == counts.sum()` rows).
-        Per-token semantics are safe under partial coverage — a 0 count just means the trainer
-        falls back to full-vocab logprobs there — so unlike `routed_experts` this is not
-        all-or-nothing. None when no node carries kept-set data (the rollout ran without
-        `enable_return_kept_tokens`)."""
+        """The branch's kept-set sampling masks as `(ids, counts)`: `counts` is int32
+        aligned 1:1 with `token_ids` (0 = no mask, safe under partial coverage — unlike
+        `routed_experts` this is not all-or-nothing), `ids` the flat int32 concatenation
+        of the kept sets in position order. None when no node carries kept-set data."""
         if all(n.kept_token_counts is None for n in self.nodes):
             return None
         # `_attribute_kept_tokens` validates counts/ids against the node's sampled
