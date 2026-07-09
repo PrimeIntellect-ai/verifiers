@@ -168,33 +168,19 @@ class MessageNode(StrictBaseModel):
             },
         )
 
-    @field_serializer("routed_experts")
-    def serialize_routed_experts(self, re: np.ndarray | None) -> dict | None:
-        """uint8 routing array -> raw-bytes `__nd__` dict so it rides the wire (numpy can't JSON)."""
-        return None if re is None else _encode_ndarray(re)
+    @field_serializer("routed_experts", "kept_token_ids", "kept_token_counts")
+    def serialize_ndarray_field(self, arr: np.ndarray | None) -> dict | None:
+        """Integer array -> raw-bytes `__nd__` dict so it rides the wire (numpy can't JSON)."""
+        return None if arr is None else _encode_ndarray(arr)
 
-    @field_validator("routed_experts", mode="before")
+    @field_validator("routed_experts", "kept_token_ids", "kept_token_counts", mode="before")
     @classmethod
-    def deserialize_routed_experts(cls, value: Any) -> np.ndarray | None:
+    def deserialize_ndarray_field(cls, value: Any) -> np.ndarray | None:
         if value is None or isinstance(value, np.ndarray):
             return value
         if isinstance(value, dict) and value.get("__nd__"):
             return _decode_ndarray(value)
-        raise TypeError(f"cannot build routed_experts from {type(value).__name__}")
-
-    @field_serializer("kept_token_ids", "kept_token_counts")
-    def serialize_kept_tokens(self, kt: np.ndarray | None) -> dict | None:
-        """int32 kept-set arrays -> raw-bytes `__nd__` dicts so they ride the wire."""
-        return None if kt is None else _encode_ndarray(kt)
-
-    @field_validator("kept_token_ids", "kept_token_counts", mode="before")
-    @classmethod
-    def deserialize_kept_tokens(cls, value: Any) -> np.ndarray | None:
-        if value is None or isinstance(value, np.ndarray):
-            return value
-        if isinstance(value, dict) and value.get("__nd__"):
-            return _decode_ndarray(value)
-        raise TypeError(f"cannot build kept tokens from {type(value).__name__}")
+        raise TypeError(f"cannot build ndarray field from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:

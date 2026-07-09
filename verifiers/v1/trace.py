@@ -177,30 +177,19 @@ class Branch(StrictBaseModel):
         `enable_return_kept_tokens`)."""
         if all(n.kept_token_counts is None for n in self.nodes):
             return None
+        # `_attribute_kept_tokens` validates counts/ids against the node's sampled
+        # tokens before setting the fields, so this is a straight scatter+concat
+        # (a corrupted node would fail loudly on the scatter shape mismatch).
         ids_parts: list[np.ndarray] = []
         counts_parts: list[np.ndarray] = []
         for node in self.nodes:
-            mask = node.mask
-            counts = np.zeros(len(mask), dtype=np.int32)
-            node_counts = node.kept_token_counts
-            if node_counts is not None and len(node_counts):
-                sampled_positions = np.nonzero(mask)[0]
-                if len(sampled_positions) == len(node_counts):
-                    counts[sampled_positions] = node_counts
-                    if node.kept_token_ids is not None:
-                        ids_parts.append(node.kept_token_ids)
-                else:
-                    counts[:] = 0
+            counts = np.zeros(len(node.mask), dtype=np.int32)
+            if node.kept_token_counts is not None and len(node.kept_token_counts):
+                counts[np.nonzero(node.mask)[0]] = node.kept_token_counts
+                ids_parts.append(node.kept_token_ids)
             counts_parts.append(counts)
-        counts = np.concatenate(counts_parts) if counts_parts else np.zeros(0, dtype=np.int32)
-        ids = (
-            np.concatenate(ids_parts).astype(np.int32, copy=False)
-            if ids_parts
-            else np.zeros(0, dtype=np.int32)
-        )
-        if int(counts.sum()) != len(ids):
-            return None
-        return ids, counts
+        ids = np.concatenate(ids_parts).astype(np.int32, copy=False) if ids_parts else np.zeros(0, dtype=np.int32)
+        return ids, np.concatenate(counts_parts)
 
     @property
     def num_total_tokens(self) -> int:
