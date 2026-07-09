@@ -16,6 +16,7 @@ This folder contains installable example environments that showcase common usage
 
 ### SingleTurnEnv subclass (custom dataset/scoring wrappers)
 - **reasoning_gym_env**: Wraps `reasoning_gym` procedural datasets, converts to HF datasets, and applies task-specific scoring.
+- **irreps_tensor_product**: Standalone O(3) irreps tensor product decomposition task with exact symbolic scoring.
 
 ### MultiTurnEnv (custom interaction protocols)
 - **alphabet_sort**: Multi-turn task requiring the model to maintain and update an alphabetically sorted list of names across turns; uses per-turn sequence similarity rewards.

@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -108,12 +109,15 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
         pytest.skip(f"Skipping dedicated-runtime smoke test for {env_dir.name}")
     tmp_venv_dir = tmp_path_factory.mktemp(f"venv_{env_dir.name}")
     repo_root = Path(__file__).parent.parent
+    tmp_venv_path = shlex.quote(tmp_venv_dir.as_posix())
+    repo_root_path = shlex.quote(repo_root.as_posix())
+    env_path = shlex.quote(env_dir.absolute().as_posix())
     cmd = (
-        f"cd {tmp_venv_dir} && uv venv --clear && source .venv/bin/activate && "
+        f"cd {tmp_venv_path} && uv venv --clear && source .venv/bin/activate && "
         "uv pip install "
-        f"{repo_root.as_posix()} && "
+        f"{repo_root_path} && "
         "uv pip install "
-        f"{env_dir.absolute().as_posix()}"
+        f"{env_path}"
     )
     try:
         process = subprocess.run(
@@ -137,7 +141,8 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
 
 def help_test_can_import_env(tmp_venv_dir: Path, env_dir: Path):
     """Test that the environment can be imported as a package."""
-    import_cmd = f"cd {tmp_venv_dir} && source .venv/bin/activate && uv run python -c 'import {env_dir.name}'"
+    tmp_venv_path = shlex.quote(tmp_venv_dir.as_posix())
+    import_cmd = f"cd {tmp_venv_path} && source .venv/bin/activate && uv run python -c 'import {env_dir.name}'"
     try:
         process = subprocess.run(
             import_cmd,
@@ -154,7 +159,8 @@ def help_test_can_import_env(tmp_venv_dir: Path, env_dir: Path):
 
 def help_test_can_load_env(tmp_venv_dir: Path, env_dir: Path):
     """Test that the environment can be loaded."""
-    load_cmd = f"""cd {tmp_venv_dir} && source .venv/bin/activate && uv run python -c 'import verifiers as vf; vf.load_environment("{env_dir.name}")'"""
+    tmp_venv_path = shlex.quote(tmp_venv_dir.as_posix())
+    load_cmd = f"""cd {tmp_venv_path} && source .venv/bin/activate && uv run python -c 'import verifiers as vf; vf.load_environment("{env_dir.name}")'"""
     try:
         process = subprocess.run(
             load_cmd,
@@ -171,7 +177,14 @@ def help_test_can_load_env(tmp_venv_dir: Path, env_dir: Path):
 
 def help_test_can_eval_env(tmp_venv_dir: Path, env_dir: Path):
     """Test that the environment can be run via vf-eval."""
-    if os.getenv("PRIME_API_KEY"):
+    if os.getenv("VF_EVAL_API_BASE_URL") and os.getenv("VF_EVAL_API_KEY_VAR"):
+        model = os.getenv("VF_EVAL_MODEL", "local/smoke-test")
+        model_flags = (
+            f"-m {shlex.quote(model)} "
+            f"-b {shlex.quote(os.environ['VF_EVAL_API_BASE_URL'])} "
+            f"-k {shlex.quote(os.environ['VF_EVAL_API_KEY_VAR'])}"
+        )
+    elif os.getenv("PRIME_API_KEY"):
         model_flags = "-m openai/gpt-4.1-mini -b https://api.pinference.ai/api/v1 -k PRIME_API_KEY"
     elif os.getenv("OPENAI_API_KEY"):
         model_flags = "-m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY"
@@ -179,7 +192,7 @@ def help_test_can_eval_env(tmp_venv_dir: Path, env_dir: Path):
         pytest.skip("Skipping vf-eval smoke test because no API key is configured")
 
     eval_cmd = (
-        f"cd {tmp_venv_dir} && source .venv/bin/activate && "
+        f"cd {shlex.quote(tmp_venv_dir.as_posix())} && source .venv/bin/activate && "
         f"uv run vf-eval {env_dir.name} {model_flags} -n 1 -r 1 -t 512"
     )
     try:
