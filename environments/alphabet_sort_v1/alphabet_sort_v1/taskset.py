@@ -23,6 +23,7 @@ from collections.abc import Iterator
 from typing import Literal
 
 from datasets import load_dataset
+from pydantic import Field
 
 import verifiers.v1 as vf
 
@@ -41,7 +42,7 @@ class AlphabetSortTaskConfig(vf.TaskConfig):
 
 
 class AlphabetSortConfig(vf.TasksetConfig):
-    num_tasks: int | None = None
+    num_tasks: int | None = Field(None, ge=1)
     """Episodes to generate; `None` yields forever (bound runs with `-n`)."""
     min_turns: int = 1
     """Minimum number of turns (assistant sorts) per episode."""
@@ -128,7 +129,7 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
         while True:
             pass_start = idx
             for entry in entries:
-                if idx == c.num_tasks:
+                if c.num_tasks is not None and idx >= c.num_tasks:
                     return
                 names = list(dict.fromkeys(n.replace(" ", "") for n in entry["names"]))
                 counts = [

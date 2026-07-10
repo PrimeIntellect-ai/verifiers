@@ -89,7 +89,7 @@ class ColorCodewordTaskConfig(vf.TaskConfig):
 
 
 class ColorCodewordConfig(vf.TasksetConfig):
-    num_tasks: int | None = None
+    num_tasks: int | None = Field(None, ge=1)
     """Synthetic episodes to generate; `None` yields forever (bound runs with `-n`)."""
     images_per_turn: int = Field(2, ge=1)
     """Colored squares shown per turn."""

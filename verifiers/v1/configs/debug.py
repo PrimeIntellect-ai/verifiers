@@ -28,6 +28,7 @@ class DebugConfig(BaseConfig):
     for the debug command/script."""
     num_tasks: int | None = Field(
         None,
+        ge=1,
         validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),
     )
     """How many tasks to debug (None = all)."""

@@ -26,6 +26,9 @@ from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
 
+MAX_LAZY_TASKS = 1_000_000
+"""Most tasks an infinite taskset's generator is willing to build (and cache) per worker."""
+
 
 class EnvServer:
     def __init__(
@@ -85,8 +88,15 @@ class EnvServer:
     def _task(self, idx: int):
         """The task at `idx`; an infinite taskset is generated (and cached) up to `idx`
         on demand. Generation must be deterministic — every pool worker runs its own
-        `load()`, so idx-addressing relies on all of them producing the same sequence."""
+        `load()`, so idx-addressing relies on all of them producing the same sequence.
+        Lazy generation is capped at `MAX_LAZY_TASKS`: an idx that far ahead is a
+        runaway driver, and generating (and caching) toward it would hang the worker
+        and exhaust memory instead of failing the one request."""
         while len(self._tasks) <= idx:
+            if idx >= MAX_LAZY_TASKS:
+                raise IndexError(
+                    f"task_idx {idx} exceeds the lazy-generation cap ({MAX_LAZY_TASKS})"
+                )
             try:
                 self._tasks.append(next(self._task_iter))
             except StopIteration:

@@ -12,6 +12,8 @@ import random
 from collections.abc import Iterator
 from typing import Literal
 
+from pydantic import Field
+
 import verifiers.v1 as vf
 
 try:
@@ -90,7 +92,7 @@ class TextArenaConfig(vf.TasksetConfig):
         "WordLadder-v0",
         "WordSearch-v0",
     ]
-    num_tasks: int | None = None
+    num_tasks: int | None = Field(None, ge=1)
     """Seeded episodes to generate; `None` yields forever (bound runs with `-n`)."""
     task: TextArenaTaskConfig = TextArenaTaskConfig()
 
