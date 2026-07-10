@@ -1,7 +1,10 @@
 """Offline scoring for saved traces.
 
-Replay runs trace-only handlers and judges, preserving runtime and group scores recorded
-by the source run. Its saved config is the base for replay-specific overrides.
+Replay clears each trace's scores and recomputes everything computable from the saved
+transcript — trace-only handlers plus the layered config's judges. Runtime-requiring
+signals (and group rewards, which need the whole group) don't run offline, so a replay
+carries offline scores only; the source run keeps the runtime-recorded values. Its saved
+config is the base for replay-specific overrides.
 """
 
 import asyncio
@@ -135,9 +138,12 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 st.state, st.detail, st.end = "skipped", "rollout errored", time.time()
             else:
                 st.state = "running"
-                # Recompute trace-only scores after restoring runtime-only values below.
+                # Offline re-score from scratch: everything computable from the saved
+                # transcript recomputes — trace-only signals plus the layered config's
+                # judges. Runtime-requiring signals simply don't run, so a replay's
+                # scores are the offline-recomputable ones only; consult the source run
+                # for runtime-recorded values.
                 trace.info.pop("judge", None)
-                prior_rewards, prior_metrics = trace.rewards, trace.metrics
                 trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
                 # The behavior wrapper around the rebuilt row: the declared Task for a
                 # rebuilt row, the base Task (judges + base signals) for a WireTaskData
@@ -146,8 +152,6 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                     row, config=config.taskset.task
                 )
                 try:
-                    # Trace-only handlers may depend on restored runtime metrics.
-                    task.restore_offline(trace, prior_rewards, prior_metrics)
                     await task.score(trace)
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
@@ -159,20 +163,6 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                             trace.task.data.idx,
                             exc_info=True,
                         )
-                # Harness and direct-write metrics have no attributable producer, so
-                # restore them wholesale — except keys recorded by judges no longer
-                # attached, which stay dropped like their rewards (see restore_offline).
-                detached = {
-                    key
-                    for name, keys in (
-                        trace.info.get("offline_keys", {}).get("judges", {}).items()
-                    )
-                    if name not in {j.reward_name for j in task.plugged_judges()}
-                    for key in keys
-                }
-                for name, value in prior_metrics.items():
-                    if name not in detached:
-                        trace.metrics.setdefault(name, value)
                 st.end = time.time()
         if not config.rich:
             logger.info(
