@@ -274,12 +274,13 @@ class InterceptionServer:
         # extends both each turn (`dialect.extend` for the wire, `prompt` for the trace).
         prompt: Messages
         prompt, tools = dialect.parse_request(body)
-        if tools is not None:
+        if tools:
             # Persist the advertised tools on the trace (see `Trace.tool_defs`): the request is
             # the ground truth of what the model saw, and this is the one choke point every
-            # harness's calls flow through. Only a tools-bearing request updates it, so a
-            # trailing tool-less call (e.g. a summarization turn) can't erase the schemas the
-            # recorded tool calls need.
+            # harness's calls flow through. Only a tools-bearing request updates it (truthy, not
+            # just non-None, so an empty parse can't clear it either) — a trailing tool-less
+            # call (e.g. a summarization turn) never erases the schemas the recorded tool
+            # calls need.
             session.trace.tool_defs = tools
         # A task with no prompt has its conversation opened by the user simulator: before the
         # first model call, seed the simulator's opening user turn(s) into both the wire request

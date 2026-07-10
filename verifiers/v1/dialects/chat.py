@@ -97,6 +97,9 @@ def parse_message(raw: dict) -> Message:
 
 
 def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
+    # `or None` so a tools array with no function entries (e.g. only `custom`/built-in
+    # tools) parses to None, not [] — the same contract as the anthropic/responses
+    # dialects, and what keeps an empty parse from clearing `Trace.tool_defs`.
     if not raw:
         return None
     return [
@@ -108,7 +111,7 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
         )
         for t in raw
         if t.get("type", "function") == "function"
-    ]
+    ] or None
 
 
 # --- vf -> chat wire ----------------------------------------------------------
