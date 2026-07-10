@@ -284,7 +284,7 @@ class InterceptionServer:
         # post-turn loop below then drives the remaining turns as usual.
         if (
             session.user is not None
-            and session.trace.task.prompt is None
+            and session.trace.task.data.prompt is None
             and session.trace.num_turns == 0
         ):
             if session.opening is None:
@@ -591,7 +591,7 @@ class InterceptionServer:
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         logger.debug("intercept GET /task: id=%s", session.trace.id)
-        task = session.trace.task
+        task = session.trace.task.data
         return web.json_response(
             {
                 "cls": f"{type(task).__module__}:{type(task).__qualname__}",

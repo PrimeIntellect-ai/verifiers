@@ -42,7 +42,7 @@ class NullHarness(Harness[NullHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(trace.task)
+        system_prompt, prompt = self.resolve_prompt(trace.task.data)
         env = {**self.config.resolved_env}
         args = [
             f"--base-url={endpoint}",

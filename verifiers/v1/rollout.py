@@ -44,7 +44,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import TraceTask, Trace
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,10 @@ class Rollout:
         eval-level shared tool servers / interception pool injected at construction (see
         `self.shared_tools` / `self.interception`)."""
         # The trace carries the DATA (the wire half); behavior stays on `self.task`.
-        trace: Trace = Trace(task=self.task.data, state=state_cls(type(self.task))())
+        trace: Trace = Trace(
+            task=TraceTask(type=type(self.task).__name__, data=self.task.data),
+            state=state_cls(type(self.task))(),
+        )
         self.trace = trace  # expose for the --rich dashboard
         self.phase = Phase.SETUP  # leaving the queue: provisioning starts now
         trace.timing.setup.start = time.time()

@@ -122,8 +122,8 @@ values uniform across the taskset live on the config — load-time ones directly
 the declared type's defaults, so a standalone task works out of the box. Overriding
 `from_trace(trace)` (not implemented by default) opts a task into being derived from a
 finished rollout's bare `Trace` — how a multi-agent step spawns a follow-up task. Only the data rides the wire:
-`trace.task` is the `TaskData`, and behavior re-attaches by constructing the task class
-around it.
+`trace.task.data` is the `TaskData` (with `trace.task.type` recording the producing Task
+class's name), and behavior re-attaches by constructing the task class around it.
 
 ## Adding Tools
 

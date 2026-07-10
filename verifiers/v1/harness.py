@@ -161,7 +161,7 @@ class Harness(ABC, Generic[ConfigT]):
         Rollout runs in parallel with this); metrics declare what they need (`task`,
         `trace`, `runtime`) and can read what the harness left behind in the runtime.
         No-op for an harness with no `@metric`s."""
-        available = {"task": trace.task, "trace": trace, "runtime": runtime}
+        available = {"task": trace.task.data, "trace": trace, "runtime": runtime}
         fns = discover_decorated(self, "metric")
         async with boundary(HarnessError, f"harness {self.config.id!r} metric"):
             results = (
@@ -186,7 +186,7 @@ class Harness(ABC, Generic[ConfigT]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         """Run the harness program in `runtime` to completion and return its result. The
-        task is `trace.task`; model calls should reach the interception server at
+        task is `trace.task.data`; model calls should reach the interception server at
         `endpoint` (bearer token `secret`); `mcp_urls` are the task's tool servers
         (name -> URL) to wire in. Each harness owns the env its program needs — read
         `ctx.model` for the model id (the default/compact harnesses set OPENAI_*; rlm sets

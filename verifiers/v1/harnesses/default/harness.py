@@ -68,7 +68,7 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(trace.task)
+        system_prompt, prompt = self.resolve_prompt(trace.task.data)
         fragments = [BASH_SYSTEM_PROMPT]
         if self.config.edit:
             fragments.append(EDIT_SYSTEM_PROMPT)

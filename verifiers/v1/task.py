@@ -3,7 +3,7 @@
 `TaskData` is the wire half: a frozen pydantic model carrying everything a rollout's
 row IS — the base fields (prompt, image, timeouts, judges) plus your typed,
 task-specific fields (the reference answer, ground truths, ...). It is what rides on
-`trace.task`, what `traces.jsonl` stores, and what tool/user servers receive over the
+`trace.task.data`, what `traces.jsonl` stores, and what tool/user servers receive over the
 `/task` channel. Subclass it per dataset.
 
 `Task` is the behavior half: a plain class owning runtime prep (`setup`/`finalize`),
@@ -33,7 +33,8 @@ instance), so hooks and scoring methods must not stash per-rollout state on `sel
 that lives on the trace (`trace.state`, typed via the `Task[..., MyState, ...]`
 param).
 
-On the wire only the data travels: a saved `trace.task` reads back as `WireTaskData`
+On the wire only the data (plus the producing class's name, `trace.task.type`)
+travels: a saved `trace.task.data` reads back as `WireTaskData`
 (extra fields preserved) without importing the taskset; a consumer that re-scores
 (e.g. `replay`) rebuilds the declared `TaskData` type and wraps it in the declared
 `Task` — one task type per taskset.
@@ -147,7 +148,7 @@ class TaskConfig(BaseConfig):
 class TaskData(StrictBaseModel):
     """The task's wire half: one row's pure data, a frozen pydantic model. Subclass per
     dataset to add typed, task-specific fields (the reference answer, ground truths,
-    per-row metadata) next to the base fields below. This is what `trace.task` holds,
+    per-row metadata) next to the base fields below. This is what `trace.task.data` holds,
     what `traces.jsonl` stores, and what tool/user servers receive over the `/task`
     channel — behavior lives on `Task`, which wraps this (`self.data`)."""
 

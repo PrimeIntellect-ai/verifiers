@@ -216,13 +216,28 @@ that the env-server wire carries fine but JSON cannot — `model_dump(mode="json
 Lives with the schema it excludes so a new tensor field can't silently start crashing dumps."""
 
 
+class TraceTask(StrictBaseModel, Generic[DataT]):
+    """The task as recorded on the trace: the row (`data`, the wire half — fully typed,
+    flows into scoring) plus the Task class name that produced the rollout (`type`) —
+    provenance, so a bare trace is self-describing: a `from_trace` implementer or an
+    offline re-scorer can tell which behavior class made it without the run's config
+    (replay warns when it disagrees with the taskset's declared type). Only data and a
+    name ride the wire — behavior still re-attaches by construction."""
+
+    type: str
+    """The Task class name (`type(task).__name__`), resolution stays anchored to the
+    taskset id like everything else."""
+    data: DataT
+    """The (immutable) row being solved."""
+
+
 class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """The full record of one rollout. Subclass to add typed fields."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     """Unique id for this rollout, auto-generated per trace."""
-    task: DataT
-    """The (immutable) task being solved — fully typed, flows into scoring."""
+    task: TraceTask[DataT]
+    """The task being solved: its class name (`task.type`) + its row (`task.data`)."""
     runtime: RuntimeInfo | None = None
     """Where the rollout ran: the runtime's full config plus the provisioned resource's `id`
     (subprocess workdir / docker container id / prime or modal sandbox id). The rollout assigns

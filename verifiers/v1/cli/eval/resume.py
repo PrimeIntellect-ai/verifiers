@@ -62,7 +62,7 @@ class Finished(Rollout):
 
     def __init__(self, trace: Trace) -> None:
         self.trace = trace
-        self.task = Task(trace.task)
+        self.task = Task(trace.task.data)
         self.phase = Phase.DONE
         self.runtime = None
 

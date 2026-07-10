@@ -75,10 +75,10 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     traces = read_traces(source, Trace[WireTaskData, state_cls(task_cls)])
     if config.num_traces is not None:
         traces = traces[: config.num_traces]
-    # `trace.task` is pure data; re-scoring with the taskset's behavior needs the declared
-    # `TaskData` type — which every saved row is (one task type per taskset; its `load()`
-    # constructs it). The rebuilt row feeds ONLY the behavior wrapper at score time —
-    # `trace.task` keeps its wire form, because the trace persists through the
+    # `trace.task.data` is pure data; re-scoring with the taskset's behavior needs the
+    # declared `TaskData` type — which every saved row is (one task type per taskset; its
+    # `load()` constructs it). The rebuilt row feeds ONLY the behavior wrapper at score
+    # time — `trace.task` keeps its wire form, because the trace persists through the
     # `Trace[WireTaskData, ...]` schema it was read as: a sibling `TaskData` assigned onto
     # it would have its subclass fields silently dropped from the replay's own output
     # (they're real fields, not `model_extra`). A row that can't be rebuilt from the wire
@@ -87,17 +87,27 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     # subclass's own `@reward`s don't run — runtime-dependent ones would be skipped
     # offline anyway).
     def rebuild(trace: Trace) -> vf.TaskData:
+        if trace.task.type != task_cls.__name__:
+            # The trace records which class produced it — a mismatch means this row is
+            # about to re-score under different behavior than it was generated with.
+            logger.warning(
+                "replay: task %s was produced by %s but re-scores as %s (the taskset's "
+                "declared type)",
+                trace.task.data.idx,
+                trace.task.type,
+                task_cls.__name__,
+            )
         try:
-            return data_cls.model_validate(trace.task.model_dump())
+            return data_cls.model_validate(trace.task.data.model_dump())
         except Exception:
             logger.warning(
                 "replay: can't rebuild %s from the saved task %s; re-scoring it as a "
                 "plain WireTaskData (judges + base-task signals only)",
                 data_cls.__name__,
-                trace.task.idx,
+                trace.task.data.idx,
                 exc_info=True,
             )
-            return trace.task
+            return trace.task.data
 
     rows = [rebuild(trace) for trace in traces]
     # Judges are config, not wire data: `Task.score` resolves them from the replay
@@ -122,7 +132,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     start = time.time()
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-    states = [ReplayProgress(idx=t.task.idx, name=t.task.name) for t, _ in work]
+    states = [ReplayProgress(idx=t.task.data.idx, name=t.task.data.name) for t, _ in work]
     lock = asyncio.Lock()
 
     async def rescore(trace: Trace, row: vf.TaskData, st: ReplayProgress) -> None:
@@ -163,7 +173,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                     if not config.rich:
                         logger.warning(
                             "replay: scoring failed for task %s",
-                            trace.task.idx,
+                            trace.task.data.idx,
                             exc_info=True,
                         )
                 # Source metrics the re-score didn't re-record survive wholesale — harness
@@ -177,7 +187,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 st.end = time.time()
         if not config.rich:
             logger.info(
-                "idx=%s %s (%.1fs)", trace.task.idx, st.state, st.end - st.start
+                "idx=%s %s (%.1fs)", trace.task.data.idx, st.state, st.end - st.start
             )
         # Persist as each trace finishes (like eval), so an interrupted replay keeps its progress.
         await append_trace(out, trace, lock)

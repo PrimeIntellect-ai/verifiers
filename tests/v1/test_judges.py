@@ -35,7 +35,9 @@ def make_trace(
     task_cls: type[QAData] = QAData,
 ) -> vf.Trace:
     return vf.Trace(
-        task=task_cls(idx=0, prompt="Capital of France?", answer=answer),
+        task=vf.TraceTask(
+            type="Task", data=task_cls(idx=0, prompt="Capital of France?", answer=answer)
+        ),
         nodes=[
             MessageNode(
                 parent=None,
@@ -210,7 +212,7 @@ def test_reference_parse():
 async def test_reference_score(fake_judge_model):
     trace = make_trace()
     verdict = await vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="reference")).score(
-        trace.task, trace
+        trace.task.data, trace
     )
     assert verdict == 1.0
     assert (
@@ -219,11 +221,11 @@ async def test_reference_score(fake_judge_model):
     assert len(trace.info["judge"]) == 1  # the call is recorded onto the trace
 
     trace = make_trace(reply="It is Rome.")
-    assert await vf.ReferenceJudge().score(trace.task, trace) == 0.0
+    assert await vf.ReferenceJudge().score(trace.task.data, trace) == 0.0
 
     judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(answer_field="gold"))
     with pytest.raises(ValueError, match="no 'gold' field"):  # misconfig raises, not 0
-        await judge.score(trace.task, trace)
+        await judge.score(trace.task.data, trace)
 
 
 async def test_reference_score_messages_prompt(fake_judge_model):
@@ -236,7 +238,7 @@ async def test_reference_score_messages_prompt(fake_judge_model):
         answer="Paris",
     )
     trace = vf.Trace(
-        task=task,
+        task=vf.TraceTask(type="Task", data=task),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
             MessageNode(
@@ -261,7 +263,7 @@ async def test_reference_question_field(fake_judge_model):
         answer="Paris",
     )
     trace = vf.Trace(
-        task=task,
+        task=vf.TraceTask(type="Task", data=task),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
             MessageNode(
@@ -285,7 +287,9 @@ def full_trace_fixture() -> vf.Trace:
     from verifiers.v1.types import ToolCall, ToolMessage
 
     return vf.Trace(
-        task=QAData(idx=0, prompt="Capital of France?", answer="Paris"),
+        task=vf.TraceTask(
+            type="Task", data=QAData(idx=0, prompt="Capital of France?", answer="Paris")
+        ),
         nodes=[
             MessageNode(
                 parent=None,
@@ -331,12 +335,12 @@ def test_transcript():
 async def test_view_modes(fake_judge_model):
     # last_reply (default): the judge sees only the final reply.
     trace = full_trace_fixture()
-    await vf.ReferenceJudge().score(trace.task, trace)
+    await vf.ReferenceJudge().score(trace.task.data, trace)
     assert "TOOL RESULT" not in fake_judge_model[0]
     # full_trace: the whole transcript (minus reasoning) fills {response}.
     trace = full_trace_fixture()
     await vf.ReferenceJudge(vf.ReferenceJudgeConfig(view="full_trace")).score(
-        trace.task, trace
+        trace.task.data, trace
     )
     assert "TOOL RESULT: Paris is the capital." in fake_judge_model[1]
     assert "SECRET REASONING" not in fake_judge_model[1]
@@ -352,7 +356,7 @@ async def test_rubric_view_full_trace(tmp_path, fake_judge_model):
     # The rubric judge's default view: criteria are judged against the whole transcript.
     judge = rubric_judge(tmp_path)
     trace = full_trace_fixture()
-    await judge.score(trace.task, trace)
+    await judge.score(trace.task.data, trace)
     assert all("TOOL RESULT" in prompt for prompt in fake_judge_model)
     assert all("SECRET REASONING" not in prompt for prompt in fake_judge_model)
 
@@ -365,7 +369,7 @@ async def test_config_prompt_overrides_class_template(fake_judge_model):
     # A template needn't use every evaluate field: score also passes {positive}/{negative},
     # which str.format ignores when the (custom) prompt doesn't reference them.
     trace = make_trace()
-    assert await judge.score(trace.task, trace) == 1.0
+    assert await judge.score(trace.task.data, trace) == 1.0
     assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
 
 
@@ -375,7 +379,7 @@ async def test_prompt_file(tmp_path, fake_judge_model):
     file.write_text("Q:{question} A:{answer} R:{response}")
     trace = make_trace()
     judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(prompt_file=file))
-    assert await judge.score(trace.task, trace) == 1.0
+    assert await judge.score(trace.task.data, trace) == 1.0
     assert fake_judge_model[0] == "Q:Capital of France? A:Paris R:It is Paris."
     # a bad path fails at judge construction, not mid-eval at score time
     with pytest.raises(FileNotFoundError):
@@ -391,7 +395,7 @@ async def test_prompt_file(tmp_path, fake_judge_model):
 async def test_reference_empty_response_short_circuits(fake_judge_model):
     # An empty reply scores 0 without paying for the (foregone) judge call.
     trace = make_trace(reply="")
-    assert await vf.ReferenceJudge().score(trace.task, trace) == 0.0
+    assert await vf.ReferenceJudge().score(trace.task.data, trace) == 0.0
     assert fake_judge_model == []
     assert "judge" not in trace.info
 
@@ -421,7 +425,7 @@ async def test_reference_choices(fake_judge_model):
     with pytest.raises(
         ValueError
     ):  # the yes-replying fake is now an unparseable verdict
-        await judge.score(trace.task, trace)
+        await judge.score(trace.task.data, trace)
     assert 'Respond either "A" or "B"' in fake_judge_model[0]
     # degenerate labels are a config error (duplicates would score every verdict 1.0)
     for choices in (("yes", "yes"), ("A", "a"), ("", "no")):
@@ -451,12 +455,12 @@ async def test_error_attribution(monkeypatch, tmp_path):
     )
     # model failure: empty reply -> judge skipped, reward 0.0, NO error
     trace = make_trace(reply="")
-    await JudgedTask(trace.task, taskset.config.task).score(trace, runtime=None)
+    await JudgedTask(trace.task.data, taskset.config.task).score(trace, runtime=None)
     assert trace.rewards["reference"] == 0.0
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
     trace = make_trace()
     with pytest.raises(vf.TaskError, match="no yes/no verdict"):
-        await JudgedTask(trace.task, taskset.config.task).score(trace, runtime=None)
+        await JudgedTask(trace.task.data, taskset.config.task).score(trace, runtime=None)
     assert "reference" not in trace.rewards
     assert len(trace.info["judge"]) == 1  # the billed call is still recorded
 
@@ -516,7 +520,7 @@ async def test_rubric_score(tmp_path, fake_judge_model):
     # judge call; each verdict lands as a `<name>/<criterion>` metric.
     judge = rubric_judge(tmp_path)
     trace = make_trace()
-    assert await judge.score(trace.task, trace) == 0.75
+    assert await judge.score(trace.task.data, trace) == 0.75
     assert trace.metrics == {"rubric/mentions_paris": 1.0, "rubric/is_polite": 0.0}
     assert len(trace.info["judge"]) == 1  # one call for the whole rubric
 
@@ -532,7 +536,7 @@ async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch):
     judge = rubric_judge(tmp_path)
     trace = make_trace()
     with pytest.raises(ValueError, match="expected the batch"):
-        await judge.score(trace.task, trace)
+        await judge.score(trace.task.data, trace)
 
 
 CHOICES_TOML = (
@@ -550,7 +554,7 @@ async def test_rubric_choices_normalize(tmp_path, monkeypatch):
     monkeypatch.setattr(Judge, "complete", graded)
     judge = rubric_judge(tmp_path, body=CHOICES_TOML, name="q")
     trace = make_trace()
-    assert await judge.score(trace.task, trace) == 0.5
+    assert await judge.score(trace.task.data, trace) == 0.5
     assert trace.metrics == {"q/depth": 0.5}
 
 
@@ -564,7 +568,7 @@ async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch):
     judge = rubric_judge(tmp_path, body=CHOICES_TOML)
     trace = make_trace()
     with pytest.raises(ValueError, match="expected one of"):
-        await judge.score(trace.task, trace)
+        await judge.score(trace.task.data, trace)
 
 
 def test_rubric_choices_validation(tmp_path):
@@ -582,12 +586,12 @@ def test_rubric_choices_validation(tmp_path):
 async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model):
     # off by default: no reference block in the prompt.
     t = make_trace()
-    await rubric_judge(tmp_path).score(t.task, t)
+    await rubric_judge(tmp_path).score(t.task.data, t)
     assert "Reference solution" not in fake_judge_model[-1]
 
     # answer_field set: the task's gold answer is shown to the judge.
     t = make_trace(answer="ZEBRA-GOLD")
-    await rubric_judge(tmp_path, answer_field="answer").score(t.task, t)
+    await rubric_judge(tmp_path, answer_field="answer").score(t.task.data, t)
     assert "Reference solution" in fake_judge_model[-1]
     assert "ZEBRA-GOLD" in fake_judge_model[-1]
 
@@ -625,7 +629,7 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     )
     taskset = JudgedTaskset(cfg)
     trace = make_trace()
-    await JudgedTask(trace.task, taskset.config.task).score(trace, runtime=None)
+    await JudgedTask(trace.task.data, taskset.config.task).score(trace, runtime=None)
     assert trace.rewards["own"] == 0.25  # decorated rewards still run
     assert (
         trace.rewards["reference"] == 0.5
@@ -638,5 +642,5 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
 
 async def test_task_without_judges_scores_as_before():
     trace = make_trace()
-    await JudgedTask(trace.task).score(trace, runtime=None)
+    await JudgedTask(trace.task.data).score(trace, runtime=None)
     assert trace.rewards == {"own": 0.25}

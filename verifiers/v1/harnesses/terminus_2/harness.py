@@ -48,7 +48,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
     ) -> ProgramResult:
         if self.config.disabled_tools:
             raise ValueError("Terminus 2 does not support disabling tools")
-        system_prompt, prompt = self.resolve_prompt(trace.task)
+        system_prompt, prompt = self.resolve_prompt(trace.task.data)
         if prompt is None:
             raise ValueError(
                 "Terminus 2 requires a task prompt (it has no user simulator)"

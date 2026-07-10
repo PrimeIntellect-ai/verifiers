@@ -102,6 +102,7 @@ from verifiers.v1.trace import (
     TimeSpan,
     Timing,
     Trace,
+    TraceTask,
     WireTrace,
 )
 from verifiers.v1.types import (
@@ -155,6 +156,7 @@ __all__ = [
     "TaskResources",
     "TaskTimeout",
     "Trace",
+    "TraceTask",
     "WireTrace",
     "State",
     "StateT",
