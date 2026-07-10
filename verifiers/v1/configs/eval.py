@@ -11,13 +11,6 @@ from verifiers.v1.types import SamplingConfig
 
 
 class EvalConfig(EnvServerConfig):
-    """The eval run plus its environment: inherits the env's fields (`taskset`, `harness`,
-    `max_turns`, token limits, timeouts) and the worker `pool` so they're top-level flags
-    (`--taskset.id`, `--harness.id`, `--harness.runtime.*`, `--pool.*`, …) with no `--env.`
-    prefix, and adds the run knobs (model, sampling, counts, …). Rollouts run in-process by
-    default; `--server` drives them through the env-server worker pool (sized by `pool`) — the
-    path prime-rl trains through. `--rich` adds a live dashboard (in-process only)."""
-
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id — the leaf of the output dir, so runs never overwrite.
     Excluded from the saved config so re-running `@ config.toml` lands in a fresh dir."""
@@ -39,7 +32,7 @@ class EvalConfig(EnvServerConfig):
             "group_size", "rollouts_per_example", "num_rollouts", "r"
         ),
     )
-    """Rollouts per task. A taskset with `@group_reward`s requires >=2)."""
+    """Rollouts per task. A task with `@group_reward`s requires at least two."""
     shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
     """Shuffle tasks before taking the first `num_tasks`."""
     max_concurrent: int | None = Field(
@@ -65,9 +58,10 @@ class EvalConfig(EnvServerConfig):
     """Where to write the run (config.toml + traces.jsonl). None = a fresh per-run dir
     under `outputs/<env>--<model>--<harness>/<uuid>` (so runs never overwrite each other)."""
     resume: Path | None = Field(None, exclude=True)
-    """Set by `--resume <dir>`: re-run only the rollouts a previous run left missing or
-    errored, appending to that run's own results. The run's saved config is loaded verbatim,
-    so `--resume` takes no other arguments. Excluded from the saved config."""
+    """Set by `--resume <dir>`: re-run missing or errored rollouts, or an incomplete
+    group-scored task as a whole group, appending to that run's own results. The run's saved
+    config is loaded verbatim, so `--resume` takes no other arguments. Excluded from the
+    saved config."""
 
     @model_validator(mode="after")
     def reject_rich_with_server(self):

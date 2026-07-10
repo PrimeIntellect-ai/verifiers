@@ -1,21 +1,3 @@
-"""The env server: load a taskset once, run rollouts on request by task index.
-
-A ZMQ ROUTER front end (msgpack frames) over a v1 `Environment`. The server
-owns the environment — taskset, harness, runtime — and is the only process that ever
-loads it. A caller (e.g. the orchestrator) stays env-agnostic: it asks `info` for
-the task count + whether group scoring is needed, then `run_rollout` / `run_group`
-by task index. Per request the server resolves a `Client` from the request's
-`client` config (cached, so a renderer's tokenizer is built once), wraps it in a
-`ModelContext`, and runs `env.episode(task, ctx, n).run()`, returning each
-`Trace` as a JSON dict (with its computed `branches`).
-
-Minimal port of `verifiers.serve` (ROUTER + msgpack), single async process: each
-request is its own `asyncio.Task`, so many rollouts run concurrently. No worker
-pool / heartbeats yet — the rollout's own runtime already isolates execution, and
-the structure leaves room to add a pool later. Health is just another request type
-(no separate socket), which is enough at this scale.
-"""
-
 import asyncio
 import contextlib
 import logging
@@ -46,15 +28,12 @@ logger = logging.getLogger(__name__)
 
 
 class EnvServer:
-    """Serve one v1 environment over ZMQ. The only process that loads the env."""
-
     def __init__(
         self, config: EnvConfig, address: str = "tcp://127.0.0.1:5000"
     ) -> None:
         self.address = address
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
-        # Load tasks once; the index range is fixed for the server's lifetime.
         self.tasks = self.env.taskset.load()
         # One task type per taskset (the authoring contract; its `load()` constructs it),
         # so group scoring is a run-wide property.
@@ -78,10 +57,7 @@ class EnvServer:
 
     @classmethod
     def run_server(cls, address_queue=None, **kwargs) -> None:
-        """Build and run a server (entry point for a spawned process). If
-        `address_queue` is given, report the concrete bound address on it (so a
-        spawner that passed a `:0` address learns the OS-assigned port) before
-        serving."""
+        """Run a spawned server and report its concrete address when requested."""
         # This worker loads the taskset (and any HF datasets it pulls in) and is killed at
         # teardown; pin tqdm to a threading lock first so it never leaks a multiprocessing
         # semaphore (resource_tracker warning at shutdown).
@@ -98,9 +74,7 @@ class EnvServer:
             pass
 
     def _client(self, client_config: ClientConfig, model: str) -> Client:
-        """Resolve (and cache) a `Client` for this config+model. Cached because a
-        renderer client builds the model's tokenizer pool on first use — doing that
-        per request would be ruinous."""
+        """Cache clients because renderer initialization builds a tokenizer pool."""
         key = (client_config.model_dump_json(), model)
         if key not in self._clients:
             self._clients[key] = resolve_client(client_config)
@@ -186,9 +160,7 @@ class EnvServer:
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
         tasks: set[asyncio.Task] = set()
-        # Enter the serving resources (shared tool servers + interception pool) for the
-        # server's lifetime so they're reused across requests; episodes built per request
-        # inherit them (the legacy bridge overrides this to a no-op).
+        # Shared servers and the interception pool live across requests in this worker.
         async with self.serving():
             try:
                 while True:

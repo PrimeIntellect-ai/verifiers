@@ -1,10 +1,6 @@
-"""The codex harness: installs the Codex CLI into the runtime and runs `codex exec`.
+"""Codex reaches interception as a Responses API provider using the session secret.
 
-Codex only speaks the streaming OpenAI Responses API, so it reaches the interception server as a
-custom model provider (`wire_api = responses`) pointed at the rollout endpoint — served by the
-Responses dialect + SSE relay (see `verifiers.v1.dialects.responses`). The binary is the static
-musl release, so it drops into any linux container with no runtime deps; its bearer token (the
-session secret) is read from an env var.
+The static musl binary runs in Linux containers without additional runtime dependencies.
 """
 
 import logging
@@ -37,8 +33,6 @@ chmod +x {bin}
 
 
 class CodexHarnessConfig(HarnessConfig):
-    """The Codex CLI harness — which codex release to install in the runtime."""
-
     version: str = "0.137.0"
     """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
 

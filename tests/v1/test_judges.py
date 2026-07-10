@@ -115,9 +115,6 @@ def test_judge_plugin_resolution():
 
 
 def test_taskset_config_narrows_judges(tmp_path):
-    # `judges` entries narrow to the config type their id resolves to (like taskset/harness
-    # narrowing in EnvConfig), so judge-specific fields validate against the real config —
-    # and survive model_dump (SerializeAsAny), which the env-server wire depends on.
     rubric = tmp_path / "rubric.toml"
     rubric.write_text(RUBRIC_TOML)
     cfg = vf.TaskConfig.model_validate(
@@ -135,7 +132,6 @@ def test_taskset_config_narrows_judges(tmp_path):
     )
     assert isinstance(rubric_cfg, vf.RubricJudgeConfig) and rubric_cfg.name == "quality"
     assert cfg.model_dump()["judges"][0]["answer_field"] == "gold"
-    # a round-trip through the dump re-narrows to the same types
     again = vf.TaskConfig.model_validate(cfg.model_dump())
     assert isinstance(again.judges[0], vf.ReferenceJudgeConfig)
 
@@ -229,7 +225,7 @@ async def test_reference_score(fake_judge_model):
 
 
 async def test_reference_score_messages_prompt(fake_judge_model):
-    # A Messages-form prompt still reaches the judge as text (via Task.prompt_text).
+    # A Messages-form prompt still reaches the judge as text (via TaskData.prompt_text).
     from verifiers.v1.types import TextContentPart, UserMessage as UM
 
     task = QAData(
@@ -594,9 +590,6 @@ async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model):
     await rubric_judge(tmp_path, answer_field="answer").score(t.task.data, t)
     assert "Reference solution" in fake_judge_model[-1]
     assert "ZEBRA-GOLD" in fake_judge_model[-1]
-
-
-# --- Task.score integration -------------------------------------------------------------
 
 
 class JudgedTask(vf.Task[QAData]):

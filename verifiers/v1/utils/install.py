@@ -1,8 +1,4 @@
-"""Environment/plugin id helpers + on-demand install from the Environments Hub.
-
-Thin v1 wrappers over `verifiers.utils.install_utils`: derive an id's package/module name,
-and make a hub id (`org/name[@version]`) importable on demand (the same path `prime env
-install` uses)."""
+"""Environment/plugin ID helpers and on-demand Hub installation."""
 
 import logging
 

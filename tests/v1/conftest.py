@@ -82,11 +82,7 @@ def user_runtime(request) -> dict:
     return {"colocated": False, "runtime": {"type": request.param}}
 
 
-# The tool server's runtime: inside the harness's runtime (`colocated`) or its own runtime
-# per rollout; this fans the tool test across all of them, each carrying its placement/runtime
-# mark (colocated uses the host subprocess runtime). Eval-wide sharing is a different SCOPE
-# (a `Taskset.tools` declaration), not a placement flag — its e2e coverage is
-# `test_shared_tool_isolation`, which fans the shared server's own runtime off this fixture.
+# Task-scoped and shared tool tests both use these runtime placements.
 TOOL_RUNTIMES = [
     pytest.param("colocated", marks=pytest.mark.colocated, id="with-tool-colocated"),
     pytest.param(

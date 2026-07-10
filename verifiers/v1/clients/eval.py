@@ -108,7 +108,8 @@ class EvalClient(Client):
                 f"malformed upstream response: {type(e).__name__}: {e}",
                 status_code=502,
             ) from e
-        response.raw = raw  # the program gets the provider's bytes back 1:1
+        # The interception server returns this full native provider object to the program.
+        response.raw = raw
         return response
 
     def _headers(

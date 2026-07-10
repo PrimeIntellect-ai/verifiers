@@ -116,6 +116,7 @@ def error_info(
 
 
 def capture_trace_error(trace: Trace, error: BaseException) -> None:
+    # CancelledError is a BaseException; Trace.capture_error accepts Exception.
     if isinstance(error, Exception):
         trace.capture_error(error)
         return
@@ -323,6 +324,7 @@ def main(argv: list[str] | None = None) -> None:
     sys.argv = [sys.argv[0], *argv]
     config = cli(config_type)
     setup_logging("DEBUG" if config.verbose else "INFO")
+    # Translate SIGTERM so async finally blocks still tear down their resources.
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     asyncio.run(run_debug(config))
 

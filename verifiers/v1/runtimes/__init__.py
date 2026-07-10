@@ -1,11 +1,4 @@
-"""Execution runtimes for harnesses.
-
-Each runtime decides WHERE the program runs and HOW it reaches the host
-interception server: subprocess (local), docker (local container), or prime /
-modal (remote sandbox). They share the `Runtime` contract, so the Environment is
-runtime-agnostic. `RuntimeConfig` is the discriminated config union and
-`make_runtime` builds the runtime matching a config.
-"""
+"""Execution runtimes for harnesses."""
 
 from typing import Annotated
 
@@ -38,9 +31,6 @@ RuntimeInfo = Annotated[
     SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | ModalRuntimeInfo,
     Field(discriminator="type"),
 ]
-"""What a rollout's runtime looked like, as trace data: each runtime's info type is its full
-config plus the provisioned resource's `id` (see `BaseRuntimeInfo`). The discriminated union
-is `Trace.runtime`'s type, so a dumped trace round-trips to the exact info class."""
 
 
 def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:

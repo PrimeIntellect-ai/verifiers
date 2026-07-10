@@ -1,30 +1,4 @@
-"""rubric — an off-the-shelf rubric judge, plugged from config alone.
-
-Reads a rubric — a list of criteria — from a JSON or TOML file and asks the judge model to grade
-each by picking one of its ordered `choices` (default `["no", "yes"]`, a binary check), scored to
-[0, 1] by rank — worst → best, so the first choice is 0.0 and the last 1.0 (all in one call by
-default, or batched `max_criteria`-at-a-time). Grading uses plain-text JSON by default, or
-structured output when `structured_output=true` (see `RubricJudgeConfig`). The reward is the
-weighted mean of the per-criterion scores (`sum(w*v) / sum(w)`, so it stays in [0, 1]); each score
-is also recorded as a `<name>/<criterion>` metric. Criterion weights come from the rubric file and
-are overridable from config (`weights`); the aggregate weighs into `trace.reward` via the judge's
-`weight`:
-
-    [[env.taskset.task.judges]]
-    id = "rubric"
-    path = "rubrics/quality.toml"
-    weight = 0.5
-    weights = { cites_sources = 2.0 }   # override the file's per-criterion weight
-
-with `rubrics/quality.toml` listing the criteria (JSON takes `{"criteria": [...]}` or a bare list):
-
-    [[criteria]]
-    name = "cites_sources"
-    text = "The response cites at least one specific source."
-    weight = 1.0
-    # choices default to ["no", "yes"]; give an ordered worst→best list for a graded criterion:
-    # choices = ["none", "partial", "thorough"]   # -> 0.0, 0.5, 1.0
-"""
+"""Built-in weighted rubric judge."""
 
 import asyncio
 import json
@@ -48,7 +22,6 @@ from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID, StrictBaseModel
 
-# A sibling text file so it doubles as a starting point for a config `prompt_file`.
 RUBRIC_PROMPT = (Path(__file__).resolve().parent / "rubric.txt").read_text(
     encoding="utf-8"
 )
@@ -67,8 +40,6 @@ JSON_SUFFIX = (
 
 
 def normalize_choice(choice: str, choices: list[str]) -> float:
-    """Score a chosen option to [0, 1] by rank. `choices` are ordered worst → best, so the first
-    scores 0.0, the last 1.0, and the rest evenly spaced (`choices` always has >= 2 entries)."""
     return choices.index(choice) / (len(choices) - 1)
 
 
@@ -91,13 +62,9 @@ def first_verdicts_object(text: str) -> dict | None:
 
 
 class Criterion(StrictBaseModel):
-    """One rubric entry the judge grades by picking one of `choices`, scored to [0, 1] by rank.
-    Defaults to a binary yes/no check (1/0)."""
-
     name: str
     """Key for the criterion's metric (`<judge name>/<name>`) and its `weights` override."""
     text: str
-    """The check itself, phrased so the first (best) choice means satisfied."""
     weight: float = 1.0
     """The criterion's share of the reward (overridable per name via `weights` in config)."""
     choices: list[str] = ["no", "yes"]
@@ -118,13 +85,13 @@ class RubricJudgeConfig(JudgeConfig):
     id: ID = "rubric"
     """Pinned to the built-in, so a code-level default entry needs no explicit id."""
     path: Path
-    """The rubric file (`.toml` or `.json`) listing the criteria — see the module docstring
-    for the shape. A relative path resolves against the eval's working directory."""
+    """A `.toml` or `.json` file containing a `criteria` list. Relative paths resolve
+    against the evaluation's working directory."""
     weights: dict[str, float] = {}
     """Per-criterion weight overrides by criterion name (config wins over the file)."""
     question_field: str = ""
     """Task field to fill the prompt's `{question}`; empty = the task's prompt rendered as
-    text (`Task.prompt_text`)."""
+    text (`TaskData.prompt_text`)."""
     answer_field: str = ""
     """Optional task field holding a reference answer (e.g. a gold patch) to show the judge, like
     the reference judge. Empty (default) shows none — `{reference}` renders blank. A list-valued
@@ -148,34 +115,21 @@ class RubricJudgeConfig(JudgeConfig):
 
 
 class CriterionVerdict(StrictBaseModel):
-    """One criterion's reply, matched back to the rubric by `name`: a short `reason`
-    (chain-of-thought, always recorded for auditability in `trace.info["judge"]`) written *before*
-    the `verdict`, so the verdict follows from it. `verdict` is one of the criterion's `choices`
-    (validated per criterion in `grade_batch`, since choices vary by criterion)."""
-
     name: str
     reason: str
     verdict: str
 
 
 class RubricVerdicts(StrictBaseModel):
-    """The judge's reply: one reasoned verdict per rubric criterion."""
-
     verdicts: list[CriterionVerdict]
 
 
 class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
-    """Scores every rubric criterion 1/0 (in one judge call, or batched `max_criteria` at a
-    time) and rewards their weighted mean."""
-
     prompt = RUBRIC_PROMPT
     schema = RubricVerdicts
 
     @cached_property
     def criteria(self) -> list[Criterion]:
-        """The rubric, parsed once from `config.path` (TOML by suffix, else JSON) with the
-        config's `weights` overrides applied. Fails loudly on a missing/empty file, duplicate
-        criterion names, or an override naming no criterion."""
         path = self.config.path
         text = path.read_text(encoding="utf-8")
         data = (
@@ -213,17 +167,10 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
     async def grade_batch(
         self, task: TaskData, trace: Trace, batch: list[Criterion]
     ) -> dict[str, float]:
-        """Grade one batch of criteria in a single judge call — structured output, or plain-text
-        JSON when `structured_output` is off (which avoids flaky structured decoding). Returns
-        `{name: score}`, each the chosen option normalized to [0, 1] by rank (best → worst),
-        matched back to the batch by name. `score` fans this out per batch."""
-
-        def render(
-            c: Criterion,
-        ) -> str:  # every criterion states its own allowed answers inline
+        def render(c: Criterion) -> str:
             return f"- {c.name}: {c.text} (answer one of, worst to best: {', '.join(c.choices)})"
 
-        reference = ""  # optional gold answer shown to the judge; blank unless `answer_field` set
+        reference = ""
         if self.config.answer_field:
             answer = getattr(task, self.config.answer_field, None)
             if answer is None:
@@ -256,9 +203,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             verdicts = cast(RubricVerdicts, result.parsed).verdicts
         else:
             messages = cast(str, self.build_messages(**fields)) + JSON_SUFFIX
-            result = await self.complete(
-                messages, trace=trace
-            )  # no schema -> plain text
+            result = await self.complete(messages, trace=trace)
             obj = first_verdicts_object(result.text)
             if obj is None:
                 raise ValueError(
@@ -276,9 +221,8 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         scores: dict[str, float] = {}
         for v in verdicts:
             choices = by_criterion[v.name].choices
-            if (
-                v.verdict not in choices
-            ):  # an off-menu answer is a judge failure, not a 0
+            # An off-menu answer is a judge failure, not a zero score.
+            if v.verdict not in choices:
                 raise ValueError(
                     f"judge answered {v.verdict!r} for '{v.name}', expected one of {choices}"
                 )
@@ -287,8 +231,6 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
 
     async def score(self, task: TaskData, trace: Trace) -> float:
         criteria = self.criteria
-        # Split into batches of `max_criteria` (None = one batch of all), then grade the batches
-        # concurrently (one judge call each) and merge.
         k = self.config.max_criteria
         if k is not None and k < 1:
             raise ValueError(f"`max_criteria` must be >= 1 or None, got {k}")

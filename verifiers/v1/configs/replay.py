@@ -1,11 +1,4 @@
-"""The `ReplayConfig`: the config the `replay` CLI parses.
-
-Replay re-scores a finished run's saved traces with no runtime, so it needs only a subset of
-`EvalConfig` — the taskset (with its plugged judges) and a few run knobs. It carries no harness,
-runtime, model, sampling, or pool. Its base is the replayed run's own `config.toml` (a full
-`EvalConfig`), so `model_config` ignores the eval-only fields rather than rejecting them; CLI
-flags / `@ file.toml` then layer overrides (e.g. re-judge with different judge settings).
-"""
+"""Offline re-scoring config; source eval-only fields are ignored."""
 
 from pathlib import Path
 from uuid import uuid4
@@ -17,10 +10,6 @@ from verifiers.v1.taskset import TasksetConfig
 
 
 class ReplayConfig(BaseConfig):
-    """A taskset (with its config-plugged judges) plus replay run knobs. The saved run's
-    `config.toml` is the base; its eval-only fields (harness, runtime, model, sampling, pool, …)
-    are ignored here — replay only re-runs scoring from the trace."""
-
     model_config = ConfigDict(extra="ignore")
 
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
@@ -60,8 +49,6 @@ class ReplayConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_taskset(cls, data):
-        """Narrow the generic `taskset` to its specific config type by `id` (mirrors
-        `ValidateConfig`), so `taskset.task.judges` and other taskset fields validate typed."""
         from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
 
         narrow_plugin_field(data, "taskset", taskset_config_type)

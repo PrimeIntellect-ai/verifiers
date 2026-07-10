@@ -1,10 +1,4 @@
-"""The `ServeConfig`: the config the env-server CLI parses.
-
-Inherits `EnvServerConfig` (taskset + harness + timeouts + turn/token limits + the worker
-`pool`), so the swappable harness/runtime knobs are the same flags as the eval CLI
-(`--taskset.id`, `--harness.id`, `--harness.runtime.type`, `--taskset.*`, `--pool.*`), and
-adds only the CLI-specific serving knobs (bind address, verbose, dry-run).
-"""
+"""Environment-server CLI configuration."""
 
 from pydantic import AliasChoices, Field
 

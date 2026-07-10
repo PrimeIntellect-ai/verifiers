@@ -1,5 +1,4 @@
-"""Live dashboard for `replay` — one row per trace being re-scored (pending → running → its
-outcome), mirroring the validate view. Reuses `TaskProgress` and `live_view`."""
+"""Live replay dashboard."""
 
 import contextlib
 import time
@@ -19,9 +18,6 @@ from verifiers.v1.utils.format import format_time
 
 @dataclass
 class ReplayProgress(TaskProgress):
-    """`TaskProgress` plus the re-score `detail` shown per row: the final reward when scored, or
-    the exception type when it errored."""
-
     detail: str = ""
 
 

@@ -1,14 +1,4 @@
-"""The validate entrypoint: `uv run validate <taskset-id> [--runtime.type subprocess] [options]`.
-
-Registered as the `validate` console script — the model-free sibling of `eval`. Where `eval`
-runs a model rollout per task, `validate` runs each task's gold check (`setup` + the
-`validate` hook) and a setup-only check in independent runtimes — or just one of them via
-`--only-gold` / `--only-setup`. Each task is provisioned, set up, checked, and torn down
-independently with bounded concurrency.
-
-Fire-and-forget: progress is shown live (the `--rich` dashboard, or per-task log lines) and
-nothing is written to disk.
-"""
+"""Model-free task-validation CLI."""
 
 import asyncio
 import contextlib
@@ -66,8 +56,6 @@ ResultRow = dict[str, Any]
 
 
 def _classify(valid: bool, exc: BaseException | None) -> str:
-    """The outcome reason: `valid` (passed), `invalid` (returned False), `timeout` (a stage
-    timed out), or `error` (raised) — the error's message carries the detail."""
     if valid:
         return "valid"
     if isinstance(exc, asyncio.TimeoutError):
@@ -93,7 +81,6 @@ def _row(
 
 
 async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
-    """The gold check: provision one runtime, run setup + validate, tear it down."""
     start = time.time()
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
@@ -126,7 +113,6 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
 
 
 async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
-    """The setup-only check: provision one runtime, run setup, tear it down."""
     start = time.time()
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
@@ -177,7 +163,6 @@ def _all_error(rows: list[ResultRow]) -> tuple[str | None, str | None]:
 
 
 async def _run_all(task: Task, config: ValidateConfig) -> ResultRow:
-    """Run every check (gold, setup-only) as independent high-level validations."""
     start = time.time()
     gold = await _run_gold(task, config)
     setup = await _run_setup(task, config)
@@ -206,8 +191,6 @@ async def _validate_task(task: Task, config: ValidateConfig) -> ResultRow:
 
 
 async def run_validate(config: ValidateConfig) -> list[dict]:
-    """Run each task's `validate` hook with bounded concurrency, showing progress live. Returns
-    the result rows in memory — nothing is persisted."""
     taskset = vf.load_taskset(config.taskset)
     tasks = taskset.load()
     if config.shuffle:

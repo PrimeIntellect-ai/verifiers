@@ -27,11 +27,7 @@ DEFAULT_FRONTEND_URL = "https://app.primeintellect.ai"
 
 @dataclass
 class PushState:
-    """Live status of the push, shared with the v1 `--rich` dashboard so it can show a status line
-    under the rollouts once the run finishes and the upload begins: dim while uploading, then the
-    viewer URL (green) or the error (red). `started` flips true when the upload begins (the caller
-    sets it), `done` when it returns; `url` is set on success and `error` on a skip/failure. No line
-    is shown until `started`. Populated by `push_traces` (pass the state in)."""
+    """Mutable upload status shared with the dashboard."""
 
     started: bool = False
     done: bool = False

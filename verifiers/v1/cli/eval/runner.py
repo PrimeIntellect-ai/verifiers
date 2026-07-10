@@ -45,9 +45,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # — so the resumed run is indistinguishable from one that was never interrupted.
     finished: list[Trace] = []
     if config.resume is not None:
-        # A group-scored task's episode must be re-run whole (its `@group_reward`s
-        # compare all its rollouts); other tasks only re-run what's missing. One task
-        # type per taskset, so group scoring is a run-wide property.
+        # Resume incomplete group-reward tasks whole so every rollout is present.
         group = bool(tasks) and bool(discover_decorated(tasks[0], "group_reward"))
         finished, owed = resume.load(
             out, [t.data.idx for t in tasks], config.num_rollouts, group
@@ -92,10 +90,6 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
         rollouts = [resume.Finished(trace) for trace in finished] + [
             rollout for episode in episodes for rollout in episode.rollouts
         ]
-        # --push in the live dashboard: share a status the dashboard renders as a line under the
-        # rollouts once the run finishes and the upload begins (dim -> green URL / red error), and
-        # do the upload inline below so it resolves on screen. Only the rich path has a dashboard;
-        # every other path uploads (+ logs the URL) from `main`.
         push_state = None
         if config.push and config.rich:
             from verifiers.v1.push import PushState
@@ -125,10 +119,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
 
 
 async def run_eval_server(config: EvalConfig) -> list[Trace]:
-    """Eval through the env-server worker pool (`--num-workers > 0`). Spawns the pool
-    (works for v1 and the v0 bridge), then drives rollouts by task idx over an
-    `EnvClient` — the same path prime-rl trains through, so it exercises the
-    router + workers end-to-end. Output matches `run_eval` (config.toml + traces.jsonl)."""
+    """Run evaluation through the env-server worker pool."""
     import multiprocessing as mp
     from functools import partial
 

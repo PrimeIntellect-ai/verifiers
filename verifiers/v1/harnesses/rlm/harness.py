@@ -1,13 +1,4 @@
-"""The rlm harness: installs the rlm CLI into the runtime and runs the binary.
-
-`RLMHarnessConfig` carries both how to install rlm (repo/branch/token/path) and its
-runtime knobs (`max_depth`, `skills`, `summarize_at_tokens`), which rlm reads from `RLM_*`
-env vars. The base `HarnessConfig.env` still passes any other `RLM_*` var through verbatim.
-
-A task's MCP tool servers are passed to rlm via `RLM_MCP_CONFIG` (a standard `mcpServers`
-URL map); rlm exposes each tool as a pre-imported IPython skill the agent calls
-programmatically (`await tools_<name>(...)`), rather than via a native MCP client.
-"""
+"""RLM exposes `RLM_MCP_CONFIG` tools as pre-imported IPython skills."""
 
 import json
 import logging
@@ -36,8 +27,6 @@ RLM_BIN = f"{RLM_DIR}/bin/rlm"
 
 
 class RLMHarnessConfig(HarnessConfig):
-    """The rlm CLI harness — how to install rlm and how it should run."""
-
     version: str = "main"
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0

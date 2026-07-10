@@ -1,16 +1,4 @@
-"""The environment: a taskset composed with an harness and a runtime.
-
-The Environment is the eval-level composition and *resolver* — it does not itself run
-rollouts. It holds the taskset (the loader), harness, runtime config, and timeouts; lists
-the tasks; and turns one task into a runnable `Episode` of `n` `Rollout`s, resolving per
-task the runtime (image + resources, with cli/task/default precedence) and the timeouts.
-Execution lives one level down: an `Episode` runs `n` `Rollout`s of a task and scores them
-(per-rollout `@reward`/`@metric`, then cross-rollout `@group_reward`); each `Rollout`
-runs one trajectory. The task's `@reward`/`@metric` get the rollout's runtime
-(read/exec inside it), so a task scores correctly under any harness; `@group_reward`s
-compare a task's rollouts. Harness capability checks (tools, user sim, container) read
-the class-level declarations (`Task.tools` / `Task.user`) — one task class per taskset.
-"""
+"""Compose a taskset and harness into runnable episodes."""
 
 import contextlib
 import logging
@@ -34,22 +22,23 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 
 class TimeoutConfig(BaseConfig):
     """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no
-    limit). Each bounds one stage of `Rollout.run`: the task's `setup` hook, the harness
+    limit). Each bounds one stage of `Rollout.run`: task and harness setup, the harness
     run, the task's `finalize` hook, then scoring."""
 
     setup: float | None = None
-    """Max wall-clock for the task's `setup` hook (per-task runtime prep)."""
+    """Shared wall-clock budget for task setup and harness provisioning."""
     rollout: float | None = None
     """Max wall-clock for the rollout (the harness run)."""
     finalize: float | None = None
     """Max wall-clock for the task's `finalize` hook (post-run work, before scoring)."""
     scoring: float | None = None
-    """Max wall-clock for scoring — verify + rewards/metrics."""
+    """Max wall-clock for task and harness scoring."""
 
 
 class StaticPoolConfig(BaseConfig):
@@ -89,11 +78,7 @@ def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
 
 
 class EnvConfig(BaseConfig):
-    """The rollout's two peers: the taskset (data + scoring) and the harness (which
-    program drives it, and where it runs — `harness.runtime`). Both are chosen at eval
-    time, not by the env — only `taskset` is narrowed per env (to its config type,
-    inferred from `load_taskset`). Tool servers are declared on `Task.tools` (per rollout)
-    or `Taskset.tools` (shared, once per eval)."""
+    """The taskset that loads tasks and the harness that runs them."""
 
     # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, DefaultHarnessConfig);
     # without it model_dump() narrows to the base type and drops the subclass fields, so the
@@ -120,10 +105,6 @@ class EnvConfig(BaseConfig):
     tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
     key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
     # --- legacy (v0) backwards-compat -----------------------------------------
-    # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
-    # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
-    # unset) to opt in; native v1 envs leave these untouched. Mirrors prime-rl's EnvConfig
-    # so it inherits these (a v0 env is driven the same way in eval and the env server).
     id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
     hub on demand), loaded via `verifiers.load_environment` and run through the legacy
@@ -234,9 +215,10 @@ def validate_pairing(harness: Harness, taskset: Taskset) -> None:
     """Reject an impossible harness/taskset pairing at construction — before any dataset
     load, shared-server launch, or first episode. Every check reads class-level facts
     (`Task.tools` / `Task.user` / `NEEDS_CONTAINER`, `Taskset.tools` — one task type per
-    taskset, `taskset.task_type()`), so a failure here holds for every row the taskset
-    can produce; on the env server it fails worker startup instead of every request."""
-    task_cls = type(taskset).task_type()
+    taskset, read off the `Taskset[TaskT, ...]` generic), so a failure here holds for
+    every row the taskset can produce; on the env server it fails worker startup instead
+    of every request."""
+    task_cls = generic_type(type(taskset), Task, origin=Taskset) or Task
     if not harness.SUPPORTS_MCP and (task_cls.tools or type(taskset).tools):
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but "
@@ -393,22 +375,10 @@ class Environment:
                 self._interception = None
 
     def interception_pool(self) -> InterceptionPool:
-        """The shared interception pool for this env's rollouts — one server (+ tunnel
-        behind a remote runtime) per `multiplex` rollouts, grown on demand. Built here,
-        where the harness runtime and `multiplex` live; the caller (eval runner / env
-        server) enters it for the run and tears it down. Pass it to `Episode.run`."""
         return InterceptionPool(self.harness.config.runtime, self.config.multiplex)
 
     @contextlib.asynccontextmanager
     async def shared_tools(self):
-        """Start the taskset-scoped (shared) tool servers ONCE for the eval — the classes
-        declared on `Taskset.tools`, each in its own `runtime` — and yield
-        `{name: SharedToolServer}` to inject into every rollout, so an expensive corpus is
-        built once, not per rollout. No-op ({}) when the taskset declares none. Sharing is
-        structural: the taskset carries no per-row data, so a shared server is
-        task-agnostic by construction (its `setup` gets no task). A shared server on a host
-        runtime is bridged to the host once (a tunnel) when the harness runs remotely, so
-        an in-sandbox harness can still reach it (see `serve_shared`)."""
         servers = self.taskset.tool_servers()
         if not servers:
             yield {}

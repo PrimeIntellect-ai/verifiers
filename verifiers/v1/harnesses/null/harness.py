@@ -1,12 +1,3 @@
-"""The built-in null harness: runs a small chat-loop program as a uv script, no tools of its own.
-
-A growing-message-list chat loop with the task's MCP tools (host-side, resolved to URLs by
-the Environment) — and no tools of its own (it's "null" precisely because it adds no
-harness-side tooling). Its uv script (deps: openai, mcp) is prepared during setup, then launched
-as the harness program. For a shell-driving agent, use a dedicated agentic harness (e.g.
-`mini-swe-agent`).
-"""
-
 import json
 from pathlib import Path
 
@@ -20,8 +11,7 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
 class NullHarnessConfig(HarnessConfig):
-    """The built-in null harness. A uv script (deps: openai, mcp), so it runs in any runtime that
-    has `uv` (the harness bootstraps it) with no other setup."""
+    pass
 
 
 class NullHarness(Harness[NullHarnessConfig]):

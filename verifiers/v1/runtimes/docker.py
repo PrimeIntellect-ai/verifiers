@@ -1,8 +1,4 @@
-"""Local Docker runtime: run the program in a container sharing the host network.
-
-On Linux the container shares the host network (`--network host`), so it reaches
-the interception server on localhost directly — no tunnel needed.
-"""
+"""Local Docker runtime using host networking."""
 
 import asyncio
 import contextlib
@@ -29,7 +25,7 @@ class DockerConfig(BaseConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
     workdir: str = "/app"
-    # TaskResources in Modal's units (also settable per-task via Task.resources).
+    # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float | None = None
     """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
     memory: float | None = None
@@ -43,11 +39,10 @@ class DockerConfig(BaseConfig):
 
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
-    """`DockerConfig` + the resolved `id` — docker's short container id."""
+    pass
 
 
 async def docker(*args: str) -> ProgramResult:
-    """Run a `docker` CLI command, capturing its result."""
     proc = await asyncio.create_subprocess_exec(
         "docker",
         *args,
@@ -63,8 +58,6 @@ async def docker(*args: str) -> ProgramResult:
 
 
 class DockerRuntime(Runtime):
-    """Runs the program in a local Docker container reachable over the host network."""
-
     def __init__(self, config: DockerConfig, name: str | None = None) -> None:
         super().__init__(name)
         self.config = config

@@ -20,35 +20,28 @@ However, for most environments, building a taskset should be enough.
 
 ## A minimal environment
 
-A task is split into data and behavior. `vf.TaskData` is one row's pure data — the wire
-shape saved on every trace; subclass it to add typed fields (the reference answer, ground
-truths). `vf.Task` is the behavior — `@vf.reward` / `@vf.metric` scoring methods, lifecycle
-hooks, and tool/user declarations — reading the row off `self.data`. The `vf.Taskset` is
-the loader: its `load()` builds each row's data and constructs the task around it (one
-task type per taskset).
-
 ```python
 import verifiers.v1 as vf
 
 
-# One row's data: the wire shape (what traces store).
+# The data for a given task
 class AdditionData(vf.TaskData):
     answer: int
 
 
-# The behavior: how a row is scored. @vf.reward receives whatever it declares by
-# parameter name (`trace`, `runtime`); the row is `self.data`. The trace contains
-# the whole message graph, including function calls and user messages.
+# A task defines a single problem and is defined as a subclass of vf.Task
 class AdditionTask(vf.Task[AdditionData]):
+    # @vf.reward denotes the scoring function for the task.
+    # It needs the trace, which contains the whole message graph, including function calls, user messages etc.
+    # It returns the reward for the single task based on this function.
     @vf.reward
     async def exact_match(self, trace: vf.Trace) -> float:
         return float(trace.last_reply == str(self.data.answer))
 
 
-# The taskset is the loader: it builds the tasks from their rows.
+# The taskset defines the tasks and needs a vf.TasksetConfig, which can be empty.
 class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
     def load(self) -> list[AdditionTask]:
-        # Load the dataset, in this case we build it on the initial load
         return [
             AdditionTask(
                 AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i),
@@ -62,9 +55,7 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
 __all__ = ["AdditionTaskset"]
 ```
 
-You can also use `@vf.metric` to record non-scored values, `@vf.group_reward` for group
-rewards (comparing a task's rollouts, useful for training), and `@vf.stop` for stop
-conditions. Lifecycle hooks (`setup`, `finalize`, `validate`) are methods on the task too.
+You can also use `@vf.metric` to record non-scored values and `@vf.group_reward` for group rewards, which might be useful for training.
 
 ## Making values configurable
 
@@ -86,12 +77,9 @@ class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
         ]
 ```
 
-Common usages for `vf.TasksetConfig` are **load-time** settings: splits (e.g., train/test),
-dataset names, sample counts, rng seeds.
+Common usages for `vf.TasksetConfig` are load-time settings, such as splits (e.g., train/test), dataset names, etc.
 
-Knobs the *task itself* reads — scoring parameters, judge endpoints, server placement — go
-on a `vf.TaskConfig`, nested on the taskset config under `task` and passed to every
-constructed task. The task reads them off `self.config`, typed by parameterizing the task:
+You can also use `vf.TaskConfig` to configure task data, such as scoring parameters:
 
 ```python
 class AdditionTaskConfig(vf.TaskConfig):
@@ -100,12 +88,12 @@ class AdditionTaskConfig(vf.TaskConfig):
 class AdditionTask(vf.Task[AdditionData, vf.State, AdditionTaskConfig]):
     @vf.reward
     async def exact_match(self, trace: vf.Trace) -> float:
-        tolerance = self.config.tolerance  # a config knob, not a per-row field
+        tolerance = self.config.tolerance  # A task-wide confgi
         ...
 
 class AdditionConfig(vf.TasksetConfig):
-    num_tasks: int = 100                              # load-time: --taskset.num-tasks
-    task: AdditionTaskConfig = AdditionTaskConfig()   # task-facing: --taskset.task.tolerance
+    num_tasks: int = 100                             # --taskset.num-tasks
+    task: AdditionTaskConfig = AdditionTaskConfig()  # --taskset.task.tolerance
 ```
 
 The boundary: per-row data (the question, the reference answer) lives on `TaskData` fields;
@@ -123,19 +111,11 @@ class's name), and behavior re-attaches by constructing the task class around it
 Some environments require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`).
 Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
 
-Where you register a toolset decides its **scope** — per rollout, or shared across the eval:
-
-- **On the Task** (`Task.tools`): one server per rollout, in the harness's runtime
-  (`colocated`) or its own (`vf.ToolsetConfig`). For tools that see per-task data.
-- **On the Taskset** (`Taskset.tools`): ONE server for the whole eval, shared by every
-  rollout (`vf.SharedToolsetConfig` — own runtime or a remote `url`, no `colocated`). For
-  an expensive, task-agnostic resource (a corpus, an index) built once. Per-rollout writes
-  stay isolated via `self.state`.
-
+You can create them like this (remember the bootstrapping with `uv run init MY_ENV -T`):
 ```python
 DATABASE = None
 
-class SearchToolset(vf.Toolset[vf.ToolsetConfig]):          # task-scoped
+class SearchToolset(vf.Toolset[vf.SharedToolsetConfig]):
     TOOL_PREFIX = "search"
 
     @vf.tool
@@ -143,30 +123,15 @@ class SearchToolset(vf.Toolset[vf.ToolsetConfig]):          # task-scoped
         """Search the task corpus."""
         return DATABASE.search(text)
 
-class CorpusToolset(vf.Toolset[vf.SharedToolsetConfig]):    # taskset-scoped (shared)
-    TOOL_PREFIX = "corpus"
-    ...
-
-class SearchTaskConfig(vf.TaskConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig()             # --taskset.task.tools.*
-
-class SearchTask(vf.Task[vf.TaskData, vf.State, SearchTaskConfig]):
-    tools = (SearchToolset,)                                 # per rollout
-
+# User-configurable knobs
 class SearchConfig(vf.TasksetConfig):
-    tools: vf.SharedToolsetConfig = vf.SharedToolsetConfig() # --taskset.tools.*
-    task: SearchTaskConfig = SearchTaskConfig()
+    tools: vf.SharedToolsetConfig = vf.SharedToolsetConfig()
 
-class SearchTaskset(vf.Taskset[SearchTask, SearchConfig]):
-    tools = (CorpusToolset,)                                 # once per eval
+class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
+    tools = (SearchToolset,)
 ```
 
-The framework builds each declared server with the matching config off the declaring
-scope's config — the field whose type is the server's declared config type, falling back
-to a default-constructed one. Override `server_config` (on `Task` or `Taskset`) if you
-need explicit pairing (e.g. two servers sharing one config type). User simulators are
-task-scoped only — they drive one rollout's conversation: `user = MyUser` on the task, a
-`vf.UserConfig` field on the task config.
+Taskset tools are shared by a worker's rollouts. Tools can also be set per task.
 
 ## Using Judges
 
@@ -174,6 +139,10 @@ If your reward is semantic, use an LLM judge.
 
 ```python
 import verifiers.v1 as vf
+from functools import cached_property
+
+class Task(vf.Task):
+    answer: str
 
 class CorrectnessJudge(vf.Judge[bool]):
     # The rubric for the judge
@@ -187,19 +156,20 @@ class CorrectnessJudge(vf.Judge[bool]):
         return "yes" in response.text
 
 
-class Config(vf.TaskConfig):
-    # The judge inherits base_url and api keys from the client config (env vars, with the Prime CLI config as a fallback)
-    judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
-
-
 class JudgedData(vf.TaskData):
     answer: str
 
 
-class JudgedTask(vf.Task[JudgedData, vf.State, Config]):
+class JudgedTaskConfig(vf.TaskConfig):
+    # The judge inherits base_url and api keys from the client config
+    judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
+
+
+class JudgedTask(vf.Task[JudgedData, vf.State, JudgedTaskConfig]):
     @vf.reward()
     async def correct(self, trace: vf.Trace) -> float:
-        judge = CorrectnessJudge(self.config.judge)  # config knobs stay CLI-tunable
+        # Keeping judge configuration on TaskConfig makes it overridable from CLI/TOML.
+        judge = CorrectnessJudge(self.config.judge)
         result = await judge.evaluate(
             trace=trace,
             question=self.data.prompt_text,
@@ -207,11 +177,11 @@ class JudgedTask(vf.Task[JudgedData, vf.State, Config]):
             # give the last assistant message to the judge
             response=trace.last_reply,
         )
-        return 1.0 if result.parsed else 0.0
+        return float(result.parsed)
 
 
 class SetConfig(vf.TasksetConfig):
-    task: Config = Config()
+    task: JudgedTaskConfig = JudgedTaskConfig()
 
 
 class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
@@ -225,12 +195,3 @@ class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
 ```
 
 To override the judge model, set `taskset.task.judge.model` in your config (it is a string).
-Sampling knobs live under `taskset.task.judge.sampling` — e.g.
-`taskset.task.judge.sampling.max_tokens`.
-
-Judges can also be plugged **from config alone** — no judge-calling code: the base
-`TaskConfig.judges` list (`--taskset.task.judges`) plugs judge plugins (built-ins like
-`reference` / `rubric`, or hub packages) into every task, and `Task.score` resolves and
-runs them after the task's own `@reward`s. Judges are config, never row data — the run's
-`config.toml` records what judged it, and `replay`'s layered config re-runs (or re-tunes)
-exactly those judges.

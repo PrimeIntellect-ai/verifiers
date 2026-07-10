@@ -1,10 +1,4 @@
-"""`serve --taskset.id <id> [options]` — serve a taskset's environment over ZMQ.
-
-Mirrors the eval entrypoint (`cli/eval.py`): the taskset and harness are selected by their
-`--taskset.id` / `--harness.id` and narrowed to their config types (via `cli/resolve.py`), so
-the taskset/harness flags stay typed (`--taskset.*`, `--harness.*`). The server then runs
-rollouts on request by task idx.
-"""
+"""Environment-server CLI entrypoint."""
 
 import sys
 from functools import partial
