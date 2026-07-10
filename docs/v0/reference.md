@@ -1,0 +1,1098 @@
+# API Reference
+
+<Warning>v0 is considered deprecated and will be fully removed in a future release.</Warning>
+
+## Table of Contents
+
+- [Type Aliases](#type-aliases)
+- [Data Types](#data-types)
+- [Classes](#classes)
+  - [Environment Classes](#environment-classes)
+  - [Parser Classes](#parser-classes)
+  - [Rubric Classes](#rubric-classes)
+- [Client Classes](#client-classes)
+- [Configuration Types](#configuration-types)
+- [Prime CLI Plugin](#prime-cli-plugin)
+- [Decorators](#decorators)
+- [Utility Functions](#utility-functions)
+
+---
+
+## Type Aliases
+
+### Messages
+
+```python
+Messages = str | list[ChatMessage]
+```
+
+The primary message type. Either a plain string (completion mode) or a list of chat messages (chat mode).
+
+### ChatMessage
+
+```python
+ChatMessage = ChatCompletionMessageParam  # from openai.types.chat
+```
+
+OpenAI's chat message type with `role`, `content`, and optional `tool_calls` / `tool_call_id` fields.
+
+### SystemMessage
+
+```python
+class SystemMessage:
+    role: Literal["system"] = "system"
+    content: MessageContent
+
+    @classmethod
+    def from_path(cls, path: str | Path) -> "SystemMessage": ...
+```
+
+Provider-agnostic system message type. Use `vf.SystemMessage.from_path(...)` to load a system prompt from a UTF-8 text file while preserving the file contents verbatim.
+
+### Info
+
+```python
+Info = dict[str, Any]
+```
+
+Arbitrary metadata dictionary from dataset rows.
+
+### SamplingArgs
+
+```python
+SamplingArgs = dict[str, Any]
+```
+
+Generation parameters passed to the inference server (e.g., `temperature`, `top_p`, `max_tokens`).
+
+### SystemPrompt
+
+```python
+SystemPrompt = PromptInput | SystemPromptConfig | None
+SystemPromptStrategy = Literal["HT", "TH", "H_OR_T", "T_OR_H", "H", "T", "REJECT"]
+
+class SystemPromptConfig:
+    path: str | None = None
+    messages: list[JsonData] = []
+```
+
+v1 system prompt type. Plain strings are prompt text. Use
+`vf.SystemPromptConfig(path="system_prompt.txt")` for file-backed prompts, or
+override `load_system_prompt(config)` when prompt construction belongs to the
+class. System prompt resolution is per task: task prompt overrides taskset
+prompt for the taskset side, then the harness applies
+`system_prompt_strategy`. The default strategy is `HT`.
+
+### RewardFunc
+
+```python
+IndividualRewardFunc = Callable[..., float | Awaitable[float]]
+GroupRewardFunc = Callable[..., list[float] | Awaitable[list[float]]]
+RewardFunc = IndividualRewardFunc | GroupRewardFunc
+```
+
+Individual reward functions operate on single rollouts. Group reward functions operate on all rollouts for an example together (useful for relative scoring).
+
+### ClientType
+
+```python
+ClientType = Literal[
+    "openai_completions",
+    "openai_chat_completions",
+    "openai_chat_completions_token",
+    "openai_responses",
+    "renderer",
+    "anthropic_messages",
+    "nemorl_chat_completions",
+]
+```
+
+Selects which `Client` implementation to use. Set via `ClientConfig.client_type`.
+
+---
+
+## Data Types
+
+### State
+
+```python
+class State(dict):
+    INPUT_FIELDS = ["prompt", "answer", "info"]
+```
+
+A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIELDS` automatically forwards to the nested `input` object.
+
+**Fields set during initialization:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `input` | `RolloutInput` | Nested input data |
+| `client` | `Client` | Client instance |
+| `model` | `str` | Model name |
+| `sampling_args` | `SamplingArgs \| None` | Generation parameters |
+| `is_completed` | `bool` | Whether rollout has ended |
+| `is_truncated` | `bool` | Whether generation was truncated |
+| `tool_defs` | `list[Tool] \| None` | Available tool definitions |
+| `trajectory` | `list[TrajectoryStep]` | Multi-turn trajectory |
+| `trajectory_id` | `str` | UUID for this rollout |
+| `timing` | `RolloutTiming` | Timing information |
+
+**Fields set after scoring:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `completion` | `Messages \| None` | Final completion |
+| `reward` | `float \| None` | Final reward |
+| `advantage` | `float \| None` | Advantage over group mean |
+| `metrics` | `dict[str, float] \| None` | Per-function metrics |
+| `stop_condition` | `str \| None` | Name of triggered stop condition |
+| `error` | `Error \| None` | Error if rollout failed |
+
+### RolloutInput
+
+```python
+class RolloutInput(TypedDict):
+    prompt: Messages        # Required
+    answer: str             # Optional
+    info: Info              # Optional
+```
+
+### RolloutOutput
+
+```python
+class RolloutOutput(dict):
+    # Required fields
+    prompt: Messages | None
+    completion: Messages | None
+    reward: float
+    timing: RolloutTiming
+    is_completed: bool
+    is_truncated: bool
+    metrics: dict[str, float]
+    # Optional fields
+    answer: str
+    info: Info
+    error: str | None
+    stop_condition: str | None
+    token_usage: TokenUsage
+    trajectory: list[TrajectoryStep]
+    tool_defs: list[Tool] | None
+```
+
+Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk.
+
+### TrajectoryStep
+
+```python
+class TrajectoryStep(TypedDict):
+    prompt: Messages
+    completion: Messages
+    response: Response
+    tokens: TrajectoryStepTokens | None
+    reward: float | None
+    advantage: float | None
+    is_truncated: bool
+    trajectory_id: str
+    extras: dict[str, Any]
+```
+
+A single turn in a multi-turn rollout.
+
+### RoutedExpertsPayload
+
+```python
+class RoutedExpertsPayload(TypedDict):
+    data: Any  # actually memoryview; kept opaque so Pydantic skips schema validation
+    shape: list[int]
+    start: int
+```
+
+### TrajectoryStepTokens
+
+```python
+class TrajectoryStepTokens(TypedDict):
+    prompt_ids: list[int]
+    prompt_mask: list[int]
+    completion_ids: list[int]
+    completion_mask: list[int]
+    completion_logprobs: list[float]
+    overlong_prompt: bool
+    is_truncated: bool
+    routed_experts: RoutedExpertsPayload | None
+    multi_modal_data: NotRequired[Any]  # renderers.MultiModalData sidecar (pixel_values, placeholder ranges) — set only on multimodal rollouts
+    prompt_attribution: NotRequired[Any]  # renderers.RenderedTokens fields as a dict (per-token is_content / sampled_mask / message_indices / message_roles) — set only on RendererClient rollouts
+```
+
+Token-level data for training.
+
+### TimeSpan
+
+```python
+class TimeSpan(CustomBaseModel):
+    """A timed span. duration = end - start."""
+    start: float = 0.0   # Unix timestamp (seconds since epoch)
+    end: float = 0.0     # Unix timestamp (seconds since epoch)
+    # duration: float    (computed_field)
+```
+
+### TimeSpans
+
+```python
+class TimeSpans(CustomBaseModel):
+    """A list of TimeSpan with aggregate duration (sum)."""
+    spans: list[TimeSpan] = []
+    # duration: float    (computed_field)
+```
+
+### RolloutTiming
+
+```python
+class RolloutTiming(CustomBaseModel):
+    """Rollout-level timing. All values in seconds."""
+    start_time: float                       # wall-clock at rollout start
+    setup: TimeSpan = TimeSpan()            # setup_state() span
+    generation: TimeSpan = TimeSpan()       # full generation phase
+    scoring: TimeSpan = TimeSpan()          # rubric.score_*() span
+    model: TimeSpans = TimeSpans()          # all model-call spans
+    env: TimeSpans = TimeSpans()            # all env-response spans
+    # total, overhead: float                (computed_fields)
+```
+
+Derivations:
+
+- `total    = scoring.end - generation.start`
+- `overhead = total - setup.duration - model.duration - env.duration - scoring.duration`
+
+`generation.start` is stamped at the top of the rollout (before `setup_state`), so `total` covers the entire rollout including setup, generation loop, finalize, and scoring. `overhead` captures any time not attributed to the named phases.
+
+### TokenUsage
+
+```python
+class TokenUsage(TypedDict, total=False):
+    input_tokens: float
+    output_tokens: float
+    final_input_tokens: float
+    final_output_tokens: float
+```
+
+| Field | Description |
+|-------|-------------|
+| `input_tokens` | Sum of prompt tokens across all turns. Shared context is counted each time it appears in a prompt. |
+| `output_tokens` | Sum of completion tokens across all turns. |
+| `final_input_tokens` | Non-completion tokens in the final turn's context (system prompts, user messages, tool results, etc.). |
+| `final_output_tokens` | Completion tokens in the final turn's context. Equals `output_tokens` for single-turn rollouts. |
+
+In a single-turn rollout, `input_tokens == final_input_tokens` and `output_tokens == final_output_tokens`. In a multi-turn rollout, `input_tokens > final_input_tokens` because earlier turns' prompts are counted again.
+
+The `final_*` metrics assume a single, continuously extended trajectory. Non-linear trajectories (multi-agent, context summarization, history rewriting) are not accounted for.
+
+### GenerateOutputs
+
+```python
+class GenerateOutputs(TypedDict):
+    outputs: list[RolloutOutput]
+    metadata: GenerateMetadata
+```
+
+Output from `Environment.generate()`. Contains a list of `RolloutOutput` objects (one per rollout) and generation metadata. Each `RolloutOutput` is a serialized, JSON-compatible dict containing the rollout's prompt, completion, answer, reward, metrics, timing, and other per-rollout data.
+
+### GenerateMetadata
+
+```python
+class VersionInfo(TypedDict):
+    vf_version: str
+    vf_commit: str | None
+    env_version: str | None
+    env_commit: str | None
+
+class GenerateMetadata(TypedDict):
+    env_id: str
+    name: NotRequired[str]
+    env_args: dict
+    model: str
+    base_url: str
+    num_examples: int
+    rollouts_per_example: int
+    shuffle: NotRequired[bool]
+    shuffle_seed: NotRequired[int | None]
+    sampling_args: SamplingArgs
+    date: str
+    time_ms: float
+    avg_reward: float
+    avg_metrics: dict[str, float]
+    avg_error: float
+    pass_at_k: dict[str, float]
+    pass_all_k: dict[str, float]
+    pass_threshold: float
+    usage: TokenUsage | None
+    version_info: VersionInfo
+    state_columns: list[str]
+    path_to_save: Path
+    tools: list[Tool] | None
+```
+
+`base_url` is always serialized as a string. For multi-endpoint runs (e.g., using `ClientConfig.endpoint_configs`), it is stored as a comma-separated list of URLs.
+
+`shuffle` records whether evaluation inputs were shuffled before selecting examples. `shuffle_seed` records the seed used for that shuffle; when shuffle is enabled without an explicit seed, the saved value is `0`.
+
+`version_info` captures the verifiers framework version/commit and the environment package version/commit at generation time. Populated automatically by `GenerateOutputsBuilder`.
+
+### RolloutScore / RolloutScores
+
+```python
+class RolloutScore(TypedDict):
+    reward: float
+    metrics: dict[str, float]
+
+class RolloutScores(TypedDict):
+    reward: list[float]
+    metrics: dict[str, list[float]]
+```
+
+---
+
+## Classes
+
+### Environment Classes
+
+#### Environment
+
+```python
+class Environment(ABC):
+    def __init__(
+        self,
+        dataset: Dataset | None = None,
+        eval_dataset: Dataset | None = None,
+        system_prompt: str | None = None,
+        few_shot: list[ChatMessage] | None = None,
+        parser: Parser | None = None,
+        rubric: Rubric | None = None,
+        sampling_args: SamplingArgs | None = None,
+        message_type: MessageType = "chat",
+        max_workers: int = 512,
+        env_id: str | None = None,
+        env_args: dict | None = None,
+        max_seq_len: int | None = None,
+        score_rollouts: bool = True,
+        pass_threshold: float = 0.5,
+        **kwargs,
+    ): ...
+```
+
+Abstract base class for all environments.
+
+**Generation methods:**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `generate(inputs, client, model, ...)` | `GenerateOutputs` | Run rollouts asynchronously. `client` accepts `Client \| ClientConfig`. |
+| `generate_sync(inputs, client, ...)` | `GenerateOutputs` | Synchronous wrapper; inside an active event loop, install `verifiers[notebook]` |
+| `evaluate(client, model, ...)` | `GenerateOutputs` | Evaluate on eval_dataset |
+| `evaluate_sync(client, model, ...)` | `GenerateOutputs` | Synchronous evaluation |
+
+**Dataset methods:**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get_dataset(n=-1, seed=None)` | `Dataset` | Get training dataset (optionally first n, shuffled) |
+| `get_eval_dataset(n=-1, seed=None)` | `Dataset` | Get evaluation dataset |
+| `make_dataset(...)` | `Dataset` | Static method to create dataset from inputs |
+
+**Rollout methods (used internally or by subclasses):**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `rollout(input, client, model, sampling_args)` | `State` | Abstract: run single rollout |
+| `init_state(input, client, model, sampling_args)` | `State` | Create initial state from input |
+| `get_model_response(state, prompt, ...)` | `Response` | Get model response for prompt |
+| `is_completed(state)` | `bool` | Check all stop conditions |
+| `run_rollout(sem, input, client, model, sampling_args)` | `State` | Run rollout with semaphore |
+| `run_group(group_inputs, client, model, ...)` | `list[State]` | Generate and score one group |
+
+Calling `generate_sync()` from Jupyter or another active event loop requires
+`uv add "verifiers[notebook]"`.
+
+**Configuration methods:**
+
+| Method | Description |
+|--------|-------------|
+| `set_kwargs(**kwargs)` | Set attributes using setter methods when available |
+| `set_concurrency(concurrency)` | Set `concurrency` and scale all registered thread-pool executors to match |
+| `add_rubric(rubric)` | Add or merge rubric |
+| `set_max_seq_len(max_seq_len)` | Set maximum sequence length |
+| `set_score_rollouts(bool)` | Enable/disable scoring |
+
+#### SingleTurnEnv
+
+Single-response Q&A tasks. Inherits from `Environment`.
+
+#### MultiTurnEnv
+
+```python
+class MultiTurnEnv(Environment):
+    def __init__(
+        self,
+        max_turns: int = -1,
+        timeout_seconds: float | None = None,
+        **kwargs,
+    ): ...
+```
+
+Multi-turn interactions. Subclasses must implement `env_response`.
+
+**Abstract method:**
+
+```python
+async def env_response(self, messages: Messages, state: State, **kwargs) -> Messages:
+    """Generate environment feedback after model turn."""
+```
+
+**Built-in stop conditions:** `has_error`, `prompt_too_long`, `max_turns_reached`, `timeout_reached`, `max_total_completion_tokens_reached`, `has_final_env_response`
+
+**Hooks:**
+
+| Method | Description |
+|--------|-------------|
+| `setup_state(state)` | Initialize per-rollout state |
+| `get_prompt_messages(state)` | Customize prompt construction |
+| `render_completion(state)` | Customize completion rendering |
+| `add_trajectory_step(state, step)` | Customize trajectory handling |
+| `set_max_total_completion_tokens(int)` | Set maximum total completion tokens |
+
+#### ToolEnv
+
+```python
+class ToolEnv(MultiTurnEnv):
+    def __init__(
+        self,
+        tools: list[Callable] | None = None,
+        max_turns: int = 10,
+        error_formatter: Callable[[Exception], str] = lambda e: f"{e}",
+        stop_errors: list[type[Exception]] | None = None,
+        **kwargs,
+    ): ...
+```
+
+Tool calling with stateless Python functions. Automatically converts functions to OpenAI tool format.
+
+**Built-in stop condition:** `no_tools_called` (ends when model responds without tool calls)
+
+**Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `add_tool(tool)` | Add a tool at runtime |
+| `remove_tool(tool)` | Remove a tool at runtime |
+| `call_tool(name, args, id)` | Override to customize tool execution |
+
+#### StatefulToolEnv
+
+Tools requiring per-rollout state. Override `setup_state` and `update_tool_args` to inject state.
+
+#### SandboxEnv
+
+```python
+class SandboxEnv(StatefulToolEnv):
+    def __init__(
+        self,
+        sandbox_name: str = "sandbox-env",
+        docker_image: str = "python:3.11-slim",
+        start_command: str = "tail -f /dev/null",
+        cpu_cores: int = 1,
+        memory_gb: int = 2,
+        disk_size_gb: int = 5,
+        gpu_count: int = 0,
+        timeout_minutes: int = 60,
+        timeout_per_command_seconds: int = 30,
+        environment_vars: dict[str, str] | None = None,
+        team_id: str | None = None,
+        advanced_configs: AdvancedConfigs | None = None,
+        labels: list[str] | None = None,
+        **kwargs,
+    ): ...
+```
+
+Sandboxed container execution using `prime` sandboxes.
+
+**Key parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `sandbox_name` | `str` | Name prefix for sandbox instances |
+| `docker_image` | `str` | Docker image to use for the sandbox |
+| `cpu_cores` | `int` | Number of CPU cores |
+| `memory_gb` | `int` | Memory allocation in GB |
+| `disk_size_gb` | `int` | Disk size in GB |
+| `gpu_count` | `int` | Number of GPUs |
+| `timeout_minutes` | `int` | Sandbox timeout in minutes |
+| `timeout_per_command_seconds` | `int` | Per-command execution timeout |
+| `environment_vars` | `dict[str, str] \| None` | Environment variables to set in sandbox |
+| `labels` | `list[str] \| None` | Labels for sandbox categorization and filtering |
+
+#### PythonEnv
+
+Persistent Python REPL in sandbox. Extends `SandboxEnv`.
+
+#### OpenEnvEnv
+
+```python
+class OpenEnvEnv(MultiTurnEnv):
+    def __init__(
+        self,
+        openenv_project: str | Path | None = None,
+        num_train_examples: int = 100,
+        num_eval_examples: int = 50,
+        seed: int = 0,
+        prompt_renderer: Callable[..., Messages] | None = None,
+        max_turns: int = -1,
+        rubric: Rubric | None = None,
+        **kwargs,
+    ): ...
+```
+
+OpenEnv integration that runs OpenEnv projects in Prime Sandboxes using a prebuilt image manifest (`.build.json`), supports both gym and MCP contracts, and requires a `prompt_renderer` to convert observations into chat messages.
+
+#### SandboxDebugEnv
+
+```python
+class SandboxDebugEnv(SandboxMixin, MultiTurnEnv):
+    def __init__(
+        self,
+        taskset: SandboxTaskSet,
+        dataset: Any = None,
+        *,
+        run_setup: bool = True,
+        debug_step: Literal["none", "gold_patch", "command", "script"] = "gold_patch",
+        run_tests: bool = True,
+        debug_command: str | None = None,
+        debug_script: str | None = None,
+        debug_script_path: str | None = None,
+        debug_timeout: int | None = None,
+        test_timeout: int = 900,
+        cpu_cores: int | None = None,
+        memory_gb: int | None = None,
+        disk_size_gb: int | None = None,
+        labels: list[str] | None = None,
+        timeout_seconds: float = 1800.0,
+        output_tail_chars: int = 2000,
+        **sandbox_kwargs,
+    ): ...
+```
+
+No-agent debugger for sandbox-backed `SandboxTaskSet` instances. It creates the task sandbox, optionally runs task setup, runs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs tests and scores the result. `SWEDebugEnv` remains as a deprecated wrapper for older callers.
+
+#### EnvGroup
+
+```python
+env_group = vf.EnvGroup(
+    envs=[env1, env2, env3],
+    env_names=["math", "code", "qa"]  # optional
+)
+```
+
+Combines multiple environments for mixed-task training. Combined datasets use
+`info["env_id"]` as internal routing metadata; it is not a top-level input,
+state, or output field.
+
+---
+
+### Parser Classes
+
+#### Parser
+
+```python
+class Parser:
+    def __init__(self, extract_fn: Callable[[str], str] = lambda x: x): ...
+    
+    def parse(self, text: str) -> Any: ...
+    def parse_answer(self, completion: Messages) -> str | None: ...
+    def get_format_reward_func(self) -> Callable: ...
+```
+
+Base parser. Default behavior returns text as-is.
+
+#### XMLParser
+
+```python
+class XMLParser(Parser):
+    def __init__(
+        self,
+        fields: list[str | tuple[str, ...]],
+        answer_field: str = "answer",
+        extract_fn: Callable[[str], str] = lambda x: x,
+    ): ...
+```
+
+Extracts structured fields from XML-tagged output.
+
+```python
+parser = vf.XMLParser(fields=["reasoning", "answer"])
+# Parses: <reasoning>...</reasoning><answer>...</answer>
+
+# With alternatives:
+parser = vf.XMLParser(fields=["reasoning", ("code", "answer")])
+# Accepts either <code> or <answer> for second field
+```
+
+**Methods:**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `parse(text)` | `SimpleNamespace` | Parse XML into object with field attributes |
+| `parse_answer(completion)` | `str \| None` | Extract answer field from completion |
+| `get_format_str()` | `str` | Get format description string |
+| `get_fields()` | `list[str]` | Get canonical field names |
+| `format(**kwargs)` | `str` | Format kwargs into XML string |
+
+#### ThinkParser
+
+```python
+class ThinkParser(Parser):
+    def __init__(self, extract_fn: Callable[[str], str] = lambda x: x): ...
+```
+
+Extracts content after `</think>` tag. For models that always include `<think>` tags but don't parse them automatically.
+
+#### MaybeThinkParser
+
+Handles optional `<think>` tags (for models that may or may not think).
+
+---
+
+### Rubric Classes
+
+#### Rubric
+
+```python
+class Rubric:
+    def __init__(
+        self,
+        funcs: list[RewardFunc] | None = None,
+        weights: list[float] | None = None,
+        parser: Parser | None = None,
+    ): ...
+```
+
+Combines multiple reward functions with weights. Default weight is `1.0`. Functions with `weight=0.0` are tracked as metrics only.
+
+**Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `add_reward_func(func, weight=1.0)` | Add a reward function |
+| `add_metric(func, weight=0.0)` | Add a metric (no reward contribution) |
+| `add_class_object(name, obj)` | Add object accessible in reward functions |
+
+**Reward function signature:**
+
+```python
+def my_reward(
+    completion: Messages,
+    answer: str = "",
+    prompt: Messages | None = None,
+    state: State | None = None,
+    parser: Parser | None = None,  # if rubric has parser
+    info: Info | None = None,
+    **kwargs
+) -> float:
+    ...
+```
+
+**Group reward function signature:**
+
+```python
+def my_group_reward(
+    completions: list[Messages],
+    answers: list[str],
+    states: list[State],
+    # ... plural versions of individual args
+    **kwargs
+) -> list[float]:
+    ...
+```
+
+#### JudgeRubric
+
+LLM-as-judge evaluation.
+
+#### MathRubric
+
+Math-specific evaluation using `math-verify`.
+
+#### RubricGroup
+
+Combines rubrics for `EnvGroup`.
+
+---
+
+## Client Classes
+
+### Client
+
+```python
+class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
+    def __init__(self, client_or_config: ClientT | ClientConfig) -> None: ...
+
+    @property
+    def client(self) -> ClientT: ...
+
+    async def get_response(
+        self,
+        prompt: Messages,
+        model: str,
+        sampling_args: SamplingArgs,
+        tools: list[Tool] | None = None,
+        **kwargs,
+    ) -> Response: ...
+
+    async def close(self) -> None: ...
+```
+
+Abstract base class for all model clients. Wraps a provider-specific SDK client and translates between provider-agnostic `vf` types (`Messages`, `Tool`, `Response`) and provider-native formats. The `client` property exposes the underlying SDK client (e.g., `AsyncOpenAI`, `AsyncAnthropic`).
+
+`get_response()` is the main public method — it converts the prompt and tools to the native format, calls the provider API, validates the response, and converts it back to a `vf.Response`. Errors are wrapped in `vf.ModelError` unless they are already `vf.Error` or authentication errors.
+
+**Abstract methods (for subclass implementors):**
+
+| Method | Description |
+|--------|-------------|
+| `setup_client(config)` | Create the native SDK client from `ClientConfig` |
+| `to_native_prompt(messages)` | Convert `Messages` → native prompt format + extra kwargs |
+| `to_native_tool(tool)` | Convert `Tool` → native tool format |
+| `get_native_response(prompt, model, ...)` | Call the provider API |
+| `raise_from_native_response(response)` | Raise `ModelError` for invalid responses |
+| `from_native_response(response)` | Convert native response → `vf.Response` |
+| `close()` | Close the underlying SDK client |
+
+### Built-in Client Implementations
+
+| Class | `client_type` | SDK Client | Description |
+|-------|---------------|------------|-------------|
+| `OpenAIChatCompletionsClient` | `"openai_chat_completions"` | `AsyncOpenAI` | Chat Completions API (default) |
+| `OpenAICompletionsClient` | `"openai_completions"` | `AsyncOpenAI` | Legacy Completions API |
+| `OpenAIChatCompletionsTokenClient` | `"openai_chat_completions_token"` | `AsyncOpenAI` | Custom vLLM token route (`/v1/chat/completions/tokens`) — server-side templating + token IDs returned alongside content |
+| `OpenAIResponsesClient` | `"openai_responses"` | `AsyncOpenAI` | OpenAI Responses API |
+| `RendererClient` | `"renderer"` | `AsyncOpenAI` | Renderer-backed token-in generate client (client-side tokenization via the `renderers` package) |
+| `AnthropicMessagesClient` | `"anthropic_messages"` | `AsyncAnthropic` | Anthropic Messages API |
+| `NeMoRLChatCompletionsClient` | `"nemorl_chat_completions"` | `AsyncOpenAI` | NeMo-RL Chat Completions variant |
+
+All built-in clients are available as `vf.OpenAIChatCompletionsClient`, `vf.AnthropicMessagesClient`, etc.
+
+### Response
+
+```python
+class Response(BaseModel):
+    id: str
+    created: int
+    model: str
+    usage: Usage | None
+    message: ResponseMessage
+
+class ResponseMessage(BaseModel):
+    content: str | None
+    reasoning_content: str | None
+    finish_reason: Literal["stop", "length", "tool_calls"] | None
+    is_truncated: bool | None
+    tokens: ResponseTokens | None
+    tool_calls: list[ToolCall] | None
+```
+
+Provider-agnostic model response. All `Client` implementations return `Response` from `get_response()`.
+
+### Tool
+
+```python
+class Tool(BaseModel):
+    name: str
+    description: str
+    parameters: dict[str, object]
+    strict: bool | None = None
+```
+
+Provider-agnostic tool definition. Environments define tools using this type; each `Client` converts them to its native format via `to_native_tool()`.
+
+---
+
+## Configuration Types
+
+### ClientConfig
+
+```python
+class ClientConfig(BaseModel):
+    client_idx: int = 0
+    client_type: ClientType = "openai_chat_completions"
+    preserve_all_thinking: bool = False
+    preserve_thinking_between_tool_calls: bool = False
+    api_key_var: str = "PRIME_API_KEY"
+    api_base_url: str = "https://api.pinference.ai/api/v1"
+    endpoint_configs: list[EndpointClientConfig] = []
+    timeout: float = 3600.0
+    connect_timeout: float = 5.0
+    max_connections: int = 28000
+    max_keepalive_connections: int = 28000
+    max_retries: int = 10
+    extra_headers: dict[str, str] = {}
+    extra_headers_from_state: dict[str, str] = {}
+```
+
+`extra_headers_from_state` maps HTTP header names to state field names. For each inference request, the header value is dynamically read from the rollout state dict. For example, `{"X-Session-ID": "trajectory_id"}` adds a `X-Session-ID` header with the value of `state["trajectory_id"]`, enabling sticky routing at the inference router level.
+
+`client_type` selects which `Client` implementation to instantiate (see [Client Classes](#client-classes)). Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
+
+`preserve_all_thinking` and `preserve_thinking_between_tool_calls` are forwarded to the underlying renderer when `client_type == "renderer"`. They control whether past-assistant `reasoning_content` is re-emitted on subsequent renders — `preserve_all_thinking` keeps every past-assistant turn's thinking, and `preserve_thinking_between_tool_calls` keeps thinking only inside the in-flight assistant→tool→…→assistant block after the most recent user turn (when that block contains at least one tool response). Both default to `False` (template default applies).
+
+When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded with the following precedence:
+- **API key**: `PRIME_API_KEY` env var > `~/.prime/config.json` > `"EMPTY"`
+- **Team ID**: `PRIME_TEAM_ID` env var > `~/.prime/config.json` > not set
+
+This allows seamless use after running `prime login`.
+
+### EndpointClientConfig
+
+```python
+class EndpointClientConfig(BaseModel):
+    client_idx: int = 0
+    api_key_var: str = "PRIME_API_KEY"
+    api_base_url: str = "https://api.pinference.ai/api/v1"
+    timeout: float = 3600.0
+    max_connections: int = 28000
+    max_keepalive_connections: int = 28000
+    max_retries: int = 10
+    extra_headers: dict[str, str] = {}
+```
+
+Leaf endpoint configuration used inside `ClientConfig.endpoint_configs`. Has the same fields as `ClientConfig` except `endpoint_configs` itself, preventing recursive nesting.
+
+### EvalConfig
+
+```python
+class EvalConfig(BaseModel):
+    env_id: str
+    name: str | None = None
+    env_args: dict
+    env_dir_path: str
+    endpoint_id: str | None = None
+    model: str
+    client_config: ClientConfig
+    sampling_args: SamplingArgs
+    num_examples: int
+    rollouts_per_example: int
+    shuffle: bool = False
+    shuffle_seed: int | None = None
+    max_concurrent: int
+    independent_scoring: bool = False
+    extra_env_kwargs: dict = {}
+    max_retries: int = 3
+    verbose: bool = False
+    state_columns: list[str] | None = None
+    save_results: bool = False
+    resume_path: Path | None = None
+    save_to_hf_hub: bool = False
+    hf_hub_dataset_name: str | None = None
+```
+
+### EndpointConfig
+
+```python
+class EndpointConfig(BaseModel):
+    model: str
+    base_url: str
+    api_key_var: str
+    api_client_type: ClientType | None = None
+    extra_headers: dict[str, str] = {}
+
+
+Endpoints = dict[str, list[EndpointConfig]]
+```
+
+`api_key_var` is a credential reference. Endpoint configs never serialize the
+materialized API key.
+
+`Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
+
+---
+
+## Prime CLI Plugin
+
+Verifiers exposes a plugin contract consumed by `prime` for command execution.
+
+### PRIME_PLUGIN_API_VERSION
+
+```python
+PRIME_PLUGIN_API_VERSION = 1
+```
+
+API version for compatibility checks between `prime` and `verifiers`.
+
+### PrimeCLIPlugin
+
+```python
+@dataclass(frozen=True)
+class PrimeCLIPlugin:
+    api_version: int = PRIME_PLUGIN_API_VERSION
+    eval_module: str = "verifiers.cli.commands.eval"
+    gepa_module: str = "verifiers.cli.commands.gepa"
+    install_module: str = "verifiers.cli.commands.install"
+    init_module: str = "verifiers.cli.commands.init"
+    setup_module: str = "verifiers.cli.commands.setup"
+    build_module: str = "verifiers.cli.commands.build"
+    play_module: str = "verifiers.cli.commands.play"
+
+    def build_module_command(
+        self, module_name: str, args: Sequence[str] | None = None
+    ) -> list[str]:
+        ...
+```
+
+`build_module_command` returns a subprocess command list for `python -m <module> ...`.
+
+### get_plugin
+
+```python
+def get_plugin() -> PrimeCLIPlugin:
+    ...
+```
+
+Returns the plugin instance consumed by `prime`.
+
+---
+
+## Decorators
+
+### @vf.stop
+
+```python
+@vf.stop
+async def my_condition(self, state: State) -> bool:
+    """Return True to end the rollout."""
+    ...
+
+@vf.stop(priority=10)  # Higher priority runs first
+async def early_check(self, state: State) -> bool:
+    ...
+```
+
+Mark a method as a stop condition. All stop conditions are checked by `is_completed()`.
+
+### @vf.cleanup
+
+```python
+@vf.cleanup
+async def my_cleanup(self, state: State) -> None:
+    """Called after each rollout completes."""
+    ...
+
+@vf.cleanup(priority=10)
+async def early_cleanup(self, state: State) -> None:
+    ...
+```
+
+Mark a method as a rollout cleanup handler. Cleanup methods should be **idempotent**—safe to call multiple times—and handle errors gracefully to ensure cleanup completes even when resources are in unexpected states.
+
+### @vf.teardown
+
+```python
+@vf.teardown
+async def my_teardown(self) -> None:
+    """Called when environment is destroyed."""
+    ...
+
+@vf.teardown(priority=10)
+async def early_teardown(self) -> None:
+    ...
+```
+
+Mark a method as an environment teardown handler.
+
+---
+
+## Utility Functions
+
+### Data Utilities
+
+```python
+vf.load_example_dataset(name: str) -> Dataset
+```
+
+Load a built-in example dataset.
+
+```python
+vf.extract_boxed_answer(text: str, strict: bool = False) -> str
+```
+
+Extract answer from LaTeX `\boxed{}` format. When `strict=True`, returns `""` if no `\boxed{}` is found (used by `MathRubric` to avoid scoring unformatted responses). When `strict=False` (default), returns the original text as a passthrough.
+
+```python
+vf.extract_hash_answer(text: str) -> str | None
+```
+
+Extract answer after `####` marker (GSM8K format).
+
+### Environment Utilities
+
+```python
+vf.load_environment(env_id: str, **kwargs) -> Environment
+```
+
+Load an environment by ID (e.g., `"primeintellect/gsm8k"`).
+
+### Configuration Utilities
+
+```python
+vf.ensure_keys(keys: list[str]) -> None
+```
+
+Validate that required environment variables are set. Raises `MissingKeyError` (a `ValueError` subclass) with a clear message listing all missing keys and instructions for setting them.
+
+```python
+class MissingKeyError(ValueError):
+    keys: list[str]  # list of missing key names
+```
+
+Example:
+
+```python
+def load_environment(api_key_var: str = "OPENAI_API_KEY") -> vf.Environment:
+    vf.ensure_keys([api_key_var])
+    # now safe to use os.environ[api_key_var]
+    ...
+```
+
+### Logging Utilities
+
+```python
+vf.print_prompt_completions_sample(outputs: GenerateOutputs, n: int = 3)
+```
+
+Pretty-print sample rollouts.
+
+```python
+vf.setup_logging(level: str = "INFO")
+```
+
+Configure verifiers logging. Set `VF_LOG_LEVEL` env var to change default.
+
+```python
+vf.log_level(level: str | int)
+```
+
+Context manager to temporarily set the verifiers logger to a new log level. Useful for temporarily adjusting verbosity during specific operations.
+
+```python
+with vf.log_level("DEBUG"):
+    # verifiers logs at DEBUG level here
+    ...
+# reverts to previous level
+```
+
+```python
+vf.quiet_verifiers()
+```
+
+Context manager to temporarily silence verifiers logging by setting WARNING level. Shorthand for `vf.log_level("WARNING")`.
+
+```python
+with vf.quiet_verifiers():
+    # verifiers logging is quieted here
+    outputs = env.generate(...)
+# logging restored

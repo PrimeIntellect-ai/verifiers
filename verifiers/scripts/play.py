@@ -2,25 +2,16 @@ import argparse
 import asyncio
 import json
 import sys
+import tomllib
 from pathlib import Path
 from typing import cast
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 from rich.console import Console
 from rich.table import Table
 
 import verifiers as vf
 from verifiers.cli.interactive import HumanClient, InteractiveSessionExit
-from verifiers.scripts.eval import (
-    DEFAULT_ENV_DIR_PATH,
-    apply_env_config_cli_overrides,
-    is_env_config_override_flag,
-    validate_env_config_override_args,
-)
+from verifiers.scripts.eval import DEFAULT_ENV_DIR_PATH
 from verifiers.types import RolloutInput, SamplingArgs, State
 from verifiers.utils.env_utils import env_module_name
 from verifiers.utils.save_utils import make_serializable, state_to_output
@@ -35,6 +26,15 @@ def build_parser() -> argparse.ArgumentParser:
             "the current environment directory when omitted."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "env_id",
+        nargs="?",
+        default=None,
+        help=(
+            "Environment module name to load. Inferred from the current "
+            "environment directory when omitted."
+        ),
     )
     parser.add_argument(
         "--env-args",
@@ -122,43 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = build_parser()
-    raw_args = list(sys.argv[1:] if argv is None else argv)
-    # Peel off the parser's own options first so ``env_id`` may appear either
-    # before or after them (matching the documented ``[options] [env_id]``).
-    args, leftovers = parser.parse_known_args(raw_args)
-    env_id, env_config_overrides = _split_env_id(leftovers)
-    args.env_id = env_id
-    validate_env_config_override_args(parser, env_config_overrides)
-    args.env_config_overrides = env_config_overrides
-    return args
-
-
-def _split_env_id(leftovers: list[str]) -> tuple[str | None, list[str]]:
-    """Separate a bare ``env_id`` token from ``--taskset.*``/``--harness.*``
-    override flags and their values in the parser's leftover args."""
-    env_id: str | None = None
-    overrides: list[str] = []
-    index = 0
-    while index < len(leftovers):
-        token = leftovers[index]
-        if is_env_config_override_flag(token):
-            overrides.append(token)
-            # Consume a space-separated value so it is not mistaken for env_id.
-            if (
-                "=" not in token
-                and index + 1 < len(leftovers)
-                and not leftovers[index + 1].startswith("-")
-            ):
-                overrides.append(leftovers[index + 1])
-                index += 2
-                continue
-        elif env_id is None and not token.startswith("-"):
-            env_id = token
-        else:
-            overrides.append(token)
-        index += 1
-    return env_id, overrides
+    return build_parser().parse_args(argv)
 
 
 def prepare_local_env_import(env_id: str, env_dir_path: str) -> None:
@@ -266,11 +230,7 @@ async def run_interactive_rollout(
     env_id = resolve_env_id(args)
     env_dir_path = resolve_env_dir_path(args.env_dir_path)
     prepare_local_env_import(env_id, env_dir_path)
-    env_args = apply_env_config_cli_overrides(
-        env_id,
-        dict(args.env_args or {}),
-        list(args.env_config_overrides),
-    )
+    env_args = dict(args.env_args or {})
     env = vf.load_environment(env_id, **env_args)
     env.set_score_rollouts(not args.no_score)
     rollout_input = select_rollout_input(

@@ -2,14 +2,14 @@ name: Test
 
 on:
   pull_request:
-    branches: [main, master]
+    branches: [main]
     paths:
       - "**.py"
       - "pyproject.toml"
       - "packages/**"
       - ".github/workflows/test.yml"
   push:
-    branches: [main, master]
+    branches: [main]
     paths:
       - "**.py"
       - "pyproject.toml"
@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -61,16 +61,11 @@ jobs:
 
       - name: Run tests
         run: |
-          uv run pytest tests/ -v --ignore=tests/test_envs.py -m "not prime_sandbox" --cov=verifiers --cov-report=xml --cov-report=term
+          uv run pytest tests/ -v --ignore=tests/test_envs.py --ignore=tests/v1 -m "not prime" --cov=verifiers --cov-report=xml --cov-report=term
 
-      - name: Run Prime sandbox tests
-        env:
-          PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
-          PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+      - name: Run v1 tests
         run: |
-          test -n "$PRIME_API_KEY"
-          test -n "$PRIME_TEAM_ID"
-          uv run pytest tests/test_v1_runtime_lifecycle.py -v -m prime_sandbox --cov=verifiers --cov-append --cov-report=xml --cov-report=term
+          uv run pytest tests/v1 -vv -n auto -m "not prime and not modal" --cov=verifiers --cov-append --cov-report=xml --cov-report=term
   test-envs:
     name: Environments
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository

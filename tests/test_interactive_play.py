@@ -635,37 +635,21 @@ def test_app_renders_image_url_content_parts():
     assert isinstance(renderables[1], Panel)
 
 
-def test_play_parse_args_accepts_v1_env_config_overrides():
-    args = play.parse_args(
-        [
-            "--taskset.id",
-            "demo",
-            "--harness.max-turns",
-            "3",
-        ]
-    )
-
-    assert args.env_config_overrides == [
-        "--taskset.id",
-        "demo",
-        "--harness.max-turns",
-        "3",
-    ]
-    assert args.env_id is None
+def test_play_parse_args_env_args_and_defaults():
+    args = play.parse_args(["wordle", "--env-args", '{"mode": "text"}'])
+    assert args.env_id == "wordle"
+    assert args.env_args == {"mode": "text"}
 
 
 def test_play_parse_args_accepts_env_id_after_options():
-    args = play.parse_args(["--split", "eval", "wordle", "--taskset.id", "demo"])
+    args = play.parse_args(["--split", "eval", "wordle"])
     assert args.env_id == "wordle"
     assert args.split == "eval"
-    assert args.env_config_overrides == ["--taskset.id", "demo"]
 
 
-def test_play_parse_args_keeps_override_value_from_env_id():
-    # A bare override value must not be captured as env_id.
-    args = play.parse_args(["--taskset.max-turns", "3"])
+def test_play_parse_args_env_id_optional():
+    args = play.parse_args(["--split", "eval"])
     assert args.env_id is None
-    assert args.env_config_overrides == ["--taskset.max-turns", "3"]
 
 
 def test_play_infers_env_id_from_current_environment_dir(tmp_path: Path):
@@ -715,7 +699,6 @@ def test_run_interactive_rollout_constructs_tui_client(monkeypatch):
         _ = self
 
     monkeypatch.setattr(play, "prepare_local_env_import", lambda *_: None)
-    monkeypatch.setattr(play, "apply_env_config_cli_overrides", lambda *_, **__: {})
     monkeypatch.setattr(play.vf, "load_environment", lambda *_, **__: DummyEnv())
     monkeypatch.setattr(HumanClient, "start", fake_start)
 
@@ -723,7 +706,6 @@ def test_run_interactive_rollout_constructs_tui_client(monkeypatch):
         env_id="demo",
         env_dir_path="./environments",
         env_args={},
-        env_config_overrides=[],
         no_score=True,
         split="eval",
         index=0,
@@ -770,21 +752,11 @@ def test_run_interactive_rollout_infers_current_env(monkeypatch, tmp_path: Path)
         captured["env_id"] = env_id
         captured["env_dir_path"] = env_dir_path
 
-    def fake_apply_env_config_cli_overrides(env_id, env_args, env_config_overrides):
-        captured["override_env_id"] = env_id
-        _ = env_config_overrides
-        return env_args
-
     async def fake_start(self):
         _ = self
 
     monkeypatch.chdir(env_dir)
     monkeypatch.setattr(play, "prepare_local_env_import", fake_prepare_local_env_import)
-    monkeypatch.setattr(
-        play,
-        "apply_env_config_cli_overrides",
-        fake_apply_env_config_cli_overrides,
-    )
     monkeypatch.setattr(play.vf, "load_environment", lambda *_, **__: DummyEnv())
     monkeypatch.setattr(HumanClient, "start", fake_start)
 
@@ -792,7 +764,6 @@ def test_run_interactive_rollout_infers_current_env(monkeypatch, tmp_path: Path)
         env_id=None,
         env_dir_path="./environments",
         env_args={},
-        env_config_overrides=[],
         no_score=True,
         split="eval",
         index=0,
@@ -808,7 +779,6 @@ def test_run_interactive_rollout_infers_current_env(monkeypatch, tmp_path: Path)
     asyncio.run(play.run_interactive_rollout(args))
 
     assert captured["env_id"] == "sample-env"
-    assert captured["override_env_id"] == "sample-env"
     assert captured["env_dir_path"] == str(env_root)
 
 

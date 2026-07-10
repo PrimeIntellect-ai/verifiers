@@ -1,0 +1,21 @@
+[project]
+name = "vf-test-fixtures"
+version = "0.0.0"
+description = "v1 e2e test fixture tasksets — packaged so a sandbox runtime can install just this dir (its own pyproject) instead of climbing to the repo root."
+requires-python = ">=3.10"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Flat fixture modules whose tool/user servers self-launch in a sandbox (docker/prime) and so must
+# be importable there. The others (echo_v1, echo_*_v0) have no server, so they never get installed.
+[tool.hatch.build]
+include = [
+    "counter_tool_v1.py",
+    "echo_tool_v1.py",
+    "echo_user_sim_v1.py",
+    "tool_response_image_v1.py",
+    "pyproject.toml",
+]

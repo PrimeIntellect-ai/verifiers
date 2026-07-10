@@ -1,10 +1,23 @@
-"""V1 state contract exports.
+"""Mutable state shared within one rollout.
 
-V1 uses the shared top-level ``verifiers.State`` type. V1 tasks opt state
-instances into strict runtime/lifecycle-field handling when they are passed to
-``State.for_task(...)``.
+Tool and user servers synchronize it through the interception state channel. It is excluded
+from serialized traces; persist artifacts in `Trace.info` instead.
 """
 
-from verifiers.types import State
+from pydantic import ConfigDict
+from typing_extensions import TypeVar
 
-__all__ = ["State"]
+from verifiers.v1.types import StrictBaseModel
+from verifiers.v1.utils.generic import generic_type
+
+
+class State(StrictBaseModel):
+    model_config = ConfigDict(ser_json_inf_nan="constants")
+
+
+StateT = TypeVar("StateT", bound=State, default=State)
+
+
+def state_cls(cls: type) -> type[State]:
+    """Resolve a class's `State` specialization through its MRO, else `State`."""
+    return generic_type(cls, State) or State

@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Annotated, Literal, TypeAlias, TypeVar
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict
-from pydantic import SkipValidation  # nosemgrep: verifiers-no-skip-validation
+from pydantic import SkipValidation
 
 from verifiers.types import (
     ClientConfig,
@@ -15,12 +15,8 @@ from verifiers.types import (
 CoercedRolloutOutput = Annotated[
     RolloutOutput, BeforeValidator(lambda v: RolloutOutput(v))
 ]
-RunInput: TypeAlias = (  # nosemgrep: verifiers-no-skip-validation
-    SkipValidation[RolloutInput]
-)
-GroupInput: TypeAlias = (  # nosemgrep: verifiers-no-skip-validation
-    SkipValidation[list[RolloutInput]]
-)
+RunInput: TypeAlias = SkipValidation[RolloutInput]
+GroupInput: TypeAlias = SkipValidation[list[RolloutInput]]
 
 
 class BaseRequest(BaseModel):

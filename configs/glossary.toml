@@ -1,0 +1,7 @@
+# glossary-v1 — a colocated MCP tool server (runs inside the harness's own runtime).
+#
+#   uv run eval glossary-v1 @ configs/glossary.toml
+num_tasks = 1
+
+[taskset]
+id = "glossary-v1"

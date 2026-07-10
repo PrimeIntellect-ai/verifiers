@@ -1,1 +1,1 @@
-"""Small v1 authoring utilities."""
+"""Shared v1 utilities."""

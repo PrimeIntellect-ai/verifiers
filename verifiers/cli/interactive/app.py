@@ -377,7 +377,7 @@ class InteractiveRolloutApp(App[None]):
     def _configure_tool_picker(self) -> None:
         picker = self.query_one("#tool-picker", Select)
         picker.set_options((Text(tool.name), tool.name) for tool in self._tools)
-        picker.value = Select.BLANK
+        picker.value = Select.NULL
         self.query_one("#tool-picker-row", Horizontal).display = bool(self._tools)
         self._update_tool_form(None)
 
@@ -385,7 +385,7 @@ class InteractiveRolloutApp(App[None]):
         if event.select.id != "tool-picker":
             return
         value = event.value
-        self._update_tool_form(None if value == Select.BLANK else str(value))
+        self._update_tool_form(None if value == Select.NULL else str(value))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "add-tool-call":
@@ -443,7 +443,7 @@ class InteractiveRolloutApp(App[None]):
 
     def _selected_tool_name(self) -> str | None:
         value = self.query_one("#tool-picker", Select).value
-        return None if value == Select.BLANK else str(value)
+        return None if value == Select.NULL else str(value)
 
     def _current_form_included(self) -> bool:
         """Whether the tool form currently being edited joins the submitted turn.

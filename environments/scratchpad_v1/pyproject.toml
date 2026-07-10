@@ -1,0 +1,13 @@
+[project]
+name = "scratchpad-v1"
+version = "0.1.0"
+description = "scratchpad-v1 — a shared, writable tool server, per-rollout isolated via self.state."
+requires-python = ">=3.10"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["scratchpad_v1"]
