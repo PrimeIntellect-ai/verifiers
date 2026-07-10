@@ -13,7 +13,6 @@ import base64
 import random
 import re
 from io import BytesIO
-from typing import ClassVar
 
 from PIL import Image
 from pydantic import Field
@@ -83,26 +82,29 @@ def extract_codeword(text: str) -> str:
     )
 
 
+class ColorCodewordTaskConfig(vf.TaskConfig):
+    user: vf.UserConfig = vf.UserConfig()
+
+
 class ColorCodewordConfig(vf.TasksetConfig):
     num_examples: int = 1000
     """Number of synthetic episodes to generate."""
     images_per_turn: int = Field(2, ge=1)
     """Colored squares shown per turn."""
-    user: vf.UserConfig = vf.UserConfig()
+    task: ColorCodewordTaskConfig = ColorCodewordTaskConfig()
 
 
-class ColorCodewordTask(vf.Task):
-    STATE: ClassVar[type[vf.State]] = ColorCodewordState
-
+class ColorCodewordTaskData(vf.TaskData):
     answer: str
     """The full expected codeword (one letter per square shown, in order)."""
     info: dict
     """The episode the user simulator replays: `colors_per_turn` and `max_turns`."""
-    user: vf.UserConfig = vf.UserConfig()
-    """Placement for the user simulator (from the taskset's `user` knob)."""
 
-    def load_user(self) -> vf.User:
-        return ColorCodewordUser(self.user)
+
+class ColorCodewordTask(
+    vf.Task[ColorCodewordTaskData, ColorCodewordState, ColorCodewordTaskConfig]
+):
+    user = ColorCodewordUser
 
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:
@@ -112,22 +114,22 @@ class ColorCodewordTask(vf.Task):
     async def exact_match(self, trace: vf.Trace) -> float:
         responses = trace.assistant_messages
         last = (responses[-1].content if responses else "") or ""
-        return 1.0 if extract_codeword(last) == self.answer else 0.0
+        return 1.0 if extract_codeword(last) == self.data.answer else 0.0
 
     @vf.metric
     async def partial_match(self, trace: vf.Trace) -> float:
-        if not self.answer:
+        if not self.data.answer:
             return 0.0
         responses = trace.assistant_messages
         last = (responses[-1].content if responses else "") or ""
         extracted = extract_codeword(last)
-        return sum(1 for a, b in zip(self.answer, extracted) if a == b) / len(
-            self.answer
+        return sum(1 for a, b in zip(self.data.answer, extracted) if a == b) / len(
+            self.data.answer
         )
 
 
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
-    def load_tasks(self) -> list[ColorCodewordTask]:
+    def load(self) -> list[ColorCodewordTask]:
         c = self.config
         rng = random.Random(SEED)
         colors = list(COLOR_MAP)
@@ -149,12 +151,17 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
             ] + [vf.TextContentPart(text=text)]
             tasks.append(
                 ColorCodewordTask(
-                    idx=idx,
-                    prompt=[vf.UserMessage(content=parts)],
-                    system_prompt=SYSTEM_PROMPT,
-                    answer=answer,
-                    info={"colors_per_turn": colors_per_turn, "max_turns": MAX_TURNS},
-                    user=c.user,
+                    ColorCodewordTaskData(
+                        idx=idx,
+                        prompt=[vf.UserMessage(content=parts)],
+                        system_prompt=SYSTEM_PROMPT,
+                        answer=answer,
+                        info={
+                            "colors_per_turn": colors_per_turn,
+                            "max_turns": MAX_TURNS,
+                        },
+                    ),
+                    c.task,
                 )
             )
         return tasks

@@ -39,7 +39,7 @@ def extract_boxed_answer(text: str, strict: bool = False) -> str:
 
 
 async def read_answer_file_or_last_reply(
-    runtime: "Runtime", path: str, trace: "Trace"
+    runtime: Runtime, path: str, trace: Trace
 ) -> str:
     try:
         answer = (await runtime.read(path)).decode(errors="replace").strip()

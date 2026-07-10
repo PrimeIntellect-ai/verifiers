@@ -9,13 +9,14 @@ A bare agent is fully standalone — each `run` provisions a runtime from the po
 brings up its own per-rollout interception server, right for scripts and small programs:
 
     agent = vf.Agent(DirectHarness(DirectHarnessConfig()), ctx)
-    trace = await agent.run(vf.Task(idx=0, prompt="..."))
+    trace = await agent.run(MyTask(vf.TaskData(idx=0, prompt="...")))
 
-Serving resources have exactly one owner: `RunServices`. For pooled operation (N
-concurrent runs sharing interception servers and shared MCP tools, like an eval), enter
-a scope and inject it — `async with RunServices() as services:
-Agent(..., services=services)` — which is precisely what `TopologyRunner.serving` does
-for every agent it binds. The agent never owns services; it borrows them.
+Serving resources have exactly one owner: `RunServices` (interception pools). For pooled
+operation (N concurrent runs sharing interception servers, like an eval), enter a scope
+and inject it — `async with RunServices() as services: Agent(..., services=services)` —
+which is precisely what `TopologyRunner.serving` does for every agent it binds. The agent
+never owns services; it borrows them. Taskset-scoped shared tool servers likewise arrive
+pre-served (`shared_tools=`, see `serve_shared`), from whoever owns the taskset.
 
 The framework's config-driven packaging of agents — CLI/toml-addressable, persisted as
 agent graphs, eval- and trainer-integrated — is the topology (`verifiers.v1.topology`);
@@ -34,11 +35,11 @@ from verifiers.v1.env import (
     TimeoutConfig,
     resolve_runtime_config,
     resolve_stage_timeouts,
-    validate_pairing,
+    validate_task_pairing,
 )
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import InterceptionPool, RolloutLimits
-from verifiers.v1.mcp import SharedServers
+from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.retries import RolloutRetryConfig, run_with_retry
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import Runtime, RuntimeConfig, make_runtime
@@ -181,7 +182,6 @@ class _AgentAttempt:
         *,
         runtime_config: RuntimeConfig,
         runtime: Runtime | None,
-        shared: SharedServers | None,
         interception: InterceptionPool | None,
         parents: Sequence[Parent],
     ) -> None:
@@ -189,22 +189,23 @@ class _AgentAttempt:
         self.task = task
         self.runtime_config = runtime_config
         self.runtime = runtime
-        self.shared = shared
         self.interception = interception
         self.parents = parents
 
     async def run(self) -> Trace:
         agent = self.agent
+        timeouts = resolve_stage_timeouts(agent.timeout, self.task, self.runtime_config)
         rollout = Rollout(
             task=self.task,
             harness=agent.harness,
             ctx=agent.ctx,
             runtime_config=self.runtime_config,
-            timeouts=resolve_stage_timeouts(
-                agent.timeout, self.task, self.runtime_config
-            ),
+            setup_timeout=timeouts.setup,
+            harness_timeout=timeouts.rollout,
+            finalize_timeout=timeouts.finalize,
+            scoring_timeout=timeouts.scoring,
             limits=agent.limits,
-            shared=self.shared,
+            shared_tools=agent.shared_tools,
             interception=self.interception,
             runtime=self.runtime,
         )
@@ -225,10 +226,10 @@ class Agent:
     world explicitly, use `provision()` and pass the yielded runtime back to one or more
     `run(..., runtime=box)` calls; borrowed-runtime rollouts never start or stop the box.
 
-    `services` is the (optional) serving scope the agent borrows pooled interception and
-    shared MCP servers from — see the module docstring; without one, every run brings up
-    its own per-rollout interception server.
-    """
+    `services` is the (optional) serving scope the agent borrows pooled interception
+    from — see the module docstring; without one, every run brings up its own
+    per-rollout interception server. `shared_tools` are the taskset-scoped shared
+    servers (already served, see `serve_shared`) this agent's rollouts reuse."""
 
     def __init__(
         self,
@@ -241,6 +242,7 @@ class Agent:
         limits: RolloutLimits | None = None,
         timeout: TimeoutConfig | None = None,
         services: RunServices | None = None,
+        shared_tools: dict[str, SharedToolServer] | None = None,
     ) -> None:
         self.harness = harness
         self.ctx = ctx
@@ -249,6 +251,7 @@ class Agent:
         self.trainable = trainable
         self.limits = limits or RolloutLimits()
         self.timeout = timeout or TimeoutConfig()
+        self.shared_tools = shared_tools or {}
         self._services = services
         self._warned_resources: set[tuple[str, str]] = set()
         self._validated: set[tuple[type[Task], str, str]] = set()
@@ -262,7 +265,9 @@ class Agent:
     def _validate_pairing(self, task: Task, runtime_config: RuntimeConfig) -> None:
         key = (type(task), runtime_config.type, runtime_config.__class__.__name__)
         if key not in self._validated:
-            validate_pairing(type(task), self.harness, runtime_config)
+            validate_task_pairing(
+                self.harness, type(task), shared_tools=tuple(self.shared_tools)
+            )
             self._validated.add(key)
 
     async def run(
@@ -285,7 +290,6 @@ class Agent:
             task,
             runtime_config=runtime_config,
             runtime=runtime,
-            shared=services.shared if services is not None else None,
             interception=await services.pool_for(runtime_config)
             if services is not None
             else None,
@@ -354,16 +358,16 @@ class Agent:
         `SessionEnded` and `go` decides what it means. Note the episode's budgets
         (`max_turns`, timeouts) span the whole interaction, including time suspended
         while other seats move — size them for the game, not a solo run."""
-        if task.prompt is not None:
+        if task.data.prompt is not None:
             raise ValueError(
                 "interact() episodes are opened by the first turn(): build the task "
                 "with prompt=None and put the framing in system_prompt"
             )
-        if type(task).load_user is not Task.load_user:
+        if type(task).user is not None:
             raise ValueError(
                 f"task {type(task).__name__} declares its own user simulator "
-                "(load_user), and a session is a second claimant for the same user "
-                "seat — run it with run(), or drop load_user"
+                "(Task.user), and a session is a second claimant for the same user "
+                "seat — run it with run(), or drop the simulator"
             )
         if not type(self.harness).SUPPORTS_USER_SIM:
             raise ValueError(
@@ -374,14 +378,18 @@ class Agent:
         self._validate_pairing(task, runtime_config)
         services = self._services
         session = Session()
+        timeouts = resolve_stage_timeouts(self.timeout, task, runtime_config)
         rollout = Rollout(
             task=task,
             harness=self.harness,
             ctx=self.ctx,
             runtime_config=runtime_config,
-            timeouts=resolve_stage_timeouts(self.timeout, task, runtime_config),
+            setup_timeout=timeouts.setup,
+            harness_timeout=timeouts.rollout,
+            finalize_timeout=timeouts.finalize,
+            scoring_timeout=timeouts.scoring,
             limits=self.limits,
-            shared=services.shared if services is not None else None,
+            shared_tools=self.shared_tools,
             interception=await services.pool_for(runtime_config)
             if services is not None
             else None,

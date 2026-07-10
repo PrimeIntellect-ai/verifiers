@@ -1,9 +1,4 @@
-"""Serve a v1 environment over ZMQ.
-
-`EnvServer` loads an environment once and runs rollouts on request by task index;
-`EnvClient` is the matching ZMQ client. The orchestrator talks to the server and
-never loads the environment itself — the env runtime is independent of it.
-"""
+"""Serve V1 environments over ZMQ."""
 
 from verifiers.v1.serve.client import EnvClient
 from verifiers.v1.serve.pool import EnvServerPool, env_config_data, serve_env

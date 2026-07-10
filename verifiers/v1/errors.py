@@ -3,10 +3,10 @@
 Four mechanisms, each in one place:
 
 1. Vocabulary (this module): `RolloutError` and the flat boundary types below. Each names the
-   boundary a failure crossed — provider, harness, toolset, user, sandbox, task, topology,
-   or interception — so a recorded `trace.error.type` says where the rollout broke.
+   boundary a failure crossed — provider, harness, toolset, user, sandbox, task, or
+   interception — so a recorded `trace.error.type` says where the rollout broke.
 2. Classification (`boundary`): the one helper that runs a framework→code boundary and attributes
-   any escaping error to that boundary's type. Extension code (task hooks, harness subclasses, topologies)
+   any escaping error to that boundary's type. Extension code (task hooks, harness subclasses)
    raises plain Python errors — it never constructs a `vf` error type; `boundary` classifies them.
    Infra that fails raises its type at the source (`runtimes` → `SandboxError`, `clients` →
    `ProviderError`, tunnels → `TunnelError`); an already-typed `RolloutError` passes through unchanged.
@@ -64,13 +64,12 @@ class SandboxError(RolloutError):
 
 
 class TaskError(RolloutError):
-    """Task- or taskset-authored code raised — `load_tasks`, `setup`, `finalize`, or a
-    `@reward`/`@metric`/`@group_reward`."""
+    """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`/`@group_reward`."""
 
 
 class TopologyError(RolloutError):
-    """Topology-authored code raised — `go` (trace→task transforms, interaction control flow,
-    or deferred cross-agent scoring)."""
+    """Topology-authored code raised — `go` or the topology's declared instance scoring.
+    Captured on the instance's `AgentGraph` (episode failures stay on their traces)."""
 
 
 class InterceptionError(RolloutError):

@@ -65,11 +65,15 @@ def render(board: chess.Board, last: str) -> str:
     )
 
 
-class SeatTask(vf.Task):
+class SeatData(vf.TaskData):
     """One player's episode: framing only (`prompt=None` — sessions open on the first
     `turn()`). No ground truth here; the outcome belongs to the game, i.e. the topology."""
 
     color: str
+
+
+class SeatTask(vf.Task[SeatData]):
+    pass
 
 
 class ChessConfig(vf.TopologyConfig):
@@ -88,7 +92,10 @@ class ChessConfig(vf.TopologyConfig):
 class ChessTopology(vf.Topology[ChessConfig]):
     def load_tasks(self) -> list[vf.Task]:
         """Self-seeding: a seed is just a game id."""
-        return [vf.Task(idx=i, prompt=None) for i in range(self.config.num_games)]
+        return [
+            vf.Task(vf.TaskData(idx=i, prompt=None))
+            for i in range(self.config.num_games)
+        ]
 
     async def go(self, task: vf.Task, run: vf.TopologyRun) -> None:
         board = chess.Board()
@@ -97,18 +104,22 @@ class ChessTopology(vf.Topology[ChessConfig]):
         async with (
             run.agent("white").interact(
                 SeatTask(
-                    idx=task.idx,
-                    color="white",
-                    prompt=None,
-                    system_prompt=SEAT_SYSTEM.format(color="white"),
+                    SeatData(
+                        idx=task.data.idx,
+                        color="white",
+                        prompt=None,
+                        system_prompt=SEAT_SYSTEM.format(color="white"),
+                    )
                 )
             ) as white,
             run.agent("black").interact(
                 SeatTask(
-                    idx=task.idx,
-                    color="black",
-                    prompt=None,
-                    system_prompt=SEAT_SYSTEM.format(color="black"),
+                    SeatData(
+                        idx=task.data.idx,
+                        color="black",
+                        prompt=None,
+                        system_prompt=SEAT_SYSTEM.format(color="black"),
+                    )
                 )
             ) as black,
         ):

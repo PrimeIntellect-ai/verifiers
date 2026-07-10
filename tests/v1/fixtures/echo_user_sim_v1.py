@@ -1,13 +1,4 @@
-"""echo (v1, user simulator): echo a phrase per turn, driven by a `vf.User` simulator.
-
-The v1 user-sim fixture for the e2e matrix. The user simulator is a `vf.User` class whose
-placement is CLI-tunable (`--taskset.user.colocated`, `--taskset.user.runtime.type`): it runs
-either inside the harness's runtime (`colocated`) or in its own runtime (the default), and
-either way the framework drives it and reaches it from wherever the harness runs. A user-sim is
-a task tool, so this needs a tool-supporting harness.
-"""
-
-from typing import ClassVar
+"""Multi-turn echo task driven by a `vf.User` simulator."""
 
 import verifiers.v1 as vf
 
@@ -17,6 +8,15 @@ SYSTEM = "Repeat the user's message back to them exactly, with no extra words."
 
 def _key(text: str) -> str:
     return "".join(c for c in text.casefold() if c.isalnum())
+
+
+class EchoUserSimTaskConfig(vf.TaskConfig):
+    user: vf.UserConfig = vf.UserConfig()
+
+
+class EchoUserSimConfig(vf.TasksetConfig):
+    phrases: list[str] = PHRASES
+    task: EchoUserSimTaskConfig = EchoUserSimTaskConfig()
 
 
 class EchoUserSimState(vf.State):
@@ -38,15 +38,14 @@ class EchoUserSimUser(vf.User[vf.UserConfig, EchoUserSimState]):
         return [{"role": "user", "content": self.phrases[self.turns]}]
 
 
-class EchoUserSimTask(vf.Task):
-    STATE: ClassVar[type[vf.State]] = EchoUserSimState
-
+class EchoUserSimData(vf.TaskData):
     phrases: list[str]
-    user: vf.UserConfig = vf.UserConfig()
-    """Placement for the user simulator (from the taskset's `user` knob)."""
 
-    def load_user(self) -> vf.User:
-        return EchoUserSimUser(self.user)
+
+class EchoUserSimTask(
+    vf.Task[EchoUserSimData, EchoUserSimState, EchoUserSimTaskConfig]
+):
+    user = EchoUserSimUser
 
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:
@@ -55,26 +54,24 @@ class EchoUserSimTask(vf.Task):
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
         replies = [m.content for m in trace.assistant_messages]
-        if len(replies) < len(self.phrases):
+        phrases = self.data.phrases
+        if len(replies) < len(phrases):
             return 0.0
-        matched = sum(_key(p) in _key(r or "") for r, p in zip(replies, self.phrases))
-        return matched / len(self.phrases)
-
-
-class EchoUserSimConfig(vf.TasksetConfig):
-    phrases: list[str] = PHRASES
-    user: vf.UserConfig = vf.UserConfig()
+        matched = sum(_key(p) in _key(r or "") for r, p in zip(replies, phrases))
+        return matched / len(phrases)
 
 
 class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
-    def load_tasks(self) -> list[EchoUserSimTask]:
+    def load(self) -> list[EchoUserSimTask]:
         return [
             EchoUserSimTask(
-                idx=0,
-                prompt=self.config.phrases[0],
-                system_prompt=SYSTEM,
-                phrases=self.config.phrases,
-                user=self.config.user,
+                EchoUserSimData(
+                    idx=0,
+                    prompt=self.config.phrases[0],
+                    system_prompt=SYSTEM,
+                    phrases=self.config.phrases,
+                ),
+                self.config.task,
             )
         ]
 

@@ -1,5 +1,3 @@
-"""The mini-swe-agent harness: runs the native bash-tool agent through LiteLLM."""
-
 from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
@@ -11,8 +9,6 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
 class MiniSWEAgentHarnessConfig(HarnessConfig):
-    """The mini-swe-agent CLI harness."""
-
     version: str = "2.2.8"
     """mini-swe-agent release to install, pinned for reproducibility."""
 
@@ -36,7 +32,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     ) -> ProgramResult:
         if self.config.disabled_tools:
             raise ValueError("mini-swe-agent does not support disabling tools")
-        _, prompt = self.resolve_prompt(trace.task)
+        _, prompt = self.resolve_prompt(trace.task.data)
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         args = [
             "--model",

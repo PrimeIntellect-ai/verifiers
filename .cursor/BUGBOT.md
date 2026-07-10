@@ -30,14 +30,14 @@ When a GitHub-only upstream is unavoidable for an environment or integration, as
 
 Any PR that adds or modifies core user-facing functionality as described in `docs/` must update the relevant documentation. This includes changes classes and APIs described in:
 
-- `docs/overview.md`
-- `docs/environments.md`
-- `docs/evaluation.md`
-- `docs/training.md`
-- `docs/reference.md`
-- `docs/faqs.md`
+- `docs/v1/overview.md`
+- `docs/v1/environments.md`
+- `docs/v1/evaluation.md`
+- `docs/v0/training.md`
+- `docs/v0/reference.md`
+- `docs/v0/faqs.md`
 
-Notable information which should be available for reference, but does not neatly map to a specific documentation section, should be mentioned in `docs/faqs.md`.
+Notable information which should be available for reference, but does not neatly map to a specific documentation section, should be mentioned in `docs/v0/faqs.md`.
 
 If such changes are detected without a corresponding documentation update, request that the author add an entry.
 
@@ -77,11 +77,11 @@ Any PR that changes user-facing Prime or Verifiers workflows for environment dev
 
 This includes changes to command contracts, defaults, or behavior in:
 
-- `docs/overview.md`
-- `docs/environments.md`
-- `docs/evaluation.md`
-- `docs/training.md`
-- `docs/faqs.md`
+- `docs/v1/overview.md`
+- `docs/v1/environments.md`
+- `docs/v1/evaluation.md`
+- `docs/v0/training.md`
+- `docs/v0/faqs.md`
 - `docs/prime_cli_verifiers_unification_design.md`
 - `verifiers/scripts/*.py`
 - `verifiers/cli/plugins/prime.py`

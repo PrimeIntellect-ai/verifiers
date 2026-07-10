@@ -1,6 +1,15 @@
 import verifiers.v1 as vf
 from verifiers.v1.harnesses.null.harness import NullHarness, NullHarnessConfig
 from verifiers.v1.rollout import Rollout
+from verifiers.v1.trace import TraceTask
+
+
+def task_of(prompt) -> vf.Task:
+    return vf.Task(vf.TaskData(idx=0, prompt=prompt))
+
+
+def trace_for(task: vf.Task) -> vf.Trace:
+    return vf.Trace(task=TraceTask(type=type(task).__name__, data=task.data))
 
 
 class FakeRuntime:
@@ -21,17 +30,19 @@ class FakeRuntime:
 async def test_agent_run_stamps_lineage_and_borrowed_runtime(monkeypatch):
     async def fake_run(self):
         self.runtime = self._borrowed_runtime
-        return vf.Trace(task=self.task)
+        return trace_for(self.task)
 
     monkeypatch.setattr(Rollout, "run", fake_run)
     agent = vf.Agent(
         NullHarness(NullHarnessConfig()),
-        vf.ModelContext(model="org/model", client=object()),
+        vf.ModelContext(
+            model="org/model", client=object(), sampling=vf.SamplingConfig()
+        ),
         name="judge",
         trainable=False,
     )
-    parent = vf.Trace(task=vf.Task(idx=0, prompt="seed"))
-    task = vf.Task(idx=1, prompt="judge")
+    parent = trace_for(task_of("seed"))
+    task = vf.Task(vf.TaskData(idx=1, prompt="judge"))
 
     trace = await agent.run(task, parents=[parent], runtime=FakeRuntime())
     assert trace.agent == "judge"
@@ -56,10 +67,12 @@ async def test_agent_provision_owns_runtime_lifetime(monkeypatch):
     monkeypatch.setattr(agent_module, "make_runtime", lambda config: runtime)
     agent = vf.Agent(
         NullHarness(NullHarnessConfig()),
-        vf.ModelContext(model="org/model", client=object()),
+        vf.ModelContext(
+            model="org/model", client=object(), sampling=vf.SamplingConfig()
+        ),
     )
 
-    async with agent.provision(vf.Task(idx=0, prompt="seed")) as box:
+    async with agent.provision(task_of("seed")) as box:
         assert box is runtime
         assert runtime.started
         assert not runtime.stopped

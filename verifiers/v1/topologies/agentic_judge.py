@@ -19,7 +19,7 @@ and its assignment (`--topology.judge.prompt`, well, `prompt` on the topology co
 import json
 
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import Task
+from verifiers.v1.task import Task, TaskData
 from verifiers.v1.topology import AgentConfig, Topology, TopologyRun
 from verifiers.v1.topologies.llm_judge import (
     JudgeTask,
@@ -43,15 +43,19 @@ a final line of exactly `SCORE: <n>`, where <n> is an integer from 0 (entirely w
 10 (flawless)."""
 
 
-class AgenticJudgeTask(JudgeTask):
-    """A grading assignment over an uploaded trace: the instance carries the solver's
-    serialized trace as data, and `setup` writes it into the judge's runtime before the
-    harness runs — so the file is there the moment the judge starts investigating. The
-    verdict parser and the `committed` stop are inherited from `JudgeTask`."""
+class AgenticJudgeData(TaskData):
+    """The grading assignment's wire half: the solver's entire trace, JSON-serialized
+    (`Trace.to_record`) — persisted with the judge's own trace, so the record shows
+    exactly what was judged."""
 
     trace_json: str
-    """The solver's entire trace, JSON-serialized (`Trace.to_record`) — persisted with the
-    judge's own trace, so the record shows exactly what was judged."""
+
+
+class AgenticJudgeTask(JudgeTask[AgenticJudgeData]):
+    """A grading assignment over an uploaded trace: the data carries the solver's
+    serialized trace, and `setup` writes it into the judge's runtime before the
+    harness runs — so the file is there the moment the judge starts investigating. The
+    verdict parser and the `committed` stop are inherited from `JudgeTask`."""
 
     @classmethod
     def for_trace(
@@ -60,14 +64,16 @@ class AgenticJudgeTask(JudgeTask):
         """Wrap a finished episode for agentic judging: the assignment (`prompt`, with
         `{path}` resolved to where the trace will land) plus the trace itself."""
         return cls(
-            idx=task.idx,
-            prompt=prompt.format(path=TRACE_PATH),
-            trace_json=json.dumps(trace.to_record()),
+            AgenticJudgeData(
+                idx=task.data.idx,
+                prompt=prompt.format(path=TRACE_PATH),
+                trace_json=json.dumps(trace.to_record()),
+            )
         )
 
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         """Upload the judged trace into the judge's runtime."""
-        await runtime.write(TRACE_PATH, self.trace_json.encode())
+        await runtime.write(TRACE_PATH, self.data.trace_json.encode())
 
 
 class AgenticJudgeAgentConfig(AgentConfig):
@@ -101,6 +107,7 @@ class AgenticJudgeTopology(LLMJudgeTopology, Topology[AgenticJudgeConfig]):
 __all__ = [
     "AgenticJudgeAgentConfig",
     "AgenticJudgeConfig",
+    "AgenticJudgeData",
     "AgenticJudgeTask",
     "AgenticJudgeTopology",
 ]

@@ -1,30 +1,6 @@
-"""Decorators that program rollout control flow + scoring.
+"""Scoring and rollout-control decorators."""
 
-Each decorator just tags a method with attributes; `discover_decorated` collects
-the tagged bound methods, sorted by descending priority then name.
-
-Scoring methods declare the inputs they need *by parameter name* and the framework
-injects them (`invoke`) — so a pure-trace reward needn't take the runtime, and an
-in-runtime verifier needn't take the trace. The available names are:
-
-    @reward / @metric  (per rollout):  task, trace, runtime
-    @group_reward      (per group):    task, traces
-
-All handlers must be `async`. Examples (on a `Task` subclass):
-
-    @vf.reward(weight=1.0)
-    async def correct(self, task, trace, runtime) -> float: ...   # all three
-
-    @vf.metric
-    async def turns(self, trace) -> float: ...                    # trace only
-
-    @vf.group_reward
-    async def most_concise(self, traces) -> list[float]: ...      # compares a task's rollouts
-
-A `@group_reward` compares trace metadata across a task's rollouts; anything from the
-runtime is recorded per rollout as a `@metric` first.
-"""
-
+import asyncio
 import inspect
 from typing import Any, Callable, TypeVar, overload
 
@@ -32,23 +8,33 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
-    """Bound methods on `obj` tagged with `attr`, sorted by priority then name."""
-    methods = [
-        method
-        for _, method in inspect.getmembers(obj, predicate=inspect.ismethod)
-        if hasattr(method, attr)
-    ]
+    """Bound methods on `obj` tagged with `attr`, sorted by priority then name. Scans the
+    class MRO for tagged functions (not `inspect.getmembers(obj)`, which evaluates every
+    descriptor — a property with side effects would run here) and binds each through
+    `getattr`, so the most-derived override wins."""
+    names = {
+        name
+        for klass in type(obj).__mro__
+        for name, fn in vars(klass).items()
+        if callable(fn) and hasattr(fn, attr)
+    }
+    # An undecorated override suppresses a decorated base method.
+    methods = [method for name in names if hasattr(method := getattr(obj, name), attr)]
     priority_attr = f"{attr}_priority"
     methods.sort(key=lambda m: (-getattr(m, priority_attr, 0), m.__name__))
     return methods
 
 
 def invoke(fn: Callable[..., Any], available: dict[str, Any]) -> Any:
-    """Call `fn`, passing only the items of `available` whose name it declares as a
-    parameter. `fn` is a bound method (so `self` is already excluded); the result is
-    a coroutine because handlers are async."""
     params = inspect.signature(fn).parameters
     return fn(**{name: value for name, value in available.items() if name in params})
+
+
+async def invoke_all(
+    fns: list[Callable[..., Any]], available: dict[str, Any]
+) -> list[Any]:
+    """Invoke scoring handlers concurrently, including empty and singleton lists."""
+    return await asyncio.gather(*(invoke(fn, available) for fn in fns))
 
 
 def mark(attr: str, **extra: Any) -> Callable[[F], F]:
@@ -91,10 +77,8 @@ def metric(
 def metric(
     func: F | None = None, priority: int = 0, agent: str | None = None
 ) -> F | Callable[[F], F]:
-    """Mark a metric `(self, task, trace) -> float` (recorded, not summed). On a
-    `Topology`, `agent` is required and scopes the metric to that agent's traces —
-    run once per matching trace after the instance completes, with `graph` injectable
-    (see `Topology.score`)."""
+    """Mark a metric `(self, trace) -> float` (recorded, not summed). On a `Topology`,
+    `agent=` scopes it to the named agent's traces (see `Topology.score`)."""
     decorator = mark("metric", metric_priority=priority, _vf_agent=agent)
     return decorator if func is None else decorator(func)
 
@@ -105,10 +89,7 @@ def reward(
 ) -> F: ...
 @overload
 def reward(
-    func: None = None,
-    weight: float = 1.0,
-    priority: int = 0,
-    agent: str | None = None,
+    func: None = None, weight: float = 1.0, priority: int = 0, agent: str | None = None
 ) -> Callable[[F], F]: ...
 def reward(
     func: F | None = None,
@@ -116,14 +97,8 @@ def reward(
     priority: int = 0,
     agent: str | None = None,
 ) -> F | Callable[[F], F]:
-    """Mark a per-rollout reward (weighted, summed into trace.reward). Declare any of
-    `task`/`trace`/`runtime`; they're injected by name. Return a `float` (recorded under
-    the method name) or a `dict[str, float]` (each entry under its own key); every
-    contribution is scaled by `weight` before it's summed into `trace.reward`.
-
-    On a `Topology`, `agent` is required and scopes the reward to that agent's traces:
-    it runs once per matching trace *after the whole instance completes* — the deferred,
-    cross-agent tier — declaring any of `task`/`trace`/`graph` (see `Topology.score`)."""
+    """Mark a weighted per-rollout reward returning a float or keyed scores. On a
+    `Topology`, `agent=` scopes it to the named agent's traces (see `Topology.score`)."""
     decorator = mark(
         "reward", reward_priority=priority, _vf_weight=weight, _vf_agent=agent
     )
@@ -139,9 +114,6 @@ def group_reward(
 def group_reward(
     func: F | None = None, weight: float = 1.0, priority: int = 0
 ) -> F | Callable[[F], F]:
-    """Mark a group reward `(self, traces[, task]) -> list[float]`: one score per trace,
-    computed by comparing all rollouts of a task (e.g. pairwise preference) — a function
-    of trace metadata. Each score is weighted and summed into that trace's reward,
-    alongside the per-rollout rewards."""
+    """Mark a weighted group reward returning one score per trace."""
     decorator = mark("group_reward", group_reward_priority=priority, _vf_weight=weight)
     return decorator if func is None else decorator(func)

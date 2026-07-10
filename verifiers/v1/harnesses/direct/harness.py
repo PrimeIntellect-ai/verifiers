@@ -40,7 +40,7 @@ class DirectHarness(Harness[DirectHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(trace.task)
+        system_prompt, prompt = self.resolve_prompt(trace.task.data)
         messages: list[dict] = (
             [{"role": "system", "content": system_prompt}] if system_prompt else []
         )

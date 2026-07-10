@@ -1,20 +1,8 @@
-"""counter (v1, shared state): a `@vf.tool` accumulates into `trace.state`, scored from it.
-
-The v1 state fixture for the e2e matrix. The task declares a typed `CounterState` and a
-`CounterToolset` whose `bump` tool increments `self.state.count` on each call — the shared
-per-rollout state, synced to the host's `trace.state` over the interception server. The `@reward`
-reads `trace.state.count` back, so a non-zero reward proves the whole round-trip: tool write ->
-host `trace.state` -> scoring. Placement is CLI-tunable like any toolset (colocated / own runtime);
-`shared` is excluded by the test (state is per-rollout, not wired to an eval-level server).
-"""
-
-from typing import ClassVar
+"""Task-scoped counter tool with typed rollout state."""
 
 import verifiers.v1 as vf
 
-TARGET = (
-    3  # calls the prompt asks for; the reward accepts >= 2 (margin for an under-call)
-)
+TARGET = 3
 
 
 class CounterState(vf.State):
@@ -22,7 +10,7 @@ class CounterState(vf.State):
 
 
 class CounterToolset(vf.Toolset[vf.ToolsetConfig, CounterState]):
-    TOOL_PREFIX = "counter"  # the model sees `counter_bump`
+    TOOL_PREFIX = "counter"
 
     @vf.tool
     def bump(self) -> str:
@@ -31,37 +19,35 @@ class CounterToolset(vf.Toolset[vf.ToolsetConfig, CounterState]):
         return f"count={self.state.count}"
 
 
-class CounterTask(vf.Task):
-    STATE: ClassVar[type[vf.State]] = CounterState
-
+class CounterTaskConfig(vf.TaskConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig()
-    """Placement for the counter tool server (from the taskset's `tools` knob)."""
 
-    def load_tools(self) -> list[vf.Toolset]:
-        return [CounterToolset(self.tools)]
+
+class CounterTask(vf.Task[vf.TaskData, CounterState, CounterTaskConfig]):
+    tools = (CounterToolset,)
 
     @vf.reward(weight=1.0)
     async def counted(self, trace: vf.Trace) -> float:
-        # The tool incremented `self.state.count` per call and pushed it to `trace.state` over the
-        # interception channel; reading it back non-zero here proves the round-trip (>= 2 accumulated).
         return float(trace.state.count >= 2)
 
 
 class CounterConfig(vf.TasksetConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    task: CounterTaskConfig = CounterTaskConfig()
 
 
 class CounterTaskset(vf.Taskset[CounterTask, CounterConfig]):
-    def load_tasks(self) -> list[CounterTask]:
+    def load(self) -> list[CounterTask]:
         return [
             CounterTask(
-                idx=0,
-                prompt=(
-                    f"Call the `counter_bump` tool {TARGET} times, one call per turn — wait for "
-                    "each result before the next. After the last result, reply with "
-                    "<answer>done</answer>."
+                vf.TaskData(
+                    idx=0,
+                    prompt=(
+                        f"Call the `counter_bump` tool {TARGET} times, one call per turn — wait "
+                        "for each result before the next. After the last result, reply with "
+                        "<answer>done</answer>."
+                    ),
                 ),
-                tools=self.config.tools,
+                self.config.task,
             )
         ]
 

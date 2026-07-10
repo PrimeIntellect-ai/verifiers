@@ -1,42 +1,94 @@
-"""The task: the unit of work — its data as frozen, typed fields; its behavior on the class.
+"""Task data, configuration, behavior, and scoring.
 
-A `Task` is what an agent consumes to produce a trace. Its *instance* is pure, serializable
-data (the prompt, the ground truth, runtime requests) that rides the wire and persists with
-the trace; its *class* carries everything an episode needs from the inside — lifecycle hooks
-(`setup`/`finalize`/`validate`), tools (`load_tools`), a user simulator (`load_user`), and judgement
-(`@vf.reward`/`@vf.metric`/`@vf.stop`/`@vf.group_reward` methods). Methods aren't fields, so
-the split costs nothing: data serializes, behavior stays importable code.
+`TaskData` is the wire half: a frozen pydantic model carrying everything a rollout's
+row IS — the base fields (prompt, image, timeouts, judges) plus your typed,
+task-specific fields (the reference answer, ground truths, ...). It is what rides on
+`trace.task.data`, what `traces.jsonl` stores, and what tool/user servers receive over the
+`/task` channel. Subclass it per dataset.
 
-Because behavior travels with the class, every way of minting a task is equal: a `Taskset`
-factory deriving them from a dataset, a topology's `load_tasks`, a task constructed mid-`go`
-from an upstream trace, a future replay buffer. A generated task is a first-class citizen —
-question and verifier in one typed object.
+`Task` is the behavior half: a plain class owning runtime prep (`setup`/`finalize`),
+server declarations (`tools`/`user`), well-formedness (`validate`), and judgement
+(`@reward`/`@metric`/`@group_reward` methods, run by `score`/`score_group`). It wraps
+a `TaskData` plus a `TaskConfig`, both plain constructor arguments:
+
+    task = MyTask(data)                        # config defaults to the declared type's
+    task = MyTask(data, config=MyTaskConfig()) # or is injected, like Taskset/Harness/Judge
+    task = MyTask.from_trace(trace)            # opt-in: derived from a finished rollout
+
+Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]` (all three
+default) — hooks and signals read the row off `self.data` and the knobs off
+`self.config`. Because behavior lives on the task class, verification never branches
+on a type field; a taskset yields one task type (its `load` constructs it), and
+instances differ per row through their data.
+
+The task is the single judgement authority, scored at two granularities (execution
+lives in the Rollout — per-rollout — and the Episode — group — which call these):
+  - `score` runs `@metric`/`@reward` — plus the plugged judges resolved from
+    `config.judges` (see `verifiers.v1.judge`) — over one trace (in its live runtime).
+  - `score_group` runs `@group_reward` over all the rollouts of this task at once —
+    pairwise/preference rewards that compare samples.
+
+A Task instance is shared across its rollouts (a group's `n` samples hold the same
+instance), so hooks and scoring methods must not stash per-rollout state on `self` —
+that lives on the trace (`trace.state`, typed via the `Task[..., MyState, ...]`
+param).
+
+On the wire only the data (plus the producing class's name, `trace.task.type`)
+travels: a saved `trace.task.data` reads back as `WireTaskData`
+(extra fields preserved) without importing the taskset; a consumer that re-scores
+(e.g. `replay`) rebuilds the declared `TaskData` type and wraps it in the declared
+`Task` — one task type per taskset.
 """
 
-import asyncio
+from __future__ import annotations
+
 import inspect
+import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, model_validator
+from pydantic_config import BaseConfig
+from typing_extensions import TypeVar
 
-from verifiers.v1.decorators import discover_decorated, invoke
+from verifiers.v1.decorators import discover_decorated, invoke_all
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.state import State
+from verifiers.v1.judge import Judges, check_judges, resolve_judges
+from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, StrictBaseModel, content_text
+from verifiers.v1.utils.generic import generic_type
 
 if TYPE_CHECKING:
+    from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset, User
     from verifiers.v1.runtimes import Runtime
     from verifiers.v1.trace import Trace
 
+logger = logging.getLogger(__name__)
+
+
+def _requires_runtime(fn) -> bool:
+    param = inspect.signature(fn).parameters.get("runtime")
+    # A defaulted runtime parameter can still be called offline with None.
+    return param is not None and param.default is inspect.Parameter.empty
+
+
+def _record_result(
+    trace: Trace,
+    name: str,
+    result,
+    weight: float | None = None,
+) -> None:
+    """Record a scalar or keyed scoring result."""
+    values = list(result.items()) if isinstance(result, Mapping) else [(name, result)]
+    for key, value in values:
+        if weight is None:
+            trace.record_metric(key, value)
+        else:
+            trace.record_reward(key, value, weight)
+
 
 class TaskResources(StrictBaseModel):
-    """Runtime resources a task requests (all optional), in Modal's units. Applied to the
-    runtime config where the field exists; a field the runtime doesn't support is warned
-    about and ignored. Precedence: cli/toml > task > the runtime default (`None` here =
-    use the runtime/provider default)."""
-
     model_config = ConfigDict(frozen=True)
 
     cpu: float | None = None
@@ -50,198 +102,232 @@ class TaskResources(StrictBaseModel):
 
 
 class TaskTimeout(StrictBaseModel):
-    """Per-task wall-clock timeout overrides (seconds, all optional), one per rollout stage. Each
-    merges with the eval's `timeout` (`TimeoutConfig`): cli/toml > this > default (no limit).
-    Frozen, like `TaskResources`."""
+    """Optional per-task timeout overrides, in seconds."""
 
     model_config = ConfigDict(frozen=True)
 
     setup: float | None = None
-    """The task's `setup` hook."""
     harness: float | None = None
-    """The harness run."""
     finalize: float | None = None
-    """The task's `finalize` hook."""
     scoring: float | None = None
-    """Verify + rewards/metrics."""
 
 
-class Task(StrictBaseModel):
-    """A single problem to solve. Subclass to add typed data fields and episode behavior
-    (`@vf.reward`/`@vf.metric`/`@vf.stop` methods, lifecycle hooks, `load_tools`/`load_user`).
-    Data gets the plain name, constructors get the `load_` prefix — so a `tools`/`user`
-    config field and its loader coexist (same convention as `Taskset.load_tasks`)."""
+class TaskConfig(BaseConfig):
+    """Run-time knobs read by `Task` behavior.
+
+    Subclass for server placement, judge, or scoring settings. Every field needs a
+    default because constructing a task without a config builds the declared config type.
+    Load-time dataset settings belong on `TasksetConfig` instead.
+    """
+
+    judges: Judges = []
+    """Judge plugins run after task rewards, set through `--taskset.task.judges`."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_judges(cls, data):
+        if isinstance(data, dict) and data.get("judges"):
+            data["judges"] = resolve_judges(data["judges"])
+        return data
+
+    @model_validator(mode="after")
+    def _check_judges(self) -> TaskConfig:
+        check_judges(self.judges)
+        return self
+
+
+class TaskData(StrictBaseModel):
+    """The task's wire half: one row's pure data, a frozen pydantic model. Subclass per
+    dataset to add typed, task-specific fields (the reference answer, ground truths,
+    per-row metadata) next to the base fields below. This is what `trace.task.data` holds,
+    what `traces.jsonl` stores, and what tool/user servers receive over the `/task`
+    channel — behavior lives on `Task`, which wraps this (`self.data`)."""
 
     model_config = ConfigDict(frozen=True)
 
-    NEEDS_CONTAINER: ClassVar[bool] = False
-    """Whether this task only runs in a container runtime (docker/prime). When True the
-    subprocess runtime is refused — for tasks whose work only makes sense inside a
-    per-task image (e.g. a SWE repo sandbox)."""
-    STATE: ClassVar[type[State]] = State
-    """The per-rollout `State` type this task's episodes carry (`trace.state`, shared with
-    tool/user servers and read+written by scoring). Override with a `State` subclass to
-    type it; the base (empty) `State` by default."""
-
     idx: int
-    """Stable integer index of this example within its taskset."""
     name: str | None = None
-    """Optional human-readable task name/label (for display/filtering)."""
     description: str | None = None
-    """Optional human-readable task description."""
     prompt: str | Messages | None
-    """The user message shown to the model (the task's question/framing). Usually a `str`; a
-    `Messages` list seeds a full initial conversation (e.g. a user message carrying images) and
-    is only accepted by harnesses that set `SUPPORTS_MESSAGE_PROMPT`. Required — set it
-    explicitly to `None` to mean the task carries no prompt: the task's user simulator
-    (`user`) then opens the conversation, its first `respond` supplying the initial user
-    turn before the model is ever called."""
+    """Initial user prompt; `None` lets the user simulator open the conversation."""
     system_prompt: str | None = None
-    """Optional system prompt. Harnesses that set `APPENDS_SYSTEM_PROMPT` emit it as a real
-    system message (or their own mechanism); others prepend it to `prompt` (with a
-    warning). See `Harness.resolve_prompt`."""
     image: str | None = None
-    """Container image this task needs (e.g. its harbor environment). When set, the
-    runtime must be a container (docker/prime): the Environment injects it into the
-    runtime config and refuses the subprocess runtime, which has no container."""
     workdir: str | None = None
-    """Working directory the harness and scoring run in — the Environment injects it into
-    the runtime config's `workdir` (where the runtime supports one). For a containerized
-    task whose image puts the working tree at a non-default path (e.g. a SWE row's
-    `/workspace/<repo>`)."""
     timeout: TaskTimeout = TaskTimeout()
-    """Optional per-task timeout overrides, one per rollout stage (merge with the eval's `timeout`)."""
     resources: TaskResources = TaskResources()
-    """Optional runtime resources this task requests (applied where supported)."""
 
     @property
     def prompt_text(self) -> str:
-        """The prompt as plain text — `prompt` itself when it's a `str`, the joined text
-        content of a `Messages` prompt (images are dropped), `""` when the task carries no
-        prompt. For consumers that need the task's framing as text regardless of the prompt
-        form, e.g. a judge's prompt template."""
         if isinstance(self.prompt, str):
             return self.prompt
         texts = [content_text(message.content) for message in self.prompt or []]
         return "\n\n".join(text for text in texts if text)
 
-    # --- episode behavior — override on subclasses; the instance is still pure data ------
 
-    def load_tools(self) -> "list[Toolset]":
-        """Tool servers exposing this task's tools to the model — `vf.Toolset`s (classes with
-        `@vf.tool` methods), each carrying its `config` (placement / runtime; a remote `url`
-        for an already-running server). Empty by default; override to give a task tools."""
-        return []
+class WireTaskData(TaskData):
+    """Wire form that preserves task-specific fields without importing the task class."""
 
-    def load_user(self) -> "User | None":
-        """A user simulator for this task — structurally a tool server (an MCP server
-        with a runtime), but driven by the framework, not exposed to the model. After
-        each model turn the interception server calls its `respond` tool and injects the
-        reply as a user turn. None by default; override to make a task a simulated
-        multi-turn conversation (e.g. a TextArena game)."""
+    model_config = ConfigDict(extra="allow")
+
+
+# No `default=`: an unparameterized `Trace`'s `task` field must serialize duck-typed
+# (a defaulted TypeVar narrows pydantic's serialization to the base `TaskData`, silently
+# dropping subclass fields from the wire).
+DataT = TypeVar("DataT", bound=TaskData)
+ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
+
+
+def task_data_cls(cls: type) -> type[TaskData]:
+    """Resolve a task's `TaskData` specialization through its MRO, else `TaskData`."""
+    return generic_type(cls, TaskData) or TaskData
+
+
+def task_config_cls(cls: type) -> type[TaskConfig]:
+    """Resolve a task's `TaskConfig` specialization through its MRO, else `TaskConfig`."""
+    return generic_type(cls, TaskConfig) or TaskConfig
+
+
+def resolve_server_config(
+    owner: str, config: BaseConfig, server_cls: type, *, sole: bool = True
+) -> BaseConfig:
+    """The config a declared server class is built with, resolved off `config`'s fields:
+    the field whose value is exactly the server's declared config type
+    (`Toolset[MyConfig]` / `User[MyConfig]`), else the unique field whose value
+    isinstance-matches it, else a default-constructed one. Two matching fields raise —
+    the `server_config` methods (`Task` / `Taskset`) are the override points for explicit
+    pairing. `owner` names the declaring class in errors. The isinstance fallback runs
+    only when the owner declares a `sole` server class: with several, a subclass-typed
+    field could silently pair with the WRONG server (e.g. a base-config server matching a
+    sibling's narrowed field), so multi-server owners need exact type matches or a
+    `server_config` override."""
+    cfg_cls = server_cls._config_cls()
+    values = {name: getattr(config, name) for name in type(config).model_fields}
+    matched = [name for name, v in values.items() if type(v) is cfg_cls]
+    if not matched and sole:
+        matched = [name for name, v in values.items() if isinstance(v, cfg_cls)]
+    if len(matched) > 1:
+        raise TaskError(
+            f"{owner}: ambiguous config for {server_cls.__name__} — config fields "
+            f"{matched} all match {cfg_cls.__name__}; override `server_config` to pair "
+            f"them explicitly"
+        )
+    if matched:
+        return values[matched[0]]
+    return cfg_cls()
+
+
+class Task(Generic[DataT, StateT, ConfigT]):
+    """Behavior, lifecycle, servers, and scoring for one `TaskData` row.
+
+    Parameterize as `Task[MyData, MyState, MyConfig]`. Construction accepts the row
+    and an optional config; omitting config builds the declared config type. One task
+    instance is shared across a rollout group, so per-rollout state belongs on the trace.
+    """
+
+    NEEDS_CONTAINER: ClassVar[bool] = False
+
+    tools: ClassVar[tuple[type[Toolset], ...]] = ()
+
+    user: ClassVar[type[User] | None] = None
+
+    def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
+        self.data = data
+        self.config = config if config is not None else task_config_cls(type(self))()
+
+    def plugged_judges(self) -> list[Judge]:
+        from verifiers.v1.loaders import load_judge
+
+        return [load_judge(config) for config in self.config.judges]
+
+    def server_config(self, server_cls: type) -> BaseConfig:
+        """The config a declared server class (`tools` / `user`) is built with, resolved
+        off `self.config` (see `resolve_server_config`: exact type match, else — for a
+        sole declared server — unique isinstance match, else default-constructed).
+        Override to pair explicitly (the escape hatch for exotic setups, e.g. two servers
+        sharing one config type)."""
+        declared = set(type(self).tools) | ({type(self).user} - {None})
+        return resolve_server_config(
+            type(self).__name__, self.config, server_cls, sole=len(declared) == 1
+        )
+
+    def tool_servers(self) -> list[Toolset]:
+        return [cls(self.server_config(cls)) for cls in type(self).tools]
+
+    def user_server(self) -> User | None:
+        cls = type(self).user
+        return cls(self.server_config(cls)) if cls is not None else None
+
+    async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
-    async def setup(self, trace: "Trace", runtime: "Runtime") -> None:
-        """Prepare the live runtime for this task, after `runtime.start()` and before the
-        harness runs. No-op by default; override to run per-task setup in the runtime (e.g.
-        a SWE row checking out its base commit). Errors propagate and fail the rollout.
-
-        Like the scoring methods, hooks declare the inputs they need *by parameter name* and
-        the framework injects them: any subset of `task` (self, for signature symmetry),
-        `trace`, `runtime`. The trace (and its per-rollout `trace.state`) already exists when
-        `setup` runs, so an override may stash per-rollout state there."""
+    async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
-    async def finalize(self, trace: "Trace", runtime: "Runtime") -> None:
-        """Post-process the live runtime after the harness finishes, before scoring. No-op
-        by default; override to do per-rollout work the rewards (or a downstream agent's
-        task) depend on — apply/commit the agent's diff, run a build, scrape runtime
-        artifacts into `trace.info`. Runs while the runtime is still live (after generation,
-        before `@reward`/`@metric`); the symmetric counterpart to `setup`. Errors propagate
-        and fail the rollout."""
-        return None
-
-    async def validate(self, runtime: "Runtime") -> bool:
-        """Check this task is well-formed and solvable, independent of any model rollout —
-        run by the `validate` entrypoint, never during a rollout. Valid (True) by default;
-        override to assert the ground truth holds (e.g. a SWE row applying its gold patch and
-        running its tests, or gsm8k confirming the verifier accepts the gold answer). Runs in
-        a live runtime started for the task with `setup` already applied (a pure-data check
-        can ignore it). Return False — or raise — to mark the task invalid; the entrypoint
-        records the reason (the raised error's message)."""
+    async def validate(self, runtime: Runtime) -> bool:
         return True
 
-    async def score(self, trace: "Trace", runtime: "Runtime | None" = None) -> None:
-        """Score one rollout: run all `@metric`, then `@reward` methods over its trace,
-        concurrently within each phase. Each metric is recorded in `trace.metrics` (a
-        number, or a mapping merged in); each reward (weighted — likewise a number or a
-        mapping merged in) in `trace.rewards`, which `trace.reward` sums. Methods declare
-        what they need — `task` (self), `trace`, `runtime` — so a reward is either a pure
-        function of the trace or runs read/write/exec in that (still-live) runtime, e.g. a
-        verifier script. `runtime` may be None for offline replay; methods that require a
-        runtime are skipped, while trace-only methods still re-score."""
-        available = {"task": self, "trace": trace}
+    async def score(
+        self,
+        trace: Trace,
+        runtime: Runtime | None = None,
+    ) -> None:
+        judges = self.plugged_judges()
+        available = {"task": self.data, "trace": trace}
         if runtime is not None:
             available["runtime"] = runtime
 
-        def can_run(fn) -> bool:
-            if runtime is not None:
-                return True
-            param = inspect.signature(fn).parameters.get("runtime")
-            return param is None or param.default is not inspect.Parameter.empty
-
         async with boundary(TaskError, f"task {type(self).__name__} scoring"):
-            for kind in ("metric", "reward"):
-                fns = [fn for fn in discover_decorated(self, kind) if can_run(fn)]
-                results = (
-                    [await invoke(fn, available) for fn in fns]
-                    if len(fns) < 2
-                    else await asyncio.gather(*(invoke(fn, available) for fn in fns))
-                )
-                for fn, result in zip(fns, results):
-                    if kind == "metric":
-                        if isinstance(result, Mapping):
-                            trace.record_metrics(result)
-                        else:
-                            trace.record_metric(fn.__name__, result)
-                    else:
-                        weight = getattr(fn, "_vf_weight", 1.0)
-                        if isinstance(result, Mapping):
-                            for name, value in result.items():
-                                trace.record_reward(name, value, weight)
-                        else:
-                            trace.record_reward(fn.__name__, result, weight)
+            metrics = discover_decorated(self, "metric")
+            rewards = discover_decorated(self, "reward")
+            if runtime is None:
+                skipped = [
+                    fn.__name__ for fn in (*metrics, *rewards) if _requires_runtime(fn)
+                ] + [
+                    judge.reward_name
+                    for judge in judges
+                    if _requires_runtime(judge.score)
+                ]
+                if skipped:
+                    logger.info(
+                        "score: no runtime — skipped runtime-dependent signals: %s",
+                        skipped,
+                    )
+                metrics = [fn for fn in metrics if not _requires_runtime(fn)]
+                rewards = [fn for fn in rewards if not _requires_runtime(fn)]
+                judges = [
+                    judge for judge in judges if not _requires_runtime(judge.score)
+                ]
 
-    async def score_group(self, traces: "list[Trace]") -> None:
-        """Score a group of rollouts of this task: run every `@group_reward` over all the
-        traces at once (pairwise/preference rewards), each returning one score per trace,
-        aligned to `traces`. A group reward declares what it needs — `task` (self) and
-        `traces` — and compares trace metadata (anything from the runtime is recorded per
-        rollout as a `@metric` first). Scores are weighted into each trace's reward,
-        alongside the per-rollout rewards. No-op without `@group_reward`s."""
+            metric_results = await invoke_all(metrics, available)
+            for fn, result in zip(metrics, metric_results):
+                _record_result(trace, fn.__name__, result)
+            reward_results = await invoke_all(rewards, available)
+            for fn, result in zip(rewards, reward_results):
+                _record_result(
+                    trace, fn.__name__, result, getattr(fn, "_vf_weight", 1.0)
+                )
+            judge_results = await invoke_all(
+                [judge.score for judge in judges], available
+            )
+            for judge, result in zip(judges, judge_results):
+                _record_result(trace, judge.reward_name, result, judge.config.weight)
+
+    async def score_group(self, traces: list[Trace]) -> None:
         rewards = discover_decorated(self, "group_reward")
         if not rewards:
             return
-        available = {"task": self, "traces": traces}
+        available = {"task": self.data, "traces": traces}
         async with boundary(TaskError, f"task {type(self).__name__} group scoring"):
-            results = (
-                [await invoke(fn, available) for fn in rewards]
-                if len(rewards) < 2
-                else await asyncio.gather(*(invoke(fn, available) for fn in rewards))
-            )
-            for fn, scores in zip(rewards, results):
+            reward_results = await invoke_all(rewards, available)
+            for fn, scores in zip(rewards, reward_results):
+                if len(scores) != len(traces):
+                    raise ValueError(
+                        f"@group_reward {fn.__name__} returned {len(scores)} score(s) "
+                        f"for {len(traces)} rollout(s); it must return one per trace"
+                    )
                 weight = getattr(fn, "_vf_weight", 1.0)
                 for trace, score in zip(traces, scores):
                     trace.record_reward(fn.__name__, score, weight)
-
-
-class WireTask(Task):
-    """A `Task` that accepts (and preserves) task-specific extra fields. Lets a `Trace`
-    be typed on the wire — `Trace[WireTask]` — without importing the task's package, since the
-    real `Task` subclass's extra fields land in `model_extra` instead of being rejected. A
-    caller that imports the package upgrades to the real type via `task_type(taskset_id)`."""
-
-    model_config = ConfigDict(extra="allow")
 
 
 TaskT = TypeVar("TaskT", bound=Task)

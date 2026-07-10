@@ -1,14 +1,4 @@
-"""The eval entrypoint: `uv run eval --taskset.id <id> [options]`.
-
-Registered as the `eval` console script. Mirrors the `~/prime-rl` pattern (`config =
-cli(Config)`). The taskset and harness are selected by their `--taskset.id` / `--harness.id`
-(the discriminator fields); `cli/resolve.py` narrows each to its config type, so the single
-`prime-pydantic-config` parse keeps their fields typed and overridable via dotted flags
-(e.g. `--harness.runtime.type docker`, `--taskset.*`) / `@ eval.toml`.
-
-`-h`/`--help` (or no args) prints the local example tasksets/harnesses plus the full, typed
-pydantic-config help — narrowed to whatever `--taskset.id` / `--harness.id` are given.
-"""
+"""Eval CLI entrypoint."""
 
 import asyncio
 import logging
@@ -114,6 +104,10 @@ def main(argv: list[str] | None = None) -> None:
     else:  # in-process (default), with or without the live dashboard
         env = vf.Environment(config)
         traces = asyncio.run(run_eval(env, config))
+    if config.push and not rich:
+        from verifiers.v1.push import push_traces
+
+        push_traces(traces, config)
     if not rich:  # --rich is the whole output; otherwise dump each trace as JSON
         for trace in traces:
             print(trace.model_dump_json(indent=2, exclude_none=True))

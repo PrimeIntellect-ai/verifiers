@@ -1,12 +1,12 @@
 """echo (v1, MCP tool): retrieve a stamped echo from a `vf.Toolset`, then report it.
 
 The v1 tool fixture for the e2e matrix. The task declares an `EchoToolset` (`vf.Toolset`)
-with one `@vf.tool` method whose placement is CLI-tunable (`--taskset.tools.colocated`,
-`--taskset.tools.shared`, `--taskset.tools.runtime.type`): it runs colocated in the harness's
-runtime, shared once per eval, or in its own runtime, and the harness must reach it wherever it
-lives. The tool stamps its output with a token the prompt never reveals, so the reward is
-1.0 only if the model actually called the tool — trivial when the infra works, impossible when
-it doesn't. The tool is task-agnostic, so it works in `shared` placement too.
+with one `@vf.tool` method whose placement is CLI-tunable (`--taskset.task.tools.colocated`,
+`--taskset.task.tools.runtime.type`): it runs colocated in the harness's runtime or in its
+own runtime, and the harness must reach it wherever it lives. The tool stamps its output
+with a token the prompt never reveals, so the reward is 1.0 only if the model actually
+called the tool — trivial when the infra works, impossible when it doesn't. The tool is
+task-agnostic, so it would also serve taskset-scoped (`Taskset.tools`).
 """
 
 import verifiers.v1 as vf
@@ -24,12 +24,12 @@ class EchoToolset(vf.Toolset[vf.ToolsetConfig]):
         return f"{message} [{ECHO_TOKEN}]"
 
 
-class EchoToolTask(vf.Task):
+class EchoToolTaskConfig(vf.TaskConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig()
-    """Placement for the echo tool server (from the taskset's `tools` knob)."""
 
-    def load_tools(self) -> list[vf.Toolset]:
-        return [EchoToolset(self.tools)]
+
+class EchoToolTask(vf.Task[vf.TaskData, vf.State, EchoToolTaskConfig]):
+    tools = (EchoToolset,)
 
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
@@ -40,19 +40,21 @@ class EchoToolTask(vf.Task):
 
 
 class EchoToolConfig(vf.TasksetConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    task: EchoToolTaskConfig = EchoToolTaskConfig()
 
 
 class EchoToolTaskset(vf.Taskset[EchoToolTask, EchoToolConfig]):
-    def load_tasks(self) -> list[EchoToolTask]:
+    def load(self) -> list[EchoToolTask]:
         return [
             EchoToolTask(
-                idx=0,
-                prompt=(
-                    f'Call the `echo_back` tool with the message "{PHRASE}", then reply '
-                    "with exactly what it returns inside <answer></answer> tags."
+                vf.TaskData(
+                    idx=0,
+                    prompt=(
+                        f'Call the `echo_back` tool with the message "{PHRASE}", then reply '
+                        "with exactly what it returns inside <answer></answer> tags."
+                    ),
                 ),
-                tools=self.config.tools,
+                self.config.task,
             )
         ]
 

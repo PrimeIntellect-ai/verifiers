@@ -35,16 +35,18 @@ class WriteTask(vf.Task):
         }
 
 
-class ReadTask(vf.Task):
+class ReadData(vf.TaskData):
     """A downstream task that reads the writer's artifact from the borrowed runtime."""
 
     expected: str
     path: str = NOTE_PATH
 
+
+class ReadTask(vf.Task[ReadData]):
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        observed = (await runtime.read(self.path)).decode().strip()
+        observed = (await runtime.read(self.data.path)).decode().strip()
         trace.info["shared_runtime"] = {
-            "path": self.path,
+            "path": self.data.path,
             "read": observed,
             "runtime": runtime.descriptor,
         }
@@ -52,7 +54,7 @@ class ReadTask(vf.Task):
     @vf.reward
     async def read_shared_note(self, trace: vf.Trace) -> float:
         observed = trace.info.get("shared_runtime", {}).get("read")
-        return float(observed == self.expected)
+        return float(observed == self.data.expected)
 
 
 class SharedRuntimeConfig(vf.TopologyConfig):
@@ -62,7 +64,7 @@ class SharedRuntimeConfig(vf.TopologyConfig):
 
 class SharedRuntimeTopology(vf.Topology[SharedRuntimeConfig]):
     def load_tasks(self) -> list[vf.Task]:
-        return [WriteTask(idx=0, prompt=WRITE_PROMPT)]
+        return [WriteTask(vf.TaskData(idx=0, prompt=WRITE_PROMPT))]
 
     async def go(self, task: WriteTask, run: vf.TopologyRun) -> None:
         writer = run.agent("writer")
@@ -73,7 +75,9 @@ class SharedRuntimeTopology(vf.Topology[SharedRuntimeConfig]):
             if note is None:
                 return  # writer episode failed before finalize — nothing was handed off
             await reader.run(
-                ReadTask(idx=task.idx, prompt=READ_PROMPT, expected=note),
+                ReadTask(
+                    ReadData(idx=task.data.idx, prompt=READ_PROMPT, expected=note)
+                ),
                 parents=[written],
                 runtime=runtime,
             )

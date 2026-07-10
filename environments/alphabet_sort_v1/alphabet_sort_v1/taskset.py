@@ -11,14 +11,14 @@ The whole conversation is driven by a `vf.User` simulator (`AlphabetSortUser` in
 conversation with the initial sort prompt — before the model is ever called — and then injects
 each follow-up after the assistant turn. The episode is one rollout the harness only ever sees
 as a single exchange. The simulator runs on the host (not colocated in the agent's runtime), so
-the host-driven loop reaches it on every runtime. The episodes are pre-generated in `load_tasks`;
+the host-driven loop reaches it on every runtime. The episodes are pre-generated in `load`;
 the simulator replays them.
 """
 
 import difflib
 import random
 import re
-from typing import ClassVar, Literal
+from typing import Literal
 
 from datasets import load_dataset
 
@@ -30,6 +30,14 @@ DATASET = "kalomaze/alphabetic-arxiv-authors-it1"
 SEED = 1337420
 
 
+class AlphabetSortTaskConfig(vf.TaskConfig):
+    similarity_power: int = 4
+    """Exponent applied to each turn's sequence-similarity score (higher = sharper penalty)."""
+    power_per_turn: bool = True
+    """Power-scale each turn then average (True), or average raw similarities then power once (False)."""
+    user: vf.UserConfig = vf.UserConfig()
+
+
 class AlphabetSortConfig(vf.TasksetConfig):
     min_turns: int = 1
     """Minimum number of turns (assistant sorts) per episode."""
@@ -39,40 +47,31 @@ class AlphabetSortConfig(vf.TasksetConfig):
     """Minimum number of names introduced on each turn."""
     max_names_per_turn: int = 5
     """Maximum number of names introduced on each turn."""
-    similarity_power: int = 4
-    """Exponent applied to each turn's sequence-similarity score (higher = sharper penalty)."""
-    power_per_turn: bool = True
-    """Power-scale each turn then average (True), or average raw similarities then power once (False)."""
     split: Literal["train"] = "train"
     """Split of the source author-names dataset to build the episodes from."""
-    user: vf.UserConfig = vf.UserConfig()
+    task: AlphabetSortTaskConfig = AlphabetSortTaskConfig()
 
 
-class AlphabetSortTask(vf.Task):
-    STATE: ClassVar[type[vf.State]] = AlphabetSortState
-
+class AlphabetSortTaskData(vf.TaskData):
     info: dict
     """The pre-generated episode: the `user_turns` the simulator reveals one by one (the opening
     sort prompt, then the follow-ups), the per-turn `ground_truths` the reward grades against,
-    and `num_turns`. The task itself carries no prompt — the simulator opens the conversation."""
-    similarity_power: int = 4
-    """Exponent applied to each turn's sequence-similarity score (higher = sharper penalty)."""
-    power_per_turn: bool = True
-    """Power-scale each turn then average (True), or average raw similarities then power once (False)."""
-    user: vf.UserConfig = vf.UserConfig()
-    """Placement for the episode-replaying user simulator (from the taskset's `user` knob)."""
+    and `num_turns`. The row itself carries no prompt — the simulator opens the conversation."""
+
+
+class AlphabetSortTask(
+    vf.Task[AlphabetSortTaskData, AlphabetSortState, AlphabetSortTaskConfig]
+):
+    user = AlphabetSortUser
 
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:
         return trace.state.user_finished
 
-    def load_user(self) -> vf.User:
-        return AlphabetSortUser(self.user)
-
     @vf.reward(weight=1.0)
     async def alphabet_sort(self, trace: vf.Trace) -> float:
-        ground_truths = self.info["ground_truths"]
-        num_turns = self.info["num_turns"]
+        ground_truths = self.data.info["ground_truths"]
+        num_turns = self.data.info["num_turns"]
         responses = [m.content or "" for m in trace.assistant_messages]
         scores = []
         for t in range(num_turns):
@@ -91,7 +90,9 @@ class AlphabetSortTask(vf.Task):
                     else 0.0
                 )
                 attempts.append(
-                    sim**self.similarity_power if self.power_per_turn else sim
+                    sim**self.config.similarity_power
+                    if self.config.power_per_turn
+                    else sim
                 )
             if not attempts:
                 scores.append(0.0)
@@ -101,11 +102,11 @@ class AlphabetSortTask(vf.Task):
                 improved = all(b > a for a, b in zip(attempts, attempts[1:]))
                 scores.append(attempts[-1] if improved else 0.0)
         avg = sum(scores) / num_turns if num_turns else 0.0
-        return avg if self.power_per_turn else avg**self.similarity_power
+        return avg if self.config.power_per_turn else avg**self.config.similarity_power
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
-    def load_tasks(self) -> list[AlphabetSortTask]:
+    def load(self) -> list[AlphabetSortTask]:
         c = self.config
         assert 1 <= c.min_turns <= c.max_turns, "need 1 <= min_turns <= max_turns"
         assert 1 <= c.min_names_per_turn <= c.max_names_per_turn, (
@@ -180,18 +181,18 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
 
             tasks.append(
                 AlphabetSortTask(
-                    idx=len(tasks),
-                    # No prompt on the task: the simulator opens with the sort prompt, then the
-                    # follow-ups — one user turn per `user_turns` entry.
-                    prompt=None,
-                    info={
-                        "user_turns": [initial_prompt, *follow_ups],
-                        "ground_truths": ground_truths,
-                        "num_turns": len(turns),
-                    },
-                    similarity_power=c.similarity_power,
-                    power_per_turn=c.power_per_turn,
-                    user=c.user,
+                    AlphabetSortTaskData(
+                        idx=len(tasks),
+                        # No prompt on the row: the simulator opens with the sort prompt, then
+                        # the follow-ups — one user turn per `user_turns` entry.
+                        prompt=None,
+                        info={
+                            "user_turns": [initial_prompt, *follow_ups],
+                            "ground_truths": ground_truths,
+                            "num_turns": len(turns),
+                        },
+                    ),
+                    c.task,
                 )
             )
         return tasks

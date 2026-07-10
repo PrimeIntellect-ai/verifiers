@@ -17,15 +17,15 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.topologies.agentic_judge import TRACE_PATH, AgenticJudgeTask
 from verifiers.v1.topologies.llm_judge import JudgeTask
 from verifiers.v1.topology import AgentGraph, TopologyRunner
-from verifiers.v1.trace import Trace, WireTrace
+from verifiers.v1.trace import Trace, TraceTask, WireTrace
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 
 def echoing_trace(task: vf.Task, reply: str) -> Trace:
     """A minimal completed trace: one user turn, one sampled assistant reply."""
-    trace = Trace(task=task)
+    trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
     trace.nodes.append(
-        MessageNode(parent=None, message=UserMessage(content=str(task.prompt)))
+        MessageNode(parent=None, message=UserMessage(content=str(task.data.prompt)))
     )
     trace.nodes.append(
         MessageNode(parent=0, message=AssistantMessage(content=reply), sampled=True)
@@ -40,7 +40,7 @@ def stub_agent_run(monkeypatch) -> None:
     executable agent's rollout work with a tiny deterministic trace."""
 
     async def fake_agent_run(self, task, *, parents=(), runtime=None, retry=None):
-        trace = echoing_trace(task, getattr(task, "answer", "ok"))
+        trace = echoing_trace(task, getattr(task.data, "answer", "ok"))
         trace.record_reward("echoed", 1.0)
         self.stamp(
             trace, parents=parents, runtime=runtime, borrowed=runtime is not None
@@ -51,7 +51,11 @@ def stub_agent_run(monkeypatch) -> None:
 
 
 async def run_stubbed_instance(env: TopologyRunner, task: vf.Task) -> AgentGraph:
-    async with env.serving(vf.ModelContext(model="org/model", client=object())):
+    async with env.serving(
+        vf.ModelContext(
+            model="org/model", client=object(), sampling=vf.SamplingConfig()
+        )
+    ):
         return await env.run_instance(task)
 
 
@@ -152,7 +156,7 @@ def test_agent_discovery_and_seed_factory():
     topology = vf.load_topology(config.topology)
     assert list(topology.agents) == ["first", "second"]  # declaration order
     tasks = topology.load_tasks()  # from the pinned echo-v1 seed factory
-    assert tasks and tasks[0].answer == "hello world"
+    assert tasks and tasks[0].data.answer == "hello world"
 
 
 def test_topology_without_seeds_is_refused():
@@ -218,7 +222,7 @@ async def test_run_instance_links_and_defers(echo_chain_env):
     assert graph.by_agent("second") == [second]
     assert first.trainable and second.trainable
     # forward arrow: the derived task echoes the same phrase
-    assert second.task.answer == seed.answer
+    assert second.task.data.answer == seed.data.answer
     # backward arrow: relay reward recorded on the upstream trace after the child finished
     assert first.rewards == {"echoed": 1.0, "relay": 1.0}
     assert second.rewards == {"echoed": 1.0}
@@ -271,7 +275,7 @@ async def test_proposer_solver_fan_out_and_difficulty(monkeypatch):
     assert [t.agent for t in solvers] == ["solver"] * 4  # num_solvers default
     assert all(t.parents == [proposer.id] for t in solvers)
     assert all(
-        t.task.prompt == solvers[0].task.prompt for t in solvers
+        t.task.data.prompt == solvers[0].task.data.prompt for t in solvers
     )  # one minted task
     assert proposer.metrics == {"solve_rate": 0.5}
     assert proposer.rewards == {"difficulty": 1.0}
@@ -299,7 +303,11 @@ async def test_provisioned_runtime_is_borrowed_across_runs(echo_chain_env, monke
     monkeypatch.setattr(agent_module, "make_runtime", lambda config: fake)
     env = echo_chain_env
     seed = env.topology.load_tasks()[0]
-    async with env.serving(vf.ModelContext(model="org/model", client=object())):
+    async with env.serving(
+        vf.ModelContext(
+            model="org/model", client=object(), sampling=vf.SamplingConfig()
+        )
+    ):
         run = vf.TopologyRun(env)
         agent = run.agent("first")
         async with agent.provision(seed) as box:
@@ -337,7 +345,7 @@ async def test_shared_runtime_topology_hands_off_through_one_box(monkeypatch):
     written, read = graph.traces
     assert (written.agent, read.agent) == ("writer", "reader")
     assert read.parents == [written.id]
-    assert read.task.expected == "note"  # the forward arrow carried the handoff
+    assert read.task.data.expected == "note"  # the forward arrow carried the handoff
     # both runs were placed into the one provisioned box
     assert written.info["agent"]["runtime"]["borrowed"] is True
     assert read.info["agent"]["runtime"]["borrowed"] is True
@@ -354,7 +362,9 @@ def scripted_sessions(monkeypatch, script):
     class ScriptedSession:
         def __init__(self, name, task):
             self.name, self.task, self.turns = name, task, 0
-            self._trace = Trace(task=task)
+            self._trace = Trace(
+                task=TraceTask(type=type(task).__name__, data=task.data)
+            )
 
         @property
         def trace(self):
@@ -433,9 +443,9 @@ async def test_debate_go_with_scripted_sessions(monkeypatch):
     def script(name, task, message, i):
         if "VOTE" in message.upper() and i == 2:
             return (
-                "VOTE: 1" if task.seat == 0 else "VOTE: 0"
+                "VOTE: 1" if task.data.seat == 0 else "VOTE: 0"
             )  # everyone else backs seat 0
-        return f"Seat {task.seat} argues its case (turn {i})."
+        return f"Seat {task.data.seat} argues its case (turn {i})."
 
     scripted_sessions(monkeypatch, script)
     config = EvalConfig(topology={"id": "debate-v1"}, rich=False)
@@ -505,17 +515,22 @@ def test_judge_task_construction_and_verdict_parsing():
     task's framing, its ground truth (an `answer` field, when the task carries one), and
     the solver's final message (last message of the final branch, not the transcript)."""
 
-    class AnsweredTask(vf.Task):
+    class AnsweredData(vf.TaskData):
         answer: str
 
-    task = AnsweredTask(idx=0, prompt="what is 2+2?", answer="4")
+    class AnsweredTask(vf.Task[AnsweredData]):
+        pass
+
+    task = AnsweredTask(AnsweredData(idx=0, prompt="what is 2+2?", answer="4"))
     solved = echoing_trace(task, "It is 4.")
     grading = JudgeTask.for_attempt(task, solved)
-    assert "what is 2+2?" in grading.prompt and "It is 4." in grading.prompt
-    assert "<reference_answer>\n4\n</reference_answer>" in grading.prompt
+    assert "what is 2+2?" in grading.data.prompt and "It is 4." in grading.data.prompt
+    assert "<reference_answer>\n4\n</reference_answer>" in grading.data.prompt
     # a task without ground truth just omits the reference section
-    bare = JudgeTask.for_attempt(vf.Task(idx=0, prompt="write a poem"), solved)
-    assert "<reference_answer>" not in bare.prompt
+    bare = JudgeTask.for_attempt(
+        vf.Task(vf.TaskData(idx=0, prompt="write a poem")), solved
+    )
+    assert "<reference_answer>" not in bare.data.prompt
     for reply, expected in [
         ("The attempt is correct.\nSCORE: 10", 1.0),
         ("Partially right.\nscore: 7/10", 0.7),
@@ -531,12 +546,12 @@ async def test_agentic_judge_task_uploads_the_trace():
     """`AgenticJudgeTask` carries the solver's entire serialized trace as data — its
     `setup` hook writes it to `TRACE_PATH` in the judge's runtime, and the assignment
     prompt points there."""
-    task = vf.Task(idx=0, prompt="what is 2+2?")
+    task = vf.Task(vf.TaskData(idx=0, prompt="what is 2+2?"))
     solved = echoing_trace(task, "It is 4.")
     solved.record_reward("correct", 1.0)
     grading = AgenticJudgeTask.for_trace(task, solved)
-    assert TRACE_PATH in grading.prompt
-    payload = json.loads(grading.trace_json)
+    assert TRACE_PATH in grading.data.prompt
+    payload = json.loads(grading.data.trace_json)
     assert payload["id"] == solved.id and payload["rewards"] == {"correct": 1.0}
 
     written: dict[str, bytes] = {}
@@ -579,7 +594,7 @@ def test_instance_record_roundtrips():
     `load` rebuilds it without the originating packages (WireTrace-typed traces, links
     intact) — what `results.jsonl` consumers and the trainer wire rely on."""
     graph = AgentGraph(topology="llm-judge")
-    trace = echoing_trace(vf.Task(idx=0, prompt="hi"), "hi")
+    trace = echoing_trace(vf.Task(vf.TaskData(idx=0, prompt="hi")), "hi")
     trace.agent = "judge"
     trace.parents = ["abc123"]
     trace.trainable = False

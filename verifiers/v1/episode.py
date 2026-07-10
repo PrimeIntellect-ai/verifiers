@@ -1,21 +1,4 @@
-"""An episode: evaluate one task — its rollout(s) and all scoring across them.
-
-An Episode is the largest unit the *evaluator* knows about: it runs `n` Rollouts of one
-task (each a single trajectory) under a shared concurrency limit, then scores across
-them. Per-rollout `@reward`/`@metric` already ran inside each Rollout; the Episode adds
-the cross-rollout `@group_reward` stage — pairwise/preference rewards (declared on the
-task's class) that compare a task's rollouts. n=1 is just an episode with a single
-rollout. It is also the trivial topology: one agent, one node — the topology layer
-(`verifiers.v1.topology`) generalizes exactly this shape across agents.
-
-These are env-level *rewards*. Training-time transforms of rewards — advantages (GRPO,
-RLOO), on-policy distillation — are deliberately NOT modeled here; they sit a level
-above, in a trainer that consumes episodes. That's why this is an "Episode" and not a
-"group": nothing here computes an advantage.
-
-Each Rollout tears its own runtime down (see rollout.py), so the Episode owns no
-runtimes — only the rollouts and the scoring across them.
-"""
+"""Run and group-score all rollouts for one task."""
 
 from __future__ import annotations
 
@@ -32,44 +15,22 @@ from verifiers.v1.utils.memory import trim_memory_periodically
 
 if TYPE_CHECKING:
     from verifiers.v1.retries import RolloutRetryConfig
-    from verifiers.v1.task import Task
-
-
-def requires_group_scoring(tasks: "list[Task]") -> bool:
-    """Whether any of `tasks` declares `@group_reward`s — probed once per distinct task
-    class, since a factory may emit heterogeneous classes (only some group-scored).
-    The runner/server coarse-grained switch; the Episode itself decides per task."""
-    seen: set[type] = set()
-    for task in tasks:
-        if type(task) not in seen:
-            seen.add(type(task))
-            if discover_decorated(task, "group_reward"):
-                return True
-    return False
 
 
 class Episode:
     def __init__(self, rollouts: list[Rollout], retry: RolloutRetryConfig) -> None:
+        if not rollouts:
+            raise ValueError("an episode needs at least one rollout (n >= 1)")
         self.rollouts = rollouts
-        self.retry = retry
         self.task = rollouts[0].task
-        """The one task all rollouts share — the owner of the `@group_reward`s scored
-        across their traces."""
+        self.retry = retry
 
     async def run(
         self,
         semaphore: asyncio.Semaphore | None = None,
         on_complete: Callable[[Trace], Awaitable[None]] | None = None,
     ) -> list[Trace]:
-        """Run all rollouts (each under `semaphore`), then group-score across their
-        traces. Without `@group_reward`s a rollout's reward is final the moment its own
-        scoring ends, so it's marked DONE then (no waiting for slower siblings); with
-        them, the whole group is marked DONE together after `score_group` — the reward
-        isn't final until every rollout is in. Each rollout already carries the run-level
-        shared tool servers / interception pool (injected by `Environment.episode`).
-        `on_complete` (the runner's persist hook) is called with each trace the instant
-        it's finalized (DONE) — per rollout without group rewards, or once per trace after
-        group scoring with them."""
+        """Run rollouts; delay completion callbacks only when group scoring needs all of them."""
         group_scored = bool(discover_decorated(self.task, "group_reward"))
 
         async def run_one(rollout: Rollout) -> Trace:

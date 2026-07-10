@@ -26,7 +26,6 @@ The asymmetric-capability shape, one self-contained package:
 
 import asyncio
 import re
-from typing import ClassVar
 
 import verifiers.v1 as vf
 
@@ -121,16 +120,13 @@ async def run_ground_truth(runtime: vf.Runtime, code: str, input: str) -> str | 
     return result.stdout.strip().splitlines()[-1].strip()
 
 
-class ProposeTask(vf.Task):
+class ProposeTask(vf.Task[vf.TaskData, SubmissionState]):
     """The single question-writing assignment (the seed). Exposes the submit tool, peels the
     committed proposal off `trace.state` into the persisted `trace.info["submission"]`
     (`finalize`), and judges its own episode with a small `well_formed` reward. Whether the
     puzzle was any *good* arrives later, from the solvers (the topology's `difficulty`)."""
 
-    STATE: ClassVar[type[vf.State]] = SubmissionState
-
-    def load_tools(self) -> list[vf.Toolset]:
-        return [SubmitToolset(vf.ToolsetConfig())]
+    tools = (SubmitToolset,)
 
     async def finalize(self, trace: vf.Trace) -> None:
         """Copy the committed submission from the transient `trace.state` into the persisted
@@ -161,15 +157,19 @@ class ProposeTask(vf.Task):
         return float(expected is not None)
 
 
-class SolverTask(vf.Task):
-    """A generated puzzle — ground truth (`code` + `input`) and verifier in one typed object,
-    minted in `go`. Serialized with each solver trace, so the record shows exactly what was
-    asked and how it was graded."""
+class SolverData(vf.TaskData):
+    """A generated puzzle's ground truth — `code` + `input` — serialized with each solver
+    trace, so the record shows exactly what was asked and how it was graded."""
 
     code: str
     """The proposer's deterministic ground-truth script (reads `sys.argv[1]`, prints answer)."""
     input: str
     """The concrete input string the ground-truth script receives."""
+
+
+class SolverTask(vf.Task[SolverData]):
+    """A generated puzzle — ground truth (`code` + `input`) and verifier in one typed object,
+    minted in `go`."""
 
     @vf.reward
     async def correct(self, trace: vf.Trace, runtime: vf.Runtime) -> float:
@@ -178,7 +178,7 @@ class SolverTask(vf.Task):
         got = parse_answer(trace)
         if got is None:
             return 0.0
-        expected = await run_ground_truth(runtime, self.code, self.input)
+        expected = await run_ground_truth(runtime, self.data.code, self.data.input)
         if expected is None:
             return 0.0  # broken ground truth — don't credit or blame the solver
         return float(answers_match(expected, got))
@@ -199,7 +199,7 @@ class ProposerSolverConfig(vf.TopologyConfig):
 class ProposerSolverTopology(vf.Topology[ProposerSolverConfig]):
     def load_tasks(self) -> list[vf.Task]:
         """Self-seeding: a single propose assignment (no `--topology.taskset.id` needed)."""
-        return [ProposeTask(idx=0, prompt=PROPOSE_PROMPT)]
+        return [ProposeTask(vf.TaskData(idx=0, prompt=PROPOSE_PROMPT))]
 
     async def go(self, task: vf.Task, run: vf.TopologyRun) -> None:
         """Control flow only: propose, read the committed submission off the trace (pure
@@ -214,10 +214,12 @@ class ProposerSolverTopology(vf.Topology[ProposerSolverConfig]):
         if not question or not code or input is None:
             return  # malformed submission — nothing solvable
         derived = SolverTask(
-            idx=task.idx,
-            prompt=SOLVE_PROMPT.format(question=question),
-            code=code,
-            input=input,
+            SolverData(
+                idx=task.data.idx,
+                prompt=SOLVE_PROMPT.format(question=question),
+                code=code,
+                input=input,
+            )
         )
         solver = run.agent("solver")
         await asyncio.gather(

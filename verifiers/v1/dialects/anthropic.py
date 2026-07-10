@@ -1,9 +1,9 @@
 """The Anthropic Messages dialect (claude-code and friends).
 
 Request parsing maps Anthropic content blocks onto the typed messages; response parsing reads
-the content blocks of a `Message`. Relay-only: the eval client forwards the program's bytes to a
+the content blocks of a `Message`. Relay-only: the eval client forwards the program's native JSON to a
 `/v1/messages` endpoint (auth is `x-api-key`, not Bearer) and this dialect parses a copy for the
-trace. `count_tokens` is relayed verbatim (an `aux_route`), never recorded.
+trace. `count_tokens` is relayed as native JSON (an `aux_route`), never recorded.
 """
 
 import json
@@ -243,8 +243,6 @@ class AnthropicStreamParser(StreamParser):
 
 
 class AnthropicDialect(Dialect[dict, AnthropicMessage]):
-    """The Anthropic Messages wire format."""
-
     routes = ("/v1/messages",)
     aux_routes = ("/v1/messages/count_tokens",)
     upstream_path = "/v1/messages"
@@ -290,7 +288,7 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
         return AnthropicStreamParser(self.validate_response)
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
-        # Forward verbatim except the eval's model + sampling. `temperature`/`top_p` are
+        # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
         # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
         # the API, so the program's is kept unless the eval sets one.
         s = sampling.model_dump(exclude_none=True)

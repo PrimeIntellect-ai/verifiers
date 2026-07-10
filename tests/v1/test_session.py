@@ -15,18 +15,29 @@ from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.harnesses.null.harness import NullHarness, NullHarnessConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.agent import Session
+from verifiers.v1.trace import TraceTask
+
+
+def task_of(prompt) -> vf.Task:
+    return vf.Task(vf.TaskData(idx=0, prompt=prompt))
+
+
+def trace_for(task: vf.Task) -> vf.Trace:
+    return vf.Trace(task=TraceTask(type=type(task).__name__, data=task.data))
 
 
 def make_session(task: vf.Task) -> Session:
     session = Session()
-    session._rollout = SimpleNamespace(trace=vf.Trace(task=task))
+    session._rollout = SimpleNamespace(trace=trace_for(task))
     return session
 
 
 def null_agent(**kwargs) -> vf.Agent:
     return vf.Agent(
         NullHarness(NullHarnessConfig()),
-        vf.ModelContext(model="org/model", client=object()),
+        vf.ModelContext(
+            model="org/model", client=object(), sampling=vf.SamplingConfig()
+        ),
         **kwargs,
     )
 
@@ -35,7 +46,7 @@ async def test_session_handshake_and_end():
     """The lockstep: opening `_respond("")` delivers nothing and returns the first
     turn; each later `_respond(reply)` delivers the reply and suspends; `end()`
     unblocks the suspended episode into a clean exit and stops the trace."""
-    session = make_session(vf.Task(idx=0, prompt=None))
+    session = make_session(task_of(None))
     seen: list[str] = []
 
     async def fake_interception_loop():
@@ -59,7 +70,7 @@ async def test_session_handshake_and_end():
 async def test_turn_raises_on_dead_episode():
     """`turn()` never hangs on an episode that can't answer: a seat that died
     mid-await gets poisoned, and a later `turn()` refuses up front."""
-    session = make_session(vf.Task(idx=0, prompt=None))
+    session = make_session(task_of(None))
 
     async def dying_episode():
         await session._respond("")  # take the first turn, then die before replying
@@ -80,7 +91,7 @@ async def test_turn_raises_on_dead_episode():
 async def test_double_drive_refused():
     """One driver per seat: a second `turn()` while one is pending raises instead of
     interleaving two conversations."""
-    session = make_session(vf.Task(idx=0, prompt=None))
+    session = make_session(task_of(None))
     session._episode = asyncio.create_task(asyncio.sleep(30))
     try:
         first = asyncio.create_task(session.turn("a"))
@@ -96,7 +107,7 @@ async def test_cancelled_turn_desyncs_loudly():
     """A `turn()` cancelled mid-flight (e.g. a sibling seat in a `gather` raised) left
     its message with the model — the conversation is desynced, so a later `turn()`
     refuses instead of consuming the stale reply one turn late."""
-    session = make_session(vf.Task(idx=0, prompt=None))
+    session = make_session(task_of(None))
     session._episode = asyncio.create_task(asyncio.sleep(30))
     try:
         pending = asyncio.create_task(session.turn("in flight"))
@@ -144,15 +155,14 @@ async def test_interact_refusals():
     and a harness that can't take injected user turns are all rejected at the call."""
     agent = null_agent()
     with pytest.raises(ValueError, match="opened by the first turn"):
-        async with agent.interact(vf.Task(idx=0, prompt="hi")):
+        async with agent.interact(task_of("hi")):
             pass
 
     class SimTask(vf.Task):
-        def load_user(self):  # pragma: no cover - never called
-            return object()
+        user = vf.User  # declared simulator class — never instantiated here
 
     with pytest.raises(ValueError, match="second claimant"):
-        async with agent.interact(SimTask(idx=0, prompt=None)):
+        async with agent.interact(SimTask(vf.TaskData(idx=0, prompt=None))):
             pass
 
     class MuteHarnessConfig(HarnessConfig):
@@ -166,10 +176,12 @@ async def test_interact_refusals():
 
     mute = vf.Agent(
         MuteHarness(MuteHarnessConfig()),
-        vf.ModelContext(model="org/model", client=object()),
+        vf.ModelContext(
+            model="org/model", client=object(), sampling=vf.SamplingConfig()
+        ),
     )
     with pytest.raises(ValueError, match="cannot take injected user turns"):
-        async with mute.interact(vf.Task(idx=0, prompt=None)):
+        async with mute.interact(task_of(None)):
             pass
 
 
@@ -179,7 +191,9 @@ async def test_interact_lifecycle_with_stubbed_rollout(monkeypatch):
     ends the episode, joins it, and stamps provenance + parents."""
 
     async def fake_run(self):
-        self.trace = trace = vf.Trace(task=self.task)
+        self.trace = trace = vf.Trace(
+            task=TraceTask(type=type(self.task).__name__, data=self.task.data)
+        )
         msgs = await self._user("")  # opening
         while msgs:
             msgs = await self._user(f"echo:{msgs[0].content}")
@@ -189,9 +203,11 @@ async def test_interact_lifecycle_with_stubbed_rollout(monkeypatch):
 
     monkeypatch.setattr(Rollout, "run", fake_run)
     agent = null_agent(name="white", trainable=False)
-    parent = vf.Trace(task=vf.Task(idx=0, prompt="seed"))
+    parent = trace_for(task_of("seed"))
 
-    async with agent.interact(vf.Task(idx=1, prompt=None), parents=[parent]) as session:
+    async with agent.interact(
+        vf.Task(vf.TaskData(idx=1, prompt=None)), parents=[parent]
+    ) as session:
         assert await session.turn("kick off") == "echo:kick off"
         trace = session.trace  # live handle
         trace.info["game"] = {"score": 1.0}

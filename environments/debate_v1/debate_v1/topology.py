@@ -60,11 +60,15 @@ def parse_vote(reply: str, seat: int, n: int) -> int | None:
     return vote if 0 <= vote < n and vote != seat else None
 
 
-class DebaterTask(vf.Task):
+class DebaterData(vf.TaskData):
     """One debater's episode: framing only (`prompt=None`; sessions open on the first
     `turn()`). The seat is data so the record and rewards stay attributable."""
 
     seat: int
+
+
+class DebaterTask(vf.Task[DebaterData]):
+    pass
 
 
 class DebateConfig(vf.TopologyConfig):
@@ -79,20 +83,25 @@ class DebateConfig(vf.TopologyConfig):
 class DebateTopology(vf.Topology[DebateConfig]):
     def load_tasks(self) -> list[vf.Task]:
         """Self-seeding: one instance per motion."""
-        return [vf.Task(idx=i, prompt=motion) for i, motion in enumerate(MOTIONS)]
+        return [
+            vf.Task(vf.TaskData(idx=i, prompt=motion))
+            for i, motion in enumerate(MOTIONS)
+        ]
 
     async def go(self, task: vf.Task, run: vf.TopologyRun) -> None:
         n = self.config.num_debaters
-        motion = task.prompt_text
+        motion = task.data.prompt_text
         async with contextlib.AsyncExitStack() as stack:
             seats = [
                 await stack.enter_async_context(
                     run.agent("debater").interact(
                         DebaterTask(
-                            idx=task.idx,
-                            seat=i,
-                            prompt=None,
-                            system_prompt=SEAT_SYSTEM.format(seat=i, n=n),
+                            DebaterData(
+                                idx=task.data.idx,
+                                seat=i,
+                                prompt=None,
+                                system_prompt=SEAT_SYSTEM.format(seat=i, n=n),
+                            )
                         )
                     )
                 )

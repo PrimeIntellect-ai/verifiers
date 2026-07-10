@@ -103,19 +103,23 @@ class ImprovementJudge(vf.Judge[float]):
         return parse_score(response.text)
 
 
-class DraftTask(vf.Task):
+class DraftData(vf.TaskData):
     """A writing brief (the seed). Carries the brief as a typed field so `go` can re-render
     it into critique and revision tasks without re-parsing the prompt."""
 
     brief: str
 
 
-class CritiqueTask(vf.Task):
+class DraftTask(vf.Task[DraftData]):
+    """The task wrapping a `DraftData` brief row."""
+
+
+class CritiqueTask(vf.Task[vf.TaskData]):
     """An editing assignment: one draft, one piece of feedback. Minted in `go` from the
     current draft (the forward arrow)."""
 
 
-class ReviseTask(vf.Task):
+class ReviseTask(vf.Task[vf.TaskData]):
     """A revision assignment: the brief, the current draft, and every editor's feedback —
     the fan-in, rendered into one task."""
 
@@ -143,7 +147,9 @@ class WriterEditorsTopology(vf.Topology[WriterEditorsConfig]):
     def load_tasks(self) -> list[vf.Task]:
         """Self-seeding: the briefs are baked in, so no `--topology.taskset.id` needed."""
         return [
-            DraftTask(idx=i, brief=brief, prompt=DRAFT_PROMPT.format(brief=brief))
+            DraftTask(
+                DraftData(idx=i, brief=brief, prompt=DRAFT_PROMPT.format(brief=brief))
+            )
             for i, brief in enumerate(BRIEFS)
         ]
 
@@ -157,8 +163,12 @@ class WriterEditorsTopology(vf.Topology[WriterEditorsConfig]):
             if not draft.last_reply:
                 return  # nothing to edit (errored or empty draft)
             critique = CritiqueTask(
-                idx=task.idx,
-                prompt=CRITIQUE_PROMPT.format(brief=task.brief, draft=draft.last_reply),
+                vf.TaskData(
+                    idx=task.data.idx,
+                    prompt=CRITIQUE_PROMPT.format(
+                        brief=task.data.brief, draft=draft.last_reply
+                    ),
+                )
             )
             edits = list(
                 await asyncio.gather(
@@ -177,10 +187,14 @@ class WriterEditorsTopology(vf.Topology[WriterEditorsConfig]):
                 return  # every editor failed — nothing to revise from
             draft = await writer.run(
                 ReviseTask(
-                    idx=task.idx,
-                    prompt=REVISE_PROMPT.format(
-                        brief=task.brief, draft=draft.last_reply, feedback=feedback
-                    ),
+                    vf.TaskData(
+                        idx=task.data.idx,
+                        prompt=REVISE_PROMPT.format(
+                            brief=task.data.brief,
+                            draft=draft.last_reply,
+                            feedback=feedback,
+                        ),
+                    )
                 ),
                 parents=[draft, *edits],
             )
@@ -205,7 +219,7 @@ class WriterEditorsTopology(vf.Topology[WriterEditorsConfig]):
             if first is not final and first.last_reply and final.last_reply:
                 result = await self.judge.evaluate(
                     trace=final,  # the judge call's usage lands on the final draft's trace
-                    brief=first.task.brief,
+                    brief=first.task.data.brief,
                     first=first.last_reply,
                     final=final.last_reply,
                 )

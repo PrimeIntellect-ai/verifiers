@@ -1,10 +1,8 @@
-"""glossary: a custom tool server, authored as a vf-native class.
+"""The simplest locally authored, task-scoped tool example.
 
-Each task asks the model to look up an entity. The tool server is a `vf.Toolset` subclass in
-`servers/facts.py` (`@vf.tool` methods, no FastMCP boilerplate); the framework launches it in its
-own runtime and surfaces its `lookup` tool as `facts_lookup`. The reward checks the looked-up fact
-reached the answer. The simplest tool example — contrast `wikispeedia` (per-task state),
-`wiki_search` (shared), `deepwiki` (remote).
+`GlossaryToolset` is a vf-native class with an `@vf.tool` method. Verifiers launches
+one server per rollout and exposes it as `facts_lookup`; compare `deepwiki` for a remote
+server and `wiki_search` for an expensive worker-shared server.
 """
 
 import verifiers.v1 as vf
@@ -12,38 +10,43 @@ import verifiers.v1 as vf
 from glossary_v1.servers.facts import FACTS, GlossaryToolset
 
 
-class GlossaryTask(vf.Task):
+class GlossaryTaskConfig(vf.TaskConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+
+
+class GlossaryTaskData(vf.TaskData):
     answer: str
     """The fact the `lookup` tool returns for this task's entity."""
-    tools: vf.ToolsetConfig = vf.ToolsetConfig()
-    """Placement for the glossary tool server (from the taskset's `tools` knob)."""
 
-    def load_tools(self) -> list[vf.Toolset]:
-        return [GlossaryToolset(self.tools)]
+
+class GlossaryTask(vf.Task[GlossaryTaskData, vf.State, GlossaryTaskConfig]):
+    tools = (GlossaryToolset,)
 
     @vf.reward(weight=1.0)
     async def looked_up(self, trace: vf.Trace) -> float:
         # The fact only reaches the answer if the model called the MCP tool.
         last = trace.last_reply
-        return float(self.answer.lower() in (last or "").lower())
+        return float(self.data.answer.lower() in (last or "").lower())
 
 
 class GlossaryConfig(vf.TasksetConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    task: GlossaryTaskConfig = GlossaryTaskConfig()
 
 
 class GlossaryTaskset(vf.Taskset[GlossaryTask, GlossaryConfig]):
-    def load_tasks(self) -> list[GlossaryTask]:
+    def load(self) -> list[GlossaryTask]:
         return [
             GlossaryTask(
-                idx=i,
-                name=entity.title(),
-                prompt=(
-                    f'Use the `facts_lookup` tool to look up "{entity.title()}", then '
-                    "reply with exactly what it returns inside <answer></answer> tags."
+                GlossaryTaskData(
+                    idx=i,
+                    name=entity.title(),
+                    prompt=(
+                        f'Use the `facts_lookup` tool to look up "{entity.title()}", then '
+                        "reply with exactly what it returns inside <answer></answer> tags."
+                    ),
+                    answer=fact,
                 ),
-                answer=fact,
-                tools=self.config.tools,
+                self.config.task,
             )
             for i, (entity, fact) in enumerate(FACTS.items())
         ]

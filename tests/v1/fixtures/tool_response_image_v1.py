@@ -27,8 +27,7 @@ class VisionToolset(vf.Toolset[vf.ToolsetConfig]):
 
 
 class ToolResponseImageTask(vf.Task):
-    def load_tools(self) -> list[vf.Toolset]:
-        return [VisionToolset(vf.ToolsetConfig())]
+    tools = (VisionToolset,)
 
     @vf.reward(weight=1.0)
     async def preserved_image_tool_result(self, trace: vf.Trace) -> float:
@@ -41,15 +40,18 @@ class ToolResponseImageTask(vf.Task):
 
 
 class ToolResponseImageTaskset(vf.Taskset[ToolResponseImageTask, vf.TasksetConfig]):
-    def load_tasks(self) -> list[ToolResponseImageTask]:
+    def load(self) -> list[ToolResponseImageTask]:
         return [
             ToolResponseImageTask(
-                idx=0,
-                prompt=(
-                    "Call the `vision_snapshot` tool exactly once. After it returns, "
-                    "reply with exactly `done`."
+                vf.TaskData(
+                    idx=0,
+                    prompt=(
+                        "Call the `vision_snapshot` tool exactly once. After it returns, "
+                        "reply with exactly `done`."
+                    ),
+                    system_prompt=SYSTEM,
                 ),
-                system_prompt=SYSTEM,
+                self.config.task,
             )
         ]
 

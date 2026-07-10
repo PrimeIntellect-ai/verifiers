@@ -24,7 +24,7 @@ from pydantic import SerializeAsAny, model_validator
 from verifiers.v1.decorators import metric, reward, stop
 from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.harnesses.direct import DirectHarnessConfig
-from verifiers.v1.task import Task
+from verifiers.v1.task import DataT, Task, TaskData
 from verifiers.v1.topology import (
     AgentConfig,
     AgentGraph,
@@ -76,7 +76,7 @@ def parse_score(text: str) -> float | None:
     return None
 
 
-class JudgeTask(Task):
+class JudgeTask(Task[DataT]):
     """A grading assignment: `prompt` carries the rendered upstream task + ground truth +
     attempt, the class carries the stop and the verdict parser — question and rubric in one
     typed object, constructed in `go` from the solver's trace (the forward arrow)."""
@@ -84,19 +84,23 @@ class JudgeTask(Task):
     @classmethod
     def for_attempt(cls, task: Task, trace: Trace) -> "JudgeTask":
         """Render an upstream episode into a grading task: the upstream task's framing, its
-        ground truth (an `answer` field, when the task has one), and the attempt's final
-        message. Pure trace→task code."""
-        answer = getattr(task, "answer", None)
+        ground truth (an `answer` data field, when the task has one), and the attempt's
+        final message. Pure trace→task code."""
+        answer = getattr(task.data, "answer", None)
         return cls(
-            idx=task.idx,
-            prompt=JUDGE_PROMPT.format(
-                task=task.prompt_text,
-                reference=REFERENCE_SECTION.format(answer=answer)
-                if answer is not None
-                else "",
-                against=" (against the reference answer)" if answer is not None else "",
-                attempt=cls.attempt_text(trace),
-            ),
+            TaskData(
+                idx=task.data.idx,
+                prompt=JUDGE_PROMPT.format(
+                    task=task.data.prompt_text,
+                    reference=REFERENCE_SECTION.format(answer=answer)
+                    if answer is not None
+                    else "",
+                    against=" (against the reference answer)"
+                    if answer is not None
+                    else "",
+                    attempt=cls.attempt_text(trace),
+                ),
+            )
         )
 
     @staticmethod

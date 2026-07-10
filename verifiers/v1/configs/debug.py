@@ -12,10 +12,6 @@ from verifiers.v1.taskset import TasksetConfig
 
 
 class DebugConfig(BaseConfig):
-    """A taskset plus one setup-only debug action. The taskset is selected by a positional
-    id or `--taskset.id`; after setup, each task runs either an inline shell command or a
-    host script uploaded into the runtime. Results are persisted as traces."""
-
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id, used as the default output directory leaf."""
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
@@ -46,7 +42,7 @@ class DebugConfig(BaseConfig):
     output_dir: Path | None = Field(
         None, validation_alias=AliasChoices("output_dir", "o")
     )
-    """Where to write `config.toml` and `results.jsonl`. None = a fresh per-run dir."""
+    """Where to write `config.toml` and `traces.jsonl`. None = a fresh per-run dir."""
 
     @property
     def name(self) -> str:
@@ -55,7 +51,6 @@ class DebugConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def resolve_taskset(cls, data):
-        """Narrow the generic `taskset` to its concrete config type by id."""
         from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
 
         narrow_plugin_field(data, "taskset", taskset_config_type)

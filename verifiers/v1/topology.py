@@ -41,6 +41,7 @@ from verifiers.v1.env import (
     EnvConfig,
 )
 from verifiers.v1.errors import TopologyError, boundary
+from verifiers.v1.interception import RolloutLimits
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.services import RunServices
@@ -354,7 +355,7 @@ class Topology(Generic[ConfigT]):
             )
         from verifiers.v1.loaders import load_taskset
 
-        return load_taskset(self.config.taskset).load_tasks()
+        return load_taskset(self.config.taskset).load()
 
     async def score(self, graph: AgentGraph) -> None:
         """Run the topology's declared judgement over one completed instance: every
@@ -373,7 +374,11 @@ class Topology(Generic[ConfigT]):
             for fn in discover_decorated(self, kind):
                 weight = getattr(fn, "_vf_weight", 1.0)
                 for trace in graph.by_agent(getattr(fn, "_vf_agent", None)):
-                    available = {"task": trace.task, "trace": trace, "graph": graph}
+                    available = {
+                        "task": trace.task.data,  # the wire half, as in `Task.score`
+                        "trace": trace,
+                        "graph": graph,
+                    }
                     result = await invoke(fn, available)
                     if kind == "metric":
                         if isinstance(result, Mapping):
@@ -590,18 +595,39 @@ class TopologyRunner:
     async def serving(self, ctx: ModelContext):
         """Hold the run-level serving resources for the duration of a topology eval: one
         `ModelContext` per agent (`ctx` with the agent's model/client/sampling overrides
-        applied), plus one shared `RunServices` scope for MCP servers and lazy interception
-        pools. Clients built for an override are closed on exit. Everything is built into
-        locals and published atomically, so a failure mid-enter never leaves the runner
-        pointing at torn-down resources. Build instances inside this context."""
+        applied), one `RunServices` scope for interception pools, and — when the seed
+        taskset declares taskset-scoped shared tool servers (`Taskset.tools`) — those
+        servers, served ONCE and reused by every agent's rollouts (the topology-side
+        mirror of `Environment.serving`). Clients built for an override are closed on
+        exit. Everything is built into locals and published atomically, so a failure
+        mid-enter never leaves the runner pointing at torn-down resources. Build
+        instances inside this context."""
         if self._agents:
             raise RuntimeError("TopologyRunner.serving() is already active")
+        from verifiers.v1.loaders import load_taskset
+        from verifiers.v1.mcp import serve_shared
+        from verifiers.v1.runtimes import runtime_is_local
+
         async with contextlib.AsyncExitStack() as stack:
             services = await stack.enter_async_context(
                 RunServices(self.config.multiplex)
             )
+            bindings = self.topology.agents
+            shared_tools: dict = {}
+            if self.topology.config.taskset.id:
+                servers = load_taskset(self.topology.config.taskset).tool_servers()
+                if servers:
+                    # Tunnel unless every agent's harness runs locally — any remote
+                    # seat must still reach the one shared instance.
+                    local = all(
+                        runtime_is_local(b.harness.config.runtime)
+                        for b in bindings.values()
+                    )
+                    shared_tools = await stack.enter_async_context(
+                        serve_shared(servers, harness_is_local=local)
+                    )
             agents: dict[str, Agent] = {}
-            for name, binding in self.topology.agents.items():
+            for name, binding in bindings.items():
                 client = ctx.client
                 if binding.config.client is not None:
                     client = resolve_client(binding.config.client)
@@ -617,9 +643,15 @@ class TopologyRunner:
                     binding.harness.config.runtime,
                     name=name,
                     trainable=binding.config.trainable,
-                    limits=self.config.limits,
+                    limits=RolloutLimits(
+                        max_turns=self.config.max_turns,
+                        max_input_tokens=self.config.max_input_tokens,
+                        max_output_tokens=self.config.max_output_tokens,
+                        max_total_tokens=self.config.max_total_tokens,
+                    ),
                     timeout=self.config.timeout,
                     services=services,
+                    shared_tools=shared_tools,
                 )
             self._agents = agents
             try:
@@ -652,6 +684,6 @@ class TopologyRunner:
             ):
                 await self.topology.score(run.graph)
         except TopologyError as e:
-            logger.exception("topology instance failed (seed task %s)", task.idx)
+            logger.exception("topology instance failed (seed task %s)", task.data.idx)
             run.graph.error = Error(type=type(e).__name__, message=str(e))
         return run.graph

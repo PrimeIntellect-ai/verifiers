@@ -58,7 +58,6 @@ def reasoning_text(data: Mapping[str, Any]) -> str | None:
 
 
 def _content_text(content) -> str:
-    """Flatten content to text for roles that never carry images."""
     if isinstance(content, list):
         return "".join(p.get("text", "") for p in content if isinstance(p, dict))
     return content or ""
@@ -113,8 +112,8 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
 
 # --- vf -> chat wire ----------------------------------------------------------
 # `message_to_wire` (chat-only): used by `extend` (user-sim turn injection), the default harness
-# (a Messages prompt), and the train client (its generate request). The proxy never
-# serializes — it relays the provider's raw bytes.
+# (a Messages prompt), and the train client (its generate request). The proxy preserves its parsed
+# native JSON independently and does not use this serializer.
 
 
 def _content_to_wire(content):
@@ -126,7 +125,6 @@ def _content_to_wire(content):
 
 
 def message_to_wire(message: Message) -> dict:
-    """A vf message -> the OpenAI chat wire dict."""
     if message.role == "assistant":
         wire: dict = {"role": "assistant", "content": message.content}
         if message.provider_state:
@@ -281,8 +279,6 @@ class ChatStreamParser(StreamParser):
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
-    """The OpenAI chat-completions wire format."""
-
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
     response_type = ChatCompletion
@@ -309,7 +305,7 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
         return ChatStreamParser()
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
-        # Forward the program's body verbatim, overlaying only what the eval owns: the model and
+        # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set (later keys win, so the eval's override the program's).
         return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
 

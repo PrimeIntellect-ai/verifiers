@@ -11,7 +11,7 @@ deterministic: every trace should score 1.0 twice over.
 from pydantic import SerializeAsAny
 
 import verifiers.v1 as vf
-from echo_v1 import EchoConfig, EchoTask, lenient_match
+from echo_v1 import EchoConfig, EchoData, EchoTask, lenient_match
 
 
 class EchoChainConfig(vf.TopologyConfig):
@@ -26,12 +26,14 @@ class EchoChainTopology(vf.Topology[EchoChainConfig]):
         # Forward arrow: the second agent must echo the same phrase — a task derived
         # from (and linked under) the first trace.
         derived = EchoTask(
-            idx=task.idx,
-            prompt=(
-                "Do not call tools or execute code. Reply immediately and include "
-                f"this exact phrase in your final response: {task.answer}"
-            ),
-            answer=task.answer,
+            EchoData(
+                idx=task.data.idx,
+                prompt=(
+                    "Do not call tools or execute code. Reply immediately and include "
+                    f"this exact phrase in your final response: {task.data.answer}"
+                ),
+                answer=task.data.answer,
+            )
         )
         await run.agent("second").run(derived, parents=[first])
 
@@ -42,7 +44,7 @@ class EchoChainTopology(vf.Topology[EchoChainConfig]):
         (`echoed`) are final by the time instance scoring runs, so reading the child's
         `reward` here is safe."""
         second = graph.children(trace, agent="second")
-        relayed = lenient_match(trace.task.answer, trace.last_reply) and bool(
+        relayed = lenient_match(trace.task.data.answer, trace.last_reply) and bool(
             second and second[0].reward > 0
         )
         return float(relayed)
