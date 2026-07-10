@@ -20,10 +20,11 @@ class MyState(vf.State):
 
 def test_bare_trace_round_trip():
     # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
-    tr = vf.Trace(task=vf.TaskData(idx=3, prompt="hello"))
+    tr = vf.Trace(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=3, prompt="hello")))
     rt = vf.Trace.model_validate(tr.model_dump())
     assert rt.id == tr.id
-    assert rt.task.idx == 3 and rt.task.prompt == "hello"
+    assert rt.task.type == "Task"
+    assert rt.task.data.idx == 3 and rt.task.data.prompt == "hello"
     assert rt.num_turns == 0 and rt.num_branches == 0
     assert rt.reward == 0.0 and rt.errors == []
 
@@ -32,7 +33,7 @@ def test_custom_task_state_round_trip():
     # Custom data and state round-trip into the same parameterization. Data fields are
     # typed (not just `model_extra`); `state` is runtime-only and never crosses the wire.
     tr = vf.Trace[MyTask, MyState](
-        task=MyTask(idx=0, prompt="q", answer="gold"),
+        task=vf.TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="gold")),
         state=MyState(score=7),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
@@ -45,8 +46,9 @@ def test_custom_task_state_round_trip():
 
     rt = vf.Trace[MyTask, MyState].model_validate(wire)
     assert (
-        isinstance(rt.task, MyTask) and rt.task.answer == "gold"
+        isinstance(rt.task.data, MyTask) and rt.task.data.answer == "gold"
     )  # typed custom field
+    assert rt.task.type == "MyTask"  # the producing class's name survives the wire
     assert rt.num_turns == 1 and rt.num_branches == 1
     assert rt.reward == 0.5  # property recomputed from `rewards`
 
@@ -55,7 +57,7 @@ def test_wire_trace_round_trip():
     # Two leaves off one root → 2 branches (a compaction-shaped trace), so the round-trip has to
     # carry node `parent` links for `num_branches` to survive.
     tr = vf.Trace[MyTask, vf.State](
-        task=MyTask(idx=0, prompt="q", answer="a"),
+        task=vf.TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="a")),
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
             MessageNode(parent=0, message=AssistantMessage(content="a1"), sampled=True),
@@ -76,7 +78,7 @@ def test_wire_trace_round_trip():
     assert rt.reward == 1.0  # property recomputed from `rewards`
     assert rt.stop_condition == "done"
     assert rt.info == {"build": "ok"}
-    assert rt.task.model_extra == {
+    assert rt.task.data.model_extra == {
         "answer": "a"
     }  # taskset extras preserved on WireTaskData
 

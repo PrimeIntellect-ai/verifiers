@@ -35,6 +35,8 @@ class EnvServer:
         self.taskset_id = config.taskset.id
         self.env = Environment(config)
         self.tasks = self.env.taskset.load()
+        # One task type per taskset (the authoring contract; its `load()` constructs it),
+        # so group scoring is a run-wide property.
         self.requires_group_scoring = bool(self.tasks) and bool(
             discover_decorated(self.tasks[0], "group_reward")
         )
@@ -86,6 +88,10 @@ class EnvServer:
         )
 
     def serving(self):
+        """Context for the server's eval-level serving resources (shared tool servers +
+        interception pool), entered for the server's lifetime so they're reused across
+        requests; episodes built inside it inherit them (see `Environment.serving`). The
+        legacy v0 bridge overrides this (it runs its own rollouts, with no v1 serving)."""
         return self.env.serving()
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:

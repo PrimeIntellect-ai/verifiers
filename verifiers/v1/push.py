@@ -46,11 +46,11 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
     def dump(messages):
         return [m.model_dump(mode="json", exclude_none=True) for m in messages]
 
-    task = trace.task.model_dump(mode="json", exclude_none=True)
+    task = trace.task.data.model_dump(mode="json", exclude_none=True)
     branches = trace.branches
     sample = {
         "sample_id": trace.id,
-        "example_id": trace.task.idx,
+        "example_id": trace.task.data.idx,
         "rollout_number": rollout_number,
         "task": task,
         "prompt": [],
@@ -151,8 +151,8 @@ def push_traces(
     counts: dict[int, int] = {}
     samples = []
     for trace in traces:
-        counts[trace.task.idx] = counts.get(trace.task.idx, 0) + 1
-        samples.append(trace_to_sample(trace, counts[trace.task.idx]))
+        counts[trace.task.data.idx] = counts.get(trace.task.data.idx, 0) + 1
+        samples.append(trace_to_sample(trace, counts[trace.task.data.idx]))
 
     metadata = {
         "framework": "verifiers",

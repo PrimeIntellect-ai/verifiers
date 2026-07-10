@@ -30,7 +30,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import TraceTask, Trace
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +97,18 @@ class Rollout:
                     yield f"{url}/v1", secret, server.port, url
 
     async def run(self) -> Trace:
-        trace: Trace = Trace(task=self.task.data, state=state_cls(type(self.task))())
-        self.trace = trace
-        self.phase = Phase.SETUP
+        """Run the rollout and return its trace. Captures expected `RolloutError`s onto
+        the trace (a bad rollout is data, not a crash), runs per-rollout scoring while
+        the runtime is live, then tears the runtime down in a `finally`. Reuses the
+        eval-level shared tool servers / interception pool injected at construction (see
+        `self.shared_tools` / `self.interception`)."""
+        # The trace carries the DATA (the wire half); behavior stays on `self.task`.
+        trace: Trace = Trace(
+            task=TraceTask(type=type(self.task).__name__, data=self.task.data),
+            state=state_cls(type(self.task))(),
+        )
+        self.trace = trace  # expose for the --rich dashboard
+        self.phase = Phase.SETUP  # leaving the queue: provisioning starts now
         trace.timing.setup.start = time.time()
         self.runtime = make_runtime(self.runtime_config, name=trace.id)
         runtime = self.runtime

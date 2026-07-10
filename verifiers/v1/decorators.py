@@ -8,7 +8,10 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
-    """Find tagged methods without evaluating unrelated descriptors."""
+    """Bound methods on `obj` tagged with `attr`, sorted by priority then name. Scans the
+    class MRO for tagged functions (not `inspect.getmembers(obj)`, which evaluates every
+    descriptor — a property with side effects would run here) and binds each through
+    `getattr`, so the most-derived override wins."""
     names = {
         name
         for klass in type(obj).__mro__

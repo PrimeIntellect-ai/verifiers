@@ -31,7 +31,7 @@ from verifiers.v1.serve.types import (
 )
 from verifiers.v1.task import WireTaskData
 from verifiers.v1 import graph
-from verifiers.v1.trace import Error, TimeSpan, Timing, Trace
+from verifiers.v1.trace import Error, TimeSpan, Timing, Trace, TraceTask
 from verifiers.v1.types import (
     AssistantMessage,
     Response,
@@ -229,7 +229,8 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
             error = Error(type="Error", message=str(raw_error), traceback=None)
 
     trace: Trace = Trace[WireTaskData](
-        task=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
+        # The bridge has no behavior class — record the base type.
+        task=TraceTask(type="Task", data=_to_wire_task(task_idx, out.get("prompt"), out.get("answer"))),
         rewards={"reward": float(out.get("reward") or 0.0)},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         is_completed=bool(out.get("is_completed", True)),

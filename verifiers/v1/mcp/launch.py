@@ -261,20 +261,44 @@ async def serve(
 
 @dataclass(frozen=True)
 class SharedToolServer:
+    """One live taskset-scoped (shared) server, as the rollouts see it: its eval-level
+    `url` plus whether its runtime is `local` (host-reachable) — which decides whether a
+    rollout must bridge its state channel to reach a REMOTE shared server (see
+    `serve_tools`). An `external` server (a config-`url` endpoint) was not launched by
+    the framework and sits outside its state machinery entirely: rollouts get its URL
+    bare — no state tag, no bridge (and no per-rollout secret sent to a third party)."""
+
     url: str
     local: bool
+    external: bool = False
 
 
 @contextlib.asynccontextmanager
 async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
-    """Serve one taskset-scoped tool instance for an environment worker."""
+    """Start the taskset-scoped (shared) tool servers ONCE for a whole eval, each in its OWN
+    `runtime`, and yield `{name: SharedToolServer}` reachable by every rollout's harness.
+    Reachability mirrors a per-rollout tool, but there's no single harness runtime to read
+    locality off — the caller (`Environment.shared_tools`) passes the harness runtime's
+    `harness_is_local`, so a host tool gets one host bridge (tunnel) when the harness runs
+    remotely, and a remote tool runtime publishes its own URL. Torn down when the eval ends.
+    A shared server is task-agnostic — the taskset carries no per-row data — so its `setup`
+    gets no task (its `setup_task` is never called; the per-rollout servers fetch
+    theirs over the `/task` channel)."""
     servers: dict[str, SharedToolServer] = {}
     async with contextlib.AsyncExitStack() as stack:
         for toolset in toolsets:
             cfg = toolset.config
             name = toolset.server_name
-            if cfg.url:
-                servers[name] = SharedToolServer(url=cfg.url, local=False)
+            if type(toolset).setup_task is not ServerBase.setup_task:
+                logger.warning(
+                    "shared server %r overrides `setup_task`, but `setup_task` is NEVER "
+                    "called for a taskset-scoped server (it's built once, task-agnostic) — "
+                    "its per-task logic will not run. Move task-agnostic work into `setup`, "
+                    "or declare it on `Task.tools` to run it per-rollout.",
+                    name,
+                )
+            if cfg.url:  # already running remotely; nothing launched, nothing to bridge
+                servers[name] = SharedToolServer(url=cfg.url, local=False, external=True)
             else:
                 url = await stack.enter_async_context(
                     serve(toolset, harness_is_local=harness_is_local)
@@ -307,10 +331,24 @@ async def serve_tools(
     state_secret: str = "",
     state_base: str | None = None,
 ):
-    """Serve rollout tools; task and state reach servers through the state channel."""
+    """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
+    task-scoped `toolsets` are launched by `serve` (placement off each one's `config`; the
+    server fetches its task over the interception `/task` channel), and the
+    taskset-scoped `shared` servers — already
+    running eval-level (see `serve_shared`) — join under their per-rollout state tag.
+    `state_port`/`state_secret` wire each per-rollout server to the interception server's
+    shared-state channel; `state_base` (its reachable URL for this rollout) wires a shared
+    server, which can't take a per-process channel, via its per-request URL tag."""
     urls: dict[str, str] = {}
     async with contextlib.AsyncExitStack() as stack:
         for name, server in (shared or {}).items():
+            if server.external:
+                # Not ours: a pre-existing endpoint with no vf state channel. Pass the URL
+                # through bare — a state tag would be useless, and the per-rollout secret
+                # must not ride the query string to a third-party host.
+                urls[name] = server.url
+                logger.info("tool server '%s' (shared, external): %s", name, server.url)
+                continue
             tool_state_base = state_base
             # A remote shared server cannot reach a local harness's loopback state URL.
             if state_base and harness_runtime.is_local and not server.local:
@@ -324,6 +362,11 @@ async def serve_tools(
             logger.info("tool server '%s' (shared): %s", name, server.url)
         for toolset in toolsets:
             name = toolset.server_name
+            if name in urls:
+                raise ToolsetError(
+                    f"tool server name '{name}' is declared both taskset-scoped (shared) "
+                    f"and task-scoped — pick one scope, or give one a distinct TOOL_PREFIX"
+                )
             cfg = toolset.config
             if cfg.url:
                 urls[name] = cfg.url
@@ -406,7 +449,13 @@ async def serve_user(
     state_secret: str = "",
     state_base: str | None = None,
 ) -> AsyncIterator[Respond | None]:
-    """Serve a rollout user; task and state reach it through the state channel."""
+    """Bring a rollout's user server up (via the shared `serve` launcher, `for_host=True` since
+    the framework drives the user from the HOST) and yield the async `respond` the interception
+    server drives — or `None` when the task has no user server. Placement is the user's
+    `config` (colocated in the harness's runtime, or its own); the server fetches its task
+    over the interception `/task` channel. `state_port`/`state_secret` wire it to the shared-state channel — how
+    the user sim's `respond` reads/writes `self.state` (and ends the trajectory via a flag a task
+    `@vf.stop` checks)."""
     if user is None:
         yield None
         return

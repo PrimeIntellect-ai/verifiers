@@ -50,16 +50,20 @@ async def test_user(run_v1, harness_runtime, user_runtime, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_tool(run_v1, run_v1_server, harness_runtime, tool_runtime, tmp_path):
-    """A task-scoped echo tool across tool and harness runtime placements."""
+async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
+    """A `vf.Toolset` (an echo tool) across the full matrix of its runtime (`tool_runtime`:
+    colocated in the harness's runtime, or its own runtime) x the harness `runtime`. The tool
+    stamps its output with a token the prompt never reveals, so reward 1.0 proves the tool was
+    reachable from wherever the harness runs and actually ran. Eval-wide SHARED servers are a
+    different scope (`Taskset.tools`) with their own env-server-path coverage:
+    `test_shared_tool_isolation`."""
     # Reaching a tool server in its own prime sandbox needs prime port exposure, whose URL isn't
     # reachable from the host here (region=us doesn't help). Skip until it is.
     if tool_runtime.get("runtime", {}).get("type") == "prime":
         pytest.skip(
             "tool server in a prime sandbox needs prime port exposure (unreachable from host here)"
         )
-    run = run_v1_server if tool_runtime.get("shared") else run_v1
-    (trace,) = await run(
+    (trace,) = await run_v1(
         "echo-tool-v1",
         harness="null",
         harness_overrides={"runtime": {"type": harness_runtime}},
@@ -74,11 +78,11 @@ async def test_tool(run_v1, run_v1_server, harness_runtime, tool_runtime, tmp_pa
 
 @pytest.mark.e2e
 async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
-    """A task-scoped tool round-trips typed state across runtime placements."""
-    if tool_runtime.get("shared"):
-        pytest.skip(
-            "shared tool servers are eval-level — per-rollout state isn't wired to them"
-        )
+    """The shared-state round-trip: a `@vf.tool` increments the typed `trace.state` each call (synced
+    over the interception server) and the `@reward` reads it back — reward 1.0 proves tool writes
+    reach the host's `trace.state`. Fanned across the tool's placement (`tool_runtime`) x the harness
+    `runtime`, so the state channel is exercised colocated and own-runtime (a SHARED server's
+    per-rollout state channel is covered by `test_shared_tool_isolation`)."""
     # Reaching a tool server in its own prime sandbox needs prime port exposure, whose URL isn't
     # reachable from the host here (region=us doesn't help). Skip until it is.
     if tool_runtime.get("runtime", {}).get("type") == "prime":
@@ -189,3 +193,52 @@ async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     assert trace.errors == []
     assert trace.num_turns >= 1  # ran a command, then finished
     assert trace.reward == 1.0
+
+
+@pytest.mark.e2e
+async def test_replay_round_trip(run_v1, tmp_path):
+    """eval -> replay -> replay-the-replay. Offline re-scoring must preserve the saved
+    task's wire form: replay reads traces as `Trace[WireTaskData, ...]`, so its own output
+    dumps through that schema — the taskset-specific fields (reverse-text's `answer`) ride
+    `model_extra` and must survive into the replay's `traces.jsonl`, or the next replay's
+    typed rebuild fails and the trace-only `@reward` silently stops running (the
+    wire-narrowing regression). Trace-only rewards are deterministic given the transcript,
+    so all three generations must agree."""
+    import tomllib
+    from pathlib import Path
+
+    from verifiers.v1.cli.output import CONFIG_FILE
+    from verifiers.v1.cli.replay import run_replay
+    from verifiers.v1.configs.replay import ReplayConfig
+
+    run_dir = tmp_path / "run"
+    (source,) = await run_v1(
+        "reverse-text-v1",
+        harness="null",
+        harness_overrides={"runtime": {"type": "subprocess"}},
+        output_dir=run_dir,
+        max_turns=2,
+    )
+    assert source.errors == []
+    assert "lcs" in source.rewards
+
+    async def replay(source_dir: Path, out: Path):
+        # The CLI's layering, minus the argv plumbing: the saved run's config is the base
+        # (`ReplayConfig` ignores its eval-only keys), the source's output_dir is dropped.
+        data = tomllib.loads((source_dir / CONFIG_FILE).read_text())
+        data.pop("output_dir", None)
+        config = ReplayConfig(**{**data, "rich": False})
+        (trace,) = await run_replay(config, source_dir, out)
+        return trace
+
+    first = await replay(run_dir, tmp_path / "replay1")
+    second = await replay(tmp_path / "replay1", tmp_path / "replay2")
+    for replayed in (first, second):
+        assert replayed.errors == []
+        # The typed rebuild ran (not the base-Task fallback): the trace-only reward re-ran
+        # and recomputed the same value.
+        assert replayed.rewards.keys() == source.rewards.keys()
+        assert replayed.reward == pytest.approx(source.reward)
+    # The wire task keeps its taskset-specific fields in the replay's own output.
+    raw = (tmp_path / "replay2" / "traces.jsonl").read_text()
+    assert '"answer"' in raw

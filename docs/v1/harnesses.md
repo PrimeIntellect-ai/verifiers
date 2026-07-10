@@ -36,8 +36,12 @@ class MyHarness(Harness[MyHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        # Resolve the task prompt according to this harness's declared capabilities.
-        _, prompt = self.resolve_prompt(trace.task)
+        # Run the harness in its respective runtime to completion
+        # The model (interception) endpoint is in endpoint
+        # mcp_urls are the URLs of the tools from the toolset (if registered)
+
+        # Resolve the task's prompt (and system prompt) for this harness
+        _, prompt = self.resolve_prompt(trace.task.data)
 
         # Example: Use the harness, but overwrite the endpoint to use the interception server and the custom model name
         ENVIRONMENT_VARS = {

@@ -1,7 +1,43 @@
 """Task data, configuration, behavior, and scoring.
 
-Only `TaskData` travels on traces. `Task` wraps that data with runtime behavior and a
-config; parameterize it as `Task[MyData, MyState, MyConfig]`.
+`TaskData` is the wire half: a frozen pydantic model carrying everything a rollout's
+row IS — the base fields (prompt, image, timeouts, judges) plus your typed,
+task-specific fields (the reference answer, ground truths, ...). It is what rides on
+`trace.task.data`, what `traces.jsonl` stores, and what tool/user servers receive over the
+`/task` channel. Subclass it per dataset.
+
+`Task` is the behavior half: a plain class owning runtime prep (`setup`/`finalize`),
+server declarations (`tools`/`user`), well-formedness (`validate`), and judgement
+(`@reward`/`@metric`/`@group_reward` methods, run by `score`/`score_group`). It wraps
+a `TaskData` plus a `TaskConfig`, both plain constructor arguments:
+
+    task = MyTask(data)                        # config defaults to the declared type's
+    task = MyTask(data, config=MyTaskConfig()) # or is injected, like Taskset/Harness/Judge
+    task = MyTask.from_trace(trace)            # opt-in: derived from a finished rollout
+
+Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]` (all three
+default) — hooks and signals read the row off `self.data` and the knobs off
+`self.config`. Because behavior lives on the task class, verification never branches
+on a type field; a taskset yields one task type (its `load` constructs it), and
+instances differ per row through their data.
+
+The task is the single judgement authority, scored at two granularities (execution
+lives in the Rollout — per-rollout — and the Episode — group — which call these):
+  - `score` runs `@metric`/`@reward` — plus the plugged judges resolved from
+    `config.judges` (see `verifiers.v1.judge`) — over one trace (in its live runtime).
+  - `score_group` runs `@group_reward` over all the rollouts of this task at once —
+    pairwise/preference rewards that compare samples.
+
+A Task instance is shared across its rollouts (a group's `n` samples hold the same
+instance), so hooks and scoring methods must not stash per-rollout state on `self` —
+that lives on the trace (`trace.state`, typed via the `Task[..., MyState, ...]`
+param).
+
+On the wire only the data (plus the producing class's name, `trace.task.type`)
+travels: a saved `trace.task.data` reads back as `WireTaskData`
+(extra fields preserved) without importing the taskset; a consumer that re-scores
+(e.g. `replay`) rebuilds the declared `TaskData` type and wraps it in the declared
+`Task` — one task type per taskset.
 """
 
 from __future__ import annotations
@@ -109,6 +145,12 @@ class TaskConfig(BaseConfig):
 
 
 class TaskData(StrictBaseModel):
+    """The task's wire half: one row's pure data, a frozen pydantic model. Subclass per
+    dataset to add typed, task-specific fields (the reference answer, ground truths,
+    per-row metadata) next to the base fields below. This is what `trace.task.data` holds,
+    what `traces.jsonl` stores, and what tool/user servers receive over the `/task`
+    channel — behavior lives on `Task`, which wraps this (`self.data`)."""
+
     model_config = ConfigDict(frozen=True)
 
     idx: int
@@ -154,14 +196,23 @@ def task_config_cls(cls: type) -> type[TaskConfig]:
 
 
 def resolve_server_config(
-    owner: str, config: BaseConfig, server_cls: type
+    owner: str, config: BaseConfig, server_cls: type, *, sole: bool = True
 ) -> BaseConfig:
+    """The config a declared server class is built with, resolved off `config`'s fields:
+    the field whose value is exactly the server's declared config type
+    (`Toolset[MyConfig]` / `User[MyConfig]`), else the unique field whose value
+    isinstance-matches it, else a default-constructed one. Two matching fields raise —
+    the `server_config` methods (`Task` / `Taskset`) are the override points for explicit
+    pairing. `owner` names the declaring class in errors. The isinstance fallback runs
+    only when the owner declares a `sole` server class: with several, a subclass-typed
+    field could silently pair with the WRONG server (e.g. a base-config server matching a
+    sibling's narrowed field), so multi-server owners need exact type matches or a
+    `server_config` override."""
     cfg_cls = server_cls._config_cls()
     values = {name: getattr(config, name) for name in type(config).model_fields}
-    # Prefer an exact field over a broader base-config match.
-    matched = [name for name, value in values.items() if type(value) is cfg_cls]
-    if not matched:
-        matched = [name for name, value in values.items() if isinstance(value, cfg_cls)]
+    matched = [name for name, v in values.items() if type(v) is cfg_cls]
+    if not matched and sole:
+        matched = [name for name, v in values.items() if isinstance(v, cfg_cls)]
     if len(matched) > 1:
         raise TaskError(
             f"{owner}: ambiguous config for {server_cls.__name__} — config fields "
@@ -187,6 +238,21 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     user: ClassVar[type[User] | None] = None
 
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        # Scope is the registration site; the config type must agree, or the mismatch
+        # fails silently at runtime (a shared config's knobs ignored / a "shared" server
+        # launched per rollout). Definition-time, so authors hit it on import.
+        from verifiers.v1.mcp.toolset import SharedToolsetConfig
+
+        for toolset in cls.tools:
+            if issubclass(toolset._config_cls(), SharedToolsetConfig):
+                raise TypeError(
+                    f"{cls.__name__}.tools declares {toolset.__name__}, whose config is a "
+                    "SharedToolsetConfig — an eval-level shared server belongs on "
+                    "Taskset.tools; a task-scoped (per-rollout) server declares a ToolsetConfig"
+                )
+
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
         self.config = config if config is not None else task_config_cls(type(self))()
@@ -197,7 +263,15 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return [load_judge(config) for config in self.config.judges]
 
     def server_config(self, server_cls: type) -> BaseConfig:
-        return resolve_server_config(type(self).__name__, self.config, server_cls)
+        """The config a declared server class (`tools` / `user`) is built with, resolved
+        off `self.config` (see `resolve_server_config`: exact type match, else — for a
+        sole declared server — unique isinstance match, else default-constructed).
+        Override to pair explicitly (the escape hatch for exotic setups, e.g. two servers
+        sharing one config type)."""
+        declared = set(type(self).tools) | ({type(self).user} - {None})
+        return resolve_server_config(
+            type(self).__name__, self.config, server_cls, sole=len(declared) == 1
+        )
 
     def tool_servers(self) -> list[Toolset]:
         return [cls(self.server_config(cls)) for cls in type(self).tools]

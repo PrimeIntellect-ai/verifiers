@@ -176,9 +176,26 @@ _NODE_DUMP_EXCLUDE: dict = {
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
+class TraceTask(StrictBaseModel, Generic[DataT]):
+    """The task as recorded on the trace: the row (`data`, the wire half — fully typed,
+    flows into scoring) plus the Task class name that produced the rollout (`type`) —
+    provenance, so a bare trace is self-describing: a `from_trace` implementer or an
+    offline re-scorer can tell which behavior class made it without the run's config
+    (replay warns when it disagrees with the taskset's declared type). Only data and a
+    name ride the wire — behavior still re-attaches by construction."""
+
+    type: str
+    """The Task class name (`type(task).__name__`), resolution stays anchored to the
+    taskset id like everything else."""
+    data: DataT
+    """The (immutable) row being solved."""
+
+
 class Trace(StrictBaseModel, Generic[DataT, StateT]):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    task: DataT
+    """Unique id for this rollout, auto-generated per trace."""
+    task: TraceTask[DataT]
+    """The task being solved: its class name (`task.type`) + its row (`task.data`)."""
     runtime: RuntimeInfo | None = None
     """The runtime's full config plus its provisioned resource ID."""
     nodes: list[MessageNode] = Field(default_factory=list)

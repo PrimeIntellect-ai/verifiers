@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.harness import HarnessConfig
+from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
@@ -21,7 +21,8 @@ from verifiers.v1.runtimes import (
     runtime_is_local,
 )
 from verifiers.v1.task import Task
-from verifiers.v1.taskset import TasksetConfig
+from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 
@@ -210,6 +211,35 @@ def resolve_runtime_config(
     return config.model_copy(update=updates) if updates else config
 
 
+def validate_pairing(harness: Harness, taskset: Taskset) -> None:
+    """Reject an impossible harness/taskset pairing at construction — before any dataset
+    load, shared-server launch, or first episode. Every check reads class-level facts
+    (`Task.tools` / `Task.user` / `NEEDS_CONTAINER`, `Taskset.tools` — one task type per
+    taskset, read off the `Taskset[TaskT, ...]` generic), so a failure here holds for
+    every row the taskset can produce; on the env server it fails worker startup instead
+    of every request."""
+    task_cls = generic_type(type(taskset), Task, origin=Taskset) or Task
+    if not harness.SUPPORTS_MCP and (task_cls.tools or type(taskset).tools):
+        raise ValueError(
+            f"Harness {harness.config.id!r} does not support MCP tools, but "
+            f"{task_cls.__name__} exposes tool servers (MCP). Run it with a harness that "
+            f"supports MCP (e.g. --harness.id default), or use tasks without tools."
+        )
+    if not harness.SUPPORTS_USER_SIM and task_cls.user is not None:
+        raise ValueError(
+            f"Harness {harness.config.id!r} does not drive a user simulator, but "
+            f"{task_cls.__name__} defines one (Task.user). Run it with a harness that "
+            f"supports user simulation (e.g. --harness.id default), or use tasks without one."
+        )
+    if task_cls.NEEDS_CONTAINER and isinstance(
+        harness.config.runtime, SubprocessConfig
+    ):
+        raise ValueError(
+            f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but the "
+            "harness runs on the subprocess runtime; use --harness.runtime.type docker or prime."
+        )
+
+
 class Environment:
     def __init__(self, config: EnvConfig) -> None:
         from verifiers.v1.loaders import load_harness, load_taskset
@@ -217,6 +247,7 @@ class Environment:
         self.config = config
         self.taskset = load_taskset(config.taskset)
         self.harness = load_harness(config.harness)
+        validate_pairing(self.harness, self.taskset)
         # The warning is about the *agent* running arbitrary code on the host: every harness hands
         # it local execution (bash/edit, or a CLI agent) except the tool-less `null` chat loop,
         # whose program only relays the model and remote MCP tools — so exempt `null`, warn for the
@@ -244,6 +275,9 @@ class Environment:
         self._warned_resources: set[tuple[str, str]] = set()
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: InterceptionPool | None = None
+        """Eval-level serving resources, live only inside `serving()`: shared tool servers
+        ({name: SharedToolServer}) and the interception pool. `episode()` injects them into every rollout
+        so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
         """Resolve the runtime config for a task off the harness's runtime (see
@@ -253,29 +287,16 @@ class Environment:
         )
 
     def episode(self, task: Task, ctx: ModelContext, n: int = 1) -> Episode:
-        """Resolve a task into an episode of `n` rollouts."""
-        if not self.harness.SUPPORTS_MCP and (
-            type(task).tools or type(self.taskset).tools
-        ):
-            raise ValueError(
-                f"Harness {self.harness.config.id!r} does not support MCP tools, but task "
-                f"{task.data.idx!r} ({type(task).__name__}) exposes tool servers (MCP). Run it with "
-                f"a harness that supports MCP (e.g. --harness.id default), or use tasks without tools."
-            )
-        if not self.harness.SUPPORTS_USER_SIM and type(task).user is not None:
-            raise ValueError(
-                f"Harness {self.harness.config.id!r} does not drive a user simulator, but task "
-                f"{task.data.idx!r} ({type(task).__name__}) defines one (Task.user). Run it with a "
-                f"harness that supports user simulation (e.g. --harness.id default), or use tasks without one."
-            )
-        if task.NEEDS_CONTAINER and isinstance(
-            self.harness.config.runtime, SubprocessConfig
-        ):
-            raise ValueError(
-                f"Task {task.data.idx!r} ({type(task).__name__}) needs a container runtime "
-                "(NEEDS_CONTAINER), but the harness runs on the subprocess runtime; "
-                "use --harness.runtime.type docker or prime."
-            )
+        """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime
+        (image + resources) and its
+        timeouts (cli/toml > task > default, None = no limit), build one `Rollout` per
+        sample sharing them, and wrap them in an `Episode` (which runs them and applies
+        the task's `@group_reward`s across their traces).
+
+        A task with `@group_reward`s compares its rollouts, so it needs >=2 of
+        them — refuse `n < 2` there (rather than silently scoring a group of one).
+        Harness capability (tools / user sim / container) is class-level and already
+        checked at construction (`validate_pairing`)."""
         if n < 2 and discover_decorated(task, "group_reward"):
             raise ValueError(
                 f"task {task.data.idx!r} defines @group_reward(s), which compare a task's rollouts "
@@ -336,7 +357,11 @@ class Environment:
 
     @contextlib.asynccontextmanager
     async def serving(self):
-        """Hold one worker's servers; build episodes inside so they inherit these resources."""
+        """Hold the env-level serving resources for the duration of an eval: the shared tool
+        servers (built once, see `shared_tools`) and the interception pool. Stash them so
+        every `episode()` built inside this context injects them into its rollouts — that's
+        what keeps both eval runners (in-process and env-server) on one serving path. Build
+        episodes inside this context; the resources are torn down on exit."""
         async with (
             self.shared_tools() as shared,
             self.interception_pool() as interception,

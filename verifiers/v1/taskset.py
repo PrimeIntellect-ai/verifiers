@@ -54,6 +54,20 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
     tools: ClassVar[tuple[type[Toolset], ...]] = ()
     """Tool server classes shared by one environment worker's rollouts."""
 
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        # Mirror of Task's check: taskset scope means shared, so the config must be a
+        # SharedToolsetConfig (a ToolsetConfig's `colocated` flag would be silently ignored).
+        from verifiers.v1.mcp.toolset import SharedToolsetConfig
+
+        for toolset in cls.tools:
+            if not issubclass(toolset._config_cls(), SharedToolsetConfig):
+                raise TypeError(
+                    f"{cls.__name__}.tools declares {toolset.__name__}, whose config is not a "
+                    "SharedToolsetConfig — Taskset.tools servers are shared (launched once per "
+                    "eval); a per-rollout server belongs on Task.tools"
+                )
+
     def __init__(self, config: TasksetConfigT) -> None:
         self.config = config
 
@@ -61,7 +75,14 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
         raise NotImplementedError
 
     def server_config(self, server_cls: type) -> BaseConfig:
-        return resolve_server_config(type(self).__name__, self.config, server_cls)
+        """The config a `tools` entry is built with, resolved off `self.config` (the
+        taskset config; see `resolve_server_config`). Override to pair explicitly."""
+        return resolve_server_config(
+            type(self).__name__,
+            self.config,
+            server_cls,
+            sole=len(set(type(self).tools)) == 1,
+        )
 
     def tool_servers(self) -> list[Toolset]:
         return [cls(self.server_config(cls)) for cls in type(self).tools]

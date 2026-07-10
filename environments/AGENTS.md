@@ -102,6 +102,16 @@ class AdditionConfig(vf.TasksetConfig):
     task: AdditionTaskConfig = AdditionTaskConfig()  # --taskset.task.tolerance
 ```
 
+The boundary: per-row data (the question, the reference answer) lives on `TaskData` fields;
+values uniform across the taskset live on the config — load-time ones directly on the
+`TasksetConfig`, task-facing ones under `task`. A task can also be constructed directly —
+`AdditionTask(data, config=AdditionTaskConfig(...))` — and an omitted config defaults to
+the declared type's defaults, so a standalone task works out of the box. Overriding
+`from_trace(trace)` (not implemented by default) opts a task into being derived from a
+finished rollout's bare `Trace` — how a multi-agent step spawns a follow-up task. Only the data rides the wire:
+`trace.task.data` is the `TaskData` (with `trace.task.type` recording the producing Task
+class's name), and behavior re-attaches by constructing the task class around it.
+
 ## Adding Tools
 
 Some environments require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`).
@@ -168,9 +178,10 @@ class JudgedTask(vf.Task[JudgedData, vf.State, JudgedTaskConfig]):
         judge = CorrectnessJudge(self.config.judge)
         result = await judge.evaluate(
             trace=trace,
-            question=self.data.prompt,
+            question=self.data.prompt_text,
             answer=self.data.answer,
-            response=trace.last_reply,  # Grade the final assistant answer.
+            # give the last assistant message to the judge
+            response=trace.last_reply,
         )
         return float(result.parsed)
 
