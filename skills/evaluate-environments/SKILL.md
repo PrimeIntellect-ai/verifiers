@@ -156,6 +156,16 @@ Resume in place:
 prime eval run --resume /path/to/run
 ```
 
+## Export SFT data
+
+A finished run's saved traces can be reshaped into an SFT dataset for prime-rl's `uv run sft`:
+
+```bash
+uv run export-sft /path/to/run --min-reward 1.0
+```
+
+Emits a `messages` column (OpenAI chat wire shape) plus a `tool_defs` column (the tools advertised to the model), one row per branch. Generation-errored traces always drop; `--min-reward` / `--drop-truncated` select further. Writes `<run>/sft/train.parquet` (readable via `load_dataset`, i.e. prime-rl's `data.name`) or pushes to the Hugging Face Hub with `--push <repo-id>`.
+
 ## Trace inspection
 
 For each representative sample inspect:

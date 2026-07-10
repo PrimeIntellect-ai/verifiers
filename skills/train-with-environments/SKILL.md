@@ -200,6 +200,22 @@ Classify before changing hyperparameters:
 Retries may help transient provider/sandbox/tunnel failures. They do not fix deterministic taskset
 or harness errors. Learning-rate changes do not fix invalid traces.
 
+## SFT from saved traces
+
+prime-rl's standalone `uv run sft` trains from an HF dataset (`messages` or `prompt`/`completion`
+columns, optional `tools`/`tool_defs`). To build one from a finished v1 eval run:
+
+```bash
+uv run export-sft /path/to/run --min-reward 1.0
+# prime-rl:
+uv run sft @ my-sft.toml --data.name /path/to/run/sft
+```
+
+The export emits one row per branch with `messages` (OpenAI chat wire shape) and `tool_defs` (the
+tools advertised to the model, so tool-use SFT re-renders the prompt the model actually saw).
+Generation-errored traces always drop; scoring-only errors keep their finished transcript and are
+governed by `--min-reward`. A typical loop is eval → export → SFT → RL on the same taskset.
+
 ## Quality rules
 
 - Never train on an uninspected reward.

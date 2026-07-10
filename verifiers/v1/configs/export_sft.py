@@ -16,8 +16,10 @@ class ExportSftConfig(BaseConfig):
     min_reward: float | None = Field(
         None, validation_alias=AliasChoices("min_reward", "r")
     )
-    """Keep only traces with `reward >= min_reward` (None = keep all). Errored traces are
-    always dropped — a broken transcript is not a training sample."""
+    """Keep only traces with `reward >= min_reward` (None = keep all). Generation-errored
+    traces (`stop_condition == "error"`) are always dropped — a broken transcript is not a
+    training sample. A scoring-only error keeps its finished transcript; its reward may be
+    partial/zero, which this threshold handles."""
     drop_truncated: bool = False
     """Also drop traces cut off by a budget/limit (`max_turns`, token caps, timeouts)."""
     output_dir: Path | None = Field(

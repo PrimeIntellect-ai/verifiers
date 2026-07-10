@@ -90,12 +90,28 @@ def test_sft_rows_one_per_branch():
 def test_select_filters():
     solved, failed = _tool_trace(reward=1.0), _tool_trace(reward=0.0)
     errored = _tool_trace()
-    errored.capture_error(RuntimeError("boom"))
+    errored.capture_error(
+        RuntimeError("boom")
+    )  # generation failure: stop becomes "error"
     truncated = _tool_trace()
     truncated.stop("max_turns")
 
-    # Errored traces always drop; the rest follow the knobs.
+    # Generation-errored traces always drop; the rest follow the knobs.
     assert select([solved, errored], ExportSftConfig()) == [solved]
     assert select([solved, failed], ExportSftConfig(min_reward=1.0)) == [solved]
     assert select([solved, failed], ExportSftConfig()) == [solved, failed]
     assert select([solved, truncated], ExportSftConfig(drop_truncated=True)) == [solved]
+
+
+def test_select_keeps_scoring_errored():
+    # A scoring-phase failure hits capture_error *after* the conversation finished, and
+    # `Trace.stop` keeps the first stop condition — so the generation outcome survives and
+    # the transcript is complete. Such traces are valid SFT samples and must be kept
+    # (mirroring replay, which re-scores exactly these); `--min-reward` governs them like
+    # any other row since their reward may be partial or zero.
+    scored_late_error = _tool_trace(reward=1.0)
+    scored_late_error.stop("done")  # generation finished cleanly
+    scored_late_error.capture_error(RuntimeError("judge failed"))  # scoring failure
+    assert scored_late_error.has_error
+    assert scored_late_error.stop_condition == "done"  # generation outcome preserved
+    assert select([scored_late_error], ExportSftConfig()) == [scored_late_error]

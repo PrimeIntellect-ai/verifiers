@@ -6,9 +6,10 @@ consumes directly — a `messages` column (OpenAI chat wire shape) plus a `tool_
 (the tools advertised to the model, JSON-encoded; prime-rl converts them for the chat
 template). One row per branch: a linear rollout contributes one sample, a compacted /
 subagent rollout one per branch (`Trace.branches` — one training sample is built per
-branch). Errored traces are always dropped; `--min-reward` / `--drop-truncated` select
-further. Writes `<run-dir>/sft/train.parquet` (a `load_dataset`-readable dir) or pushes to
-the Hub with `--push`.
+branch). Generation-errored traces are always dropped (scoring-only errors keep their
+finished transcript); `--min-reward` / `--drop-truncated` select further. Writes
+`<run-dir>/sft/train.parquet` (a `load_dataset`-readable dir) or pushes to the Hub with
+`--push`.
 """
 
 import json
@@ -51,12 +52,16 @@ def sft_rows(trace: Trace) -> list[dict]:
 
 
 def select(traces: list[Trace], config: ExportSftConfig) -> list[Trace]:
-    """The traces worth training on: errored ones always drop (a broken transcript is not a
-    sample); truncated and low-reward ones drop per config."""
+    """The traces worth training on. Generation failures (`stop_condition == "error"`) always
+    drop — a broken transcript is not a sample. A scoring-only error is different: `Trace.stop`
+    keeps the first stop condition, so the generation outcome survives and the conversation is
+    complete — those stay (mirroring `replay`, which re-scores exactly these), though their
+    reward may be partial/zero, which `--min-reward` handles. Truncated and low-reward traces
+    drop per config."""
     return [
         t
         for t in traces
-        if not t.has_error
+        if t.stop_condition != "error"
         and not (config.drop_truncated and t.is_truncated)
         and (config.min_reward is None or t.reward >= config.min_reward)
     ]
