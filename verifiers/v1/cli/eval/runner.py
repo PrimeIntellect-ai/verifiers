@@ -17,15 +17,13 @@ from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
-_SHUFFLE_SEED = (
-    0  # fixed so `--shuffle` samples the same tasks every run (reproducible)
-)
+SEED = 0  # fixed so `--shuffle` samples the same tasks every run (reproducible)
 
 
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
-    tasks = env.taskset.select(config.num_tasks, config.shuffle, seed=_SHUFFLE_SEED)
+    tasks = env.taskset.select(config.num_tasks, config.shuffle, seed=SEED)
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.
@@ -181,7 +179,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         else:
             idxs = list(range(info.num_tasks))
             if config.shuffle:
-                random.Random(_SHUFFLE_SEED).shuffle(idxs)
+                random.Random(SEED).shuffle(idxs)
             if config.num_tasks is not None:
                 idxs = idxs[: config.num_tasks]
         out = output_path(config)
