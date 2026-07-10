@@ -1,9 +1,4 @@
-"""The runtime contract: provision execution, run the program, tear down.
-
-A runtime decides WHERE the program runs and HOW it reaches the host interception
-server. Concrete runtimes live alongside this base; harnesses and the Environment
-depend only on this contract, so they stay runtime-agnostic.
-"""
+"""Execution runtime contract."""
 
 import asyncio
 import atexit
@@ -109,16 +104,7 @@ def cleanup_at_exit() -> None:
 
 
 class BaseRuntimeInfo(BaseConfig):
-    """Runtime metadata persisted with the rollout (`Trace.runtime`): each runtime's info class
-    inherits its full config — every knob the runtime ran with — and adds the provisioned
-    resource's `id`. Built with the runtime and shared by reference with the trace, so fields
-    land there the moment they're known: the config at creation, `id` once `start()` has
-    provisioned the resource. `RuntimeInfo` (the discriminated union over the concrete info
-    types) is what a dumped trace round-trips through."""
-
     id: str | None = None
-    """The provisioned resource's identifier (None until the runtime is up): the subprocess
-    workdir, the docker container id, the prime/modal sandbox id."""
 
 
 class Runtime(ABC):
@@ -129,38 +115,23 @@ class Runtime(ABC):
     need a tunnel each way: `host_endpoint` inward, `expose` outward)."""
 
     info: BaseRuntimeInfo
-    """This runtime's trace-facing metadata (see `BaseRuntimeInfo`): the full config plus the
-    resolved resource `id`. Each runtime constructs its own info type in `__init__` and fills
-    `id` in `start()`."""
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
-        """Resource name — the subprocess workdir, docker `--name`, prime sandbox name.
-        The rollout passes its trace id, so the provisioned resource is greppable back to
-        the rollout it serves; falls back to a unique `vf-` name (standalone / tool
-        runtimes, where there's no single owning rollout)."""
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
 
-    # --- identity / display ---
-
     @property
     def type(self) -> str:
-        """The runtime's config discriminator ("subprocess" / "docker" / "prime" / "modal")."""
         return self.config.type
 
     @property
     def descriptor(self) -> str | None:
-        """A short resolved id for display (None until provisioned): the runtime's `info.id` —
-        subprocess workdir, docker container id, prime/modal sandbox id."""
         return self.info.id
-
-    # --- lifecycle ---
 
     @abstractmethod
     async def start(self) -> None:
-        """Provision execution (workspace / container / sandbox). Use `expose` to turn a
-        host port into a URL the program can reach."""
+        pass
 
     async def stop(self) -> None:
         """Free the provisioned resource on the normal path (the owner's `finally`),
@@ -183,11 +154,9 @@ class Runtime(ABC):
         source of truth for teardown: usable from the atexit backstop where async machinery
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
 
-    # --- execution ---
-
     @abstractmethod
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        """Run `argv` (with the interception env vars `env`) to completion."""
+        pass
 
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
@@ -212,7 +181,6 @@ class Runtime(ABC):
         script: str | bytes,
         env: dict[str, str] | None = None,
     ) -> list[str]:
-        """Stage a PEP 723 script and resolve its dependencies, returning its executable argv."""
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         path = f"/tmp/vf-scripts/{digest}.py"
@@ -261,38 +229,22 @@ class Runtime(ABC):
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
     ) -> ProgramResult:
-        """Run a self-contained uv script (PEP 723 inline deps) in this runtime, with
-        `args` as its positional arguments (the script's `sys.argv[1:]`).
-
-        `prepare_uv_script` stages the script and resolves its dependencies once; this method
-        then runs it directly with the prepared interpreter. Built on `write`/`run`, so it
-        works the same on every runtime. `args` are passed as separate argv entries, so
-        spaces, quotes, and newlines in them are safe; pass structured data as a JSON string
-        if you need to.
-
-        The script is written to a stable, content-addressed path (NOT the per-rollout
-        workspace): uv keys its per-script environment by the script's full path, so a
+        """The script is written to a stable, content-addressed path rather than the per-rollout
+        workspace: uv keys its per-script environment by the script's full path, so a
         unique path per call would mint a fresh env every rollout. A path derived from the
         content means identical scripts share one path → uv reuses one env, bounded by the
         number of distinct scripts. Published via a unique temp + atomic `mv`, so
-        concurrent rollouts writing the same content never race a half-written read. This is
-        the general-purpose script path; stateful harness programs use the prepared argv with
-        `run_program` instead."""
+        concurrent rollouts writing the same content never race a half-written read."""
         argv = await self.prepare_uv_script(script, env)
         return await self.run([*argv, *(args or [])], env or {})
 
-    # --- filesystem ---
-
     @abstractmethod
     async def read(self, path: str) -> bytes:
-        """Read a file from the runtime's workspace. The caller need not know
-        whether that's the host fs or across a container/sandbox boundary."""
+        pass
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:
-        """Write a file into the runtime's workspace, creating parent dirs."""
-
-    # --- networking ---
+        pass
 
     @property
     def published_port(self) -> int | None:
@@ -366,15 +318,10 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
 
 
 class _Host:
-    """The host network as a `reachable_url` location: shares the host network (so it's `is_local`)
-    and publishes nothing itself (it's reached *into* via `host_endpoint`, not via `expose`)."""
-
     is_local = True
 
 
 HOST = _Host()
-"""The host network, as a service location (e.g. the interception server) or a consumer (the
-framework driving a user sim) — see `reachable_url`."""
 
 
 @contextlib.asynccontextmanager
@@ -387,8 +334,8 @@ async def reachable_url(
 
     `service` is the `Runtime` the service runs in, or `HOST` (a host-network service). `consumer` is
     the consuming `Runtime` (used for the colocated check and its locality); leave it `None` for a
-    host consumer or an eval-level consumer with no single instance (a shared tool reused by every
-    rollout's harness) and pass its locality as `consumer_is_local`:
+    host consumer or a worker-shared tool with no single harness instance, and pass its locality as
+    `consumer_is_local`:
 
     - same location (a colocated tool in the consumer's own runtime, or host -> host): localhost;
     - the service runs in a sandbox (a remote runtime): its own published URL (`expose`), reachable

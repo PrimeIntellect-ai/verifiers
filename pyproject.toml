@@ -247,7 +247,6 @@ markers = [
     "prime: v1 e2e cases touching the prime runtime (real sandbox + tunnel; local-only, excluded in CI)",
     "modal: v1 e2e cases touching the modal runtime (local-only setup; excluded in CI)",
     "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
-    "shared: v1 e2e cases with a shared (one-per-eval) tool server",
     "null: v1 e2e cases on the null harness",
     "default: v1 e2e cases on the default harness",
     "rlm: v1 e2e cases on the rlm harness",

@@ -66,55 +66,69 @@ Never mix v0 `Environment`, `Rubric`, `Parser`, `SingleTurnEnv`, `MultiTurnEnv`,
 ## Minimal implementation
 
 ```python
-import verifiers.v1 as vf 
+import verifiers.v1 as vf
 
 
-# A task defines a single problem and is defined as a subclass of vf.Task
-class AdditionTask(vf.Task):
+# One row's serializable data. Add references or other task-specific fields here.
+class AdditionData(vf.TaskData):
     answer: int
 
 
-# The taskset defines the dataset (collection of tasks) and needs a vf.TasksetConfig, which can be empty.
+# The behavior for that row. Decorated methods may request only the values they need;
+# `trace` contains the full message graph and `self.data` is this task's row.
+class AdditionTask(vf.Task[AdditionData]):
+    @vf.reward
+    async def exact_match(self, trace: vf.Trace) -> float:
+        return float(trace.last_reply == str(self.data.answer))
+
+
+# The taskset is the loader. Its config can be the empty base config.
 class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
-    def load_tasks(self) -> list[AdditionTask]:
-        # Load the dataset, in this case we built it on the initial load
+    def load(self) -> list[AdditionTask]:
+        # Construct one behavior object around each data row and the shared task config.
         return [
-            AdditionTask(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i)
+            AdditionTask(
+                AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i),
+                self.config.task,
+            )
             for i in range(100)
         ]
 
-    # @vf.reward denotes the scoring function for the environment.
-    # It needs the actual task (defined earlier) as well as the trace, which contains the whole message graph, including function calls, user messages etc.
-    # It returns the reward for the rollout based on this function.
-    @vf.reward
-    async def exact_match(self, task: AdditionTask, trace: vf.Trace) -> float:
-        return float(trace.last_reply == str(task.answer))
 
-
-# Export the Taskset for verifiers to find it when loading
+# Export the taskset class so the v1 loader can discover it.
 __all__ = ["AdditionTaskset"]
 ```
 
-Do not override `Taskset.__init__`; use config, `load_tasks()`, lifecycle hooks, or an owning server.
+Do not override `Taskset.__init__`. Implement `load()` on the taskset and put hooks and scoring on the task.
 
 ## Ownership rules
 
-The taskset owns:
+`TaskData` owns the immutable, serializable values for one row:
 
-- task loading and prompt framing;
-- task-specific tools and user simulation;
-- typed transient state;
-- setup/finalize/validate hooks;
-- stop conditions, metrics, rewards, and group rewards.
+- prompts and optional system prompts;
+- reference answers or other ground truth;
+- container image, workdir, resources, and timeout requests;
+- any additional typed fields scoring or a user/tool server needs.
+
+Only `TaskData` is stored on the trace. Do not put live clients, runtime handles etc. here.
+
+`Task` owns the behavior applied to that row:
+
+- `setup`, `finalize`, and model-free `validate` hooks;
+- stop conditions, metrics, rewards, and group rewards;
+- task-scoped tool and user-simulator declarations;
+- task-facing configuration read from `self.config`.
+
+`Taskset` owns loading and selection-time concerns. Its `load()` constructs the tasks, its direct config fields hold dataset/split/seed/sample-count knobs, and `Taskset.tools` may declare task-agnostic servers shared by one environment worker's rollouts.
 
 The harness owns:
 
-- the reusable agent/chat program;
-- how the program is provisioned and launched;
-- wiring the program to the supplied interception endpoint;
+- the reusable agent or chat program;
+- how that program is provisioned and launched;
+- wiring model requests to the supplied interception endpoint and secret;
 - harness-generic execution metrics.
 
-The runtime config owns where code executes. The task should not interfere with the runtime nor manipulate it directly.
+Runtime config chooses where code executes. Task hooks should use the `vf.Runtime` interface they receive instead of assuming Docker-, Prime-, Modal-, or host-specific implementation details.
 
 ## Scoring rules
 
@@ -122,15 +136,15 @@ The runtime config owns where code executes. The task should not interfere with 
 - Use an LLM judge only when semantic judgment is unavoidable.
 - Metrics are for observability and do not contribute to reward, but are useful. Use them deliberately and appropriately!
 - Group rewards receive all traces for one task but no live runtime.
-- Raise ordinary Python exceptions for invalid verifier execution. The framework records a `TasksetError` in this case.
+- Raise ordinary Python exceptions from rollout hooks and scoring. The rollout records them as `TaskError`.
 
 ## Validation and lifecycle
 
-Implement `validate(task, runtime)` whenever ground truth can be checked without a model. Keep rollout work in the owning stage:
+Implement `Task.validate(self, runtime)` whenever ground truth can be checked without a model. Keep rollout work on the task:
 
-- `setup(task, runtime)` — prepare repo, files, or service.
+- `setup(self, trace, runtime)` — prepare files or services.
 - harness execution — let the agent act.
-- `finalize(task, trace, runtime)` — capture diffs/artifacts needed for scoring.
+- `finalize(self, trace, runtime)` — capture artifacts needed for scoring.
 - `@vf.reward` / `@vf.metric` — evaluate while the runtime is still live.
 
 Persist inspectable artifacts in JSON-serializable `trace.info`. Put counters and live coordination in a typed `vf.State` subclass.
@@ -139,41 +153,37 @@ Persist inspectable artifacts in JSON-serializable `trace.info`. Put counters an
 
 Some environments require custom tools. These should be the exception as they don’t work with every harness and are registered as MCP servers.
 
-You can create them like this (remember the bootstrapping with `prime env init MY_ENV -T`)
 ```python
 class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
     TOOL_PREFIX = "search"
 
     @vf.tool
     async def query(self, text: str) -> list[str]:
+        # Tool docstrings are exposed to the model as the MCP tool description.
         """Search the task corpus."""
         return []
+
+
+class SearchTaskConfig(vf.TaskConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+
+
+class SearchTask(vf.Task[vf.TaskData, vf.State, SearchTaskConfig]):
+    # Declaring the class on Task.tools gives it one-server-per-rollout scope.
+    tools = (SearchToolset,)
 
 
 if __name__ == "__main__":
     SearchToolset.run()
 ```
 
-Expose the tool to the config:
+Choose placement from the tool's lifetime and filesystem needs:
 
-```python
-class SearchConfig(vf.TasksetConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
-```
+- **Task-scoped, own runtime:** declare the class on `Task.tools` with `vf.ToolsetConfig`. One server is launched per rollout. The default subprocess runtime is inexpensive and host-side.
+- **Task-scoped, colocated:** set `colocated = true` on its `ToolsetConfig` when the tool must see the harness's filesystem or processes. It still launches once per rollout.
+- **Taskset-scoped, shared:** parameterize the toolset with `vf.SharedToolsetConfig`, put the matching config field directly on `TasksetConfig`, and declare the class on `Taskset.tools`.
+- **Existing remote service:** set `url` on the matching toolset config. Verifiers connects to the streamable-HTTP MCP endpoint instead of launching the class locally.
 
-`Taskset.tools()` returns `[]` by default, so the toolset is never launched unless you wire it. Return it from the hook:
-
-```python
-class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
-    def tools(self, task: vf.Task) -> list[vf.Toolset]:
-        return [SearchToolset(self.config.tools)]
-```
-
-Tools can be placed in various ways. Think about what the tool is and how expensive its setup is:
-- per-rollout for cheap setup MCPs;
-- colocated for shared harness filesystem;
-- shared for expensive read-only setup or writable state entirely in `self.state` (e.g. big databases);
-- remote URL for an existing MCP service.
 
 ## User simulation
 
@@ -209,14 +219,14 @@ Map concepts directly:
 
 | V0 | Native v1 |
 | --- | --- |
-| Dataset row | Typed `vf.Task` subclass |
+| Dataset row | Typed `vf.TaskData` subclass |
 | `load_environment(**kwargs)` | Exported `vf.Taskset` class + typed config |
-| `Rubric` reward function | Taskset `@vf.reward` method |
-| Parser object | Ordinary parsing inside scoring |
-| `ToolEnv` tools | `vf.Toolset` + `Taskset.tools()` |
-| `MultiTurnEnv.env_response` | `vf.User`, tools, or a reusable harness |
+| `Rubric` reward function | Task `@vf.reward` method |
+| Parser object | Ordinary parsing inside task scoring |
+| `ToolEnv` tools | `vf.Toolset` declared on `Task.tools` or `Taskset.tools` |
+| `MultiTurnEnv.env_response` | `vf.User` declared on the task |
 | Dict state | Typed `vf.State` |
-| Sandbox subclass | Harness runtime config + task hooks |
+| Sandbox subclass | Runtime config + task hooks |
 
 Preserve prompt, tool, and scoring equivalence before improving design. Compare representative v0 and v1 traces where feasible.
 

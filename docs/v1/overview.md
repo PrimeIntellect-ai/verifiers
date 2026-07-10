@@ -6,7 +6,7 @@ The following concepts are important when creating or running environments, be i
 
 ## Environment Hub
 
-The [Environment Hub] is Prime Intellect's collection of (user-created) environments which are installable and ready to use with verifiers.
+The [Environment Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars) is Prime Intellect's collection of user-created environments which are installable and ready to use with verifiers.
 
 ## Environment
 
@@ -14,7 +14,7 @@ An environment combines a _taskset_ and a _harness_. Often, it is sufficient to 
 
 ## Taskset
 
-A taskset is a collection of tasks, i.e., the _what_. A task is a prompt, a set of files, etc. A taskset also defines the scoring mechanism (known as reward).
+A taskset is the collection and loader for the tasks—the _what_ of an environment. Each task combines a serializable `TaskData` row (prompt, files, references, resource requirements) with its task class's behavior (lifecycle hooks, tools, metrics, and rewards). The taskset's `load()` method constructs those objects and declares their task/config types through `Taskset[TaskT, ConfigT]`.
 
 ## Harness
 

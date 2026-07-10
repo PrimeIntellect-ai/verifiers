@@ -1,13 +1,4 @@
-"""The rlm harness: installs the rlm CLI into the runtime and runs the binary.
-
-`RLMHarnessConfig` carries both how to install rlm (repo/branch/token/path) and its
-runtime knobs (`max_depth`, `skills`, `summarize_at_tokens`), which rlm reads from `RLM_*`
-env vars. The base `HarnessConfig.env` still passes any other `RLM_*` var through verbatim.
-
-A task's MCP tool servers are passed to rlm via `RLM_MCP_CONFIG` (a standard `mcpServers`
-URL map); rlm exposes each tool as a pre-imported IPython skill the agent calls
-programmatically (`await tools_<name>(...)`), rather than via a native MCP client.
-"""
+"""RLM exposes `RLM_MCP_CONFIG` tools as pre-imported IPython skills."""
 
 import json
 import logging
@@ -36,8 +27,6 @@ RLM_BIN = f"{RLM_DIR}/bin/rlm"
 
 
 class RLMHarnessConfig(HarnessConfig):
-    """The rlm CLI harness — how to install rlm and how it should run."""
-
     version: str = "main"
     """Git ref (branch, tag, or commit) of rlm to install."""
     max_depth: int = 0
@@ -122,7 +111,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(trace.task)
+        system_prompt, prompt = self.resolve_prompt(trace.task.data)
         env = {
             **self.config.resolved_env,
             "RLM_BASE_URL": endpoint,
@@ -130,7 +119,7 @@ class RLMHarness(Harness[RLMHarnessConfig]):
             "RLM_MODEL": ctx.model,
             "RLM_MAX_DEPTH": str(self.config.max_depth),
             "RLM_HOME": RLM_HOME,
-            "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(trace.task.idx),
+            "RLM_SUMMARIZE_AT_TOKENS": self.summarize_threshold(trace.task.data.idx),
         }
         if system_prompt is not None:
             env["RLM_APPEND_TO_SYSTEM_PROMPT"] = system_prompt

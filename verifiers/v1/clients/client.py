@@ -1,8 +1,4 @@
-"""The client abstraction: turn a prompt into a `Response`.
-
-Collapsed from v1's 4-typevar generic ABC with five conversion hooks to a single
-abstract method. Each concrete client owns its own wire translation internally.
-"""
+"""Client interfaces for model inference and relay."""
 
 import logging
 from abc import ABC, abstractmethod
@@ -75,17 +71,16 @@ class Client(ABC):
         headers: Mapping[str, str] | None = None,
     ) -> dict:
         """Relay a non-model-turn side request (an `aux_route`, e.g. Anthropic's `count_tokens`)
-        verbatim to the provider and return its JSON. Only the relay (eval) client supports it."""
+        as native JSON and return the provider JSON. Only the relay (eval) client supports it."""
         raise NotImplementedError(f"{type(self).__name__} does not relay aux routes")
 
     async def close(self) -> None:
-        """Release any underlying resources. Default no-op."""
+        pass
 
 
 @dataclass(frozen=True)
 class ModelContext:
-    """The model-side collaborators a harness talks to (client + model + sampling),
-    bundled so harnesses hold no rollout state. Built by the Environment."""
+    """Client, model, and sampling settings for one rollout."""
 
     model: str
     client: Client

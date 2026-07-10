@@ -1,21 +1,7 @@
-"""reference — an off-the-shelf reference-answer judge, plugged from config alone.
+"""Built-in reference-answer judge.
 
-Asks the judge model whether the rollout's reply matches the task's reference answer and
-scores 1/0. The reference answer is read off the task by field name (`answer_field`, default
-`"answer"`; a list-valued field is judged as multiple acceptable answers), so it plugs into
-any taskset that carries one — no taskset code:
-
-    [[env.taskset.judges]]
-    id = "reference"
-    answer_field = "answer"
-
-Grading inputs are config-selectable: `question_field` (what fills `{question}`), `view`
-(final reply vs the whole transcript), and `choices` (the verdict labels, e.g. `["A", "B"]`).
-
-Error attribution: a *model* failure scores 0 — an empty response short-circuits to 0.0
-without a judge call, a wrong/non-committal reply gets the negative verdict. A *judge*
-failure — an API error or an unparseable verdict — raises instead, erroring the rollout so
-the sample is excluded/retried rather than scored against the model.
+Empty model output scores zero. Judge API or parsing failures raise so the sample can
+be retried instead of being scored against the model.
 """
 
 from pathlib import Path
@@ -32,11 +18,10 @@ from verifiers.v1.judge import (
     judge_response,
     judge_verdict,
 )
-from verifiers.v1.task import Task
+from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ID
 
-# A sibling text file so it doubles as a starting point for a config `prompt_file`.
 REFERENCE_PROMPT = (Path(__file__).resolve().parent / "reference.txt").read_text(
     encoding="utf-8"
 )
@@ -53,7 +38,7 @@ class ReferenceJudgeConfig(JudgeConfig):
     question_field: str = ""
     """Task field to fill the prompt's `{question}` (e.g. a dedicated `question` column
     without the prompt's instruction framing); empty = the task's prompt rendered as text
-    (`Task.prompt_text`)."""
+    (`TaskData.prompt_text`)."""
     view: JudgeView = "last_reply"
     """How much of the rollout fills `{response}` (see `JudgeView`). Defaults to the final
     reply — a reference-answer check grades the answer, not the path to it."""
@@ -76,8 +61,6 @@ class ReferenceJudgeConfig(JudgeConfig):
 
 
 class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
-    """Scores the reply 1/0 against the task's reference answer."""
-
     prompt = REFERENCE_PROMPT
 
     def parse(self, response: JudgeResponse[float]) -> float:
@@ -85,7 +68,7 @@ class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
             judge_verdict(response.text, self.config.choices) == self.config.choices[0]
         )
 
-    async def score(self, task: Task, trace: Trace) -> float:
+    async def score(self, task: TaskData, trace: Trace) -> float:
         answer = getattr(task, self.config.answer_field, None)
         if answer is None:
             raise ValueError(

@@ -35,7 +35,6 @@ from verifiers.v1.types import (
 
 
 def tool_to_wire(tool: Tool) -> dict:
-    """A vf tool -> the OpenAI chat wire dict (the renderer's generate request)."""
     function: dict = {
         "name": tool.name,
         "description": tool.description,

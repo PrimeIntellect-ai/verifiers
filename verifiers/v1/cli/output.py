@@ -58,6 +58,7 @@ def save_config(config: BaseModel, results_dir: Path) -> None:
 
 def write_trace(results_dir: Path, trace: Trace) -> None:
     """Serialize and append one trace in the worker thread."""
+    # Preserve fields declared by typed Trace subclasses.
     data = TypeAdapter(type(trace)).dump_json(trace, exclude_none=True)
     with (results_dir / TRACES_FILE).open("ab") as f:
         f.write(data + b"\n")
@@ -65,9 +66,8 @@ def write_trace(results_dir: Path, trace: Trace) -> None:
 
 def read_traces(results_dir: Path, trace_type: type) -> list[Trace]:
     """Load a run's saved traces from `traces.jsonl`, typed as `trace_type` — the inverse of
-    `write_trace`. Used by `replay` to re-score finished rollouts (pass the taskset's typed
-    `Trace[...]`, or `Trace[WireTask, ...]` to read any taskset's traces without importing it).
-    Streams line-by-line so a large (multi-GB) traces file isn't loaded into memory at once."""
+    `write_trace`. Used by `replay` to re-score finished rollouts (pass the task's typed
+    `Trace[...]`, or `Trace[WireTaskData, ...]` to read any taskset's traces without importing it)."""
     adapter = TypeAdapter(trace_type)
     traces: list[Trace] = []
     with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:

@@ -1,12 +1,12 @@
 # Harnesses
 
-verifiers supports a range of harnesses out of the box, such as Claude Code, Codex or a minimal, default harness without any built-in tools. However, you may want to build a custom one or extend the selection of third‑party harnesses.
+verifiers supports a range of harnesses out of the box, including Claude Code, Codex, the tool-enabled default harness, and the minimal tool-less `null` harness. However, you may want to build a custom one or extend the selection of third‑party harnesses.
 
 ## A minimal harness implementation
 
 
 ```python
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -24,13 +24,12 @@ class MyHarness(Harness[MyHarnessConfig]):
     SUPPORTS_USER_SIM = True
 
     async def setup(self, runtime: Runtime) -> None:
-        # Add your install script(s) here
-        MY_INSTALL_COMMAND = "echo 'installing...'"
-        await runtime.run(["sh", MY_INSTALL_COMMAND], {})
+        # Install the harness in its rollout runtime
+        await runtime.run(["sh", "-c", "echo installing..."], {})
 
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
@@ -42,7 +41,7 @@ class MyHarness(Harness[MyHarnessConfig]):
         # mcp_urls are the URLs of the tools from the toolset (if registered)
 
         # Resolve the task's prompt (and system prompt) for this harness
-        _, prompt = self.resolve_prompt(trace.task)
+        _, prompt = self.resolve_prompt(trace.task.data)
 
         # Example: Use the harness, but overwrite the endpoint to use the interception server and the custom model name
         ENVIRONMENT_VARS = {
@@ -51,7 +50,6 @@ class MyHarness(Harness[MyHarnessConfig]):
             "HARNESS_API_KEY": secret,
             "HARNESS_BASE_MODEL": ctx.model,
         }
-
-        # Run the harness using the values we defined earlier
-        return await runtime.run_program([HARNESS_BINARY, prompt], ENVIRONMENT_VARS)
+        # Run the harness to completion inside the selected runtime.
+        return await runtime.run_program(["<HARNESS_BINARY>", str(prompt or "")], env)
 ```

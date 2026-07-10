@@ -12,7 +12,7 @@ def test_color_images_are_rendered_once(monkeypatch) -> None:
     monkeypatch.setattr(taskset, "color_data_url", counted)
     tasks = taskset.ColorCodewordTaskset(
         taskset.ColorCodewordConfig(num_examples=100)
-    ).load_tasks()
+    ).load()
 
     assert len(tasks) == 100
     assert calls == list(taskset.COLOR_MAP)

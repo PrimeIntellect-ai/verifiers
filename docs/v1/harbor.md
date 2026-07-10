@@ -15,7 +15,6 @@ class TerminalBench2Config(HarborConfig):
 # The data will get loaded automatically
 class TerminalBench2Taskset(HarborTaskset, vf.Taskset[HarborTask, TerminalBench2Config]):
     pass
-    # No need for a reward function, as it will get inherited from the Harbor dataset
 ```
 
 You can also write custom code for your environments. A common functionality is to set custom images for tasks that don’t come with an image in their `task.toml`:
@@ -27,18 +26,27 @@ from typing import Literal
 import verifiers.v1 as vf
 from verifiers.v1.tasksets.harbor import HarborConfig, HarborTask, HarborTaskset
 
+IMAGE_TEMPLATE = "registry.example.com/openthoughts/{task}:latest"
+
+
 class OpenThoughtsTBLiteConfig(HarborConfig):
     dataset: Literal["openthoughts/openthoughts-tblite"] = "openthoughts/openthoughts-tblite"
-    # Tell verifiers to ignore the Dockerfile in the task
+    # Tell verifiers to use the pre-built image
     ignore_dockerfile: bool = True
 
 
 class OpenThoughtsTBLiteTaskset(HarborTaskset, vf.Taskset[HarborTask, OpenThoughtsTBLiteConfig]):
-    def load_tasks(self) -> list[HarborTask]:
-        # Use the public image instead to avoid building the image at runtime
+    def load(self) -> list[HarborTask]:
+        # Use the public image instead to avoid building the image at runtime; the row
+        # data is frozen, so rebuild each task around an updated copy.
         return [
-            task.model_copy(update={"image": IMAGE_TEMPLATE.format(task=Path(task.task_dir).name)})
-            for task in super().load_tasks()
+            HarborTask(
+                task.data.model_copy(
+                    update={"image": IMAGE_TEMPLATE.format(task=Path(task.data.task_dir).name)}
+                ),
+                task.config,
+            )
+            for task in super().load()
         ]
 ```
 
@@ -55,7 +63,7 @@ timeout_multiplier = 2.0
 resource_multiplier = 2.0
 ```
 
-The `timeout_multiplier` multiplies both the reagent and the verifier timeout, while the `resource_multiplier` multiplies the task's CPU, memory and disk space. You might want to use these multipliers when the tasks set too tight limits and/or the agent is slow.
+The `timeout_multiplier` multiplies both the agent and verifier timeout, while the `resource_multiplier` multiplies the task's CPU, memory and disk space. You might want to use these multipliers when the tasks set too tight limits and/or the agent is slow.
 
 ## Shortcomings
 

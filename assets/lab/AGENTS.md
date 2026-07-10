@@ -22,8 +22,8 @@ Use these rules when shaping public v1 APIs, configs, and environment files.
 - Prefer verifiers-native task, trace, server, harness, and runtime interfaces over repeated path/import/discovery plumbing in user packages.
 - Expose as few knobs in the configs as possible, but as many as needed.
 - Use strict Pydantic models for structured config, tasks, messages, and state.
-- A basic taskset should fit in a few dozen idiomatic lines: typed task/config classes, `load_tasks()`, and decorated scoring.
-- Do not override `Taskset.__init__`, `Harness.__init__`, or `User.__init__`. Use `setup()` instead.
+- A basic taskset should fit in a few dozen idiomatic lines: typed data/task/config classes, `load()`, and decorated scoring on the task.
+- Do not override `Taskset.__init__`; implement `load()`. Do not override `Harness.__init__` or `User.__init__`; use `setup()`.
 - Refer to the code as the source of truth.
 - Avoid mutable module globals. Process-level locks/rate limiters and immutable constants are the narrow exceptions.
 

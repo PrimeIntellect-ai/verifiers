@@ -1,14 +1,4 @@
-"""The validate entrypoint: `uv run validate <taskset-id> [--runtime.type subprocess] [options]`.
-
-Registered as the `validate` console script — the model-free sibling of `eval`. Where `eval`
-runs a model rollout per task, `validate` runs each task's gold check (`setup` + the
-`validate` hook) and a setup-only check in independent runtimes — or just one of them via
-`--only-gold` / `--only-setup`. Each task is provisioned, set up, checked, and torn down
-independently with bounded concurrency.
-
-Fire-and-forget: progress is shown live (the `--rich` dashboard, or per-task log lines) and
-nothing is written to disk.
-"""
+"""Model-free task-validation CLI."""
 
 import asyncio
 import contextlib
@@ -34,8 +24,8 @@ from verifiers.v1.decorators import invoke
 from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
-from verifiers.v1.taskset import Taskset
-from verifiers.v1.trace import Trace
+from verifiers.v1.task import Task
+from verifiers.v1.trace import Trace, TraceTask
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -66,8 +56,6 @@ ResultRow = dict[str, Any]
 
 
 def _classify(valid: bool, exc: BaseException | None) -> str:
-    """The outcome reason: `valid` (passed), `invalid` (returned False), `timeout` (a stage
-    timed out), or `error` (raised) — the error's message carries the detail."""
     if valid:
         return "valid"
     if isinstance(exc, asyncio.TimeoutError):
@@ -81,8 +69,8 @@ def _row(
     task, mode: str, valid: bool, exc: BaseException | None, start: float
 ) -> ResultRow:
     return {
-        "index": task.idx,
-        "name": task.name,
+        "index": task.data.idx,
+        "name": task.data.name,
         "mode": mode,
         "valid": bool(valid),
         "reason": _classify(valid, exc),
@@ -92,53 +80,61 @@ def _row(
     }
 
 
-async def _run_gold(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
-    """The gold check: provision one runtime, run setup + validate, tear it down."""
+async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
     start = time.time()
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
-        name=f"validate-gold-{task.idx}-{uuid4().hex[:8]}",
+        name=f"validate-gold-{task.data.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
-        config.timeout.setup if config.timeout.setup is not None else task.timeout.setup
+        config.timeout.setup
+        if config.timeout.setup is not None
+        else task.data.timeout.setup
     )
     valid, exc = False, None
     try:
-        trace = Trace(task=task, state=state_cls(type(taskset))())
+        trace = Trace(
+            task=TraceTask(type=type(task).__name__, data=task.data),
+            state=state_cls(type(task))(),
+        )
         await runtime.start()
         await asyncio.wait_for(
-            invoke(taskset.setup, {"task": task, "trace": trace, "runtime": runtime}),
+            invoke(task.setup, {"trace": trace, "runtime": runtime}),
             setup_timeout,
         )
-        valid = await asyncio.wait_for(
-            taskset.validate(task, runtime), config.timeout.total
-        )
+        valid = await asyncio.wait_for(task.validate(runtime), config.timeout.total)
     except Exception as e:
         exc = e
     finally:
         try:
             await runtime.stop()
         except Exception:
-            logger.warning("runtime teardown failed (task %s)", task.idx, exc_info=True)
+            logger.warning(
+                "runtime teardown failed (task %s)", task.data.idx, exc_info=True
+            )
     return _row(task, "gold", valid, exc, start)
 
 
-async def _run_setup(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
-    """The setup-only check: provision one runtime, run setup, tear it down."""
+async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
     start = time.time()
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
-        name=f"validate-setup-{task.idx}-{uuid4().hex[:8]}",
+        name=f"validate-setup-{task.data.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
-        config.timeout.setup if config.timeout.setup is not None else task.timeout.setup
+        config.timeout.setup
+        if config.timeout.setup is not None
+        else task.data.timeout.setup
     )
     valid, exc = False, None
     try:
-        trace = Trace(task=task, state=state_cls(type(taskset))())
+        trace = Trace(
+            task=TraceTask(type=type(task).__name__, data=task.data),
+            state=state_cls(type(task))(),
+        )
         await runtime.start()
         await asyncio.wait_for(
-            invoke(taskset.setup, {"task": task, "trace": trace, "runtime": runtime}),
+            invoke(task.setup, {"trace": trace, "runtime": runtime}),
             setup_timeout,
         )
         valid = True
@@ -148,7 +144,9 @@ async def _run_setup(taskset: Taskset, task, config: ValidateConfig) -> ResultRo
         try:
             await runtime.stop()
         except Exception:
-            logger.warning("runtime teardown failed (task %s)", task.idx, exc_info=True)
+            logger.warning(
+                "runtime teardown failed (task %s)", task.data.idx, exc_info=True
+            )
     return _row(task, "setup", valid, exc, start)
 
 
@@ -170,16 +168,15 @@ def _all_error(rows: list[ResultRow]) -> tuple[str | None, str | None]:
     return ("; ".join(parts) or None, "+".join(sorted(error_types)) or None)
 
 
-async def _run_all(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
-    """Run every check (gold, setup-only) as independent high-level validations."""
+async def _run_all(task: Task, config: ValidateConfig) -> ResultRow:
     start = time.time()
-    gold = await _run_gold(taskset, task, config)
-    setup = await _run_setup(taskset, task, config)
+    gold = await _run_gold(task, config)
+    setup = await _run_setup(task, config)
     rows = [gold, setup]
     error, error_type = _all_error(rows)
     return {
-        "index": task.idx,
-        "name": task.name,
+        "index": task.data.idx,
+        "name": task.data.name,
         "mode": "all",
         "valid": all(row["valid"] for row in rows),
         "reason": _all_reason(rows),
@@ -191,25 +188,23 @@ async def _run_all(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
     }
 
 
-async def _validate_task(taskset: Taskset, task, config: ValidateConfig) -> ResultRow:
+async def _validate_task(task: Task, config: ValidateConfig) -> ResultRow:
     if config.only_gold:
-        return await _run_gold(taskset, task, config)
+        return await _run_gold(task, config)
     if config.only_setup:
-        return await _run_setup(taskset, task, config)
-    return await _run_all(taskset, task, config)
+        return await _run_setup(task, config)
+    return await _run_all(task, config)
 
 
 async def run_validate(config: ValidateConfig) -> list[dict]:
-    """Run each task's `validate` hook with bounded concurrency, showing progress live. Returns
-    the result rows in memory — nothing is persisted."""
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.load_tasks()
+    tasks = taskset.load()
     if config.shuffle:
         random.Random(0).shuffle(tasks)
     if config.num_tasks is not None:
         tasks = tasks[: config.num_tasks]
-    if isinstance(config.runtime, vf.SubprocessConfig) and (
-        taskset.NEEDS_CONTAINER or any(t.image for t in tasks)
+    if isinstance(config.runtime, vf.SubprocessConfig) and any(
+        type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):
         raise SystemExit(
             "taskset needs a container runtime to validate - pass --runtime.type docker (or prime)"
@@ -226,15 +221,15 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     )
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-    states = [TaskProgress(idx=t.idx, name=t.name) for t in tasks]
+    states = [TaskProgress(idx=t.data.idx, name=t.data.name) for t in tasks]
     state_by_idx = {s.idx: s for s in states}
 
     async def _one(task) -> dict:
-        st = state_by_idx[task.idx]
+        st = state_by_idx[task.data.idx]
         async with sem or contextlib.nullcontext():
             st.start = time.time()
             st.state = "running"
-            row = await _validate_task(taskset, task, config)
+            row = await _validate_task(task, config)
         st.end, st.state = time.time(), row["reason"]
         if not config.rich:  # the dashboard shows this live; otherwise log each task
             detail = f" - {row['error']}" if row["error"] else ""

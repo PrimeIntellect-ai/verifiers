@@ -112,8 +112,7 @@ can override it.
 - If groups are mostly all-one, increase difficulty or sample a harder task distribution.
 - Choose `batch_size` with whole groups, packing, sequence length, and GPU memory in mind.
 
-A taskset `@vf.group_reward` is scoring, not trainer advantage. The env server automatically keeps
-that task's rollouts together before returning traces.
+A task `@vf.group_reward` is scoring, not trainer advantage. The env server automatically keeps that task's rollouts together before returning traces.
 
 ## Difficulty filtering
 
@@ -194,7 +193,7 @@ Classify before changing hyperparameters:
 3. **HarnessError** — program installation, launch, or nonzero exit.
 4. **ToolsetError/UserError** — server startup, reachability, or call behavior.
 5. **SandboxError/TunnelError** — runtime capacity, lifecycle, filesystem, network, or rate limits.
-6. **TasksetError** — setup/finalize/scoring implementation.
+6. **TaskError** — task setup, finalize, or scoring implementation during a rollout.
 7. **Trainer instability** — valid branches arrive, then loss/KL/gradient/weight behavior fails.
 
 Retries may help transient provider/sandbox/tunnel failures. They do not fix deterministic taskset

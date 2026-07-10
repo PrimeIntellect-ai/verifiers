@@ -25,7 +25,7 @@ prime eval run <MY_ENV>
 prime eval run <MY_ENV> --dry-run
 ```
 
-2. Run model-free gold validation when the taskset implements it:
+2. Run model-free gold validation when the taskset implements `validate`:
 
 ```bash
 prime eval validate <MY_ENV> --runtime.type subprocess
@@ -134,7 +134,7 @@ Whole-rollout retry is opt-in. That means if something fails in the rollout, the
 prime eval run my-task-v1 \
   --retries.rollout.max-retries 2 \
   --retries.rollout.include SandboxError ProviderError \
-  --retries.rollout.exclude TasksetError
+  --retries.rollout.exclude TaskError
 ```
 
 ## Output and resume
@@ -144,7 +144,7 @@ Default output:
 ```text
 outputs/<taskset>--<model>--<harness>/<uuid>/
 ├── config.toml
-├── results.jsonl
+├── traces.jsonl
 └── eval.log
 ```
 
@@ -173,7 +173,7 @@ Classify outcomes:
 1. Valid completion and correct reward.
 2. Valid completion with low reward (model/task outcome).
 3. Truncated completion (budget outcome).
-4. Captured rollout error (provider, harness, tool, user, runtime, taskset, or interception).
+4. Captured rollout error (provider, harness, tool, user, runtime, task, or interception).
 
 Do not average these categories together without reporting failure rate.
 

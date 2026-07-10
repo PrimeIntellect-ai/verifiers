@@ -1,4 +1,4 @@
-"""Remote Prime sandbox runtime: run the program in a sandbox, reached via native port exposure.
+"""Remote Prime sandbox runtime.
 
 `expose` (sandbox port -> public URL) uses the SDK's native exposure (`client.expose`), so a
 host-side harness/framework can reach a tool/user server hosted in the sandbox. The reverse
@@ -46,10 +46,8 @@ class PrimeConfig(BaseConfig):
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     labels: list[str] = []
-    """Labels attached to the sandbox and its tunnels — e.g. to group every resource a run
-    creates. When unset, the eval defaults them to the run's uuid (see `run_eval`)."""
-    # TaskResources, in Modal's units (also settable per-task via Task.resources, with
-    # precedence cli/toml > task > this default). Mapped to prime's API in `start`.
+    """Labels attached to the sandbox."""
+    # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float = 1.0
     """CPU cores."""
     memory: float = 2.0
@@ -76,12 +74,10 @@ class PrimeConfig(BaseConfig):
 
 
 class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
-    """`PrimeConfig` + the resolved `id` — the prime sandbox id."""
+    pass
 
 
 class PrimeRuntime(Runtime):
-    """Runs the program in a Prime sandbox; the server is reached via a tunnel."""
-
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:

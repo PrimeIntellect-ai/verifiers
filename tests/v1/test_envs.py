@@ -57,7 +57,7 @@ def test_eval(taskset: str):
         "uv", "run", "--no-sync", "eval",
         "--taskset.id", taskset,
         *model,
-        # -r 2: a taskset with @group_reward(s) needs >=2 rollouts to compare.
+        # -r 2: a task with @group_reward(s) needs >=2 rollouts to compare.
         "-n", "1", "-r", "2", "--max-turns", "4",
         "--sampling.max-tokens", "512", "--rich", "false",
     ]  # fmt: skip

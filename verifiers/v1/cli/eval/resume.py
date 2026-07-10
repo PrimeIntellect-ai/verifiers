@@ -21,6 +21,7 @@ from pydantic_core import from_json
 from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
+from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, WireTrace
 
 
@@ -54,13 +55,9 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
 
 
 class Finished(Rollout):
-    """A finished rollout reloaded from a previous session (see `load`): carries just the
-    surface the dashboard reads (`trace`/`task`/`phase`/`runtime`), so a resumed run's kept
-    rollouts render exactly like this session's."""
-
     def __init__(self, trace: Trace) -> None:
         self.trace = trace
-        self.task = trace.task
+        self.task = Task(trace.task.data)
         self.phase = Phase.DONE
         self.runtime = None
 
@@ -87,7 +84,7 @@ def load(
                     row = from_json(line)
                 except ValueError:
                     row = json.loads(line)
-                idx = row["task"]["idx"]
+                idx = row["task"]["data"]["idx"]
                 if (
                     idx in selected
                     and not row.get("errors")

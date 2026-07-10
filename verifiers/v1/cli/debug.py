@@ -28,8 +28,8 @@ from verifiers.v1.decorators import invoke
 from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
 from verifiers.v1.state import state_cls
-from verifiers.v1.taskset import Taskset
-from verifiers.v1.trace import Error, Trace
+from verifiers.v1.task import Task
+from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ def output_path(config: DebugConfig) -> Path:
 
 
 def task_info(task) -> dict[str, Any]:
-    return {"idx": task.idx, "name": task.name, "workdir": task.workdir}
+    return {"idx": task.data.idx, "name": task.data.name, "workdir": task.data.workdir}
 
 
 def runtime_info(runtime: Runtime) -> dict[str, Any]:
@@ -116,6 +116,7 @@ def error_info(
 
 
 def capture_trace_error(trace: Trace, error: BaseException) -> None:
+    # CancelledError is a BaseException; Trace.capture_error accepts Exception.
     if isinstance(error, Exception):
         trace.capture_error(error)
         return
@@ -203,8 +204,11 @@ async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
     }
 
 
-async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace, bool]:
-    trace = Trace(task=task, state=state_cls(type(taskset))())
+async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
+    trace = Trace(
+        task=TraceTask(type=type(task).__name__, data=task.data),
+        state=state_cls(type(task))(),
+    )
     debug = {
         "task": task_info(task),
         "action": "command" if config.command is not None else "script",
@@ -214,17 +218,19 @@ async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace
     cancelled = False
     runtime = make_runtime(
         resolve_runtime_config(config.runtime, task),
-        name=f"debug-{task.idx}-{uuid4().hex[:8]}",
+        name=f"debug-{task.data.idx}-{uuid4().hex[:8]}",
     )
     setup_timeout = (
-        config.timeout.setup if config.timeout.setup is not None else task.timeout.setup
+        config.timeout.setup
+        if config.timeout.setup is not None
+        else task.data.timeout.setup
     )
     try:
         trace.timing.setup.start = time.time()
         await runtime.start()
         debug["runtime"] = runtime_info(runtime)
         await asyncio.wait_for(
-            invoke(taskset.setup, {"task": task, "trace": trace, "runtime": runtime}),
+            invoke(task.setup, {"trace": trace, "runtime": runtime}),
             setup_timeout,
         )
         trace.timing.setup.end = time.time()
@@ -253,19 +259,21 @@ async def debug_task(taskset: Taskset, task, config: DebugConfig) -> tuple[Trace
             # persist the trace — absorb it here; the caller re-raises after appending
             cancelled = True
         except Exception:
-            logger.warning("runtime teardown failed (task %s)", task.idx, exc_info=True)
+            logger.warning(
+                "runtime teardown failed (task %s)", task.data.idx, exc_info=True
+            )
     return trace, cancelled
 
 
 async def run_debug(config: DebugConfig) -> list[Trace]:
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.load_tasks()
+    tasks = taskset.load()
     if config.shuffle:
         random.Random(0).shuffle(tasks)
     if config.num_tasks is not None:
         tasks = tasks[: config.num_tasks]
-    if isinstance(config.runtime, vf.SubprocessConfig) and (
-        taskset.NEEDS_CONTAINER or any(t.image for t in tasks)
+    if isinstance(config.runtime, vf.SubprocessConfig) and any(
+        type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):
         raise SystemExit(
             "taskset needs a container runtime to debug - pass --runtime.type docker (or prime)"
@@ -286,13 +294,13 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
 
     async def one(task) -> Trace:
         async with sem or contextlib.nullcontext():
-            trace, cancelled = await debug_task(taskset, task, config)
+            trace, cancelled = await debug_task(task, config)
         await append_trace(out, trace, write_lock)
         info = trace.info["debug"]
         detail = f" - {info['error']}" if info.get("error") else ""
         logger.info(
             "idx=%s ok=%s reason=%s%s",
-            task.idx,
+            task.data.idx,
             info["ok"],
             info["reason"],
             detail,
@@ -319,6 +327,7 @@ def main(argv: list[str] | None = None) -> None:
     sys.argv = [sys.argv[0], *argv]
     config = cli(config_type)
     setup_logging("DEBUG" if config.verbose else "INFO")
+    # Translate SIGTERM so async finally blocks still tear down their resources.
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     asyncio.run(run_debug(config))
 

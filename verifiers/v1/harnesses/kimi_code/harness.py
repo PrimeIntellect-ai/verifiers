@@ -1,9 +1,4 @@
-"""The Kimi Code harness: installs the CLI into the runtime and runs it headlessly.
-
-Kimi Code speaks the OpenAI Chat Completions API through an environment-defined model, so
-the rollout interception endpoint and session secret are passed through `KIMI_MODEL_*`.
-Task-owned MCP servers live in an isolated Kimi home.
-"""
+"""Kimi receives interception through `KIMI_MODEL_*`; task MCP config uses an isolated home."""
 
 import json
 import logging
@@ -37,8 +32,6 @@ env \
 
 
 class KimiCodeHarnessConfig(HarnessConfig):
-    """The Kimi Code CLI harness."""
-
     version: str = "0.14.3"
     """Kimi Code release to install, pinned for reproducibility."""
 
@@ -71,7 +64,7 @@ class KimiCodeHarness(Harness[KimiCodeHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        _, prompt = self.resolve_prompt(trace.task)
+        _, prompt = self.resolve_prompt(trace.task.data)
         env = {
             **self.config.resolved_env,
             "KIMI_CODE_HOME": KIMI_HOME,
