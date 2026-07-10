@@ -58,14 +58,15 @@ class AgenticJudgeTask(JudgeTask[AgenticJudgeData]):
     verdict parser and the `committed` stop are inherited from `JudgeTask`."""
 
     @classmethod
-    def for_trace(
-        cls, task: Task, trace: Trace, prompt: str = AGENTIC_JUDGE_PROMPT
+    def from_trace(
+        cls, trace: Trace, prompt: str = AGENTIC_JUDGE_PROMPT
     ) -> "AgenticJudgeTask":
-        """Wrap a finished episode for agentic judging: the assignment (`prompt`, with
-        `{path}` resolved to where the trace will land) plus the trace itself."""
+        """Wrap a finished episode for agentic judging (the `Task.from_trace`
+        convention): the assignment (`prompt`, with `{path}` resolved to where the
+        trace will land) plus the trace itself."""
         return cls(
             AgenticJudgeData(
-                idx=task.data.idx,
+                idx=trace.task.data.idx,
                 prompt=prompt.format(path=TRACE_PATH),
                 trace_json=json.dumps(trace.to_record()),
             )
@@ -99,7 +100,7 @@ class AgenticJudgeTopology(LLMJudgeTopology, Topology[AgenticJudgeConfig]):
     async def go(self, task: Task, run: TopologyRun) -> None:
         solver = await run.agent("solver").run(task)
         await run.agent("judge").run(
-            AgenticJudgeTask.for_trace(task, solver, self.config.prompt),
+            AgenticJudgeTask.from_trace(solver, self.config.prompt),
             parents=[solver],
         )
 

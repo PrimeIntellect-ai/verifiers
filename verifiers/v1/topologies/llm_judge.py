@@ -82,16 +82,18 @@ class JudgeTask(Task[DataT]):
     typed object, constructed in `go` from the solver's trace (the forward arrow)."""
 
     @classmethod
-    def for_attempt(cls, task: Task, trace: Trace) -> "JudgeTask":
-        """Render an upstream episode into a grading task: the upstream task's framing, its
-        ground truth (an `answer` data field, when the task has one), and the attempt's
-        final message. Pure trace→task code."""
-        answer = getattr(task.data, "answer", None)
+    def from_trace(cls, trace: Trace) -> "JudgeTask":
+        """Render a finished episode into a grading task (the `Task.from_trace`
+        convention): the upstream task's framing, its ground truth (an `answer` data
+        field, when the row has one), and the attempt's final message — all read off
+        the trace, which is self-describing (`trace.task.data`). Pure trace→task code."""
+        data = trace.task.data
+        answer = getattr(data, "answer", None)
         return cls(
             TaskData(
-                idx=task.data.idx,
+                idx=data.idx,
                 prompt=JUDGE_PROMPT.format(
-                    task=task.data.prompt_text,
+                    task=data.prompt_text,
                     reference=REFERENCE_SECTION.format(answer=answer)
                     if answer is not None
                     else "",
@@ -163,9 +165,7 @@ class LLMJudgeConfig(TopologyConfig):
 class LLMJudgeTopology(Topology[LLMJudgeConfig]):
     async def go(self, task: Task, run: TopologyRun) -> None:
         solver = await run.agent("solver").run(task)
-        await run.agent("judge").run(
-            JudgeTask.for_attempt(task, solver), parents=[solver]
-        )
+        await run.agent("judge").run(JudgeTask.from_trace(solver), parents=[solver])
 
     @metric(agent="solver")
     async def judge_committed(self, trace: Trace, graph: AgentGraph) -> float:

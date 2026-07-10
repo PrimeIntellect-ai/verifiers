@@ -511,7 +511,8 @@ def test_output_path_names_topology_runs():
 
 
 def test_judge_task_construction_and_verdict_parsing():
-    """`JudgeTask.for_attempt` peels the judge's inputs off the finished episode: the seed
+    """`JudgeTask.from_trace` (main's `Task.from_trace` convention) peels the judge's
+    inputs off the finished episode: the seed
     task's framing, its ground truth (an `answer` field, when the task carries one), and
     the solver's final message (last message of the final branch, not the transcript)."""
 
@@ -523,13 +524,12 @@ def test_judge_task_construction_and_verdict_parsing():
 
     task = AnsweredTask(AnsweredData(idx=0, prompt="what is 2+2?", answer="4"))
     solved = echoing_trace(task, "It is 4.")
-    grading = JudgeTask.for_attempt(task, solved)
+    grading = JudgeTask.from_trace(solved)
     assert "what is 2+2?" in grading.data.prompt and "It is 4." in grading.data.prompt
     assert "<reference_answer>\n4\n</reference_answer>" in grading.data.prompt
     # a task without ground truth just omits the reference section
-    bare = JudgeTask.for_attempt(
-        vf.Task(vf.TaskData(idx=0, prompt="write a poem")), solved
-    )
+    unanswered = echoing_trace(vf.Task(vf.TaskData(idx=0, prompt="write a poem")), "ok")
+    bare = JudgeTask.from_trace(unanswered)
     assert "<reference_answer>" not in bare.data.prompt
     for reply, expected in [
         ("The attempt is correct.\nSCORE: 10", 1.0),
@@ -549,7 +549,7 @@ async def test_agentic_judge_task_uploads_the_trace():
     task = vf.Task(vf.TaskData(idx=0, prompt="what is 2+2?"))
     solved = echoing_trace(task, "It is 4.")
     solved.record_reward("correct", 1.0)
-    grading = AgenticJudgeTask.for_trace(task, solved)
+    grading = AgenticJudgeTask.from_trace(solved)
     assert TRACE_PATH in grading.data.prompt
     payload = json.loads(grading.data.trace_json)
     assert payload["id"] == solved.id and payload["rewards"] == {"correct": 1.0}
