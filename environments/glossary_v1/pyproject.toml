@@ -1,6 +1,6 @@
 [project]
 name = "glossary-v1"
-version = "0.1.0"
+version = "0.2.0"
 description = "glossary-v1 — task-specific tools via a vf-native Toolset class."
 requires-python = ">=3.10"
 dependencies = ["verifiers"]

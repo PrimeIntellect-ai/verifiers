@@ -151,7 +151,7 @@ wheels = [
 
 [[package]]
 name = "alphabet-sort-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "environments/alphabet_sort_v1" }
 dependencies = [
     { name = "datasets" },
@@ -675,7 +675,7 @@ wheels = [
 
 [[package]]
 name = "code-golf-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "environments/code_golf_v1" }
 dependencies = [
     { name = "verifiers" },
@@ -686,7 +686,7 @@ requires-dist = [{ name = "verifiers" }]
 
 [[package]]
 name = "color-codeword-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "environments/color_codeword_v1" }
 dependencies = [
     { name = "pillow" },
@@ -719,7 +719,7 @@ wheels = [
 
 [[package]]
 name = "compact"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "environments/compact" }
 dependencies = [
     { name = "verifiers" },
@@ -1048,7 +1048,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/24/61/5ea1c63b139fe7530
 
 [[package]]
 name = "deepwiki-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "environments/deepwiki_v1" }
 dependencies = [
     { name = "verifiers" },
@@ -1696,7 +1696,7 @@ wheels = [
 
 [[package]]
 name = "glossary-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "environments/glossary_v1" }
 dependencies = [
     { name = "verifiers" },
@@ -1782,7 +1782,7 @@ wheels = [
 
 [[package]]
 name = "gsm8k-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "environments/gsm8k_v1" }
 dependencies = [
     { name = "datasets" },
@@ -4998,7 +4998,7 @@ wheels = [
 
 [[package]]
 name = "reverse-text-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "environments/reverse_text_v1" }
 dependencies = [
     { name = "datasets" },
@@ -5291,7 +5291,7 @@ wheels = [
 
 [[package]]
 name = "scratchpad-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "environments/scratchpad_v1" }
 dependencies = [
     { name = "verifiers" },
@@ -6598,7 +6598,7 @@ wheels = [
 
 [[package]]
 name = "wiki-search-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "environments/wiki_search_v1" }
 dependencies = [
     { name = "chromadb" },
@@ -6624,7 +6624,7 @@ wheels = [
 
 [[package]]
 name = "wordle-v1"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "environments/wordle_v1" }
 dependencies = [
     { name = "verifiers", extra = ["ta"] },

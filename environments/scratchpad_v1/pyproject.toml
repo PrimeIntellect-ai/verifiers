@@ -1,6 +1,6 @@
 [project]
 name = "scratchpad-v1"
-version = "0.1.0"
+version = "0.2.0"
 description = "scratchpad-v1 — a shared, writable tool server, per-rollout isolated via self.state."
 requires-python = ">=3.10"
 dependencies = ["verifiers"]

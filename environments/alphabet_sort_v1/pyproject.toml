@@ -1,6 +1,6 @@
 [project]
 name = "alphabet-sort-v1"
-version = "0.1.0"
+version = "0.2.0"
 description = "alphabet-sort-v1 — maintain an alphabetically sorted list of names across turns, driven by a colocated user simulator."
 requires-python = ">=3.10"
 dependencies = ["verifiers", "datasets"]

@@ -1,6 +1,6 @@
 [project]
 name = "wordle-v1"
-version = "0.1.0"
+version = "0.2.0"
 description = "Wordle — the textarena taskset pinned to Wordle-v0."
 requires-python = ">=3.10"
 dependencies = ["verifiers[ta]"]
