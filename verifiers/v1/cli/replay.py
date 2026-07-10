@@ -65,6 +65,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     traces = read_traces(source, Trace[WireTaskData, state_cls(task_cls)])
     if config.num_traces is not None:
         traces = traces[: config.num_traces]
+
     # `trace.task.data` is pure data; re-scoring with the taskset's behavior needs the
     # declared `TaskData` type — which every saved row is (one task type per taskset; its
     # `load()` constructs it). The rebuilt row feeds ONLY the behavior wrapper at score
@@ -81,8 +82,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
             # The trace records which class produced it — a mismatch means this row is
             # about to re-score under different behavior than it was generated with.
             logger.warning(
-                "replay: task %s was produced by %s but re-scores as %s (the taskset's "
-                "declared type)",
+                "replay: task %s was produced by %s but re-scores as %s (the taskset's declared type)",
                 trace.task.data.idx,
                 trace.task.type,
                 task_cls.__name__,
@@ -122,7 +122,9 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     start = time.time()
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-    states = [ReplayProgress(idx=t.task.data.idx, name=t.task.data.name) for t, _ in work]
+    states = [
+        ReplayProgress(idx=t.task.data.idx, name=t.task.data.name) for t, _ in work
+    ]
     lock = asyncio.Lock()
 
     async def rescore(trace: Trace, row: vf.TaskData, st: ReplayProgress) -> None:
@@ -174,9 +176,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
         else contextlib.nullcontext()
     )
     async with display:
-        await asyncio.gather(
-            *(rescore(t, row, s) for (t, row), s in zip(work, states))
-        )
+        await asyncio.gather(*(rescore(t, row, s) for (t, row), s in zip(work, states)))
     logger.info("replay: done in %.1fs -> %s", time.time() - start, out)
     return [t for t, _ in work]
 
@@ -205,8 +205,7 @@ def main(argv: list[str] | None = None) -> None:
     out = output_dir(config)
     if out.resolve() == source.resolve():
         raise SystemExit(
-            f"replay: --output-dir must differ from the source run ({source}); "
-            "refusing to overwrite it"
+            f"replay: --output-dir must differ from the source run ({source}); refusing to overwrite it"
         )
     level = "DEBUG" if config.verbose else "INFO"
     if config.dry_run:

@@ -230,7 +230,10 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
 
     trace: Trace = Trace[WireTaskData](
         # The bridge has no behavior class — record the base type.
-        task=TraceTask(type="Task", data=_to_wire_task(task_idx, out.get("prompt"), out.get("answer"))),
+        task=TraceTask(
+            type="Task",
+            data=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
+        ),
         rewards={"reward": float(out.get("reward") or 0.0)},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         is_completed=bool(out.get("is_completed", True)),

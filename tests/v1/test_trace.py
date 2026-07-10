@@ -20,7 +20,9 @@ class MyState(vf.State):
 
 def test_bare_trace_round_trip():
     # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
-    tr = vf.Trace(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=3, prompt="hello")))
+    tr = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=3, prompt="hello"))
+    )
     rt = vf.Trace.model_validate(tr.model_dump())
     assert rt.id == tr.id
     assert rt.task.type == "Task"

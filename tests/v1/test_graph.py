@@ -39,7 +39,9 @@ def test_routed_experts_attributed_and_aligned_across_turns():
     nodes get this turn's slice and reused nodes keep theirs, so `Branch.routed_experts`
     concatenates back to a `[tokens, layers, top_k]` array aligned 1:1 with `branch.token_ids` —
     and survives the base64 wire round-trip."""
-    trace = vf.Trace(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")))
+    trace = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x"))
+    )
     user = vf.UserMessage(content="u1")
     graph.prepare_turn(trace, [user]).commit(
         vf.Response(
@@ -91,7 +93,9 @@ def test_routed_experts_attributed_and_aligned_across_turns():
 def test_routed_experts_none_when_absent():
     """No routing captured (engine ran without `enable_return_routed_experts`) -> the branch
     reports None and the trainer simply skips replay."""
-    trace = vf.Trace(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")))
+    trace = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x"))
+    )
     graph.prepare_turn(trace, [vf.UserMessage(content="u1")]).commit(
         vf.Response(
             id="a",
@@ -200,14 +204,18 @@ def test_renderer_level_break_forks_by_token_id():
         )
 
     # Control: the prior turn re-renders to the same tokens -> stays one linear branch.
-    linear = vf.Trace(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")))
+    linear = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x"))
+    )
     first_turn(linear)
     second_turn(linear, [1, 2, 3, 4, 5, 6, 7])
     assert linear.num_branches == 1
     assert linear.branches[0].token_ids == [1, 2, 3, 4, 5, 6, 7, 8]
 
     # Break: the assistant turn retokenizes (4 -> 99), so prompt_ids diverge at that node.
-    broken = vf.Trace(task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")))
+    broken = vf.Trace(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x"))
+    )
     first_turn(broken)
     second_turn(broken, [1, 2, 3, 99, 5, 6, 7])
     assert broken.num_branches == 2

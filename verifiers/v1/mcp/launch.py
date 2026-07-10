@@ -298,7 +298,9 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     name,
                 )
             if cfg.url:  # already running remotely; nothing launched, nothing to bridge
-                servers[name] = SharedToolServer(url=cfg.url, local=False, external=True)
+                servers[name] = SharedToolServer(
+                    url=cfg.url, local=False, external=True
+                )
             else:
                 url = await stack.enter_async_context(
                     serve(toolset, harness_is_local=harness_is_local)

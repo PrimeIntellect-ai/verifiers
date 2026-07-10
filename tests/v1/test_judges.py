@@ -36,7 +36,8 @@ def make_trace(
 ) -> vf.Trace:
     return vf.Trace(
         task=vf.TraceTask(
-            type="Task", data=task_cls(idx=0, prompt="Capital of France?", answer=answer)
+            type="Task",
+            data=task_cls(idx=0, prompt="Capital of France?", answer=answer),
         ),
         nodes=[
             MessageNode(
@@ -456,7 +457,9 @@ async def test_error_attribution(monkeypatch, tmp_path):
     # judge failure: unparseable verdict -> the rollout errors, no reward recorded
     trace = make_trace()
     with pytest.raises(vf.TaskError, match="no yes/no verdict"):
-        await JudgedTask(trace.task.data, taskset.config.task).score(trace, runtime=None)
+        await JudgedTask(trace.task.data, taskset.config.task).score(
+            trace, runtime=None
+        )
     assert "reference" not in trace.rewards
     assert len(trace.info["judge"]) == 1  # the billed call is still recorded
 
@@ -535,10 +538,7 @@ async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch):
         await judge.score(trace.task.data, trace)
 
 
-CHOICES_TOML = (
-    '[[criteria]]\nname = "depth"\ntext = "How thorough?"\n'
-    'choices = ["none", "partial", "good"]\n'
-)
+CHOICES_TOML = '[[criteria]]\nname = "depth"\ntext = "How thorough?"\nchoices = ["none", "partial", "good"]\n'
 
 
 async def test_rubric_choices_normalize(tmp_path, monkeypatch):
