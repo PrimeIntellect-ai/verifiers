@@ -5,7 +5,7 @@ with one `@vf.tool` method whose placement is CLI-tunable (`--taskset.task.tools
 `--taskset.task.tools.runtime.type`): it runs colocated in the harness's runtime or in its own
 runtime, and the harness must reach it wherever it lives. The tool stamps its output with a token the prompt never reveals, so the reward is
 1.0 only if the model actually called the tool — trivial when the infra works, impossible when
-it doesn't. The tool is task-agnostic, so it works in `shared` placement too.
+it doesn't.
 """
 
 import verifiers.v1 as vf
