@@ -159,9 +159,20 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                             trace.task.data.idx,
                             exc_info=True,
                         )
-                # Harness and direct-write metrics have no attributable producer.
+                # Harness and direct-write metrics have no attributable producer, so
+                # restore them wholesale — except keys recorded by judges no longer
+                # attached, which stay dropped like their rewards (see restore_offline).
+                detached = {
+                    key
+                    for name, keys in (
+                        trace.info.get("offline_keys", {}).get("judges", {}).items()
+                    )
+                    if name not in {j.reward_name for j in task.plugged_judges()}
+                    for key in keys
+                }
                 for name, value in prior_metrics.items():
-                    trace.metrics.setdefault(name, value)
+                    if name not in detached:
+                        trace.metrics.setdefault(name, value)
                 st.end = time.time()
         if not config.rich:
             logger.info(

@@ -29,7 +29,7 @@ from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Error, Trace
+from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -205,7 +205,10 @@ async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
 
 
 async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
-    trace = Trace(task=task.data, state=state_cls(type(task))())
+    trace = Trace(
+        task=TraceTask(type=type(task).__name__, data=task.data),
+        state=state_cls(type(task))(),
+    )
     debug = {
         "task": task_info(task),
         "action": "command" if config.command is not None else "script",

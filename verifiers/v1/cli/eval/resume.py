@@ -84,7 +84,7 @@ def load(
                     row = from_json(line)
                 except ValueError:
                     row = json.loads(line)
-                idx = row["task"]["idx"]
+                idx = row["task"]["data"]["idx"]
                 if (
                     idx in selected
                     and not row.get("errors")

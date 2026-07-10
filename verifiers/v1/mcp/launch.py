@@ -289,6 +289,11 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
         for toolset in toolsets:
             cfg = toolset.config
             name = toolset.server_name
+            if name in servers:
+                raise ToolsetError(
+                    f"duplicate shared tool server name '{name}' in Taskset.tools — "
+                    f"give one a distinct TOOL_PREFIX"
+                )
             if type(toolset).setup_task is not ServerBase.setup_task:
                 logger.warning(
                     "shared server %r overrides `setup_task`, but `setup_task` is NEVER "

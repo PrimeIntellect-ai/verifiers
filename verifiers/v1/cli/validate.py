@@ -25,7 +25,7 @@ from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import Trace, TraceTask
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,10 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
     )
     valid, exc = False, None
     try:
-        trace = Trace(task=task.data, state=state_cls(type(task))())
+        trace = Trace(
+            task=TraceTask(type=type(task).__name__, data=task.data),
+            state=state_cls(type(task))(),
+        )
         await runtime.start()
         await asyncio.wait_for(
             invoke(task.setup, {"trace": trace, "runtime": runtime}),
@@ -125,7 +128,10 @@ async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
     )
     valid, exc = False, None
     try:
-        trace = Trace(task=task.data, state=state_cls(type(task))())
+        trace = Trace(
+            task=TraceTask(type=type(task).__name__, data=task.data),
+            state=state_cls(type(task))(),
+        )
         await runtime.start()
         await asyncio.wait_for(
             invoke(task.setup, {"trace": trace, "runtime": runtime}),
