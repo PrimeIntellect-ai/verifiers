@@ -34,7 +34,7 @@ from verifiers.v1.decorators import invoke
 from verifiers.v1.env import resolve_runtime_config
 from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task
+from verifiers.v1.task import Task, task_class_path
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.logging import setup_logging
 
@@ -106,7 +106,11 @@ async def _run_gold(task: Task, config: ValidateConfig) -> ResultRow:
     )
     valid, exc = False, None
     try:
-        trace = Trace(task=task.data, state=state_cls(type(task))())
+        trace = Trace(
+            task=task.data,
+            task_class=task_class_path(type(task)),
+            state=state_cls(type(task))(),
+        )
         await runtime.start()
         await asyncio.wait_for(
             invoke(task.setup, {"trace": trace, "runtime": runtime}),
@@ -139,7 +143,11 @@ async def _run_setup(task: Task, config: ValidateConfig) -> ResultRow:
     )
     valid, exc = False, None
     try:
-        trace = Trace(task=task.data, state=state_cls(type(task))())
+        trace = Trace(
+            task=task.data,
+            task_class=task_class_path(type(task)),
+            state=state_cls(type(task))(),
+        )
         await runtime.start()
         await asyncio.wait_for(
             invoke(task.setup, {"trace": trace, "runtime": runtime}),

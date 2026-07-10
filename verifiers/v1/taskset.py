@@ -2,22 +2,22 @@
 
 A `Taskset` is the data half of an environment: config in, tasks out. `load()` — the one
 subclass hook, and the one method consumers call — builds each row's `TaskData` and wraps
-it in the task type with the config's task-facing subtree:
+it in one of the taskset's declared task types with its task-facing config:
 
     def load(self) -> list[MyTask]:
         return [MyTask(MyData(idx=i, ...), self.config.task) for i in ...]
 
-Load-time knobs (dataset, split, seed) live on the taskset config; the task-facing knobs
-under its `task` subtree (`TasksetConfig.task`, a `TaskConfig`, everything under
-`--taskset.task.*`); an eval-wide shared tool server is declared on `tools` with its knobs
+Load-time knobs (dataset, split, seed) live on the taskset config. A single-type taskset
+usually narrows `TasksetConfig.task`; a multi-type taskset declares one explicit config
+field per task type. An eval-wide shared tool server is declared on `tools` with its knobs
 at the taskset level (`--taskset.tools.*`). All per-task behavior — runtime prep, tools,
 user simulation, `@reward`/`@metric` scoring — lives on the `Task` (see
 `verifiers.v1.task`).
 
 The class stays generic over its task and config types (`Taskset[TaskT, TasksetConfigT]`)
-so the loaders can read them: `taskset_config_type` narrows `--taskset.*` CLI/toml flags
-to the real config, and `task_type` types the wire trace — one task type per taskset, so
-replay can rebuild every saved row as the declared type's data and re-wrap it.
+so the loaders can read them: `TaskT` may be a union (`ProposerTask | SolvedTask`),
+`taskset_config_type` narrows `--taskset.*` CLI/toml flags to the real config, and
+`task_types` supplies the closed set replay may resolve from the wire.
 """
 
 from __future__ import annotations
@@ -28,7 +28,14 @@ from pydantic import SerializeAsAny
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
-from verifiers.v1.task import Task, TaskConfig, TaskT, resolve_server_config
+from verifiers.v1.errors import TaskError
+from verifiers.v1.task import (
+    Task,
+    TaskConfig,
+    TaskT,
+    resolve_server_config,
+    task_config_cls,
+)
 from verifiers.v1.types import ID
 from verifiers.v1.utils.install import env_name
 
@@ -37,19 +44,17 @@ if TYPE_CHECKING:
 
 
 class TasksetConfig(BaseConfig):
-    """Base taskset config: load-time knobs (dataset, split, seed, ...) plus the task's own
-    config under `task`. Subclass to add task-generation knobs; narrow `task` to your
-    `TaskConfig` subclass when the task reads knobs (`task: MyTaskConfig = MyTaskConfig()`),
-    so `--taskset.task.*` flags validate against it. `load()` passes `config.task` to every
-    task it constructs."""
+    """Base taskset config: load-time knobs plus task-facing configs. A single-type
+    taskset normally narrows `task`; a multi-type taskset adds one explicitly typed field
+    per task type (for example `proposer` and `solved`)."""
 
     id: ID = ""
     """The taskset id, which selects this taskset: a local package, or an
     `org/name[@version]` package installed on demand from the Environments Hub (see
     `ID`). Set via `--taskset.id`."""
     task: SerializeAsAny[TaskConfig] = TaskConfig()
-    """The task-facing config, passed to every constructed task (`Task.config`): server
-    placement, judges, scoring knobs. Everything under `--taskset.task.*`."""
+    """The conventional task-facing config for a single-type taskset: server placement,
+    judges, scoring knobs. Multi-type tasksets use explicit sibling fields instead."""
 
     @property
     def name(self) -> str:
@@ -61,10 +66,10 @@ TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetC
 
 
 class Taskset(Generic[TaskT, TasksetConfigT]):
-    """Generic over its task and config types, so `self.config` and `load` are fully
-    typed (and the loaders can narrow CLI flags / type the wire trace off the generics).
-    Subclass: implement `load`, constructing each task from its row's data and the
-    config's task subtree (`MyTask(data, self.config.task)`)."""
+    """Generic over its task types and config, so `self.config` and `load` are fully
+    typed. `TaskT` may be a concrete task or a union of every task this factory owns.
+    Subclass: implement `load`; additional taskset-specific factory methods may construct
+    later task types from finished traces."""
 
     tools: ClassVar[tuple[type[Toolset], ...]] = ()
     """TASKSET-scoped (shared) tool server classes: each is launched ONCE per eval by the
@@ -81,6 +86,50 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
     def load(self) -> list[TaskT]:
         raise NotImplementedError
 
+    @classmethod
+    def task_types(cls) -> tuple[type[Task], ...]:
+        """Concrete task types declared by `Taskset[TaskT, ConfigT]`, including unions."""
+        for klass in cls.__mro__:
+            for orig in getattr(klass, "__orig_bases__", ()):
+                if get_origin(orig) is Taskset:
+                    task_arg = get_args(orig)[0]
+                    declared = tuple(
+                        task
+                        for task in get_args(task_arg) or (task_arg,)
+                        if isinstance(task, type) and issubclass(task, Task)
+                    )
+                    if declared:
+                        return declared
+        return (Task,)
+
+    def task_config(self, task_cls: type[Task]) -> TaskConfig:
+        """Resolve a task type's config from an explicitly typed taskset-config field.
+
+        Exact type wins, then a unique isinstance match. Multi-type tasksets use a
+        distinct `TaskConfig` subclass and field for each task type.
+        """
+        if task_cls not in self.task_types():
+            raise TaskError(
+                f"{task_cls.__name__} is not declared by {type(self).__name__}"
+            )
+        config_cls = task_config_cls(task_cls)
+        values = {
+            name: getattr(self.config, name) for name in type(self.config).model_fields
+        }
+        matched = [name for name, value in values.items() if type(value) is config_cls]
+        if not matched:
+            matched = [
+                name for name, value in values.items() if isinstance(value, config_cls)
+            ]
+        if len(matched) == 1:
+            return values[matched[0]]
+        detail = f"matching fields {matched}" if matched else "no matching field"
+        raise TaskError(
+            f"{type(self).__name__}: {detail} for {task_cls.__name__}'s "
+            f"{config_cls.__name__}; declare exactly one explicit field of that type and "
+            "use a distinct TaskConfig subclass per task type"
+        )
+
     def server_config(self, server_cls: type) -> BaseConfig:
         """The config a `tools` entry is built with, resolved off `self.config` (the
         taskset config; see `resolve_server_config`). Override to pair explicitly."""
@@ -95,14 +144,11 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
 
     @classmethod
     def task_type(cls) -> type[Task]:
-        """The declared `TaskT`, read off the `Taskset[TaskT, TasksetConfigT]` generic
-        across the MRO (most-derived specialization wins, so a thin wrapper re-binding only
-        the config inherits its parent's task type). Falls back to the base `Task` when no
-        subclass is given."""
-        for klass in cls.__mro__:
-            for orig in getattr(klass, "__orig_bases__", ()):
-                if get_origin(orig) is Taskset:
-                    for arg in get_args(orig):
-                        if isinstance(arg, type) and issubclass(arg, Task):
-                            return arg
-        return Task
+        """The sole declared task type; fail loudly for a multi-type taskset."""
+        declared = cls.task_types()
+        if len(declared) != 1:
+            raise TypeError(
+                f"{cls.__name__} declares multiple task types "
+                f"{[task.__name__ for task in declared]}; use task_types()"
+            )
+        return declared[0]

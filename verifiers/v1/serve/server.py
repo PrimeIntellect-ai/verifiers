@@ -3,7 +3,7 @@
 A ZMQ ROUTER front end (msgpack frames) over a v1 `Environment`. The server
 owns the environment — taskset, harness, runtime — and is the only process that ever
 loads it. A caller (e.g. the orchestrator) stays env-agnostic: it asks `info` for
-the task count + whether group scoring is needed, then `run_rollout` / `run_group`
+the task count + which task positions need group scoring, then `run_rollout` / `run_group`
 by task index. Per request the server resolves a `Client` from the request's
 `client` config (cached, so a renderer's tokenizer is built once), wraps it in a
 `ModelContext`, and runs `env.episode(task, ctx, n).run()`, returning each
@@ -56,11 +56,12 @@ class EnvServer:
         self.env = Environment(config)
         # Load tasks once; the index range is fixed for the server's lifetime.
         self.tasks = self.env.taskset.load()
-        # One task type per taskset (`Taskset.tasks` enforces it), so group scoring is a
-        # run-wide property.
-        self.requires_group_scoring = bool(self.tasks) and bool(
-            discover_decorated(self.tasks[0], "group_reward")
-        )
+        self.task_data_idxs = [task.data.idx for task in self.tasks]
+        self.group_idxs = [
+            idx
+            for idx, task in enumerate(self.tasks)
+            if discover_decorated(task, "group_reward")
+        ]
         self._clients: dict[
             tuple[str, str], Client
         ] = {}  # (client_config, model) -> Client
@@ -145,7 +146,8 @@ class EnvServer:
             elif route == "info":
                 response = InfoResponse(
                     num_tasks=len(self.tasks),
-                    requires_group_scoring=self.requires_group_scoring,
+                    task_data_idxs=self.task_data_idxs,
+                    group_idxs=self.group_idxs,
                 )
             elif route == "run_rollout":
                 response = await self._run_rollout(
@@ -181,7 +183,7 @@ class EnvServer:
             self.taskset_id,
             self.address,
             len(self.tasks),
-            self.requires_group_scoring,
+            bool(self.group_idxs),
         )
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)

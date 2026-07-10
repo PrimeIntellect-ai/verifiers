@@ -64,6 +64,7 @@ from verifiers.v1.loaders import (
     load_judge,
     load_taskset,
     task_type,
+    task_types,
     taskset_config_type,
 )
 from verifiers.v1.scoring import (
@@ -219,6 +220,7 @@ __all__ = [
     "load_harness",
     "load_judge",
     "task_type",
+    "task_types",
     "taskset_config_type",
     "harness_config_type",
     "judge_config_type",

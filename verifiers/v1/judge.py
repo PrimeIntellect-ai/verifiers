@@ -234,7 +234,7 @@ class Judge(Generic[ParsedT, ConfigT]):
     `prompt` template and use the defaults — then call `evaluate(**fields)`. Set `schema` to opt
     into structured outputs. Generic over the verdict and (optionally) the config type —
     `Judge[bool]` for a code-level judge, `Judge[float, MyJudgeConfig]` to also narrow
-    `self.config` (which is how a plugged judge declares its config for `--taskset.task.judges`
+    `self.config` (which is how a plugged judge declares its config for `TaskConfig.judges`
     narrowing; see `judge_config_cls`). A pluggable judge additionally implements `score`.
     """
 
@@ -288,7 +288,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         via `TaskConfig.judges`; code-level judges just call `evaluate` from a `@reward`."""
         raise NotImplementedError(
             f"{type(self).__name__} implements no `score`, so it can't be plugged via "
-            "`taskset.task.judges`; implement `score` (see verifiers.v1.judges for examples) or "
+            "`TaskConfig.judges`; implement `score` (see verifiers.v1.judges for examples) or "
             "call it from a task `@reward` instead."
         )
 

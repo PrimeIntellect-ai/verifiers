@@ -17,9 +17,8 @@ a `TaskData` plus a `TaskConfig`, both plain constructor arguments:
 
 Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]` (all three
 default) — hooks and signals read the row off `self.data` and the knobs off
-`self.config`. Because behavior lives on the task class, verification never branches
-on a type field; a taskset yields one task type (its `load` constructs it), and
-instances differ per row through their data.
+`self.config`. A taskset declares every task type it can construct; each trace records
+the concrete behavior class so replay can re-attach the right one.
 
 The task is the single judgement authority, scored at two granularities (execution
 lives in the Rollout — per-rollout — and the Episode — group — which call these):
@@ -33,10 +32,10 @@ instance), so hooks and scoring methods must not stash per-rollout state on `sel
 that lives on the trace (`trace.state`, typed via the `Task[..., MyState, ...]`
 param).
 
-On the wire only the data travels: a saved `trace.task` reads back as `WireTaskData`
-(extra fields preserved) without importing the taskset; a consumer that re-scores
-(e.g. `replay`) rebuilds the declared `TaskData` type and wraps it in the declared
-`Task` — one task type per taskset.
+On the wire the row travels as data plus `Trace.task_class`: a saved `trace.task` reads
+back as `WireTaskData` (extra fields preserved) without importing the taskset; a consumer
+that re-scores (e.g. `replay`) resolves the recorded class within the taskset's declared
+task types, rebuilds its `TaskData`, and wraps it in that behavior.
 """
 
 from __future__ import annotations
@@ -123,7 +122,8 @@ class TaskConfig(BaseConfig):
     into any taskset/harness pair from the eval config alone, no taskset code. `Task.score`
     resolves and runs them after the task's `@reward`s; each entry records its verdict in
     `trace.rewards` under its `name` with its `weight` (see `JudgeConfig`). Set via
-    `--taskset.task.judges`."""
+    the matching task-config field (`--taskset.task.judges` by convention for a
+    single-type taskset)."""
 
     @model_validator(mode="before")
     @classmethod
@@ -154,7 +154,8 @@ class TaskData(StrictBaseModel):
     model_config = ConfigDict(frozen=True)
 
     idx: int
-    """Stable integer index of this example within its taskset."""
+    """Stable integer index of this example within its taskset. It must be unique among
+    the tasks returned by one `Taskset.load()` call."""
     name: str | None = None
     """Optional human-readable task name/label (for display/filtering)."""
     description: str | None = None
@@ -201,7 +202,7 @@ class WireTaskData(TaskData):
     `Trace` be typed on the wire — `Trace[WireTaskData]` — without importing the taskset,
     since the real `TaskData` subclass's extra fields land in `model_extra` instead of
     being rejected. A caller that re-scores rebuilds the real type via
-    `task_data_cls(task_type(taskset_id))` first."""
+    the trace's recorded class within `task_types(taskset_id)` first."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -280,10 +281,10 @@ class Task(Generic[DataT, StateT, ConfigT]):
         MyTask(data, config=MyTaskConfig())  # or injected
         MyTask.from_trace(trace)             # opt-in: derived from a finished rollout
 
-    A taskset's `load()` constructs one per row with the eval's `TasksetConfig.task`.
-    Hooks and signals read the row off `self.data` and the knobs off `self.config`; one
-    instance is shared across a group's rollouts, so per-rollout state lives on
-    `trace.state`, never on `self`."""
+    A taskset constructs each task with its matching task-config field (`task` by convention
+    for a single-type taskset). Hooks and signals read the row off `self.data` and the knobs
+    off `self.config`; one instance is shared across a group's rollouts, so per-rollout
+    state lives on `trace.state`, never on `self`."""
 
     NEEDS_CONTAINER: ClassVar[bool] = False
     """Whether this task only runs in a container runtime (docker/prime). When True the
@@ -338,8 +339,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     def plugged_judges(self) -> list[Judge]:
         """The runtime `Judge` objects for this task's plugged judges — resolved from
-        `config.judges` alone (`--taskset.task.judges`; judges are config, never row
-        data). Built fresh per call — a judge is a cheap value (its HTTP client is
+        `config.judges` alone (the matching task-config field; judges are config, never
+        row data). Built fresh per call — a judge is a cheap value (its HTTP client is
         opened per call inside `Judge.complete` and closed when it returns), so nothing
         is shared or cached."""
         from verifiers.v1.loaders import load_judge
@@ -622,6 +623,26 @@ class Task(Generic[DataT, StateT, ConfigT]):
             for trace in traces:
                 if isinstance(trace.info, dict):
                     trace.info.setdefault("offline_keys", {})["group"] = group_keys
+
+
+def task_class_path(cls: type[Task]) -> str:
+    """Stable wire identity for a concrete task behavior class."""
+    return f"{cls.__module__}:{cls.__qualname__}"
+
+
+def resolve_task_class(
+    declared: tuple[type[Task], ...], path: str | None
+) -> type[Task]:
+    """Resolve a wire identity strictly within a taskset's declared task types."""
+    if path is not None:
+        for cls in declared:
+            if task_class_path(cls) == path:
+                return cls
+    if path is None and len(declared) == 1:
+        return declared[0]
+    raise ValueError(
+        f"task class {path!r} is not one of {[task_class_path(cls) for cls in declared]}"
+    )
 
 
 TaskT = TypeVar("TaskT", bound=Task)

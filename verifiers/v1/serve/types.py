@@ -2,7 +2,7 @@
 
 from typing import ClassVar
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, Field, field_serializer
 
 from verifiers.v1.clients.config import ClientConfig
 from verifiers.v1.task import WireTaskData
@@ -38,10 +38,12 @@ class InfoRequest(BaseRequest):
 class InfoResponse(BaseResponse):
     num_tasks: int = 0
     """Number of tasks in the taskset — the index range the caller samples from."""
-    requires_group_scoring: bool = False
-    """Whether the taskset's tasks define `@group_reward`s (one task type per taskset) —
-    the caller then runs each task via `run_group` (a whole episode per request) and
-    plans its resume whole-group; otherwise everything goes per-rollout."""
+    task_data_idxs: list[int] = Field(default_factory=list)
+    """`TaskData.idx` for each task position, used to map server requests to persisted
+    traces when the stable data index differs from the task's list position."""
+    group_idxs: list[int] = Field(default_factory=list)
+    """Task positions that define `@group_reward`s. The caller runs only these through
+    `run_group` and plans their resume whole-group; other tasks run per rollout."""
 
 
 class RunRolloutRequest(BaseRequest):
@@ -56,7 +58,7 @@ class RunRolloutResponse(BaseResponse):
     trace: Trace[WireTaskData] | None = None
     """A typed `Trace` with a non-strict `WireTaskData` (taskset-specific task fields ride in
     `model_extra`), so the server needn't assume the caller imports the taskset. A caller
-    that *does* import it upgrades via `Trace[task_type(taskset_id)].model_validate(...)`."""
+    that imports it resolves `trace.task_class` within `task_types(taskset_id)`."""
 
     @field_serializer("trace")
     def _ser_trace(self, trace: "Trace[WireTaskData] | None") -> dict | None:

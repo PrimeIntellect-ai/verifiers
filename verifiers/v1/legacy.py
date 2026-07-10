@@ -307,7 +307,10 @@ class LegacyEnvServer(EnvServer):
         except ValueError:
             self.dataset = self.env.get_eval_dataset()
         self.tasks = self.dataset  # `len(self.tasks)` drives the `info` response
-        self.requires_group_scoring = self.env.requires_group_rollouts
+        self.task_data_idxs = list(range(len(self.tasks)))
+        self.group_idxs = (
+            list(range(len(self.tasks))) if self.env.requires_group_rollouts else []
+        )
         self._clients: dict[tuple[str, str], Any] = {}
 
         self.ctx = zmq.asyncio.Context()

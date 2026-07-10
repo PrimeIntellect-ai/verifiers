@@ -9,7 +9,7 @@ Execution lives one level down: an `Episode` runs `n` `Rollout`s of a task and s
 runs one trajectory. The task's `@reward`/`@metric` get the rollout's runtime
 (read/exec inside it), so a task scores correctly under any harness; `@group_reward`s
 compare a task's rollouts. Harness capability checks (tools, user sim, container) read
-the class-level declarations (`Task.tools` / `Task.user`) — one task class per taskset.
+each task's concrete class-level declarations (`Task.tools` / `Task.user`).
 """
 
 import contextlib

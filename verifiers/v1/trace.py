@@ -223,6 +223,9 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """Unique id for this rollout, auto-generated per trace."""
     task: DataT
     """The (immutable) task being solved — fully typed, flows into scoring."""
+    task_class: str | None = None
+    """Concrete task behavior class (`module:qualname`). Rollouts stamp it so replay can
+    resolve each row within a multi-type taskset; None only for manually built/legacy traces."""
     runtime: RuntimeInfo | None = None
     """Where the rollout ran: the runtime's full config plus the provisioned resource's `id`
     (subprocess workdir / docker container id / prime or modal sandbox id). The rollout assigns

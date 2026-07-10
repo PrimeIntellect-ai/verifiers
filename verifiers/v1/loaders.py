@@ -12,8 +12,8 @@ with verifiers under `verifiers/v1/{harnesses,tasksets,judges}`; custom ones liv
 
 The taskset/harness class carries its types as generic args — `Taskset[TaskT, ConfigT]`,
 `Harness[ConfigT]` — which the CLI reads to narrow the plugin's config for `--taskset.*` /
-`--harness.*` flags (`taskset_config_type` / `harness_config_type`) and to type the wire trace
-(`task_type`).
+`--harness.*` flags (`taskset_config_type` / `harness_config_type`) and to resolve a wire
+trace's concrete behavior within the taskset's declared `task_types`.
 """
 
 import importlib
@@ -193,8 +193,10 @@ def judge_config_type(judge_id: str) -> type[JudgeConfig]:
 
 
 def task_type(taskset_id: str) -> type[Task]:
-    """The taskset's `Task` subclass (`Taskset.task_type`) — no data is loaded, so a caller
-    that imports the taskset can cheaply build a typed `Trace[TaskT]` for the otherwise
-    taskset-specific (loose dict) wire trace. Falls back to the base `Task` when no
-    subclass is given."""
+    """The taskset's sole task type; fail for a taskset that declares a union."""
     return taskset_class(taskset_id).task_type()
+
+
+def task_types(taskset_id: str) -> tuple[type[Task], ...]:
+    """Every concrete task type declared by a taskset, without loading its data."""
+    return taskset_class(taskset_id).task_types()

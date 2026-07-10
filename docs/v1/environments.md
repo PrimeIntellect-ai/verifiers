@@ -24,8 +24,8 @@ A task is split into data and behavior. `vf.TaskData` is one row's pure data —
 shape saved on every trace; subclass it to add typed fields (the reference answer, ground
 truths). `vf.Task` is the behavior — `@vf.reward` / `@vf.metric` scoring methods, lifecycle
 hooks, and tool/user declarations — reading the row off `self.data`. The `vf.Taskset` is
-the loader: its `load()` builds each row's data and constructs the task around it (one
-task type per taskset).
+the loader and factory: `Taskset[...]` declares every task type it owns, and `load()`
+constructs its initial tasks.
 
 ```python
 import verifiers.v1 as vf
@@ -90,8 +90,9 @@ Common usages for `vf.TasksetConfig` are **load-time** settings: splits (e.g., t
 dataset names, sample counts, rng seeds.
 
 Knobs the *task itself* reads — scoring parameters, judge endpoints, server placement — go
-on a `vf.TaskConfig`, nested on the taskset config under `task` and passed to every
-constructed task. The task reads them off `self.config`, typed by parameterizing the task:
+on a `vf.TaskConfig`, nested on the taskset config under `task` for a single task type and
+passed to every constructed task. The task reads them off `self.config`, typed by
+parameterizing the task:
 
 ```python
 class AdditionTaskConfig(vf.TaskConfig):
@@ -110,13 +111,36 @@ class AdditionConfig(vf.TasksetConfig):
 
 The boundary: per-row data (the question, the reference answer) lives on `TaskData` fields;
 values uniform across the taskset live on the config — load-time ones directly on the
-`TasksetConfig`, task-facing ones under `task`. A task can also be constructed directly —
+`TasksetConfig`, task-facing ones under `task` for a single type or under explicit per-type
+fields for a task family. A task can also be constructed directly —
 `AdditionTask(data, config=AdditionTaskConfig(...))` — and an omitted config defaults to
 the declared type's defaults, so a standalone task works out of the box. Overriding
 `from_trace(trace)` (not implemented by default) opts a task into being derived from a
-finished rollout's bare `Trace` — how a multi-agent step spawns a follow-up task. Only the data rides the wire:
-`trace.task` is the `TaskData`, and behavior re-attaches by constructing the task class
-around it.
+finished rollout's bare `Trace` — how a multi-agent step spawns a follow-up task. The task
+data rides the wire as `trace.task`; `trace.task_class` records which declared behavior to
+re-attach during replay.
+
+A task family uses a distinct config type and explicit field for each task type. `load()`
+may return only seed tasks; a taskset-specific factory can construct a later type when the
+orchestrator has the preceding trace:
+
+```python
+class ProposerConfig(vf.TaskConfig): ...
+class SolvedConfig(vf.TaskConfig): ...
+
+class WorkflowConfig(vf.TasksetConfig):
+    proposer: ProposerConfig = ProposerConfig()
+    solved: SolvedConfig = SolvedConfig()
+
+class WorkflowTaskset(
+    vf.Taskset[ProposerTask | SolvedTask, WorkflowConfig]
+):
+    def load(self) -> list[ProposerTask | SolvedTask]:
+        return [ProposerTask(row, self.config.proposer) for row in load_rows()]
+
+    def solved_task(self, trace: vf.Trace) -> SolvedTask:
+        return SolvedTask.from_trace(trace, config=self.config.solved)
+```
 
 ## Adding Tools
 
@@ -222,8 +246,9 @@ Sampling knobs live under `taskset.task.judge.sampling` — e.g.
 `taskset.task.judge.sampling.max_tokens`.
 
 Judges can also be plugged **from config alone** — no judge-calling code: the base
-`TaskConfig.judges` list (`--taskset.task.judges`) plugs judge plugins (built-ins like
-`reference` / `rubric`, or hub packages) into every task, and `Task.score` resolves and
-runs them after the task's own `@reward`s. Judges are config, never row data — the run's
+`TaskConfig.judges` list on the corresponding task-config field (for example,
+`--taskset.task.judges` or `--taskset.proposer.judges`) plugs judge plugins (built-ins like
+`reference` / `rubric`, or hub packages) into each task using that config, and `Task.score`
+resolves and runs them after the task's own `@reward`s. Judges are config, never row data — the run's
 `config.toml` records what judged it, and `replay`'s layered config re-runs (or re-tunes)
 exactly those judges.

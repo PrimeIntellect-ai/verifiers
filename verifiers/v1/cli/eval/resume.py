@@ -6,9 +6,8 @@ brings the good saved rollouts back into memory and re-runs only what's still ow
 *missing* rollouts (never written — the run was interrupted) and the *errored* ones (written
 with an error; dropped and redone). The loaded traces rejoin the run everywhere — counted,
 displayed, pushed, and printed alongside this session's — so a resumed run picks up exactly
-where the interrupted one stopped. A group-scored taskset is resumed a whole task at a time
-(its rollouts are scored together), so any task that isn't fully complete is redone from
-scratch.
+where the interrupted one stopped. A group-scored task is resumed whole (its rollouts are
+scored together), so any such task that isn't fully complete is redone from scratch.
 """
 
 import json
@@ -68,12 +67,15 @@ class Finished(Rollout):
 
 
 def load(
-    resume_dir: Path, selected_idxs: list[int], num_rollouts: int, group: bool
+    resume_dir: Path,
+    selected_idxs: list[int],
+    num_rollouts: int,
+    group_idxs: set[int],
 ) -> tuple[list[Trace], dict[int, int]]:
     """Load the good saved rollouts back into memory as finished traces and diff them against
     the run's target (`num_rollouts` per selected task): returns (the kept traces, rollouts
-    owed per task idx). An errored trace is dropped and re-run; a group-scored task is kept
-    only if fully complete, else its whole group is redone. Rewrites `traces.jsonl` to just
+    owed per task idx). An errored trace is dropped and re-run; each group-scored task is
+    kept only if fully complete, else its whole group is redone. Rewrites `traces.jsonl` to just
     the kept rows — verbatim, via a temp file + atomic rename, so an interrupted resume can't
     corrupt the prior good results — and the resumed rollouts then append. `WireTrace` reads
     any taskset's saved traces without importing it."""
@@ -100,7 +102,7 @@ def load(
     owed: dict[int, int] = {}
     for idx in selected_idxs:
         rows = good.get(idx, [])
-        if group and len(rows) < num_rollouts:
+        if idx in group_idxs and len(rows) < num_rollouts:
             owed[idx] = num_rollouts  # re-run the whole group; keep none of it
             continue
         keep.extend(rows)
