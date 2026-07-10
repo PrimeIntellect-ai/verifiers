@@ -6,7 +6,7 @@ The asymmetric-capability shape, one self-contained package:
     The proposer must invent a question that a short deterministic script can *solve*, but
     which reads as a natural-language puzzle a human (or a tool-less solver) must *reason*
     through. It commits the proposal by calling the `submit_question` tool.
-  - **Tasks carry their behavior**: `ProposeTask` exposes the submit `Toolset` (`load_tools`),
+  - **Tasks carry their behavior**: `ProposeTask` declares the submit `Toolset` (`tools`),
     peels the committed submission off `trace.state` into the persisted `trace.info` in
     `finalize`, and judges its own episode (`well_formed`: the submission exists AND its
     ground-truth code runs cleanly on the given input). `SolverTask` carries that ground
@@ -130,7 +130,7 @@ class ProposeTask(vf.Task[vf.TaskData, SubmissionState]):
 
     async def finalize(self, trace: vf.Trace) -> None:
         """Copy the committed submission from the transient `trace.state` into the persisted
-        `trace.info` — readable by `go` in-process and by anyone reading `results.jsonl`."""
+        `trace.info` — readable by `go` in-process and by anyone reading `traces.jsonl`."""
         if trace.state.submitted:
             trace.info["submission"] = {
                 "code": trace.state.code,
@@ -170,6 +170,21 @@ class SolverData(vf.TaskData):
 class SolverTask(vf.Task[SolverData]):
     """A generated puzzle — ground truth (`code` + `input`) and verifier in one typed object,
     minted in `go`."""
+
+    @classmethod
+    def from_trace(cls, trace: vf.Trace) -> "SolverTask":
+        """Mint the solver's puzzle from a finished proposer episode (the
+        `Task.from_trace` convention): question, ground-truth code, and input all come
+        off the trace — what the proposer's `finalize` peeled into `info["submission"]`."""
+        submission = trace.info["submission"]
+        return cls(
+            SolverData(
+                idx=trace.task.data.idx,
+                prompt=SOLVE_PROMPT.format(question=submission["question"]),
+                code=submission["code"],
+                input=submission["input"],
+            )
+        )
 
     @vf.reward
     async def correct(self, trace: vf.Trace, runtime: vf.Runtime) -> float:
@@ -213,14 +228,7 @@ class ProposerSolverTopology(vf.Topology[ProposerSolverConfig]):
         input = submission.get("input")
         if not question or not code or input is None:
             return  # malformed submission — nothing solvable
-        derived = SolverTask(
-            SolverData(
-                idx=task.data.idx,
-                prompt=SOLVE_PROMPT.format(question=question),
-                code=code,
-                input=input,
-            )
-        )
+        derived = SolverTask.from_trace(proposer)
         solver = run.agent("solver")
         await asyncio.gather(
             *(

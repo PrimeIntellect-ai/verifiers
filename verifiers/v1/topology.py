@@ -224,7 +224,7 @@ class AgentGraph(StrictBaseModel):
     always finishes before a task is derived from it, so the list is topologically sorted.
 
     The trace's sibling, one level up: what a trace is to an episode, the graph is to an
-    instance. A topology run persists one graph per line (`results.jsonl`), traces nested —
+    instance. A topology run persists one graph per line (`traces.jsonl`), traces nested —
     and since each trace carries its own links, the graph is also *recoverable* from a flat
     trace dump (one instance = one connected component)."""
 
@@ -261,7 +261,7 @@ class AgentGraph(StrictBaseModel):
         return [trace for trace in self.traces if trace.agent == agent]
 
     def to_record(self) -> dict:
-        """A JSON-serializable record of this instance for `results.jsonl` — each nested
+        """A JSON-serializable record of this instance for `traces.jsonl` — each nested
         trace dumped like `Trace.to_record` (per-node training tensors stripped)."""
         from verifiers.v1.trace import _NODE_DUMP_EXCLUDE
 

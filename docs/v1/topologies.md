@@ -120,8 +120,8 @@ game where each agent is effectively the other's user — hold episodes **open**
     async def go(self, task: vf.Task, run: vf.TopologyRun) -> None:
         board = chess.Board()                       # game rules live HERE, host-side
         async with (
-            run.agent("white").interact(SeatTask(color="white", prompt=None, system_prompt=...)) as white,
-            run.agent("black").interact(SeatTask(color="black", prompt=None, system_prompt=...)) as black,
+            run.agent("white").interact(SeatTask(SeatData(color="white", prompt=None, system_prompt=...))) as white,
+            run.agent("black").interact(SeatTask(SeatData(color="black", prompt=None, system_prompt=...))) as black,
         ):
             seats = {chess.WHITE: white, chess.BLACK: black}
             while not board.is_game_over():
@@ -146,7 +146,7 @@ Mechanically a session is a user simulator without the server: the interception 
 suspends the episode between turns awaiting the user seat, and here the "user" is `go`.
 The safety contract is loud, not patient: `turn()` on a dead episode raises
 `SessionEnded` (carrying the trace) instead of hanging; a second concurrent `turn()` on
-one session is refused; a task that declares its own `load_user` — or a prompted task
+one session is refused; a task that declares its own user simulator (`Task.user`) — or a prompted task
 (sessions open on the first `turn()`; put framing in `system_prompt`), or a harness that
 can't take injected user turns — is refused at the `interact()` call. No `retry=`: one
 side of a half-played game can't be re-run; a dead seat is `go`'s decision. Budgets
