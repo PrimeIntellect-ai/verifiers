@@ -105,7 +105,7 @@ You can create them like this (remember the bootstrapping with `uv run init MY_E
 ```python
 DATABASE = None
 
-class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
+class SearchToolset(vf.Toolset[vf.SharedToolsetConfig]):
     TOOL_PREFIX = "search"
 
     @vf.tool
@@ -115,15 +115,13 @@ class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
 
 # User-configurable knobs
 class SearchConfig(vf.TasksetConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    tools: vf.SharedToolsetConfig = vf.SharedToolsetConfig()
 
 class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
-    # Launch the tools during setup
-    def tools(self, task: vf.Task) -> list[vf.Toolset]:
-        return [SearchToolset(self.config.tools)]
+    tools = (SearchToolset,)
 ```
 
-Tools can also be set per task, not just per taskset.
+Taskset tools are shared by a worker's rollouts. Tools can also be set per task.
 
 ## Using Judges
 
