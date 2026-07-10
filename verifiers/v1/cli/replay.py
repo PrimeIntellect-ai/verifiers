@@ -76,14 +76,19 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     if config.num_traces is not None:
         traces = traces[: config.num_traces]
     # `trace.task` is pure data; re-scoring with the taskset's behavior needs the declared
-    # `TaskData` type — which every saved row is (`Taskset.tasks` constructs one task type).
-    # A row that can't be rebuilt from the wire (a load-time-only field excluded from
-    # serialization, like harbor's `task_dir`) stays a `WireTaskData` and is scored by the
-    # base `Task` (judges + base signals only; the subclass's own `@reward`s don't run —
-    # runtime-dependent ones would be skipped offline anyway).
-    for trace in traces:
+    # `TaskData` type — which every saved row is (one task type per taskset; its `load()`
+    # constructs it). The rebuilt row feeds ONLY the behavior wrapper at score time —
+    # `trace.task` keeps its wire form, because the trace persists through the
+    # `Trace[WireTaskData, ...]` schema it was read as: a sibling `TaskData` assigned onto
+    # it would have its subclass fields silently dropped from the replay's own output
+    # (they're real fields, not `model_extra`). A row that can't be rebuilt from the wire
+    # (a load-time-only field excluded from serialization, like harbor's `task_dir`) is
+    # scored by the base `Task` on the wire row (judges + base signals only; the
+    # subclass's own `@reward`s don't run — runtime-dependent ones would be skipped
+    # offline anyway).
+    def rebuild(trace: Trace) -> vf.TaskData:
         try:
-            trace.task = data_cls.model_validate(trace.task.model_dump())
+            return data_cls.model_validate(trace.task.model_dump())
         except Exception:
             logger.warning(
                 "replay: can't rebuild %s from the saved task %s; re-scoring it as a "
@@ -92,12 +97,19 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 trace.task.idx,
                 exc_info=True,
             )
+            return trace.task
+
+    rows = [rebuild(trace) for trace in traces]
     # Judges are config, not wire data: `Task.score` resolves them from the replay
     # config's `taskset.task.judges` (the source run's config.toml layered under any CLI
     # overrides) — so a re-tuned judge overrides the recorded run's and a newly-plugged
     # one joins, with no trace surgery.
     # `num_rescores` re-scores each trace that many times, each on its own copy.
-    work = [t.model_copy(deep=True) for t in traces for _ in range(config.num_rescores)]
+    work = [
+        (t.model_copy(deep=True), row)
+        for t, row in zip(traces, rows)
+        for _ in range(config.num_rescores)
+    ]
 
     save_config(config, out)
     logger.info(
@@ -110,10 +122,10 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     start = time.time()
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-    states = [ReplayProgress(idx=t.task.idx, name=t.task.name) for t in work]
+    states = [ReplayProgress(idx=t.task.idx, name=t.task.name) for t, _ in work]
     lock = asyncio.Lock()
 
-    async def rescore(trace: Trace, st: ReplayProgress) -> None:
+    async def rescore(trace: Trace, row: vf.TaskData, st: ReplayProgress) -> None:
         async with sem or contextlib.nullcontext():
             st.start = time.time()
             # A rollout that errored during generation was never scored by eval (its scoring phase
@@ -129,11 +141,11 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                     trace.info.pop("judge", None)
                 prior_rewards, prior_metrics = trace.rewards, trace.metrics
                 trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
-                # The behavior wrapper around the saved row: the declared Task for a
+                # The behavior wrapper around the rebuilt row: the declared Task for a
                 # rebuilt row, the base Task (judges + base signals) for a WireTaskData
                 # fallback; the replay config's task subtree supplies the knobs.
-                task = (task_cls if isinstance(trace.task, data_cls) else Task)(
-                    trace.task, config=config.taskset.task
+                task = (task_cls if isinstance(row, data_cls) else Task)(
+                    row, config=config.taskset.task
                 )
                 try:
                     # Pre-fill the runtime-only values the offline `score` can't recompute
@@ -176,9 +188,11 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
         else contextlib.nullcontext()
     )
     async with display:
-        await asyncio.gather(*(rescore(t, s) for t, s in zip(work, states)))
+        await asyncio.gather(
+            *(rescore(t, row, s) for (t, row), s in zip(work, states))
+        )
     logger.info("replay: done in %.1fs -> %s", time.time() - start, out)
-    return work
+    return [t for t, _ in work]
 
 
 def main(argv: list[str] | None = None) -> None:
