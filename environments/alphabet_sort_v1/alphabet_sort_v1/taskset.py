@@ -73,7 +73,7 @@ class AlphabetSortTask(
         return trace.state.user_finished
 
     @vf.reward(weight=1.0)
-    async def similarity(self, trace: vf.Trace) -> float:
+    async def alphabet_sort(self, trace: vf.Trace) -> float:
         ground_truths = self.data.info["ground_truths"]
         num_turns = self.data.info["num_turns"]
         responses = [m.content or "" for m in trace.assistant_messages]
