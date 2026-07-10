@@ -44,7 +44,7 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, Generic, Self, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self, get_args
 
 from pydantic import ConfigDict, model_validator
 from pydantic_config import BaseConfig
@@ -645,4 +645,4 @@ def resolve_task_class(
     )
 
 
-TaskT = TypeVar("TaskT", bound=Task)
+TaskT = TypeVar("TaskT", bound=Task[Any, Any, Any])

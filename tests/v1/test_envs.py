@@ -2,9 +2,9 @@
 
 The v0 counterpart (`tests/test_envs.py`) covers v0 envs (`vf.load_environment` + `vf-eval`);
 here we run each `_v1` taskset with its required harness for one short, capped rollout and
-require it to succeed — so a broken example taskset fails CI. `compact` is excluded (it's a
-harness, not a taskset); SWE/container tasksets need a docker/prime runtime and are covered by
-the dedicated v1 e2e tests instead.
+require it to succeed — so a broken example taskset fails CI. `compact` is excluded because
+it is a harness; container/corpus tasksets that cannot run in plain CI are listed in
+`SKIP_EVAL` below.
 """
 
 import os
@@ -20,9 +20,9 @@ EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 2)
 ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
 # v1 tasksets that can't run a plain-CI smoke eval — e.g. they need a docker/prime runtime or
-# clone a corpus CI can't read. Empty: the SWE/container and corpus tasksets live in
-# research-environments now.
-SKIP_EVAL: set[str] = set()
+# clone a corpus CI can't read. Proposer-solver executes model-authored ground-truth code and
+# therefore requires an explicitly selected docker/prime harness runtime.
+SKIP_EVAL = {"proposer_solver_v1"}
 
 
 def v1_tasksets() -> list[str]:

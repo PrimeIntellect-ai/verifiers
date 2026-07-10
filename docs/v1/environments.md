@@ -142,6 +142,11 @@ class WorkflowTaskset(
         return SolvedTask.from_trace(trace, config=self.config.solved)
 ```
 
+See [`proposer_solver_v1`](https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/proposer_solver_v1)
+for a concrete task family; its taskset builds the handoff, while an orchestrator schedules
+the derived task on the next agent. It executes proposed verification code, so select an
+isolated harness runtime with `--harness.runtime.type docker` (or `prime`).
+
 ## Adding Tools
 
 Some environments require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`).
