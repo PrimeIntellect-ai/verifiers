@@ -84,6 +84,16 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "exec",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            # Server-driven feature tools (codex apps, plugins, multi-agent) land in the
+            # Responses `tools` array with definitions non-OpenAI providers reject
+            # (upstream 400 on every call) — and they can flip on remotely under a pinned
+            # CLI. The agent's own tools (exec_command, plan, view_image) stay.
+            "--disable",
+            "apps",
+            "--disable",
+            "plugins",
+            "--disable",
+            "multi_agent",
             "-m",
             ctx.model,
             "-c",
