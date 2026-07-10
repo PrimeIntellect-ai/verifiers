@@ -127,10 +127,13 @@ class Session:
     async def turn(self, message: str | Messages) -> str:
         """Send the episode its next user turn(s) and return the model's reply text.
         Raises `SessionEnded` (never hangs) when the episode can't answer, and refuses
-        a second concurrent `turn()` on this session."""
+        a second concurrent `turn()` on this session — including after a `turn()` was
+        *cancelled* mid-flight (its message is already with the model, so the
+        conversation is desynced; `end()` the seat instead of driving on)."""
         if self._pending:
             raise RuntimeError(
-                "a turn is already pending on this session — one driver per seat"
+                "a turn is already pending (or was cancelled mid-flight) on this "
+                "session — one driver per seat; end() a desynced seat"
             )
         if self._episode is not None and self._episode.done():
             raise SessionEnded(self._rollout.trace if self._rollout else None)
@@ -143,11 +146,14 @@ class Session:
         try:
             await self._inbox.put(turns)
             reply = await self._replies.get()
-            if reply is _DEAD:
-                raise SessionEnded(self._rollout.trace if self._rollout else None)
-            return reply
-        finally:
-            self._pending = False
+        except asyncio.CancelledError:
+            # The message is in flight with no reader for its reply: leave `_pending`
+            # set so a later turn() can't consume the stale reply one turn late.
+            raise
+        self._pending = False
+        if reply is _DEAD:
+            raise SessionEnded(self._rollout.trace if self._rollout else None)
+        return reply
 
     async def end(self, condition: str = "interaction_complete") -> None:
         """Finish the episode early and cleanly (forfeits, eliminations). Idempotent;

@@ -92,6 +92,53 @@ async def test_double_drive_refused():
         session._episode.cancel()
 
 
+async def test_cancelled_turn_desyncs_loudly():
+    """A `turn()` cancelled mid-flight (e.g. a sibling seat in a `gather` raised) left
+    its message with the model — the conversation is desynced, so a later `turn()`
+    refuses instead of consuming the stale reply one turn late."""
+    session = make_session(vf.Task(idx=0, prompt=None))
+    session._episode = asyncio.create_task(asyncio.sleep(30))
+    try:
+        pending = asyncio.create_task(session.turn("in flight"))
+        await asyncio.sleep(0)  # let it post its message and suspend
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        with pytest.raises(RuntimeError, match="cancelled mid-flight"):
+            await session.turn("resync?")
+        await session.end()  # the sanctioned way out of a desynced seat
+    finally:
+        session._episode.cancel()
+
+
+def test_extend_coerces_reasoning_only_turn():
+    """Regression (found by a live chess game): a truncated reasoning turn comes back
+    with `content: null` and no tool calls — valid *output*, but upstreams 422 it when
+    re-sent as conversation *input*. `extend` must coerce it to the empty string; a
+    tool-call turn stays legitimately content-less."""
+    from verifiers.v1.dialects.chat import ChatDialect
+
+    dialect = ChatDialect()
+    body = {"messages": [{"role": "user", "content": "your move"}]}
+    truncated = {"choices": [{"message": {"role": "assistant", "content": None}}]}
+    extended = dialect.extend(body, truncated, [vf.UserMessage(content="next")])
+    assert extended["messages"][1] == {"role": "assistant", "content": ""}
+
+    tool_turn = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{"id": "x"}],
+                }
+            }
+        ]
+    }
+    extended = dialect.extend(body, tool_turn, [])
+    assert extended["messages"][1]["content"] is None  # untouched — tool calls carry it
+
+
 async def test_interact_refusals():
     """The refuse-loudly table: a prompted task, a task with its own user simulator,
     and a harness that can't take injected user turns are all rejected at the call."""

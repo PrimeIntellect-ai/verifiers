@@ -19,7 +19,8 @@ Budgets span the whole game (a seat's episode includes time suspended while the
 opponent thinks): size `--max-turns` >= max_plies and the rollout timeout for a full
 game, not a solo run.
 
-    uv run eval --topology.id chess-v1 -n 1 --max-turns 64 --timeout.rollout 900
+    uv run eval --topology.id chess-v1 -n 1 --max-turns 64 --timeout.rollout 900 \\
+        --sampling.max-tokens 4096   # reasoning room per move — a tight cap truncates turns
 """
 
 import re

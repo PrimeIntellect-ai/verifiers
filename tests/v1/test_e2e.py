@@ -294,7 +294,9 @@ async def test_chess_topology(tmp_path):
         topology={"id": "chess-v1", "max_plies": 6, "illegal_retries": 2},
         num_tasks=1,
         max_turns=16,
-        sampling={"max_tokens": 512, "temperature": 0},
+        # reasoning models can spend 1k+ tokens thinking per move; a tight cap truncates
+        # the turn to null content and reads as an illegal move (or a forfeit)
+        sampling={"max_tokens": 4096, "temperature": 0},
         timeout={"rollout": 420, "scoring": 60},
         rich=False,
         output_dir=tmp_path,
@@ -322,7 +324,7 @@ async def test_debate_topology(tmp_path):
         topology={"id": "debate-v1", "num_debaters": 3, "num_rounds": 1},
         num_tasks=1,
         max_turns=8,
-        sampling={"max_tokens": 1024, "temperature": 0},
+        sampling={"max_tokens": 2048, "temperature": 0},
         timeout={"rollout": 420, "scoring": 60},
         rich=False,
         output_dir=tmp_path,

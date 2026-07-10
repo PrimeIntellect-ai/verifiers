@@ -162,7 +162,7 @@ uv run eval --topology.id proposer-solver-v1 -n 3
 # compares first draft to final and the same reward lands on every trace
 uv run eval --topology.id writer-editors-v1 -n 3
 # back-and-forth: two live sessions play chess (each agent is the other's user turn)
-uv run eval --topology.id chess-v1 -n 1 --max-turns 64 --timeout.rollout 900
+uv run eval --topology.id chess-v1 -n 1 --max-turns 64 --timeout.rollout 900 --sampling.max-tokens 4096
 ```
 
 ### Tools
