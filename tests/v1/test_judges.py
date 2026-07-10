@@ -113,9 +113,6 @@ def test_judge_plugin_resolution():
 
 
 def test_taskset_config_narrows_judges(tmp_path):
-    # `judges` entries narrow to the config type their id resolves to (like taskset/harness
-    # narrowing in EnvConfig), so judge-specific fields validate against the real config —
-    # and survive model_dump (SerializeAsAny), which the env-server wire depends on.
     rubric = tmp_path / "rubric.toml"
     rubric.write_text(RUBRIC_TOML)
     cfg = vf.TaskConfig.model_validate(
@@ -133,7 +130,6 @@ def test_taskset_config_narrows_judges(tmp_path):
     )
     assert isinstance(rubric_cfg, vf.RubricJudgeConfig) and rubric_cfg.name == "quality"
     assert cfg.model_dump()["judges"][0]["answer_field"] == "gold"
-    # a round-trip through the dump re-narrows to the same types
     again = vf.TaskConfig.model_validate(cfg.model_dump())
     assert isinstance(again.judges[0], vf.ReferenceJudgeConfig)
 
@@ -227,7 +223,7 @@ async def test_reference_score(fake_judge_model):
 
 
 async def test_reference_score_messages_prompt(fake_judge_model):
-    # A Messages-form prompt still reaches the judge as text (via Task.prompt_text).
+    # A Messages-form prompt still reaches the judge as text (via TaskData.prompt_text).
     from verifiers.v1.types import TextContentPart, UserMessage as UM
 
     task = QAData(
@@ -592,9 +588,6 @@ async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model):
     assert "ZEBRA-GOLD" in fake_judge_model[-1]
 
 
-# --- Task.score integration -------------------------------------------------------------
-
-
 class JudgedTask(vf.Task[QAData]):
     @vf.reward
     async def own(self, trace) -> float:
@@ -626,14 +619,10 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model):
     taskset = JudgedTaskset(cfg)
     trace = make_trace()
     await JudgedTask(trace.task, taskset.config.task).score(trace, runtime=None)
-    assert trace.rewards["own"] == 0.25  # decorated rewards still run
-    assert (
-        trace.rewards["reference"] == 0.5
-    )  # 1.0 * weight 0.5, under the id-derived name
-    assert trace.rewards["quality"] == 0.75  # the rubric's aggregate, under its `name`
-    assert (
-        len(trace.info["judge"]) == 2
-    )  # every judge call recorded (rubric = one call)
+    assert trace.rewards["own"] == 0.25
+    assert trace.rewards["reference"] == 0.5
+    assert trace.rewards["quality"] == 0.75
+    assert len(trace.info["judge"]) == 2
 
 
 async def test_task_without_judges_scores_as_before():

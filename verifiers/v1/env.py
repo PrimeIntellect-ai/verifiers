@@ -1,16 +1,4 @@
-"""The environment: a taskset composed with an harness and a runtime.
-
-The Environment is the eval-level composition and *resolver* — it does not itself run
-rollouts. It holds the taskset (the loader), harness, runtime config, and timeouts; lists
-the tasks; and turns one task into a runnable `Episode` of `n` `Rollout`s, resolving per
-task the runtime (image + resources, with cli/task/default precedence) and the timeouts.
-Execution lives one level down: an `Episode` runs `n` `Rollout`s of a task and scores them
-(per-rollout `@reward`/`@metric`, then cross-rollout `@group_reward`); each `Rollout`
-runs one trajectory. The task's `@reward`/`@metric` get the rollout's runtime
-(read/exec inside it), so a task scores correctly under any harness; `@group_reward`s
-compare a task's rollouts. Harness capability checks (tools, user sim, container) read
-the class-level declarations (`Task.tools` / `Task.user`) — one task class per taskset.
-"""
+"""Compose a taskset and harness into runnable episodes."""
 
 import contextlib
 import logging
@@ -39,17 +27,17 @@ from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 class TimeoutConfig(BaseConfig):
     """Framework-enforced wall-clock timeouts per rollout stage, in seconds (None = no
-    limit). Each bounds one stage of `Rollout.run`: the task's `setup` hook, the harness
+    limit). Each bounds one stage of `Rollout.run`: task and harness setup, the harness
     run, the task's `finalize` hook, then scoring."""
 
     setup: float | None = None
-    """Max wall-clock for the task's `setup` hook (per-task runtime prep)."""
+    """Shared wall-clock budget for task setup and harness provisioning."""
     rollout: float | None = None
     """Max wall-clock for the rollout (the harness run)."""
     finalize: float | None = None
     """Max wall-clock for the task's `finalize` hook (post-run work, before scoring)."""
     scoring: float | None = None
-    """Max wall-clock for scoring — verify + rewards/metrics."""
+    """Max wall-clock for task and harness scoring."""
 
 
 class StaticPoolConfig(BaseConfig):
@@ -89,11 +77,7 @@ def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
 
 
 class EnvConfig(BaseConfig):
-    """The rollout's two peers: the taskset (data + scoring) and the harness (which
-    program drives it, and where it runs — `harness.runtime`). Both are chosen at eval
-    time, not by the env — only `taskset` is narrowed per env (to its config type,
-    inferred from `load_taskset`). Tool servers are declared on `Task.tools` (per rollout)
-    or `Taskset.tools` (shared, once per eval)."""
+    """The taskset that loads tasks and the harness that runs them."""
 
     # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, DefaultHarnessConfig);
     # without it model_dump() narrows to the base type and drops the subclass fields, so the
@@ -120,10 +104,6 @@ class EnvConfig(BaseConfig):
     tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
     key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
     # --- legacy (v0) backwards-compat -----------------------------------------
-    # Run a classic `verifiers.load_environment(id, **args)` env, bridged to v1 Traces (see
-    # `verifiers.v1.legacy`), instead of a v1 taskset/harness. Set `id` (leave `taskset`
-    # unset) to opt in; native v1 envs leave these untouched. Mirrors prime-rl's EnvConfig
-    # so it inherits these (a v0 env is driven the same way in eval and the env server).
     id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
     hub on demand), loaded via `verifiers.load_environment` and run through the legacy
@@ -264,9 +244,6 @@ class Environment:
         self._warned_resources: set[tuple[str, str]] = set()
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: InterceptionPool | None = None
-        """Eval-level serving resources, live only inside `serving()`: shared tool servers
-        ({name: url}) and the interception pool. `episode()` injects them into every rollout
-        so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
         """Resolve the runtime config for a task off the harness's runtime (see
@@ -276,18 +253,7 @@ class Environment:
         )
 
     def episode(self, task: Task, ctx: ModelContext, n: int = 1) -> Episode:
-        """Resolve `task` into a runnable episode of `n` rollouts: check the harness
-        supports what this task needs (tools / user sim / a container — per task, by
-        value, since instances differ per row), pick its runtime (image + resources) and its
-        timeouts (cli/toml > task > default, None = no limit), build one `Rollout` per
-        sample sharing them, and wrap them in an `Episode` (which runs them and applies
-        the task's `@group_reward`s across their traces).
-
-        A task with `@group_reward`s compares its rollouts, so it needs >=2 of
-        them — refuse `n < 2` there (rather than silently scoring a group of one)."""
-        # Capability checks read the class-level declarations (`Task.tools` / `Task.user`)
-        # — declarative, so nothing is constructed; the real per-rollout instances are
-        # built in `Rollout.run`.
+        """Resolve a task into an episode of `n` rollouts."""
         if not self.harness.SUPPORTS_MCP and (
             type(task).tools or type(self.taskset).tools
         ):
@@ -369,12 +335,8 @@ class Environment:
         return Episode(rollouts, retry=retries.rollout)
 
     @contextlib.asynccontextmanager
-    async def serving(self, tasks: list[Task] | None = None):
-        """Hold the env-level serving resources for the duration of an eval: the shared tool
-        servers (built once, see `shared_tools`) and the interception pool. Stash them so
-        every `episode()` built inside this context injects them into its rollouts — that's
-        what keeps both eval runners (in-process and env-server) on one serving path. Build
-        episodes inside this context; the resources are torn down on exit."""
+    async def serving(self):
+        """Hold one worker's servers; build episodes inside so they inherit these resources."""
         async with (
             self.shared_tools() as shared,
             self.interception_pool() as interception,
@@ -388,22 +350,10 @@ class Environment:
                 self._interception = None
 
     def interception_pool(self) -> InterceptionPool:
-        """The shared interception pool for this env's rollouts — one server (+ tunnel
-        behind a remote runtime) per `multiplex` rollouts, grown on demand. Built here,
-        where the harness runtime and `multiplex` live; the caller (eval runner / env
-        server) enters it for the run and tears it down. Pass it to `Episode.run`."""
         return InterceptionPool(self.harness.config.runtime, self.config.multiplex)
 
     @contextlib.asynccontextmanager
     async def shared_tools(self):
-        """Start the taskset-scoped (shared) tool servers ONCE for the eval — the classes
-        declared on `Taskset.tools`, each in its own `runtime` — and yield
-        `{name: SharedToolServer}` to inject into every rollout, so an expensive corpus is
-        built once, not per rollout. No-op ({}) when the taskset declares none. Sharing is
-        structural: the taskset carries no per-row data, so a shared server is
-        task-agnostic by construction (its `setup` gets no task). A shared server on a host
-        runtime is bridged to the host once (a tunnel) when the harness runs remotely, so
-        an in-sandbox harness can still reach it (see `serve_shared`)."""
         servers = self.taskset.tool_servers()
         if not servers:
             yield {}

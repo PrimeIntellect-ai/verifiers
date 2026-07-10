@@ -38,11 +38,13 @@ prime env pull owner/name -t ./tmp-env
 
 When you find environments, look through the code to see if they import `verifiers.v1`. If they do, always prefer these.
 
-Inspect the taskset to learn about its task and config.
-- `load_tasks()` loads or creates the dataset
-- A `vf.TasksetConfig` denotes the user-configurable settings. As the creator of this environment has put them deliberately, pay attention to those.
-- Some environments come with custom harnesses, which require attention, while others only work with some harnesses.
-- Some environments only work in some runtimes.
+Inspect the taskset, task, data, and configs:
+
+- `Taskset.load()` constructs the tasks.
+- `TaskData` contains each serializable row.
+- `Task` contains hooks, scoring, task-scoped tools, and user simulation.
+- `TasksetConfig` contains load-time settings; task-facing settings live under its nested `task` config.
+- Check custom harness and runtime requirements explicitly.
 
 For each of the candidates, look into these categories to get a more complete picture.
 

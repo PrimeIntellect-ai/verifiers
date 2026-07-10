@@ -1,20 +1,16 @@
-"""deepwiki: an EXISTING (remote) tool server.
+"""Remote-tool example backed by the public DeepWiki MCP server.
 
-The other tool examples ship a server the harness runs (`glossary` host-side, `wikispeedia`
-its own runtime, `wiki_search` shared); this one points at a live, public streamable-HTTP MCP
-server — DeepWiki, which answers questions about GitHub repos. The `DeepWikiToolset` in
-`servers/deepwiki.py` has no `@tool` methods: setting `url` on its config makes the framework
-connect to the remote directly. Each task asks the model to use `deepwiki_ask_question` for a
-repo's primary language; the reward checks the answer.
-
-Runs in docker (the harness installs the mcp client there and needs outbound net).
+Unlike the locally authored `glossary` and worker-shared `wiki_search` examples,
+`DeepWikiToolset` declares no local `@tool` methods. Its config supplies an existing
+streamable-HTTP URL, so verifiers connects the harness directly to that remote server.
+The harness runtime therefore needs outbound network access.
 """
 
 import verifiers.v1 as vf
 
 from deepwiki_v1.servers.deepwiki import DEEPWIKI_URL, DeepWikiToolset
 
-# (repo, expected language) — unambiguous, well-indexed repos.
+# (repository, expected primary language) pairs chosen for unambiguous answers.
 TASKS = [
     ("modelcontextprotocol/python-sdk", "python"),
     ("tokio-rs/tokio", "rust"),
@@ -32,8 +28,6 @@ class DeepWikiTaskData(vf.TaskData):
 
 class DeepWikiTask(vf.Task[DeepWikiTaskData, vf.State, DeepWikiTaskConfig]):
     tools = (DeepWikiToolset,)
-    # Built with the task config's `tools` field (where the toolset points; stays
-    # CLI-tunable via --taskset.task.tools.*), resolved by `Task.server_config`.
 
     @vf.reward(weight=1.0)
     async def answered(self, trace: vf.Trace) -> float:

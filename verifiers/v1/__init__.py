@@ -1,8 +1,4 @@
-"""verifiers v1 — a clean-slate, heavily-typed reimplementation.
-
-Public surface is re-exported here so environments can `import verifiers.v1 as vf`
-and reach everything they need. Built up milestone by milestone.
-"""
+"""Public v1 API."""
 
 import logging as _logging
 
@@ -86,8 +82,15 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
 )
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
-from verifiers.v1.taskset import TaskConfig, Taskset, TasksetConfig
+from verifiers.v1.task import (
+    Task,
+    TaskConfig,
+    TaskData,
+    TaskResources,
+    TaskTimeout,
+    WireTaskData,
+)
+from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.mcp import (
     Toolset,
     SharedToolsetConfig,

@@ -1,14 +1,4 @@
-"""The eval entrypoint: `uv run eval --taskset.id <id> [options]`.
-
-Registered as the `eval` console script. Mirrors the `~/prime-rl` pattern (`config =
-cli(Config)`). The taskset and harness are selected by their `--taskset.id` / `--harness.id`
-(the discriminator fields); `cli/resolve.py` narrows each to its config type, so the single
-`prime-pydantic-config` parse keeps their fields typed and overridable via dotted flags
-(e.g. `--harness.runtime.type docker`, `--taskset.*`) / `@ eval.toml`.
-
-`-h`/`--help` (or no args) prints the local example tasksets/harnesses plus the full, typed
-pydantic-config help — narrowed to whatever `--taskset.id` / `--harness.id` are given.
-"""
+"""Eval CLI entrypoint."""
 
 import asyncio
 import logging

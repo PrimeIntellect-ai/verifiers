@@ -1,17 +1,10 @@
-"""lean: a reusable Lean 4 theorem-proving taskset base.
+"""Lean 4 theorem-proving tasks backed by Hugging Face datasets.
 
-Loads a Lean dataset (any HuggingFace dataset with a formal-statement column),
-plants a ``sorry`` starter file in a Mathlib sandbox at ``setup``, and rewards a
-clean ``lake env lean`` compile — with a reward-hacking guard that pins the
-original theorem signature — at scoring time. It exposes **no tools**: the agent
-reads, edits, and compiles ``proof.lean`` through whichever shell-capable harness
-drives the rollout (``mini-swe-agent`` / ``rlm`` / ``bash``), so a lean task runs
-under ANY harness.
-
-This is a *base*: point it at a dataset via ``--taskset.dataset-name`` (+ column
-config), or subclass it in a thin per-dataset package that just sets the config
-defaults — the way ``swebench-verified-v1`` etc. wrap ``HarborTaskset``. The
-per-dataset packages live in research-environments.
+Each task plants a ``sorry``-based starter file, lets any container-capable
+harness edit it, and rewards a clean ``lake env lean`` compile. The original
+theorem signature must remain present, which prevents replacing the assigned
+statement with an easier theorem. Dataset-specific packages can subclass this
+taskset and only supply column mappings.
 """
 
 from __future__ import annotations
@@ -23,8 +16,8 @@ from pydantic_config import BaseConfig
 from verifiers.v1.decorators import reward
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.state import State
-from verifiers.v1.task import Task, TaskData, TaskResources
-from verifiers.v1.taskset import TaskConfig, Taskset, TasksetConfig
+from verifiers.v1.task import Task, TaskConfig, TaskData, TaskResources
+from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.tasksets.lean.scoring import (
     build_starter_file,
     expected_protected_signature,
@@ -33,8 +26,7 @@ from verifiers.v1.tasksets.lean.scoring import (
 )
 from verifiers.v1.trace import Trace
 
-# Default sandbox image: Lean v4.27 + Mathlib v4.27 (PI Research team registry).
-# A per-dataset package overrides ``docker_image`` with its version-matched image.
+# Lean v4.27 with Mathlib v4.27.
 DEFAULT_DOCKER_IMAGE = "team-clyvldofb0000gg1kx39rgzjq/lean-tactic:mathlib-v4.27.0-v3"
 LEAN_PROJECT_PATH = "/workspace/mathlib4"
 PROOF_FILE_PATH = "/tmp/proof.lean"
@@ -43,8 +35,6 @@ DEFAULT_SYSTEM_PROMPT = "You are an expert Lean 4 theorem prover working with Ma
 
 
 class LeanDatasetConfig(BaseConfig):
-    """Which HuggingFace dataset to load and how to read its columns."""
-
     name: str
     """HuggingFace dataset id (required; each per-dataset package sets it)."""
     split: str = "train"
@@ -59,9 +49,6 @@ class LeanDatasetConfig(BaseConfig):
 
 
 class LeanTaskConfig(TaskConfig):
-    """The knobs lean's hooks and reward read (``self.config``): the sandbox layout and
-    the compile budget. Everything under ``--taskset.task.*``."""
-
     lean_project_path: str = LEAN_PROJECT_PATH
     proof_file_path: str = PROOF_FILE_PATH
     compile_timeout: int = 300
@@ -89,11 +76,8 @@ class LeanData(TaskData):
 
 class LeanTask(Task[LeanData, State, LeanTaskConfig]):
     NEEDS_CONTAINER = True
-    # The row is `self.data` (LeanData); the sandbox layout + compile budget are
-    # config knobs, read off `self.config` (LeanTaskConfig).
 
     async def _compile(self, runtime: Runtime) -> tuple[bool, str, int]:
-        """Run ``lake env lean`` on the proof file; returns (compiled, output, exit_code)."""
         cmd = (
             f"cd {shlex.quote(self.config.lean_project_path)} && "
             f"timeout {self.config.compile_timeout} lake env lean "
@@ -104,7 +88,6 @@ class LeanTask(Task[LeanData, State, LeanTaskConfig]):
         return parse_compile_output((result.stdout or "") + (result.stderr or ""))
 
     async def setup(self, runtime: Runtime) -> None:
-        """Plant the ``sorry`` starter file in the sandbox before the agent runs."""
         content = build_starter_file(
             self.data.formal_statement,
             header=self.data.header,
@@ -115,21 +98,11 @@ class LeanTask(Task[LeanData, State, LeanTaskConfig]):
 
     @reward(weight=1.0)
     async def lean_compiled(self, trace: Trace, runtime: Runtime) -> float:
-        """1.0 iff the final proof compiles cleanly (exit 0, no ``sorry``) and the
-        protected theorem signature is intact; 0.0 otherwise.
-
-        Reads the final ``proof.lean`` back through the live runtime, runs the
-        host-side signature guard (with comment/string stripping), then re-runs
-        ``lake env lean``. Diagnostics land on ``trace.info`` for inspection.
-        """
+        """Require both the assigned signature and a clean Lean compile."""
         if trace.has_error:
             return 0.0
 
-        # Read the final proof back. A read failure here is genuinely exceptional
-        # (setup planted the file; the agent edits it in-sandbox), so let it
-        # propagate as a scoring error rather than swallow an infra/sandbox failure
-        # into a false-negative 0. (The prime runtime collapses every read error
-        # into SandboxError, so there's no file-not-found type to narrow to.)
+        # Setup created this file, so a read failure is an infrastructure error.
         current = (await runtime.read(self.config.proof_file_path)).decode(
             "utf-8", "replace"
         )
@@ -152,15 +125,7 @@ class LeanTask(Task[LeanData, State, LeanTaskConfig]):
         return 1.0 if compiled else 0.0
 
     async def validate(self, runtime: Runtime) -> bool:
-        """Compile the gold proof: substitute it for ``sorry`` and check it type-checks.
-
-        ``False`` is reserved for a row whose gold proof exists but **fails to
-        compile** (a genuinely bad/unprovable row). A row with **no** gold proof
-        (statement-only datasets, or an empty proof column) returns ``True`` — there
-        is nothing to refute, matching the base ``Task.validate`` no-op; flagging
-        it ``invalid`` would both swamp the report on statement-only datasets and
-        mask the rows whose gold actually fails on a sparse-gold dataset.
-        """
+        """Compile the gold proof; rows without one have nothing to preflight."""
         gold = (self.data.formal_proof or "").rstrip()
         if not gold:
             return True
@@ -190,10 +155,7 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
             num_proc=8,
         )
 
-        # Fail loud on a misconfigured column name — otherwise a typo is silently
-        # treated as a missing/empty field (e.g. a wrong proof_column makes every
-        # gold check vacuously fail), or a statement_column typo raises a raw
-        # KeyError on the first row instead of this clear error.
+        # Validate optional columns before empty-value fallbacks hide a typo.
         for label, col in (
             ("statement_column", ds.statement_column),
             ("header_column", ds.header_column),
@@ -209,15 +171,12 @@ class LeanTaskset(Taskset[LeanTask, LeanConfig]):
         resources = TaskResources(cpu=4, memory=4, disk=10)
         tasks: list[LeanTask] = []
         for index, row in enumerate(raw):
-            # Skip degenerate rows with no statement: there's nothing to prove, and
-            # an empty statement collapses the pinned signature to just ``:= by``,
-            # which every proof contains — so the reward-hacking guard would pass on
-            # a rewritten trivial theorem. Drop them rather than ship a free-reward task.
+            # An empty statement would reduce the signature guard to `:= by`.
             formal_statement = row[ds.statement_column]
             if not isinstance(formal_statement, str) or not formal_statement.strip():
                 continue
-            # Unset columns are None, and row.get(None) is None, so the `or`
-            # fallbacks cover both an unset column and an empty value.
+            # A disabled optional column is None; row.get(None) yields the same
+            # empty fallback as a present-but-empty column.
             header = row.get(ds.header_column) or ""
             imports = row.get(ds.imports_column) or "import Mathlib"
             gold = row.get(ds.proof_column) or ""

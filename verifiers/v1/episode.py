@@ -1,19 +1,4 @@
-"""An episode: evaluate one task — its rollout(s) and all scoring across them.
-
-An Episode is the largest unit the *evaluator* knows about: it runs `n` Rollouts of one
-task (each a single trajectory) under a shared concurrency limit, then scores across
-them. Per-rollout `@reward`/`@metric` already ran inside each Rollout; the Episode adds
-the cross-rollout `@group_reward` stage — pairwise/preference rewards that compare a
-task's rollouts. n=1 is just an episode with a single rollout.
-
-These are env-level *rewards*. Training-time transforms of rewards — advantages (GRPO,
-RLOO), on-policy distillation — are deliberately NOT modeled here; they sit a level
-above, in a trainer that consumes episodes. That's why this is an "Episode" and not a
-"group": nothing here computes an advantage.
-
-Each Rollout tears its own runtime down (see rollout.py), so the Episode owns no
-runtimes — only the rollouts and the scoring across them.
-"""
+"""Run and group-score all rollouts for one task."""
 
 from __future__ import annotations
 
@@ -38,8 +23,6 @@ class Episode:
             raise ValueError("an episode needs at least one rollout (n >= 1)")
         self.rollouts = rollouts
         self.task = rollouts[0].task
-        """The shared task — every rollout in an episode samples the same one; its
-        `@group_reward`s (if any) run across their traces."""
         self.retry = retry
 
     async def run(
@@ -47,15 +30,7 @@ class Episode:
         semaphore: asyncio.Semaphore | None = None,
         on_complete: Callable[[Trace], Awaitable[None]] | None = None,
     ) -> list[Trace]:
-        """Run all rollouts (each under `semaphore`), then group-score across their
-        traces. Without `@group_reward`s a rollout's reward is final the moment its own
-        scoring ends, so it's marked DONE then (no waiting for slower siblings); with
-        them, the whole group is marked DONE together after `score_group` — the reward
-        isn't final until every rollout is in. Each rollout already carries the eval-level
-        shared tool servers / interception pool (injected by `Environment.episode`).
-        `on_complete` (the runner's persist hook) is called with each trace the instant
-        it's finalized (DONE) — per rollout without group rewards, or once per trace after
-        group scoring with them."""
+        """Run rollouts; delay completion callbacks only when group scoring needs all of them."""
         group_scored = bool(discover_decorated(self.task, "group_reward"))
 
         async def run_one(rollout: Rollout) -> Trace:

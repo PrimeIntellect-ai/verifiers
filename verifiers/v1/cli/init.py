@@ -1,13 +1,4 @@
-"""The init entrypoint: `uv run init <name> [--add-tool] [--add-user] [--add-harness]`.
-
-Registered as the `init` console script — the v1 sibling of v0's `vf-init`. It scaffolds a new
-environment package under `--path` (default `./environments`), following the layout of the
-shipped `environments/*_v1` examples: a `pyproject.toml`, a package whose `__init__.py` re-exports
-the plugin via `__all__`, and a `taskset.py` that runs out of the box (replace `load` and
-the `@reward`). The optional flags add more scaffolding — a `vf.Toolset` (`--add-tool`), a
-`vf.User` simulator (`--add-user`), and a custom `vf.Harness` (`--add-harness`). `--v0` scaffolds
-a legacy v0 `load_environment` package instead (via `verifiers.scripts.init`).
-"""
+"""Scaffold v1 environment packages."""
 
 import sys
 from pathlib import Path
@@ -24,9 +15,6 @@ USAGE = (
 
 
 def _names(name: str) -> tuple[str, str, str, str]:
-    """`(dash, pkg, stem, prefix)` derived from a raw name: the hyphenated id, the importable
-    package (underscores), the `_v1`-less stem (for tool prefixes), and the CamelCase class
-    prefix (e.g. `my-task-v1` -> `my-task-v1`, `my_task_v1`, `my_task`, `MyTask`)."""
     dash = name.strip().strip("/").replace("_", "-").lower()
     pkg = dash.replace("-", "_")
     stem = pkg[:-3] if pkg.endswith("_v1") else pkg
@@ -37,7 +25,6 @@ def _names(name: str) -> tuple[str, str, str, str]:
 
 
 def _write(path: Path, content: str, force: bool) -> bool:
-    """Write `content` to `path` unless it exists (and `force` is off). Returns whether it wrote."""
     if path.exists() and not force:
         print(f"  skip   {path} (exists)")
         return False
@@ -76,19 +63,11 @@ def _init_py(pkg: str, prefix: str, add_harness: bool) -> str:
 
 
 def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str:
-    """The taskset module skeleton — the row's data on a `TaskData` subclass, the behavior
-    (`@reward`, tool/user declarations) on the `Task` subclass, and a thin `Taskset` whose
-    `load` constructs the tasks (`Task(Data(...), self.config.task)`). Each enabled piece (tool/user) adds its import, a
-    class-level declaration on the task, and a field on the task's config (`vf.TaskConfig`,
-    nested under `TasksetConfig.task` and read as `self.config` — the framework builds each
-    declared server with the matching config field; see `Task.server_config`)."""
     imports = "import verifiers.v1 as vf"
     local_imports: list[str] = []
     task_config_fields = ""
     task_decls = ""
     task_methods: list[str] = []
-    # a user simulator carries per-rollout state and a stop condition, so the task is typed with
-    # its `State` subclass (`vf.Task[MyState, ...]`); without one it stays on the default `State`.
     state = "vf.State"
     if add_tool:
         local_imports.append(f"from {pkg}.servers.tool import {prefix}Toolset")
@@ -109,62 +88,41 @@ def _taskset_py(pkg: str, prefix: str, *, add_tool: bool, add_user: bool) -> str
     if local_imports:
         imports += "\n\n" + "\n".join(local_imports)
     methods_block = "".join(f"\n{m}\n" for m in task_methods)
-    if not (add_tool or add_user):
-        return f'''\
-{imports}
-
-
-class {prefix}Data(vf.TaskData):
-    """One row's data. Add task-specific fields here (e.g. a reference answer)."""
-
-
-class {prefix}Task(vf.Task[{prefix}Data]):
-    """The task's behavior: rewards and hooks, reading the row off `self.data`."""
-
-    @vf.reward(weight=1.0)
-    async def reward(self, trace: vf.Trace) -> float:
-        raise NotImplementedError("Score the rollout and return a float (e.g. in [0, 1]).")
-
-
-class {prefix}Config(vf.TasksetConfig):
-    num_tasks: int = 5
-    """How many tasks to build."""
-
-
-class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
-    def load(self) -> list[{prefix}Task]:
-        raise NotImplementedError(
-            "Return this taskset's tasks, e.g. "
-            "[{prefix}Task({prefix}Data(idx=i, prompt=...), self.config.task) "
-            "for i in range(self.config.num_tasks)]."
-        )
-'''
+    has_task_config = add_tool or add_user
+    task_config = (
+        f"\n\nclass {prefix}TaskConfig(vf.TaskConfig):\n"
+        '    """Knobs the task reads from ``self.config``; configure them under '
+        f'``--taskset.task.*``."""{task_config_fields}\n'
+        if has_task_config
+        else ""
+    )
+    task_generic = (
+        f"{prefix}Data, {state}, {prefix}TaskConfig"
+        if has_task_config
+        else f"{prefix}Data"
+    )
+    config_body = '    num_tasks: int = 5\n    """How many tasks to build."""\n' + (
+        f"    task: {prefix}TaskConfig = {prefix}TaskConfig()\n"
+        if has_task_config
+        else ""
+    )
     return f'''\
 {imports}
 
 
 class {prefix}Data(vf.TaskData):
-    """One row's data. Add task-specific fields here (e.g. a reference answer)."""
+    """One row's data. Add task-specific fields here, such as a reference answer."""
+{task_config}
 
-
-class {prefix}TaskConfig(vf.TaskConfig):
-    """Knobs the task reads (`self.config`) — under `--taskset.task.*`."""{task_config_fields}
-
-
-class {prefix}Task(vf.Task[{prefix}Data, {state}, {prefix}TaskConfig]):
-    """The task's behavior: rewards, hooks, and server declarations, reading the row
-    off `self.data` and the knobs off `self.config`."""{task_decls}
-{methods_block}
+class {prefix}Task(vf.Task[{task_generic}]):
+    """Rewards, hooks, and servers, with row data available on ``self.data``."""{task_decls}{methods_block}
     @vf.reward(weight=1.0)
     async def reward(self, trace: vf.Trace) -> float:
         raise NotImplementedError("Score the rollout and return a float (e.g. in [0, 1]).")
 
 
 class {prefix}Config(vf.TasksetConfig):
-    num_tasks: int = 5
-    """How many tasks to build."""
-    task: {prefix}TaskConfig = {prefix}TaskConfig()
-
+{config_body}
 
 class {prefix}Taskset(vf.Taskset[{prefix}Task, {prefix}Config]):
     def load(self) -> list[{prefix}Task]:
@@ -284,12 +242,11 @@ uv run eval {dash} -n 3    # evaluate a few tasks with the default harness
 
 {layout_block}
 
-Tune knobs from the CLI: `--taskset.num-tasks 10`, `--model <id>`, `-n`/`-r`/`-t`/`-T`.
+Tune knobs from the CLI: `--taskset.num-tasks 10`, `--model <id>`, `-n`, and `-r`.
 """
 
 
 def scaffold(config: InitConfig) -> Path:
-    """Scaffold a v1 environment package from `config` and return its directory."""
     dash, pkg, stem, prefix = _names(config.name)
     env_dir = Path(config.path) / pkg
     pkg_dir = env_dir / pkg
@@ -334,7 +291,7 @@ def scaffold(config: InitConfig) -> Path:
 
 def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:]) if argv is None else list(argv)
-    if argv and not argv[0].startswith(("-", "@")):  # leading bare token is the name
+    if argv and not argv[0].startswith(("-", "@")):
         argv = ["--name", argv[0], *argv[1:]]
 
     if not argv or any(arg in ("-h", "--help") for arg in argv):
@@ -343,7 +300,7 @@ def main(argv: list[str] | None = None) -> None:
         cli(InitConfig)
         return
 
-    sys.argv = [sys.argv[0], *argv]  # let prime-pydantic-config render help/errors
+    sys.argv = [sys.argv[0], *argv]
     config = cli(InitConfig)
     if not config.name:
         raise SystemExit(USAGE)

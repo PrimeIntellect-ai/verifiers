@@ -252,7 +252,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
 def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTaskData:
     """Carry the v0 prompt's meta onto the v1 task: the system message becomes
     ``system_prompt``, the user message(s) become ``prompt``, and the reference
-    ``answer`` rides along as a taskset-extra field (``WireTaskData`` allows extras)."""
+    ``answer`` rides along as a task-specific extra field (``WireTaskData`` allows extras)."""
     system_prompt: str | None = None
     user_texts: list[str] = []
     for m in prompt or []:
@@ -398,7 +398,7 @@ class LegacyEnvServer(EnvServer):
         return RunGroupResponse(traces=traces)
 
 
-# --- in-process v0 eval (the `eval` CLI's `--legacy.id` path) ------------------
+# --- in-process v0 eval (the `eval` CLI's `--id` path) -------------------------
 
 
 def _eval_client(client_config: ClientConfig, model: str):
@@ -430,15 +430,7 @@ def _legacy_output_dir(config) -> Path:
 
 
 async def run_legacy_eval(config) -> list[Trace]:
-    """In-process v0 eval used by the `eval` CLI when `config.is_legacy` (a legacy `id` is
-    set, no v1 `taskset`).
-
-    Loads the v0 env, runs `num_rollouts` per task with bounded concurrency, maps each v0
-    `RolloutOutput` to a v1 `Trace` (`rollout_output_to_trace`), persists results as they
-    land (the same `traces.jsonl` / `config.toml` a native run writes), and returns the
-    traces. The v0 env is run directly (`env.run_rollout`, no env server), so this needs no
-    runtime / interception server. All v0 specifics live here; the CLI only branches on
-    `config.is_legacy`."""
+    """Run a legacy environment in process and return v1 traces."""
     import asyncio
     import random
 

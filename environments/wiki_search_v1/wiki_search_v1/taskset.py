@@ -1,12 +1,9 @@
-"""wiki-search: answer trivia by searching a wiki corpus (read-only tools + judge).
+"""Answer trivia with a worker-shared wiki corpus and a reference judge.
 
-The opposite shape from wikispeedia: read-only tools and an LLM-judge reward. The taskset
-loads questions from a HuggingFace dataset and exposes semantic `search_pages` +
-`view_sections`/`read_section` over the full corpus (chroma index) via a `vf.Toolset`. The
-expensive corpus + index are built in the toolset's `setup` (runs in the server process), and
-the toolset is SHARED — one instance for the whole eval, not rebuilt per rollout. Grading is
-the plugged built-in `reference` judge (a default `judges` entry, overridable per eval) with a
-prompt that also requires coherence.
+The tool server builds an expensive corpus/index in its process-level `setup`, so
+`Taskset.tools` launches one instance per environment worker instead of rebuilding it
+per rollout. The tools are read-only; grading comes from the plugged `reference` judge,
+whose prompt also rejects incoherent answers.
 """
 
 import verifiers.v1 as vf
@@ -47,19 +44,16 @@ NUM_QUESTIONS = 20
 
 
 class WikiSearchTaskConfig(vf.TaskConfig):
-    # The built-in reference judge, plugged by default with this env's prompt (which also
-    # requires coherence). Fully eval-tunable: `--taskset.task.judges.0.model ...`, or
-    # replaced wholesale from the TOML's `[[taskset.task.judges]]`.
+    # Users can replace or reconfigure this judge through --taskset.task.judges.
     judges: vf.Judges = [
         vf.ReferenceJudgeConfig(prompt=JUDGE_PROMPT, question_field="question")
     ]
 
 
 class TriviaTaskData(vf.TaskData):
+    # These fields feed the reference judge's question and answer template values.
     question: str
     answer: str
-    # `question`/`answer` feed the plugged reference judge (it reads them off the row by
-    # field name: `question_field`/`answer_field`).
 
 
 class TriviaTask(vf.Task[TriviaTaskData, vf.State, WikiSearchTaskConfig]):
@@ -67,17 +61,12 @@ class TriviaTask(vf.Task[TriviaTaskData, vf.State, WikiSearchTaskConfig]):
 
 
 class WikiSearchConfig(vf.TasksetConfig):
-    # The chroma corpus is expensive, so the toolset is TASKSET-scoped: one shared server
-    # for the whole eval (its own runtime), reused across rollouts rather than rebuilt per
-    # rollout. Its knobs live at the taskset level: `--taskset.tools.runtime.type docker`.
     tools: vf.SharedToolsetConfig = vf.SharedToolsetConfig()
     task: WikiSearchTaskConfig = WikiSearchTaskConfig()
 
 
 class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
     tools = (WikiSearchToolset,)
-    # Declared on the TASKSET: shared scope is structural (one eval-level server),
-    # built with `WikiSearchConfig.tools` via `Taskset.server_config`.
 
     def load(self) -> list[TriviaTask]:
         from datasets import load_dataset

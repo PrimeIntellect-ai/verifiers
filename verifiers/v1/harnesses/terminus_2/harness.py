@@ -1,5 +1,3 @@
-"""The Terminus 2 harness: runs Harbor's tmux agent through LiteLLM."""
-
 import logging
 from pathlib import Path
 
@@ -13,8 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 class Terminus2HarnessConfig(HarnessConfig):
-    """The Harbor Terminus 2 harness."""
-
     version: str = "0.14.0"
     """Harbor release to install, pinned for reproducibility."""
 

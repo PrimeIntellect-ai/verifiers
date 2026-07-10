@@ -1,4 +1,4 @@
-"""Remote Modal sandbox runtime: run the program in a Modal sandbox, reached via a tunnel.
+"""Remote Modal sandbox runtime.
 
 `expose` (sandbox port -> public internet) uses Modal's own forwarding — a port named via
 `encrypted_ports` at `Sandbox.create`, read back from `sandbox.tunnels()` — so a host-side
@@ -39,8 +39,7 @@ class ModalConfig(BaseConfig):
     network_access: bool = True
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
-    # TaskResources, in Modal's native units (also settable per-task via Task.resources, with
-    # precedence cli/toml > task > this default).
+    # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float = 1.0
     """CPU cores."""
     memory: float = 2.0
@@ -56,12 +55,10 @@ class ModalConfig(BaseConfig):
 
 
 class ModalRuntimeInfo(ModalConfig, BaseRuntimeInfo):
-    """`ModalConfig` + the resolved `id` — the modal sandbox object id."""
+    pass
 
 
 class ModalRuntime(Runtime):
-    """Runs the program in a Modal sandbox; the server is reached via a tunnel."""
-
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: ModalConfig, name: str | None = None) -> None:

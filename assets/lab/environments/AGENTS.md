@@ -28,29 +28,34 @@ However, for most environments, building a taskset should be enough.
 ## A minimal environment
 
 ```python
-import verifiers.v1 as vf 
+import verifiers.v1 as vf
 
 
-# A task defines a single problem and is defined as a subclass of vf.Task
-class AdditionTask(vf.Task):
+# The data for a given task
+class AdditionData(vf.TaskData):
     answer: int
 
 
-# The taskset defines the dataset (collection of tasks) and needs a vf.TasksetConfig, which can be empty.
+# A task defines a single problem and is defined as a subclass of vf.Task
+class AdditionTask(vf.Task[AdditionData]):
+    # @vf.reward denotes the scoring function for the task.
+    # It needs the trace, which contains the whole message graph, including function calls, user messages etc.
+    # It returns the reward for the single task based on this function.
+    @vf.reward
+    async def exact_match(self, trace: vf.Trace) -> float:
+        return float(trace.last_reply == str(self.data.answer))
+
+
+# The taskset defines the tasks and needs a vf.TasksetConfig, which can be empty.
 class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
-    def load_tasks(self) -> list[AdditionTask]:
-        # Load the dataset, in this case we built it on the initial load
+    def load(self) -> list[AdditionTask]:
         return [
-            AdditionTask(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i)
+            AdditionTask(
+                AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i),
+                self.config.task,
+            )
             for i in range(100)
         ]
-
-    # @vf.reward denotes the scoring function for the environment.
-    # It needs the actual task (defined earlier) as well as the trace, which contains the whole message graph, including function calls, user messages etc.
-    # It returns the reward for the rollout based on this function.
-    @vf.reward
-    async def exact_match(self, task: AdditionTask, trace: vf.Trace) -> float:
-        return float(trace.last_reply == str(task.answer))
 
 
 # Export the Taskset for verifiers to find it when loading
@@ -69,14 +74,34 @@ class AdditionConfig(vf.TasksetConfig):
     num_tasks: int = 100
 
 class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
-    def load_tasks(self) -> list[AdditionTask]:
+    def load(self) -> list[AdditionTask]:
         return [
-            AdditionTask(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i)
+            AdditionTask(
+                AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i),
+                self.config.task,
+            )
             for i in range(self.config.num_tasks) # <- re-use the value here
         ]
-
 ```
-Common usages for `vf.TasksetConfig` are settings like splits (e.g., train/test), difficulty settings, judge model names, etc.
+
+Common usages for `vf.TasksetConfig` are load-time settings, such as splits (e.g., train/test), dataset names, etc.
+
+You can also use `vf.TaskConfig` to configure task data, such as scoring parameters:
+
+```python
+class AdditionTaskConfig(vf.TaskConfig):
+    tolerance: float = 0.0
+
+class AdditionTask(vf.Task[AdditionData, vf.State, AdditionTaskConfig]):
+    @vf.reward
+    async def exact_match(self, trace: vf.Trace) -> float:
+        tolerance = self.config.tolerance  # A task-wide confgi
+        ...
+
+class AdditionConfig(vf.TasksetConfig):
+    num_tasks: int = 100                             # --taskset.num-tasks
+    task: AdditionTaskConfig = AdditionTaskConfig()  # --taskset.task.tolerance
+```
 
 ## Adding Tools
 
@@ -105,6 +130,8 @@ class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
         return [SearchToolset(self.config.tools)]
 ```
 
+Tools can also be set per task, not just per taskset.
+
 ## Using Judges
 
 If your reward is semantic, use an LLM judge.
@@ -128,31 +155,41 @@ class CorrectnessJudge(vf.Judge[bool]):
         return "yes" in response.text
 
 
-class Config(vf.TasksetConfig):
-    # The judge inherits base_url and api keys from the client config (env vars, with the Prime CLI config as a fallback)
+class JudgedData(vf.TaskData):
+    answer: str
+
+
+class JudgedTaskConfig(vf.TaskConfig):
+    # The judge inherits base_url and api keys from the client config
     judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
 
 
-class JudgeTraceTaskset(vf.Taskset[Task, Config]):
-    # Build the judge lazily from config — no Taskset.__init__ override needed.
-    @cached_property
-    def judge(self) -> CorrectnessJudge:
-        return CorrectnessJudge(self.config.judge)
-
-    def load_tasks(self) -> list[Task]:
-        return [Task(idx=0, prompt="What is 2+2?", answer="4")]
-
+class JudgedTask(vf.Task[JudgedData, vf.State, JudgedTaskConfig]):
     @vf.reward()
-    async def correct(self, task, trace) -> float:
-        result = await self.judge.evaluate(
-            trace=trace, 
-            question=task.prompt, 
-            answer=task.answer, 
-            # give the last assistant message to the judge
-            response=trace.last_reply
+    async def correct(self, trace: vf.Trace) -> float:
+        # Keeping judge configuration on TaskConfig makes it overridable from CLI/TOML.
+        judge = CorrectnessJudge(self.config.judge)
+        result = await judge.evaluate(
+            trace=trace,
+            question=self.data.prompt,
+            answer=self.data.answer,
+            response=trace.last_reply,  # Grade the final assistant answer.
         )
-        return 1.0 if result.parsed else 0.0
+        return float(result.parsed)
+
+
+class SetConfig(vf.TasksetConfig):
+    task: JudgedTaskConfig = JudgedTaskConfig()
+
+
+class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
+    def load(self) -> list[JudgedTask]:
+        return [
+            JudgedTask(
+                JudgedData(idx=0, prompt="What is 2+2?", answer="4"),
+                self.config.task,
+            )
+        ]
 ```
 
-To override the judge model, set `taskset.judge.model` in your config (it is a string).
-Sampling knobs live under `taskset.judge.sampling` — e.g. `taskset.judge.sampling.max_tokens`.
+To override the judge model, set `taskset.task.judge.model` in your config (it is a string).

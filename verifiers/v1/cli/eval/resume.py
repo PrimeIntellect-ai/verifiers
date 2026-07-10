@@ -55,11 +55,6 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
 
 
 class Finished(Rollout):
-    """A finished rollout reloaded from a previous session (see `load`): carries just the
-    surface the dashboard reads (`trace`/`task`/`phase`/`runtime`), so a resumed run's kept
-    rollouts render exactly like this session's. The saved row is pure data, so it's wrapped
-    in the base `Task` (display reads `task.data`; no behavior is needed)."""
-
     def __init__(self, trace: Trace) -> None:
         self.trace = trace
         self.task = Task(trace.task)

@@ -1,10 +1,8 @@
-"""glossary: a custom tool server, authored as a vf-native class.
+"""The simplest locally authored, task-scoped tool example.
 
-Each task asks the model to look up an entity. The tool server is a `vf.Toolset` subclass in
-`servers/facts.py` (`@vf.tool` methods, no FastMCP boilerplate); the framework launches it in its
-own runtime and surfaces its `lookup` tool as `facts_lookup`. The reward checks the looked-up fact
-reached the answer. The simplest tool example — contrast `wikispeedia` (per-task state),
-`wiki_search` (shared), `deepwiki` (remote).
+`GlossaryToolset` is a vf-native class with an `@vf.tool` method. Verifiers launches
+one server per rollout and exposes it as `facts_lookup`; compare `deepwiki` for a remote
+server and `wiki_search` for an expensive worker-shared server.
 """
 
 import verifiers.v1 as vf
@@ -23,8 +21,6 @@ class GlossaryTaskData(vf.TaskData):
 
 class GlossaryTask(vf.Task[GlossaryTaskData, vf.State, GlossaryTaskConfig]):
     tools = (GlossaryToolset,)
-    # Built with the task config's `tools` field (placement stays CLI-tunable via
-    # --taskset.task.tools.*), resolved by `Task.server_config`.
 
     @vf.reward(weight=1.0)
     async def looked_up(self, trace: vf.Trace) -> float:

@@ -105,8 +105,6 @@ class ColorCodewordTask(
     vf.Task[ColorCodewordTaskData, ColorCodewordState, ColorCodewordTaskConfig]
 ):
     user = ColorCodewordUser
-    # Built with the task config's `user` field (placement stays CLI-tunable via
-    # --taskset.task.user.*), resolved by `Task.server_config`.
 
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:

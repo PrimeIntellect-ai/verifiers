@@ -181,6 +181,7 @@ class MessageNode(StrictBaseModel):
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
+    # Ignore JSON key order and whitespace when hashing equivalent tool calls.
     try:
         return json.dumps(json.loads(arguments), sort_keys=True, separators=(",", ":"))
     except (json.JSONDecodeError, ValueError):
@@ -434,15 +435,6 @@ def _attribute_routed_experts(
 
 
 def _commit_turn(turn: PendingTurn, response: Response) -> None:
-    """Insert one prepared model turn into the graph.
-
-    Token attribution anchors new tokens to the cumulative *stored* length of the reused
-    prefix (`path_len`), not message spans — the previous assistant's closing scaffold lives
-    in its later input-form span but not its stored generation form, so anchoring on spans
-    would drop it. The new tokens (`prompt_ids[path_len:]`) are split among the new input
-    messages by span (leading template scaffold folds into the following message), and the
-    trailing generation prompt goes on the assistant node before its sampled completion. By
-    construction `concat(node.token_ids along the path) == prompt_ids + completion_ids`."""
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens

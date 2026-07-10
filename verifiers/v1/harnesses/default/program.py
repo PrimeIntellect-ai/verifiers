@@ -2,19 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp", "httpx"]
 # ///
-"""The default harness's program: a chat loop with a local `bash` tool (+ optional `edit`, `search`, MCP).
-
-A growing-message-list chat loop. It always offers a local `bash` tool that runs shell commands in
-the runtime; with `--edit` it also offers a local `edit` tool that replaces a unique string in a
-file, and with `--search` a `search` tool (Serper Google search). When the harness sets
-MCP_CONFIG (a standard `mcpServers` URL map) it also connects to those servers over streamable
-HTTP, exposes their tools to the model as `<server>_<tool>`, and routes those calls to the server.
-The loop runs until the model answers without a tool call.
-
-It runs as a uv script (deps: openai, mcp, httpx), so the chat + tool plumbing is just the SDKs —
-the harness bootstraps `uv` in the runtime. The interception endpoint, per-rollout secret, model,
-and serper key arrive as argv (not env), so the local tools' subprocesses never inherit them.
-"""
+"""Secrets arrive through argv so local tool subprocesses do not inherit them."""
 
 import argparse
 import asyncio

@@ -11,7 +11,7 @@ from verifiers.v1.types import AssistantMessage, UserMessage
 
 
 class MyTask(vf.TaskData):
-    answer: str = ""  # a taskset-specific field WireTaskData must absorb
+    answer: str = ""  # a task-specific field WireTaskData must absorb
 
 
 class MyState(vf.State):
@@ -29,7 +29,7 @@ def test_bare_trace_round_trip():
 
 
 def test_custom_task_state_round_trip():
-    # A custom Task + State, round-tripped into the same parameterization. Custom task fields are
+    # Custom data and state round-trip into the same parameterization. Data fields are
     # typed (not just `model_extra`); `state` is runtime-only and never crosses the wire.
     tr = vf.Trace[MyTask, MyState](
         task=MyTask(idx=0, prompt="q", answer="gold"),

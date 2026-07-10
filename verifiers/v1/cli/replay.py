@@ -1,16 +1,7 @@
-"""The replay entrypoint: `uv run replay <output-dir> [options] [@ file.toml]`.
+"""Offline scoring for saved traces.
 
-Offline sibling of `eval`: loads a finished run's saved traces and re-runs **scoring only**, no
-runtime. The run's own `config.toml` is the base; CLI flags / `@ file.toml` layer on top (e.g. a
-different judge model). Signals needing a `runtime` (in-sandbox verifiers like a SWE `solved`
-reward) are skipped and left as the source recorded them — group rewards likewise (no group
-context offline); the config's judges and trace-only `@reward`/`@metric`s re-run (judges are
-config, so the layered replay config decides exactly what judges). Metrics the
-re-score doesn't re-record (harness metrics, a skipped signal's direct writes) keep their source
-values. Rollouts that errored during generation (`stop_condition == "error"`)
-were never scored by eval, so they're copied through unchanged rather than re-scored on a broken
-transcript. `--num-rescores`/`-r` re-scores each trace N times to sample judge variance. Results go
-to a fresh output dir, so the source run is never overwritten.
+Replay runs trace-only handlers and judges, preserving runtime and group scores recorded
+by the source run. Its saved config is the base for replay-specific overrides.
 """
 
 import asyncio
@@ -35,7 +26,7 @@ from verifiers.v1.cli.output import (
 )
 from verifiers.v1.configs.replay import ReplayConfig
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task, WireTaskData, task_data_cls
+from verifiers.v1.task import WireTaskData, task_data_cls
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.logging import setup_logging
 
@@ -48,8 +39,7 @@ USAGE = (
 
 
 def _narrow(config_path: Path) -> type[ReplayConfig]:
-    """`ReplayConfig` with `taskset` narrowed to the saved run's taskset type, so the `cli()`
-    parse stays typed and CLI overrides of taskset fields validate (mirrors eval/validate)."""
+    """Narrow replay config to the saved taskset's config type."""
     data = tomllib.loads(config_path.read_text())
     taskset_id = (data.get("taskset") or {}).get("id")
     if not taskset_id:
@@ -63,7 +53,7 @@ def _narrow(config_path: Path) -> type[ReplayConfig]:
 
 
 def output_dir(config: ReplayConfig) -> Path:
-    """Where a replay writes: `--output-dir`, else a fresh `outputs/<taskset>--replay/<uuid>`."""
+    """Resolve a replay's output directory."""
     return config.output_dir or Path("outputs") / f"{config.name}--replay" / config.uuid
 
 
@@ -71,32 +61,12 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     logger.debug("replay config:\n%s", config.model_dump_json(indent=2))
     task_cls = vf.task_type(config.taskset.id)
     data_cls = task_data_cls(task_cls)
-    # `WireTaskData` reads any taskset's saved task without a runtime or its Task type (see WireTaskData).
+    # Rebuild wire data as concrete TaskData so subclass scoring sees typed fields.
     traces = read_traces(source, Trace[WireTaskData, state_cls(task_cls)])
     if config.num_traces is not None:
         traces = traces[: config.num_traces]
-    # `trace.task` is pure data; re-scoring with the taskset's behavior needs the declared
-    # `TaskData` type — which every saved row is (`Taskset.tasks` constructs one task type).
-    # A row that can't be rebuilt from the wire (a load-time-only field excluded from
-    # serialization, like harbor's `task_dir`) stays a `WireTaskData` and is scored by the
-    # base `Task` (judges + base signals only; the subclass's own `@reward`s don't run —
-    # runtime-dependent ones would be skipped offline anyway).
     for trace in traces:
-        try:
-            trace.task = data_cls.model_validate(trace.task.model_dump())
-        except Exception:
-            logger.warning(
-                "replay: can't rebuild %s from the saved task %s; re-scoring it as a "
-                "plain WireTaskData (judges + base-task signals only)",
-                data_cls.__name__,
-                trace.task.idx,
-                exc_info=True,
-            )
-    # Judges are config, not wire data: `Task.score` resolves them from the replay
-    # config's `taskset.task.judges` (the source run's config.toml layered under any CLI
-    # overrides) — so a re-tuned judge overrides the recorded run's and a newly-plugged
-    # one joins, with no trace surgery.
-    # `num_rescores` re-scores each trace that many times, each on its own copy.
+        trace.task = data_cls.model_validate(trace.task.model_dump())
     work = [t.model_copy(deep=True) for t in traces for _ in range(config.num_rescores)]
 
     save_config(config, out)
@@ -116,50 +86,31 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     async def rescore(trace: Trace, st: ReplayProgress) -> None:
         async with sem or contextlib.nullcontext():
             st.start = time.time()
-            # A rollout that errored during generation was never scored by eval (its scoring phase
-            # never ran), so re-scoring would grade a broken/partial transcript. Copy it through
-            # unchanged, mirroring eval. A *scoring* error leaves `stop_condition` as the
-            # generation outcome, so those still re-score (the offline-recovery case).
+            # Generation failures have no complete transcript to score.
             if trace.stop_condition == "error":
                 st.state, st.detail, st.end = "skipped", "rollout errored", time.time()
             else:
                 st.state = "running"
-                # Clear prior scores so a changed/removed judge leaves no stale (double-summed) entry.
-                if isinstance(trace.info, dict):
-                    trace.info.pop("judge", None)
+                # Recompute trace-only scores after restoring runtime-only values below.
+                trace.info.pop("judge", None)
                 prior_rewards, prior_metrics = trace.rewards, trace.metrics
                 trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
-                # The behavior wrapper around the saved row: the declared Task for a
-                # rebuilt row, the base Task (judges + base signals) for a WireTaskData
-                # fallback; the replay config's task subtree supplies the knobs.
-                task = (task_cls if isinstance(trace.task, data_cls) else Task)(
-                    trace.task, config=config.taskset.task
-                )
+                task = task_cls(trace.task, config=config.taskset.task)
                 try:
-                    # Pre-fill the runtime-only values the offline `score` can't recompute
-                    # BEFORE scoring — so trace-only signals that read them (e.g. a
-                    # `@reward` reading a runtime `@metric`'s entry) see them, and a failed
-                    # re-score still persists them.
+                    # Trace-only handlers may depend on restored runtime metrics.
                     task.restore_offline(trace, prior_rewards, prior_metrics)
                     await task.score(trace)
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
                     st.state, st.detail = "error", type(exc).__name__
-                    trace.capture_error(
-                        exc
-                    )  # record the re-scoring failure on the trace
+                    trace.capture_error(exc)
                     if not config.rich:
                         logger.warning(
                             "replay: scoring failed for task %s",
                             trace.task.idx,
                             exc_info=True,
                         )
-                # Source metrics the re-score didn't re-record survive wholesale — harness
-                # metrics and direct `record_metric` writes by skipped runtime signals are
-                # unattributable to a producer (`Task.restore_offline` covers only returned
-                # keys). Fill-if-missing: everything re-recorded above keeps its fresh
-                # value. Rewards get no such sweep — they stay attributed, so a removed
-                # judge's entry is not resurrected into the reward sum.
+                # Harness and direct-write metrics have no attributable producer.
                 for name, value in prior_metrics.items():
                     trace.metrics.setdefault(name, value)
                 st.end = time.time()
@@ -167,7 +118,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
             logger.info(
                 "idx=%s %s (%.1fs)", trace.task.idx, st.state, st.end - st.start
             )
-        # Persist as each trace finishes (like eval), so an interrupted replay keeps its progress.
+        # Persist each result as it lands so an interrupted replay keeps its progress.
         await append_trace(out, trace, lock)
 
     display = (
@@ -188,44 +139,39 @@ def main(argv: list[str] | None = None) -> None:
         sys.argv = [sys.argv[0], "--help"]
         cli(ReplayConfig)  # full, typed pydantic-config option help
         return
-    source = Path(argv.pop(0))  # the finished run dir to replay
+    source = Path(argv.pop(0))
     config_path = source / CONFIG_FILE
     if not config_path.exists():
         raise SystemExit(f"{USAGE}\nno config.toml in {source}")
 
-    # The saved run's config is the base; user flags / @ file.toml layer on top.
     layered = ["@", str(config_path), *argv]
     config_type = _narrow(config_path)
     sys.argv = [sys.argv[0], *layered]
     config = cli(config_type)
-    # Honor a user-set output_dir (via -o or an @ file); drop the *source* run's own output_dir
-    # so a replay always writes to a fresh dir and never back over the run it re-scores.
-    source_out = (tomllib.loads(config_path.read_text())).get("output_dir")
+    source_out = tomllib.loads(config_path.read_text()).get("output_dir")
+    # Clear the source run's output_dir unless the user overrode it.
     if config.output_dir is None or str(config.output_dir) == str(source_out):
         config = config.model_copy(update={"output_dir": None})
 
     out = output_dir(config)
-    if (
-        out.resolve() == source.resolve()
-    ):  # never write back over the run being replayed
+    if out.resolve() == source.resolve():
         raise SystemExit(
             f"replay: --output-dir must differ from the source run ({source}); "
             "refusing to overwrite it"
         )
     level = "DEBUG" if config.verbose else "INFO"
-    if config.dry_run:  # resolve + validate, write the config, and exit (no re-scoring)
+    if config.dry_run:
         setup_logging(level)
         logger.info("wrote config to %s", write_config(config, out))
         return
 
-    log_file = str(
-        out / "replay.log"
-    )  # tee the run's logs to its output dir, like eval
-    if config.rich:  # the dashboard owns the screen, so keep logs off the console
+    log_file = str(out / "replay.log")
+    if config.rich:
         setup_logging(level, log_file=log_file, console=False)
         logging.lastResort = None
     else:
         setup_logging(level, log_file=log_file, console=True)
+    # Translate SIGTERM so async finally blocks still tear down their resources.
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     asyncio.run(run_replay(config, source, out))
 
