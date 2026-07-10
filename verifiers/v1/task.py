@@ -13,7 +13,7 @@ a `TaskData` plus a `TaskConfig`, both plain constructor arguments:
 
     task = MyTask(data)                        # config defaults to the declared type's
     task = MyTask(data, config=MyTaskConfig()) # or is injected, like Taskset/Harness/Judge
-    task = MyTask.from_trace(trace)            # or derived from a finished rollout
+    task = MyTask.from_trace(trace)            # opt-in: derived from a finished rollout
 
 Subclass per dataset and parameterize `Task[MyData, MyState, MyConfig]` (all three
 default) — hooks and signals read the row off `self.data` and the knobs off
@@ -278,7 +278,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
         MyTask(data)                         # config = the declared type's defaults
         MyTask(data, config=MyTaskConfig())  # or injected
-        MyTask.from_trace(trace)             # or derived from a finished rollout
+        MyTask.from_trace(trace)             # opt-in: derived from a finished rollout
 
     A taskset's `load()` constructs one per row with the eval's `TasksetConfig.task`.
     Hooks and signals read the row off `self.data` and the knobs off `self.config`; one
@@ -323,13 +323,18 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     @classmethod
     def from_trace(cls, trace: Trace, *, config: ConfigT | None = None) -> Self:
-        """Derive a task from a rollout's trace — the constructor for tasks that are not
-        loaded from a taskset (e.g. a multi-agent step spawning a follow-up task from a
-        finished trajectory). Rebuilds the declared `TaskData` from the trace's saved row;
-        the config is the explicit `config` if given, else the declared type's defaults
-        (the trace carries data only — configs come from whoever spawns the task)."""
-        data = task_data_cls(cls).model_validate(trace.task.model_dump())
-        return cls(data, config=config)  # type: ignore[arg-type]
+        """Derive a task from the trace of a previous rollout — the opt-in constructor
+        for tasks that are not loaded from a taskset (e.g. a multi-agent step spawning a
+        follow-up task from a finished trajectory). The trace is a *bare* `Trace`: its
+        task/state need not be this task's declared types — the override decides what to
+        read off it and how to build the new row. Not implemented by default; a task that
+        implements it declares it can be spawned from a finished rollout. The config is
+        the explicit `config` if given, else the declared type's defaults (the trace
+        carries data only — configs come from whoever spawns the task)."""
+        raise NotImplementedError(
+            f"{cls.__name__} cannot be constructed from a trace — override "
+            f"`from_trace` to define how a finished rollout spawns this task"
+        )
 
     def plugged_judges(self) -> list[Judge]:
         """The runtime `Judge` objects for this task's plugged judges — resolved from

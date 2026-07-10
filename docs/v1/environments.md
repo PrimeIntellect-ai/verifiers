@@ -111,9 +111,10 @@ class AdditionConfig(vf.TasksetConfig):
 The boundary: per-row data (the question, the reference answer) lives on `TaskData` fields;
 values uniform across the taskset live on the config — load-time ones directly on the
 `TasksetConfig`, task-facing ones under `task`. A task can also be constructed directly —
-`AdditionTask(data, config=AdditionTaskConfig(...))`, or `AdditionTask.from_trace(trace)`
-to derive one from a finished rollout — and an omitted config defaults to the declared
-type's defaults, so a standalone task works out of the box. Only the data rides the wire:
+`AdditionTask(data, config=AdditionTaskConfig(...))` — and an omitted config defaults to
+the declared type's defaults, so a standalone task works out of the box. Overriding
+`from_trace(trace)` (not implemented by default) opts a task into being derived from a
+finished rollout's bare `Trace` — how a multi-agent step spawns a follow-up task. Only the data rides the wire:
 `trace.task` is the `TaskData`, and behavior re-attaches by constructing the task class
 around it.
 
