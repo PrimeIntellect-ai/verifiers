@@ -60,6 +60,13 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
         "prompt": [],
         "completion": dump(branches[-1].messages) if branches else [],
         "answer": task.get("answer"),
+        # The tools advertised to the model (`Trace.tool_defs`) — the v0 sample format
+        # already carries `tool_defs`, so bridged and native rollouts render the same.
+        "tool_defs": [
+            t.model_dump(mode="json", exclude_none=True) for t in trace.tool_defs
+        ]
+        if trace.tool_defs
+        else None,
         "reward": trace.reward,
         "timing": trace.timing.model_dump(mode="json", exclude_none=True),
         "is_completed": trace.is_completed,

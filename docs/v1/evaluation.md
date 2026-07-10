@@ -43,6 +43,10 @@ The output from evaluations are written into `outputs/<taskset>--<model>--<harne
 
 `--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `results.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone.
 
+## Exporting SFT data
+
+`uv run export-sft <run-dir>` reshapes a finished run's saved traces into an SFT dataset that [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl)'s `uv run sft` consumes directly: a `messages` column (OpenAI chat wire shape) plus a `tool_defs` column (the tools advertised to the model, from `trace.tool_defs`). One row per branch; errored traces are always dropped. `--min-reward 1.0` keeps only solved rollouts, `--drop-truncated` drops budget-cut ones. Writes `<run-dir>/sft/train.parquet` (readable via `load_dataset`, i.e. prime-rl's `data.name`), or pushes to the Hugging Face Hub with `--push <repo-id>`.
+
 ## Disabling tools
 
 Almost every harness comes with a `disabled_tools` list, which can be used to disable one or multiple tools:
