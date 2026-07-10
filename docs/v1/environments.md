@@ -192,16 +192,18 @@ class Config(vf.TaskConfig):
     judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
 
 
-class JudgedTask(vf.Task[vf.State, Config]):
+class JudgedData(vf.TaskData):
     answer: str
 
+
+class JudgedTask(vf.Task[JudgedData, vf.State, Config]):
     @vf.reward()
     async def correct(self, trace: vf.Trace) -> float:
         judge = CorrectnessJudge(self.config.judge)  # config knobs stay CLI-tunable
         result = await judge.evaluate(
             trace=trace,
-            question=self.prompt,
-            answer=self.answer,
+            question=self.data.prompt_text,
+            answer=self.data.answer,
             # give the last assistant message to the judge
             response=trace.last_reply,
         )
@@ -214,7 +216,12 @@ class SetConfig(vf.TasksetConfig):
 
 class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
     def load(self) -> list[JudgedTask]:
-        return [JudgedTask(idx=0, prompt="What is 2+2?", answer="4")]
+        return [
+            JudgedTask(
+                JudgedData(idx=0, prompt="What is 2+2?", answer="4"),
+                self.config.task,
+            )
+        ]
 ```
 
 To override the judge model, set `taskset.task.judge.model` in your config (it is a string).
