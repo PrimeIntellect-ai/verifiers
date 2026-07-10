@@ -32,7 +32,8 @@ class InfoRequest(BaseRequest):
 
 
 class InfoResponse(BaseResponse):
-    num_tasks: int = 0
+    num_tasks: int | None = None
+    """Task count; `None` means the taskset is infinite (bound runs with `num_tasks`)."""
     requires_group_scoring: bool = False
     """Whether tasks must be run and resumed as whole groups."""
 

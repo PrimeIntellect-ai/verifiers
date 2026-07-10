@@ -1,11 +1,16 @@
 """The taskset: a thin loader that yields typed tasks.
 
 A `Taskset` is the data half of an environment: config in, tasks out. `load()` — the one
-subclass hook, and the one method consumers call — builds each row's `TaskData` and wraps
-it in the task type with the config's task-facing subtree:
+subclass hook — builds each row's `TaskData` and wraps it in the task type with the
+config's task-facing subtree:
 
-    def load(self) -> list[MyTask]:
+    def load(self) -> Iterable[MyTask]:
         return [MyTask(MyData(idx=i, ...), self.config.task) for i in ...]
+
+`load` may also be a generator — yielding each task as it's built, possibly forever (a
+procedural taskset; override `infinite` to say so). Runs materialize the tasks they need
+through `select`, which pulls only that many off a generator; the env server instead
+pulls `load` on demand, task by task.
 
 Load-time knobs (dataset, split, seed) live on the taskset config; the task-facing knobs
 under its `task` subtree (`TasksetConfig.task`, a `TaskConfig`, everything under
@@ -22,6 +27,10 @@ replay can rebuild every saved row as the declared type's data and re-wrap it.
 
 from __future__ import annotations
 
+import itertools
+import logging
+import random
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, ClassVar, Generic
 
 from pydantic import SerializeAsAny
@@ -34,6 +43,8 @@ from verifiers.v1.utils.install import env_name
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset
+
+logger = logging.getLogger(__name__)
 
 
 class TasksetConfig(BaseConfig):
@@ -57,8 +68,42 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
     def __init__(self, config: TasksetConfigT) -> None:
         self.config = config
 
-    def load(self) -> list[TaskT]:
+    def load(self) -> Iterable[TaskT]:
         raise NotImplementedError
+
+    @property
+    def infinite(self) -> bool:
+        """Whether `load` yields tasks forever. An infinite taskset must be bounded with
+        `num_tasks` when selecting and can't be shuffled. Typically overridden as
+        `return self.config.num_tasks is None` on a procedural taskset."""
+        return False
+
+    def select(
+        self, num_tasks: int | None = None, shuffle: bool = False, seed: int = 0
+    ) -> list[TaskT]:
+        """Materialize the tasks a run needs: the first `num_tasks` off `load` (all of
+        them when `None`), pulled lazily — a generator `load` only builds what the run
+        takes. `shuffle` samples the subset from the whole taskset instead, which
+        materializes everything first; on an infinite taskset it's a no-op (warned) —
+        the first `num_tasks` generated tasks are already an arbitrary sample."""
+        if self.infinite:
+            if num_tasks is None:
+                raise ValueError(
+                    f"{type(self).__name__} is infinite - select a bounded subset "
+                    "with num_tasks (-n on the CLI)"
+                )
+            if shuffle:
+                logger.warning(
+                    "shuffle is a no-op on an infinite taskset - "
+                    "taking the first %d generated tasks",
+                    num_tasks,
+                )
+            return list(itertools.islice(self.load(), num_tasks))
+        if shuffle:
+            tasks = list(self.load())
+            random.Random(seed).shuffle(tasks)
+            return tasks[:num_tasks]
+        return list(itertools.islice(self.load(), num_tasks))
 
     def server_config(self, server_cls: type) -> BaseConfig:
         """The config a `tools` entry is built with, resolved off `self.config` (the

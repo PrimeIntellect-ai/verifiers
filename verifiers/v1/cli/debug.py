@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import logging
-import random
 import shlex
 import signal
 import sys
@@ -267,11 +266,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
 
 async def run_debug(config: DebugConfig) -> list[Trace]:
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.load()
-    if config.shuffle:
-        random.Random(0).shuffle(tasks)
-    if config.num_tasks is not None:
-        tasks = tasks[: config.num_tasks]
+    tasks = taskset.select(config.num_tasks, config.shuffle)
     if isinstance(config.runtime, vf.SubprocessConfig) and any(
         type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):

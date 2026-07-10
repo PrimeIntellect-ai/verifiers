@@ -25,10 +25,7 @@ _SHUFFLE_SEED = (
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
-    tasks = env.taskset.load()
-    if config.shuffle:
-        random.Random(_SHUFFLE_SEED).shuffle(tasks)
-    tasks = tasks if config.num_tasks is None else tasks[: config.num_tasks]
+    tasks = env.taskset.select(config.num_tasks, config.shuffle, seed=_SHUFFLE_SEED)
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.
@@ -169,11 +166,24 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         await client.wait_for_server_startup(timeout=600)
         info = await client.info()
         group_scored = info.requires_group_scoring
-        idxs = list(range(info.num_tasks))
-        if config.shuffle:
-            random.Random(_SHUFFLE_SEED).shuffle(idxs)
-        if config.num_tasks is not None:
-            idxs = idxs[: config.num_tasks]
+        if info.num_tasks is None:  # infinite taskset - the run must be bounded
+            if config.num_tasks is None:
+                raise ValueError(
+                    f"{config.env_id} is infinite - bound the run with -n/--num-tasks"
+                )
+            if config.shuffle:
+                logger.warning(
+                    "shuffle is a no-op on an infinite taskset - "
+                    "taking the first %d generated tasks",
+                    config.num_tasks,
+                )
+            idxs = list(range(config.num_tasks))
+        else:
+            idxs = list(range(info.num_tasks))
+            if config.shuffle:
+                random.Random(_SHUFFLE_SEED).shuffle(idxs)
+            if config.num_tasks is not None:
+                idxs = idxs[: config.num_tasks]
         out = output_path(config)
         finished: list[Trace] = []
         if config.resume is not None:

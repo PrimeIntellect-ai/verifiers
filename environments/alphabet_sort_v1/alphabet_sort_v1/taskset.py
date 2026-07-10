@@ -11,13 +11,15 @@ The whole conversation is driven by a `vf.User` simulator (`AlphabetSortUser` in
 conversation with the initial sort prompt — before the model is ever called — and then injects
 each follow-up after the assistant turn. The episode is one rollout the harness only ever sees
 as a single exchange. The simulator runs on the host (not colocated in the agent's runtime), so
-the host-driven loop reaches it on every runtime. The episodes are pre-generated in `load`;
-the simulator replays them.
+the host-driven loop reaches it on every runtime. `load` generates episodes on demand —
+forever, unless `num_tasks` bounds it: each pass over the source name lists draws fresh turn
+splits, so the stream never repeats. The simulator replays each generated episode.
 """
 
 import difflib
 import random
 import re
+from collections.abc import Iterator
 from typing import Literal
 
 from datasets import load_dataset
@@ -39,6 +41,8 @@ class AlphabetSortTaskConfig(vf.TaskConfig):
 
 
 class AlphabetSortConfig(vf.TasksetConfig):
+    num_tasks: int | None = None
+    """Episodes to generate; `None` yields forever (bound runs with `-n`)."""
     min_turns: int = 1
     """Minimum number of turns (assistant sorts) per episode."""
     max_turns: int = 3
@@ -106,83 +110,93 @@ class AlphabetSortTask(
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
-    def load(self) -> list[AlphabetSortTask]:
+    @property
+    def infinite(self) -> bool:
+        return self.config.num_tasks is None
+
+    def load(self) -> Iterator[AlphabetSortTask]:
         c = self.config
         assert 1 <= c.min_turns <= c.max_turns, "need 1 <= min_turns <= max_turns"
         assert 1 <= c.min_names_per_turn <= c.max_names_per_turn, (
             "need 1 <= min_names_per_turn <= max_names_per_turn"
         )
         rng = random.Random(SEED)
-        tasks: list[AlphabetSortTask] = []
-        for entry in load_dataset(DATASET, split=c.split):
-            names = list(dict.fromkeys(n.replace(" ", "") for n in entry["names"]))
-            counts = [
-                rng.randint(c.min_names_per_turn, c.max_names_per_turn)
-                for _ in range(rng.randint(c.min_turns, c.max_turns))
-            ]
-            if len(names) < sum(counts):
-                continue
-            by_first = rng.choice([True, False])
-            label = "FIRST" if by_first else "LAST"
+        entries = load_dataset(DATASET, split=c.split)
+        idx = 0
+        # Cycle the source name lists forever; the rng advances across passes, so every
+        # pass draws fresh turn splits and the episode stream never repeats.
+        while True:
+            pass_start = idx
+            for entry in entries:
+                if idx == c.num_tasks:
+                    return
+                names = list(dict.fromkeys(n.replace(" ", "") for n in entry["names"]))
+                counts = [
+                    rng.randint(c.min_names_per_turn, c.max_names_per_turn)
+                    for _ in range(rng.randint(c.min_turns, c.max_turns))
+                ]
+                if len(names) < sum(counts):
+                    continue
+                by_first = rng.choice([True, False])
+                label = "FIRST" if by_first else "LAST"
 
-            def sort_key(s: str) -> str:
-                # split at the first capital after index 0 -> first- vs last-name part
-                cut = next((i for i in range(1, len(s)) if s[i].isupper()), len(s))
-                return s[:cut] if by_first else s[cut:]
+                def sort_key(s: str) -> str:
+                    # split at the first capital after index 0 -> first- vs last-name part
+                    cut = next((i for i in range(1, len(s)) if s[i].isupper()), len(s))
+                    return s[:cut] if by_first else s[cut:]
 
-            turns, cumulative, ground_truths, i = [], [], [], 0
-            for count in counts:
-                turn = names[i : i + count]
-                i += count
-                turns.append(turn)
-                cumulative += turn
-                ranked = sorted(cumulative, key=sort_key)
-                ground_truths.append(
-                    ranked
-                    if len(turns) == 1
-                    else [f"{x} // new name!" if x in turn else x for x in ranked]
-                )
-
-            first = turns[0][:]
-            rng.shuffle(first)
-            shown = rng.randint(c.min_names_per_turn, c.max_names_per_turn)
-            initial_prompt = (
-                f"Sort these names in alphabetical order by {label} name: {', '.join(first)}\n\n"
-                "Use exactly this format:\n<alphabetical_sorted>\n"
-                + "\n".join(f"Name{j}" for j in range(1, shown + 1))
-                + "\n</alphabetical_sorted>"
-            )
-
-            follow_ups = []
-            for t in range(1, len(turns)):
-                shuffled = turns[t][:]
-                rng.shuffle(shuffled)
-                shown = rng.randint(
-                    c.min_names_per_turn, sum(len(x) for x in turns[: t + 1])
-                )
-                threshold = rng.randint(0, shown - 1)
-                prompt = (
-                    f"Now sort ALL of these names alphabetically by {label} name: {', '.join(shuffled)}\n\n"
-                    "These are in addition to the prior list. Mark any NEW names (that weren't "
-                    "in the prior list) with `// new name!` at the end."
-                )
-                if t == 1:
-                    prompt += (
-                        "\n\nUse exactly this format:\n<combined_alphabetical_sorted>\n"
-                        + "\n".join(
-                            f"Name{j}" + (" // new name!" if j > threshold else "")
-                            for j in range(1, shown + 1)
-                        )
-                        + "\n</combined_alphabetical_sorted>"
+                turns, cumulative, ground_truths, i = [], [], [], 0
+                for count in counts:
+                    turn = names[i : i + count]
+                    i += count
+                    turns.append(turn)
+                    cumulative += turn
+                    ranked = sorted(cumulative, key=sort_key)
+                    ground_truths.append(
+                        ranked
+                        if len(turns) == 1
+                        else [f"{x} // new name!" if x in turn else x for x in ranked]
                     )
-                else:
-                    prompt += " Follow the same format as before."
-                follow_ups.append(prompt)
 
-            tasks.append(
-                AlphabetSortTask(
+                first = turns[0][:]
+                rng.shuffle(first)
+                shown = rng.randint(c.min_names_per_turn, c.max_names_per_turn)
+                initial_prompt = (
+                    f"Sort these names in alphabetical order by {label} name: {', '.join(first)}\n\n"
+                    "Use exactly this format:\n<alphabetical_sorted>\n"
+                    + "\n".join(f"Name{j}" for j in range(1, shown + 1))
+                    + "\n</alphabetical_sorted>"
+                )
+
+                follow_ups = []
+                for t in range(1, len(turns)):
+                    shuffled = turns[t][:]
+                    rng.shuffle(shuffled)
+                    shown = rng.randint(
+                        c.min_names_per_turn, sum(len(x) for x in turns[: t + 1])
+                    )
+                    threshold = rng.randint(0, shown - 1)
+                    prompt = (
+                        f"Now sort ALL of these names alphabetically by {label} name: {', '.join(shuffled)}\n\n"
+                        "These are in addition to the prior list. Mark any NEW names (that weren't "
+                        "in the prior list) with `// new name!` at the end."
+                    )
+                    if t == 1:
+                        prompt += (
+                            "\n\nUse exactly this format:\n<combined_alphabetical_sorted>\n"
+                            + "\n".join(
+                                f"Name{j}" + (" // new name!" if j > threshold else "")
+                                for j in range(1, shown + 1)
+                            )
+                            + "\n</combined_alphabetical_sorted>"
+                        )
+                    else:
+                        prompt += " Follow the same format as before."
+                    follow_ups.append(prompt)
+
+                yield AlphabetSortTask(
                     AlphabetSortTaskData(
-                        idx=len(tasks),
+                        idx=idx,
                         # No prompt on the row: the simulator opens with the sort prompt, then
                         # the follow-ups — one user turn per `user_turns` entry.
                         prompt=None,
@@ -194,5 +208,9 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
                     ),
                     c.task,
                 )
-            )
-        return tasks
+                idx += 1
+            if idx == pass_start:
+                raise ValueError(
+                    "no source name list is long enough for the configured turns - "
+                    "lower min/max_turns or min/max_names_per_turn"
+                )

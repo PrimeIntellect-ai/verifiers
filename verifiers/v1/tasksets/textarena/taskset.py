@@ -6,8 +6,10 @@ outcome there; scoring reads that file instead of trusting conversational text.
 """
 
 import copy
+import itertools
 import json
 import random
+from collections.abc import Iterator
 from typing import Literal
 
 import verifiers.v1 as vf
@@ -88,7 +90,8 @@ class TextArenaConfig(vf.TasksetConfig):
         "WordLadder-v0",
         "WordSearch-v0",
     ]
-    num_tasks: int = 1000
+    num_tasks: int | None = None
+    """Seeded episodes to generate; `None` yields forever (bound runs with `-n`)."""
     task: TextArenaTaskConfig = TextArenaTaskConfig()
 
 
@@ -115,7 +118,11 @@ class TextArenaTask(vf.Task[TextArenaData, TextArenaState, TextArenaTaskConfig])
 
 
 class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
-    def load(self) -> list[TextArenaTask]:
+    @property
+    def infinite(self) -> bool:
+        return self.config.num_tasks is None
+
+    def load(self) -> Iterator[TextArenaTask]:
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
         template = ta.make(env_id=self.config.game)
@@ -130,8 +137,13 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         # seed-invariant; otherwise each task must expose its seeded board.
         first = observation(0)
         seed_specific = observation(1) != first
-        return [
-            TextArenaTask(
+        seeds = (
+            itertools.count()
+            if self.config.num_tasks is None
+            else range(self.config.num_tasks)
+        )
+        for i in seeds:
+            yield TextArenaTask(
                 TextArenaData(
                     idx=i,
                     name=f"{self.config.game}#{i}",
@@ -141,8 +153,6 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
                 ),
                 self.config.task,
             )
-            for i in range(self.config.num_tasks)
-        ]
 
 
 if __name__ == "__main__":

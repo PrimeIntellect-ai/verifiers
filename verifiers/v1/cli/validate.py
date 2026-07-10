@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import logging
-import random
 import signal
 import sys
 import time
@@ -198,11 +197,7 @@ async def _validate_task(task: Task, config: ValidateConfig) -> ResultRow:
 
 async def run_validate(config: ValidateConfig) -> list[dict]:
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.load()
-    if config.shuffle:
-        random.Random(0).shuffle(tasks)
-    if config.num_tasks is not None:
-        tasks = tasks[: config.num_tasks]
+    tasks = taskset.select(config.num_tasks, config.shuffle)
     if isinstance(config.runtime, vf.SubprocessConfig) and any(
         type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):

@@ -7,7 +7,7 @@ max_turns = 8
 
 [taskset]
 id = "wordle-v1"
-num_tasks = 50  # pool of seeded episodes to draw the eval's tasks from
+# The taskset generates seeded episodes forever; the eval's `num_tasks` bounds the run.
 
 [harness]
 id = "null"
