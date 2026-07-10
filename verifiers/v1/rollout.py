@@ -191,7 +191,6 @@ class Rollout:
                     serve_tools(
                         tool_servers,
                         runtime,
-                        self.task,
                         shared=self.shared_tools,
                         state_port=state_port,
                         state_secret=secret,
@@ -199,7 +198,6 @@ class Rollout:
                     ) as urls,
                     serve_user(
                         self.task.user_server(),
-                        self.task,
                         harness_runtime=runtime,
                         state_port=state_port,
                         state_secret=secret,
