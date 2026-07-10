@@ -100,6 +100,7 @@ from verifiers.v1.scoring import (
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
 from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.agent import Session, SessionEnded
 from verifiers.v1.services import RunServices
 from verifiers.v1.topology import (
     AgentBinding,
@@ -236,6 +237,8 @@ __all__ = [
     "DirectAgentConfig",
     "NullAgentConfig",
     "RunServices",
+    "Session",
+    "SessionEnded",
     "Topology",
     "TopologyAgent",
     "TopologyConfig",

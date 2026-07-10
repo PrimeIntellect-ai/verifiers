@@ -49,6 +49,7 @@ from verifiers.v1.trace import Trace
 
 if TYPE_CHECKING:
     from verifiers.v1.env import TimeoutConfig
+    from verifiers.v1.mcp import Respond
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class Rollout:
         shared: SharedServers | None = None,
         interception: InterceptionPool | None = None,
         runtime: Runtime | None = None,
+        user: "Respond | None" = None,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -98,6 +100,11 @@ class Rollout:
         self._borrowed_runtime = runtime
         """A live runtime to run in instead of provisioning one. The borrower gets its
         own trace/session/secrets, but the runtime owner keeps start/stop ownership."""
+        self._user = user
+        """A programmatic user seat (see `verifiers.v1.agent.Session`): an in-process
+        `Respond` wired straight into the interception session instead of a user-sim
+        server launched from `task.load_user()`. Exactly one party may hold the user
+        seat — the caller (`Agent.interact`) refuses tasks that declare their own."""
         self.phase = Phase.PENDING
         """Lifecycle phase for display (see `Phase`); starts PENDING (queued behind the
         concurrency cap) so the --rich dashboard can list it before it begins, advances to
@@ -230,14 +237,17 @@ class Rollout:
                         state_base=state_base,
                     ) as urls,
                     serve_user(
-                        task.load_user(),
+                        None if self._user is not None else task.load_user(),
                         task,
                         harness_runtime=runtime,
                         state_port=state_port,
                         state_secret=secret,
                         state_base=state_base,
-                    ) as session.user,
+                    ) as launched_user,
                 ):
+                    session.user = (
+                        self._user if self._user is not None else launched_user
+                    )
                     if task.prompt is None and session.user is None:
                         raise TaskError(
                             "task has no prompt and no user simulator to open the "

@@ -90,6 +90,8 @@ Taskset examples (the `*_v1` packages under `environments/`):
 | `wordle-v1` | configuring the vendored `textarena` integration |
 | `proposer-solver-v1` | a multi-agent **topology**: proposer → n solvers (fan-out), deferred rewards |
 | `writer-editors-v1` | a multi-agent **topology**: rounds + fan-in (writer → n editors → revision), one `vf.Judge` verdict rewarding every trace |
+| `chess-v1` | **sessions**: two live episodes play chess against each other; host-side board as referee |
+| `debate-v1` | **sessions, N-ary**: n concurrent debater episodes argue and peer-vote |
 
 Harness examples (under `environments/`):
 
@@ -159,6 +161,8 @@ uv run eval --topology.id proposer-solver-v1 -n 3
 # rounds + fan-in: writer drafts, n editors critique, the writer revises; one judge call
 # compares first draft to final and the same reward lands on every trace
 uv run eval --topology.id writer-editors-v1 -n 3
+# back-and-forth: two live sessions play chess (each agent is the other's user turn)
+uv run eval --topology.id chess-v1 -n 1 --max-turns 64 --timeout.rollout 900
 ```
 
 ### Tools

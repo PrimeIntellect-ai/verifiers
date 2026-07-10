@@ -281,6 +281,64 @@ async def test_writer_editors_topology(tmp_path):
 
 
 @pytest.mark.e2e
+async def test_chess_topology(tmp_path):
+    """The `chess-v1` example, live: two direct-harness seats play one game through
+    live sessions — each seat ONE multi-turn trace with the opponent's moves as its
+    user turns, the host-side board adjudicating. Asserts the session plumbing (both
+    episodes alternate, end cleanly, outcomes sum to one game), not chess skill."""
+    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.configs.eval import EvalConfig
+    from verifiers.v1.topology import TopologyRunner
+
+    config = EvalConfig(
+        topology={"id": "chess-v1", "max_plies": 6, "illegal_retries": 2},
+        num_tasks=1,
+        max_turns=16,
+        sampling={"max_tokens": 512, "temperature": 0},
+        timeout={"rollout": 420, "scoring": 60},
+        rich=False,
+        output_dir=tmp_path,
+    )
+    env = TopologyRunner(config.topology, config)
+    traces = await run_topology_eval(env, config)
+    seats = {t.agent: t for t in traces}
+    assert set(seats) == {"white", "black"}
+    assert all(t.errors == [] for t in traces)
+    assert sum(t.rewards["outcome"] for t in traces) == 1.0  # one game's points
+    assert all(t.num_turns >= 1 for t in traces)  # both seats actually played
+    assert seats["white"].info["chess"]["plies"] >= 2  # ...against each other
+
+
+@pytest.mark.e2e
+async def test_debate_topology(tmp_path):
+    """The `debate-v1` example, live: three concurrent seats of one agent config give
+    openings, rebuttals, and peer votes through suspended sessions. Asserts the N-ary
+    plumbing (3 coherent multi-turn traces, votes tallied into declared rewards)."""
+    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.configs.eval import EvalConfig
+    from verifiers.v1.topology import TopologyRunner
+
+    config = EvalConfig(
+        topology={"id": "debate-v1", "num_debaters": 3, "num_rounds": 1},
+        num_tasks=1,
+        max_turns=8,
+        sampling={"max_tokens": 1024, "temperature": 0},
+        timeout={"rollout": 420, "scoring": 60},
+        rich=False,
+        output_dir=tmp_path,
+    )
+    env = TopologyRunner(config.topology, config)
+    traces = await run_topology_eval(env, config)
+    assert [t.agent for t in traces] == ["debater"] * 3
+    assert all(t.errors == [] for t in traces)
+    assert all(t.num_turns == 3 for t in traces)  # opening + rebuttal + vote
+    total_votes = sum(t.info["debate"]["votes_received"] for t in traces)
+    valid_ballots = sum(t.info["debate"]["voted_validly"] for t in traces)
+    assert total_votes == valid_ballots  # every valid ballot landed on someone
+    assert all("support" in t.rewards for t in traces)
+
+
+@pytest.mark.e2e
 @pytest.mark.subprocess
 async def test_shared_runtime_topology(tmp_path):
     """The `shared-runtime-v1` example, live: `go` provisions one box via

@@ -34,7 +34,7 @@ from typing import Generic, TypeVar
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent, Parent
+from verifiers.v1.agent import Agent, Parent, Session
 from verifiers.v1.clients import ClientConfig, ModelContext, resolve_client
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.env import (
@@ -444,6 +444,21 @@ class TopologyAgent:
             self.name, task, parents=parents, runtime=runtime
         )
 
+    def interact(
+        self,
+        task: Task,
+        *,
+        parents: Sequence[Parent] = (),
+        runtime: Runtime | None = None,
+    ) -> contextlib.AbstractAsyncContextManager[Session]:
+        """Hold a live episode of this agent open and yield its `Session` — the
+        back-and-forth primitive (see `Agent.interact`): `go` converses with the
+        suspended episode via `session.turn(...)`, N sessions compose into games,
+        debates, negotiations. The completed trace is graph-recorded on close."""
+        return self._run.interact_agent(
+            self.name, task, parents=parents, runtime=runtime
+        )
+
 
 class TopologyRun:
     """One live topology instance: the execution surface `go` programs against. Owns the
@@ -484,6 +499,41 @@ class TopologyRun:
         self.graph.add(trace)
         await trim_memory_periodically()
         return trace
+
+    @contextlib.asynccontextmanager
+    async def interact_agent(
+        self,
+        agent: str,
+        task: Task,
+        *,
+        parents: Sequence[Parent] = (),
+        runtime: Runtime | None = None,
+    ):
+        """Hold a live episode of a topology-bound agent open (see `Agent.interact`) and
+        record its completed trace in this graph on close — even when `go` crashed
+        mid-interaction (completed episodes remain data; `run_instance` captures the
+        crash as the graph's `TopologyError`).
+
+        Sessions deliberately bypass the rollout-concurrency semaphore: a seat spends
+        most of an interaction suspended (no model call in flight), and a multi-seat
+        game holding N slots for its whole duration could deadlock the cap. Instance
+        concurrency (the eval's `-c`) is what bounds session pressure."""
+        executable = self.env.executable_agent(agent)
+        session: Session | None = None
+        try:
+            async with executable.interact(
+                task, parents=parents, runtime=runtime
+            ) as session:
+                yield session
+        finally:
+            if session is not None:
+                try:
+                    trace = session.trace
+                except RuntimeError:  # the episode never started — nothing to record
+                    trace = None
+                if trace is not None:
+                    self.graph.add(trace)
+                    await trim_memory_periodically()
 
 
 class TopologyRunner:

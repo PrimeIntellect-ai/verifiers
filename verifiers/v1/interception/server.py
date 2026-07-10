@@ -155,6 +155,10 @@ class RolloutSession:
         call halts the harness (its model call errors out); Harness.run treats it as clean. A task
         that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
         so the interception server holds no opinion about the state's contents."""
+        if self.trace.stop_condition is not None:
+            # A stopped trace takes no more turns — however it was stopped (a prior limit
+            # or @stop, or an out-of-band end like `Session.end`).
+            return self.trace.stop_condition
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)
