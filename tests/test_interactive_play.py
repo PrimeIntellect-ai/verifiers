@@ -87,6 +87,31 @@ def test_app_preserves_string_argument_whitespace():
     assert InteractiveRolloutApp.parse_human_value("  a\n  b\n", schema) == "  a\n  b\n"
 
 
+@pytest.mark.asyncio
+async def test_app_required_whitespace_only_string_is_sent():
+    tool = Tool(
+        name="write",
+        description="write content",
+        parameters={
+            "type": "object",
+            "properties": {"content": {"type": "string"}},
+            "required": ["content"],
+        },
+    )
+    app = InteractiveRolloutApp()
+    async with app.run_test() as pilot:
+        ask_task = asyncio.create_task(app.ask([UserMessage(content="go")], [tool]))
+        await pilot.pause()
+        app.query_one("#tool-picker", Select).value = "write"
+        await pilot.pause()
+        app.query_one(".arg-input", TextArea).load_text("   ")
+        app._submit_current_turn()
+        response = await ask_task
+
+    assert response.tool_calls is not None
+    assert json.loads(response.tool_calls[0].arguments) == {"content": "   "}
+
+
 def test_tool_calls_text_shows_decoded_arguments():
     app = InteractiveRolloutApp()
     text = app._tool_calls_to_text(

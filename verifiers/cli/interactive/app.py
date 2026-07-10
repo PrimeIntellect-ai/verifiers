@@ -476,7 +476,10 @@ class InteractiveRolloutApp(App[None]):
         arguments: dict[str, Any] = {}
         for name, (input_widget, schema, required) in self._arg_inputs.items():
             raw = self._arg_raw_value(input_widget)
-            if not raw.strip():
+            # Only a literally-empty field counts as "not provided"; a
+            # whitespace-only value is a real string the operator typed
+            # (e.g. an intentionally blank/indentation-only required arg).
+            if raw == "":
                 if required:
                     raise ValueError(f"Missing required argument: {name}")
                 continue
@@ -541,7 +544,7 @@ class InteractiveRolloutApp(App[None]):
 
     def _current_tool_form_has_values(self) -> bool:
         return any(
-            self._arg_raw_value(input_widget).strip()
+            self._arg_raw_value(input_widget) != ""
             for input_widget, _, _ in self._arg_inputs.values()
         )
 
