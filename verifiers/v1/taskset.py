@@ -8,7 +8,7 @@ config's task-facing subtree:
         return [MyTask(MyData(idx=i, ...), self.config.task) for i in ...]
 
 `load` may also be a generator — yielding each task as it's built, possibly forever (a
-procedural taskset; override `infinite` to say so). Runs materialize the tasks they need
+procedural taskset; declare `INFINITE = True`). Runs materialize the tasks they need
 through `select`, which pulls only that many off a generator; the env server instead
 pulls `load` on demand, task by task.
 
@@ -62,6 +62,11 @@ TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetC
 
 
 class Taskset(Generic[TaskT, TasksetConfigT]):
+    INFINITE: ClassVar[bool] = False
+    """Whether `load` yields tasks forever (a procedural generator). Infinity is inherent
+    to the taskset, not a config knob: consumers bound a run with `select(num_tasks)`
+    (`-n` on the CLI), and shuffle is impossible."""
+
     tools: ClassVar[tuple[type[Toolset], ...]] = ()
     """Tool server classes shared by one environment worker's rollouts."""
 
@@ -71,22 +76,15 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
     def load(self) -> Iterable[TaskT]:
         raise NotImplementedError
 
-    @property
-    def infinite(self) -> bool:
-        """Whether `load` yields tasks forever. An infinite taskset must be bounded with
-        `num_tasks` when selecting and can't be shuffled. Typically overridden as
-        `return self.config.num_tasks is None` on a procedural taskset."""
-        return False
-
     def select(
         self, num_tasks: int | None = None, shuffle: bool = False, seed: int = 0
     ) -> list[TaskT]:
         """Materialize the tasks a run needs: the first `num_tasks` off `load` (all of
         them when `None`), pulled lazily — a generator `load` only builds what the run
         takes. `shuffle` samples the subset from the whole taskset instead, which
-        materializes everything first; on an infinite taskset it's a no-op (warned) —
+        materializes everything first; on an `INFINITE` taskset it's a no-op (warned) —
         the first `num_tasks` generated tasks are already an arbitrary sample."""
-        if self.infinite:
+        if type(self).INFINITE:
             if num_tasks is None:
                 raise ValueError(
                     f"{type(self).__name__} is infinite - select a bounded subset "

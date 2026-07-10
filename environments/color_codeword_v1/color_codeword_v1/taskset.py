@@ -89,8 +89,6 @@ class ColorCodewordTaskConfig(vf.TaskConfig):
 
 
 class ColorCodewordConfig(vf.TasksetConfig):
-    num_tasks: int | None = Field(None, ge=1)
-    """Synthetic episodes to generate; `None` yields forever (bound runs with `-n`)."""
     images_per_turn: int = Field(2, ge=1)
     """Colored squares shown per turn."""
     task: ColorCodewordTaskConfig = ColorCodewordTaskConfig()
@@ -131,9 +129,7 @@ class ColorCodewordTask(
 
 
 class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
-    @property
-    def infinite(self) -> bool:
-        return self.config.num_tasks is None
+    INFINITE = True
 
     def load(self) -> Iterator[ColorCodewordTask]:
         c = self.config
@@ -141,8 +137,7 @@ class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
         colors = list(COLOR_MAP)
         color_urls = {color: color_data_url(color) for color in colors}
         length = c.images_per_turn * MAX_TURNS
-        indices = itertools.count() if c.num_tasks is None else range(c.num_tasks)
-        for idx in indices:
+        for idx in itertools.count():
             sequence = [rng.choice(colors) for _ in range(length)]
             answer = "".join(COLOR_MAP[col] for col in sequence)
             colors_per_turn = [

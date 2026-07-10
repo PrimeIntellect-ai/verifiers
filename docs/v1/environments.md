@@ -113,31 +113,20 @@ Consumers materialize tasks through `Taskset.select`, which pulls only what a ru
 `eval -n 5` builds 5 tasks, not the whole set — so a generator pays off whenever building
 a task is expensive.
 
-A procedural taskset can keep yielding forever. Override `infinite` so consumers know the
-stream never ends; the conventional knob is a `num_tasks: int | None` config field where
-`None` means unbounded:
+A procedural taskset can keep yielding forever. Declare `INFINITE = True` so consumers know
+the stream never ends — infinity is inherent to the taskset, not a config knob; how many
+tasks a run takes is the run's choice (`-n`), not the taskset's:
 
 ```python
 import itertools
 from collections.abc import Iterator
 
 
-class AdditionConfig(vf.TasksetConfig):
-    num_tasks: int | None = None  # None yields forever
-
-
-class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
-    @property
-    def infinite(self) -> bool:
-        return self.config.num_tasks is None
+class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
+    INFINITE = True
 
     def load(self) -> Iterator[AdditionTask]:
-        indices = (
-            itertools.count()
-            if self.config.num_tasks is None
-            else range(self.config.num_tasks)
-        )
-        for i in indices:
+        for i in itertools.count():
             yield AdditionTask(
                 AdditionData(idx=i, prompt=f"What is {i} + {i}?", answer=2 * i),
                 self.config.task,

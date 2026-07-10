@@ -43,7 +43,7 @@ class EnvServer:
         self._task_iter = iter(self.env.taskset.load())
         self._tasks: list = []
         self.num_tasks: int | None = None
-        if not self.env.taskset.infinite:
+        if not type(self.env.taskset).INFINITE:
             self._tasks = list(self._task_iter)
             self.num_tasks = len(self._tasks)
         # One task type per taskset (the authoring contract; its `load()` constructs it),

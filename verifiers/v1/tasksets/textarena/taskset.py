@@ -12,8 +12,6 @@ import random
 from collections.abc import Iterator
 from typing import Literal
 
-from pydantic import Field
-
 import verifiers.v1 as vf
 
 try:
@@ -92,8 +90,6 @@ class TextArenaConfig(vf.TasksetConfig):
         "WordLadder-v0",
         "WordSearch-v0",
     ]
-    num_tasks: int | None = Field(None, ge=1)
-    """Seeded episodes to generate; `None` yields forever (bound runs with `-n`)."""
     task: TextArenaTaskConfig = TextArenaTaskConfig()
 
 
@@ -120,9 +116,7 @@ class TextArenaTask(vf.Task[TextArenaData, TextArenaState, TextArenaTaskConfig])
 
 
 class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
-    @property
-    def infinite(self) -> bool:
-        return self.config.num_tasks is None
+    INFINITE = True
 
     def load(self) -> Iterator[TextArenaTask]:
         nltk.download("words", quiet=True)
@@ -139,12 +133,7 @@ class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
         # seed-invariant; otherwise each task must expose its seeded board.
         first = observation(0)
         seed_specific = observation(1) != first
-        seeds = (
-            itertools.count()
-            if self.config.num_tasks is None
-            else range(self.config.num_tasks)
-        )
-        for i in seeds:
+        for i in itertools.count():
             yield TextArenaTask(
                 TextArenaData(
                     idx=i,

@@ -11,9 +11,9 @@ The whole conversation is driven by a `vf.User` simulator (`AlphabetSortUser` in
 conversation with the initial sort prompt — before the model is ever called — and then injects
 each follow-up after the assistant turn. The episode is one rollout the harness only ever sees
 as a single exchange. The simulator runs on the host (not colocated in the agent's runtime), so
-the host-driven loop reaches it on every runtime. `load` generates episodes on demand —
-forever, unless `num_tasks` bounds it: each pass over the source name lists draws fresh turn
-splits, so the stream never repeats. The simulator replays each generated episode.
+the host-driven loop reaches it on every runtime. The taskset is `INFINITE`: `load` generates
+episodes on demand, forever — each pass over the source name lists draws fresh turn splits, so
+the stream never repeats; runs bound it with `-n`. The simulator replays each generated episode.
 """
 
 import difflib
@@ -23,7 +23,6 @@ from collections.abc import Iterator
 from typing import Literal
 
 from datasets import load_dataset
-from pydantic import Field
 
 import verifiers.v1 as vf
 
@@ -42,8 +41,6 @@ class AlphabetSortTaskConfig(vf.TaskConfig):
 
 
 class AlphabetSortConfig(vf.TasksetConfig):
-    num_tasks: int | None = Field(None, ge=1)
-    """Episodes to generate; `None` yields forever (bound runs with `-n`)."""
     min_turns: int = 1
     """Minimum number of turns (assistant sorts) per episode."""
     max_turns: int = 3
@@ -111,9 +108,7 @@ class AlphabetSortTask(
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
-    @property
-    def infinite(self) -> bool:
-        return self.config.num_tasks is None
+    INFINITE = True
 
     def load(self) -> Iterator[AlphabetSortTask]:
         c = self.config
@@ -129,8 +124,6 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTask, AlphabetSortConfig]):
         while True:
             pass_start = idx
             for entry in entries:
-                if c.num_tasks is not None and idx >= c.num_tasks:
-                    return
                 names = list(dict.fromkeys(n.replace(" ", "") for n in entry["names"]))
                 counts = [
                     rng.randint(c.min_names_per_turn, c.max_names_per_turn)
