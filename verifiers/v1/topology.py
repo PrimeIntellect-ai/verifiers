@@ -37,10 +37,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.agent import Agent, Parent, Session
 from verifiers.v1.clients import Client, ClientConfig, ModelContext, resolve_client
 from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.env import (
-    EnvConfig,
-    validate_pairing,
-)
+from verifiers.v1.env import EnvConfig, EnvServerConfig, validate_pairing
 from verifiers.v1.errors import TopologyError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interception import RolloutLimits
@@ -430,16 +427,12 @@ class SingleAgentTopology(Topology[SingleAgentTopologyConfig]):
         await run.agent("agent").run(task)
 
 
-def resolve_topology_runner(
-    config: EnvConfig,
-    topology_config: TopologyConfig | None = None,
-) -> "TopologyRunner":
+def resolve_topology_runner(config: EnvConfig) -> "TopologyRunner":
     """Resolve explicit topology or taskset + harness syntax to the canonical runner."""
-    selected = topology_config or getattr(config, "topology", None)
-    if selected is not None:
+    if config.topology is not None:
         from verifiers.v1.loaders import load_topology
 
-        topology = load_topology(selected)
+        topology = load_topology(config.topology)
     else:
         topology = SingleAgentTopology(
             SingleAgentTopologyConfig(
@@ -757,3 +750,11 @@ class TopologyRunner:
             logger.exception("topology instance failed (seed task %s)", task.data.idx)
             run.graph.error = Error(type=type(e).__name__, message=str(e))
         return run.graph
+
+
+# `EnvConfig.topology` is annotated as a forward reference — env.py sits *below* this
+# module and can't import it. Finalize the models here, where `TopologyConfig` exists;
+# anything importing `verifiers.v1` (or any submodule — the package init runs first and
+# imports this module) sees the completed models.
+EnvConfig.model_rebuild()
+EnvServerConfig.model_rebuild()

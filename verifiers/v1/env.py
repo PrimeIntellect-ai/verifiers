@@ -1,7 +1,7 @@
 """Native environment configuration and execution-policy helpers."""
 
 import logging
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
@@ -17,6 +17,9 @@ from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.types import ID
 from verifiers.v1.utils.generic import generic_type
+
+if TYPE_CHECKING:
+    from verifiers.v1.topology import TopologyConfig
 
 
 class TimeoutConfig(BaseConfig):
@@ -71,13 +74,20 @@ def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
 
 
 class EnvConfig(BaseConfig):
-    """The taskset that loads tasks and the harness that runs them."""
+    """What to run: a taskset × harness pair (lowered into the built-in single-agent
+    topology), or an explicit multi-agent `topology`."""
 
     # SerializeAsAny: these hold resolved subclasses (e.g. MathConfig, DefaultHarnessConfig);
     # without it model_dump() narrows to the base type and drops the subclass fields, so the
     # env-server subconfig the orchestrator writes would lose taskset/harness-specific knobs.
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     harness: SerializeAsAny[HarnessConfig] = HarnessConfig(id="default")
+    topology: "SerializeAsAny[TopologyConfig] | None" = None
+    """A multi-agent topology to run *instead of* the single `taskset` × `harness` pair
+    (see `verifiers.v1.topology`), selected by `--topology.id`. Seeds come from its
+    `taskset` slot (`--topology.taskset.id <id>`); each agent binds its own
+    harness/routing (`--topology.<agent>.harness.id`, ...). Forward-referenced: env.py is
+    below topology.py, which finalizes this model (`model_rebuild`) when it loads."""
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
     max_turns: int | None = None
@@ -124,15 +134,27 @@ class EnvConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_plugins(cls, data):
-        """Resolve the generic `taskset` / `harness` to its specific config type by `id`, so
-        env-specific fields validate against the real plugin config (no untyped args dict)."""
+        """Resolve the generic `topology` / `taskset` / `harness` to its specific config
+        type by `id`, so env-specific fields validate against the real plugin config (no
+        untyped args dict). Topology first, before the default harness is manufactured
+        below — so a *user-supplied* `harness` alongside a topology is still
+        distinguishable, and refused (it would be silently ignored; agents bind their
+        own harnesses)."""
         from verifiers.v1.loaders import (
             default_harness_id,
             harness_config_type,
             narrow_plugin_field,
             taskset_config_type,
+            topology_config_type,
         )
 
+        if isinstance(data, dict) and data.get("topology"):
+            if data.get("harness"):
+                raise ValueError(
+                    "`--harness.*` is ignored under a topology — each agent binds its "
+                    "own harness (`--topology.<agent>.harness.*`); drop the flag."
+                )
+            narrow_plugin_field(data, "topology", topology_config_type)
         narrow_plugin_field(data, "taskset", taskset_config_type)
         taskset = data.get("taskset")
         taskset_id = (
@@ -146,6 +168,17 @@ class EnvConfig(BaseConfig):
             data, "harness", harness_config_type, default_harness_id(taskset_id or "")
         )
         return data
+
+    @model_validator(mode="after")
+    def _check_topology(self):
+        """A topology replaces the config's own taskset × harness pair — reject
+        combinations that would silently ignore half the config."""
+        if self.topology is not None and (self.taskset.id or self.id):
+            raise ValueError(
+                "`--topology.id` runs the topology's own agents; drop `--taskset.id` / "
+                "`--id` (choose the seed tasks via --topology.taskset.id)."
+            )
+        return self
 
 
 class EnvServerConfig(EnvConfig):

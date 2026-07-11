@@ -19,7 +19,7 @@ from verifiers.v1.serve.types import (
     RunRequest,
     RunResponse,
 )
-from verifiers.v1.topology import TopologyConfig, resolve_topology_runner
+from verifiers.v1.topology import resolve_topology_runner
 from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
@@ -27,13 +27,10 @@ logger = logging.getLogger(__name__)
 
 class EnvServer:
     def __init__(
-        self,
-        config: EnvConfig,
-        address: str = "tcp://127.0.0.1:5000",
-        topology_config: TopologyConfig | None = None,
+        self, config: EnvConfig, address: str = "tcp://127.0.0.1:5000"
     ) -> None:
         self.address = address
-        self.runner = resolve_topology_runner(config, topology_config)
+        self.runner = resolve_topology_runner(config)
         self.tasks = self.runner.tasks
         self._clients: dict[
             tuple[str, str], Client

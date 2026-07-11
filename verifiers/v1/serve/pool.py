@@ -83,10 +83,8 @@ def _worker_entry(
     if log_setup is not None:
         log_setup()
     if "config_data" in server_kwargs:
-        config, topology_config = _configs_from_data(server_kwargs["config_data"])
         server_kwargs = {
-            "config": config,
-            "topology_config": topology_config,
+            "config": EnvConfig.model_validate(server_kwargs["config_data"])
         }
     cls = LegacyEnvServer if legacy else EnvServer
     cls.run_server(address=address, **server_kwargs)
@@ -275,27 +273,18 @@ class EnvServerPool:
 
 
 def env_config_data(config) -> dict:
-    """Picklable native execution fields, including an optional narrowed topology."""
+    """The picklable `EnvConfig` fields of a (possibly dynamically-narrowed, unpicklable)
+    config object — ship this across a process boundary, then rebuild via
+    `EnvConfig.model_validate` (its validator re-resolves the concrete
+    topology/taskset/harness)."""
     data = config.model_dump(mode="json")
-    selected = {k: v for k, v in data.items() if k in EnvConfig.model_fields}
     if data.get("topology") is not None:
-        selected["topology"] = data["topology"]
-    return selected
-
-
-def _configs_from_data(data: dict):
-    """Rebuild narrowed native configs in a spawned worker."""
-    env_data = {k: v for k, v in data.items() if k in EnvConfig.model_fields}
-    config = EnvConfig.model_validate(env_data)
-    topology_data = data.get("topology")
-    if topology_data is None:
-        return config, None
-    from verifiers.v1.loaders import topology_config_type
-
-    topology_config = topology_config_type(topology_data["id"]).model_validate(
-        topology_data
-    )
-    return config, topology_config
+        # A topology run never consults the taskset × harness pair (agents bind their
+        # own harnesses); shipping the manufactured defaults would trip the
+        # harness-with-topology guard on worker-side revalidation. Mirrors write_config.
+        data.pop("taskset", None)
+        data.pop("harness", None)
+    return {k: v for k, v in data.items() if k in EnvConfig.model_fields}
 
 
 def serve_env(
@@ -363,12 +352,8 @@ def serve_env(
             if (
                 "config_data" in server_kwargs
             ):  # rebuild the env config for an in-process server
-                config, topology_config = _configs_from_data(
-                    server_kwargs["config_data"]
-                )
                 server_kwargs = {
-                    "config": config,
-                    "topology_config": topology_config,
+                    "config": EnvConfig.model_validate(server_kwargs["config_data"])
                 }
             cls = LegacyEnvServer if legacy else EnvServer
             cls.run_server(
