@@ -1,16 +1,12 @@
-"""The codex harness: installs the Codex CLI into the runtime and runs `codex exec`.
+"""Codex reaches interception as a Responses API provider using the session secret.
 
-Codex only speaks the streaming OpenAI Responses API, so it reaches the interception server as a
-custom model provider (`wire_api = responses`) pointed at the rollout endpoint — served by the
-Responses dialect + SSE relay (see `verifiers.v1.dialects.responses`). The binary is the static
-musl release, so it drops into any linux container with no runtime deps; its bearer token (the
-session secret) is read from an env var.
+The static musl binary runs in Linux containers without additional runtime dependencies.
 """
 
 import logging
 import shlex
 
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -37,8 +33,6 @@ chmod +x {bin}
 
 
 class CodexHarnessConfig(HarnessConfig):
-    """The Codex CLI harness — which codex release to install in the runtime."""
-
     version: str = "0.137.0"
     """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
 
@@ -65,17 +59,17 @@ class CodexHarness(Harness[CodexHarnessConfig]):
 
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        _, prompt = self.resolve_prompt(trace.task)
+        _, prompt = self.resolve_prompt(trace.task.data)
         # codex authenticates to the interception server with the session secret (its provider
         # api key) and posts Responses calls to `{endpoint}/responses`.
-        env = {**self.config.env, KEY_VAR: secret}
+        env = {**self.config.resolved_env, KEY_VAR: secret}
         # Values are Codex feature names such as `shell_tool`; Codex owns validation.
         # https://developers.openai.com/codex/config-reference#features
         tool_config = [
@@ -90,6 +84,16 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "exec",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            # Server-driven feature tools (codex apps, plugins, multi-agent) land in the
+            # Responses `tools` array with definitions non-OpenAI providers reject
+            # (upstream 400 on every call) — and they can flip on remotely under a pinned
+            # CLI. The agent's own tools (exec_command, plan, view_image) stay.
+            "--disable",
+            "apps",
+            "--disable",
+            "plugins",
+            "--disable",
+            "multi_agent",
             "-m",
             ctx.model,
             "-c",
@@ -105,6 +109,7 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "-c",
             f"model_providers.{PROVIDER}.requires_openai_auth=false",
             *tool_config,
+            "--",
             prompt,
         ]
         return await runtime.run_program(argv, env)

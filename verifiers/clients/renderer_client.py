@@ -18,7 +18,6 @@ from openai import AsyncOpenAI
 from renderers import Message as RendererMessage
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import (
-    AutoRendererConfig,
     MultimodalRenderer,
     ParsedToolCall,
     RenderedTokens,
@@ -26,13 +25,11 @@ from renderers import (
     RendererConfig,
     RendererPool,
     ToolSpec,
-    config_from_name,
     create_renderer_pool,
     is_multimodal,
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
-from renderers.base import MODEL_RENDERER_MAP
 from renderers.client import _maybe_offload, generate
 
 from verifiers.clients.client import Client
@@ -98,6 +95,14 @@ def _get_value(obj: Any, key: str, default: Any = None) -> Any:
     if isinstance(obj, Mapping):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _chat_template_kwargs_key(
+    chat_template_kwargs: Mapping[str, Any] | None,
+) -> str | None:
+    if not chat_template_kwargs:
+        return None
+    return json.dumps(chat_template_kwargs, sort_keys=True, separators=(",", ":"))
 
 
 def _normalize_for_comparison(value: Any, _key: str | None = None) -> Any:
@@ -380,53 +385,6 @@ async def _get_incremental_prompt_ids(
     return None
 
 
-def _resolve_renderer_config(
-    base: RendererConfig | None,
-    chat_template_kwargs: Mapping[str, Any] | None,
-    *,
-    renderer_model: str,
-) -> RendererConfig | None:
-    """Merge ``chat_template_kwargs`` into a typed ``RendererConfig``.
-
-    When ``base`` is ``None`` or ``AutoRendererConfig`` (would auto-resolve
-    inside ``renderers.create_renderer``), we pull resolution forward via
-    ``MODEL_RENDERER_MAP`` so kwargs land on the concrete config variant
-    and pydantic validates them against the actual renderer's schema —
-    ``AutoRendererConfig`` intentionally carries only ``preserve_*`` and
-    would reject template kwargs like ``enable_thinking``. ``renderer_model``
-    must match what the pool will tokenize with (i.e.
-    ``ClientConfig.renderer_model_name`` when set, else the request model),
-    so resolution agrees with the tokenizer the renderer will hold.
-
-    Kwargs override fields with the same name on the (resolved) base.
-    Typed configs (``extra="forbid"``) reject unknown keys with a
-    field-path error; ``DefaultRendererConfig`` (``extra="allow"``) keeps
-    the escape hatch for arbitrary jinja kwargs.
-    """
-    if not chat_template_kwargs:
-        return base
-
-    # Resolve auto → concrete (mirrors ``renderers._resolve_auto``) so
-    # ``enable_thinking`` etc. validate against the right schema instead of
-    # ``AutoRendererConfig``'s minimal one. Carries ``preserve_*`` across.
-    if base is None or isinstance(base, AutoRendererConfig):
-        renderer_name = MODEL_RENDERER_MAP.get(renderer_model, "default")
-        # ``config_from_name`` returns ``None`` only for ``"auto"``, which
-        # ``MODEL_RENDERER_MAP.get(..., "default")`` excludes — assert for ty.
-        concrete = config_from_name(renderer_name)
-        assert concrete is not None
-        if isinstance(base, AutoRendererConfig):
-            concrete = concrete.model_copy(
-                update={
-                    "preserve_all_thinking": base.preserve_all_thinking,
-                    "preserve_thinking_between_tool_calls": base.preserve_thinking_between_tool_calls,
-                }
-            )
-        base = cast(RendererConfig, concrete)
-
-    return type(base).model_validate({**base.model_dump(), **chat_template_kwargs})
-
-
 class RendererClient(
     Client[AsyncOpenAI, list[RendererMessage], dict[str, Any], ToolSpec]
 ):
@@ -439,13 +397,12 @@ class RendererClient(
     so that concurrent rollouts tokenize in parallel threads.
     """
 
-    # Cache key is ``(renderer_model_name, pool_size, renderer_config_json)``.
-    # ``renderer_config`` is a frozen pydantic model so it's hashable directly,
-    # but we serialize it via ``model_dump_json()`` for a stable, deterministic
-    # key shape that's safe across pydantic version bumps.
+    # Cache key is ``(renderer_model_name, pool_size, renderer_config_json,
+    # chat_template_kwargs_json)``. Renderers owns the concrete config
+    # resolution; verifiers only separates pools whose construction inputs differ.
     _shared_pools: ClassVar[
         dict[
-            tuple[str, int, str | None],
+            tuple[str, int, str | None, str | None],
             RendererPool,
         ]
     ] = {}
@@ -477,6 +434,7 @@ class RendererClient(
         model: str,
         *,
         renderer_config: RendererConfig | None = None,
+        chat_template_kwargs: Mapping[str, Any] | None = None,
     ) -> Renderer | RendererPool:
         if self._renderer is not None:
             return self._renderer
@@ -493,14 +451,18 @@ class RendererClient(
         cfg_key = (
             renderer_config.model_dump_json() if renderer_config is not None else None
         )
-        cache_key = (renderer_model, self._pool_size, cfg_key)
+        kwargs_key = _chat_template_kwargs_key(chat_template_kwargs)
+        cache_key = (renderer_model, self._pool_size, cfg_key, kwargs_key)
 
         with self._shared_pools_lock:
             if cache_key not in self._shared_pools:
+                pool_kwargs: dict[str, Any] = {"size": self._pool_size}
+                if chat_template_kwargs:
+                    pool_kwargs["chat_template_kwargs"] = chat_template_kwargs
                 self._shared_pools[cache_key] = create_renderer_pool(
                     renderer_model,
                     renderer_config,
-                    size=self._pool_size,
+                    **pool_kwargs,
                 )
 
         return self._shared_pools[cache_key]
@@ -543,25 +505,14 @@ class RendererClient(
         }
         sampling_params: dict[str, Any] = dict(args.pop("extra_body", None) or {})
 
-        # ``chat_template_kwargs`` belong to the renderer, not the engine —
-        # peel them off the per-request sampling and fold them into the
-        # typed RendererConfig. Pool cache key already includes the
-        # effective config so identical kwargs reuse the same renderer.
+        # ``chat_template_kwargs`` belong to the renderer, not the engine.
+        # Renderers owns resolving them against the concrete chat template;
+        # verifiers only routes them into pool construction.
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
-        # Auto-resolution must agree with the model the pool will tokenize
-        # against — ``renderer_model_name`` overrides the request ``model``
-        # when set (same precedence ``_get_renderer_or_pool`` uses below).
-        renderer_model = (
-            self._config.renderer_model_name
-            if self._config is not None and self._config.renderer_model_name is not None
-            else model
+        renderer = self._get_renderer_or_pool(
+            model,
+            chat_template_kwargs=chat_template_kwargs,
         )
-        effective_cfg = _resolve_renderer_config(
-            self._config.renderer_config if self._config is not None else None,
-            chat_template_kwargs,
-            renderer_model=renderer_model,
-        )
-        renderer = self._get_renderer_or_pool(model, renderer_config=effective_cfg)
 
         for key in (
             "temperature",

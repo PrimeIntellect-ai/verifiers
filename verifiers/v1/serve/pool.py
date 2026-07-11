@@ -37,7 +37,7 @@ import zmq.asyncio
 
 from verifiers.v1.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import HealthResponse
+from verifiers.v1.serve.types import HealthResponse, RunGroupRequest
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,12 @@ def _arm_teardown(death_pipe=None) -> None:
     - SIGTERM -> KeyboardInterrupt so the event loop runs its finallys (serve_env swallows it);
     - with `death_pipe`, self-SIGTERM when the parent dies (pipe EOF, even on its SIGKILL) so no
       child is orphaned (main -> serve_env and broker -> worker are both armed this way)."""
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+    def on_sigterm(*_) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, on_sigterm)
     if death_pipe is None:
         return
 
@@ -161,7 +166,7 @@ class EnvServerPool:
             self._poller.register(dealer, zmq.POLLIN)
 
     def _maybe_scale_up(self, in_flight: int) -> None:
-        """Spawn one more worker when in-flight requests reach 90% of current capacity.
+        """Spawn one more worker when in-flight rollout slots reach 90% of capacity.
 
         A new worker starts at `active=0`, so least-busy dispatch funnels the backlog to
         it as it comes online (a few seconds to load the env) — fine, since we only scale
@@ -188,7 +193,8 @@ class EnvServerPool:
         # (`max_workers` is a concrete count when elastic is off).
         for _ in range(1 if self.elastic else (self.max_workers or 1)):
             self._spawn_worker()
-        pending: dict[bytes, dict] = {}  # request_id -> {client_id, worker}
+        # request_id -> {client_id, worker, rollout_slots}
+        pending: dict[bytes, dict] = {}
         logger.info(
             "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
             self.address,
@@ -198,6 +204,7 @@ class EnvServerPool:
             self.elastic,
         )
         try:
+            in_flight = 0
             while True:
                 events = dict(await self._poller.poll())
                 if self.frontend in events:
@@ -212,16 +219,29 @@ class EnvServerPool:
                             [client_id, request_id, _HEALTH]
                         )
                     else:
+                        # Pool capacity is measured in rollouts; one group request carries n.
+                        rollout_slots = 1
+                        if method == b"run_group":
+                            with contextlib.suppress(Exception):
+                                request = RunGroupRequest.model_validate(
+                                    msgpack.unpackb(payload, raw=False)
+                                )
+                                rollout_slots = max(1, request.n)
                         worker = min(self.workers, key=lambda w: w["active"])
-                        worker["active"] += 1
-                        pending[request_id] = {"client_id": client_id, "worker": worker}
+                        worker["active"] += rollout_slots
+                        pending[request_id] = {
+                            "client_id": client_id,
+                            "worker": worker,
+                            "rollout_slots": rollout_slots,
+                        }
+                        in_flight += rollout_slots
                         # forward without client_id — the DEALER identity is the worker's
                         # `client_id`; we hold the real one in `pending`.
                         await worker["dealer"].send_multipart(
                             [request_id, method, payload]
                         )
                         if self.elastic:
-                            self._maybe_scale_up(len(pending))
+                            self._maybe_scale_up(in_flight)
                 for w in self.workers:
                     if w["dealer"] in events:
                         request_id, data = await w["dealer"].recv_multipart(copy=False)
@@ -229,7 +249,8 @@ class EnvServerPool:
                         entry = pending.pop(request_id.bytes, None)
                         if entry is None:
                             continue
-                        entry["worker"]["active"] -= 1
+                        entry["worker"]["active"] -= entry["rollout_slots"]
+                        in_flight -= entry["rollout_slots"]
                         with contextlib.suppress(zmq.ZMQError):
                             await self.frontend.send_multipart(
                                 [entry["client_id"], request_id, data], copy=False

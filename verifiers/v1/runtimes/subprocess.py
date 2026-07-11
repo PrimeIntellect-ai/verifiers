@@ -1,9 +1,4 @@
-"""Local subprocess runtime: run the program on the host; server on localhost.
-
-Each rollout gets a fresh `/tmp/<name>` workspace (created on `start`, removed on
-`stop`/`cleanup`) used as the program's cwd, so concurrent local rollouts are isolated
-and trivially cleaned up. Relative `read`/`write` paths resolve against it.
-"""
+"""Local subprocess runtime."""
 
 import asyncio
 import contextlib
@@ -15,27 +10,23 @@ from typing import Literal
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.runtimes.base import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import BaseRuntimeInfo, ProgramResult, Runtime
 
-# A local subprocess inherits the host environment EXCEPT any var whose name
-# contains "API_KEY" — so it can never reach a real provider with the host's API
-# key, while still inheriting harmless config (PATH, HOME, UV_CACHE_DIR, HF_HOME,
-# ...). Harnesses hand their interception endpoint + per-rollout secret to their own
-# client via argv/CLI (not OPENAI_*), so nothing they spawn inherits the endpoint.
-# A container/sandbox is isolated and inherits nothing, so this
-# allow-by-default model is subprocess-only. NOTE: this strip applies to EVERY
-# program run here, including a task's tool/user server — so a tool server that
-# genuinely needs an API key won't get one on subprocess placement; give it its
-# own runtime (docker/prime) or have it fetch the key itself.
+# Implicit host inheritance removes every name containing "API_KEY" while keeping
+# harmless settings such as PATH, HOME, and cache locations. The explicit `env`
+# argument is merged afterward, so callers can deliberately pass credentials and
+# child processes inherit them. Containers and sandboxes inherit no host environment.
 
 
 class SubprocessConfig(BaseConfig):
     type: Literal["subprocess"] = "subprocess"
 
 
-class SubprocessRuntime(Runtime):
-    """Runs the program as a local subprocess in a unique /tmp workspace."""
+class SubprocessRuntimeInfo(SubprocessConfig, BaseRuntimeInfo):
+    pass
 
+
+class SubprocessRuntime(Runtime):
     # Share prepared script environments across the worker's per-rollout runtimes.
     _interpreters: dict[str, str] = {}
     _locks: dict[str, asyncio.Lock] = {}
@@ -45,16 +36,14 @@ class SubprocessRuntime(Runtime):
         self._uv_interpreters = self._interpreters
         self._uv_script_locks = self._locks
         self.config = config
+        self.info = SubprocessRuntimeInfo(**config.model_dump())
         self.workdir: Path | None = None
         self._background: list[asyncio.subprocess.Process] = []
-
-    @property
-    def descriptor(self) -> str | None:
-        return self.workdir.name if self.workdir else None
 
     async def start(self) -> None:
         self.workdir = Path("/tmp") / self.name
         self.workdir.mkdir()
+        self.info.id = str(self.workdir)
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}

@@ -1,12 +1,4 @@
-"""The `ValidateConfig`: the single config object the validate CLI parses.
-
-Validation is per-task and model-free — it runs the taskset's `validate` hook (apply a gold
-solution, run a verifier) in a runtime, not a harness rollout. So the config carries just the
-taskset, the `runtime` its hook runs in (docker by default — a gold check often needs the
-task's declared container), the stage timeouts, and the run knobs. No harness, model, or
-sampling — and it's fire-and-forget: nothing is written to disk, so there's no output dir /
-resume / dry-run.
-"""
+"""Configuration for model-free task validation."""
 
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
@@ -15,22 +7,23 @@ from verifiers.v1.runtimes import DockerConfig, RuntimeConfig
 from verifiers.v1.taskset import TasksetConfig
 
 
-class ValidateConfig(BaseConfig):
-    """A taskset plus how to validate it. The taskset is selected by `--taskset.id` (with a
-    bare positional shorthand, `validate gsm8k-v1`); its fields stay typed and overridable
-    via dotted flags (`--taskset.split test`). The `validate` hook runs in `--runtime.*`
-    (docker by default; SWE rows carry their own per-task image)."""
+class CheckTimeoutConfig(BaseConfig):
+    setup: float | None = None
+    """Max wall-clock for the task's `setup` hook."""
+    total: float | None = None
+    """Max wall-clock for the check itself per task — the `validate` hook, or the debug
+    command/script."""
 
+
+class ValidateConfig(BaseConfig):
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     runtime: RuntimeConfig = DockerConfig()
-    """Where each task's `validate` hook runs. Docker by default — unlike the eval harness
-    (subprocess), a gold check often needs the task's declared container; a SWE task overrides
-    the image per task. Use `--runtime.type subprocess` for a check that needs no container —
-    one that only reads task data or runs a uv-script verifier (e.g. gsm8k)."""
-    setup_timeout: float | None = None
-    """Max wall-clock for the taskset's `setup` hook per task (None = no limit)."""
-    validate_timeout: float | None = None
-    """Max wall-clock for the taskset's `validate` hook per task (None = no limit)."""
+    """Where each task's validation hooks run."""
+    timeout: CheckTimeoutConfig = CheckTimeoutConfig()
+    only_setup: bool = False
+    """Run only `Task.setup`."""
+    only_gold: bool = False
+    """Run only `Task.setup` and `Task.validate`."""
     num_tasks: int | None = Field(
         None,
         validation_alias=AliasChoices("num_tasks", "n", "num_examples", "batch_size"),
@@ -51,11 +44,15 @@ class ValidateConfig(BaseConfig):
     def name(self) -> str:
         return self.taskset.name
 
+    @model_validator(mode="after")
+    def _validate_only(self):
+        if self.only_setup and self.only_gold:
+            raise ValueError("pass at most one of `--only-setup` or `--only-gold`")
+        return self
+
     @model_validator(mode="before")
     @classmethod
     def _resolve_taskset(cls, data):
-        """Narrow the generic `taskset` to its specific config type by `id` — the taskset-only
-        half of `EnvConfig._resolve_plugins` (validate has no harness)."""
         from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
 
         narrow_plugin_field(data, "taskset", taskset_config_type)

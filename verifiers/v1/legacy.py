@@ -20,6 +20,7 @@ from typing import Any
 
 import zmq
 import zmq.asyncio
+from pydantic import ValidationError
 
 from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
 from verifiers.v1.serve.server import EnvServer
@@ -29,14 +30,15 @@ from verifiers.v1.serve.types import (
     RunRolloutRequest,
     RunRolloutResponse,
 )
-from verifiers.v1.task import WireTask
+from verifiers.v1.task import WireTaskData
 from verifiers.v1 import graph
-from verifiers.v1.trace import Error, TimeSpan, Timing, Trace
+from verifiers.v1.trace import Error, TimeSpan, Timing, Trace, TraceTask
 from verifiers.v1.types import (
     AssistantMessage,
     Response,
     SamplingConfig,
     SystemMessage,
+    Tool,
     ToolCall,
     ToolMessage,
     TurnTokens,
@@ -59,6 +61,22 @@ def _as_dict(obj: Any) -> Any:
     if hasattr(obj, "model_dump"):
         return obj.model_dump()
     return obj
+
+
+def _to_v1_tools(raw: Any) -> list[Tool] | None:
+    """Map v0 ``RolloutOutput.tool_defs`` onto ``Trace.tools``. The v0 and v1 ``Tool``
+    shapes are identical (name/description/parameters/strict), so this is a re-validation;
+    malformed entries are dropped rather than failing the whole trace mapping."""
+    defs: list[Tool] = []
+    for t in raw or []:
+        t = _as_dict(t)
+        if not isinstance(t, dict):
+            continue
+        try:
+            defs.append(Tool.model_validate(t))
+        except ValidationError:
+            continue
+    return defs or None
 
 
 def _text(content: Any) -> str:
@@ -228,8 +246,13 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
         else:
             error = Error(type="Error", message=str(raw_error), traceback=None)
 
-    trace: Trace = Trace[WireTask](
-        task=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
+    trace: Trace = Trace[WireTaskData](
+        # The bridge has no behavior class — record the base type.
+        task=TraceTask(
+            type="Task",
+            data=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
+        ),
+        tools=_to_v1_tools(out.get("tool_defs")),
         rewards={"reward": float(out.get("reward") or 0.0)},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         is_completed=bool(out.get("is_completed", True)),
@@ -249,10 +272,10 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
     return trace
 
 
-def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTask:
+def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTaskData:
     """Carry the v0 prompt's meta onto the v1 task: the system message becomes
     ``system_prompt``, the user message(s) become ``prompt``, and the reference
-    ``answer`` rides along as a taskset-extra field (``WireTask`` allows extras)."""
+    ``answer`` rides along as a task-specific extra field (``WireTaskData`` allows extras)."""
     system_prompt: str | None = None
     user_texts: list[str] = []
     for m in prompt or []:
@@ -264,7 +287,7 @@ def _to_wire_task(task_idx: int, prompt: Any, answer: Any) -> WireTask:
         elif m.get("role") == "user":
             user_texts.append(_text(m.get("content")))
     extra = {"answer": answer} if answer else {}
-    return WireTask(
+    return WireTaskData(
         idx=task_idx,
         prompt="\n\n".join(user_texts),
         system_prompt=system_prompt,
@@ -398,7 +421,7 @@ class LegacyEnvServer(EnvServer):
         return RunGroupResponse(traces=traces)
 
 
-# --- in-process v0 eval (the `eval` CLI's `--legacy.id` path) ------------------
+# --- in-process v0 eval (the `eval` CLI's `--id` path) -------------------------
 
 
 def _eval_client(client_config: ClientConfig, model: str):
@@ -430,15 +453,7 @@ def _legacy_output_dir(config) -> Path:
 
 
 async def run_legacy_eval(config) -> list[Trace]:
-    """In-process v0 eval used by the `eval` CLI when `config.is_legacy` (a legacy `id` is
-    set, no v1 `taskset`).
-
-    Loads the v0 env, runs `num_rollouts` per task with bounded concurrency, maps each v0
-    `RolloutOutput` to a v1 `Trace` (`rollout_output_to_trace`), persists results as they
-    land (the same `results.jsonl` / `config.toml` a native run writes), and returns the
-    traces. The v0 env is run directly (`env.run_rollout`, no env server), so this needs no
-    runtime / interception server. All v0 specifics live here; the CLI only branches on
-    `config.is_legacy`."""
+    """Run a legacy environment in process and return v1 traces."""
     import asyncio
     import random
 

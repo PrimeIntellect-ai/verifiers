@@ -14,7 +14,7 @@ one tunnel) per pool member rather than one each — see `interception.pool`.
 When a rollout sets a user simulator (see `verifiers.v1.mcp.user`), the session also drives it:
 after each model turn it injects the simulator's reply as a user turn and re-prompts the
 model, so a multi-turn exchange plays out within one program request, transparently to the
-harness. When the task carries no prompt (`task.prompt is None`), the simulator also
+harness. When the row carries no prompt (`TaskData.prompt is None`), the simulator also
 opens the conversation: its first turn is seeded before the model is ever called. Tools are
 handled out-of-band (run by the harness).
 """
@@ -24,25 +24,26 @@ import contextlib
 import json
 import logging
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from aiohttp import web
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects import DIALECTS, Dialect
+from verifiers.v1.dialects.base import is_sse_done_event
 from verifiers.v1 import graph
 from verifiers.v1.errors import (
     OverlongPromptError,
     RolloutError,
-    TasksetError,
+    TaskError,
     UserError,
 )
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.types import Messages, Tool
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Respond
@@ -56,6 +57,7 @@ logger = logging.getLogger(__name__)
 # context window are the real limits, this is just a host-OOM backstop.
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
+_STREAM_QUEUE_MAXSIZE = 16
 # The server binds loopback; callers reach it via localhost or a host tunnel (see `reachable_url`).
 _HOST = "127.0.0.1"
 
@@ -69,13 +71,27 @@ def _completion_response(completion: dict | None) -> web.Response:
     return web.Response(body=body, content_type="application/json", charset="utf-8")
 
 
+async def _queue_chunks(
+    chunks: AsyncIterator[bytes],
+    queue: asyncio.Queue[bytes | None],
+    ready: asyncio.Event,
+) -> None:
+    try:
+        async for chunk in chunks:
+            await queue.put(chunk)
+            ready.set()
+    finally:
+        await queue.put(None)
+        ready.set()
+
+
 @dataclass(frozen=True)
 class RolloutLimits:
     """Per-rollout framework limits (None = no cap), checked before each turn is served.
     The first limit reached refuses the turn — halting any harness, the same mechanism as
     a @stop — and becomes the trace's stop condition. Each caps a trace computed property:
-    `max_turns` -> num_turns, `max_input_tokens` -> prompt_len, `max_output_tokens` ->
-    completion_len, `max_total_tokens` -> total_tokens. Token caps are soft by one turn:
+    `max_turns` -> num_turns, `max_input_tokens` -> num_input_tokens, `max_output_tokens` ->
+    num_output_tokens, `max_total_tokens` -> num_total_tokens. Token caps are soft by one turn:
     they're checked between turns, so the turn that crosses a cap still completes."""
 
     max_turns: int | None = None
@@ -89,17 +105,17 @@ class RolloutLimits:
             return "max_turns"
         if (
             self.max_input_tokens is not None
-            and trace.prompt_len >= self.max_input_tokens
+            and trace.num_input_tokens >= self.max_input_tokens
         ):
             return "max_input_tokens"
         if (
             self.max_output_tokens is not None
-            and trace.completion_len >= self.max_output_tokens
+            and trace.num_output_tokens >= self.max_output_tokens
         ):
             return "max_output_tokens"
         if (
             self.max_total_tokens is not None
-            and trace.total_tokens >= self.max_total_tokens
+            and trace.num_total_tokens >= self.max_total_tokens
         ):
             return "max_total_tokens"
         return None
@@ -107,13 +123,7 @@ class RolloutLimits:
 
 @dataclass
 class RolloutSession:
-    """One rollout's interception state, served by a (possibly shared) `InterceptionServer`
-    and keyed there by its secret. Holds everything a single rollout's chat-completions need:
-    the client/model context, the trace to record turns onto, the framework limits + `@stop`s
-    checked before each turn, and (optionally) a user simulator the rollout sets before the
-    harness runs."""
-
-    ctx: RolloutContext
+    ctx: ModelContext
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
@@ -136,7 +146,7 @@ class RolloutSession:
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
-        call halts the harness (its model call errors out); Harness.run treats it as clean. A taskset
+        call halts the harness (its model call errors out); Harness.run treats it as clean. A task
         that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
         so the interception server holds no opinion about the state's contents."""
         if (limit := self.limits.reached(self.trace)) is not None:
@@ -152,13 +162,6 @@ class RolloutSession:
 
 
 class InterceptionServer:
-    """A localhost server that proxies model calls for one or more rollouts. It serves every
-    registered dialect's routes (see `dialects.DIALECTS`), so a request's wire format is resolved
-    from the endpoint it arrived on — not declared by the harness. Each rollout `register`s a
-    `RolloutSession` and gets back a secret; each request is routed to the session whose secret
-    matches its bearer token. A single server can multiplex many rollouts (the basis for
-    `interception.pool`); used 1:1 it's just a server with one session."""
-
     def __init__(self) -> None:
         self.sessions: dict[str, RolloutSession] = {}
         self.port = 0
@@ -200,8 +203,8 @@ class InterceptionServer:
         # GET/PUT their `self.state` here, keyed by the same bearer secret as the model routes.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
-        # A forked shared server (see `verifiers.v1.mcp.multiplex`) fetches its rollout's task here
-        # to run `setup_task` per child — a shared server gets no task via env, keyed by the secret.
+        # A launched tool/user server fetches its rollout's task here to run `setup_task` — the task
+        # is never passed via env, only over this channel, keyed by the same bearer secret.
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
@@ -252,33 +255,28 @@ class InterceptionServer:
             session.trace.id,
             dialect.streaming(body),
         )
-        # `body` is forwarded to the model 1:1 (the proxy mutates only model + sampling), so no
-        # provider field is lost. `prompt` is the dialect's typed parse, kept only to build the
-        # trace (the renderer re-derives its own from the body it's handed). A user simulator
-        # extends both each turn (`dialect.extend` for the wire, `prompt` for the trace).
+        # The proxy preserves native JSON fields except model + sampling. `prompt` is only the
+        # dialect's typed view for building the trace; the renderer re-derives its own from `body`.
+        # A user simulator extends both each turn (`dialect.extend` for wire, `prompt` for trace).
         prompt: Messages
-        prompt, _ = dialect.parse_request(body)
-        # A task with no prompt has its conversation opened by the user simulator: before the
-        # first model call, seed the simulator's opening user turn(s) into both the wire request
-        # and the trace prompt, so the model answers the user rather than an empty prompt. Guarded
-        # to the opening (`num_turns == 0`), so a later program request (e.g. after a tool call)
-        # never re-seeds. The opening `respond("")` is cached on the session and reused, so a
-        # retried opening request (e.g. the harness SDK retrying a transient model 502, before any
-        # turn is recorded) doesn't advance the simulator's queue and skip the opening turn. The
-        # post-turn loop below then drives the remaining turns as usual.
+        # `tools` is recorded onto the trace only when a turn commits (below / in `_stream`):
+        # the request is ground truth for what the model saw, but a refused or failed request
+        # was never seen at all.
+        prompt, tools = dialect.parse_request(body)
+        # Cache the opening so retries do not advance the simulator twice.
         if (
             session.user is not None
-            and session.trace.task.prompt is None
+            and session.trace.task.data.prompt is None
             and session.trace.num_turns == 0
         ):
             if session.opening is None:
                 session.opening = await session.user("")
             body = dialect.extend(body, None, session.opening)
             prompt = [*prompt, *session.opening]
-            # If the simulator ended at the open (its taskset's `@stop` now fires), the loop's
+            # If the simulator ended at the open (its task's `@stop` now fires), the loop's
             # `refused()` below halts the harness before any model call — no special-casing here.
         if dialect.streaming(body):
-            return await self._stream(request, session, dialect, body, prompt)
+            return await self._stream(request, session, dialect, body, prompt, tools)
         headers = request.headers.copy()
         # A user simulator turns one program request into a multi-turn exchange: after each
         # model turn the simulator's reply is injected as a user turn and the model is
@@ -296,7 +294,7 @@ class InterceptionServer:
                 return self._fail(
                     session,
                     dialect,
-                    TasksetError(f"@stop failed: {type(e).__name__}: {e}"),
+                    TaskError(f"@stop failed: {type(e).__name__}: {e}"),
                 )
             if refused is not None:
                 # Refuse the first model call to halt the harness; once a simulated
@@ -351,8 +349,8 @@ class InterceptionServer:
                     e,
                 )
                 return web.json_response(dialect.error_body(str(e)), status=502)
-            # `Response.raw` is the wire response handed to the program 1:1 — the provider's
-            # verbatim bytes (proxy) or the client's serialized completion (renderer).
+            # `Response.raw` is the full native provider object, or the renderer's synthesized
+            # completion object, that the server serializes for the program.
             completion = response.raw
             logger.debug(
                 "intercept turn: id=%s tools=%d",
@@ -361,6 +359,12 @@ class InterceptionServer:
             )
             turn.commit(response)  # one node per new message;
             # branches fall out of walking the graph (see Trace.branches / verifiers.v1.graph)
+            if tools:
+                # Persist the advertised tools now that the model actually saw them (see
+                # `Trace.tools`). Only a tools-bearing turn updates it (truthy, so an empty
+                # parse or a trailing tool-less call never erases the schemas the recorded
+                # tool calls need).
+                session.trace.tools = tools
             # Hand back to the program when the model wants a tool (the program runs it) or
             # when there's no user simulator to keep the conversation going.
             if response.message.tool_calls or session.user is None:
@@ -378,7 +382,7 @@ class InterceptionServer:
             # Inject the model turn + the simulator's user turn(s): into the wire request for the
             # next model call (`dialect.extend`, which keeps the model turn verbatim so reasoning
             # survives) and into the typed prompt for the trace. The simulator ends the trajectory
-            # through its taskset's `@stop` (e.g. a `user_finished` flag it set on `self.state`),
+            # through its task's `@stop` (e.g. a `user_finished` flag it set on `self.state`),
             # caught by `refused()` at the top of the next iteration — the interception server holds
             # no opinion about the state's contents.
             body = dialect.extend(body, completion, user_messages)
@@ -394,17 +398,18 @@ class InterceptionServer:
         dialect: Dialect,
         body: dict,
         prompt: Messages,
+        tools: list[Tool] | None = None,
     ) -> web.StreamResponse:
         """A streamed (SSE) model turn: relay the provider's stream through to the program,
-        accumulating the bytes to record the turn on the trace. Single-shot — a streamed turn
-        never drives a user simulator (the only client that streams is the eval relay)."""
+        incrementally assembling the response to record on the trace. Single-shot — a streamed
+        turn never drives a user simulator (the only client that streams is the eval relay)."""
         try:
             refused = await session.refused()
         except RolloutError as e:
             return self._fail(session, dialect, e)
         except Exception as e:
             return self._fail(
-                session, dialect, TasksetError(f"@stop failed: {type(e).__name__}: {e}")
+                session, dialect, TaskError(f"@stop failed: {type(e).__name__}: {e}")
             )
         if refused is not None:
             return web.json_response(
@@ -445,36 +450,76 @@ class InterceptionServer:
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
         )
         resp.content_type = reply.content_type.split(";")[0].strip()
-        buffer = bytearray()
-        chunks = reply.chunks.__aiter__()
-        next_chunk = asyncio.create_task(anext(chunks, None))
+        # Parse complete events as they relay, avoiding a full-stream byte copy.
+        parser = dialect.stream_parser()
+        feed_event = parser.feed
+        on_done = parser.on_done
+        # One bounded producer avoids per-event tasks; keepalive timeouts only cancel readiness waits.
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue(
+            maxsize=_STREAM_QUEUE_MAXSIZE
+        )
+        ready = asyncio.Event()
+        producer = asyncio.create_task(_queue_chunks(reply.chunks, queue, ready))
+        parser_error: Exception | None = None
+        # SSE events from the turn-ending one onward (the terminal event and any trailing
+        # `[DONE]`), withheld until the turn is committed: a client that ends its turn on the
+        # terminal event (e.g. codex on `response.completed`) would otherwise reach scoring
+        # with the turn still unrecorded.
+        deferred: list[bytes] = []
         try:
             await resp.prepare(request)
             while True:
-                done, _ = await asyncio.wait(
-                    {next_chunk}, timeout=_KEEPALIVE_INTERVAL_SECONDS
-                )
-                if not done:
+                try:
+                    async with asyncio.timeout(_KEEPALIVE_INTERVAL_SECONDS):
+                        await ready.wait()
+                except TimeoutError:
                     await resp.write(b": keepalive\n\n")
                     continue
-                chunk = next_chunk.result()
+                chunk = queue.get_nowait()
+                if queue.empty():
+                    ready.clear()
                 if chunk is None:
+                    await producer
                     break
-                buffer += chunk
+                if deferred or dialect.is_terminal_event(chunk):
+                    if parser_error is None:
+                        try:
+                            if on_done is not None and is_sse_done_event(chunk):
+                                on_done()
+                            feed_event(chunk)
+                        except Exception as e:
+                            parser_error = e
+                    # forwarded after the turn is committed, below
+                    deferred.append(chunk)
+                    continue
                 await resp.write(chunk)
-                next_chunk = asyncio.create_task(anext(chunks, None))
+                if parser_error is None:
+                    try:
+                        feed_event(chunk)
+                    except Exception as e:
+                        parser_error = e
         except ConnectionResetError:
             return resp
         finally:
-            next_chunk.cancel()
-            await asyncio.gather(next_chunk, return_exceptions=True)
+            producer.cancel()
+            # Let a canceled producer enqueue EOF while unwinding.
+            if queue.full():
+                queue.get_nowait()
+            await asyncio.gather(producer, return_exceptions=True)
             await reply.close()
 
         try:
-            turn.commit(dialect.parse_stream(bytes(buffer)))
+            if parser_error is not None:
+                raise parser_error
+            turn.commit(parser.finish())
+            if tools:  # record only on commit, like the non-streaming path
+                session.trace.tools = tools
             logger.debug("intercept stream turn: id=%s", session.trace.id)
         finally:
+            # Release the withheld events only now — after the commit — then close.
             with contextlib.suppress(ConnectionResetError):
+                for event in deferred:
+                    await resp.write(event)
                 await resp.write_eof()
         return resp
 
@@ -482,14 +527,14 @@ class InterceptionServer:
         self, request: web.Request, dialect: Dialect, route: str
     ) -> web.Response:
         """A non-model-turn side request (an `aux_route`, e.g. Anthropic's `count_tokens`):
-        relayed verbatim to the provider, never recorded on the trace."""
+        relayed as native JSON, never recorded on the trace."""
         session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
             result = await session.ctx.client.relay_aux(
-                dialect, route, await request.json()
+                dialect, route, await request.json(), headers=request.headers
             )
         except RolloutError as e:
             # An aux call isn't a model turn, so don't clobber a pending turn error.
@@ -522,18 +567,22 @@ class InterceptionServer:
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         logger.debug("intercept GET /state: id=%s", session.trace.id)
+        state = session.trace.state
         return web.Response(
-            text=session.trace.state.model_dump_json(), content_type="application/json"
+            # TypeAdapter emits UTF-8 bytes directly, avoiding a JSON str copy in aiohttp.
+            body=TypeAdapter(type(state)).dump_json(state),
+            content_type="application/json",
+            charset="utf-8",
         )
 
     async def handle_task_get(self, request: web.Request) -> web.Response:
-        """Hand a forked shared server the rollout's task (class ref + JSON) so its child can run
+        """Hand a launched tool/user server the rollout's task (class ref + JSON) so it can run
         `setup_task` for this rollout — keyed by the same bearer secret as the state channel."""
         session = self._session_for(request)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         logger.debug("intercept GET /task: id=%s", session.trace.id)
-        task = session.trace.task
+        task = session.trace.task.data
         return web.json_response(
             {
                 "cls": f"{type(task).__module__}:{type(task).__qualname__}",
@@ -543,20 +592,18 @@ class InterceptionServer:
 
     async def handle_state_put(self, request: web.Request) -> web.Response:
         """Replace a rollout's shared `trace.state` with a server's pushed copy (validated into the
-        trace's `State` type). Last write wins per call. A taskset ends the trajectory from state via
+        trace's `State` type). Last write wins per call. A task ends the trajectory from state via
         its own `@stop` (run in `RolloutSession.refused` before each model call)."""
         session = self._session_for(request)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         logger.debug("intercept PUT /state: id=%s", session.trace.id)
         state_cls = type(session.trace.state)
+        raw = await request.read()
         try:
-            new_state = state_cls.model_validate(await request.json())
-        except (ValidationError, ValueError) as e:
-            # Malformed JSON (`request.json()` -> JSONDecodeError, a ValueError) or a pushed state
-            # that doesn't fit the trace's `State` type (almost always a `StateT` mismatch between the
-            # taskset and a server). Surface a clean 400 (with the reason) rather than a 500, so the
-            # server's failed PUT fails the rollout legibly.
+            new_state = state_cls.model_validate_json(raw)
+        except ValidationError as e:
+            # Reject malformed, over-nested, or mismatched state before it enters the shared channel.
             logger.warning("state PUT rejected: id=%s %s", session.trace.id, e)
             return web.json_response(
                 {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},

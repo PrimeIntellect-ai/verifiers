@@ -1,11 +1,14 @@
-"""Resume an interrupted eval: re-run only the rollouts a previous run didn't finish.
+"""Resume an interrupted eval: reload its finished rollouts and run only the rest.
 
-A run writes `config.toml` + `results.jsonl` into its output dir. `--resume <dir>` reloads
-that config verbatim (so it takes no other flags) and writes back into the same dir, running
-only the rollouts still owed: the *missing* ones (never written — the run was interrupted) and
-the *errored* ones (written with an error). Good rollouts are kept; errored ones are dropped
-and redone. A group-scored taskset is resumed a whole task at a time (its rollouts are scored
-together), so any task that isn't fully complete is redone from scratch.
+A run writes `config.toml` + `traces.jsonl` into its output dir. `--resume <dir>` reloads
+that config verbatim (so it takes no other flags) and writes back into the same dir. `load`
+brings the good saved rollouts back into memory and re-runs only what's still owed: the
+*missing* rollouts (never written — the run was interrupted) and the *errored* ones (written
+with an error; dropped and redone). The loaded traces rejoin the run everywhere — counted,
+displayed, pushed, and printed alongside this session's — so a resumed run picks up exactly
+where the interrupted one stopped. A group-scored taskset is resumed a whole task at a time
+(its rollouts are scored together), so any task that isn't fully complete is redone from
+scratch.
 """
 
 import json
@@ -13,7 +16,13 @@ import tomllib
 from collections import defaultdict
 from pathlib import Path
 
+from pydantic_core import from_json
+
+from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE
 from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.rollout import Phase, Rollout
+from verifiers.v1.task import Task
+from verifiers.v1.trace import Trace, WireTrace
 
 
 def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
@@ -33,8 +42,8 @@ def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
 
 def load_resume_config(resume_dir: Path) -> EvalConfig:
     """Rebuild the run's `EvalConfig` from its saved `config.toml`, pointed back at its own
-    output dir so the resumed rollouts append to the same `results.jsonl`."""
-    config_path = resume_dir / "config.toml"
+    output dir so the resumed rollouts append to the same `traces.jsonl`."""
+    config_path = resume_dir / CONFIG_FILE
     if not config_path.exists():
         raise SystemExit(
             f"--resume: no config.toml in {resume_dir} - not an eval output dir"
@@ -45,55 +54,57 @@ def load_resume_config(resume_dir: Path) -> EvalConfig:
     return config
 
 
-def _read_results(results_path: Path) -> list[dict]:
-    """The previous run's traces as raw dicts. The on-disk dump carries computed fields a
-    strict `Trace` can't re-validate, so we read the JSON directly — resume only needs each
-    trace's `task.idx` and whether it `errors`ed."""
-    if not results_path.exists():
-        return []
-    return [
-        json.loads(line)
-        for line in results_path.read_text().split("\n")
-        if line.strip()
-    ]
+class Finished(Rollout):
+    def __init__(self, trace: Trace) -> None:
+        self.trace = trace
+        self.task = Task(trace.task.data)
+        self.phase = Phase.DONE
+        self.runtime = None
 
 
-def plan(
+def load(
     resume_dir: Path, selected_idxs: list[int], num_rollouts: int, group: bool
-) -> tuple[list[dict], dict[int, int]]:
-    """Diff the saved results against the run's target (`num_rollouts` per selected task).
-    Returns (rows to keep in `results.jsonl`, rollouts owed per task idx). An errored trace is
-    dropped and re-run; a group-scored task is kept only if fully complete, else its whole
-    group is redone."""
-    by_idx: dict[int, list[dict]] = defaultdict(list)
-    for row in _read_results(resume_dir / "results.jsonl"):
-        by_idx[row["task"]["idx"]].append(row)
-    keep: list[dict] = []
+) -> tuple[list[Trace], dict[int, int]]:
+    """Load the good saved rollouts back into memory as finished traces and diff them against
+    the run's target (`num_rollouts` per selected task): returns (the kept traces, rollouts
+    owed per task idx). An errored trace is dropped and re-run; a group-scored task is kept
+    only if fully complete, else its whole group is redone. Rewrites `traces.jsonl` to just
+    the kept rows — verbatim, via a temp file + atomic rename, so an interrupted resume can't
+    corrupt the prior good results — and the resumed rollouts then append. `WireTrace` reads
+    any taskset's saved traces without importing it."""
+    path = resume_dir / TRACES_FILE
+    selected = set(selected_idxs)
+    good: dict[int, list[bytes]] = defaultdict(list)
+    if path.exists():
+        with path.open("rb") as results:
+            for line in results:
+                if not line.strip():
+                    continue
+                try:
+                    row = from_json(line)
+                except ValueError:
+                    row = json.loads(line)
+                idx = row["task"]["data"]["idx"]
+                if (
+                    idx in selected
+                    and not row.get("errors")
+                    and len(good[idx]) < num_rollouts
+                ):
+                    good[idx].append(line if line.endswith(b"\n") else line + b"\n")
+    keep: list[bytes] = []
     owed: dict[int, int] = {}
     for idx in selected_idxs:
-        good = [row for row in by_idx.get(idx, []) if not row.get("errors")]
-        if group:
-            if len(good) >= num_rollouts:
-                keep.extend(good[:num_rollouts])
-            else:
-                owed[idx] = num_rollouts  # re-run the whole group; keep none of it
-        else:
-            keep.extend(good[:num_rollouts])
-            missing = num_rollouts - min(len(good), num_rollouts)
-            if missing:
-                owed[idx] = missing
-    return keep, owed
-
-
-def rewrite_results(resume_dir: Path, keep: list[dict]) -> None:
-    """Replace `results.jsonl` with just the kept (good) traces; resumed rollouts append. Via a
-    temp file + atomic rename, so an interrupted resume can't corrupt the prior good results."""
-    path = resume_dir / "results.jsonl"
+        rows = good.get(idx, [])
+        if group and len(rows) < num_rollouts:
+            owed[idx] = num_rollouts  # re-run the whole group; keep none of it
+            continue
+        keep.extend(rows)
+        if missing := num_rollouts - len(rows):
+            owed[idx] = missing
     tmp = path.with_suffix(".jsonl.tmp")
-    with tmp.open("w") as f:
-        for row in keep:
-            f.write(json.dumps(row) + "\n")
+    tmp.write_bytes(b"".join(keep))
     tmp.replace(path)
+    return [WireTrace.model_validate_json(line) for line in keep], owed
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:

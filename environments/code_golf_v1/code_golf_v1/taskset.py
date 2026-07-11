@@ -29,43 +29,19 @@ SYSTEM = (
 
 def extract_program(trace: vf.Trace) -> str:
     """The python from the last assistant message's code block (or its raw text)."""
-    text = trace.assistant_messages[-1].content if trace.assistant_messages else ""
+    text = trace.last_reply
     match = re.search(r"```(?:python)?\n(.*?)```", text or "", re.DOTALL)
     return (match.group(1) if match else text or "").strip()
 
 
-class CodeGolfTask(vf.Task):
+class CodeGolfData(vf.TaskData):
     expected: str
     """The exact stdout the program must produce."""
 
 
-class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
-    # (name, description, expected stdout)
-    SPECS = [
-        ("simple-sum", "the sum of the integers 1 to 100", "5050"),
-        (
-            "fibonacci",
-            "the first 10 Fibonacci numbers space-separated on one line",
-            "0 1 1 2 3 5 8 13 21 34",
-        ),
-        ("reverse-str", "the string HELLO reversed", "OLLEH"),
-    ]
-
-    def load_tasks(self) -> list[CodeGolfTask]:
-        return [
-            CodeGolfTask(
-                idx=i,
-                name=name,
-                prompt=f"{SYSTEM}\n\nPrint {description}.",
-                expected=expected,
-            )
-            for i, (name, description, expected) in enumerate(self.SPECS)
-        ]
-
+class CodeGolfTask(vf.Task[CodeGolfData]):
     @vf.metric
-    async def evaluate(
-        self, task: CodeGolfTask, trace: vf.Trace, runtime: vf.Runtime
-    ) -> dict[str, float]:
+    async def evaluate(self, trace: vf.Trace, runtime: vf.Runtime) -> dict[str, float]:
         """Run the program once in the rollout's runtime; record correctness + latency."""
         program = extract_program(trace)
         if not program:
@@ -74,7 +50,9 @@ class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
         start = time.perf_counter()
         result = await runtime.run(["python3", "solution.py"], {})
         latency = time.perf_counter() - start
-        passed = float(result.exit_code == 0 and result.stdout.strip() == task.expected)
+        passed = float(
+            result.exit_code == 0 and result.stdout.strip() == self.data.expected
+        )
         return {"passed": passed, "latency": latency}
 
     @vf.reward
@@ -94,3 +72,30 @@ class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
         times = [t.metrics.get("latency", 1e6) for t in traces]
         best = min(times)
         return [1.0 if t == best else 0.0 for t in times]
+
+
+class CodeGolfTaskset(vf.Taskset[CodeGolfTask, vf.TasksetConfig]):
+    # (name, description, expected stdout)
+    SPECS = [
+        ("simple-sum", "the sum of the integers 1 to 100", "5050"),
+        (
+            "fibonacci",
+            "the first 10 Fibonacci numbers space-separated on one line",
+            "0 1 1 2 3 5 8 13 21 34",
+        ),
+        ("reverse-str", "the string HELLO reversed", "OLLEH"),
+    ]
+
+    def load(self) -> list[CodeGolfTask]:
+        return [
+            CodeGolfTask(
+                CodeGolfData(
+                    idx=i,
+                    name=name,
+                    prompt=f"{SYSTEM}\n\nPrint {description}.",
+                    expected=expected,
+                ),
+                self.config.task,
+            )
+            for i, (name, description, expected) in enumerate(self.SPECS)
+        ]

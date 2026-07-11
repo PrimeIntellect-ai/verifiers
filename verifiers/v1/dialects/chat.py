@@ -8,11 +8,12 @@ read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning
 
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any
 
 from openai.types.chat import ChatCompletion
 
-from verifiers.v1.dialects.base import Dialect, iter_sse
+from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -57,7 +58,6 @@ def reasoning_text(data: Mapping[str, Any]) -> str | None:
 
 
 def _content_text(content) -> str:
-    """Flatten content to text for roles that never carry images."""
     if isinstance(content, list):
         return "".join(p.get("text", "") for p in content if isinstance(p, dict))
     return content or ""
@@ -96,6 +96,9 @@ def parse_message(raw: dict) -> Message:
 
 
 def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
+    # `or None` so a tools array with no function entries (e.g. only `custom`/built-in
+    # tools) parses to None, not [] — the same contract as the anthropic/responses
+    # dialects, and what keeps an empty parse from clearing `Trace.tools`.
     if not raw:
         return None
     return [
@@ -107,13 +110,13 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
         )
         for t in raw
         if t.get("type", "function") == "function"
-    ]
+    ] or None
 
 
 # --- vf -> chat wire ----------------------------------------------------------
 # `message_to_wire` (chat-only): used by `extend` (user-sim turn injection), the default harness
-# (a Messages prompt), and the train client (its generate request). The proxy never
-# serializes — it relays the provider's raw bytes.
+# (a Messages prompt), and the train client (its generate request). The proxy preserves its parsed
+# native JSON independently and does not use this serializer.
 
 
 def _content_to_wire(content):
@@ -125,7 +128,6 @@ def _content_to_wire(content):
 
 
 def message_to_wire(message: Message) -> dict:
-    """A vf message -> the OpenAI chat wire dict."""
     if message.role == "assistant":
         wire: dict = {"role": "assistant", "content": message.content}
         if message.provider_state:
@@ -168,25 +170,7 @@ def response_from_wire(completion: ChatCompletion) -> Response:
     finish: FinishReason = (
         choice.finish_reason if choice.finish_reason in FINISH_REASONS else None
     )
-    usage = None
-    if completion.usage:
-        cached = (
-            completion.usage.prompt_tokens_details.cached_tokens
-            if completion.usage.prompt_tokens_details
-            else None
-        )
-        reasoning = (
-            completion.usage.completion_tokens_details.reasoning_tokens
-            if completion.usage.completion_tokens_details
-            else None
-        )
-        usage = Usage(
-            prompt_tokens=completion.usage.prompt_tokens - (cached or 0),
-            completion_tokens=completion.usage.completion_tokens,
-            cached_input_tokens=cached,
-            reasoning_tokens=reasoning,
-            cost=getattr(completion.usage, "cost", None),
-        )
+    usage = Usage.from_openai(completion.usage)
     return Response(
         id=completion.id,
         created=completion.created,
@@ -202,9 +186,102 @@ def response_from_wire(completion: ChatCompletion) -> Response:
     )
 
 
-class ChatDialect(Dialect[dict, ChatCompletion]):
-    """The OpenAI chat-completions wire format."""
+@dataclass
+class ChatStreamParser(StreamParser):
+    """Incrementally assemble Chat Completions deltas without retaining SSE bytes."""
 
+    message: dict = dataclass_field(
+        default_factory=lambda: {"role": "assistant", "content": None}
+    )
+    message_parts: dict[str, list[str]] = dataclass_field(
+        default_factory=lambda: {key: [] for key in REASONING_FIELDS[:2] + ("content",)}
+    )
+    tool_calls: dict[int, dict] = dataclass_field(default_factory=dict)
+    tool_arguments: dict[int, list[str]] = dataclass_field(default_factory=dict)
+    reasoning_details: list[dict] = dataclass_field(default_factory=list)
+    reasoning_detail_parts: dict[int, list[str]] = dataclass_field(default_factory=dict)
+    finish_reason: str | None = None
+    usage: dict | None = None
+    head: dict | None = None
+
+    def feed(self, raw: bytes) -> None:
+        chunk = parse_sse_event(raw)
+        if chunk is None:
+            return
+        if self.head is None:
+            self.head = chunk
+        self.usage = chunk.get("usage") or self.usage
+        for choice in chunk.get("choices") or []:
+            if choice.get("index", 0) != 0:
+                continue
+            self.finish_reason = choice.get("finish_reason") or self.finish_reason
+            delta = choice.get("delta") or {}
+            for key in ("content", "reasoning_content", "reasoning"):
+                if delta.get(key) is not None:
+                    self.message_parts[key].append(delta[key])
+            for detail in delta.get("reasoning_details") or []:
+                previous = self.reasoning_details[-1] if self.reasoning_details else {}
+                if detail.get("type") == previous.get("type") == "reasoning.text":
+                    self.reasoning_detail_parts.setdefault(
+                        len(self.reasoning_details) - 1,
+                        [previous.get("text") or ""],
+                    ).append(detail.get("text") or "")
+                    for field_name in ("signature", "format"):
+                        previous[field_name] = previous.get(field_name) or detail.get(
+                            field_name
+                        )
+                else:
+                    self.reasoning_details.append(detail)
+            for tool_call in delta.get("tool_calls") or []:
+                index = tool_call.get("index", 0)
+                slot = self.tool_calls.setdefault(
+                    index,
+                    {"type": "function", "function": {"name": "", "arguments": ""}},
+                )
+                slot["id"] = tool_call.get("id") or slot.get("id", "")
+                function = tool_call.get("function") or {}
+                if function.get("name"):
+                    slot["function"]["name"] = function["name"]
+                self.tool_arguments.setdefault(index, []).append(
+                    function.get("arguments") or ""
+                )
+
+    def finish(self) -> Response:
+        for key, parts in self.message_parts.items():
+            if parts:
+                self.message[key] = "".join(parts)
+        for index, parts in self.reasoning_detail_parts.items():
+            self.reasoning_details[index]["text"] = "".join(parts)
+        for index, parts in self.tool_arguments.items():
+            self.tool_calls[index]["function"]["arguments"] = "".join(parts)
+        if self.tool_calls:
+            self.message["tool_calls"] = [
+                self.tool_calls[index] for index in sorted(self.tool_calls)
+            ]
+        if self.reasoning_details:
+            self.message["reasoning_details"] = self.reasoning_details
+        head = self.head or {}
+        return response_from_wire(
+            ChatCompletion.model_validate(
+                {
+                    "id": head.get("id", "vf-intercept"),
+                    "object": "chat.completion",
+                    "created": head.get("created", int(time.time())),
+                    "model": head.get("model", ""),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": self.message,
+                            "finish_reason": self.finish_reason or "stop",
+                        }
+                    ],
+                    "usage": self.usage,
+                }
+            )
+        )
+
+
+class ChatDialect(Dialect[dict, ChatCompletion]):
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
     response_type = ChatCompletion
@@ -227,70 +304,11 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
 
-    def parse_stream(self, raw: bytes) -> Response:
-        """Assemble `chat.completion.chunk` deltas into one completion, then parse it."""
-        chunks = iter_sse(raw)
-        message: dict = {"role": "assistant", "content": None}
-        tool_calls: dict[int, dict] = {}
-        reasoning_details: list[dict] = []
-        finish_reason = None
-        usage = None
-        for chunk in chunks:
-            usage = chunk.get("usage") or usage
-            for choice in chunk.get("choices") or []:
-                if choice.get("index", 0) != 0:
-                    continue
-                finish_reason = choice.get("finish_reason") or finish_reason
-                delta = choice.get("delta") or {}
-                for key in ("content", "reasoning_content", "reasoning"):
-                    if delta.get(key) is not None:
-                        message[key] = (message.get(key) or "") + delta[key]
-                for detail in delta.get("reasoning_details") or []:
-                    previous = reasoning_details[-1] if reasoning_details else {}
-                    if detail.get("type") == previous.get("type") == "reasoning.text":
-                        previous["text"] = (previous.get("text") or "") + (
-                            detail.get("text") or ""
-                        )
-                        for field in ("signature", "format"):
-                            previous[field] = previous.get(field) or detail.get(field)
-                    else:
-                        reasoning_details.append(detail)
-                for tc in delta.get("tool_calls") or []:
-                    slot = tool_calls.setdefault(
-                        tc.get("index", 0),
-                        {"type": "function", "function": {"name": "", "arguments": ""}},
-                    )
-                    slot["id"] = tc.get("id") or slot.get("id", "")
-                    fn = tc.get("function") or {}
-                    if fn.get("name"):
-                        slot["function"]["name"] = fn["name"]
-                    slot["function"]["arguments"] += fn.get("arguments") or ""
-        if tool_calls:
-            message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
-        if reasoning_details:
-            message["reasoning_details"] = reasoning_details
-        head = chunks[0] if chunks else {}
-        return response_from_wire(
-            ChatCompletion.model_validate(
-                {
-                    "id": head.get("id", "vf-intercept"),
-                    "object": "chat.completion",
-                    "created": head.get("created", int(time.time())),
-                    "model": head.get("model", ""),
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": message,
-                            "finish_reason": finish_reason or "stop",
-                        }
-                    ],
-                    "usage": usage,
-                }
-            )
-        )
+    def stream_parser(self) -> StreamParser:
+        return ChatStreamParser()
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
-        # Forward the program's body verbatim, overlaying only what the eval owns: the model and
+        # Preserve the program's native fields, overlaying only what the eval owns: the model and
         # the sampling knobs it set (later keys win, so the eval's override the program's).
         return {**body, "model": model, **sampling.model_dump(exclude_none=True)}
 
