@@ -59,7 +59,7 @@ class RunResponse(BaseResponse):
 
     @field_serializer("graph")
     def _serialize_graph(self, graph: AgentGraph | None) -> dict | None:
-        return graph.to_record() if graph is not None else None
+        return graph.model_dump(mode="python") if graph is not None else None
 
 
 # Legacy v0 bridge protocol. Native v1 never dispatches these routes.

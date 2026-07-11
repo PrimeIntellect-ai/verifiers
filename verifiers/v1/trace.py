@@ -23,6 +23,7 @@ from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
+    SamplingConfig,
     StrictBaseModel,
     ToolMessage,
     Usage,
@@ -149,15 +150,11 @@ class Branch(StrictBaseModel):
     @property
     def num_input_tokens(self) -> int:
         """Final-turn prompt size, falling back to provider usage without token IDs."""
-        last_completion = next(
-            (sum(n.mask) for n in reversed(self.nodes) if any(n.mask)), 0
-        )
+        last_completion = next((sum(n.mask) for n in reversed(self.nodes) if any(n.mask)), 0)
         token_len = self.num_total_tokens - last_completion
         if token_len:
             return token_len
-        last = next(
-            (n.usage for n in reversed(self.nodes) if n.usage is not None), None
-        )
+        last = next((n.usage for n in reversed(self.nodes) if n.usage is not None), None)
         return last.input_tokens if last else 0
 
     @property
@@ -170,9 +167,7 @@ class Branch(StrictBaseModel):
         return usage.completion_tokens if usage else 0
 
 
-_NODE_DUMP_EXCLUDE: dict = {
-    "nodes": {"__all__": {"multi_modal_data", "routed_experts"}}
-}
+_NODE_DUMP_EXCLUDE: dict = {"nodes": {"__all__": {"multi_modal_data", "routed_experts"}}}
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
@@ -207,6 +202,10 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """Whether this trace is a training sample. Set from the producing agent's
     `AgentConfig.trainable`, so a trainer can drop e.g. a judge agent's traces without
     consulting the topology config. Always True outside a topology."""
+    sampling: SamplingConfig | None = None
+    """The resolved sampling configuration used by this agent invocation. This includes
+    topology-agent overrides, so training consumers can recover the actual sampling
+    temperature and other policy metadata from the trace itself."""
     runtime: RuntimeInfo | None = None
     """The runtime's full config plus its provisioned resource ID."""
     nodes: list[MessageNode] = Field(default_factory=list)
@@ -319,11 +318,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     def assistant_messages(self) -> list[AssistantMessage]:
         """Every model response, in order — one per turn, branch-independent. Excludes
         prompt-supplied assistant messages (`sampled` is the provenance signal)."""
-        return [
-            n.message
-            for n in self.nodes
-            if n.sampled and isinstance(n.message, AssistantMessage)
-        ]
+        return [n.message for n in self.nodes if n.sampled and isinstance(n.message, AssistantMessage)]
 
     @property
     def last_reply(self) -> str:
@@ -340,10 +335,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
             if isinstance(message, AssistantMessage):
                 if message.content:
                     lines.append(message.content)
-                lines.extend(
-                    f"[tool_call {call.name}({call.arguments})]"
-                    for call in message.tool_calls or []
-                )
+                lines.extend(f"[tool_call {call.name}({call.arguments})]" for call in message.tool_calls or [])
             else:
                 if isinstance(message, ToolMessage) and message.name:
                     lines[0] = f"[{message.role} {message.name}]"
@@ -362,9 +354,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
     def record_metric(self, name: str, value: float) -> None:
         if name in self.metrics:
-            logger.warning(
-                "metric %r overridden: %s -> %s", name, self.metrics[name], value
-            )
+            logger.warning("metric %r overridden: %s -> %s", name, self.metrics[name], value)
         self.metrics[name] = float(value)
 
     def record_metrics(self, values: Mapping[str, float]) -> None:
@@ -379,9 +369,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
         contribution = float(value) * float(weight)
         if name in self.rewards:
-            logger.warning(
-                "reward %r overridden: %s -> %s", name, self.rewards[name], contribution
-            )
+            logger.warning("reward %r overridden: %s -> %s", name, self.rewards[name], contribution)
         self.rewards[name] = contribution
 
     def stop(self, condition: str = "done") -> None:
@@ -396,9 +384,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
                 message=str(error),
                 # Provider errors already carry the actionable upstream diagnostic.
                 # Keep full tracebacks for every other failure.
-                traceback=None
-                if isinstance(error, ProviderError)
-                else traceback.format_exc(),
+                traceback=None if isinstance(error, ProviderError) else traceback.format_exc(),
             )
         )
         self.stop("error")
