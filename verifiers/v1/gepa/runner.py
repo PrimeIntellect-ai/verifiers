@@ -16,7 +16,11 @@ from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.env import Environment
 from verifiers.v1.gepa.adapter import GEPAv1Adapter
 from verifiers.v1.gepa.config import GEPAConfig
-from verifiers.v1.gepa.dataset import resolve_gepa_seed_prompt, split_tasks
+from verifiers.v1.gepa.dataset import (
+    reject_group_reward_tasksets,
+    resolve_gepa_seed_prompt,
+    split_tasks,
+)
 from verifiers.v1.gepa.reflection import build_reflection_lm
 from verifiers.v1.trace import Trace
 
@@ -39,6 +43,9 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
         all_tasks, config.num_train, config.num_val, config.shuffle
     )
     selected_tasks = [*train_tasks, *val_tasks]
+    reject_group_reward_tasksets(
+        selected_tasks
+    )  # GEPA scores n=1 per task; groups need >=2
     # Seed from the tasks GEPA actually evaluates (train ∪ val), not the full pre-split pool —
     # a taskset with per-task system prompts could otherwise seed from a task in neither split.
     seed_prompt = resolve_gepa_seed_prompt(selected_tasks, config.initial_prompt)

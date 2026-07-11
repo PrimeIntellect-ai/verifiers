@@ -6,8 +6,23 @@ individual tasksets define ad hoc ones inconsistently), so GEPA carves one out o
 reproducible across runs like every other entrypoint), then two disjoint slices.
 """
 
+from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.task import Task
 from verifiers.v1.utils.sampling import sample
+
+
+def reject_group_reward_tasksets(tasks: list[Task]) -> None:
+    """GEPA scores one rollout per task (`n=1`) to get the per-task scalar its pareto frontier
+    needs, but `@group_reward`s compare a task's rollouts and need >=2 — so a group-reward
+    taskset can't be optimized this way (`Environment.episode` would raise on the first batch).
+    Reject it up front with a clear message instead of crashing mid-run. A taskset loads one task
+    type, so the first task is representative (as `run_eval` also assumes)."""
+    if tasks and discover_decorated(tasks[0], "group_reward"):
+        raise ValueError(
+            "this taskset defines @group_reward(s), which compare >=2 rollouts of a task; GEPA "
+            "optimizes a single system prompt from per-task scalar scores (one rollout per task) "
+            "and can't score group rewards. Optimize a taskset without @group_reward instead."
+        )
 
 
 def split_tasks(
