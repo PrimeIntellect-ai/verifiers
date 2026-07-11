@@ -34,7 +34,7 @@ def install(rich: bool) -> None:
             sys.stderr.write(
                 "\ninterrupted — cleaning up, please wait...\n"
                 if first
-                else "cleanup in progress — please wait (Ctrl-C ignored)\n"
+                else "cleanup in progress — please wait (ctrl-c ignored)\n"
             )
             sys.stderr.flush()
         if first:

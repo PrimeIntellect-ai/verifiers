@@ -111,16 +111,19 @@ def _aligned(rows: list[list[str]]) -> list[str]:
     ]
 
 
-def _interrupt_banner() -> Text | None:
-    """Shown atop the dashboard once Ctrl-C has begun teardown — the on-screen echo of the
-    graceful-shutdown notice (console logging is silenced in rich mode); further Ctrl-C is
-    ignored while it shows."""
+def _interrupt_footer() -> Group | None:
+    """The graceful-shutdown notice under the rollouts once Ctrl-C has begun teardown — the
+    on-screen echo of the warning (console logging is silenced in rich mode); a further Ctrl-C
+    is ignored while it shows. Sits beside the `--push` line, mirroring its placement."""
     if not cleaning_up():
         return None
-    return Text(
-        "interrupted  Cleaning up — tearing down containers/sandboxes. "
-        "Please wait; further Ctrl-C is ignored.",
-        style="bold red",
+    return Group(
+        Rule(style="dim"),
+        Text(
+            "interrupted — cleaning up, tearing down containers/sandboxes. "
+            "please wait; a further ctrl-c is ignored.",
+            style="yellow",
+        ),
     )
 
 
@@ -573,13 +576,13 @@ def _render(
     push: "PushState | None" = None,
 ) -> Group:
     now = time.time()
-    banners = [b for b in (_interrupt_banner(), _warning(config)) if b is not None]
-    header = Group(*(part for b in banners for part in (b, Text(""))), Overview(config))
-    # The --push status line appears under the rollouts once the upload starts (None during the run
-    # / when off). Measure the fixed top (header + progress + rule) and the footer so the rollout
-    # rows fill what's left; page through them (timer / arrows) when they'd overflow (else rich
-    # truncates).
-    footer = _push_footer(push)
+    warning = _warning(config)
+    header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
+    # The --push status line (and, on Ctrl-C, the cleanup notice) appear under the rollouts. Measure
+    # the fixed top (header + progress + rule) and the footer so the rollout rows fill what's left;
+    # page through them (timer / arrows) when they'd overflow (else rich truncates).
+    footers = [f for f in (_push_footer(push), _interrupt_footer()) if f is not None]
+    footer = Group(*footers) if footers else None
     top = Group(header, Progress(rollouts, start), Rule(style="dim"))
     reserved = len(_CONSOLE.render_lines(top))
     if footer is not None:
