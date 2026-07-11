@@ -1,9 +1,4 @@
-"""Wire dialects: per-native-format translators (wire -> vf) for the interception trace.
-
-`Dialect` is the abstraction; one module per native format (`chat`, `responses`, `anthropic`).
-The interception server serves each registered dialect's `routes`, so the wire format is
-resolved from the endpoint the program's SDK posts to — no per-harness declaration.
-"""
+"""Registered wire dialects for interception."""
 
 from verifiers.v1.dialects.anthropic import AnthropicDialect
 from verifiers.v1.dialects.base import Dialect, StreamParser, iter_sse

@@ -12,7 +12,9 @@ async def main() -> None:
         model="z-ai/glm-5.2", client=vf.resolve_client(vf.EvalClientConfig())
     )
     solver = vf.Agent(DefaultHarness(DefaultHarnessConfig()), ctx)
-    task = vf.Task(idx=0, prompt="What is 2+2? Answer with just the number.")
+    task = vf.Task(
+        vf.TaskData(idx=0, prompt="What is 2+2? Answer with just the number.")
+    )
     async with solver:
         trace = await solver.run(task)
     print("stop:", trace.stop_condition)

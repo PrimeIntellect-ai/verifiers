@@ -8,10 +8,11 @@ rollout and returns its `Trace`. Everything else is a parameter, not a concept:
   - placement: `runtime=` borrows a live box (creator owns teardown) instead of
     provisioning a fresh one — put a judge into a solver's sandbox, or two agents into
     one world. `agent.provision(task)` hands you a box to place runs into.
-  - judgement: `taskset=` attaches data-plane scoring (`@reward`/`@metric`, `setup`/
-    `finalize`) to a run; omitted, the run is unscored — a pure `Task -> Trace` arrow.
-  - chaining: plain functions. Mint the next `Task` from earlier traces (stamp
-    `sources`/`relation` for lineage) and hand it to the next agent.
+  - judgement: the task carries it. A `Task` subclass's hooks (`setup`/`finalize`)
+    and signals (`@reward`/`@metric`) run as in any eval; a plain base `Task` has
+    no-op hooks and no signals, so the run is unscored — a pure `Task -> Trace` arrow.
+  - chaining: plain functions. Mint the next task's `TaskData` from earlier traces
+    (stamp `sources`/`relation` for lineage) and hand it to the next agent.
 
 The Agent is an async context manager: entered, it owns an `InterceptionPool` so N
 concurrent runs share interception servers (and tunnels, behind remote runtimes) like an
@@ -20,7 +21,7 @@ for scripts and small programs.
 
 The execution machinery is unchanged: every run is a standard `Rollout` (staged lifecycle,
 typed error attribution, token-true trace capture). The Agent only decides what goes into
-the five-tuple.
+the rollout.
 """
 
 import logging
@@ -45,9 +46,7 @@ from verifiers.v1.runtimes import (
     make_runtime,
     runtime_is_local,
 )
-from verifiers.v1.state import State
 from verifiers.v1.task import Task
-from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -57,15 +56,6 @@ def _merge(agent_timeout: float | None, task_timeout: float | None) -> float | N
     """Agent-level timeout wins; else the task's; else no limit (`Environment.episode`'s
     precedence, with the agent standing in for cli/toml)."""
     return agent_timeout if agent_timeout is not None else task_timeout
-
-
-class NullTaskset(Taskset[Task, TasksetConfig, State]):
-    """No data, no judgement: the taskset behind an unscored `agent.run`. Every world hook
-    is the inherited no-op; `load_tasks` is never called (the program supplies the task)."""
-
-
-_NULL_TASKSET = NullTaskset(TasksetConfig())
-"""The shared no-judgement taskset behind every unscored `agent.run` (it is stateless)."""
 
 
 class Agent:
@@ -135,20 +125,18 @@ class Agent:
         self,
         task: Task,
         *,
-        taskset: Taskset | None = None,
         runtime: Runtime | None = None,
         ctx: ModelContext | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace.
 
-        `taskset` attaches judgement (its world hooks + `@reward`/`@metric` run as in any
-        eval); omitted, the run is unscored. `runtime` places the run into a live box
-        (borrowed — not started or torn down here) instead of provisioning a fresh one
-        from the agent's runtime policy. `ctx` replaces the agent's model context for
-        this run — `dataclasses.replace(agent.ctx, model=...)` for a judge sweeping
-        models."""
+        The task carries its own judgement (its hooks + `@reward`/`@metric` run as in
+        any eval); a plain base `Task` makes the run unscored. `runtime` places the run
+        into a live box (borrowed — not started or torn down here) instead of
+        provisioning a fresh one from the agent's runtime policy. `ctx` replaces the
+        agent's model context for this run — `dataclasses.replace(agent.ctx, model=...)`
+        for a judge sweeping models."""
         ctx = ctx if ctx is not None else self.ctx
-        taskset = taskset if taskset is not None else _NULL_TASKSET
         if runtime is not None:
             runtime_config = runtime.config
             run_is_local = runtime.is_local
@@ -157,21 +145,20 @@ class Agent:
                 self.runtime_config, task, self._warned_resources
             )
             run_is_local = runtime_is_local(runtime_config)
-        validate_pairing(self.harness, taskset, runtime_config)
+        validate_pairing(self.harness, type(task), runtime_config)
         rollout = Rollout(
             task=task,
-            taskset=taskset,
             harness=self.harness,
             ctx=ctx,
             runtime_config=runtime_config,
-            setup_timeout=_merge(self.timeout.setup, task.timeout.setup),
+            setup_timeout=_merge(self.timeout.setup, task.data.timeout.setup),
             harness_timeout=cap_remote_harness_timeout(
-                _merge(self.timeout.rollout, task.timeout.harness),
+                _merge(self.timeout.rollout, task.data.timeout.harness),
                 runtime_config,
                 task,
             ),
-            finalize_timeout=_merge(self.timeout.finalize, task.timeout.finalize),
-            scoring_timeout=_merge(self.timeout.scoring, task.timeout.scoring),
+            finalize_timeout=_merge(self.timeout.finalize, task.data.timeout.finalize),
+            scoring_timeout=_merge(self.timeout.scoring, task.data.timeout.scoring),
             limits=self.limits,
             interception=self._interception_for(run_is_local),
             runtime=runtime,

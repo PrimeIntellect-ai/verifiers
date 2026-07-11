@@ -41,10 +41,12 @@ JUDGE_PROMPT = (
 def judge_task(solver_trace: vf.Trace) -> vf.Task:
     """A plain traces -> Task function: mint the judge's task from the solver's trace."""
     return vf.Task(
-        idx=0,
-        prompt=JUDGE_PROMPT.format(solver_task=solver_trace.task.prompt),
-        sources=(solver_trace.id,),
-        relation="judges",
+        vf.TaskData(
+            idx=0,
+            prompt=JUDGE_PROMPT.format(solver_task=solver_trace.task.data.prompt),
+            sources=(solver_trace.id,),
+            relation="judges",
+        )
     )
 
 
@@ -59,7 +61,7 @@ async def main() -> None:
         harness, vf.ModelContext(model="openai/gpt-5.4-mini", client=client), sandbox
     )
 
-    task = vf.Task(idx=0, prompt=SOLVER_PROMPT)
+    task = vf.Task(vf.TaskData(idx=0, prompt=SOLVER_PROMPT))
     async with solver.provision(task) as box:
         print(f"box up: {box.descriptor}")
         solver_trace = await solver.run(task, runtime=box)
@@ -89,9 +91,9 @@ async def main() -> None:
     print("verdict:", json.dumps(verdict, indent=2))
     print(
         "lineage: judge task sources =",
-        verdict_trace.task.sources,
+        verdict_trace.task.data.sources,
         "relation =",
-        verdict_trace.task.relation,
+        verdict_trace.task.data.relation,
     )
     print("solver box:", solver_trace.info["agent"]["runtime"])
     print("judge box: ", verdict_trace.info["agent"]["runtime"])

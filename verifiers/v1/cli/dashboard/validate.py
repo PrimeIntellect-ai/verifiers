@@ -1,11 +1,4 @@
-"""The validate `--rich` dashboard: a taskset overview, a progress bar, and one row per task.
-
-The model-free counterpart of the eval dashboard — no rollout phases, tokens, turns, or
-reward, just each task's validation outcome, shown as a bracketed marker that reads at a
-glance — `[pending]` / `[running]` / `[valid]` / `[invalid]` / `[error]` / `[timeout]`,
-padded so the brackets line up in a column. The runner advances a `TaskProgress` per task;
-this reads them each tick.
-"""
+"""Live task-validation dashboard."""
 
 import contextlib
 import time
@@ -40,9 +33,6 @@ _DONE = ("valid", "invalid", "error", "timeout")
 
 @dataclass
 class TaskProgress:
-    """Live state of one task's validation, read by the dashboard each tick and advanced by the
-    runner (pending → running → its outcome)."""
-
     idx: int
     name: str | None
     state: str = "pending"

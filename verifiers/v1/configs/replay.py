@@ -1,11 +1,4 @@
-"""The `ReplayConfig`: the config the `replay` CLI parses.
-
-Replay re-scores a finished run's saved traces with no runtime, so it needs only a subset of
-`EvalConfig` — the taskset (with its plugged judges) and a few run knobs. It carries no harness,
-runtime, model, sampling, or pool. Its base is the replayed run's own `config.toml` (a full
-`EvalConfig`), so `model_config` ignores the eval-only fields rather than rejecting them; CLI
-flags / `@ file.toml` then layer overrides (e.g. re-judge with different judge settings).
-"""
+"""Offline re-scoring config; source eval-only fields are ignored."""
 
 from pathlib import Path
 from uuid import uuid4
@@ -17,17 +10,14 @@ from verifiers.v1.taskset import TasksetConfig
 
 
 class ReplayConfig(BaseConfig):
-    """A taskset (with its config-plugged judges) plus replay run knobs. The saved run's
-    `config.toml` is the base; its eval-only fields (harness, runtime, model, sampling, pool, …)
-    are ignored here — replay only re-runs scoring from the trace."""
-
     model_config = ConfigDict(extra="ignore")
 
     uuid: str = Field(default_factory=lambda: str(uuid4()), exclude=True)
     """Auto-generated run id — the leaf of the output dir, so replays never overwrite."""
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     """The taskset, selected by `--taskset.id` (narrowed to its config type). Its
-    `taskset.judges` are what replay re-runs; override them via `@ file.toml` / dotted flags."""
+    `taskset.task.judges` replace the source run's judges entirely (and new ones
+    join); set them via `@ file.toml` / dotted flags."""
     num_traces: int | None = Field(
         None, validation_alias=AliasChoices("num_traces", "n")
     )
@@ -49,7 +39,7 @@ class ReplayConfig(BaseConfig):
     output_dir: Path | None = Field(
         None, validation_alias=AliasChoices("output_dir", "o")
     )
-    """Where to write the re-scored run (config.toml + results.jsonl). None = a fresh per-run
+    """Where to write the re-scored run (config.toml + traces.jsonl). None = a fresh per-run
     dir under `outputs/<taskset>--replay/<uuid>` (so a replay never overwrites the source run)."""
 
     @property
@@ -59,8 +49,6 @@ class ReplayConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_taskset(cls, data):
-        """Narrow the generic `taskset` to its specific config type by `id` (mirrors
-        `ValidateConfig`), so `taskset.judges` and other taskset fields validate typed."""
         from verifiers.v1.loaders import narrow_plugin_field, taskset_config_type
 
         narrow_plugin_field(data, "taskset", taskset_config_type)

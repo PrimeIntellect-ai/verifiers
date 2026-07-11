@@ -1,7 +1,7 @@
 """Demo 4: a third-party harness (mini-swe-agent) + runtime-verified scoring.
 
-The agent runs the real mini-swe-agent CLI in a fresh prime sandbox; the attached
-taskset's @reward re-executes the agent's artifact IN the live box — judging the world,
+The agent runs the real mini-swe-agent CLI in a fresh prime sandbox; the task's
+@reward re-executes the agent's artifact IN the live box — judging the world,
 not the transcript.
 """
 
@@ -19,7 +19,7 @@ TASK = (
 )
 
 
-class WorldTaskset(vf.Taskset[vf.Task, vf.TasksetConfig]):
+class WorldTask(vf.Task):
     @vf.reward
     async def artifact_runs(self, trace: vf.Trace, runtime: vf.Runtime) -> float:
         result = await runtime.run(["python3", "/app/fizz.py"], {})
@@ -48,9 +48,7 @@ async def main() -> None:
         vf.PrimeConfig(labels=["agent-programs-demo"]),
         timeout=vf.TimeoutConfig(rollout=420, scoring=60),  # scoring runs agent code
     )
-    trace = await agent.run(
-        vf.Task(idx=0, prompt=TASK), taskset=WorldTaskset(vf.TasksetConfig())
-    )
+    trace = await agent.run(WorldTask(vf.TaskData(idx=0, prompt=TASK)))
     print("stop:", trace.stop_condition, "| error:", trace.error)
     print("turns:", trace.num_turns, "| usage:", trace.usage)
     print("rewards:", trace.rewards, "-> reward:", trace.reward)

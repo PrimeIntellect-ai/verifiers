@@ -1,7 +1,3 @@
-"""Built-in harnesses, resolved by id (`--harness.id <id>`) as `verifiers.v1.harnesses.<id>`.
-
-Re-exports each harness's class + config off the package."""
-
 from verifiers.v1.harnesses.codex import CodexHarness, CodexHarnessConfig
 from verifiers.v1.harnesses.default import DefaultHarness, DefaultHarnessConfig
 from verifiers.v1.harnesses.kimi_code import KimiCodeHarness, KimiCodeHarnessConfig

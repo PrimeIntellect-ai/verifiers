@@ -1,4 +1,4 @@
-"""On-disk output: results.jsonl (one full trace per line) + config.toml.
+"""On-disk output: traces.jsonl (one full trace per line) + config.toml.
 
 The trace is the full data dump — written verbatim, consumed by the platform
 (visualization) and prime-rl (training). config.toml is the run's resolved EvalConfig,
@@ -7,7 +7,7 @@ its own output. Aggregates (avg reward, etc.) are cheap to recompute from result
 they aren't stored.
 
 The runner writes `config.toml` once up front (`save_config`) and then appends each
-trace to `results.jsonl` as it completes (`append_trace`), so a long run's results are
+trace to `traces.jsonl` as it completes (`append_trace`), so a long run's results are
 durable as they land rather than only at the end.
 """
 
@@ -21,6 +21,12 @@ from pydantic import BaseModel, TypeAdapter
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.aio import run_shielded
+
+TRACES_FILE = "traces.jsonl"
+"""Filename each run's full per-rollout traces are written to (one JSON trace per line)."""
+
+CONFIG_FILE = "config.toml"
+"""Filename a run's resolved config is written to (re-runnable via `@ config.toml`)."""
 
 
 def output_path(config: EvalConfig) -> Path:
@@ -38,35 +44,33 @@ def write_config(config: BaseModel, results_dir: Path) -> Path:
     nulls TOML can't represent."""
     results_dir.mkdir(parents=True, exist_ok=True)
     toml = tomli_w.dumps(config.model_dump(mode="json", exclude_none=True))
-    config_path = results_dir / "config.toml"
+    config_path = results_dir / CONFIG_FILE
     config_path.write_text(toml)
     return config_path
 
 
 def save_config(config: BaseModel, results_dir: Path) -> None:
     """Set up the run's output dir: write `config.toml` and start a fresh (empty)
-    `results.jsonl`. Call once up front, before traces start landing."""
+    `traces.jsonl`. Call once up front, before traces start landing."""
     write_config(config, results_dir)
-    (results_dir / "results.jsonl").write_text(
-        ""
-    )  # fresh; appended to as traces complete
+    (results_dir / TRACES_FILE).write_text("")  # fresh; appended to as traces complete
 
 
 def write_trace(results_dir: Path, trace: Trace) -> None:
     """Serialize and append one trace in the worker thread."""
+    # Preserve fields declared by typed Trace subclasses.
     data = TypeAdapter(type(trace)).dump_json(trace, exclude_none=True)
-    with (results_dir / "results.jsonl").open("ab") as f:
+    with (results_dir / TRACES_FILE).open("ab") as f:
         f.write(data + b"\n")
 
 
 def read_traces(results_dir: Path, trace_type: type) -> list[Trace]:
-    """Load a run's saved traces from `results.jsonl`, typed as `trace_type` — the inverse of
-    `write_trace`. Used by `replay` to re-score finished rollouts (pass the taskset's typed
-    `Trace[...]`, or `Trace[WireTask, ...]` to read any taskset's traces without importing it).
-    Streams line-by-line so a large (multi-GB) results file isn't loaded into memory at once."""
+    """Load a run's saved traces from `traces.jsonl`, typed as `trace_type` — the inverse of
+    `write_trace`. Used by `replay` to re-score finished rollouts (pass the task's typed
+    `Trace[...]`, or `Trace[WireTaskData, ...]` to read any taskset's traces without importing it)."""
     adapter = TypeAdapter(trace_type)
     traces: list[Trace] = []
-    with (results_dir / "results.jsonl").open(encoding="utf-8") as f:
+    with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 traces.append(adapter.validate_python(json.loads(line)))
