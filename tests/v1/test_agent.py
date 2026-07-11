@@ -18,7 +18,9 @@ def trace_for(task: vf.Task) -> vf.Trace:
 def null_agent(**kwargs) -> vf.Agent:
     return vf.Agent(
         NullHarness(NullHarnessConfig()),
-        vf.ModelContext(model="org/model", client=object(), sampling=vf.SamplingConfig()),
+        vf.ModelContext(
+            model="org/model", client=object(), sampling=vf.SamplingConfig()
+        ),
         **kwargs,
     )
 
@@ -82,7 +84,9 @@ async def test_agent_provision_owns_runtime_lifetime(monkeypatch):
     monkeypatch.setattr(agent_module, "make_runtime", lambda config: runtime)
     agent = vf.Agent(
         NullHarness(NullHarnessConfig()),
-        vf.ModelContext(model="org/model", client=object(), sampling=vf.SamplingConfig()),
+        vf.ModelContext(
+            model="org/model", client=object(), sampling=vf.SamplingConfig()
+        ),
     )
 
     async with agent.provision(task_of("seed")) as box:
@@ -113,7 +117,9 @@ async def test_mid_run_teardown_of_borrowed_box_raises_to_caller():
             raise RuntimeError("box died under the harness")
 
     with pytest.raises(ValueError, match="mid-run") as excinfo:
-        await null_agent().run(SabotagedTask(vf.TaskData(idx=0, prompt="hi")), runtime=FakeRuntime())
+        await null_agent().run(
+            SabotagedTask(vf.TaskData(idx=0, prompt="hi")), runtime=FakeRuntime()
+        )
     assert isinstance(excinfo.value.__cause__, TaskError)  # raw failure chained
 
 

@@ -315,3 +315,10 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
 ]
+
+# Pin ruff's config discovery to THIS repo: when verifiers is checked out under
+# prime-rl (deps/verifiers), a section-less pyproject would make ruff walk up and
+# inherit prime-rl's line-length = 120 — every commit authored there then fights
+# this repo's formatting. An explicit section (at ruff's defaults) stops the walk.
+[tool.ruff]
+line-length = 88
