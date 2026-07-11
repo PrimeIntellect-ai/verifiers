@@ -121,8 +121,9 @@ Reward/metric handlers are `async def` — a sync handler fails at scoring time.
 - A **borrowed box** (`runtime=`) is its creator's to tear down; runs in it skip
   provisioning entirely. Place any number of runs — by one agent or several — into one
   box; their traces never entangle (interception sessions are per-run). Borrowing a box
-  its owner already tore down raises immediately — a lifetime bug in the program, not a
-  rollout error on the trace.
+  its owner already tore down raises immediately, and a box torn down mid-run raises at
+  the awaited `run()` (the raw failure chained underneath) — lifetime bugs in the
+  program, not rollout errors on the trace.
 - An adversarial caveat: an agent that runs in a box can tamper with evidence already in
   it. For hack detection, prefer writing the evidence *after* the suspect run (as above),
   or judge in a separate box.

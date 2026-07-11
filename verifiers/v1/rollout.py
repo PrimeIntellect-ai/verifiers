@@ -254,10 +254,19 @@ class Rollout:
                     self.scoring_timeout,
                 )
             trace.timing.scoring.end = time.time()
-        except RolloutError as e:
-            trace.capture_error(e)
         except Exception as e:
-            logger.exception("unexpected error in rollout %s", trace.id)
+            if not owns_runtime and runtime.stopped:
+                # The owner tore the borrowed box down mid-run — the same lifetime bug
+                # as borrowing a stopped runtime, surfaced through the same channel:
+                # raise to the caller (raw failure chained) instead of capturing a
+                # misattributed world error onto the trace.
+                raise ValueError(
+                    f"borrowed runtime {runtime.name!r} was torn down by its owner "
+                    "mid-run; keep the provisioning context open until every run "
+                    "placed into the box has completed"
+                ) from e
+            if not isinstance(e, RolloutError):
+                logger.exception("unexpected error in rollout %s", trace.id)
             trace.capture_error(e)
         finally:
             trace.is_completed = True
