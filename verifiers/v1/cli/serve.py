@@ -34,7 +34,9 @@ def main(argv: list[str] | None = None) -> None:
         and not legacy_id
         and not references_config_file(argv)
     ):
-        raise SystemExit(USAGE)  # need a --taskset.id (v1), a legacy --id (v0), or @ file.toml
+        raise SystemExit(
+            USAGE
+        )  # need a --taskset.id (v1), a legacy --id (v0), or @ file.toml
 
     config_type = narrow_config(ServeConfig, argv)
     sys.argv = [sys.argv[0], *argv]

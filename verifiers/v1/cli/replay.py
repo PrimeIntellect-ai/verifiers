@@ -108,7 +108,11 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     # overrides) — so a re-tuned judge overrides the recorded run's and a newly-plugged
     # one joins, with no trace surgery.
     # `num_rescores` re-scores each trace that many times, each on its own copy.
-    work = [(t.model_copy(deep=True), row) for t, row in zip(traces, rows) for _ in range(config.num_rescores)]
+    work = [
+        (t.model_copy(deep=True), row)
+        for t, row in zip(traces, rows)
+        for _ in range(config.num_rescores)
+    ]
 
     save_config(config, out)
     logger.info(
@@ -121,7 +125,9 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     start = time.time()
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-    states = [ReplayProgress(idx=t.task.data.idx, name=t.task.data.name) for t, _ in work]
+    states = [
+        ReplayProgress(idx=t.task.data.idx, name=t.task.data.name) for t, _ in work
+    ]
     lock = asyncio.Lock()
 
     async def rescore(trace: Trace, row: vf.TaskData, st: ReplayProgress) -> None:
@@ -142,7 +148,9 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 # The behavior wrapper around the rebuilt row: the declared Task for a
                 # rebuilt row, the base Task (judges + base signals) for a WireTaskData
                 # fallback; the replay config's task subtree supplies the knobs.
-                task = (task_cls if isinstance(row, data_cls) else Task)(row, config=config.taskset.task)
+                task = (task_cls if isinstance(row, data_cls) else Task)(
+                    row, config=config.taskset.task
+                )
                 try:
                     await task.score(trace)
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
@@ -157,12 +165,16 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                         )
                 st.end = time.time()
         if not config.rich:
-            logger.info("idx=%s %s (%.1fs)", trace.task.data.idx, st.state, st.end - st.start)
+            logger.info(
+                "idx=%s %s (%.1fs)", trace.task.data.idx, st.state, st.end - st.start
+            )
         # Persist each result as it lands so an interrupted replay keeps its progress.
         await append_trace(out, trace, lock)
 
     display = (
-        replay_dashboard(states, config.name, str(source), str(out), start) if config.rich else contextlib.nullcontext()
+        replay_dashboard(states, config.name, str(source), str(out), start)
+        if config.rich
+        else contextlib.nullcontext()
     )
     async with display:
         await asyncio.gather(*(rescore(t, row, s) for (t, row), s in zip(work, states)))
@@ -193,7 +205,9 @@ def main(argv: list[str] | None = None) -> None:
 
     out = output_dir(config)
     if out.resolve() == source.resolve():
-        raise SystemExit(f"replay: --output-dir must differ from the source run ({source}); refusing to overwrite it")
+        raise SystemExit(
+            f"replay: --output-dir must differ from the source run ({source}); refusing to overwrite it"
+        )
     level = "DEBUG" if config.verbose else "INFO"
     if config.dry_run:
         setup_logging(level)

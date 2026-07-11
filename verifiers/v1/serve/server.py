@@ -35,7 +35,9 @@ class EnvServer:
         self.address = address
         self.runner = resolve_topology_runner(config, topology_config)
         self.tasks = self.runner.tasks
-        self._clients: dict[tuple[str, str], Client] = {}  # (client_config, model) -> Client
+        self._clients: dict[
+            tuple[str, str], Client
+        ] = {}  # (client_config, model) -> Client
 
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
@@ -73,8 +75,12 @@ class EnvServer:
             self._clients[key] = resolve_client(client_config)
         return self._clients[key]
 
-    def _context(self, client_config: ClientConfig, model: str, sampling: SamplingConfig) -> ModelContext:
-        return ModelContext(client=self._client(client_config, model), model=model, sampling=sampling)
+    def _context(
+        self, client_config: ClientConfig, model: str, sampling: SamplingConfig
+    ) -> ModelContext:
+        return ModelContext(
+            client=self._client(client_config, model), model=model, sampling=sampling
+        )
 
     def serving(self):
         """Hold topology services for this worker's full request-serving lifetime."""
@@ -97,12 +103,16 @@ class EnvServer:
             return await self._run(RunRequest.model_validate(raw))
         return BaseResponse(success=False, error=f"unknown method {route!r}")
 
-    async def _handle(self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes) -> None:
+    async def _handle(
+        self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes
+    ) -> None:
         try:
             route = method.decode()
             raw = msgpack.unpackb(payload, raw=False)
             response = await self._dispatch(route, raw)
-        except Exception as e:  # a failed request is data, not a crash — report and keep serving
+        except (
+            Exception
+        ) as e:  # a failed request is data, not a crash — report and keep serving
             logger.warning("request failed: %s", e, exc_info=True)
             response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
         data = msgpack.packb(
@@ -112,7 +122,9 @@ class EnvServer:
         )
         try:
             # Let ZMQ retain the packed response instead of copying large traces.
-            await self.frontend.send_multipart([client_id, request_id, data], copy=False)
+            await self.frontend.send_multipart(
+                [client_id, request_id, data], copy=False
+            )
         except zmq.ZMQError as e:
             logger.warning("failed to send response: %s", e)
 
@@ -134,10 +146,14 @@ class EnvServer:
                         continue
                     frames = await self.frontend.recv_multipart()
                     if len(frames) != 4:
-                        logger.warning("invalid message: expected 4 frames, got %d", len(frames))
+                        logger.warning(
+                            "invalid message: expected 4 frames, got %d", len(frames)
+                        )
                         continue
                     client_id, request_id, method, payload = frames
-                    task = asyncio.create_task(self._handle(client_id, request_id, method, payload))
+                    task = asyncio.create_task(
+                        self._handle(client_id, request_id, method, payload)
+                    )
                     tasks.add(task)
                     task.add_done_callback(tasks.discard)
             except (asyncio.CancelledError, KeyboardInterrupt):

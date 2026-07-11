@@ -44,7 +44,9 @@ class CodeGolfTask(vf.Task[CodeGolfData]):
         start = time.perf_counter()
         result = await runtime.run(["python3", "solution.py"], {})
         latency = time.perf_counter() - start
-        passed = float(result.exit_code == 0 and result.stdout.strip() == self.data.expected)
+        passed = float(
+            result.exit_code == 0 and result.stdout.strip() == self.data.expected
+        )
         return {"passed": passed, "latency": latency, "length": float(len(program))}
 
     @vf.reward

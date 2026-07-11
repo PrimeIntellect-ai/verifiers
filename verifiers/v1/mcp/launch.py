@@ -206,9 +206,13 @@ async def serve_in_runtime(
             port = await _read_back_port(runtime, port_file)
         except ToolsetError as e:
             raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
-    probe = await runtime.run(["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {})
+    probe = await runtime.run(
+        ["python3", "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
+    )
     if probe.exit_code != 0:
-        raise ToolsetError(f"tool server {server.server_name!r} not serving in runtime: {await log_tail(runtime, log)}")
+        raise ToolsetError(
+            f"tool server {server.server_name!r} not serving in runtime: {await log_tail(runtime, log)}"
+        )
     return port
 
 
@@ -241,7 +245,9 @@ async def serve(
             if state_base is not None and runtime is harness_runtime:
                 base = state_base
             else:
-                base = await stack.enter_async_context(reachable_url(HOST, state_port, consumer=runtime))
+                base = await stack.enter_async_context(
+                    reachable_url(HOST, state_port, consumer=runtime)
+                )
             state_url = f"{base.rstrip('/')}/state"
         port = await serve_in_runtime(
             server,
@@ -253,7 +259,9 @@ async def serve(
         # User simulators are host-driven; tool servers are harness-facing.
         consumer = HOST if for_host else harness_runtime
         base = await stack.enter_async_context(
-            reachable_url(runtime, port, consumer=consumer, consumer_is_local=harness_is_local)
+            reachable_url(
+                runtime, port, consumer=consumer, consumer_is_local=harness_is_local
+            )
         )
         yield f"{base.rstrip('/')}/mcp"
 
@@ -301,10 +309,16 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     name,
                 )
             if cfg.url:  # already running remotely; nothing launched, nothing to bridge
-                servers[name] = SharedToolServer(url=cfg.url, local=False, external=True)
+                servers[name] = SharedToolServer(
+                    url=cfg.url, local=False, external=True
+                )
             else:
-                url = await stack.enter_async_context(serve(toolset, harness_is_local=harness_is_local))
-                servers[name] = SharedToolServer(url=url, local=runtime_is_local(cfg.runtime))
+                url = await stack.enter_async_context(
+                    serve(toolset, harness_is_local=harness_is_local)
+                )
+                servers[name] = SharedToolServer(
+                    url=url, local=runtime_is_local(cfg.runtime)
+                )
             logger.info("shared tool server '%s': %s", name, servers[name].url)
         yield servers
 
@@ -354,7 +368,9 @@ async def serve_tools(
                 tool_state_base = await stack.enter_async_context(
                     reachable_url(HOST, state_port, consumer_is_local=False)
                 )
-            urls[name] = _shared_url_for_rollout(server.url, tool_state_base, state_secret)
+            urls[name] = _shared_url_for_rollout(
+                server.url, tool_state_base, state_secret
+            )
             # The tagged URL contains the bearer secret; log only the untagged base URL.
             logger.info("tool server '%s' (shared): %s", name, server.url)
         for toolset in toolsets:
@@ -407,7 +423,11 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
 
                 async def respond(message: str) -> Messages:
                     result = await session.call_tool("respond", {"message": message})
-                    texts = [b.text for b in result.content if getattr(b, "type", None) == "text"]
+                    texts = [
+                        b.text
+                        for b in result.content
+                        if getattr(b, "type", None) == "text"
+                    ]
                     data = json.loads("\n".join(texts))
                     return [parse_message(m) for m in data["messages"]]
 
@@ -425,8 +445,12 @@ async def connect_user(url: str) -> AsyncIterator[Respond]:
                 # Raw transport groups bypass rollout handling, so attribute the loss here.
                 raise UserError(f"user server at {url} connection lost: {e!r}") from e
             last_exc = e
-            await asyncio.sleep(min(_USER_CONNECT_BACKOFF * 2**attempt, _USER_CONNECT_MAX_BACKOFF))
-    raise UserError(f"user server at {url} unreachable after {_USER_CONNECT_ATTEMPTS} attempts: {last_exc!r}")
+            await asyncio.sleep(
+                min(_USER_CONNECT_BACKOFF * 2**attempt, _USER_CONNECT_MAX_BACKOFF)
+            )
+    raise UserError(
+        f"user server at {url} unreachable after {_USER_CONNECT_ATTEMPTS} attempts: {last_exc!r}"
+    )
 
 
 @contextlib.asynccontextmanager

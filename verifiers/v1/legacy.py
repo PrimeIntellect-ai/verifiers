@@ -68,7 +68,9 @@ def _text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        return "".join(
+            part.get("text", "") for part in content if isinstance(part, dict)
+        )
     return "" if content is None else str(content)
 
 
@@ -336,7 +338,9 @@ class LegacyEnvServer(EnvServer):
         builds a v0 chat-completions client. The per-request ``model`` selects the sampling
         target in ``run_rollout``."""
         is_renderer = isinstance(client_config, TrainClientConfig)
-        renderer_model = (client_config.renderer_model_name if is_renderer else None) or model
+        renderer_model = (
+            client_config.renderer_model_name if is_renderer else None
+        ) or model
         key = (client_config.model_dump_json(), renderer_model)
         if key not in self._clients:
             from verifiers.clients import resolve_client
@@ -380,7 +384,9 @@ class LegacyEnvServer(EnvServer):
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
-        return RunRolloutResponse(trace=rollout_output_to_trace(out, req.task_idx).model_dump())
+        return RunRolloutResponse(
+            trace=rollout_output_to_trace(out, req.task_idx).model_dump()
+        )
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         client = self._v0_client(req.client, req.model)
@@ -392,7 +398,9 @@ class LegacyEnvServer(EnvServer):
             sampling_args=req.sampling.model_dump(exclude_none=True),
             state_columns=["trajectory"],
         )
-        traces = [rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs]
+        traces = [
+            rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs
+        ]
         return RunGroupResponse(traces=traces)
 
     async def _dispatch(self, route: str, raw: dict) -> BaseResponse:

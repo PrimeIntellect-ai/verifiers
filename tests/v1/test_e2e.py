@@ -30,8 +30,12 @@ async def test_user(run_v1, harness_runtime, user_runtime, tmp_path):
     # the host framework via prime port exposure, whose URL isn't reachable from the host here
     # (region=us doesn't help). Skip until it is.
     user_rt = user_runtime.get("runtime", {}).get("type")
-    if user_rt == "prime" or (user_runtime.get("colocated") and harness_runtime == "prime"):
-        pytest.skip("user sim in a prime sandbox needs prime port exposure (unreachable from host here)")
+    if user_rt == "prime" or (
+        user_runtime.get("colocated") and harness_runtime == "prime"
+    ):
+        pytest.skip(
+            "user sim in a prime sandbox needs prime port exposure (unreachable from host here)"
+        )
     (trace,) = await run_v1(
         "echo-user-sim-v1",
         harness="null",
@@ -56,7 +60,9 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     # Reaching a tool server in its own prime sandbox needs prime port exposure, whose URL isn't
     # reachable from the host here (region=us doesn't help). Skip until it is.
     if tool_runtime.get("runtime", {}).get("type") == "prime":
-        pytest.skip("tool server in a prime sandbox needs prime port exposure (unreachable from host here)")
+        pytest.skip(
+            "tool server in a prime sandbox needs prime port exposure (unreachable from host here)"
+        )
     (trace,) = await run_v1(
         "echo-tool-v1",
         harness="null",
@@ -80,7 +86,9 @@ async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
     # Reaching a tool server in its own prime sandbox needs prime port exposure, whose URL isn't
     # reachable from the host here (region=us doesn't help). Skip until it is.
     if tool_runtime.get("runtime", {}).get("type") == "prime":
-        pytest.skip("tool server in a prime sandbox needs prime port exposure (unreachable from host here)")
+        pytest.skip(
+            "tool server in a prime sandbox needs prime port exposure (unreachable from host here)"
+        )
     (trace,) = await run_v1(
         "counter-tool-v1",
         harness="null",
@@ -95,7 +103,9 @@ async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_shared_tool_isolation(run_v1_server, harness_runtime, tool_runtime, tmp_path):
+async def test_shared_tool_isolation(
+    run_v1_server, harness_runtime, tool_runtime, tmp_path
+):
     """A shared writable tool isolates state across concurrent rollouts and runtimes."""
     tool_rt = tool_runtime.get("runtime", {}).get("type")
     if tool_rt is None:
@@ -103,7 +113,9 @@ async def test_shared_tool_isolation(run_v1_server, harness_runtime, tool_runtim
     # Reaching a tool server in its own prime sandbox needs prime port exposure, whose URL isn't
     # reachable from the host here (region=us doesn't help). Skip until it is.
     if tool_rt == "prime":
-        pytest.skip("tool server in a prime sandbox needs prime port exposure (unreachable from host here)")
+        pytest.skip(
+            "tool server in a prime sandbox needs prime port exposure (unreachable from host here)"
+        )
     traces = await run_v1_server(
         "scratchpad-v1",
         harness="null",
@@ -166,7 +178,9 @@ async def test_rubric_judge(run_v1, tmp_path):
 async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     """Agentic: write a phrase to a file with the agent's shell, checked in the runtime."""
     if harness == "null":
-        pytest.skip("null is a chat loop with no shell — it can't do the file-write task")
+        pytest.skip(
+            "null is a chat loop with no shell — it can't do the file-write task"
+        )
     (trace,) = await run_v1(
         "echo-agentic-v1",
         harness=harness,
@@ -335,7 +349,10 @@ async def test_shared_runtime_topology(tmp_path):
     assert read.parents == [written.id]
     assert written.info["agent"]["runtime"]["borrowed"] is True
     assert read.info["agent"]["runtime"]["borrowed"] is True
-    assert written.info["agent"]["runtime"]["descriptor"] == read.info["agent"]["runtime"]["descriptor"]
+    assert (
+        written.info["agent"]["runtime"]["descriptor"]
+        == read.info["agent"]["runtime"]["descriptor"]
+    )
     assert read.rewards["read_shared_note"] == 1.0
     assert written.rewards["handoff_succeeded"] == 1.0
 

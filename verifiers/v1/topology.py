@@ -69,7 +69,9 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
-def _merge_sampling(base: SamplingConfig, override: SamplingConfig | None) -> SamplingConfig:
+def _merge_sampling(
+    base: SamplingConfig, override: SamplingConfig | None
+) -> SamplingConfig:
     """Agent sampling overrides layer onto the run sampling, field by field."""
     if override is None:
         return base
@@ -129,11 +131,16 @@ class AgentConfig(BaseConfig):
             raw = raw.model_dump()
         raw = dict(raw or {})
         default = cls.model_fields["harness"].default
-        pinned = isinstance(default, HarnessConfig) and default != AgentConfig.model_fields["harness"].default
+        pinned = (
+            isinstance(default, HarnessConfig)
+            and default != AgentConfig.model_fields["harness"].default
+        )
         if raw.get("id"):  # explicit swap always wins
             narrow_plugin_field(data, "harness", harness_config_type)
         elif pinned:
-            data["harness"] = harness_config_type(default.id).model_validate(_deep_merge(default.model_dump(), raw))
+            data["harness"] = harness_config_type(default.id).model_validate(
+                _deep_merge(default.model_dump(), raw)
+            )
         else:
             narrow_plugin_field(data, "harness", harness_config_type, "default")
         return data
@@ -209,7 +216,9 @@ class AgentBinding:
     binding is the config-side declaration a topology loads and validates before serving.
     """
 
-    def __init__(self, name: str, config: AgentConfig, harness: Harness | None = None) -> None:
+    def __init__(
+        self, name: str, config: AgentConfig, harness: Harness | None = None
+    ) -> None:
         from verifiers.v1.loaders import load_harness
 
         self.name = name
@@ -252,7 +261,11 @@ class AgentGraph(StrictBaseModel):
         """The traces derived from `trace` (its direct downstream runs), optionally
         only those a named agent produced — the navigation cross-agent scoring lives on
         (`graph.children(proposer, agent="solver")`)."""
-        return [t for t in self.traces if trace.id in t.parents and (agent is None or t.agent == agent)]
+        return [
+            t
+            for t in self.traces
+            if trace.id in t.parents and (agent is None or t.agent == agent)
+        ]
 
     def by_agent(self, agent: str) -> list[Trace]:
         """The traces a named agent produced, in completion order."""
@@ -263,7 +276,9 @@ class AgentGraph(StrictBaseModel):
         trace dumped like `Trace.to_record` (per-node training tensors stripped)."""
         from verifiers.v1.trace import _NODE_DUMP_EXCLUDE
 
-        return self.model_dump(mode="json", exclude={"traces": {"__all__": _NODE_DUMP_EXCLUDE}})
+        return self.model_dump(
+            mode="json", exclude={"traces": {"__all__": _NODE_DUMP_EXCLUDE}}
+        )
 
     @classmethod
     def load(cls, data: dict) -> "AgentGraph":
@@ -299,7 +314,11 @@ class Topology(Generic[ConfigT]):
         """The topology's agents, one per `AgentConfig` field on the config (in declaration
         order). Override only to compose agents programmatically — each is still just
         `AgentBinding(name, config)`."""
-        return {name: AgentBinding(name, value) for name, value in self.config if isinstance(value, AgentConfig)}
+        return {
+            name: AgentBinding(name, value)
+            for name, value in self.config
+            if isinstance(value, AgentConfig)
+        }
 
     @cached_property
     def agents(self) -> dict[str, AgentBinding]:
@@ -454,7 +473,9 @@ class TopologyAgent:
     def harness(self) -> Harness:
         return self._executable().harness
 
-    def provision(self, task: Task | None = None) -> contextlib.AbstractAsyncContextManager[Runtime]:
+    def provision(
+        self, task: Task | None = None
+    ) -> contextlib.AbstractAsyncContextManager[Runtime]:
         """Provision a runtime from this agent's policy (resolved for `task` when given)
         and tear it down on exit — the box for `run(..., runtime=box)` calls to share,
         by this agent or any other (see `Agent.provision`)."""
@@ -467,7 +488,9 @@ class TopologyAgent:
         parents: Sequence[Parent] = (),
         runtime: Runtime | None = None,
     ) -> Trace:
-        return await self._run.run_agent(self.name, task, parents=parents, runtime=runtime)
+        return await self._run.run_agent(
+            self.name, task, parents=parents, runtime=runtime
+        )
 
     def interact(
         self,
@@ -480,7 +503,9 @@ class TopologyAgent:
         back-and-forth primitive (see `Agent.interact`): `go` converses with the
         suspended run via `session.turn(...)`, N sessions compose into games,
         debates, negotiations. The completed trace is graph-recorded on close."""
-        return self._run.interact_agent(self.name, task, parents=parents, runtime=runtime)
+        return self._run.interact_agent(
+            self.name, task, parents=parents, runtime=runtime
+        )
 
 
 class TopologyRun:
@@ -513,7 +538,9 @@ class TopologyRun:
             return self._agents[name]
         except KeyError:
             self.runner.agent(name)
-            raise RuntimeError(f"agent {name!r} is not bound to this topology run") from None
+            raise RuntimeError(
+                f"agent {name!r} is not bound to this topology run"
+            ) from None
 
     async def run_agent(
         self,
@@ -557,7 +584,9 @@ class TopologyRun:
         executable = self.executable_agent(agent)
         session: Session | None = None
         try:
-            async with executable.interact(task, parents=parents, runtime=runtime) as session:
+            async with executable.interact(
+                task, parents=parents, runtime=runtime
+            ) as session:
                 yield session
         finally:
             if session is not None:
@@ -584,7 +613,9 @@ class TopologyRunner:
         # or `load_tasks` is overridden — never both. A self-seeding topology accepting a
         # `--topology.taskset.id` it then ignores would silently run a different experiment
         # than the config claims, so refuse it up front.
-        if topology.config.taskset.id and (type(self.topology).load_tasks is not Topology.load_tasks):
+        if topology.config.taskset.id and (
+            type(self.topology).load_tasks is not Topology.load_tasks
+        ):
             raise ValueError(
                 f"topology {topology.config.id!r} constructs its own seeds (it overrides "
                 "`load_tasks`), so `--topology.taskset.id` would be silently ignored; drop "
@@ -596,7 +627,9 @@ class TopologyRunner:
             assert topology.taskset is not None
             validate_pairing(bindings["agent"].harness, topology.taskset)
         for binding in bindings.values():
-            if binding.harness.config.id != "null" and isinstance(binding.harness.config.runtime, SubprocessConfig):
+            if binding.harness.config.id != "null" and isinstance(
+                binding.harness.config.runtime, SubprocessConfig
+            ):
                 logger.warning(
                     "Harness %r is running in the subprocess runtime on the local system. "
                     "Local files and settings may affect the evaluation; use subprocess only "
@@ -626,7 +659,9 @@ class TopologyRunner:
         from verifiers.v1.runtimes import runtime_is_local
 
         async with contextlib.AsyncExitStack() as stack:
-            services = await stack.enter_async_context(RunServices(self.config.multiplex))
+            services = await stack.enter_async_context(
+                RunServices(self.config.multiplex)
+            )
             bindings = self.topology.agents
             shared_tools: dict = {}
             if self.topology.taskset is not None:
@@ -634,8 +669,13 @@ class TopologyRunner:
                 if servers:
                     # Tunnel unless every agent's harness runs locally — any remote
                     # seat must still reach the one shared instance.
-                    local = all(runtime_is_local(b.harness.config.runtime) for b in bindings.values())
-                    shared_tools = await stack.enter_async_context(serve_shared(servers, harness_is_local=local))
+                    local = all(
+                        runtime_is_local(b.harness.config.runtime)
+                        for b in bindings.values()
+                    )
+                    shared_tools = await stack.enter_async_context(
+                        serve_shared(servers, harness_is_local=local)
+                    )
             override_clients: dict[str, Client] = {}
             for name, binding in bindings.items():
                 if binding.config.client is not None:
@@ -659,7 +699,9 @@ class TopologyRunner:
     ) -> dict[str, Agent]:
         services = self._services
         if services is None:
-            raise RuntimeError("TopologyRunner.run_instance() must be called inside TopologyRunner.serving()")
+            raise RuntimeError(
+                "TopologyRunner.run_instance() must be called inside TopologyRunner.serving()"
+            )
         limits = RolloutLimits(
             max_turns=self.config.max_turns,
             max_input_tokens=self.config.max_input_tokens,
@@ -701,11 +743,15 @@ class TopologyRunner:
         running (mirrors `Rollout.run`'s a-bad-rollout-is-data stance one level up)."""
         run = TopologyRun(self, task, self._agents_for(ctx, on_rollout), semaphore)
         try:
-            async with boundary(TopologyError, f"topology {self.topology.config.id!r} go"):
+            async with boundary(
+                TopologyError, f"topology {self.topology.config.id!r} go"
+            ):
                 await self.topology.go(task, run)
             # Instance judgement: the declared @reward/@metric methods over the finished
             # graph. Skipped when `go` itself failed — a broken instance isn't scored.
-            async with boundary(TopologyError, f"topology {self.topology.config.id!r} scoring"):
+            async with boundary(
+                TopologyError, f"topology {self.topology.config.id!r} scoring"
+            ):
                 await self.topology.score(run.graph)
         except TopologyError as e:
             logger.exception("topology instance failed (seed task %s)", task.data.idx)

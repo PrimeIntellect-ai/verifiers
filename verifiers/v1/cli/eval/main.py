@@ -34,13 +34,17 @@ def main(argv: list[str] | None = None) -> None:
     if not argv or any(arg in ("-h", "--help") for arg in argv):
         print(USAGE)
         sys.argv = [sys.argv[0], "--help"]
-        cli(narrow_config(EvalConfig, argv))  # full option help, narrowed to the given ids
+        cli(
+            narrow_config(EvalConfig, argv)
+        )  # full option help, narrowed to the given ids
         return
     resume_dir, rest = split_resume(argv)
     # re-run a previous run's missing/errored rollouts, in place
     if resume_dir is not None:
         if rest:
-            raise SystemExit(f"{USAGE}\n--resume re-runs a saved config verbatim and takes no other arguments")
+            raise SystemExit(
+                f"{USAGE}\n--resume re-runs a saved config verbatim and takes no other arguments"
+            )
         config = load_resume_config(resume_dir)
     else:
         legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id

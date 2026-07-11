@@ -180,7 +180,9 @@ def task_config_cls(cls: type) -> type[TaskConfig]:
     return generic_type(cls, TaskConfig) or TaskConfig
 
 
-def resolve_server_config(owner: str, config: BaseConfig, server_cls: type, *, sole: bool = True) -> BaseConfig:
+def resolve_server_config(
+    owner: str, config: BaseConfig, server_cls: type, *, sole: bool = True
+) -> BaseConfig:
     """The config a declared server class is built with, resolved off `config`'s fields:
     the field whose value is exactly the server's declared config type
     (`Toolset[MyConfig]` / `User[MyConfig]`), else the unique field whose value
@@ -237,7 +239,9 @@ class Task(Generic[DataT, StateT, ConfigT]):
         Override to pair explicitly (the escape hatch for exotic setups, e.g. two servers
         sharing one config type)."""
         declared = set(type(self).tools) | ({type(self).user} - {None})
-        return resolve_server_config(type(self).__name__, self.config, server_cls, sole=len(declared) == 1)
+        return resolve_server_config(
+            type(self).__name__, self.config, server_cls, sole=len(declared) == 1
+        )
 
     def tool_servers(self) -> list[Toolset]:
         return [cls(self.server_config(cls)) for cls in type(self).tools]
@@ -269,8 +273,12 @@ class Task(Generic[DataT, StateT, ConfigT]):
             metrics = discover_decorated(self, "metric")
             rewards = discover_decorated(self, "reward")
             if runtime is None:
-                skipped = [fn.__name__ for fn in (*metrics, *rewards) if _requires_runtime(fn)] + [
-                    judge.reward_name for judge in judges if _requires_runtime(judge.score)
+                skipped = [
+                    fn.__name__ for fn in (*metrics, *rewards) if _requires_runtime(fn)
+                ] + [
+                    judge.reward_name
+                    for judge in judges
+                    if _requires_runtime(judge.score)
                 ]
                 if skipped:
                     logger.info(
@@ -279,15 +287,21 @@ class Task(Generic[DataT, StateT, ConfigT]):
                     )
                 metrics = [fn for fn in metrics if not _requires_runtime(fn)]
                 rewards = [fn for fn in rewards if not _requires_runtime(fn)]
-                judges = [judge for judge in judges if not _requires_runtime(judge.score)]
+                judges = [
+                    judge for judge in judges if not _requires_runtime(judge.score)
+                ]
 
             metric_results = await invoke_all(metrics, available)
             for fn, result in zip(metrics, metric_results):
                 _record_result(trace, fn.__name__, result)
             reward_results = await invoke_all(rewards, available)
             for fn, result in zip(rewards, reward_results):
-                _record_result(trace, fn.__name__, result, getattr(fn, "_vf_weight", 1.0))
-            judge_results = await invoke_all([judge.score for judge in judges], available)
+                _record_result(
+                    trace, fn.__name__, result, getattr(fn, "_vf_weight", 1.0)
+                )
+            judge_results = await invoke_all(
+                [judge.score for judge in judges], available
+            )
             for judge, result in zip(judges, judge_results):
                 _record_result(trace, judge.reward_name, result, judge.config.weight)
 

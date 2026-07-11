@@ -37,7 +37,9 @@ async def run_eval(config: EvalConfig) -> list[AgentGraph]:
     finished: list[AgentGraph] = []
     owed: dict[int, int] | None = None
     if config.resume is not None:
-        finished, owed = resume.load(out, [task.data.idx for task in tasks], config.num_rollouts)
+        finished, owed = resume.load(
+            out, [task.data.idx for task in tasks], config.num_rollouts
+        )
         if not owed:
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
@@ -59,7 +61,9 @@ async def run_eval(config: EvalConfig) -> list[AgentGraph]:
     logger.info("results: %s", out)
     client = resolve_client(config.client)
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
-    semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+    semaphore = (
+        asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+    )
     start = time.time()
     write_lock = asyncio.Lock()
     rollouts = [resume.Finished(trace) for trace in graph_traces(finished)]
@@ -79,7 +83,11 @@ async def run_eval(config: EvalConfig) -> list[AgentGraph]:
         from verifiers.v1.push import PushState
 
         push_state = PushState()
-    display = dashboard(rollouts, config, start, push=push_state) if config.rich else contextlib.nullcontext()
+    display = (
+        dashboard(rollouts, config, start, push=push_state)
+        if config.rich
+        else contextlib.nullcontext()
+    )
     try:
         async with runner.serving(), display:
             instances = [
@@ -93,7 +101,9 @@ async def run_eval(config: EvalConfig) -> list[AgentGraph]:
                 from verifiers.v1.push import push_traces
 
                 push_state.started = True
-                await asyncio.to_thread(push_traces, graph_traces(graphs), config, push_state)
+                await asyncio.to_thread(
+                    push_traces, graph_traces(graphs), config, push_state
+                )
         return graphs
     finally:
         await client.close()
@@ -142,9 +152,17 @@ async def run_eval_server(config: EvalConfig) -> list[AgentGraph]:
         if config.resume is not None:
             finished, owed = resume.load(out, task_ids, config.num_rollouts)
             if not owed:
-                print(resume.nothing_to_resume_msg(out, len(positions), config.num_rollouts))
+                print(
+                    resume.nothing_to_resume_msg(
+                        out, len(positions), config.num_rollouts
+                    )
+                )
                 raise SystemExit(0)
-            selected = [(position, task_id) for position, task_id in zip(positions, task_ids) if owed.get(task_id)]
+            selected = [
+                (position, task_id)
+                for position, task_id in zip(positions, task_ids)
+                if owed.get(task_id)
+            ]
             logger.info(
                 "resuming %s: %d task(s), %d invocation(s) owed",
                 out,
@@ -163,7 +181,9 @@ async def run_eval_server(config: EvalConfig) -> list[AgentGraph]:
                 config.model,
             )
         logger.info("results: %s", out)
-        semaphore = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+        semaphore = (
+            asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+        )
         write_lock = asyncio.Lock()
 
         async def run_unit(position: int) -> AgentGraph:
@@ -177,7 +197,11 @@ async def run_eval_server(config: EvalConfig) -> list[AgentGraph]:
             await append_graph(out, graph, write_lock)
             return graph
 
-        units = [run_unit(position) for position, task_id in selected for _ in range(owed[task_id])]
+        units = [
+            run_unit(position)
+            for position, task_id in selected
+            for _ in range(owed[task_id])
+        ]
         completed = await asyncio.gather(*units)
         return finished + completed
     finally:

@@ -35,7 +35,9 @@ def make_session(task: vf.Task) -> Session:
 def null_agent(**kwargs) -> vf.Agent:
     return vf.Agent(
         NullHarness(NullHarnessConfig()),
-        vf.ModelContext(model="org/model", client=object(), sampling=vf.SamplingConfig()),
+        vf.ModelContext(
+            model="org/model", client=object(), sampling=vf.SamplingConfig()
+        ),
         **kwargs,
     )
 
@@ -174,7 +176,9 @@ async def test_interact_refusals():
 
     mute = vf.Agent(
         MuteHarness(MuteHarnessConfig()),
-        vf.ModelContext(model="org/model", client=object(), sampling=vf.SamplingConfig()),
+        vf.ModelContext(
+            model="org/model", client=object(), sampling=vf.SamplingConfig()
+        ),
     )
     with pytest.raises(ValueError, match="cannot take injected user turns"):
         async with mute.interact(task_of(None)):
@@ -187,7 +191,9 @@ async def test_interact_lifecycle_with_stubbed_rollout(monkeypatch):
     ends the episode, joins it, and stamps provenance + parents."""
 
     async def fake_run(self):
-        self.trace = trace = vf.Trace(task=TraceTask(type=type(self.task).__name__, data=self.task.data))
+        self.trace = trace = vf.Trace(
+            task=TraceTask(type=type(self.task).__name__, data=self.task.data)
+        )
         msgs = await self._user("")  # opening
         while msgs:
             msgs = await self._user(f"echo:{msgs[0].content}")
@@ -199,7 +205,9 @@ async def test_interact_lifecycle_with_stubbed_rollout(monkeypatch):
     agent = null_agent(name="white", trainable=False)
     parent = trace_for(task_of("seed"))
 
-    async with agent.interact(vf.Task(vf.TaskData(idx=1, prompt=None)), parents=[parent]) as session:
+    async with agent.interact(
+        vf.Task(vf.TaskData(idx=1, prompt=None)), parents=[parent]
+    ) as session:
         assert await session.turn("kick off") == "echo:kick off"
         trace = session.trace  # live handle
         trace.info["game"] = {"score": 1.0}

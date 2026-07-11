@@ -19,7 +19,9 @@ def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
     for i, arg in enumerate(argv):
         if arg == "--resume":
             if i + 1 >= len(argv):
-                raise SystemExit("--resume needs an output dir: uv run eval --resume <dir>")
+                raise SystemExit(
+                    "--resume needs an output dir: uv run eval --resume <dir>"
+                )
             return Path(argv[i + 1]), argv[:i] + argv[i + 2 :]
         if arg.startswith("--resume="):
             return Path(arg.split("=", 1)[1]), argv[:i] + argv[i + 1 :]
@@ -29,7 +31,9 @@ def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
 def load_resume_config(resume_dir: Path) -> EvalConfig:
     config_path = resume_dir / CONFIG_FILE
     if not config_path.exists():
-        raise SystemExit(f"--resume: no config.toml in {resume_dir} - not an eval output dir")
+        raise SystemExit(
+            f"--resume: no config.toml in {resume_dir} - not an eval output dir"
+        )
     config = EvalConfig.model_validate(tomllib.loads(config_path.read_text()))
     config.resume = resume_dir
     config.output_dir = resume_dir
@@ -44,7 +48,9 @@ class Finished(Rollout):
         self.runtime = None
 
 
-def load(resume_dir: Path, selected_idxs: list[int], num_rollouts: int) -> tuple[list[AgentGraph], dict[int, int]]:
+def load(
+    resume_dir: Path, selected_idxs: list[int], num_rollouts: int
+) -> tuple[list[AgentGraph], dict[int, int]]:
     """Keep successful graph records and return invocations still owed per seed task."""
     path = resume_dir / TRACES_FILE
     selected = set(selected_idxs)
@@ -81,6 +87,4 @@ def load(resume_dir: Path, selected_idxs: list[int], num_rollouts: int) -> tuple
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:
-    return (
-        f"nothing to resume in {resume_dir}: all {num_tasks}x{num_rollouts} invocations already completed without error"
-    )
+    return f"nothing to resume in {resume_dir}: all {num_tasks}x{num_rollouts} invocations already completed without error"

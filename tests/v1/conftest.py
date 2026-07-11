@@ -44,7 +44,9 @@ from verifiers.v1.trace import Trace
 # not modal"`. The `id`s make a test read like `<harness>-harness-in-<rt>` /
 # `harness-in-<rt>-with-<user|tool>-...`.
 HARNESS_RUNTIMES = [
-    pytest.param("subprocess", marks=pytest.mark.subprocess, id="harness-in-subprocess"),
+    pytest.param(
+        "subprocess", marks=pytest.mark.subprocess, id="harness-in-subprocess"
+    ),
     pytest.param("docker", marks=pytest.mark.docker, id="harness-in-docker"),
     pytest.param("prime", marks=pytest.mark.prime, id="harness-in-prime"),
     pytest.param("modal", marks=pytest.mark.modal, id="harness-in-modal"),
@@ -60,7 +62,9 @@ def harness_runtime(request) -> str:
 # fans the user test across both, each carrying its placement/runtime mark.
 USER_RUNTIMES = [
     pytest.param("colocated", marks=pytest.mark.colocated, id="with-user-colocated"),
-    pytest.param("subprocess", marks=pytest.mark.subprocess, id="with-user-in-subprocess"),
+    pytest.param(
+        "subprocess", marks=pytest.mark.subprocess, id="with-user-in-subprocess"
+    ),
     pytest.param("docker", marks=pytest.mark.docker, id="with-user-in-docker"),
     pytest.param("prime", marks=pytest.mark.prime, id="with-user-in-prime"),
     pytest.param("modal", marks=pytest.mark.modal, id="with-user-in-modal"),
@@ -79,7 +83,9 @@ def user_runtime(request) -> dict:
 # Task-scoped and shared tool tests both use these runtime placements.
 TOOL_RUNTIMES = [
     pytest.param("colocated", marks=pytest.mark.colocated, id="with-tool-colocated"),
-    pytest.param("subprocess", marks=pytest.mark.subprocess, id="with-tool-in-subprocess"),
+    pytest.param(
+        "subprocess", marks=pytest.mark.subprocess, id="with-tool-in-subprocess"
+    ),
     pytest.param("docker", marks=pytest.mark.docker, id="with-tool-in-docker"),
     pytest.param("prime", marks=pytest.mark.prime, id="with-tool-in-prime"),
     pytest.param("modal", marks=pytest.mark.modal, id="with-tool-in-modal"),
@@ -121,7 +127,9 @@ def pytest_configure(config) -> None:
     fixtures = str(Path(__file__).parent / "fixtures")
     existing = os.environ.get("PYTHONPATH", "")
     if fixtures not in existing.split(os.pathsep):
-        os.environ["PYTHONPATH"] = f"{fixtures}{os.pathsep}{existing}" if existing else fixtures
+        os.environ["PYTHONPATH"] = (
+            f"{fixtures}{os.pathsep}{existing}" if existing else fixtures
+        )
 
 
 def pytest_collection_modifyitems(config, items) -> None:

@@ -147,7 +147,9 @@ class Rollout:
                 await runtime.start()
             # Task setup and harness provisioning share one setup-stage deadline.
             setup_deadline = (
-                None if self.setup_timeout is None else asyncio.get_running_loop().time() + self.setup_timeout
+                None
+                if self.setup_timeout is None
+                else asyncio.get_running_loop().time() + self.setup_timeout
             )
             async with (
                 boundary(TaskError, "task setup"),
@@ -159,7 +161,9 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
-            async with self._serve_interception(self.interception, runtime, session) as (
+            async with self._serve_interception(
+                self.interception, runtime, session
+            ) as (
                 endpoint,
                 secret,
                 state_port,
@@ -184,7 +188,9 @@ class Rollout:
                         state_base=state_base,
                     ) as launched_user,
                 ):
-                    session.user = self._user if self._user is not None else launched_user
+                    session.user = (
+                        self._user if self._user is not None else launched_user
+                    )
                     if self.task.data.prompt is None and session.user is None:
                         raise TaskError(
                             "task has no prompt and no user simulator to open the "
@@ -199,7 +205,9 @@ class Rollout:
                     # A timeout still scores the partial trajectory.
                     try:
                         await asyncio.wait_for(
-                            self.harness.run(ctx, trace, runtime, endpoint, secret, urls),
+                            self.harness.run(
+                                ctx, trace, runtime, endpoint, secret, urls
+                            ),
                             self.harness_timeout,
                         )
                     except TimeoutError:
@@ -252,7 +260,9 @@ class Rollout:
                 try:
                     await runtime.stop()
                 except Exception:
-                    logger.warning("runtime teardown failed (rollout %s)", trace.id, exc_info=True)
+                    logger.warning(
+                        "runtime teardown failed (rollout %s)", trace.id, exc_info=True
+                    )
             self.phase = Phase.DONE
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",

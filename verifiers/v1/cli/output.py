@@ -95,7 +95,9 @@ def read_traces(results_dir: Path, trace_type: type) -> list[Trace]:
     return traces
 
 
-async def append_graph(results_dir: Path, graph: AgentGraph, lock: asyncio.Lock) -> None:
+async def append_graph(
+    results_dir: Path, graph: AgentGraph, lock: asyncio.Lock
+) -> None:
     """Append one fully scored invocation without blocking the event loop."""
 
     async def persist() -> None:

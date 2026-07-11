@@ -69,7 +69,9 @@ def _arm_teardown(death_pipe=None) -> None:
     threading.Thread(target=_watch, daemon=True).start()
 
 
-def _worker_entry(*, server_kwargs: dict, address: str, death_pipe, legacy: bool, log_setup=None) -> None:
+def _worker_entry(
+    *, server_kwargs: dict, address: str, death_pipe, legacy: bool, log_setup=None
+) -> None:
     """Spawned worker: an ordinary EnvServer/LegacyEnvServer bound to `address` (ipc).
     A native config arrives as a dict (`config_data`): the eval/serve CLI's narrowed
     config type is dynamic and unpicklable, so we rebuild it here via EnvConfig's
@@ -215,7 +217,9 @@ class EnvServerPool:
                         payload,
                     ) = await self.frontend.recv_multipart()
                     if method == b"health":
-                        await self.frontend.send_multipart([client_id, request_id, _HEALTH])
+                        await self.frontend.send_multipart(
+                            [client_id, request_id, _HEALTH]
+                        )
                     else:
                         worker = min(self.workers, key=lambda w: w["active"])
                         worker["active"] += 1
@@ -226,7 +230,9 @@ class EnvServerPool:
                         in_flight += 1
                         # forward without client_id — the DEALER identity is the worker's
                         # `client_id`; we hold the real one in `pending`.
-                        await worker["dealer"].send_multipart([request_id, method, payload])
+                        await worker["dealer"].send_multipart(
+                            [request_id, method, payload]
+                        )
                         if self.elastic:
                             self._maybe_scale_up(in_flight)
                 for w in self.workers:
@@ -239,7 +245,9 @@ class EnvServerPool:
                         entry["worker"]["active"] -= 1
                         in_flight -= 1
                         with contextlib.suppress(zmq.ZMQError):
-                            await self.frontend.send_multipart([entry["client_id"], request_id, data], copy=False)
+                            await self.frontend.send_multipart(
+                                [entry["client_id"], request_id, data], copy=False
+                            )
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:
@@ -284,7 +292,9 @@ def _configs_from_data(data: dict):
         return config, None
     from verifiers.v1.loaders import topology_config_type
 
-    topology_config = topology_config_type(topology_data["id"]).model_validate(topology_data)
+    topology_config = topology_config_type(topology_data["id"]).model_validate(
+        topology_data
+    )
     return config, topology_config
 
 
@@ -329,8 +339,12 @@ def serve_env(
         log_setup()
     try:
         if max_workers is None or max_workers > 1:
-            if "config" in server_kwargs:  # dict-ify for the workers (config_data is picklable)
-                server_kwargs = {"config_data": env_config_data(server_kwargs["config"])}
+            if (
+                "config" in server_kwargs
+            ):  # dict-ify for the workers (config_data is picklable)
+                server_kwargs = {
+                    "config_data": env_config_data(server_kwargs["config"])
+                }
             pool = EnvServerPool(
                 server_kwargs,
                 max_workers,
@@ -346,13 +360,19 @@ def serve_env(
         else:
             from verifiers.v1.legacy import LegacyEnvServer
 
-            if "config_data" in server_kwargs:  # rebuild the env config for an in-process server
-                config, topology_config = _configs_from_data(server_kwargs["config_data"])
+            if (
+                "config_data" in server_kwargs
+            ):  # rebuild the env config for an in-process server
+                config, topology_config = _configs_from_data(
+                    server_kwargs["config_data"]
+                )
                 server_kwargs = {
                     "config": config,
                     "topology_config": topology_config,
                 }
             cls = LegacyEnvServer if legacy else EnvServer
-            cls.run_server(address=address, address_queue=address_queue, **server_kwargs)
+            cls.run_server(
+                address=address, address_queue=address_queue, **server_kwargs
+            )
     except KeyboardInterrupt:
         pass

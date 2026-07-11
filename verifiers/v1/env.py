@@ -54,7 +54,9 @@ class ElasticPoolConfig(BaseConfig):
 
 
 # Discriminated on `type` so the CLI selects with `--pool.type static|elastic`.
-PoolConfig = Annotated[StaticPoolConfig | ElasticPoolConfig, Field(discriminator="type")]
+PoolConfig = Annotated[
+    StaticPoolConfig | ElasticPoolConfig, Field(discriminator="type")
+]
 
 
 def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
@@ -133,10 +135,16 @@ class EnvConfig(BaseConfig):
 
         narrow_plugin_field(data, "taskset", taskset_config_type)
         taskset = data.get("taskset")
-        taskset_id = taskset.get("id") if isinstance(taskset, dict) else getattr(taskset, "id", None)
+        taskset_id = (
+            taskset.get("id")
+            if isinstance(taskset, dict)
+            else getattr(taskset, "id", None)
+        )
         # A taskset that bundles its own harness runs with it by default; an explicit
         # `--harness.id` / toml id (already on the field) takes precedence.
-        narrow_plugin_field(data, "harness", harness_config_type, default_harness_id(taskset_id or ""))
+        narrow_plugin_field(
+            data, "harness", harness_config_type, default_harness_id(taskset_id or "")
+        )
         return data
 
 
@@ -188,18 +196,28 @@ def resolve_runtime_config(
                     config.type,
                     field,
                 )
-        elif getattr(config, field) == spec.default:  # still the default → task may set it
+        elif (
+            getattr(config, field) == spec.default
+        ):  # still the default → task may set it
             updates[field] = value
         # else: cli/toml changed it from the default → it wins over the task
     return config.model_copy(update=updates) if updates else config
 
 
-def resolve_stage_timeouts(timeout: TimeoutConfig, task: Task, runtime_config: RuntimeConfig) -> TimeoutConfig:
+def resolve_stage_timeouts(
+    timeout: TimeoutConfig, task: Task, runtime_config: RuntimeConfig
+) -> TimeoutConfig:
     """Resolve a task's per-stage wall-clock budgets into a concrete `TimeoutConfig`:
     cli/toml > task > default (None = no limit), with remote sandbox lifetimes capping
     the harness stage at 24 hours."""
-    harness = timeout.rollout if timeout.rollout is not None else task.data.timeout.harness
-    if harness is not None and harness > 24 * 60 * 60 and not runtime_is_local(runtime_config):
+    harness = (
+        timeout.rollout if timeout.rollout is not None else task.data.timeout.harness
+    )
+    if (
+        harness is not None
+        and harness > 24 * 60 * 60
+        and not runtime_is_local(runtime_config)
+    ):
         logger.warning(
             "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
             "maximum lifetime of 24 hours; capping it at 24 hours",
@@ -211,12 +229,18 @@ def resolve_stage_timeouts(timeout: TimeoutConfig, task: Task, runtime_config: R
     return TimeoutConfig(
         setup=timeout.setup if timeout.setup is not None else task.data.timeout.setup,
         rollout=harness,
-        finalize=timeout.finalize if timeout.finalize is not None else task.data.timeout.finalize,
-        scoring=timeout.scoring if timeout.scoring is not None else task.data.timeout.scoring,
+        finalize=timeout.finalize
+        if timeout.finalize is not None
+        else task.data.timeout.finalize,
+        scoring=timeout.scoring
+        if timeout.scoring is not None
+        else task.data.timeout.scoring,
     )
 
 
-def validate_task_pairing(harness: Harness, task_cls: type[Task], shared_tools: tuple = ()) -> None:
+def validate_task_pairing(
+    harness: Harness, task_cls: type[Task], shared_tools: tuple = ()
+) -> None:
     """Reject an impossible harness/task-class pairing. Every check reads class-level
     facts (`Task.tools` / `Task.user` / `NEEDS_CONTAINER`, plus any taskset-scoped
     `shared_tools`), so a failure holds for every instance of the class. Shared between
@@ -235,7 +259,9 @@ def validate_task_pairing(harness: Harness, task_cls: type[Task], shared_tools: 
             f"{task_cls.__name__} defines one (Task.user). Run it with a harness that "
             f"supports user simulation (e.g. --harness.id default), or use tasks without one."
         )
-    if task_cls.NEEDS_CONTAINER and isinstance(harness.config.runtime, SubprocessConfig):
+    if task_cls.NEEDS_CONTAINER and isinstance(
+        harness.config.runtime, SubprocessConfig
+    ):
         raise ValueError(
             f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but the "
             "harness runs on the subprocess runtime; use --harness.runtime.type docker or prime."

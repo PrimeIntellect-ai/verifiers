@@ -125,7 +125,9 @@ def _provider_status(e: OpenAIError | str) -> int:
     return 502
 
 
-def model_error(e: OpenAIError | str, *, status_code: int | None = None) -> ProviderError:
+def model_error(
+    e: OpenAIError | str, *, status_code: int | None = None
+) -> ProviderError:
     """Map a provider failure to our error type: an overlong prompt (a budget limit the interception
     server turns into a clean truncation) is told apart from any other provider call failure, which
     becomes a plain `ProviderError`. `status_code` is the HTTP status surfaced to the harness (whose

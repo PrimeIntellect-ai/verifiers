@@ -138,7 +138,11 @@ class Session:
             )
         if self._run_task is not None and self._run_task.done():
             raise SessionEnded(self._rollout.trace if self._rollout else None)
-        turns: Messages = [UserMessage(content=message)] if isinstance(message, str) else list(message)
+        turns: Messages = (
+            [UserMessage(content=message)]
+            if isinstance(message, str)
+            else list(message)
+        )
         self._pending = True
         try:
             await self._inbox.put(turns)
@@ -265,7 +269,9 @@ class Agent:
     def _validate_pairing(self, task: Task, runtime_config: RuntimeConfig) -> None:
         key = (type(task), runtime_config.type, runtime_config.__class__.__name__)
         if key not in self._validated:
-            validate_task_pairing(self.harness, type(task), shared_tools=tuple(self.shared_tools))
+            validate_task_pairing(
+                self.harness, type(task), shared_tools=tuple(self.shared_tools)
+            )
             self._validated.add(key)
 
     async def run(
@@ -288,7 +294,9 @@ class Agent:
             task,
             runtime_config=runtime_config,
             runtime=runtime,
-            interception=await services.pool_for(runtime_config) if services is not None else None,
+            interception=await services.pool_for(runtime_config)
+            if services is not None
+            else None,
             parents=parents,
         )
         if retry is not None:
@@ -386,7 +394,9 @@ class Agent:
             scoring_timeout=timeouts.scoring,
             limits=self.limits,
             shared_tools=self.shared_tools,
-            interception=await services.pool_for(runtime_config) if services is not None else None,
+            interception=await services.pool_for(runtime_config)
+            if services is not None
+            else None,
             runtime=runtime,
             user=session._respond,
         )
