@@ -14,6 +14,7 @@ from rich.text import Text
 
 from verifiers.v1.cli.dashboard.base import live_view
 from verifiers.v1.cli.output import output_path
+from verifiers.v1.utils.interrupt import cleaning_up
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
@@ -108,6 +109,22 @@ def _aligned(rows: list[list[str]]) -> list[str]:
         )
         for row in rows
     ]
+
+
+def _interrupt_footer() -> Group | None:
+    """The graceful-shutdown notice under the rollouts once Ctrl-C has begun teardown — the
+    on-screen echo of the warning (console logging is silenced in rich mode); a further Ctrl-C
+    is ignored while it shows. Sits beside the `--push` line, mirroring its placement."""
+    if not cleaning_up():
+        return None
+    return Group(
+        Rule(style="dim"),
+        Text(
+            "interrupted — cleaning up, tearing down containers/sandboxes. "
+            "please wait; a further ctrl-c is ignored.",
+            style="yellow",
+        ),
+    )
 
 
 def _warning(config: EvalConfig) -> Text | None:
@@ -561,11 +578,11 @@ def _render(
     now = time.time()
     warning = _warning(config)
     header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
-    # The --push status line appears under the rollouts once the upload starts (None during the run
-    # / when off). Measure the fixed top (header + progress + rule) and the footer so the rollout
-    # rows fill what's left; page through them (timer / arrows) when they'd overflow (else rich
-    # truncates).
-    footer = _push_footer(push)
+    # The --push status line (and, on Ctrl-C, the cleanup notice) appear under the rollouts. Measure
+    # the fixed top (header + progress + rule) and the footer so the rollout rows fill what's left;
+    # page through them (timer / arrows) when they'd overflow (else rich truncates).
+    footers = [f for f in (_push_footer(push), _interrupt_footer()) if f is not None]
+    footer = Group(*footers) if footers else None
     top = Group(header, Progress(rollouts, start), Rule(style="dim"))
     reserved = len(_CONSOLE.render_lines(top))
     if footer is not None:
