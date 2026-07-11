@@ -68,7 +68,6 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     # (GEPAv1Adapter.evaluate), and it's all torn down in `finally`. Keeping optimize() on the
     # main thread means a Ctrl-C raises straight through it into this teardown.
     loop = asyncio.new_event_loop()
-    serving = env.serving()
     semaphore = (
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
@@ -81,34 +80,40 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
             await append_trace(run_dir, trace, write_lock)
 
     try:
+        serving = env.serving()
         loop.run_until_complete(serving.__aenter__())
-        adapter = GEPAv1Adapter(
-            env=env,
-            ctx=ctx,
-            tasks=tasks_by_idx,
-            loop=loop,
-            semaphore=semaphore,
-            on_complete=on_complete,
-            state_columns=config.state_columns,
-        )
-        optimize_kwargs: dict = dict(
-            seed_candidate={"system_prompt": seed_prompt},
-            trainset=[task.data.idx for task in train_tasks],
-            valset=[task.data.idx for task in val_tasks],
-            adapter=adapter,
-            reflection_lm=reflection_lm,
-            max_metric_calls=config.max_metric_calls,
-            reflection_minibatch_size=config.reflection_minibatch_size,
-            run_dir=str(run_dir) if run_dir is not None else None,
-            seed=config.seed,
-            display_progress_bar=False,
-            skip_perfect_score=config.perfect_score is not None,
-            logger=_GEPALog(),
-        )
-        if config.perfect_score is not None:
-            optimize_kwargs["perfect_score"] = config.perfect_score
-        return optimize(**optimize_kwargs)
+        # Pair __aexit__ with a *successful* __aenter__: this inner block is reached only once
+        # serving is up, so a startup failure propagates as-is instead of being masked by
+        # tearing down a context that never entered.
+        try:
+            adapter = GEPAv1Adapter(
+                env=env,
+                ctx=ctx,
+                tasks=tasks_by_idx,
+                loop=loop,
+                semaphore=semaphore,
+                on_complete=on_complete,
+                state_columns=config.state_columns,
+            )
+            optimize_kwargs: dict = dict(
+                seed_candidate={"system_prompt": seed_prompt},
+                trainset=[task.data.idx for task in train_tasks],
+                valset=[task.data.idx for task in val_tasks],
+                adapter=adapter,
+                reflection_lm=reflection_lm,
+                max_metric_calls=config.max_metric_calls,
+                reflection_minibatch_size=config.reflection_minibatch_size,
+                run_dir=str(run_dir) if run_dir is not None else None,
+                seed=config.seed,
+                display_progress_bar=False,
+                skip_perfect_score=config.perfect_score is not None,
+                logger=_GEPALog(),
+            )
+            if config.perfect_score is not None:
+                optimize_kwargs["perfect_score"] = config.perfect_score
+            return optimize(**optimize_kwargs)
+        finally:
+            loop.run_until_complete(serving.__aexit__(None, None, None))
     finally:
-        loop.run_until_complete(serving.__aexit__(None, None, None))
         loop.run_until_complete(client.close())
         loop.close()
