@@ -84,7 +84,7 @@ def main(argv: list[str] | None = None) -> None:
     # runs each rollout's `finally` (tears down containers/sandboxes) and any worker pool it
     # spawned; further signals during that cleanup are swallowed so an impatient second Ctrl-C
     # can't orphan those resources.
-    install_interrupt(rich)
+    install_interrupt()
 
     try:
         if (
