@@ -11,7 +11,6 @@ rejected; run those through the existing `vf-gepa` command instead.
 
 import asyncio
 import logging
-import signal
 import sys
 
 from pydantic_config import cli
@@ -25,6 +24,7 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.gepa import GEPAConfig, run_gepa
+from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -60,9 +60,10 @@ def main(argv: list[str] | None = None) -> None:
         logger.info("wrote config to %s", write_config(config, output_path(config)))
         return
 
-    # Make SIGTERM behave like Ctrl-C (SIGINT) so a killed/timed-out run still runs the
-    # runner's `serving()` teardown (tears down interception pool / tool-server runtimes).
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out run still
+    # runs the runner's `serving()` teardown (interception pool / tool-server runtimes); further
+    # signals during that cleanup are swallowed so an impatient second Ctrl-C can't orphan them.
+    install_interrupt()
 
     env = vf.Environment(config)
     result = asyncio.run(run_gepa(env, config))

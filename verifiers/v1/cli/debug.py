@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import logging
 import shlex
-import signal
 import sys
 import time
 import traceback
@@ -29,6 +28,7 @@ from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
+from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.utils.sampling import sample
 
@@ -323,8 +323,9 @@ def main(argv: list[str] | None = None) -> None:
     sys.argv = [sys.argv[0], *argv]
     config = cli(config_type)
     setup_logging("DEBUG" if config.verbose else "INFO")
-    # Translate SIGTERM so async finally blocks still tear down their resources.
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    # Graceful shutdown: first Ctrl-C/SIGTERM unwinds each task's teardown `finally`;
+    # a second is swallowed so it can't orphan containers/sandboxes mid-cleanup.
+    install_interrupt()
     asyncio.run(run_debug(config))
 
 
