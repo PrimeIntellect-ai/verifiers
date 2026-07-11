@@ -270,7 +270,10 @@ class Agent:
         key = (type(task), runtime_config.type, runtime_config.__class__.__name__)
         if key not in self._validated:
             validate_task_pairing(
-                self.harness, type(task), shared_tools=tuple(self.shared_tools)
+                self.harness,
+                type(task),
+                runtime_config,  # where the run actually lands — a borrowed box may differ
+                shared_tools=tuple(self.shared_tools),
             )
             self._validated.add(key)
 
@@ -411,7 +414,10 @@ class Agent:
         finally:
             await session.end()
             try:
-                trace = await run_task  # never raises: a rollout captures its failures
+                # A rollout captures its failures onto the trace; the one raise is a
+                # borrowed-box lifetime bug (torn down under the run), which belongs
+                # to the caller.
+                trace = await run_task
             except asyncio.CancelledError:
                 run_task.cancel()
                 raise

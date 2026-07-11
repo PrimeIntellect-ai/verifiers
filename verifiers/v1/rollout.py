@@ -125,6 +125,14 @@ class Rollout:
         self.trace = trace  # expose for the --rich dashboard
         self.phase = Phase.SETUP  # leaving the queue: provisioning starts now
         trace.timing.setup.start = time.time()
+        if self._borrowed_runtime is not None and self._borrowed_runtime.stopped:
+            # A lifetime bug in the borrowing program, not a property of this rollout's
+            # world: raise to the caller instead of capturing onto the trace.
+            raise ValueError(
+                f"borrowed runtime {self._borrowed_runtime.name!r} was already torn "
+                "down by its owner; keep the provisioning context open for every run "
+                "placed into the box"
+            )
         self.runtime = (
             self._borrowed_runtime
             if self._borrowed_runtime is not None
@@ -241,10 +249,19 @@ class Rollout:
                     self.scoring_timeout,
                 )
             trace.timing.scoring.end = time.time()
-        except RolloutError as e:
-            trace.capture_error(e)
         except Exception as e:
-            logger.exception("unexpected error in rollout %s", trace.id)
+            if self._borrowed_runtime is not None and runtime.stopped:
+                # The owner tore the borrowed box down mid-run — the same lifetime bug
+                # as borrowing a stopped runtime, surfaced through the same channel:
+                # raise to the caller (raw failure chained) instead of capturing a
+                # misattributed world error onto the trace.
+                raise ValueError(
+                    f"borrowed runtime {runtime.name!r} was torn down by its owner "
+                    "mid-run; keep the provisioning context open until every run "
+                    "placed into the box has completed"
+                ) from e
+            if not isinstance(e, RolloutError):
+                logger.exception("unexpected error in rollout %s", trace.id)
             trace.capture_error(e)
         finally:
             trace.is_completed = True

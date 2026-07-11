@@ -272,14 +272,17 @@ def resolve_stage_timeouts(
 
 
 def validate_task_pairing(
-    harness: Harness, task_cls: type[Task], shared_tools: tuple = ()
+    harness: Harness,
+    task_cls: type[Task],
+    runtime_config: RuntimeConfig,
+    shared_tools: tuple = (),
 ) -> None:
-    """Reject an impossible harness/task-class pairing. Every check reads class-level
-    facts (`Task.tools` / `Task.user` / `NEEDS_CONTAINER`, plus any taskset-scoped
-    `shared_tools`), so a failure holds for every instance of the class. Shared between
-    `validate_pairing` (a taskset's one task type, at construction) and topology agents
-    (which pair task classes with harnesses directly, at the first episode that pairs
-    them — derived task classes don't exist at load time)."""
+    """Reject an impossible harness/task-class/runtime combination. Every check reads
+    class-level facts (`Task.tools` / `Task.user` / `NEEDS_CONTAINER`, plus any
+    taskset-scoped `shared_tools`), so a failure holds for every instance of the class.
+    `runtime_config` is where the run actually lands — the harness's policy at
+    construction (`validate_pairing`), the *resolved* config per run for topology agents
+    (a borrowed box may differ from the harness's default, in either direction)."""
     if not harness.SUPPORTS_MCP and (task_cls.tools or shared_tools):
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but "
@@ -292,12 +295,10 @@ def validate_task_pairing(
             f"{task_cls.__name__} defines one (Task.user). Run it with a harness that "
             f"supports user simulation (e.g. --harness.id default), or use tasks without one."
         )
-    if task_cls.NEEDS_CONTAINER and isinstance(
-        harness.config.runtime, SubprocessConfig
-    ):
+    if task_cls.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
         raise ValueError(
-            f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but the "
-            "harness runs on the subprocess runtime; use --harness.runtime.type docker or prime."
+            f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but this "
+            "run resolves to the subprocess runtime; use --harness.runtime.type docker or prime."
         )
 
 
@@ -307,4 +308,6 @@ def validate_pairing(harness: Harness, taskset: Taskset) -> None:
     type per taskset, read off the `Taskset[TaskT, ...]` generic). On the env server this
     fails worker startup instead of every request."""
     task_cls = generic_type(type(taskset), Task, origin=Taskset) or Task
-    validate_task_pairing(harness, task_cls, shared_tools=type(taskset).tools)
+    validate_task_pairing(
+        harness, task_cls, harness.config.runtime, shared_tools=type(taskset).tools
+    )
