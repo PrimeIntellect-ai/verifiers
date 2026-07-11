@@ -36,6 +36,25 @@ graph cost.
 Defer cost-aware admission, per-agent/model telemetry, and dynamic capacity accounting until
 there is enough operational evidence to choose a useful abstraction.
 
+### Retry whole instances, not just rollouts
+
+`retries.rollout` reruns a single failed agent run, but there is no graph-level analogue:
+an invocation that comes out invalid (by the topology's own `Topology.complete()` verdict)
+is persisted as-is and only redone by a later `--resume`. `Topology.complete()` is already
+the right predicate for an online instance-level retry (`retries.instance`), and the
+`RetryConfig` wrapper deliberately keeps that slot open. Defer until a real training or
+eval run demonstrates the need; when added, cap and attribute retries so a topology whose
+instances are *never* complete fails loudly instead of looping.
+
+### Right-size graph wire payloads
+
+`RunResponse` now serializes graphs with full per-node training tensors
+(`routed_experts`, `multi_modal_data`) so the trainable path survives the env-server hop —
+correct for training, but eval-mode server runs now ship tensors nobody reads, inflating
+ZMQ payloads and decode time for large graphs. Defer until payload size shows up in
+practice; the likely shape is a per-request or per-server "strip training tensors" switch
+mirroring what `to_record()` already does for JSON persistence.
+
 ### Add explicit run-level state if needed
 
 There is no canonical state store for information that must survive beyond one `go(task)`
@@ -62,6 +81,21 @@ can retain the conservative fallback.
 
 Done when resume produces the same decision in process, through an environment server, and from
 a graph record alone.
+
+### Recover relative signals as a built-in best-of-N topology
+
+Deleting `@group_reward` removed the only native home for pairwise/relative eval signals
+(code-golf's "shortest of the group wins", preference comparisons); they were demoted to
+per-trace metrics with the comparison left to "the training algorithm". For *training*
+that is the right owner, but eval-mode relative signals have a clean replacement the
+framework should ship rather than describe: a built-in best-of-N topology — one seed,
+`go` fans out N runs of the same agent, a `@reward(agent=...)` compares
+`graph.children(...)`. That recovers everything group rewards did, explicitly, on the
+canonical path, and doubles as the documented migration story for the removal.
+
+Done when a `best-of-n` built-in exists, code-golf's relative signals are expressed
+through it (or its docstring points at it), and the docs name it as the group-reward
+successor.
 
 ## Replay, presentation, and platform upload
 
@@ -109,6 +143,36 @@ A future cleanup can introduce one normalized, fully resolved agent execution co
 agent runs. This is not required for correctness and should not be combined with unrelated server
 lifecycle changes.
 
+### Settle the config layer's structure
+
+A reviewed set of config cleanups, deferred as one pass (analysis 2026-07-11):
+
+- **Split `topology.py` into its authoring and runner halves.** The authoring surface
+  (`AgentConfig`, `TopologyConfig`, `AgentGraph`, `Topology`, `SingleAgentTopology`,
+  `graph_complete`) imports nothing from `env.py`; only the runner half does. Splitting
+  turns the layering into a clean DAG (`topology ← env ← runner`) and deletes the
+  forward-referenced `EnvConfig.topology` annotation plus the `model_rebuild()` call that
+  currently papers over the cycle — the one trick in the config layer.
+- **Declare `RolloutLimits` once.** `EnvConfig` carries four flat `max_*` fields that are
+  hand-copied into `RolloutLimits` at the runner; a `limits` property on `EnvConfig`
+  states the correspondence once while keeping the flat CLI flags.
+- **De-collide `multiplex`.** `--multiplex` (rollouts per interception server) and
+  `--pool.multiplex` (graph requests per worker, the elastic scale trigger) are unrelated
+  knobs sharing a name; rename the pool field with an alias for compatibility.
+- **Align timeout vocabulary.** `--timeout.rollout` maps onto the task-authored
+  `TaskTimeout.harness`; post-consolidation "rollout" is the word — rename the task field
+  while it is still a five-file change.
+- **Delete the dead `EnvConfig.env_id` property** (no v1 consumers) and, riding the
+  split, consider moving the `EnvConfig` family into `configs/` so that package holds all
+  process-level configs (plugin configs stay colocated with their plugin classes — that
+  idiom is deliberate and load-bearing for id-narrowing).
+
+Explicitly considered and rejected (do not re-open without new evidence): nesting
+`model`/`client`/`sampling` into a ModelContext-shaped sub-config (kills `-m` /
+`--topology.<agent>.model` ergonomics), a shared CLI mixin for `verbose`/`dry_run`
+(saves ~6 lines, adds a class), quarantining the legacy `--id` block (it *is* the compat
+interface), and dropping the `group_size`/`rollouts_per_example` aliases (trainer-facing).
+
 ## Compatibility isolation
 
 ### Separate the legacy protocol from native v1
@@ -131,3 +195,18 @@ execution model. They do not consistently explain the canonical lowering to a to
 
 Update these surfaces after the corresponding contracts settle. Documentation should describe
 the current model only, not preserve a migration narrative.
+
+### Reconcile PR #1939 (agent programs)
+
+The standalone Agent-facade PR (#1939, open against main) is the ancestor of this branch's
+agent layer. Its machinery is fully absorbed or deliberately superseded here (pool ownership
+moved to `RunServices`; `TaskData.sources`/`relation` lineage replaced by trace-field links;
+the per-run `ctx=` override replaced by per-agent routing), and its three correctness fixes
+(borrowed-box tombstone, mid-run teardown attribution, resolved-runtime pairing) have been
+ported. What remains unique to it is `docs/v1/agent-programs.md` plus four
+`examples/agent_programs/` scripts — written against its API variant, so merging it as-is
+would reintroduce a conflicting Agent surface and a duplicate lineage mechanism.
+
+Done when the bare-`vf.Agent` scripting surface is documented against *this* branch's API
+(an agent-programs page or a section of the topology docs, examples rewritten) and #1939 is
+closed or rebased to nothing.
