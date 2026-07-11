@@ -58,10 +58,6 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
         )  # config.toml + a fresh traces.jsonl (like run_eval)
         logger.info("results: %s", run_dir)
 
-    client = resolve_client(config.client)
-    ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
-    reflection_lm = build_reflection_lm(config)
-
     # optimize() is synchronous and blocking, so it drives the run from this (main) thread. We
     # own one event loop: `env.serving()` (shared tool servers + interception pool, built once
     # like run_eval) is entered on it, each rollout batch runs on it via `loop.run_until_complete`
@@ -79,7 +75,13 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
         if run_dir is not None:
             await append_trace(run_dir, trace, write_lock)
 
+    # The client opens an httpx pool at construction, so build it inside the try that closes it —
+    # a failure while building ctx/reflection_lm must not leak the pool.
+    client = None
     try:
+        client = resolve_client(config.client)
+        ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
+        reflection_lm = build_reflection_lm(config)
         serving = env.serving()
         loop.run_until_complete(serving.__aenter__())
         # Pair __aexit__ with a *successful* __aenter__: this inner block is reached only once
@@ -115,5 +117,6 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
         finally:
             loop.run_until_complete(serving.__aexit__(None, None, None))
     finally:
-        loop.run_until_complete(client.close())
+        if client is not None:
+            loop.run_until_complete(client.close())
         loop.close()
