@@ -216,6 +216,13 @@ class ProposerSolverTopology(vf.Topology[ProposerSolverConfig]):
         """Self-seeding: a single propose assignment (no `--topology.taskset.id` needed)."""
         return [ProposeTask(vf.TaskData(idx=0, prompt=PROPOSE_PROMPT))]
 
+    def complete(self, graph: vf.AgentGraph) -> bool:
+        """This topology tolerates failed children (`go` handles an uncommitted proposal,
+        `solve_rate` excludes errored solvers from its denominator), so a persisted
+        instance is a valid result unless the composition itself crashed — without this
+        override, `--resume` would redo instances it already accepted and scored."""
+        return graph.error is None
+
     async def go(self, task: vf.Task, run: vf.TopologyRun) -> None:
         """Control flow only: propose, read the committed submission off the trace (pure
         host-side), then fan the solvers out over the derived puzzle."""

@@ -289,6 +289,13 @@ class AgentGraph(StrictBaseModel):
         return graph
 
 
+def graph_complete(graph: AgentGraph) -> bool:
+    """The conservative instance-validity default (`Topology.complete`'s base rule):
+    no instance-level error and no errored trace. Module-level so consumers without a
+    live topology (the server-mode eval client) apply the same rule."""
+    return graph.error is None and not any(t.has_error for t in graph.traces)
+
+
 class Topology(Generic[ConfigT]):
     """Generic over its config type, so `self.config` is fully typed in subclasses.
     Subclass: declare `AgentConfig` fields on your config, implement `go` (control flow)
@@ -369,6 +376,17 @@ class Topology(Generic[ConfigT]):
             )
         assert self.taskset is not None
         return self.taskset.load()
+
+    def complete(self, graph: AgentGraph) -> bool:
+        """Whether a persisted instance counts as a valid result of this topology — the
+        verdict consumers read when deciding what to redo or drop (today: `--resume`
+        re-runs instances that fail it). The default is conservative — no instance-level
+        error and no errored trace — which is exact for the single-agent lowering, where
+        the one trace IS the invocation. A topology whose `go` tolerates child failures
+        overrides this to match (typically `graph.error is None`), else resume redoes
+        instances it already accepted and scored. A read-only verdict over a finished
+        graph: what a failed child *means* stays in `go` and the declared rewards."""
+        return graph_complete(graph)
 
     async def score(self, graph: AgentGraph) -> None:
         """Run the topology's declared judgement over one completed instance: every

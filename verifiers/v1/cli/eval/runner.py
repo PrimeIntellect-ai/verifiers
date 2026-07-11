@@ -38,7 +38,10 @@ async def run_eval(config: EvalConfig) -> list[AgentGraph]:
     owed: dict[int, int] | None = None
     if config.resume is not None:
         finished, owed = resume.load(
-            out, [task.data.idx for task in tasks], config.num_rollouts
+            out,
+            [task.data.idx for task in tasks],
+            config.num_rollouts,
+            complete=runner.topology.complete,
         )
         if not owed:
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
