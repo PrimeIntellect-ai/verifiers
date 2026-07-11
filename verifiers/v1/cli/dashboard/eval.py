@@ -14,6 +14,7 @@ from rich.text import Text
 
 from verifiers.v1.cli.dashboard.base import live_view
 from verifiers.v1.cli.output import output_path
+from verifiers.v1.utils.interrupt import cleaning_up
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.trace import Trace
@@ -108,6 +109,19 @@ def _aligned(rows: list[list[str]]) -> list[str]:
         )
         for row in rows
     ]
+
+
+def _interrupt_banner() -> Text | None:
+    """Shown atop the dashboard once Ctrl-C has begun teardown — the on-screen echo of the
+    graceful-shutdown notice (console logging is silenced in rich mode); further Ctrl-C is
+    ignored while it shows."""
+    if not cleaning_up():
+        return None
+    return Text(
+        "interrupted  Cleaning up — tearing down containers/sandboxes. "
+        "Please wait; further Ctrl-C is ignored.",
+        style="bold red",
+    )
 
 
 def _warning(config: EvalConfig) -> Text | None:
@@ -559,8 +573,8 @@ def _render(
     push: "PushState | None" = None,
 ) -> Group:
     now = time.time()
-    warning = _warning(config)
-    header = Group(warning, Text(""), Overview(config)) if warning else Overview(config)
+    banners = [b for b in (_interrupt_banner(), _warning(config)) if b is not None]
+    header = Group(*(part for b in banners for part in (b, Text(""))), Overview(config))
     # The --push status line appears under the rollouts once the upload starts (None during the run
     # / when off). Measure the fixed top (header + progress + rule) and the footer so the rollout
     # rows fill what's left; page through them (timer / arrows) when they'd overflow (else rich
