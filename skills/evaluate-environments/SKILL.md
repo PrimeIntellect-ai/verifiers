@@ -37,7 +37,7 @@ prime eval validate <MY_ENV> --runtime.type subprocess
 prime eval run <MY_ENV> -m deepseek/deepseek-v4-flash -n 3 -r 1
 ```
 
-4. Inspect successful, zero-reward, and errored traces.
+4. Inspect successful, zero-reward, and errored graphs and their traces.
 5. Scale only after task loading, harness capability, runtime lifecycle, and scoring are correct.
 
 When the user requests a full run, do not restrict the number of tasks. Ask for the appropriate harness to use (if not specified)
@@ -148,7 +148,7 @@ outputs/<taskset>--<model>--<harness>/<uuid>/
 └── eval.log
 ```
 
-Set an exact path with `-o`. Results append as each trace finishes.
+Set an exact path with `-o`. Results append as each fully scored graph finishes.
 
 Resume in place:
 
@@ -156,7 +156,10 @@ Resume in place:
 prime eval run --resume /path/to/run
 ```
 
-## Trace inspection
+## Graph and trace inspection
+
+Each `traces.jsonl` line is one `AgentGraph`; taskset + harness runs produce a one-node
+graph through the built-in single-agent topology.
 
 For each representative sample inspect:
 

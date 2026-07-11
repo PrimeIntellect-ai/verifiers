@@ -3,8 +3,8 @@
 `RunServices` owns the interception pools — too expensive to create per rollout, but
 not process-global: an in-process eval enters one for the command; a topology enters one
 while its instances run. Shared MCP servers are NOT here: they are taskset-scoped
-(`Taskset.tools`, served once by whoever owns the taskset — `Environment.serving` or
-`TopologyRunner.serving` — via `serve_shared`) and flow into rollouts as a plain
+(`Taskset.tools`, served once by `TopologyRunner.serving` via `serve_shared`) and flow
+into rollouts as a plain
 `{name: SharedToolServer}` dict.
 """
 
@@ -55,8 +55,6 @@ class RunServices:
             pool = self._pools.get(key)
             if pool is not None:
                 return pool
-            pool = await self._stack.enter_async_context(
-                InterceptionPool(runtime_config, self.multiplex)
-            )
+            pool = await self._stack.enter_async_context(InterceptionPool(runtime_config, self.multiplex))
             self._pools[key] = pool
             return pool

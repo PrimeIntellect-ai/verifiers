@@ -13,10 +13,7 @@ def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
     descriptor — a property with side effects would run here) and binds each through
     `getattr`, so the most-derived override wins."""
     names = {
-        name
-        for klass in type(obj).__mro__
-        for name, fn in vars(klass).items()
-        if callable(fn) and hasattr(fn, attr)
+        name for klass in type(obj).__mro__ for name, fn in vars(klass).items() if callable(fn) and hasattr(fn, attr)
     }
     # An undecorated override suppresses a decorated base method.
     methods = [method for name in names if hasattr(method := getattr(obj, name), attr)]
@@ -30,9 +27,7 @@ def invoke(fn: Callable[..., Any], available: dict[str, Any]) -> Any:
     return fn(**{name: value for name, value in available.items() if name in params})
 
 
-async def invoke_all(
-    fns: list[Callable[..., Any]], available: dict[str, Any]
-) -> list[Any]:
+async def invoke_all(fns: list[Callable[..., Any]], available: dict[str, Any]) -> list[Any]:
     """Invoke scoring handlers concurrently, including empty and singleton lists."""
     return await asyncio.gather(*(invoke(fn, available) for fn in fns))
 
@@ -71,12 +66,8 @@ def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
 @overload
 def metric(func: F, priority: int = 0, agent: str | None = None) -> F: ...
 @overload
-def metric(
-    func: None = None, priority: int = 0, agent: str | None = None
-) -> Callable[[F], F]: ...
-def metric(
-    func: F | None = None, priority: int = 0, agent: str | None = None
-) -> F | Callable[[F], F]:
+def metric(func: None = None, priority: int = 0, agent: str | None = None) -> Callable[[F], F]: ...
+def metric(func: F | None = None, priority: int = 0, agent: str | None = None) -> F | Callable[[F], F]:
     """Mark a metric `(self, trace) -> float` (recorded, not summed). On a `Topology`,
     `agent=` scopes it to the named agent's traces (see `Topology.score`)."""
     decorator = mark("metric", metric_priority=priority, _vf_agent=agent)
@@ -84,13 +75,9 @@ def metric(
 
 
 @overload
-def reward(
-    func: F, weight: float = 1.0, priority: int = 0, agent: str | None = None
-) -> F: ...
+def reward(func: F, weight: float = 1.0, priority: int = 0, agent: str | None = None) -> F: ...
 @overload
-def reward(
-    func: None = None, weight: float = 1.0, priority: int = 0, agent: str | None = None
-) -> Callable[[F], F]: ...
+def reward(func: None = None, weight: float = 1.0, priority: int = 0, agent: str | None = None) -> Callable[[F], F]: ...
 def reward(
     func: F | None = None,
     weight: float = 1.0,
@@ -99,21 +86,5 @@ def reward(
 ) -> F | Callable[[F], F]:
     """Mark a weighted per-rollout reward returning a float or keyed scores. On a
     `Topology`, `agent=` scopes it to the named agent's traces (see `Topology.score`)."""
-    decorator = mark(
-        "reward", reward_priority=priority, _vf_weight=weight, _vf_agent=agent
-    )
-    return decorator if func is None else decorator(func)
-
-
-@overload
-def group_reward(func: F, weight: float = 1.0, priority: int = 0) -> F: ...
-@overload
-def group_reward(
-    func: None = None, weight: float = 1.0, priority: int = 0
-) -> Callable[[F], F]: ...
-def group_reward(
-    func: F | None = None, weight: float = 1.0, priority: int = 0
-) -> F | Callable[[F], F]:
-    """Mark a weighted group reward returning one score per trace."""
-    decorator = mark("group_reward", group_reward_priority=priority, _vf_weight=weight)
+    decorator = mark("reward", reward_priority=priority, _vf_weight=weight, _vf_agent=agent)
     return decorator if func is None else decorator(func)

@@ -5,7 +5,6 @@ from functools import partial
 
 from pydantic_config import cli
 
-from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_config,
@@ -15,8 +14,9 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.configs.serve import ServeConfig
 from verifiers.v1.env import pool_serve_kwargs
 from verifiers.v1.serve import serve_env
+from verifiers.v1.utils.logging import setup_logging
 
-USAGE = "usage: uv run serve [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]"
+USAGE = "usage: uv run serve [<taskset-id>] [--harness.id <id>] | --topology.id <id> | --id <env-id> (legacy) [options] [@ file.toml]"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -30,12 +30,11 @@ def main(argv: list[str] | None = None) -> None:
     legacy_id = any(a == "--id" or a.startswith("--id=") for a in argv)  # v0 env id
     if (
         not extract_id(argv, "taskset")
+        and not extract_id(argv, "topology")
         and not legacy_id
         and not references_config_file(argv)
     ):
-        raise SystemExit(
-            USAGE
-        )  # need a --taskset.id (v1), a legacy --id (v0), or @ file.toml
+        raise SystemExit(USAGE)  # need a --taskset.id (v1), a legacy --id (v0), or @ file.toml
 
     config_type = narrow_config(ServeConfig, argv)
     sys.argv = [sys.argv[0], *argv]

@@ -1,6 +1,6 @@
 """Env-server worker pool: a ROUTER broker over N worker processes.
 
-A lone `EnvServer` runs every rollout as an `asyncio.Task` on one event loop, so
+A lone `EnvServer` runs every graph request as an `asyncio.Task` on one event loop, so
 CPU-bound work (renderer tokenization, scoring) competes for that loop. v0 relieved
 this with a router + worker pool; this reinstates it for v1.
 
@@ -37,7 +37,7 @@ import zmq.asyncio
 
 from verifiers.v1.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import HealthResponse, RunGroupRequest
+from verifiers.v1.serve.types import HealthResponse
 
 logger = logging.getLogger(__name__)
 
@@ -69,9 +69,7 @@ def _arm_teardown(death_pipe=None) -> None:
     threading.Thread(target=_watch, daemon=True).start()
 
 
-def _worker_entry(
-    *, server_kwargs: dict, address: str, death_pipe, legacy: bool, log_setup=None
-) -> None:
+def _worker_entry(*, server_kwargs: dict, address: str, death_pipe, legacy: bool, log_setup=None) -> None:
     """Spawned worker: an ordinary EnvServer/LegacyEnvServer bound to `address` (ipc).
     A native config arrives as a dict (`config_data`): the eval/serve CLI's narrowed
     config type is dynamic and unpicklable, so we rebuild it here via EnvConfig's
@@ -83,8 +81,10 @@ def _worker_entry(
     if log_setup is not None:
         log_setup()
     if "config_data" in server_kwargs:
+        config, topology_config = _configs_from_data(server_kwargs["config_data"])
         server_kwargs = {
-            "config": EnvConfig.model_validate(server_kwargs["config_data"])
+            "config": config,
+            "topology_config": topology_config,
         }
     cls = LegacyEnvServer if legacy else EnvServer
     cls.run_server(address=address, **server_kwargs)
@@ -166,7 +166,7 @@ class EnvServerPool:
             self._poller.register(dealer, zmq.POLLIN)
 
     def _maybe_scale_up(self, in_flight: int) -> None:
-        """Spawn one more worker when in-flight rollout slots reach 90% of capacity.
+        """Spawn one more worker when in-flight requests reach 90% of capacity.
 
         A new worker starts at `active=0`, so least-busy dispatch funnels the backlog to
         it as it comes online (a few seconds to load the env) — fine, since we only scale
@@ -193,7 +193,7 @@ class EnvServerPool:
         # (`max_workers` is a concrete count when elastic is off).
         for _ in range(1 if self.elastic else (self.max_workers or 1)):
             self._spawn_worker()
-        # request_id -> {client_id, worker, rollout_slots}
+        # request_id -> {client_id, worker}
         pending: dict[bytes, dict] = {}
         logger.info(
             "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
@@ -215,31 +215,18 @@ class EnvServerPool:
                         payload,
                     ) = await self.frontend.recv_multipart()
                     if method == b"health":
-                        await self.frontend.send_multipart(
-                            [client_id, request_id, _HEALTH]
-                        )
+                        await self.frontend.send_multipart([client_id, request_id, _HEALTH])
                     else:
-                        # Pool capacity is measured in rollouts; one group request carries n.
-                        rollout_slots = 1
-                        if method == b"run_group":
-                            with contextlib.suppress(Exception):
-                                request = RunGroupRequest.model_validate(
-                                    msgpack.unpackb(payload, raw=False)
-                                )
-                                rollout_slots = max(1, request.n)
                         worker = min(self.workers, key=lambda w: w["active"])
-                        worker["active"] += rollout_slots
+                        worker["active"] += 1
                         pending[request_id] = {
                             "client_id": client_id,
                             "worker": worker,
-                            "rollout_slots": rollout_slots,
                         }
-                        in_flight += rollout_slots
+                        in_flight += 1
                         # forward without client_id — the DEALER identity is the worker's
                         # `client_id`; we hold the real one in `pending`.
-                        await worker["dealer"].send_multipart(
-                            [request_id, method, payload]
-                        )
+                        await worker["dealer"].send_multipart([request_id, method, payload])
                         if self.elastic:
                             self._maybe_scale_up(in_flight)
                 for w in self.workers:
@@ -249,12 +236,10 @@ class EnvServerPool:
                         entry = pending.pop(request_id.bytes, None)
                         if entry is None:
                             continue
-                        entry["worker"]["active"] -= entry["rollout_slots"]
-                        in_flight -= entry["rollout_slots"]
+                        entry["worker"]["active"] -= 1
+                        in_flight -= 1
                         with contextlib.suppress(zmq.ZMQError):
-                            await self.frontend.send_multipart(
-                                [entry["client_id"], request_id, data], copy=False
-                            )
+                            await self.frontend.send_multipart([entry["client_id"], request_id, data], copy=False)
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:
@@ -282,11 +267,25 @@ class EnvServerPool:
 
 
 def env_config_data(config) -> dict:
-    """The picklable `EnvConfig` fields of a (possibly dynamically-narrowed, unpicklable)
-    config object — ship this across a process boundary, then rebuild via
-    `EnvConfig.model_validate` (its validator re-resolves the concrete taskset/harness)."""
+    """Picklable native execution fields, including an optional narrowed topology."""
     data = config.model_dump(mode="json")
-    return {k: v for k, v in data.items() if k in EnvConfig.model_fields}
+    selected = {k: v for k, v in data.items() if k in EnvConfig.model_fields}
+    if data.get("topology") is not None:
+        selected["topology"] = data["topology"]
+    return selected
+
+
+def _configs_from_data(data: dict):
+    """Rebuild narrowed native configs in a spawned worker."""
+    env_data = {k: v for k, v in data.items() if k in EnvConfig.model_fields}
+    config = EnvConfig.model_validate(env_data)
+    topology_data = data.get("topology")
+    if topology_data is None:
+        return config, None
+    from verifiers.v1.loaders import topology_config_type
+
+    topology_config = topology_config_type(topology_data["id"]).model_validate(topology_data)
+    return config, topology_config
 
 
 def serve_env(
@@ -330,12 +329,8 @@ def serve_env(
         log_setup()
     try:
         if max_workers is None or max_workers > 1:
-            if (
-                "config" in server_kwargs
-            ):  # dict-ify for the workers (config_data is picklable)
-                server_kwargs = {
-                    "config_data": env_config_data(server_kwargs["config"])
-                }
+            if "config" in server_kwargs:  # dict-ify for the workers (config_data is picklable)
+                server_kwargs = {"config_data": env_config_data(server_kwargs["config"])}
             pool = EnvServerPool(
                 server_kwargs,
                 max_workers,
@@ -351,15 +346,13 @@ def serve_env(
         else:
             from verifiers.v1.legacy import LegacyEnvServer
 
-            if (
-                "config_data" in server_kwargs
-            ):  # rebuild the env config for an in-process server
+            if "config_data" in server_kwargs:  # rebuild the env config for an in-process server
+                config, topology_config = _configs_from_data(server_kwargs["config_data"])
                 server_kwargs = {
-                    "config": EnvConfig.model_validate(server_kwargs["config_data"])
+                    "config": config,
+                    "topology_config": topology_config,
                 }
             cls = LegacyEnvServer if legacy else EnvServer
-            cls.run_server(
-                address=address, address_queue=address_queue, **server_kwargs
-            )
+            cls.run_server(address=address, address_queue=address_queue, **server_kwargs)
     except KeyboardInterrupt:
         pass

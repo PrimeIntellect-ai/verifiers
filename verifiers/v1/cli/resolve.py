@@ -63,8 +63,8 @@ def narrow_config(base: type, argv: list[str]) -> type:
         ("harness", vf.harness_config_type, harness_id),
         ("topology", vf.topology_config_type, topology_id),
     ):
-        # Only narrow fields the base config declares — `serve` has no `topology` (yet), and
-        # narrowing must never invent a field the config would then silently swallow.
+        # Only narrow fields the base config declares; narrowing must never invent a field
+        # the config would then silently swallow.
         if ident and field in base.model_fields:
             ftype = resolve(ident)
             annotations[field] = ftype

@@ -11,10 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 import verifiers.v1 as vf
+from verifiers.v1.agent import Session
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.harnesses.null.harness import NullHarness, NullHarnessConfig
 from verifiers.v1.rollout import Rollout
-from verifiers.v1.agent import Session
 from verifiers.v1.trace import TraceTask
 
 
@@ -35,9 +35,7 @@ def make_session(task: vf.Task) -> Session:
 def null_agent(**kwargs) -> vf.Agent:
     return vf.Agent(
         NullHarness(NullHarnessConfig()),
-        vf.ModelContext(
-            model="org/model", client=object(), sampling=vf.SamplingConfig()
-        ),
+        vf.ModelContext(model="org/model", client=object(), sampling=vf.SamplingConfig()),
         **kwargs,
     )
 
@@ -56,7 +54,7 @@ async def test_session_handshake_and_end():
             msgs = await session._respond(f"echo:{msgs[0].content}")
 
     episode = asyncio.create_task(fake_interception_loop())
-    session._episode = episode
+    session._run_task = episode
     episode.add_done_callback(session._poison)
 
     assert await session.turn("one") == "echo:one"
@@ -77,7 +75,7 @@ async def test_turn_raises_on_dead_episode():
         raise RuntimeError("boom")
 
     episode = asyncio.create_task(dying_episode())
-    session._episode = episode
+    session._run_task = episode
     episode.add_done_callback(session._poison)
 
     with pytest.raises(vf.SessionEnded):
@@ -92,7 +90,7 @@ async def test_double_drive_refused():
     """One driver per seat: a second `turn()` while one is pending raises instead of
     interleaving two conversations."""
     session = make_session(task_of(None))
-    session._episode = asyncio.create_task(asyncio.sleep(30))
+    session._run_task = asyncio.create_task(asyncio.sleep(30))
     try:
         first = asyncio.create_task(session.turn("a"))
         await asyncio.sleep(0)  # let it post and suspend
@@ -100,7 +98,7 @@ async def test_double_drive_refused():
             await session.turn("b")
         first.cancel()
     finally:
-        session._episode.cancel()
+        session._run_task.cancel()
 
 
 async def test_cancelled_turn_desyncs_loudly():
@@ -108,7 +106,7 @@ async def test_cancelled_turn_desyncs_loudly():
     its message with the model — the conversation is desynced, so a later `turn()`
     refuses instead of consuming the stale reply one turn late."""
     session = make_session(task_of(None))
-    session._episode = asyncio.create_task(asyncio.sleep(30))
+    session._run_task = asyncio.create_task(asyncio.sleep(30))
     try:
         pending = asyncio.create_task(session.turn("in flight"))
         await asyncio.sleep(0)  # let it post its message and suspend
@@ -119,7 +117,7 @@ async def test_cancelled_turn_desyncs_loudly():
             await session.turn("resync?")
         await session.end()  # the sanctioned way out of a desynced seat
     finally:
-        session._episode.cancel()
+        session._run_task.cancel()
 
 
 def test_extend_coerces_reasoning_only_turn():
@@ -176,9 +174,7 @@ async def test_interact_refusals():
 
     mute = vf.Agent(
         MuteHarness(MuteHarnessConfig()),
-        vf.ModelContext(
-            model="org/model", client=object(), sampling=vf.SamplingConfig()
-        ),
+        vf.ModelContext(model="org/model", client=object(), sampling=vf.SamplingConfig()),
     )
     with pytest.raises(ValueError, match="cannot take injected user turns"):
         async with mute.interact(task_of(None)):
@@ -191,9 +187,7 @@ async def test_interact_lifecycle_with_stubbed_rollout(monkeypatch):
     ends the episode, joins it, and stamps provenance + parents."""
 
     async def fake_run(self):
-        self.trace = trace = vf.Trace(
-            task=TraceTask(type=type(self.task).__name__, data=self.task.data)
-        )
+        self.trace = trace = vf.Trace(task=TraceTask(type=type(self.task).__name__, data=self.task.data))
         msgs = await self._user("")  # opening
         while msgs:
             msgs = await self._user(f"echo:{msgs[0].content}")
@@ -205,9 +199,7 @@ async def test_interact_lifecycle_with_stubbed_rollout(monkeypatch):
     agent = null_agent(name="white", trainable=False)
     parent = trace_for(task_of("seed"))
 
-    async with agent.interact(
-        vf.Task(vf.TaskData(idx=1, prompt=None)), parents=[parent]
-    ) as session:
+    async with agent.interact(vf.Task(vf.TaskData(idx=1, prompt=None)), parents=[parent]) as session:
         assert await session.turn("kick off") == "echo:kick off"
         trace = session.trace  # live handle
         trace.info["game"] = {"score": 1.0}

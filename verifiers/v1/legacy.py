@@ -21,16 +21,18 @@ from typing import Any
 import zmq
 import zmq.asyncio
 
+from verifiers.v1 import graph
 from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import (
+    BaseResponse,
+    LegacyInfoResponse,
     RunGroupRequest,
     RunGroupResponse,
     RunRolloutRequest,
     RunRolloutResponse,
 )
 from verifiers.v1.task import WireTaskData
-from verifiers.v1 import graph
 from verifiers.v1.trace import Error, TimeSpan, Timing, Trace, TraceTask
 from verifiers.v1.types import (
     AssistantMessage,
@@ -66,9 +68,7 @@ def _text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join(
-            part.get("text", "") for part in content if isinstance(part, dict)
-        )
+        return "".join(part.get("text", "") for part in content if isinstance(part, dict))
     return "" if content is None else str(content)
 
 
@@ -336,9 +336,7 @@ class LegacyEnvServer(EnvServer):
         builds a v0 chat-completions client. The per-request ``model`` selects the sampling
         target in ``run_rollout``."""
         is_renderer = isinstance(client_config, TrainClientConfig)
-        renderer_model = (
-            client_config.renderer_model_name if is_renderer else None
-        ) or model
+        renderer_model = (client_config.renderer_model_name if is_renderer else None) or model
         key = (client_config.model_dump_json(), renderer_model)
         if key not in self._clients:
             from verifiers.clients import resolve_client
@@ -382,9 +380,7 @@ class LegacyEnvServer(EnvServer):
 
     async def _run_rollout(self, req: RunRolloutRequest) -> RunRolloutResponse:
         out = await self._run_v0(req.task_idx, req.client, req.model, req.sampling)
-        return RunRolloutResponse(
-            trace=rollout_output_to_trace(out, req.task_idx).model_dump()
-        )
+        return RunRolloutResponse(trace=rollout_output_to_trace(out, req.task_idx).model_dump())
 
     async def _run_group(self, req: RunGroupRequest) -> RunGroupResponse:
         client = self._v0_client(req.client, req.model)
@@ -396,10 +392,21 @@ class LegacyEnvServer(EnvServer):
             sampling_args=req.sampling.model_dump(exclude_none=True),
             state_columns=["trajectory"],
         )
-        traces = [
-            rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs
-        ]
+        traces = [rollout_output_to_trace(out, req.task_idx).model_dump() for out in outs]
         return RunGroupResponse(traces=traces)
+
+    async def _dispatch(self, route: str, raw: dict) -> BaseResponse:
+        if route == "info":
+            return LegacyInfoResponse(
+                num_tasks=len(self.tasks),
+                task_ids=list(range(len(self.tasks))),
+                requires_group_scoring=self.requires_group_scoring,
+            )
+        if route == "run_rollout":
+            return await self._run_rollout(RunRolloutRequest.model_validate(raw))
+        if route == "run_group":
+            return await self._run_group(RunGroupRequest.model_validate(raw))
+        return await super()._dispatch(route, raw)
 
 
 # --- in-process v0 eval (the `eval` CLI's `--id` path) -------------------------
@@ -439,7 +446,6 @@ async def run_legacy_eval(config) -> list[Trace]:
     import random
 
     from verifiers import load_environment
-
     from verifiers.v1.cli.output import append_trace, save_config
     from verifiers.v1.utils.install import ensure_installed
 

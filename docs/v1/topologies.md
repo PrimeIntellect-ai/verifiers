@@ -1,11 +1,10 @@
 # Topologies — multi-agent environments
 
-A **topology** composes multiple agents over episodes: which agents exist, how one agent's
-trace becomes the next agent's task, and how rewards flow backwards once downstream agents
-have run. Each *episode* is an ordinary rollout — one agent consuming one task and producing
-one trace — and tasks carry their own behavior, so nothing about a task or a harness is
-topology-specific. Run one with `--topology.id` (it replaces the eval's own
-`taskset` × `harness` pair):
+A **topology** composes agent invocations: which agents exist, how one agent's trace becomes
+the next agent's task, and how rewards flow backwards once downstream agents have run. Each
+agent invocation consumes one task and produces one trace. Every environment invocation,
+including taskset × harness syntax lowered to the built-in single-agent topology, produces
+one `AgentGraph`. Run an explicit topology with `--topology.id`:
 
 ```bash
 uv run eval --topology.id llm-judge --topology.taskset.id gsm8k-v1 -n 4
@@ -14,7 +13,7 @@ uv run eval --topology.id proposer-solver-v1 -n 3
 
 ## Agents
 
-An agent is **pure routing** — a name + the harness driving its episodes + how its model calls
+An agent is **pure routing** — a name + the harness driving its runs + how its model calls
 are routed; it carries nothing task-side. Declare agents as typed `AgentConfig` fields on your
 config — the field *name* is the agent's name, and every agent is CLI-addressable
 (`--topology.solver.harness.id rlm`, `--topology.judge.model <id>`):
@@ -34,7 +33,7 @@ config). Subclass it to pin typed per-agent defaults — `vf.DirectAgentConfig` 
 the `direct` harness plus `trainable=False` (a pin must live on the subclass's field default,
 e.g. `harness: SerializeAsAny[vf.HarnessConfig] = vf.HarnessConfig(id="direct")`, so partial
 overrides deep-merge into it). The tasks an agent consumes (each carrying its own behavior)
-arrive per episode, from the topology's seeds or constructed in `go`.
+arrive per invocation, from the topology's seeds or constructed in `go`.
 
 An `AgentConfig` field is the one declaration form. The default `load_agents` builds one
 `AgentBinding` per field, in declaration order; override it only to compose agents
@@ -64,7 +63,7 @@ class ProposerSolverTopology(vf.Topology[ProposerSolverConfig]):
 ```
 
 Per-role behavior lives on **task classes**, minted anywhere. In `proposer-solver-v1`,
-`ProposeTask` judges its own episode (a format reward), and the `SolverTask` built mid-`go`
+`ProposeTask` judges its own trace (a format reward), and the `SolverTask` built mid-`go`
 carries the ground truth *and* the `correct` reward — question and verifier in one typed
 object, serialized with each solver trace so the record shows exactly what was asked:
 
@@ -87,7 +86,7 @@ class SolverTask(vf.Task):
 ## The interaction pattern — `go`
 
 `go` is plain imperative Python over a `TopologyRun`; interaction patterns are code, not a
-DSL. `run.agent(name).run(task, parents=...)` runs one episode and links it into the
+DSL. `run.agent(name).run(task, parents=...)` runs one agent invocation and links it into the
 agent graph; `asyncio.gather` fans out; loops are rounds; awaiting several traces before
 building the next task is fan-in:
 
@@ -109,11 +108,11 @@ building the next task is fan-in:
         )
 ```
 
-## Sessions — agents talking *within* each other's episodes
+## Sessions — agents talking within live interactions
 
-`run(task)` composes **completed** episodes: an episode finishes before its trace feeds
+`run(task)` composes **completed** agent runs: a run finishes before its trace feeds
 anything downstream. For back-and-forth interaction — chess, negotiation, debate, any
-game where each agent is effectively the other's user — hold episodes **open** with
+game where each agent is effectively the other's user — hold agent runs **open** with
 `run.agent(name).interact(task)` and converse with the yielded `Session`:
 
 ```python
@@ -127,12 +126,12 @@ game where each agent is effectively the other's user — hold episodes **open**
             while not board.is_game_over():
                 reply = await seats[board.turn].turn(render(board))   # user turn in, model turn out
                 board.push(parse_move(reply, board))
-        # scope exit ends both episodes cleanly (stop -> finalize -> task scoring);
+        # scope exit ends both runs cleanly (stop -> finalize -> task scoring);
         # stamp the outcome as data for the declared rewards to read:
         white.trace.info["chess"] = {"score": ...}
 ```
 
-A `Session` has exactly three members: `turn(message) -> reply` (send the episode its
+A `Session` has exactly three members: `turn(message) -> reply` (send the agent its
 next user turn, get the model's turn back), `end()` (finish early — forfeits,
 eliminations; idempotent, scope exit calls it), and `.trace` (the live trace: read
 mid-game `state`, stamp outcome `info`). Everything else — who talks to whom, in what
@@ -140,11 +139,11 @@ order, with what *view* of the interaction — is imperative code in `go`, so N 
 compose into round-robins, simultaneous moves (`asyncio.gather` over several `turn`s),
 moderated rooms, and hidden-information games with no further machinery. Each seat's
 trace is ONE multi-turn trajectory with its counterparts' messages as user turns — the
-training-sample shape self-play wants, not one episode per move.
+training-sample shape self-play wants, not one trace per move.
 
 Mechanically a session is a user simulator without the server: the interception layer
-suspends the episode between turns awaiting the user seat, and here the "user" is `go`.
-The safety contract is loud, not patient: `turn()` on a dead episode raises
+suspends the agent between turns awaiting the user seat, and here the "user" is `go`.
+The safety contract is loud, not patient: `turn()` on a dead run raises
 `SessionEnded` (carrying the trace) instead of hanging; a second concurrent `turn()` on
 one session is refused; a task that declares its own user simulator (`Task.user`) — or a prompted task
 (sessions open on the first `turn()`; put framing in `system_prompt`), or a harness that
@@ -158,7 +157,7 @@ concurrent seats of one agent config, peer-voted).
 
 ## Topology rewards — declared, cross-agent judgement
 
-Per-episode judgement rides on the task classes (`SolverTask.correct` above). Cross-agent
+Per-trace judgement rides on the task classes (`SolverTask.correct` above). Cross-agent
 judgement is *not* written inline in `go`: declare it as `@vf.reward(agent=...)` /
 `@vf.metric(agent=...)` methods on the topology — the same decorators tasks use, scoped
 to an agent. Each runs once per matching trace **after the whole instance completes**, with
@@ -185,22 +184,22 @@ The contract, chosen to fail loudly and stay predictable:
   trace in scope is scored — across all rounds and fan-outs — automatically.
 - **Ordering**: methods run sequentially, metrics before rewards, each phase in
   (priority, name) order. A method may read task-recorded rewards (final since the
-  episode ended) and, in the rewards phase, any metric — but topology rewards must not
+  agent run ended) and, in the rewards phase, any metric — but topology rewards must not
   read each other; derive shared inputs from the traces or a metric.
 - **Failures**: a raise during instance scoring is classified `TopologyError` and recorded
-  on the graph — episodes stay as data, siblings unaffected.
+  on the graph — completed traces stay as data, siblings unaffected.
 
 `trace.record_reward(...)` inside `go` still works as the escape hatch for exotic shapes
 (e.g. a mid-round adjustment), but the declared methods are the norm.
 
 The forward arrow stays in `go`: construct the downstream agent's typed `Task` from an
 upstream trace — its typed task, `last_reply`, `transcript`, or `trace.info`. This is pure
-host-side code; only when peeling requires the episode's *live runtime* (scraping files,
+host-side code; only when peeling requires the agent's *live runtime* (scraping files,
 running a build) does the upstream task class need a `finalize` hook, which runs before
 teardown and parks results in `trace.info`. The backward arrow — cross-agent rewards — is
 declared, not inlined (above).
 
-Episode failures never raise into `go` — they come back as data on the trace
+Agent failures never raise into `go` — they come back as data on the trace
 (`trace.has_error`), and `go` decides what a failed child means (drop it, count it against a
 pass rate, retry the round). A crash in `go` itself is recorded on the instance's graph as a
 `TopologyError` and doesn't touch sibling instances.
@@ -208,7 +207,7 @@ pass rate, retry the round). A crash in `go` itself is recorded on the instance'
 ## The agent graph
 
 Running one instance produces an `AgentGraph` — the serialized instance artifact
-`{id, topology, error, traces[]}`: every episode's trace in completion (= topological) order,
+`{id, topology, task, error, traces[]}`: the seed task plus every agent trace in completion order,
 each stamped with `trace.agent`, `trace.parents` (upstream trace ids), and `trace.trainable`.
 A topology run persists **one instance record per `traces.jsonl` line**, traces nested (an
 instance's rewards are only final once the whole instance is done); `AgentGraph.load(dict)`
@@ -217,7 +216,7 @@ reads one back without the originating packages (task-specific fields ride in
 reconstructs from any flat trace dump (one instance = one connected component). Navigation —
 `graph.roots()` / `graph.children(trace, agent=...)` / `graph.by_agent(name)` — is what
 cross-agent scoring lives on, and `graph.error` records a crash in `go` itself. A `Trace` is
-the per-agent view of one episode; the agent graph is the global view of the interaction.
+the per-agent view of one run; the agent graph is the global view of the interaction.
 
 ## The built-in judge topologies
 
@@ -225,8 +224,8 @@ Judging as a config-only pattern, two tiers, one verdict contract (a `SCORE: <0-
 recorded on the *solver's* trace as a weighted reward, `--topology.weight`):
 
 - **`llm-judge`** — a `solver` (any taskset, via `--topology.taskset.id`) and a non-trainable
-  `judge`, **fixed** to the in-process `direct` harness (an episode ≈ one API call). `go`
-  peels the judge's inputs off the finished solver episode — the seed task's framing, its
+  `judge`, **fixed** to the in-process `direct` harness (a run ≈ one API call). `go`
+  peels the judge's inputs off the finished solver trace — the seed task's framing, its
   ground truth (an `answer` field, when the taskset carries one), and the solver's final
   message — into a `JudgeTask` minted from the trace. Give the judge its own model
   (`--topology.judge.model`) or client routing; swapping its harness is refused and points
@@ -241,8 +240,7 @@ For a verdict baked into a task's own grading, call `vf.Judge` from the task's
 `@reward` instead — that's the cheap utility tier; these topologies are the tier where the
 judge is itself an agent.
 
-Not yet supported under a topology: `--server` (env-server serving), `--resume`, and the
-`--rich` dashboard.
+Topologies use the same in-process runner, env-server worker pool, resume behavior, and
+dashboard path as taskset × harness configurations.
 
 ---
-

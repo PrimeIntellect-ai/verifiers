@@ -1,11 +1,10 @@
 import asyncio
-from typing import TYPE_CHECKING
 import logging
 import time
 from contextlib import asynccontextmanager
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
-from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import (
@@ -15,12 +14,14 @@ from verifiers.v1.errors import (
     ToolsetError,
     boundary,
 )
+from verifiers.v1.harness import Harness
 from verifiers.v1.interception import (
     InterceptionPool,
     InterceptionServer,
     RolloutLimits,
     RolloutSession,
 )
+from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.runtimes import (
     HOST,
     Runtime,
@@ -28,13 +29,12 @@ from verifiers.v1.runtimes import (
     make_runtime,
     reachable_url,
 )
-from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Respond
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import TraceTask, Trace
+from verifiers.v1.trace import Trace, TraceTask
 
 logger = logging.getLogger(__name__)
 
@@ -147,9 +147,7 @@ class Rollout:
                 await runtime.start()
             # Task setup and harness provisioning share one setup-stage deadline.
             setup_deadline = (
-                None
-                if self.setup_timeout is None
-                else asyncio.get_running_loop().time() + self.setup_timeout
+                None if self.setup_timeout is None else asyncio.get_running_loop().time() + self.setup_timeout
             )
             async with (
                 boundary(TaskError, "task setup"),
@@ -161,9 +159,7 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
-            async with self._serve_interception(
-                self.interception, runtime, session
-            ) as (
+            async with self._serve_interception(self.interception, runtime, session) as (
                 endpoint,
                 secret,
                 state_port,
@@ -188,9 +184,7 @@ class Rollout:
                         state_base=state_base,
                     ) as launched_user,
                 ):
-                    session.user = (
-                        self._user if self._user is not None else launched_user
-                    )
+                    session.user = self._user if self._user is not None else launched_user
                     if self.task.data.prompt is None and session.user is None:
                         raise TaskError(
                             "task has no prompt and no user simulator to open the "
@@ -205,9 +199,7 @@ class Rollout:
                     # A timeout still scores the partial trajectory.
                     try:
                         await asyncio.wait_for(
-                            self.harness.run(
-                                ctx, trace, runtime, endpoint, secret, urls
-                            ),
+                            self.harness.run(ctx, trace, runtime, endpoint, secret, urls),
                             self.harness_timeout,
                         )
                     except TimeoutError:
@@ -233,7 +225,6 @@ class Rollout:
             self.phase = Phase.SCORING
             trace.timing.scoring.start = now
             async with boundary(TaskError, "scoring"):
-                # Group rewards run later, after the runtime is gone.
                 await asyncio.wait_for(
                     asyncio.gather(
                         self.task.score(trace, runtime),
@@ -261,9 +252,8 @@ class Rollout:
                 try:
                     await runtime.stop()
                 except Exception:
-                    logger.warning(
-                        "runtime teardown failed (rollout %s)", trace.id, exc_info=True
-                    )
+                    logger.warning("runtime teardown failed (rollout %s)", trace.id, exc_info=True)
+            self.phase = Phase.DONE
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

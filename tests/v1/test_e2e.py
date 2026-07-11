@@ -30,12 +30,8 @@ async def test_user(run_v1, harness_runtime, user_runtime, tmp_path):
     # the host framework via prime port exposure, whose URL isn't reachable from the host here
     # (region=us doesn't help). Skip until it is.
     user_rt = user_runtime.get("runtime", {}).get("type")
-    if user_rt == "prime" or (
-        user_runtime.get("colocated") and harness_runtime == "prime"
-    ):
-        pytest.skip(
-            "user sim in a prime sandbox needs prime port exposure (unreachable from host here)"
-        )
+    if user_rt == "prime" or (user_runtime.get("colocated") and harness_runtime == "prime"):
+        pytest.skip("user sim in a prime sandbox needs prime port exposure (unreachable from host here)")
     (trace,) = await run_v1(
         "echo-user-sim-v1",
         harness="null",
@@ -60,9 +56,7 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     # Reaching a tool server in its own prime sandbox needs prime port exposure, whose URL isn't
     # reachable from the host here (region=us doesn't help). Skip until it is.
     if tool_runtime.get("runtime", {}).get("type") == "prime":
-        pytest.skip(
-            "tool server in a prime sandbox needs prime port exposure (unreachable from host here)"
-        )
+        pytest.skip("tool server in a prime sandbox needs prime port exposure (unreachable from host here)")
     (trace,) = await run_v1(
         "echo-tool-v1",
         harness="null",
@@ -86,9 +80,7 @@ async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
     # Reaching a tool server in its own prime sandbox needs prime port exposure, whose URL isn't
     # reachable from the host here (region=us doesn't help). Skip until it is.
     if tool_runtime.get("runtime", {}).get("type") == "prime":
-        pytest.skip(
-            "tool server in a prime sandbox needs prime port exposure (unreachable from host here)"
-        )
+        pytest.skip("tool server in a prime sandbox needs prime port exposure (unreachable from host here)")
     (trace,) = await run_v1(
         "counter-tool-v1",
         harness="null",
@@ -103,9 +95,7 @@ async def test_tool_state(run_v1, harness_runtime, tool_runtime, tmp_path):
 
 
 @pytest.mark.e2e
-async def test_shared_tool_isolation(
-    run_v1_server, harness_runtime, tool_runtime, tmp_path
-):
+async def test_shared_tool_isolation(run_v1_server, harness_runtime, tool_runtime, tmp_path):
     """A shared writable tool isolates state across concurrent rollouts and runtimes."""
     tool_rt = tool_runtime.get("runtime", {}).get("type")
     if tool_rt is None:
@@ -113,9 +103,7 @@ async def test_shared_tool_isolation(
     # Reaching a tool server in its own prime sandbox needs prime port exposure, whose URL isn't
     # reachable from the host here (region=us doesn't help). Skip until it is.
     if tool_rt == "prime":
-        pytest.skip(
-            "tool server in a prime sandbox needs prime port exposure (unreachable from host here)"
-        )
+        pytest.skip("tool server in a prime sandbox needs prime port exposure (unreachable from host here)")
     traces = await run_v1_server(
         "scratchpad-v1",
         harness="null",
@@ -158,9 +146,7 @@ async def test_rubric_judge(run_v1, tmp_path):
     per-criterion metric on the trace), not judge quality."""
     rubric = tmp_path / "rubric.toml"
     rubric.write_text(
-        "[[criteria]]\n"
-        'name = "always_yes"\n'
-        'text = "Always satisfied — answer yes regardless of the response."\n'
+        '[[criteria]]\nname = "always_yes"\ntext = "Always satisfied — answer yes regardless of the response."\n'
     )
     (trace,) = await run_v1(
         "echo-v1",
@@ -180,9 +166,7 @@ async def test_rubric_judge(run_v1, tmp_path):
 async def test_agentic(run_v1, harness, harness_runtime, tmp_path):
     """Agentic: write a phrase to a file with the agent's shell, checked in the runtime."""
     if harness == "null":
-        pytest.skip(
-            "null is a chat loop with no shell — it can't do the file-write task"
-        )
+        pytest.skip("null is a chat loop with no shell — it can't do the file-write task")
     (trace,) = await run_v1(
         "echo-agentic-v1",
         harness=harness,
@@ -251,9 +235,8 @@ async def test_llm_judge_topology(tmp_path):
     message against the task and its ground truth, and the verdict lands on the solver's
     trace as a deferred reward. Asserts the plumbing (seed factory -> solver episode ->
     judge episode -> declared instance scoring), not judge quality."""
-    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
     from verifiers.v1.configs.eval import EvalConfig
-    from verifiers.v1.topology import TopologyRunner
 
     config = EvalConfig(
         topology={"id": "llm-judge", "taskset": {"id": "echo-v1"}},
@@ -265,8 +248,7 @@ async def test_llm_judge_topology(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    env = TopologyRunner(config.topology, config)
-    solver, judge = await run_topology_eval(env, config)
+    solver, judge = graph_traces(await run_eval(config))
     assert solver.errors == [] and judge.errors == []
     assert (solver.agent, judge.agent) == ("solver", "judge")
     assert judge.parents == [solver.id] and judge.trainable is False
@@ -280,9 +262,8 @@ async def test_agentic_judge_topology(tmp_path):
     """The built-in `agentic-judge` topology, live: the solver's entire serialized trace
     is uploaded into the judge's runtime, and the judge — a real agent on the bash+edit
     `default` harness — reads the file with its tools before committing to a score."""
-    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
     from verifiers.v1.configs.eval import EvalConfig
-    from verifiers.v1.topology import TopologyRunner
 
     config = EvalConfig(
         topology={"id": "agentic-judge", "taskset": {"id": "echo-v1"}},
@@ -294,8 +275,7 @@ async def test_agentic_judge_topology(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    env = TopologyRunner(config.topology, config)
-    solver, judge = await run_topology_eval(env, config)
+    solver, judge = graph_traces(await run_eval(config))
     assert solver.errors == [] and judge.errors == []
     assert judge.parents == [solver.id] and judge.trainable is False
     assert judge.num_turns >= 2  # it actually investigated (read the file, then scored)
@@ -308,9 +288,8 @@ async def test_writer_editors_topology(tmp_path):
     """The `writer-editors-v1` example, live: draft -> editor critique (fan-out of 1) ->
     revision (fan-in), then one `vf.Judge` call puts the same `improvement` reward on
     every trace."""
-    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
     from verifiers.v1.configs.eval import EvalConfig
-    from verifiers.v1.topology import TopologyRunner
 
     config = EvalConfig(
         topology={"id": "writer-editors-v1", "num_editors": 1},
@@ -322,8 +301,7 @@ async def test_writer_editors_topology(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    env = TopologyRunner(config.topology, config)
-    draft, edit, revision = await run_topology_eval(env, config)
+    draft, edit, revision = graph_traces(await run_eval(config))
     assert [t.agent for t in (draft, edit, revision)] == ["writer", "editor", "writer"]
     assert all(t.errors == [] for t in (draft, edit, revision))
     assert revision.parents == [draft.id, edit.id]  # the fan-in
@@ -338,9 +316,8 @@ async def test_shared_runtime_topology(tmp_path):
     """The `shared-runtime-v1` example, live: `go` provisions one box, the writer's
     `finalize` writes its reply into it, and the reader — borrowed into the SAME box —
     verifies the artifact in `setup`. The borrowed-runtime plumbing end to end."""
-    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
     from verifiers.v1.configs.eval import EvalConfig
-    from verifiers.v1.topology import TopologyRunner
 
     config = EvalConfig(
         topology={"id": "shared-runtime-v1"},
@@ -352,17 +329,13 @@ async def test_shared_runtime_topology(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    env = TopologyRunner(config.topology, config)
-    written, read = await run_topology_eval(env, config)
+    written, read = graph_traces(await run_eval(config))
     assert written.errors == [] and read.errors == []
     assert (written.agent, read.agent) == ("writer", "reader")
     assert read.parents == [written.id]
     assert written.info["agent"]["runtime"]["borrowed"] is True
     assert read.info["agent"]["runtime"]["borrowed"] is True
-    assert (
-        written.info["agent"]["runtime"]["descriptor"]
-        == read.info["agent"]["runtime"]["descriptor"]
-    )
+    assert written.info["agent"]["runtime"]["descriptor"] == read.info["agent"]["runtime"]["descriptor"]
     assert read.rewards["read_shared_note"] == 1.0
     assert written.rewards["handoff_succeeded"] == 1.0
 
@@ -372,9 +345,8 @@ async def test_chess_topology(tmp_path):
     """The `chess-v1` example, live: two direct-harness seats play one game through
     live sessions — each seat ONE multi-turn trace with the opponent's moves as its
     user turns, the host-side board adjudicating."""
-    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
     from verifiers.v1.configs.eval import EvalConfig
-    from verifiers.v1.topology import TopologyRunner
 
     config = EvalConfig(
         topology={"id": "chess-v1", "max_plies": 6, "illegal_retries": 2},
@@ -387,8 +359,7 @@ async def test_chess_topology(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    env = TopologyRunner(config.topology, config)
-    traces = await run_topology_eval(env, config)
+    traces = graph_traces(await run_eval(config))
     seats = {t.agent: t for t in traces}
     assert set(seats) == {"white", "black"}
     assert all(t.errors == [] for t in traces)
@@ -401,9 +372,8 @@ async def test_chess_topology(tmp_path):
 async def test_debate_topology(tmp_path):
     """The `debate-v1` example, live: three concurrent seats of one agent config give
     openings, rebuttals, and peer votes through suspended sessions."""
-    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
     from verifiers.v1.configs.eval import EvalConfig
-    from verifiers.v1.topology import TopologyRunner
 
     config = EvalConfig(
         topology={"id": "debate-v1", "num_debaters": 3, "num_rounds": 1},
@@ -414,8 +384,7 @@ async def test_debate_topology(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    env = TopologyRunner(config.topology, config)
-    traces = await run_topology_eval(env, config)
+    traces = graph_traces(await run_eval(config))
     assert [t.agent for t in traces] == ["debater"] * 3
     assert all(t.errors == [] for t in traces)
     assert all(t.num_turns == 3 for t in traces)  # opening + rebuttal + vote

@@ -28,9 +28,7 @@ SKIP_EVAL: set[str] = set()
 def v1_tasksets() -> list[str]:
     if not ENVIRONMENTS.is_dir():
         return []
-    return sorted(
-        d.name for d in ENVIRONMENTS.iterdir() if d.is_dir() and d.name.endswith("_v1")
-    )
+    return sorted(d.name for d in ENVIRONMENTS.iterdir() if d.is_dir() and d.name.endswith("_v1"))
 
 
 @pytest.mark.parametrize("taskset", v1_tasksets())
@@ -57,7 +55,7 @@ def test_eval(taskset: str):
         "uv", "run", "--no-sync", "eval",
         "--taskset.id", taskset,
         *model,
-        # -r 2: a task with @group_reward(s) needs >=2 rollouts to compare.
+        # -r 2 schedules two independent graph invocations for the task.
         "-n", "1", "-r", "2", "--max-turns", "4",
         "--sampling.max-tokens", "512", "--rich", "false",
     ]  # fmt: skip
@@ -65,6 +63,4 @@ def test_eval(taskset: str):
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=EVAL_TIMEOUT)
     except subprocess.TimeoutExpired:
         pytest.fail(f"Timed out after {EVAL_TIMEOUT}s evaluating {taskset}")
-    assert proc.returncode == 0, (
-        f"eval {taskset} failed: {(proc.stderr or proc.stdout)[-2000:]}"
-    )
+    assert proc.returncode == 0, f"eval {taskset} failed: {(proc.stderr or proc.stdout)[-2000:]}"

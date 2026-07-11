@@ -112,7 +112,9 @@ can override it.
 - If groups are mostly all-one, increase difficulty or sample a harder task distribution.
 - Choose `batch_size` with whole groups, packing, sequence length, and GPU memory in mind.
 
-A task `@vf.group_reward` is scoring, not trainer advantage. The env server automatically keeps that task's rollouts together before returning traces.
+Each environment invocation returns a fully scored agent graph. Group-relative credit is
+computed by the trainer across independent graphs; the environment server never executes
+replicas atomically.
 
 ## Difficulty filtering
 

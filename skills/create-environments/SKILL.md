@@ -115,11 +115,11 @@ Only `TaskData` is stored on the trace. Do not put live clients, runtime handles
 `Task` owns the behavior applied to that row:
 
 - `setup`, `finalize`, and model-free `validate` hooks;
-- stop conditions, metrics, rewards, and group rewards;
+- stop conditions, metrics, and per-trace rewards;
 - task-scoped tool and user-simulator declarations;
 - task-facing configuration read from `self.config`.
 
-`Taskset` owns loading and selection-time concerns. Its `load()` constructs the tasks, its direct config fields hold dataset/split/seed/sample-count knobs, and `Taskset.tools` may declare task-agnostic servers shared by one environment worker's rollouts.
+`Taskset` owns loading and selection-time concerns. Its `load()` constructs the tasks, its direct config fields hold dataset/split/seed/sample-count knobs, and `Taskset.tools` may declare task-agnostic servers shared by one topology worker's runs.
 
 The harness owns:
 

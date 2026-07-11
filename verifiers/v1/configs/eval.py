@@ -21,9 +21,7 @@ class EvalConfig(EnvServerConfig):
     slot (`--topology.taskset.id <id>`); each agent binds its own harness/routing
     (`--topology.<agent>.harness.id`, ...); `num_rollouts` then means topology instances per
     seed task, and `max_concurrent` still bounds rollouts in flight."""
-    model: str = Field(
-        "deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m")
-    )
+    model: str = Field("deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m"))
     """Model id."""
     client: ClientConfig = EvalClientConfig()
     sampling: SamplingConfig = SamplingConfig()
@@ -35,17 +33,13 @@ class EvalConfig(EnvServerConfig):
     num_rollouts: int = Field(
         1,
         ge=1,
-        validation_alias=AliasChoices(
-            "group_size", "rollouts_per_example", "num_rollouts", "r"
-        ),
+        validation_alias=AliasChoices("group_size", "rollouts_per_example", "num_rollouts", "r"),
     )
-    """Rollouts per task. A task with `@group_reward`s requires at least two."""
+    """Independent topology invocations per seed task."""
     shuffle: bool = Field(False, validation_alias=AliasChoices("shuffle", "s"))
     """Shuffle tasks before taking the first `num_tasks`."""
-    max_concurrent: int | None = Field(
-        128, validation_alias=AliasChoices("max_concurrent", "c")
-    )
-    """Max rollouts in flight at once."""
+    max_concurrent: int | None = Field(128, validation_alias=AliasChoices("max_concurrent", "c"))
+    """Max agent runs in flight in-process, or graph requests through the server."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
     dry_run: bool = False
@@ -59,16 +53,13 @@ class EvalConfig(EnvServerConfig):
     """Upload the finished run to the Prime Intellect platform (the private Evaluations
     tab) at the end of the eval. On by default; disable with `--no-push`. Needs
     `$PRIME_API_KEY` or `prime login`."""
-    output_dir: Path | None = Field(
-        None, validation_alias=AliasChoices("output_dir", "o")
-    )
+    output_dir: Path | None = Field(None, validation_alias=AliasChoices("output_dir", "o"))
     """Where to write the run (config.toml + traces.jsonl). None = a fresh per-run dir
     under `outputs/<env>--<model>--<harness>/<uuid>` (so runs never overwrite each other)."""
     resume: Path | None = Field(None, exclude=True)
-    """Set by `--resume <dir>`: re-run missing or errored rollouts, or an incomplete
-    group-scored task as a whole group, appending to that run's own results. The run's saved
-    config is loaded verbatim, so `--resume` takes no other arguments. Excluded from the
-    saved config."""
+    """Set by `--resume <dir>`: re-run missing or errored graph invocations, appending
+    to that run's own results. The saved config is loaded verbatim, so `--resume` takes
+    no other arguments. Excluded from the saved config."""
 
     @model_validator(mode="before")
     @classmethod
@@ -109,13 +100,5 @@ class EvalConfig(EnvServerConfig):
             raise ValueError(
                 "`--topology.id` runs the topology's own agents; drop `--taskset.id` / "
                 "`--id` (choose the seed tasks via --topology.taskset.id)."
-            )
-        if self.server:
-            raise ValueError(
-                "topologies don't run through the env-server pool yet; drop `--server`."
-            )
-        if self.resume is not None:
-            raise ValueError(
-                "`--resume` is not supported for topology runs yet; re-run the eval."
             )
         return self

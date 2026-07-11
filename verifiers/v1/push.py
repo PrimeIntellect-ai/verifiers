@@ -61,9 +61,7 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
         "is_completed": trace.is_completed,
         "is_truncated": trace.is_truncated,
         "metrics": trace.metrics,
-        "error": trace.error.model_dump(mode="json", exclude_none=True)
-        if trace.error
-        else None,
+        "error": trace.error.model_dump(mode="json", exclude_none=True) if trace.error else None,
         "stop_condition": trace.stop_condition,
         "trajectory": [
             {
@@ -73,9 +71,7 @@ def trace_to_sample(trace: Trace, rollout_number: int = 1) -> dict[str, Any]:
             }
             for branch in branches
         ],
-        "token_usage": trace.usage.model_dump(mode="json", exclude_none=True)
-        if trace.usage
-        else None,
+        "token_usage": trace.usage.model_dump(mode="json", exclude_none=True) if trace.usage else None,
         "info": dict(trace.info) or None,
     }
     # Flatten each sub-reward onto the sample as a top-level key, the way v0's `state_to_output`
@@ -89,25 +85,14 @@ def _creds() -> tuple[str | None, str, str, str | None]:
     """(api_key, api_base, frontend_url, team_id) from env vars / `~/.prime/config.json`."""
     cfg = load_prime_config()
     api_key = os.getenv("PRIME_API_KEY") or cfg.get("api_key")
-    base = (
-        os.getenv("PRIME_API_BASE_URL")
-        or os.getenv("PRIME_BASE_URL")
-        or cfg.get("base_url")
-        or DEFAULT_API_URL
-    )
+    base = os.getenv("PRIME_API_BASE_URL") or os.getenv("PRIME_BASE_URL") or cfg.get("base_url") or DEFAULT_API_URL
     base = base.rstrip("/").removesuffix("/api/v1")
-    frontend = (
-        os.getenv("PRIME_FRONTEND_URL")
-        or cfg.get("frontend_url")
-        or DEFAULT_FRONTEND_URL
-    )
+    frontend = os.getenv("PRIME_FRONTEND_URL") or cfg.get("frontend_url") or DEFAULT_FRONTEND_URL
     team_id = os.getenv("PRIME_TEAM_ID") or cfg.get("team_id")
     return api_key, base, frontend, team_id
 
 
-def push_traces(
-    traces: list[Trace], config: EvalConfig, state: "PushState | None" = None
-) -> str | None:
+def push_traces(traces: list[Trace], config: EvalConfig, state: "PushState | None" = None) -> str | None:
     """Upload a finished run to the platform; return the viewer URL (None if skipped/failed).
 
     Resolves the env (get-or-create) by name so a local run uploads without a prior
@@ -124,9 +109,7 @@ def push_traces(
 
     api_key, base, frontend, team_id = _creds()
     if not api_key:
-        logger.warning(
-            "--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload"
-        )
+        logger.warning("--push: no PRIME_API_KEY (set it or run `prime login`); skipping upload")
         return finish(error="no PRIME_API_KEY (run `prime login`)")
 
     def compute_metrics() -> dict[str, Any]:
@@ -146,7 +129,8 @@ def push_traces(
             "avg_error": sum(t.has_error for t in traces) / n if n else 0.0,
         }
 
-    env_name = config.taskset.id or config.id
+    topology = getattr(config, "topology", None)
+    env_name = topology.id if topology is not None else config.taskset.id or config.id
     metrics = compute_metrics()
     counts: dict[int, int] = {}
     samples = []
@@ -177,9 +161,7 @@ def push_traces(
                 resp.raise_for_status()
                 return resp.json()
 
-            env_id = post("/environmentshub/resolve", {"name": env_name, **team})[
-                "data"
-            ]["id"]
+            env_id = post("/environmentshub/resolve", {"name": env_name, **team})["data"]["id"]
             eval_id = post(
                 "/evaluations/",
                 {

@@ -149,15 +149,11 @@ class Branch(StrictBaseModel):
     @property
     def num_input_tokens(self) -> int:
         """Final-turn prompt size, falling back to provider usage without token IDs."""
-        last_completion = next(
-            (sum(n.mask) for n in reversed(self.nodes) if any(n.mask)), 0
-        )
+        last_completion = next((sum(n.mask) for n in reversed(self.nodes) if any(n.mask)), 0)
         token_len = self.num_total_tokens - last_completion
         if token_len:
             return token_len
-        last = next(
-            (n.usage for n in reversed(self.nodes) if n.usage is not None), None
-        )
+        last = next((n.usage for n in reversed(self.nodes) if n.usage is not None), None)
         return last.input_tokens if last else 0
 
     @property
@@ -170,9 +166,7 @@ class Branch(StrictBaseModel):
         return usage.completion_tokens if usage else 0
 
 
-_NODE_DUMP_EXCLUDE: dict = {
-    "nodes": {"__all__": {"multi_modal_data", "routed_experts"}}
-}
+_NODE_DUMP_EXCLUDE: dict = {"nodes": {"__all__": {"multi_modal_data", "routed_experts"}}}
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
@@ -198,11 +192,11 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """The task being solved: its class name (`task.type`) + its row (`task.data`)."""
     agent: str | None = None
     """The topology agent that produced this trace (the `Topology` config field name,
-    e.g. `"solver"`). None outside a topology — a plain eval's traces carry no agent."""
+    e.g. `"solver"`; the built-in single-agent topology uses `"agent"`)."""
     parents: list[str] = Field(default_factory=list)
-    """Trace ids of the upstream episodes this one was derived from — the agent-graph
+    """Trace ids of the upstream agent runs this one was derived from — the agent-graph
     links. A topology's traces plus these links ARE the agent graph (see
-    `verifiers.v1.topology`); empty for a root episode and outside topologies."""
+    `verifiers.v1.topology`); empty for a root run."""
     trainable: bool = True
     """Whether this trace is a training sample. Set from the producing agent's
     `AgentConfig.trainable`, so a trainer can drop e.g. a judge agent's traces without
@@ -213,7 +207,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """The message graph; branches are derived views and storage stays linear in turns."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
-    """Weighted contributions from task rewards, group rewards, and judges."""
+    """Weighted contributions from task rewards, topology rewards, and judges."""
     metrics: dict[str, float] = Field(default_factory=dict)
     """Unweighted metrics from tasks, harnesses, and judges."""
     info: dict[str, Any] = Field(default_factory=dict)
@@ -319,11 +313,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     def assistant_messages(self) -> list[AssistantMessage]:
         """Every model response, in order — one per turn, branch-independent. Excludes
         prompt-supplied assistant messages (`sampled` is the provenance signal)."""
-        return [
-            n.message
-            for n in self.nodes
-            if n.sampled and isinstance(n.message, AssistantMessage)
-        ]
+        return [n.message for n in self.nodes if n.sampled and isinstance(n.message, AssistantMessage)]
 
     @property
     def last_reply(self) -> str:
@@ -340,10 +330,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
             if isinstance(message, AssistantMessage):
                 if message.content:
                     lines.append(message.content)
-                lines.extend(
-                    f"[tool_call {call.name}({call.arguments})]"
-                    for call in message.tool_calls or []
-                )
+                lines.extend(f"[tool_call {call.name}({call.arguments})]" for call in message.tool_calls or [])
             else:
                 if isinstance(message, ToolMessage) and message.name:
                     lines[0] = f"[{message.role} {message.name}]"
@@ -362,9 +349,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
     def record_metric(self, name: str, value: float) -> None:
         if name in self.metrics:
-            logger.warning(
-                "metric %r overridden: %s -> %s", name, self.metrics[name], value
-            )
+            logger.warning("metric %r overridden: %s -> %s", name, self.metrics[name], value)
         self.metrics[name] = float(value)
 
     def record_metrics(self, values: Mapping[str, float]) -> None:
@@ -379,9 +364,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
         contribution = float(value) * float(weight)
         if name in self.rewards:
-            logger.warning(
-                "reward %r overridden: %s -> %s", name, self.rewards[name], contribution
-            )
+            logger.warning("reward %r overridden: %s -> %s", name, self.rewards[name], contribution)
         self.rewards[name] = contribution
 
     def stop(self, condition: str = "done") -> None:
@@ -396,9 +379,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
                 message=str(error),
                 # Provider errors already carry the actionable upstream diagnostic.
                 # Keep full tracebacks for every other failure.
-                traceback=None
-                if isinstance(error, ProviderError)
-                else traceback.format_exc(),
+                traceback=None if isinstance(error, ProviderError) else traceback.format_exc(),
             )
         )
         self.stop("error")

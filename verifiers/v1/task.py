@@ -8,7 +8,7 @@ task-specific fields (the reference answer, ground truths, ...). It is what ride
 
 `Task` is the behavior half: a plain class owning runtime prep (`setup`/`finalize`),
 server declarations (`tools`/`user`), well-formedness (`validate`), and judgement
-(`@reward`/`@metric`/`@group_reward` methods, run by `score`/`score_group`). It wraps
+(`@reward`/`@metric` methods, run by `score`). It wraps
 a `TaskData` plus a `TaskConfig`, both plain constructor arguments:
 
     task = MyTask(data)                        # config defaults to the declared type's
@@ -21,17 +21,10 @@ default) — hooks and signals read the row off `self.data` and the knobs off
 on a type field; a taskset yields one task type (its `load` constructs it), and
 instances differ per row through their data.
 
-The task is the single judgement authority, scored at two granularities (execution
-lives in the Rollout — per-rollout — and the Episode — group — which call these):
-  - `score` runs `@metric`/`@reward` — plus the plugged judges resolved from
-    `config.judges` (see `verifiers.v1.judge`) — over one trace (in its live runtime).
-  - `score_group` runs `@group_reward` over all the rollouts of this task at once —
-    pairwise/preference rewards that compare samples.
-
-A Task instance is shared across its rollouts (a group's `n` samples hold the same
-instance), so hooks and scoring methods must not stash per-rollout state on `self` —
-that lives on the trace (`trace.state`, typed via the `Task[..., MyState, ...]`
-param).
+`score` runs `@metric`/`@reward` — plus the plugged judges resolved from
+`config.judges` (see `verifiers.v1.judge`) — over one trace in its live runtime.
+Cross-trace judgement within one completed invocation belongs to `Topology`; comparisons
+across independent invocations belong to the training algorithm.
 
 On the wire only the data (plus the producing class's name, `trace.task.type`)
 travels: a saved `trace.task.data` reads back as `WireTaskData`
@@ -187,9 +180,7 @@ def task_config_cls(cls: type) -> type[TaskConfig]:
     return generic_type(cls, TaskConfig) or TaskConfig
 
 
-def resolve_server_config(
-    owner: str, config: BaseConfig, server_cls: type, *, sole: bool = True
-) -> BaseConfig:
+def resolve_server_config(owner: str, config: BaseConfig, server_cls: type, *, sole: bool = True) -> BaseConfig:
     """The config a declared server class is built with, resolved off `config`'s fields:
     the field whose value is exactly the server's declared config type
     (`Toolset[MyConfig]` / `User[MyConfig]`), else the unique field whose value
@@ -221,7 +212,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     Parameterize as `Task[MyData, MyState, MyConfig]`. Construction accepts the row
     and an optional config; omitting config builds the declared config type. One task
-    instance is shared across a rollout group, so per-rollout state belongs on the trace.
+    instance may be reused across invocations, so per-rollout state belongs on the trace.
     """
 
     NEEDS_CONTAINER: ClassVar[bool] = False
@@ -246,9 +237,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         Override to pair explicitly (the escape hatch for exotic setups, e.g. two servers
         sharing one config type)."""
         declared = set(type(self).tools) | ({type(self).user} - {None})
-        return resolve_server_config(
-            type(self).__name__, self.config, server_cls, sole=len(declared) == 1
-        )
+        return resolve_server_config(type(self).__name__, self.config, server_cls, sole=len(declared) == 1)
 
     def tool_servers(self) -> list[Toolset]:
         return [cls(self.server_config(cls)) for cls in type(self).tools]
@@ -280,12 +269,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
             metrics = discover_decorated(self, "metric")
             rewards = discover_decorated(self, "reward")
             if runtime is None:
-                skipped = [
-                    fn.__name__ for fn in (*metrics, *rewards) if _requires_runtime(fn)
-                ] + [
-                    judge.reward_name
-                    for judge in judges
-                    if _requires_runtime(judge.score)
+                skipped = [fn.__name__ for fn in (*metrics, *rewards) if _requires_runtime(fn)] + [
+                    judge.reward_name for judge in judges if _requires_runtime(judge.score)
                 ]
                 if skipped:
                     logger.info(
@@ -294,40 +279,17 @@ class Task(Generic[DataT, StateT, ConfigT]):
                     )
                 metrics = [fn for fn in metrics if not _requires_runtime(fn)]
                 rewards = [fn for fn in rewards if not _requires_runtime(fn)]
-                judges = [
-                    judge for judge in judges if not _requires_runtime(judge.score)
-                ]
+                judges = [judge for judge in judges if not _requires_runtime(judge.score)]
 
             metric_results = await invoke_all(metrics, available)
             for fn, result in zip(metrics, metric_results):
                 _record_result(trace, fn.__name__, result)
             reward_results = await invoke_all(rewards, available)
             for fn, result in zip(rewards, reward_results):
-                _record_result(
-                    trace, fn.__name__, result, getattr(fn, "_vf_weight", 1.0)
-                )
-            judge_results = await invoke_all(
-                [judge.score for judge in judges], available
-            )
+                _record_result(trace, fn.__name__, result, getattr(fn, "_vf_weight", 1.0))
+            judge_results = await invoke_all([judge.score for judge in judges], available)
             for judge, result in zip(judges, judge_results):
                 _record_result(trace, judge.reward_name, result, judge.config.weight)
-
-    async def score_group(self, traces: list[Trace]) -> None:
-        rewards = discover_decorated(self, "group_reward")
-        if not rewards:
-            return
-        available = {"task": self.data, "traces": traces}
-        async with boundary(TaskError, f"task {type(self).__name__} group scoring"):
-            reward_results = await invoke_all(rewards, available)
-            for fn, scores in zip(rewards, reward_results):
-                if len(scores) != len(traces):
-                    raise ValueError(
-                        f"@group_reward {fn.__name__} returned {len(scores)} score(s) "
-                        f"for {len(traces)} rollout(s); it must return one per trace"
-                    )
-                weight = getattr(fn, "_vf_weight", 1.0)
-                for trace, score in zip(traces, scores):
-                    trace.record_reward(fn.__name__, score, weight)
 
 
 TaskT = TypeVar("TaskT", bound=Task)

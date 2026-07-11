@@ -4,7 +4,7 @@ import logging as _logging
 
 from pydantic_config import BaseConfig
 
-from verifiers.v1.agent import Agent
+from verifiers.v1.agent import Agent, Session, SessionEnded
 from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
@@ -14,17 +14,15 @@ from verifiers.v1.clients import (
     TrainClientConfig,
     resolve_client,
 )
-from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
+from verifiers.v1.decorators import metric, reward, stop, tool
 from verifiers.v1.env import (
     ElasticPoolConfig,
     EnvConfig,
-    Environment,
     EnvServerConfig,
     StaticPoolConfig,
     TimeoutConfig,
     pool_serve_kwargs,
 )
-from verifiers.v1.episode import Episode
 from verifiers.v1.errors import (
     HarnessError,
     InterceptionError,
@@ -69,6 +67,7 @@ from verifiers.v1.loaders import (
     topology_config_type,
 )
 from verifiers.v1.mcp import (
+    SharedToolsetConfig,
     Toolset,
     ToolsetConfig,
     User,
@@ -103,6 +102,7 @@ from verifiers.v1.scoring import (
 from verifiers.v1.scoring import (
     verify_boxed_math_answer as verify_boxed_math_answer,
 )
+from verifiers.v1.services import RunServices
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import (
     Task,
@@ -113,22 +113,20 @@ from verifiers.v1.task import (
     WireTaskData,
 )
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.agent import Session, SessionEnded
-from verifiers.v1.services import RunServices
 from verifiers.v1.topology import (
     AgentBinding,
     AgentConfig,
     AgentGraph,
     DirectAgentConfig,
     NullAgentConfig,
+    SingleAgentTopology,
+    SingleAgentTopologyConfig,
     Topology,
     TopologyAgent,
     TopologyConfig,
     TopologyRun,
     TopologyRunner,
-)
-from verifiers.v1.mcp import (
-    SharedToolsetConfig,
+    resolve_topology_runner,
 )
 from verifiers.v1.trace import (
     Branch,
@@ -205,7 +203,6 @@ __all__ = [
     "tool",
     "metric",
     "reward",
-    "group_reward",
     # errors
     "RolloutError",
     "ProviderError",
@@ -239,7 +236,6 @@ __all__ = [
     "SubprocessConfig",
     "DockerConfig",
     "PrimeConfig",
-    "Environment",
     "EnvConfig",
     "EnvServerConfig",
     "StaticPoolConfig",
@@ -248,7 +244,6 @@ __all__ = [
     "RetryConfig",
     "RolloutRetryConfig",
     "TimeoutConfig",
-    "Episode",
     "Rollout",
     # agents / topology
     "Agent",
@@ -257,6 +252,8 @@ __all__ = [
     "AgentGraph",
     "DirectAgentConfig",
     "NullAgentConfig",
+    "SingleAgentTopology",
+    "SingleAgentTopologyConfig",
     "RunServices",
     "Session",
     "SessionEnded",
@@ -265,6 +262,7 @@ __all__ = [
     "TopologyConfig",
     "TopologyRunner",
     "TopologyRun",
+    "resolve_topology_runner",
     # loaders
     "import_taskset",
     "import_harness",

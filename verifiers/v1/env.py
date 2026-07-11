@@ -1,6 +1,5 @@
-"""Compose a taskset and harness into runnable episodes."""
+"""Native environment configuration and execution-policy helpers."""
 
-import contextlib
 import logging
 from typing import Annotated, Literal
 
@@ -8,13 +7,7 @@ from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.clients import ModelContext
-from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.episode import Episode
-from verifiers.v1.types import ID
-from verifiers.v1.interception import InterceptionPool, RolloutLimits
 from verifiers.v1.retries import RetryConfig
-from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     RuntimeConfig,
     SubprocessConfig,
@@ -22,8 +15,8 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.types import ID
 from verifiers.v1.utils.generic import generic_type
-from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 
 class TimeoutConfig(BaseConfig):
@@ -56,14 +49,12 @@ class ElasticPoolConfig(BaseConfig):
     max_workers: int | None = None
     """Upper bound on workers (None = unbounded)."""
     multiplex: int = Field(128, ge=1)
-    """Rollouts per worker for the scale-up trigger: add a worker once in-flight rollouts
+    """Graph requests per worker for the scale-up trigger: add a worker once in-flight requests
     reach 90% of `workers * multiplex`."""
 
 
 # Discriminated on `type` so the CLI selects with `--pool.type static|elastic`.
-PoolConfig = Annotated[
-    StaticPoolConfig | ElasticPoolConfig, Field(discriminator="type")
-]
+PoolConfig = Annotated[StaticPoolConfig | ElasticPoolConfig, Field(discriminator="type")]
 
 
 def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
@@ -142,16 +133,10 @@ class EnvConfig(BaseConfig):
 
         narrow_plugin_field(data, "taskset", taskset_config_type)
         taskset = data.get("taskset")
-        taskset_id = (
-            taskset.get("id")
-            if isinstance(taskset, dict)
-            else getattr(taskset, "id", None)
-        )
+        taskset_id = taskset.get("id") if isinstance(taskset, dict) else getattr(taskset, "id", None)
         # A taskset that bundles its own harness runs with it by default; an explicit
         # `--harness.id` / toml id (already on the field) takes precedence.
-        narrow_plugin_field(
-            data, "harness", harness_config_type, default_harness_id(taskset_id or "")
-        )
+        narrow_plugin_field(data, "harness", harness_config_type, default_harness_id(taskset_id or ""))
         return data
 
 
@@ -175,7 +160,7 @@ def resolve_runtime_config(
     an image must run in a container — refuse subprocess), and apply its `workdir` and
     requested `resources` to the fields the runtime supports. Precedence is cli/toml > task >
     default; a resource the runtime doesn't support warns once (deduped via `warned`). Shared
-    by `Environment.runtime_for` (rollouts) and the `validate` entrypoint."""
+    by topology agents and the `validate` entrypoint."""
     config = base
     updates: dict = {}
     if task.data.image is not None:
@@ -203,28 +188,18 @@ def resolve_runtime_config(
                     config.type,
                     field,
                 )
-        elif (
-            getattr(config, field) == spec.default
-        ):  # still the default → task may set it
+        elif getattr(config, field) == spec.default:  # still the default → task may set it
             updates[field] = value
         # else: cli/toml changed it from the default → it wins over the task
     return config.model_copy(update=updates) if updates else config
 
 
-def resolve_stage_timeouts(
-    timeout: TimeoutConfig, task: Task, runtime_config: RuntimeConfig
-) -> TimeoutConfig:
+def resolve_stage_timeouts(timeout: TimeoutConfig, task: Task, runtime_config: RuntimeConfig) -> TimeoutConfig:
     """Resolve a task's per-stage wall-clock budgets into a concrete `TimeoutConfig`:
     cli/toml > task > default (None = no limit), with remote sandbox lifetimes capping
-    the harness stage at 24 hours. Shared by `Environment.episode` and topology agents."""
-    harness = (
-        timeout.rollout if timeout.rollout is not None else task.data.timeout.harness
-    )
-    if (
-        harness is not None
-        and harness > 24 * 60 * 60
-        and not runtime_is_local(runtime_config)
-    ):
+    the harness stage at 24 hours."""
+    harness = timeout.rollout if timeout.rollout is not None else task.data.timeout.harness
+    if harness is not None and harness > 24 * 60 * 60 and not runtime_is_local(runtime_config):
         logger.warning(
             "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
             "maximum lifetime of 24 hours; capping it at 24 hours",
@@ -236,18 +211,12 @@ def resolve_stage_timeouts(
     return TimeoutConfig(
         setup=timeout.setup if timeout.setup is not None else task.data.timeout.setup,
         rollout=harness,
-        finalize=timeout.finalize
-        if timeout.finalize is not None
-        else task.data.timeout.finalize,
-        scoring=timeout.scoring
-        if timeout.scoring is not None
-        else task.data.timeout.scoring,
+        finalize=timeout.finalize if timeout.finalize is not None else task.data.timeout.finalize,
+        scoring=timeout.scoring if timeout.scoring is not None else task.data.timeout.scoring,
     )
 
 
-def validate_task_pairing(
-    harness: Harness, task_cls: type[Task], shared_tools: tuple = ()
-) -> None:
+def validate_task_pairing(harness: Harness, task_cls: type[Task], shared_tools: tuple = ()) -> None:
     """Reject an impossible harness/task-class pairing. Every check reads class-level
     facts (`Task.tools` / `Task.user` / `NEEDS_CONTAINER`, plus any taskset-scoped
     `shared_tools`), so a failure holds for every instance of the class. Shared between
@@ -266,9 +235,7 @@ def validate_task_pairing(
             f"{task_cls.__name__} defines one (Task.user). Run it with a harness that "
             f"supports user simulation (e.g. --harness.id default), or use tasks without one."
         )
-    if task_cls.NEEDS_CONTAINER and isinstance(
-        harness.config.runtime, SubprocessConfig
-    ):
+    if task_cls.NEEDS_CONTAINER and isinstance(harness.config.runtime, SubprocessConfig):
         raise ValueError(
             f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but the "
             "harness runs on the subprocess runtime; use --harness.runtime.type docker or prime."
@@ -282,119 +249,3 @@ def validate_pairing(harness: Harness, taskset: Taskset) -> None:
     fails worker startup instead of every request."""
     task_cls = generic_type(type(taskset), Task, origin=Taskset) or Task
     validate_task_pairing(harness, task_cls, shared_tools=type(taskset).tools)
-
-
-class Environment:
-    def __init__(self, config: EnvConfig) -> None:
-        from verifiers.v1.loaders import load_harness, load_taskset
-
-        self.config = config
-        self.taskset = load_taskset(config.taskset)
-        self.harness = load_harness(config.harness)
-        validate_pairing(self.harness, self.taskset)
-        # The warning is about the *agent* running arbitrary code on the host: every harness hands
-        # it local execution (bash/edit, or a CLI agent) except the tool-less `null` chat loop,
-        # whose program only relays the model and remote MCP tools — so exempt `null`, warn for the
-        # rest. (`null` still runs its fixed chat-loop program locally, but nothing agent-authored.)
-        if self.harness.config.id != "null" and isinstance(
-            self.harness.config.runtime, SubprocessConfig
-        ):
-            logger.warning(
-                "Harness %r is running in the subprocess runtime on the local system. "
-                "Local files and settings may affect the evaluation; use subprocess only "
-                "for debugging. Use --harness.runtime.type docker or prime for an isolated "
-                "run.",
-                self.harness.config.id,
-            )
-        self.setup_timeout = config.timeout.setup
-        self.harness_timeout = config.timeout.rollout
-        self.finalize_timeout = config.timeout.finalize
-        self.scoring_timeout = config.timeout.scoring
-        self.limits = RolloutLimits(
-            max_turns=config.max_turns,
-            max_input_tokens=config.max_input_tokens,
-            max_output_tokens=config.max_output_tokens,
-            max_total_tokens=config.max_total_tokens,
-        )
-        self._warned_resources: set[tuple[str, str]] = set()
-        self._shared_tools: dict[str, SharedToolServer] = {}
-        self._interception: InterceptionPool | None = None
-        """Eval-level serving resources, live only inside `serving()`: shared tool servers
-        ({name: SharedToolServer}) and the interception pool. `episode()` injects them into every rollout
-        so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
-
-    def runtime_for(self, task: Task) -> RuntimeConfig:
-        """Resolve the runtime config for a task off the harness's runtime (see
-        `resolve_runtime_config`)."""
-        return resolve_runtime_config(
-            self.harness.config.runtime, task, self._warned_resources
-        )
-
-    def episode(self, task: Task, ctx: ModelContext, n: int = 1) -> Episode:
-        """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime
-        (image + resources) and its
-        timeouts (cli/toml > task > default, None = no limit), build one `Rollout` per
-        sample sharing them, and wrap them in an `Episode` (which runs them and applies
-        the task's `@group_reward`s across their traces).
-
-        A task with `@group_reward`s compares its rollouts, so it needs >=2 of
-        them — refuse `n < 2` there (rather than silently scoring a group of one).
-        Harness capability (tools / user sim / container) is class-level and already
-        checked at construction (`validate_pairing`)."""
-        if n < 2 and discover_decorated(task, "group_reward"):
-            raise ValueError(
-                f"task {task.data.idx!r} defines @group_reward(s), which compare a task's rollouts "
-                f"and need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
-            )
-        runtime_config = self.runtime_for(task)
-        timeouts = resolve_stage_timeouts(self.config.timeout, task, runtime_config)
-        retries = self.config.retries
-        rollouts = [
-            Rollout(
-                task=task,
-                harness=self.harness,
-                ctx=ctx,
-                runtime_config=runtime_config,
-                setup_timeout=timeouts.setup,
-                harness_timeout=timeouts.rollout,
-                finalize_timeout=timeouts.finalize,
-                scoring_timeout=timeouts.scoring,
-                limits=self.limits,
-                shared_tools=self._shared_tools,
-                interception=self._interception,
-            )
-            for _ in range(n)
-        ]
-        return Episode(rollouts, retry=retries.rollout)
-
-    @contextlib.asynccontextmanager
-    async def serving(self):
-        """Hold the env-level serving resources for the duration of an eval: the shared tool
-        servers (built once, see `shared_tools`) and the interception pool. Stash them so
-        every `episode()` built inside this context injects them into its rollouts — that's
-        what keeps both eval runners (in-process and env-server) on one serving path. Build
-        episodes inside this context; the resources are torn down on exit."""
-        async with (
-            self.shared_tools() as shared,
-            self.interception_pool() as interception,
-        ):
-            self._shared_tools = shared
-            self._interception = interception
-            try:
-                yield
-            finally:
-                self._shared_tools = {}
-                self._interception = None
-
-    def interception_pool(self) -> InterceptionPool:
-        return InterceptionPool(self.harness.config.runtime, self.config.multiplex)
-
-    @contextlib.asynccontextmanager
-    async def shared_tools(self):
-        servers = self.taskset.tool_servers()
-        if not servers:
-            yield {}
-            return
-        harness_is_local = runtime_is_local(self.harness.config.runtime)
-        async with serve_shared(servers, harness_is_local=harness_is_local) as shared:
-            yield shared

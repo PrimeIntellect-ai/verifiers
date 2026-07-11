@@ -24,12 +24,8 @@ from verifiers.v1.types import AssistantMessage, UserMessage
 def echoing_trace(task: vf.Task, reply: str) -> Trace:
     """A minimal completed trace: one user turn, one sampled assistant reply."""
     trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
-    trace.nodes.append(
-        MessageNode(parent=None, message=UserMessage(content=str(task.data.prompt)))
-    )
-    trace.nodes.append(
-        MessageNode(parent=0, message=AssistantMessage(content=reply), sampled=True)
-    )
+    trace.nodes.append(MessageNode(parent=None, message=UserMessage(content=str(task.data.prompt))))
+    trace.nodes.append(MessageNode(parent=0, message=AssistantMessage(content=reply), sampled=True))
     trace.stop("agent_completed")
     return trace
 
@@ -42,21 +38,16 @@ def stub_agent_run(monkeypatch) -> None:
     async def fake_agent_run(self, task, *, parents=(), runtime=None, retry=None):
         trace = echoing_trace(task, getattr(task.data, "answer", "ok"))
         trace.record_reward("echoed", 1.0)
-        self.stamp(
-            trace, parents=parents, runtime=runtime, borrowed=runtime is not None
-        )
+        self.stamp(trace, parents=parents, runtime=runtime, borrowed=runtime is not None)
         return trace
 
     monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
 
 
 async def run_stubbed_instance(env: TopologyRunner, task: vf.Task) -> AgentGraph:
-    async with env.serving(
-        vf.ModelContext(
-            model="org/model", client=object(), sampling=vf.SamplingConfig()
-        )
-    ):
-        return await env.run_instance(task)
+    ctx = vf.ModelContext(model="org/model", client=object(), sampling=vf.SamplingConfig())
+    async with env.serving():
+        return await env.run_instance(task, ctx)
 
 
 @pytest.fixture
@@ -70,9 +61,7 @@ def test_llm_judge_config_narrows_typed_agents():
     """`--topology.id llm-judge` narrows to `LLMJudgeConfig`; the seed factory narrows by
     id, and the judge keeps its pinned defaults (direct harness, non-trainable) unless
     overridden."""
-    config = EvalConfig(
-        topology={"id": "llm-judge", "taskset": {"id": "echo-v1"}}, rich=False
-    )
+    config = EvalConfig(topology={"id": "llm-judge", "taskset": {"id": "echo-v1"}}, rich=False)
     assert type(config.topology).__name__ == "LLMJudgeConfig"
     assert type(config.topology.taskset).__name__ == "EchoConfig"
     assert config.topology.solver.harness.id == "default"
@@ -168,9 +157,7 @@ def test_topology_without_seeds_is_refused():
 def test_seed_slot_is_exclusive_with_load_tasks_override():
     """The seed contract is XOR: proposer-solver overrides `load_tasks` (self-seeding), so
     passing `--topology.taskset.id` — which would be silently ignored — is refused at load."""
-    config = EvalConfig(
-        topology={"id": "proposer-solver-v1", "taskset": {"id": "echo-v1"}}, rich=False
-    )
+    config = EvalConfig(topology={"id": "proposer-solver-v1", "taskset": {"id": "echo-v1"}}, rich=False)
     with pytest.raises(ValueError, match="constructs its own seeds"):
         TopologyRunner(config.topology, config)
 
@@ -181,8 +168,9 @@ def test_unknown_agent_is_refused(echo_chain_env):
 
 
 async def test_run_instance_requires_serving(echo_chain_env):
+    ctx = vf.ModelContext(model="org/model", client=object(), sampling=vf.SamplingConfig())
     with pytest.raises(RuntimeError, match="inside TopologyRunner.serving"):
-        await echo_chain_env.run_instance(echo_chain_env.topology.load_tasks()[0])
+        await echo_chain_env.run_instance(echo_chain_env.topology.load_tasks()[0], ctx)
 
 
 def test_topology_reward_scopes_validated_at_load():
@@ -261,9 +249,7 @@ async def test_proposer_solver_fan_out_and_difficulty(monkeypatch):
         else:
             trace = echoing_trace(task, "ANSWER: 1")
             trace.record_reward("correct", next(verdicts))
-        self.stamp(
-            trace, parents=parents, runtime=runtime, borrowed=runtime is not None
-        )
+        self.stamp(trace, parents=parents, runtime=runtime, borrowed=runtime is not None)
         return trace
 
     monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
@@ -274,9 +260,7 @@ async def test_proposer_solver_fan_out_and_difficulty(monkeypatch):
     proposer, *solvers = graph.traces
     assert [t.agent for t in solvers] == ["solver"] * 4  # num_solvers default
     assert all(t.parents == [proposer.id] for t in solvers)
-    assert all(
-        t.task.data.prompt == solvers[0].task.data.prompt for t in solvers
-    )  # one minted task
+    assert all(t.task.data.prompt == solvers[0].task.data.prompt for t in solvers)  # one minted task
     assert proposer.metrics == {"solve_rate": 0.5}
     assert proposer.rewards == {"difficulty": 1.0}
 
@@ -303,12 +287,9 @@ async def test_provisioned_runtime_is_borrowed_across_runs(echo_chain_env, monke
     monkeypatch.setattr(agent_module, "make_runtime", lambda config: fake)
     env = echo_chain_env
     seed = env.topology.load_tasks()[0]
-    async with env.serving(
-        vf.ModelContext(
-            model="org/model", client=object(), sampling=vf.SamplingConfig()
-        )
-    ):
-        run = vf.TopologyRun(env)
+    ctx = vf.ModelContext(model="org/model", client=object(), sampling=vf.SamplingConfig())
+    async with env.serving():
+        run = vf.TopologyRun(env, seed, env._agents_for(ctx))
         agent = run.agent("first")
         async with agent.provision(seed) as box:
             assert box is fake and fake.started and not fake.stopped
@@ -332,9 +313,7 @@ async def test_shared_runtime_topology_hands_off_through_one_box(monkeypatch):
             trace.info["shared_runtime"] = {"wrote": "note", "path": "shared/note.txt"}
         else:
             trace.record_reward("read_shared_note", 1.0)
-        self.stamp(
-            trace, parents=parents, runtime=runtime, borrowed=runtime is not None
-        )
+        self.stamp(trace, parents=parents, runtime=runtime, borrowed=runtime is not None)
         return trace
 
     monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
@@ -362,9 +341,7 @@ def scripted_sessions(monkeypatch, script):
     class ScriptedSession:
         def __init__(self, name, task):
             self.name, self.task, self.turns = name, task, 0
-            self._trace = Trace(
-                task=TraceTask(type=type(task).__name__, data=task.data)
-            )
+            self._trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
 
         @property
         def trace(self):
@@ -420,9 +397,7 @@ async def test_chess_go_with_scripted_sessions(monkeypatch):
 async def test_chess_illegal_moves_retry_then_forfeit(monkeypatch):
     """The feedback loop: an illegal move gets a retry turn; a seat that never produces
     a legal move forfeits, and the opponent takes the game."""
-    scripted_sessions(
-        monkeypatch, lambda name, task, msg, i: "MOVE: zz99"
-    )  # never legal
+    scripted_sessions(monkeypatch, lambda name, task, msg, i: "MOVE: zz99")  # never legal
     config = EvalConfig(topology={"id": "chess-v1", "illegal_retries": 1}, rich=False)
     env = TopologyRunner(config.topology, config)
     graph = await run_stubbed_instance(env, env.topology.load_tasks()[0])
@@ -442,9 +417,7 @@ async def test_debate_go_with_scripted_sessions(monkeypatch):
 
     def script(name, task, message, i):
         if "VOTE" in message.upper() and i == 2:
-            return (
-                "VOTE: 1" if task.data.seat == 0 else "VOTE: 0"
-            )  # everyone else backs seat 0
+            return "VOTE: 1" if task.data.seat == 0 else "VOTE: 0"  # everyone else backs seat 0
         return f"Seat {task.data.seat} argues its case (turn {i})."
 
     scripted_sessions(monkeypatch, script)
@@ -470,9 +443,7 @@ async def test_go_failure_is_captured_on_graph(echo_chain_env, monkeypatch):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(cls, "go", exploding_go)
-    graph = await run_stubbed_instance(
-        echo_chain_env, echo_chain_env.topology.load_tasks()[0]
-    )
+    graph = await run_stubbed_instance(echo_chain_env, echo_chain_env.topology.load_tasks()[0])
     assert graph.error is not None
     assert graph.error.type == "TopologyError"
     assert "boom" in graph.error.message
@@ -481,14 +452,12 @@ async def test_go_failure_is_captured_on_graph(echo_chain_env, monkeypatch):
 
 def test_eval_config_rejects_topology_with_taskset():
     with pytest.raises(ValueError, match="drop `--taskset.id`"):
-        EvalConfig(
-            topology={"id": "echo-chain-v1"}, taskset={"id": "echo-v1"}, rich=False
-        )
+        EvalConfig(topology={"id": "echo-chain-v1"}, taskset={"id": "echo-v1"}, rich=False)
 
 
-def test_eval_config_rejects_topology_with_server():
-    with pytest.raises(ValueError, match="env-server"):
-        EvalConfig(topology={"id": "echo-chain-v1"}, server=True, rich=False)
+def test_eval_config_accepts_topology_with_server():
+    config = EvalConfig(topology={"id": "echo-chain-v1"}, server=True, rich=False)
+    assert config.topology.id == "echo-chain-v1"
 
 
 def test_eval_config_rejects_topology_with_harness():
@@ -570,9 +539,7 @@ async def test_writer_editors_fan_in_and_shared_verdict(monkeypatch, stub_agent_
     same `improvement` reward on every trace of the instance."""
     from writer_editors_v1.topology import ImprovementJudge
 
-    config = EvalConfig(
-        topology={"id": "writer-editors-v1", "num_editors": 2}, rich=False
-    )
+    config = EvalConfig(topology={"id": "writer-editors-v1", "num_editors": 2}, rich=False)
     env = TopologyRunner(config.topology, config)
 
     async def stub_evaluate(self, *, trace=None, **fields):
@@ -592,9 +559,13 @@ async def test_writer_editors_fan_in_and_shared_verdict(monkeypatch, stub_agent_
 def test_instance_record_roundtrips():
     """The graph is the serialized instance artifact: `to_record` nests the traces, and
     `load` rebuilds it without the originating packages (WireTrace-typed traces, links
-    intact) — what `results.jsonl` consumers and the trainer wire rely on."""
-    graph = AgentGraph(topology="llm-judge")
-    trace = echoing_trace(vf.Task(vf.TaskData(idx=0, prompt="hi")), "hi")
+    intact) — what `traces.jsonl` consumers and the trainer wire rely on."""
+    task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
+    graph = AgentGraph(
+        topology="llm-judge",
+        task=vf.TraceTask(type=type(task).__name__, data=task.data),
+    )
+    trace = echoing_trace(task, "hi")
     trace.agent = "judge"
     trace.parents = ["abc123"]
     trace.trainable = False
@@ -612,10 +583,10 @@ def test_instance_record_roundtrips():
 @pytest.mark.subprocess
 @pytest.mark.null
 async def test_echo_chain_live(tmp_path):
-    """The echo-chain fixture topology end to end via `run_topology_eval` (live model, null
+    """The echo-chain fixture topology end to end via `run_eval` (live model, null
     harness in-subprocess): two linked reward-1.0 traces per instance, persisted as one
     instance record."""
-    from verifiers.v1.cli.eval.runner import run_topology_eval
+    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
 
     config = EvalConfig(
         topology={"id": "echo-chain-v1"},
@@ -627,14 +598,13 @@ async def test_echo_chain_live(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    env = TopologyRunner(config.topology, config)
-    traces = await run_topology_eval(env, config)
+    traces = graph_traces(await run_eval(config))
     first, second = traces
     assert first.errors == [] and second.errors == []
     assert second.parents == [first.id]
     assert first.rewards == {"echoed": 1.0, "relay": 1.0}
     assert second.reward == 1.0
-    (line,) = (tmp_path / "results.jsonl").read_text().splitlines()
+    (line,) = (tmp_path / "traces.jsonl").read_text().splitlines()
     graph = AgentGraph.load(json.loads(line))
     assert [t.agent for t in graph.traces] == ["first", "second"]
     assert graph.error is None

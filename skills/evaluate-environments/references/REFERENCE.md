@@ -34,16 +34,16 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 | `client` | `ClientConfig` | `EvalClientConfig()` | — | The model client (discriminated union — see [Client config](#client-config)). |
 | `sampling` | `SamplingConfig` | `SamplingConfig()` | — | Per-request sampling knobs (see [Sampling config](#sampling-config)). |
 | `num_tasks` | `int \| None` | `None` | `batch_size`, `num_examples`, `num_tasks`, `n` | How many tasks to evaluate (None = all). |
-| `num_rollouts` | `int` | `1` | `group_size`, `rollouts_per_example`, `num_rollouts`, `r` | Rollouts per task. A task with `@group_reward`s requires ≥ 2. |
+| `num_rollouts` | `int` | `1` | `group_size`, `rollouts_per_example`, `num_rollouts`, `r` | Independent graph invocations per seed task. |
 | `shuffle` | `bool` | `False` | `shuffle`, `s` | Shuffle tasks before taking the first `num_tasks`. |
-| `max_concurrent` | `int \| None` | `128` | `max_concurrent`, `c` | Max rollouts in flight at once. |
+| `max_concurrent` | `int \| None` | `128` | `max_concurrent`, `c` | Max agent runs in-process, or graph requests through the server. |
 | `verbose` | `bool` | `False` | `verbose`, `v` | Log at debug level instead of info. |
 | `dry_run` | `bool` | `False` | — | Resolve + validate the config and dump it, then exit. |
 | `rich` | `bool` | `True` | — | Live dashboard instead of per-rollout logs (in-process only). |
-| `server` | `bool` | `False` | — | Drive rollouts through the env-server worker pool (sized by `pool`) instead of in-process — the path prime-rl trains through. Incompatible with `--rich`. |
+| `server` | `bool` | `False` | — | Drive graph invocations through the env-server worker pool instead of in-process. Incompatible with `--rich`. |
 | `push` | `bool` | `True` | — | Upload the finished run to the private Evaluations tab. Disable with `--no-push`. |
 | `output_dir` | `Path \| None` | `None` | `output_dir`, `o` | Where to write the run (`config.toml` + `traces.jsonl`). None = a fresh per-run dir under `outputs/<env>--<model>--<harness>/<uuid>`. |
-| `resume` | `Path \| None` | `None` | — | Set by `--resume <dir>`: re-run missing/errored rollouts; an incomplete group-scored task is re-run as a whole group. Excluded from the saved config; takes no other args. |
+| `resume` | `Path \| None` | `None` | — | Set by `--resume <dir>`: re-run missing or errored graph invocations. Excluded from the saved config; takes no other args. |
 
 Validator: `--rich` + `--server` together is rejected (the dashboard is in-process only).
 
@@ -563,7 +563,9 @@ is supplied, billed judge usage is recorded even if parsing later fails. Plugin 
 
 ## ServeConfig — the env-server CLI
 
-`verifiers/v1/configs/serve.py` — `ServeConfig(EnvServerConfig)`. The env-server CLI. Inherits the full env + pool, so `--taskset.*` / `--harness.*` / `--pool.*` are the same flags as eval. Adds only CLI-specific serving knobs.
+`verifiers/v1/configs/serve.py` — `ServeConfig(EnvServerConfig)`. The env-server CLI.
+It accepts taskset + harness syntax or `--topology.id`; both execute through the same
+`TopologyRunner` and worker pool.
 
 | Field | Type | Default | Aliases | Notes |
 |---|---|---|---|---|

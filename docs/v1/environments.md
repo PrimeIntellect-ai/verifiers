@@ -55,7 +55,13 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
 __all__ = ["AdditionTaskset"]
 ```
 
-You can also use `@vf.metric` to record non-scored values and `@vf.group_reward` for group rewards, which might be useful for training.
+At execution time this taskset and the selected harness are lowered to the built-in
+single-agent topology. Each invocation therefore produces a one-trace `AgentGraph`, using
+the same runner and server path as an explicitly authored topology.
+
+Use `@vf.metric` to record non-scored values. Comparisons across independent graph
+invocations belong to the training algorithm; cross-trace environment judgement belongs
+on a topology reward.
 
 ## Making values configurable
 
