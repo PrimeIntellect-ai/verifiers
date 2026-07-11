@@ -1,30 +1,28 @@
-"""The reflection (teacher) LM: a plain synchronous string-in/string-out call, decoupled from
-rollout execution entirely. Built straight from the v1 client config — the sync sibling of
-`verifiers.v1.clients.config.build_async_openai` — so the resolved API key and extra headers
-(e.g. Prime team billing) apply to reflection calls exactly as they do to rollouts.
+"""The reflection (teacher) LM: GEPA's proposer calls this synchronously to turn a prompt into
+text. Backed by a vf `Judge` — `Judge.complete` owns the model client (same key / header /
+Prime-billing resolution rollouts use), so we never build one here. GEPA calls it from the
+worker thread running `optimize()`, so each call drives the async `complete` on a private loop.
 """
 
+import asyncio
 from typing import Callable
 
-from openai import OpenAI
-
-from verifiers.v1.clients.config import resolve_api_key
 from verifiers.v1.gepa.config import GEPAConfig
+from verifiers.v1.judge import Judge, JudgeConfig
 
 
 def build_reflection_lm(config: GEPAConfig) -> Callable[[str], str]:
-    client_config = config.reflection_client or config.client
-    client = OpenAI(
-        base_url=client_config.base_url,
-        api_key=resolve_api_key(client_config),
-        default_headers=client_config.headers or None,
+    client = config.reflection_client or config.client
+    judge = Judge(
+        JudgeConfig(
+            model=config.reflection_model or config.model,
+            base_url=client.base_url,
+            api_key_var=client.api_key_var,
+            headers=client.headers,
+        )
     )
-    model = config.reflection_model or config.model
 
     def reflection_lm(prompt: str) -> str:
-        response = client.chat.completions.create(
-            model=model, messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content or ""
+        return asyncio.run(judge.complete(prompt)).text
 
     return reflection_lm
