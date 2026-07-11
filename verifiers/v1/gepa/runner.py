@@ -46,7 +46,7 @@ async def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     if run_dir is not None:
         save_config(
             config, run_dir
-        )  # config.toml + a fresh results.jsonl (like run_eval)
+        )  # config.toml + a fresh traces.jsonl (like run_eval)
         logger.info("results: %s", run_dir)
 
     client = resolve_client(config.client)
@@ -60,7 +60,7 @@ async def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
                 if config.max_concurrent
                 else None
             )
-            # Stream every rollout's trace to results.jsonl as it finalizes — the same persist
+            # Stream every rollout's trace to traces.jsonl as it finalizes — the same persist
             # hook run_eval passes to Episode.run (each trace records its candidate prompt).
             write_lock = asyncio.Lock()
 

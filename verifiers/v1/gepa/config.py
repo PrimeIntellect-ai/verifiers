@@ -69,8 +69,9 @@ class GEPAConfig(EnvConfig):
     output_dir: Path | None = Field(
         None, validation_alias=AliasChoices("output_dir", "o")
     )
-    """Where to write results (config.toml + system_prompt.txt + metadata.json). None = a fresh
-    per-run dir under `outputs/<taskset>--<model>--<harness>/<uuid>` (via `output_path`)."""
+    """Where to write results (config.toml + the streamed traces.jsonl, alongside GEPA's own
+    candidates.json / run_log.json). None = a fresh per-run dir under
+    `outputs/<taskset>--<model>--<harness>/<uuid>` (via `output_path`)."""
     save_results: bool = True
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     dry_run: bool = False
