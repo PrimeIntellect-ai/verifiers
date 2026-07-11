@@ -39,7 +39,7 @@ async def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     selected_tasks = [*train_tasks, *val_tasks]
     # Seed from the tasks GEPA actually evaluates (train ∪ val), not the full pre-split pool —
     # a taskset with per-task system prompts could otherwise seed from a task in neither split.
-    seed_prompt = resolve_gepa_seed_prompt(env, selected_tasks, config.initial_prompt)
+    seed_prompt = resolve_gepa_seed_prompt(selected_tasks, config.initial_prompt)
     tasks_by_idx = {task.data.idx: task for task in selected_tasks}
 
     run_dir = output_path(config) if config.save_results else None

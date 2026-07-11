@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import logging
-import random
 import shlex
 import signal
 import sys
@@ -31,6 +30,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
 
@@ -267,11 +267,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
 
 async def run_debug(config: DebugConfig) -> list[Trace]:
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.load()
-    if config.shuffle:
-        random.Random(0).shuffle(tasks)
-    if config.num_tasks is not None:
-        tasks = tasks[: config.num_tasks]
+    tasks = sample(taskset.load(), config.shuffle, config.num_tasks)
     if isinstance(config.runtime, vf.SubprocessConfig) and any(
         type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):

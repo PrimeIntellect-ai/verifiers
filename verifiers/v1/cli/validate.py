@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import logging
-import random
 import signal
 import sys
 import time
@@ -27,6 +26,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, TraceTask
 from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
 
@@ -198,11 +198,7 @@ async def _validate_task(task: Task, config: ValidateConfig) -> ResultRow:
 
 async def run_validate(config: ValidateConfig) -> list[dict]:
     taskset = vf.load_taskset(config.taskset)
-    tasks = taskset.load()
-    if config.shuffle:
-        random.Random(0).shuffle(tasks)
-    if config.num_tasks is not None:
-        tasks = tasks[: config.num_tasks]
+    tasks = sample(taskset.load(), config.shuffle, config.num_tasks)
     if isinstance(config.runtime, vf.SubprocessConfig) and any(
         type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):
