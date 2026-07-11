@@ -9,7 +9,6 @@ and the actual parse is `pydantic_config.cli`. v1-native tasksets only — a leg
 rejected; run those through the existing `vf-gepa` command instead.
 """
 
-import asyncio
 import logging
 import sys
 
@@ -66,5 +65,10 @@ def main(argv: list[str] | None = None) -> None:
     install_interrupt()
 
     env = vf.Environment(config)
-    result = asyncio.run(run_gepa(env, config))
+    try:
+        result = run_gepa(env, config)
+    except KeyboardInterrupt:
+        # Graceful cleanup already ran (run_gepa's finally tore down serving); exit on the
+        # conventional Ctrl-C code without dumping a traceback.
+        raise SystemExit(130)
     print(f"best system prompt:\n{result.best_candidate.get('system_prompt', '')}")

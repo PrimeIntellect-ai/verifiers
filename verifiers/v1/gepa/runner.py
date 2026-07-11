@@ -1,7 +1,9 @@
 """The GEPA runner: split tasks, drive `gepa.api.optimize` against a `GEPAv1Adapter`, save
-results. Async like the sibling runners (`run_eval`) — it holds `env.serving()` open with an
-`async with` and runs the blocking `optimize()` in a worker thread (`asyncio.to_thread`) so the
-loop stays free to drive the adapter's rollouts (see `GEPAv1Adapter`)."""
+results. Unlike the async sibling runners, `optimize()` is synchronous and blocking, so it runs
+on the main thread and the runner manages one event loop by hand: `env.serving()` is entered on
+it once, each rollout batch runs via `loop.run_until_complete` (see `GEPAv1Adapter.evaluate`),
+and everything is torn down in `finally`. Mirrors how v0 vf-gepa bridged sync GEPA to async
+rollouts — a Ctrl-C raises on the main thread inside `optimize()` and unwinds through teardown."""
 
 import asyncio
 import logging
@@ -30,7 +32,7 @@ class _GEPALog:
         logger.info(message)
 
 
-async def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
+def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     logger.info("gepa config:\n%s", config.model_dump_json(indent=2))
     all_tasks = env.taskset.load()
     train_tasks, val_tasks = split_tasks(
@@ -52,50 +54,54 @@ async def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     client = resolve_client(config.client)
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
     reflection_lm = build_reflection_lm(config)
+
+    # optimize() is synchronous and blocking, so it drives the run from this (main) thread. We
+    # own one event loop: `env.serving()` (shared tool servers + interception pool, built once
+    # like run_eval) is entered on it, each rollout batch runs on it via `loop.run_until_complete`
+    # (GEPAv1Adapter.evaluate), and it's all torn down in `finally`. Keeping optimize() on the
+    # main thread means a Ctrl-C raises straight through it into this teardown.
+    loop = asyncio.new_event_loop()
+    serving = env.serving()
+    semaphore = (
+        asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
+    )
+    # Stream every rollout's trace to traces.jsonl as it finalizes — the same persist hook
+    # run_eval passes to Episode.run (each trace records its candidate prompt).
+    write_lock = asyncio.Lock()
+
+    async def on_complete(trace: Trace) -> None:
+        if run_dir is not None:
+            await append_trace(run_dir, trace, write_lock)
+
     try:
-        # Shared serving (tool servers + interception pool) comes up once, like run_eval.
-        async with env.serving():
-            semaphore = (
-                asyncio.Semaphore(config.max_concurrent)
-                if config.max_concurrent
-                else None
-            )
-            # Stream every rollout's trace to traces.jsonl as it finalizes — the same persist
-            # hook run_eval passes to Episode.run (each trace records its candidate prompt).
-            write_lock = asyncio.Lock()
-
-            async def on_complete(trace: Trace) -> None:
-                if run_dir is not None:
-                    await append_trace(run_dir, trace, write_lock)
-
-            adapter = GEPAv1Adapter(
-                env=env,
-                ctx=ctx,
-                tasks=tasks_by_idx,
-                loop=asyncio.get_running_loop(),
-                semaphore=semaphore,
-                on_complete=on_complete,
-                state_columns=config.state_columns,
-            )
-            optimize_kwargs: dict = dict(
-                seed_candidate={"system_prompt": seed_prompt},
-                trainset=[task.data.idx for task in train_tasks],
-                valset=[task.data.idx for task in val_tasks],
-                adapter=adapter,
-                reflection_lm=reflection_lm,
-                max_metric_calls=config.max_metric_calls,
-                reflection_minibatch_size=config.reflection_minibatch_size,
-                run_dir=str(run_dir) if run_dir is not None else None,
-                seed=config.seed,
-                display_progress_bar=False,
-                skip_perfect_score=config.perfect_score is not None,
-                logger=_GEPALog(),
-            )
-            if config.perfect_score is not None:
-                optimize_kwargs["perfect_score"] = config.perfect_score
-            # optimize() is synchronous and blocking; run it off-thread so this loop stays
-            # free to serve the rollouts the adapter submits back to it.
-            result = await asyncio.to_thread(optimize, **optimize_kwargs)
+        loop.run_until_complete(serving.__aenter__())
+        adapter = GEPAv1Adapter(
+            env=env,
+            ctx=ctx,
+            tasks=tasks_by_idx,
+            loop=loop,
+            semaphore=semaphore,
+            on_complete=on_complete,
+            state_columns=config.state_columns,
+        )
+        optimize_kwargs: dict = dict(
+            seed_candidate={"system_prompt": seed_prompt},
+            trainset=[task.data.idx for task in train_tasks],
+            valset=[task.data.idx for task in val_tasks],
+            adapter=adapter,
+            reflection_lm=reflection_lm,
+            max_metric_calls=config.max_metric_calls,
+            reflection_minibatch_size=config.reflection_minibatch_size,
+            run_dir=str(run_dir) if run_dir is not None else None,
+            seed=config.seed,
+            display_progress_bar=False,
+            skip_perfect_score=config.perfect_score is not None,
+            logger=_GEPALog(),
+        )
+        if config.perfect_score is not None:
+            optimize_kwargs["perfect_score"] = config.perfect_score
+        return optimize(**optimize_kwargs)
     finally:
-        await client.close()
-    return result
+        loop.run_until_complete(serving.__aexit__(None, None, None))
+        loop.run_until_complete(client.close())
+        loop.close()

@@ -1,11 +1,11 @@
 """The GEPA <-> v1 bridge: run a candidate system prompt over a batch of tasks and score it.
 
 GEPA's adapter protocol (`evaluate`, `make_reflective_dataset`) is synchronous and
-`gepa.api.optimize` blocks, but v1 rollouts are async. The runner keeps the whole thing on one
-event loop: it holds `env.serving()` open with a normal `async with` and runs the blocking
-`optimize()` in a worker thread (`asyncio.to_thread`), so the loop stays free to drive rollouts.
-Each synchronous `evaluate()` (called from that worker thread) submits its batch back to the
-loop with `run_coroutine_threadsafe` and blocks on the result — the one sync↔async hop.
+`gepa.api.optimize` blocks, but v1 rollouts are async. The runner manages one event loop by
+hand: it enters `env.serving()` on that loop and runs the blocking `optimize()` on the main
+thread, so each synchronous `evaluate()` drives its batch of rollouts with
+`loop.run_until_complete` — the one sync↔async hop. (Mirrors how v0 vf-gepa bridged; no worker
+thread, so a Ctrl-C unwinds straight through `optimize()` into the runner's teardown.)
 """
 
 import asyncio
@@ -29,9 +29,9 @@ class GEPAv1Adapter:
     """Bridges GEPA's optimization loop with a native v1 `Environment`. `tasks` covers only the
     trainset + valset tasks GEPA was given (not the whole taskset), keyed by `task.data.idx` —
     GEPA's `batch` is a list of those idxs, and injecting the candidate rebuilds each `Task`
-    around a `data` row carrying the new `system_prompt`. `loop` is the runner's event loop
-    (which holds `env.serving()` open); `evaluate` runs in GEPA's worker thread and marshals its
-    rollouts onto it."""
+    around a `data` row carrying the new `system_prompt`. `loop` is the runner's persistent event
+    loop (which holds `env.serving()` open); `evaluate` drives its rollouts on it with
+    `run_until_complete`."""
 
     env: Environment
     ctx: ModelContext
@@ -54,13 +54,10 @@ class GEPAv1Adapter:
         capture_traces: bool = False,
     ) -> EvaluationBatch[Trace, Trace]:
         """Run `candidate`'s system prompt on the tasks named by `batch` (`Task.idx` values)
-        and score them. Called synchronously by GEPA from a worker thread; the rollouts run on
-        the runner's loop via `run_coroutine_threadsafe`."""
+        and score them. Called synchronously by GEPA on the main thread; each batch's rollouts
+        run on the runner's persistent loop via `run_until_complete`."""
         system_prompt = candidate.get("system_prompt", "")
-        future = asyncio.run_coroutine_threadsafe(
-            self._run_batch(batch, system_prompt), self.loop
-        )
-        traces = future.result()
+        traces = self.loop.run_until_complete(self._run_batch(batch, system_prompt))
         scores = [trace.reward for trace in traces]
         return EvaluationBatch(
             outputs=traces,
