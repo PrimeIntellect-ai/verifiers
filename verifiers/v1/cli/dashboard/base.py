@@ -91,10 +91,8 @@ async def live_view(
                 try:
                     await asyncio.sleep(0.25)
                 except asyncio.CancelledError:
-                    # On Ctrl-C, asyncio cancels every task at once. Keep refreshing through
-                    # graceful shutdown so the "cleaning up" banner stays live during teardown;
-                    # only really stop when live_view itself tears down (`stopping`), else the
-                    # dashboard would freeze for the whole (possibly slow) container teardown.
+                    # Ctrl-C cancels every task at once; keep refreshing so the cleanup notice
+                    # stays live through teardown, stopping only when live_view tears down.
                     if stopping or not cleaning_up():
                         raise
                 live.update(render(), refresh=True)

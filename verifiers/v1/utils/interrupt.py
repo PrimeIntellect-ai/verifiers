@@ -28,9 +28,7 @@ def install(rich: bool) -> None:
     def handle(*_) -> None:
         global _cleaning_up
         first, _cleaning_up = not _cleaning_up, True
-        if (
-            not rich
-        ):  # rich shows the notice in the dashboard; the console is silenced there
+        if not rich:
             sys.stderr.write(
                 "\ninterrupted — cleaning up, please wait...\n"
                 if first
