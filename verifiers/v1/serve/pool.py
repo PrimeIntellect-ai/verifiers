@@ -69,27 +69,6 @@ def _arm_teardown(death_pipe=None) -> None:
     threading.Thread(target=_watch, daemon=True).start()
 
 
-def _worker_entry(
-    *, server_kwargs: dict, address: str, death_pipe, legacy: bool, log_setup=None
-) -> None:
-    """Spawned worker: an ordinary EnvServer/LegacyEnvServer bound to `address` (ipc).
-    A native config arrives as a dict (`config_data`): the eval/serve CLI's narrowed
-    config type is dynamic and unpicklable, so we rebuild it here via EnvConfig's
-    id-resolving validator. `log_setup` (if given) configures this fresh process's
-    logging so per-rollout logs surface — a spawned worker inherits no handlers."""
-    from verifiers.v1.legacy import LegacyEnvServer
-
-    _arm_teardown(death_pipe)
-    if log_setup is not None:
-        log_setup()
-    if "config_data" in server_kwargs:
-        server_kwargs = {
-            "config": EnvConfig.model_validate(server_kwargs["config_data"])
-        }
-    cls = LegacyEnvServer if legacy else EnvServer
-    cls.run_server(address=address, **server_kwargs)
-
-
 class EnvServerPool:
     """ROUTER broker that elastically scales worker processes (least-busy dispatch).
 
@@ -138,13 +117,14 @@ class EnvServerPool:
         address = f"ipc://{self._worker_path(i)}"
         parent_conn, child_conn = self._mpctx.Pipe()
         proc = self._mpctx.Process(
-            target=_worker_entry,
+            target=serve_env,
             kwargs=dict(
-                server_kwargs=self.server_kwargs,
+                max_workers=1,
                 address=address,
                 death_pipe=child_conn,
                 legacy=self.legacy,
                 log_setup=self.log_setup,
+                **self.server_kwargs,
             ),
             daemon=False,
         )
@@ -363,3 +343,6 @@ def serve_env(
             )
     except KeyboardInterrupt:
         pass
+    except Exception:
+        logger.exception("Env server failed")
+        raise
