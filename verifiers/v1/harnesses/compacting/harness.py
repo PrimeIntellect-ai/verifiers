@@ -3,9 +3,9 @@ rlm-style automatic context compaction.
 
 `DefaultHarness` owns the whole chat-loop program; this subclass only turns on the program's
 compaction path by appending `--compact-at-tokens` (and, when configured, the two prompt
-overrides) to the program argv. Compaction itself lives in the program: when a turn's reported
-`usage.prompt_tokens` reaches the threshold, it asks the model for a handoff summary with the
-full conversation still in context — the summary turn is the last turn of the old context —
+overrides) to the program argv. Compaction itself lives in the program: when the next prompt's
+reported or estimated size reaches the threshold, it asks the model for a handoff summary with
+the full conversation still in context — the summary turn is the last turn of the old context —
 then rebuilds its messages as `[system, user(framing + summary)]`. The rewrite forks the trace
 into a new branch (see `verifiers.v1.graph`), which is the boundary context-training (TTT)
 techniques key on.
@@ -21,10 +21,9 @@ class CompactingHarnessConfig(DefaultHarnessConfig):
     """The default harness's knobs plus the compaction threshold and prompt overrides."""
 
     compact_at_tokens: int
-    """Compact once a turn's prompt token count reaches this many tokens. The check runs after
-    each turn's tool results are appended (so they're summarized too) and fires at most once
-    per loop turn; the turn that crosses the threshold completes first, so the cap is soft by
-    one turn."""
+    """Compact once the next prompt reaches this many reported or estimated tokens. The check
+    includes the current assistant/tool results and fires at most once per loop turn; the turn
+    that crosses the threshold completes first, so the cap is soft by one turn."""
 
     checkpoint_prompt: str | None = None
     """Override the user message that requests the handoff summary. None uses the program's

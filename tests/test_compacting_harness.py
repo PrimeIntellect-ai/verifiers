@@ -29,10 +29,12 @@ program = load_program()
 class StubClient:
     """Captures chat.completions.create kwargs and returns a canned summary completion."""
 
-    def __init__(self, content="the summary", prompt_tokens=123):
+    def __init__(self, content="the summary", prompt_tokens=123, error=None):
         self.calls = []
 
         async def create(**kwargs):
+            if error is not None:
+                raise error
             # Snapshot the messages: `compact` mutates the list in place after the call,
             # and the assertions need what the request actually contained.
             kwargs["messages"] = [dict(m) for m in kwargs["messages"]]
@@ -107,11 +109,43 @@ async def test_compact_without_system_or_tools():
     assert "tool_choice" not in call
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("client", "error"),
+    [
+        (StubClient(content="   "), "empty summary"),
+        (StubClient(error=RuntimeError("provider unavailable")), "provider unavailable"),
+    ],
+)
+async def test_compact_preserves_context_when_summary_is_unusable(client, error):
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "important work"},
+    ]
+    original = [dict(message) for message in messages]
+    with pytest.raises(RuntimeError, match=error):
+        await program.compact(client, "m", messages, [], "checkpoint", "framing")
+    assert messages == original
+
+
 def test_prompt_tokens_reads_usage():
     completion = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=77))
     assert program.prompt_tokens(completion) == 77
     assert program.prompt_tokens(SimpleNamespace(usage=None)) == 0
     assert program.prompt_tokens(SimpleNamespace(usage=SimpleNamespace(prompt_tokens=None))) == 0
+
+
+def test_next_prompt_tokens_includes_new_content_and_handles_missing_usage():
+    assistant = {"role": "assistant", "tool_calls": [{"function": {"arguments": "{}"}}]}
+    tool = {"role": "tool", "content": "x" * 300}
+    messages = [{"role": "user", "content": "task"}, assistant, tool]
+    completion = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20))
+    assert program.next_prompt_tokens(completion, messages, TOOLS, [assistant, tool]) > 120
+
+    no_usage = SimpleNamespace(usage=None)
+    assert program.next_prompt_tokens(no_usage, messages, TOOLS, [assistant, tool]) == (
+        program.estimate_tokens({"messages": messages, "tools": TOOLS})
+    )
 
 
 def test_config_requires_positive_threshold():

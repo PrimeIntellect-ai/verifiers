@@ -24,9 +24,7 @@ BASH_TOOL = {
         "description": "Run a bash command and return its combined stdout and stderr.",
         "parameters": {
             "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "The bash command to run."}
-            },
+            "properties": {"command": {"type": "string", "description": "The bash command to run."}},
             "required": ["command"],
         },
     },
@@ -36,9 +34,7 @@ EDIT_TOOL = {
     "type": "function",
     "function": {
         "name": "edit",
-        "description": (
-            "Replace a unique string in a file. old_str must appear exactly once in the file."
-        ),
+        "description": ("Replace a unique string in a file. old_str must appear exactly once in the file."),
         "parameters": {
             "type": "object",
             "properties": {
@@ -131,9 +127,7 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
 
 def run_bash(command: str) -> str:
     try:
-        result = subprocess.run(
-            ["bash", "-c", command], capture_output=True, text=True, timeout=3600
-        )
+        result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, timeout=3600)
         return result.stdout + result.stderr
     except Exception as e:
         return f"error: {e}"
@@ -217,6 +211,36 @@ def prompt_tokens(completion) -> int:
     return getattr(usage, "prompt_tokens", None) or 0
 
 
+def estimate_tokens(value) -> int:
+    """Conservative tokenizer-free estimate for OpenAI-wire data.
+
+    Providers do not consistently report usage, and the program cannot load a model-specific
+    tokenizer. Three UTF-8 bytes per token intentionally errs toward compacting early while
+    keeping the configured threshold in approximate token units.
+    """
+    wire = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str).encode()
+    return (len(wire) + 2) // 3
+
+
+def next_prompt_tokens(completion, messages: list[dict], tools: list[dict], appended: list[dict]) -> int:
+    """Best available size of the next prompt after this turn's assistant/tool messages.
+
+    Reported prompt usage describes the request before the newly generated assistant and tool
+    results existed. Add reported completion usage plus a conservative estimate of tool results.
+    If prompt usage is absent, estimate the complete next wire payload instead of silently
+    disabling compaction.
+    """
+    reported_prompt = prompt_tokens(completion)
+    if reported_prompt <= 0:
+        return estimate_tokens({"messages": messages, "tools": tools or None})
+    usage = getattr(completion, "usage", None)
+    reported_completion = getattr(usage, "completion_tokens", None)
+    assistant = appended[:1]
+    tool_results = appended[1:]
+    completion_tokens = reported_completion if reported_completion is not None else estimate_tokens(assistant)
+    return reported_prompt + completion_tokens + estimate_tokens(tool_results)
+
+
 async def compact(
     client: AsyncOpenAI,
     model: str,
@@ -234,10 +258,12 @@ async def compact(
     summary request advertises the same `tools` with `tool_choice="none"` so the rendered
     system prompt matches regular turns (chat templates inject the tools block only when
     `tools=` is set) — the trace then branches exactly at the rewrite, not one turn early."""
-    messages.append({"role": "user", "content": checkpoint_prompt})
-    completion = await chat(client, model, messages, tools, tool_choice="none")
+    summary_messages = [*messages, {"role": "user", "content": checkpoint_prompt}]
+    completion = await chat(client, model, summary_messages, tools, tool_choice="none")
     message = completion.choices[0].message
-    summary = message.content or ""
+    summary = (message.content or "").strip()
+    if not summary:
+        raise RuntimeError("context compaction returned an empty summary; original context preserved")
     head = [messages[0]] if messages and messages[0].get("role") == "system" else []
     messages[:] = [*head, {"role": "user", "content": f"{framing}\n\n{summary}"}]
 
@@ -254,12 +280,8 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
     tool_schemas: list[dict] = []
     dispatch: dict[str, tuple] = {}
     for name, spec in config.get("mcpServers", {}).items():
-        http_client = await stack.enter_async_context(
-            create_mcp_http_client(headers=spec.get("headers") or None)
-        )
-        read, write, *_ = await stack.enter_async_context(
-            streamable_http_client(spec["url"], http_client=http_client)
-        )
+        http_client = await stack.enter_async_context(create_mcp_http_client(headers=spec.get("headers") or None))
+        read, write, *_ = await stack.enter_async_context(streamable_http_client(spec["url"], http_client=http_client))
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         for tool in (await session.list_tools()).tools:
@@ -323,25 +345,17 @@ async def main() -> None:
     # No client-side retries: re-sending a request whose turn the interception already committed
     # re-samples it and forks the trace into an extra dead-end branch. A generous timeout lets a
     # slow turn finish instead of timing out and re-sending; genuine failures surface as error rows.
-    client = AsyncOpenAI(
-        base_url=args.base_url, api_key=args.api_key, timeout=1800.0, max_retries=0
-    )
+    client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key, timeout=1800.0, max_retries=0)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
-        mcp_tools, dispatch = (
-            await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
-        )
+        mcp_tools, dispatch = await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
         tools = [BASH_TOOL]
         if args.edit:
             tools.append(EDIT_TOOL)
         if args.search:
             tools.append(SEARCH_TOOL)
         tools += mcp_tools
-        messages = (
-            [{"role": "system", "content": args.system_prompt}]
-            if args.system_prompt
-            else []
-        )
+        messages = [{"role": "system", "content": args.system_prompt}] if args.system_prompt else []
         # A Messages prompt (e.g. an image-bearing prompt) arrives pre-built as OpenAI wire dicts
         # via INITIAL_MESSAGES (kept in env: it can be large multimodal content that overflows
         # argv, and it's prompt content, not a credential); otherwise --prompt is the opening
@@ -352,6 +366,7 @@ async def main() -> None:
         elif args.prompt:
             messages.append({"role": "user", "content": args.prompt})
         while True:
+            num_messages_before_turn = len(messages)
             completion = await chat(client, args.model, messages, tools)
             message = completion.choices[0].message
             messages.append(message.model_dump(exclude_none=True))
@@ -384,9 +399,7 @@ async def main() -> None:
                 if name in dispatch:
                     content = await call_mcp(dispatch, name, tool_args)
                 elif name == "bash":
-                    content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
-                    )
+                    content = await asyncio.to_thread(run_bash, tool_args.get("command", ""))
                 elif name == "edit" and args.edit:
                     content = await asyncio.to_thread(
                         run_edit,
@@ -403,14 +416,17 @@ async def main() -> None:
                     )
                 else:
                     content = f"error: unknown tool {name!r}"
-                messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": content}
-                )
-            # Auto-compaction: once this turn's prompt token count crossed the threshold,
-            # summarize and rebuild the conversation (mirrors rlm's engine: the check uses the
-            # usage the model just reported, fires at most once per loop turn, and runs after
-            # the tool results are appended so they're part of what gets summarized).
-            if 0 < args.compact_at_tokens <= prompt_tokens(completion):
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
+            # Auto-compaction uses the size of the *next* prompt, including the assistant's
+            # tool call and tool results just appended. Provider usage covers only the
+            # pre-turn prompt; missing usage falls back to a tokenizer-free wire estimate.
+            next_tokens = next_prompt_tokens(
+                completion,
+                messages,
+                tools,
+                messages[num_messages_before_turn:],
+            )
+            if 0 < args.compact_at_tokens <= next_tokens:
                 await compact(
                     client,
                     args.model,
