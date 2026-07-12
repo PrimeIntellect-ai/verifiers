@@ -1,4 +1,4 @@
-"""mmmu-v1 — MMMU multimodal multiple-choice benchmark (the v1 port of `mmmu`).
+"""mmmu-v1 — MMMU multimodal multiple-choice benchmark.
 
 Each row shows one or more images plus a multiple-choice question; the model
 reasons and answers with the option letter inside \\boxed{}. The prompt carries
@@ -16,39 +16,6 @@ from typing import Literal
 
 import verifiers.v1 as vf
 
-ALL_SUBSETS = [
-    "Accounting",
-    "Agriculture",
-    "Architecture_and_Engineering",
-    "Art",
-    "Art_Theory",
-    "Basic_Medical_Science",
-    "Biology",
-    "Chemistry",
-    "Clinical_Medicine",
-    "Computer_Science",
-    "Design",
-    "Diagnostics_and_Laboratory_Medicine",
-    "Economics",
-    "Electronics",
-    "Energy_and_Power",
-    "Finance",
-    "Geography",
-    "History",
-    "Literature",
-    "Management",
-    "Marketing",
-    "Materials",
-    "Math",
-    "Mechanical_Engineering",
-    "Music",
-    "Pharmacy",
-    "Physics",
-    "Psychology",
-    "Public_Health",
-    "Sociology",
-]
-
 LETTERS = "ABCDEFGHI"
 
 
@@ -60,7 +27,7 @@ def image_data_url(pil_image) -> str:
 
 
 def question_text(question: str, options: list[str]) -> str:
-    """The v0 prompt text verbatim: question, lettered options, boxed-answer instruction."""
+    """Question, lettered options, and the boxed-answer instruction."""
     lines = [f"{LETTERS[i]}. {o}" for i, o in enumerate(options)]
     return (
         f"{question}\n\n"
@@ -94,18 +61,18 @@ class MMMUTask(vf.Task[MMMUData]):
 
 class MMMUConfig(vf.TasksetConfig):
     subset: str | None = "Art"
-    """MMMU subject subset; `None` loads all 30 subjects."""
+    """MMMU subject subset; `None` loads all subjects."""
     split: Literal["dev", "validation", "test"] = "dev"
 
 
 class MMMUTaskset(vf.Taskset[MMMUTask, MMMUConfig]):
     def load(self) -> list[MMMUTask]:
-        from datasets import load_dataset
+        from datasets import get_dataset_config_names, load_dataset
 
         c = self.config
-        if c.subset is not None and c.subset not in ALL_SUBSETS:
-            raise ValueError(f"Invalid subset: {c.subset}")
-        subsets = ALL_SUBSETS if c.subset is None else [c.subset]
+        subsets = (
+            get_dataset_config_names("MMMU/MMMU") if c.subset is None else [c.subset]
+        )
 
         tasks: list[MMMUTask] = []
         for subset in subsets:
