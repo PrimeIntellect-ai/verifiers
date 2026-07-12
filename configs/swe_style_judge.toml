@@ -1,0 +1,47 @@
+# One SWE-bench Verified solver and one style judge in the same Prime sandbox.
+# Run from the prime-rl workspace with:
+#   uv run --extra envs eval @ deps/verifiers/configs/swe_style_judge.toml
+
+model = "openai/gpt-5.5"
+num_tasks = 1
+num_rollouts = 1
+max_concurrent = 1
+max_turns = 40
+rich = false
+push = false
+
+[timeout]
+setup = 900
+rollout = 3600
+finalize = 300
+scoring = 1800
+
+[retries.rollout]
+max_retries = 1
+include = ["ProviderError", "SandboxError"]
+
+[topology]
+id = "swe-style-judge"
+weight = 1.0
+
+[topology.taskset]
+id = "swebench-verified-v1"
+use_prime_registry = true
+
+[topology.solver.harness]
+id = "default"
+
+[topology.solver.harness.runtime]
+type = "prime"
+labels = ["swe-style-judge"]
+
+[topology.judge]
+model = "openai/gpt-5.5"
+
+[topology.judge.harness]
+id = "default"
+edit = false
+
+[topology.judge.harness.runtime]
+type = "prime"
+labels = ["swe-style-judge"]

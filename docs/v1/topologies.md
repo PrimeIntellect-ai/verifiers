@@ -20,7 +20,7 @@ config — the field *name* is the agent's name, and every agent is CLI-addressa
 
 ```python
 class ProposerSolverConfig(vf.TopologyConfig):
-    proposer: vf.NullAgentConfig = vf.NullAgentConfig()      # `null` chat loop (has MCP tools)
+    proposer: vf.AgentConfig = vf.AgentConfig()              # default: bash + edit + task tools
     solver: vf.DirectAgentConfig = vf.DirectAgentConfig()    # in-process `direct` (tool-less)
     num_solvers: int = 4
 ```
@@ -50,37 +50,37 @@ typed, e.g. `--topology.taskset.split train`) — or from a `load_tasks` overrid
 self-seeding topology. **Exclusive-or, enforced at load**: when the slot can be set it IS
 the seed source, verbatim; a topology that overrides `load_tasks` is refused the flag
 (rather than silently ignoring it), and a custom `load_tasks` wanting a config-driven
-source declares its own factory field:
+source declares its own factory field. A topology may also pin a specific taskset, as
+`proposer-solver-v1` pins AIME 2026:
 
 ```python
 class ProposerSolverTopology(vf.Topology[ProposerSolverConfig]):
     def load_tasks(self) -> list[vf.Task]:
-        """Self-seeding: the references are baked in, so no `--topology.taskset.id` needed."""
-        return [
-            ProposeTask(idx=i, prompt=PROPOSE_PROMPT.format(reference=reference))
-            for i, reference in enumerate(REFERENCES)
-        ]
+        config_type = vf.taskset_config_type("aime26-v1")
+        return vf.load_taskset(config_type(id="aime26-v1")).load()
 ```
 
 Per-role behavior lives on **task classes**, minted anywhere. In `proposer-solver-v1`,
-`ProposeTask` judges its own trace (a format reward), and the `SolverTask` built mid-`go`
-carries the ground truth *and* the `correct` reward — question and verifier in one typed
-object, serialized with each solver trace so the record shows exactly what was asked:
+`ProposeTask` judges its own trace with a format reward. The solver task is derived from
+the AIME seed by replacing its prompt and answer while retaining its task class and config,
+so the modified problem keeps AIME's math-verify reward:
 
 ```python
 class ProposeTask(vf.Task):
+    tools = (SubmitToolset,)
+
     @vf.reward(weight=0.1)
-    async def well_formed(self, trace: vf.Trace) -> float:
-        answer = parse_number(parse_labeled(trace, "ANSWER") or "")
-        return float(bool(parse_labeled(trace, "QUESTION")) and answer is not None)
+    async def parseable(self, trace: vf.Trace) -> float:
+        return float("submission" in trace.info)
 
 
-class SolverTask(vf.Task):
-    answer: str   # the proposer's canonical numeric answer
-
-    @vf.reward
-    async def correct(self, trace: vf.Trace) -> float:
-        return float(parse_number(parse_labeled(trace, "ANSWER") or "") == self.answer)
+def solver_task(seed: vf.Task, trace: vf.Trace) -> vf.Task:
+    submission = trace.info["submission"]
+    data = seed.data.model_copy(update={
+        "prompt": AIME_INSTRUCTION + submission["question"],
+        "answer": submission["answer"],
+    })
+    return type(seed)(data, seed.config)
 ```
 
 ## The interaction pattern — `go`
@@ -92,13 +92,10 @@ building the next task is fan-in:
 
 ```python
     async def go(self, task: vf.Task, run: vf.TopologyRun) -> None:
-        proposer = await run.agent("proposer").run(task)
-        # Forward arrow: read the proposal straight off the trace, pure host-side.
-        question = parse_labeled(proposer, "QUESTION")
-        answer = parse_number(parse_labeled(proposer, "ANSWER") or "")
-        if not question or answer is None:
-            return  # malformed proposal — `well_formed` scored it; nothing to solve
-        derived = SolverTask(idx=task.data.idx, prompt=SOLVE_PROMPT.format(question=question), answer=answer)
+        proposer = await run.agent("proposer").run(ProposeTask.from_task(task))
+        if "submission" not in proposer.info:
+            return
+        derived = self.solver_task(task, proposer)
         solver = run.agent("solver")
         await asyncio.gather(
             *(
@@ -157,7 +154,7 @@ concurrent seats of one agent config, peer-voted).
 
 ## Topology rewards — declared, cross-agent judgement
 
-Per-trace judgement rides on the task classes (`SolverTask.correct` above). Cross-agent
+Per-trace judgement rides on task classes (the derived AIME task's `correct` reward above). Cross-agent
 judgement is *not* written inline in `go`: declare it as `@vf.reward(agent=...)` /
 `@vf.metric(agent=...)` methods on the topology — the same decorators tasks use, scoped
 to an agent. Each runs once per matching trace **after the whole instance completes**, with

@@ -1,7 +1,7 @@
 [project]
 name = "proposer-solver-v1"
 version = "0.1.0"
-description = "proposer-solver-v1 — a proposer invents a code-checkable puzzle; n solver agents reason it out (example topology)."
+description = "proposer-solver-v1 — a proposer makes an AIME 2026 problem harder and a solver panel attempts it."
 requires-python = ">=3.10"
 dependencies = ["verifiers"]
 

@@ -67,6 +67,17 @@ def echo_chain_env(stub_agent_run) -> TopologyRunner:
     return TopologyRunner(config.topology, config)
 
 
+@pytest.fixture
+def proposer_seed(monkeypatch) -> vf.Task:
+    """A local seed with the AIME data shape, avoiding a research-plugin dependency in unit tests."""
+    taskset = vf.load_taskset(vf.taskset_config_type("echo-v1")(id="echo-v1"))
+    seed = taskset.load()[0]
+    from proposer_solver_v1.topology import ProposerSolverTopology
+
+    monkeypatch.setattr(ProposerSolverTopology, "load_tasks", lambda self: [seed])
+    return seed
+
+
 def test_llm_judge_config_narrows_typed_agents():
     """`--topology.id llm-judge` narrows to `LLMJudgeConfig`; the seed factory narrows by
     id, and the judge keeps its pinned defaults (direct harness, non-trainable) unless
@@ -91,6 +102,7 @@ def test_pinned_harness_survives_sibling_and_partial_overrides():
 
     # (a) sibling field override keeps the subclass pin
     config = ProposerSolverConfig.model_validate({"solver": {"model": "org/strong"}})
+    assert config.proposer.harness.id == "default"
     assert config.solver.model == "org/strong"
     assert config.solver.harness.id == "direct"
     # (b) partial harness override tunes the pin (llm-judge judge: direct + docker runtime)
@@ -166,9 +178,29 @@ def test_topology_without_seeds_is_refused():
         vf.load_topology(config.topology).load_tasks()
 
 
-def test_seed_slot_is_exclusive_with_load_tasks_override():
-    """The seed contract is XOR: proposer-solver overrides `load_tasks` (self-seeding), so
-    passing `--topology.taskset.id` — which would be silently ignored — is refused at load."""
+def test_proposer_solver_fixes_aime26_seed_taskset(monkeypatch):
+    from proposer_solver_v1.topology import AIME_TASKSET_ID
+
+    config = EvalConfig(topology={"id": "proposer-solver-v1"}, rich=False)
+    topology = vf.load_topology(config.topology)
+    requested: list[str] = []
+
+    def config_type(taskset_id):
+        requested.append(taskset_id)
+        return vf.TasksetConfig
+
+    class StubTaskset:
+        def load(self):
+            return ["seed"]
+
+    monkeypatch.setattr(vf, "taskset_config_type", config_type)
+    monkeypatch.setattr(vf, "load_taskset", lambda config: StubTaskset())
+    assert topology.load_tasks() == ["seed"]
+    assert requested == [AIME_TASKSET_ID]
+
+
+def test_proposer_solver_refuses_taskset_override():
+    """Its AIME source is fixed in `load_tasks`, so the generic taskset slot is invalid."""
     config = EvalConfig(
         topology={"id": "proposer-solver-v1", "taskset": {"id": "echo-v1"}}, rich=False
     )
@@ -232,13 +264,12 @@ async def test_run_instance_links_and_defers(echo_chain_env):
     assert second.rewards == {"echoed": 1.0}
 
 
-async def test_declared_judgement_scores_the_instance(stub_agent_run):
+async def test_declared_judgement_scores_the_instance(stub_agent_run, proposer_seed):
     """`Topology.score` runs the declared @metric/@reward methods once per matching trace
     after `go` returns — metrics before rewards (`difficulty` reads the `solve_rate`
     metric), and over every trace in scope even when the instance ended early (the stub
-    replies with no QUESTION/ANSWER, so `go` stops after the proposer). The proposer's own
-    task-declared reward (`well_formed`) is absent here because the stub skips episode
-    scoring — task rewards run inside real rollouts."""
+    never calls the submission tool, so `go` stops after the proposer). The proposer's
+    task-declared parseability reward is absent because the stub skips episode scoring."""
     config = EvalConfig(topology={"id": "proposer-solver-v1"}, rich=False)
     env = TopologyRunner(config.topology, config)
     graph = await run_stubbed_instance(env, env.topology.load_tasks()[0])
@@ -247,9 +278,9 @@ async def test_declared_judgement_scores_the_instance(stub_agent_run):
     assert proposer.rewards == {"echoed": 1.0, "difficulty": 0.0}
 
 
-async def test_proposer_solver_fan_out_and_difficulty(monkeypatch):
+async def test_proposer_solver_fan_out_and_difficulty(monkeypatch, proposer_seed):
     """The happy path: the proposer commits a submission, `go` fans `num_solvers` solver
-    episodes out over the minted `SolverTask` (all parented under the proposer), and the
+    episodes out over the derived AIME task (all parented under the proposer), and the
     declared judgement averages the solvers' `correct` into `solve_rate` → `difficulty`
     (peaked at 50%, so a 2/4 split scores 1.0)."""
     verdicts = iter([1.0, 0.0, 1.0, 0.0])
@@ -258,12 +289,11 @@ async def test_proposer_solver_fan_out_and_difficulty(monkeypatch):
         if self.name == "proposer":
             trace = echoing_trace(task, "submitted")
             trace.info["submission"] = {
-                "code": "import sys\nprint(1)",
-                "input": "",
                 "question": "What is 1?",
+                "answer": "1",
             }
         else:
-            trace = echoing_trace(task, "ANSWER: 1")
+            trace = echoing_trace(task, "\\boxed{1}")
             trace.record_reward("correct", next(verdicts))
         self.stamp(
             trace, parents=parents, runtime=runtime, borrowed=runtime is not None
@@ -281,6 +311,7 @@ async def test_proposer_solver_fan_out_and_difficulty(monkeypatch):
     assert all(
         t.task.data.prompt == solvers[0].task.data.prompt for t in solvers
     )  # one minted task
+    assert all(t.task.data.answer == "1" for t in solvers)
     assert proposer.metrics == {"solve_rate": 0.5}
     assert proposer.rewards == {"difficulty": 1.0}
 
