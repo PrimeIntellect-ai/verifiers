@@ -143,21 +143,43 @@ class Branch(StrictBaseModel):
         return sum(len(n.token_ids) for n in self.nodes)
 
     @property
+    def is_ttt_qa(self) -> bool:
+        """Whether this branch is a TTT Q&A side-generation (its leaf-side nodes carry
+        `ttt_qa`). QA branches are real sampled branches — RL trains them — but analysis,
+        budgets, and rollout metrics treat them separately."""
+        return any(n.ttt_qa for n in self.nodes)
+
+    @property
+    def ttt_version(self) -> int | None:
+        """The single TTT adapter version this branch's sampled tokens ran under (see
+        `verifiers.v1.ttt`), or None for a rollout without TTT. Sampled-node versions must
+        agree — TTT updates fire only at branch forks, so a branch mixing versions means the
+        bookkeeping broke; fail loudly rather than hand the trainer a corrupt replay ref.
+        Input-only nodes (a shared prefix committed under an older version) don't constrain
+        it — replay correctness follows the version the *sampled* tokens ran under."""
+        versions = {n.ttt_version for n in self.nodes if n.sampled}
+        versions.discard(None)
+        if not versions:
+            return None
+        if len(versions) > 1:
+            raise ValueError(
+                f"branch {self.index} was sampled under multiple TTT adapter versions "
+                f"({sorted(versions)}); updates must only fire at branch forks."
+            )
+        return versions.pop()
+
+    @property
     def usage(self) -> Usage | None:
         return Usage.aggregate(n.usage for n in self.nodes if n.usage is not None)
 
     @property
     def num_input_tokens(self) -> int:
         """Final-turn prompt size, falling back to provider usage without token IDs."""
-        last_completion = next(
-            (sum(n.mask) for n in reversed(self.nodes) if any(n.mask)), 0
-        )
+        last_completion = next((sum(n.mask) for n in reversed(self.nodes) if any(n.mask)), 0)
         token_len = self.num_total_tokens - last_completion
         if token_len:
             return token_len
-        last = next(
-            (n.usage for n in reversed(self.nodes) if n.usage is not None), None
-        )
+        last = next((n.usage for n in reversed(self.nodes) if n.usage is not None), None)
         return last.input_tokens if last else 0
 
     @property
@@ -170,9 +192,7 @@ class Branch(StrictBaseModel):
         return usage.completion_tokens if usage else 0
 
 
-_NODE_DUMP_EXCLUDE: dict = {
-    "nodes": {"__all__": {"multi_modal_data", "routed_experts"}}
-}
+_NODE_DUMP_EXCLUDE: dict = {"nodes": {"__all__": {"multi_modal_data", "routed_experts"}}}
 """Raw tensor fields kept on the msgpack wire but excluded from JSON records."""
 
 
@@ -242,18 +262,39 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
     @property
     def num_input_tokens(self) -> int:
-        """Final-turn prompt sizes summed across training branches."""
-        return sum(branch.num_input_tokens for branch in self.branches)
+        """Total input context summed over branches (each branch's final-turn prompt) —
+        the trajectory yields one training sample per branch, so totals aggregate them.
+        TTT Q&A side-branches are excluded: budgets (`RolloutLimits`) and metrics cover the
+        rollout proper; QA runs on its own configured budget."""
+        return sum(branch.num_input_tokens for branch in self._main_branches())
 
     @property
     def num_output_tokens(self) -> int:
-        """Model-sampled tokens summed across training branches."""
-        return sum(branch.num_output_tokens for branch in self.branches)
+        """Total assistant-generated (completion) tokens summed over branches — every token
+        the model produced (reasoning included), so it can exceed the final context size.
+        TTT Q&A side-branches are excluded (see `num_input_tokens`)."""
+        return sum(branch.num_output_tokens for branch in self._main_branches())
 
     @property
     def num_total_tokens(self) -> int:
-        """Sequence lengths summed across training branches for token batching."""
-        return sum(branch.num_total_tokens for branch in self.branches)
+        """Total sequence length summed over branches (each branch's final-turn prompt +
+        completion) — used for token batching. TTT Q&A side-branches are excluded (see
+        `num_input_tokens`)."""
+        return sum(branch.num_total_tokens for branch in self._main_branches())
+
+    def _main_branches(self) -> "list[Branch]":
+        """The rollout's own branches — the branch view over the graph without TTT Q&A
+        side-generation nodes (`graph.leaves(include_qa=False)`)."""
+        branches: list[Branch] = []
+        for i, leaf in enumerate(graph.leaves(self, include_qa=False)):
+            path: list[int] = []
+            nid: int | None = leaf
+            while nid is not None:
+                path.append(nid)
+                nid = self.nodes[nid].parent
+            path.reverse()
+            branches.append(Branch(index=i, nodes=[self.nodes[n] for n in path]))
+        return branches
 
     @property
     def usage(self) -> Usage | None:
@@ -286,8 +327,9 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     @property
     def num_turns(self) -> int:
         """Total model turns (sampled responses) across all branches — prompt-supplied
-        assistant messages don't count."""
-        return sum(1 for n in self.nodes if n.sampled)
+        assistant messages don't count. TTT Q&A side-generations are excluded (they run on
+        the QA config's own budget, not the rollout's `max_turns`)."""
+        return sum(1 for n in self.nodes if n.sampled and not n.ttt_qa)
 
     @property
     def is_truncated(self) -> bool:
@@ -308,11 +350,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     def assistant_messages(self) -> list[AssistantMessage]:
         """Every model response, in order — one per turn, branch-independent. Excludes
         prompt-supplied assistant messages (`sampled` is the provenance signal)."""
-        return [
-            n.message
-            for n in self.nodes
-            if n.sampled and isinstance(n.message, AssistantMessage)
-        ]
+        return [n.message for n in self.nodes if n.sampled and isinstance(n.message, AssistantMessage)]
 
     @property
     def last_reply(self) -> str:
@@ -329,10 +367,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
             if isinstance(message, AssistantMessage):
                 if message.content:
                     lines.append(message.content)
-                lines.extend(
-                    f"[tool_call {call.name}({call.arguments})]"
-                    for call in message.tool_calls or []
-                )
+                lines.extend(f"[tool_call {call.name}({call.arguments})]" for call in message.tool_calls or [])
             else:
                 if isinstance(message, ToolMessage) and message.name:
                     lines[0] = f"[{message.role} {message.name}]"
@@ -351,9 +386,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
 
     def record_metric(self, name: str, value: float) -> None:
         if name in self.metrics:
-            logger.warning(
-                "metric %r overridden: %s -> %s", name, self.metrics[name], value
-            )
+            logger.warning("metric %r overridden: %s -> %s", name, self.metrics[name], value)
         self.metrics[name] = float(value)
 
     def record_metrics(self, values: Mapping[str, float]) -> None:
@@ -368,9 +401,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
         contribution = float(value) * float(weight)
         if name in self.rewards:
-            logger.warning(
-                "reward %r overridden: %s -> %s", name, self.rewards[name], contribution
-            )
+            logger.warning("reward %r overridden: %s -> %s", name, self.rewards[name], contribution)
         self.rewards[name] = contribution
 
     def stop(self, condition: str = "done") -> None:
@@ -385,9 +416,7 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
                 message=str(error),
                 # Provider errors already carry the actionable upstream diagnostic.
                 # Keep full tracebacks for every other failure.
-                traceback=None
-                if isinstance(error, ProviderError)
-                else traceback.format_exc(),
+                traceback=None if isinstance(error, ProviderError) else traceback.format_exc(),
             )
         )
         self.stop("error")

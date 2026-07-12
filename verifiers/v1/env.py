@@ -7,12 +7,12 @@ from typing import Annotated, Literal
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
-from verifiers.v1.types import ID
+from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interception import InterceptionPool, RolloutLimits
+from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
@@ -22,8 +22,9 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
+from verifiers.v1.ttt import TTTConfig
+from verifiers.v1.types import ID
 from verifiers.v1.utils.generic import generic_type
-from verifiers.v1.mcp import SharedToolServer, serve_shared
 
 
 class TimeoutConfig(BaseConfig):
@@ -61,9 +62,7 @@ class ElasticPoolConfig(BaseConfig):
 
 
 # Discriminated on `type` so the CLI selects with `--pool.type static|elastic`.
-PoolConfig = Annotated[
-    StaticPoolConfig | ElasticPoolConfig, Field(discriminator="type")
-]
+PoolConfig = Annotated[StaticPoolConfig | ElasticPoolConfig, Field(discriminator="type")]
 
 
 def pool_serve_kwargs(pool: StaticPoolConfig | ElasticPoolConfig) -> dict:
@@ -104,6 +103,11 @@ class EnvConfig(BaseConfig):
     """Rollouts that share one interception server (and, behind a remote runtime, one
     tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
     key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
+    ttt: TTTConfig | None = None
+    """Test-time training (None = off): train a per-rollout LoRA adapter at every context
+    rewrite (compaction) and sample subsequent branches through it. Points at a running TTT
+    service (`--ttt.base-url`); requires the renderer (train) client and an inference engine
+    serving with LoRA enabled. See `verifiers.v1.ttt`."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
@@ -142,16 +146,10 @@ class EnvConfig(BaseConfig):
 
         narrow_plugin_field(data, "taskset", taskset_config_type)
         taskset = data.get("taskset")
-        taskset_id = (
-            taskset.get("id")
-            if isinstance(taskset, dict)
-            else getattr(taskset, "id", None)
-        )
+        taskset_id = taskset.get("id") if isinstance(taskset, dict) else getattr(taskset, "id", None)
         # A taskset that bundles its own harness runs with it by default; an explicit
         # `--harness.id` / toml id (already on the field) takes precedence.
-        narrow_plugin_field(
-            data, "harness", harness_config_type, default_harness_id(taskset_id or "")
-        )
+        narrow_plugin_field(data, "harness", harness_config_type, default_harness_id(taskset_id or ""))
         return data
 
 
@@ -203,9 +201,7 @@ def resolve_runtime_config(
                     config.type,
                     field,
                 )
-        elif (
-            getattr(config, field) == spec.default
-        ):  # still the default → task may set it
+        elif getattr(config, field) == spec.default:  # still the default → task may set it
             updates[field] = value
         # else: cli/toml changed it from the default → it wins over the task
     return config.model_copy(update=updates) if updates else config
@@ -231,9 +227,7 @@ def validate_pairing(harness: Harness, taskset: Taskset) -> None:
             f"{task_cls.__name__} defines one (Task.user). Run it with a harness that "
             f"supports user simulation (e.g. --harness.id default), or use tasks without one."
         )
-    if task_cls.NEEDS_CONTAINER and isinstance(
-        harness.config.runtime, SubprocessConfig
-    ):
+    if task_cls.NEEDS_CONTAINER and isinstance(harness.config.runtime, SubprocessConfig):
         raise ValueError(
             f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but the "
             "harness runs on the subprocess runtime; use --harness.runtime.type docker or prime."
@@ -252,9 +246,7 @@ class Environment:
         # it local execution (bash/edit, or a CLI agent) except the tool-less `null` chat loop,
         # whose program only relays the model and remote MCP tools — so exempt `null`, warn for the
         # rest. (`null` still runs its fixed chat-loop program locally, but nothing agent-authored.)
-        if self.harness.config.id != "null" and isinstance(
-            self.harness.config.runtime, SubprocessConfig
-        ):
+        if self.harness.config.id != "null" and isinstance(self.harness.config.runtime, SubprocessConfig):
             logger.warning(
                 "Harness %r is running in the subprocess runtime on the local system. "
                 "Local files and settings may affect the evaluation; use subprocess only "
@@ -282,9 +274,7 @@ class Environment:
     def runtime_for(self, task: Task) -> RuntimeConfig:
         """Resolve the runtime config for a task off the harness's runtime (see
         `resolve_runtime_config`)."""
-        return resolve_runtime_config(
-            self.harness.config.runtime, task, self._warned_resources
-        )
+        return resolve_runtime_config(self.harness.config.runtime, task, self._warned_resources)
 
     def episode(self, task: Task, ctx: ModelContext, n: int = 1) -> Episode:
         """Resolve `task` into a runnable episode of `n` rollouts: pick its runtime
@@ -303,21 +293,9 @@ class Environment:
                 f"and need >=2; got n={n} (pass -r/--num-rollouts >= 2)"
             )
         runtime_config = self.runtime_for(task)
-        setup_timeout = (
-            self.setup_timeout
-            if self.setup_timeout is not None
-            else task.data.timeout.setup
-        )
-        harness_timeout = (
-            self.harness_timeout
-            if self.harness_timeout is not None
-            else task.data.timeout.harness
-        )
-        if (
-            harness_timeout is not None
-            and harness_timeout > 24 * 60 * 60
-            and not runtime_is_local(runtime_config)
-        ):
+        setup_timeout = self.setup_timeout if self.setup_timeout is not None else task.data.timeout.setup
+        harness_timeout = self.harness_timeout if self.harness_timeout is not None else task.data.timeout.harness
+        if harness_timeout is not None and harness_timeout > 24 * 60 * 60 and not runtime_is_local(runtime_config):
             logger.warning(
                 "task %r resolves to a %.1f-hour harness timeout, but %s sandboxes have a "
                 "maximum lifetime of 24 hours; capping it at 24 hours",
@@ -326,16 +304,8 @@ class Environment:
                 runtime_config.type,
             )
             harness_timeout = 24 * 60 * 60
-        finalize_timeout = (
-            self.finalize_timeout
-            if self.finalize_timeout is not None
-            else task.data.timeout.finalize
-        )
-        scoring_timeout = (
-            self.scoring_timeout
-            if self.scoring_timeout is not None
-            else task.data.timeout.scoring
-        )
+        finalize_timeout = self.finalize_timeout if self.finalize_timeout is not None else task.data.timeout.finalize
+        scoring_timeout = self.scoring_timeout if self.scoring_timeout is not None else task.data.timeout.scoring
         retries = self.config.retries
         rollouts = [
             Rollout(
@@ -350,6 +320,7 @@ class Environment:
                 limits=self.limits,
                 shared_tools=self._shared_tools,
                 interception=self._interception,
+                ttt=self.config.ttt,
             )
             for _ in range(n)
         ]

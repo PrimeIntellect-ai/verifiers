@@ -13,9 +13,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from openai import AsyncOpenAI, OpenAIError
-from renderers import RenderedTokens
 from renderers import OverlongPromptError as RendererOverlongPromptError
-from renderers import RendererConfig
+from renderers import RenderedTokens, RendererConfig
 
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect, parse_tools
@@ -69,13 +68,9 @@ def serialize_completion(response: Response, model: str) -> dict:
             "total_tokens": response.usage.total_tokens,
         }
         if response.usage.reasoning_tokens is not None:
-            usage["completion_tokens_details"] = {
-                "reasoning_tokens": response.usage.reasoning_tokens
-            }
+            usage["completion_tokens_details"] = {"reasoning_tokens": response.usage.reasoning_tokens}
         if response.usage.cached_input_tokens is not None:
-            usage["prompt_tokens_details"] = {
-                "cached_tokens": response.usage.cached_input_tokens
-            }
+            usage["prompt_tokens_details"] = {"cached_tokens": response.usage.cached_input_tokens}
     return {
         "id": response.id or "vf-intercept",
         "object": "chat.completion",
@@ -92,23 +87,15 @@ def serialize_completion(response: Response, model: str) -> dict:
     }
 
 
-def response_from_generate(
-    result: dict, model: str, bridged_turn: PendingTurn | None = None
-) -> Response:
+def response_from_generate(result: dict, model: str, bridged_turn: PendingTurn | None = None) -> Response:
     """Parse a `renderers.client.generate` result dict into a typed `Response`,
     mirroring the chat client's `response_from_wire` (plus the token encoding)."""
-    finish: FinishReason = (
-        result["finish_reason"]
-        if result.get("finish_reason") in FINISH_REASONS
-        else None
-    )
+    finish: FinishReason = result["finish_reason"] if result.get("finish_reason") in FINISH_REASONS else None
     tool_calls = [
         ToolCall(
             id=tc.id or f"call_{i}",
             name=tc.name,
-            arguments=tc.arguments
-            if isinstance(tc.arguments, str)
-            else json.dumps(tc.arguments or {}),
+            arguments=tc.arguments if isinstance(tc.arguments, str) else json.dumps(tc.arguments or {}),
         )
         for i, tc in enumerate(result.get("tool_calls") or [])
         if getattr(tc, "name", None)
@@ -136,9 +123,7 @@ def response_from_generate(
         finish_reason=finish,
         # /inference/v1/generate returns exact token ids but no usage details, so the
         # completion's reasoning-token subset is unknown.
-        usage=Usage(
-            prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)
-        ),
+        usage=Usage(prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)),
         # generate() returns owned, typed lists. Skip revalidation here to avoid copying
         # million-token contexts synchronously on the event loop.
         tokens=TurnTokens.model_construct(
@@ -244,17 +229,18 @@ class TrainClient(Client):
         from renderers.client import _maybe_offload, generate
 
         wire_tools = [tool_to_wire(t) for t in tools] if tools else None
-        wire_messages = (
-            [message_to_wire(m) for m in turn.tail] if turn is not None else []
-        )
+        wire_messages = [message_to_wire(m) for m in turn.tail] if turn is not None else []
         prompt_ids: list[int] | None = None
         multi_modal_data = None
         prompt_attribution: RenderedTokens | None = None
         raw_sampling = sampling_args.model_dump(exclude_none=True)
-        sampling_params: dict[str, Any] = dict(
-            raw_sampling.pop("extra_body", None) or {}
-        )
+        sampling_params: dict[str, Any] = dict(raw_sampling.pop("extra_body", None) or {})
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
+        # `cache_salt` is a top-level generate-request field, not a sampling param — pop it
+        # out of `extra_body` and thread it as the `generate(cache_salt=...)` kwarg (mirrors
+        # the v0 renderer client). Callers salt per policy version (prime-rl) and per TTT
+        # adapter version (verifiers.v1.ttt) to keep stale prefix KV from being reused.
+        cache_salt = sampling_params.pop("cache_salt", None)
         sampling_params.update(raw_sampling)
         renderer = self._renderer_pool(
             model,
@@ -265,9 +251,7 @@ class TrainClient(Client):
         # Only build the (O(context)) previous-turn token ids once the cheap guards pass — a
         # multimodal prompt or a tail that isn't a clean `[tool*, user?]` extension can't bridge.
         can_bridge = (
-            turn is not None
-            and not _has_multimodal_content(prompt)
-            and _is_valid_incremental_tail(wire_messages)
+            turn is not None and not _has_multimodal_content(prompt) and _is_valid_incremental_tail(wire_messages)
         )
         previous_ids = turn.previous_token_ids() if can_bridge else None
         if previous_ids is not None:
@@ -307,6 +291,7 @@ class TrainClient(Client):
                 prompt_attribution=prompt_attribution,
                 tools=wire_tools,
                 sampling_params=sampling_params,
+                cache_salt=cache_salt,
                 extra_headers={SESSION_ID_HEADER: session_id} if session_id else None,
             )
         except RendererOverlongPromptError as e:

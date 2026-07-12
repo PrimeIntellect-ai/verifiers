@@ -4,7 +4,6 @@ import time
 from contextlib import asynccontextmanager
 from enum import StrEnum
 
-from verifiers.v1.harness import Harness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated, invoke
 from verifiers.v1.errors import (
@@ -14,12 +13,14 @@ from verifiers.v1.errors import (
     ToolsetError,
     boundary,
 )
+from verifiers.v1.harness import Harness
 from verifiers.v1.interception import (
     InterceptionPool,
     InterceptionServer,
     RolloutLimits,
     RolloutSession,
 )
+from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.runtimes import (
     HOST,
     Runtime,
@@ -27,10 +28,10 @@ from verifiers.v1.runtimes import (
     make_runtime,
     reachable_url,
 )
-from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import TraceTask, Trace
+from verifiers.v1.trace import Trace, TraceTask
+from verifiers.v1.ttt import TTTConfig, TTTRolloutHook
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ class Rollout:
         limits: RolloutLimits | None = None,
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: InterceptionPool | None = None,
+        ttt: TTTConfig | None = None,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -69,6 +71,7 @@ class Rollout:
         self.scoring_timeout = scoring_timeout
         self.limits = limits or RolloutLimits()
         self.shared_tools = shared_tools or {}
+        self.ttt = ttt
         self.interception = interception
         self.phase = Phase.PENDING
         self.runtime: Runtime | None = None
@@ -122,14 +125,16 @@ class Rollout:
             self.harness.config.name,
             self.runtime_config.type,
         )
+        ttt_hook: TTTRolloutHook | None = None
         try:
             session = RolloutSession(ctx, trace, stops, self.limits)
+            if self.ttt is not None and self.ttt.enabled:
+                ttt_hook = TTTRolloutHook(self.ttt, trace, ctx=ctx)
+                session.ttt = ttt_hook
             await runtime.start()
             # Task setup and harness provisioning share one setup-stage deadline.
             setup_deadline = (
-                None
-                if self.setup_timeout is None
-                else asyncio.get_running_loop().time() + self.setup_timeout
+                None if self.setup_timeout is None else asyncio.get_running_loop().time() + self.setup_timeout
             )
             async with (
                 boundary(TaskError, "task setup"),
@@ -141,9 +146,7 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
-            async with self._serve_interception(
-                self.interception, runtime, session
-            ) as (
+            async with self._serve_interception(self.interception, runtime, session) as (
                 endpoint,
                 secret,
                 state_port,
@@ -182,9 +185,7 @@ class Rollout:
                     # A timeout still scores the partial trajectory.
                     try:
                         await asyncio.wait_for(
-                            self.harness.run(
-                                ctx, trace, runtime, endpoint, secret, urls
-                            ),
+                            self.harness.run(ctx, trace, runtime, endpoint, secret, urls),
                             self.harness_timeout,
                         )
                     except TimeoutError:
@@ -196,6 +197,10 @@ class Rollout:
                     else:
                         if session.error is not None:
                             raise session.error
+            if ttt_hook is not None:
+                # Optional final-branch update (config); still inside the trace's generation
+                # span, before taskset finalize. A failure is a TTTError → captured below.
+                await ttt_hook.finalize_rollout()
             now = time.time()
             trace.timing.generation.end = now
             trace.timing.finalize.start = now
@@ -234,12 +239,14 @@ class Rollout:
             ):
                 if span.start and not span.end:
                     span.end = now
+            # Release the rollout's TTT adapter (engine slot + service optimizer state);
+            # its checkpoints stay on disk for RL replay. Never raises.
+            if ttt_hook is not None:
+                await ttt_hook.aclose()
             try:
                 await runtime.stop()
             except Exception:
-                logger.warning(
-                    "runtime teardown failed (rollout %s)", trace.id, exc_info=True
-                )
+                logger.warning("runtime teardown failed (rollout %s)", trace.id, exc_info=True)
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
             trace.id,

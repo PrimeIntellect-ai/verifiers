@@ -71,6 +71,16 @@ class InterceptionError(RolloutError):
     """The host interception server (model calls + `/state` + `/task` channels) couldn't be reached."""
 
 
+class TTTError(RolloutError):
+    """A test-time-training update failed (the TTT service call, or a version mismatch).
+    Fails the rollout loudly: after a lost update the adapter no longer matches the context
+    the model believes it has, so continuing would silently corrupt the experiment.
+    `status_code` 400 so the harness's SDK treats it as deterministic (no retry — retrying
+    the model call would re-trigger the same failed update)."""
+
+    status_code = 400
+
+
 class TunnelError(InterceptionError):
     """The `prime_tunnel` tunnel to the host interception server couldn't be established."""
 
@@ -120,9 +130,7 @@ def _provider_status(e: OpenAIError | str) -> int:
     return 502
 
 
-def model_error(
-    e: OpenAIError | str, *, status_code: int | None = None
-) -> ProviderError:
+def model_error(e: OpenAIError | str, *, status_code: int | None = None) -> ProviderError:
     """Map a provider failure to our error type: an overlong prompt (a budget limit the interception
     server turns into a clean truncation) is told apart from any other provider call failure, which
     becomes a plain `ProviderError`. `status_code` is the HTTP status surfaced to the harness (whose

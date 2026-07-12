@@ -103,6 +103,17 @@ class MessageNode(StrictBaseModel):
     `mask`; empty for input messages."""
     finish_reason: FinishReason = None
     """The response's finish reason (assistant nodes only) — kept for truncation detection."""
+    ttt_version: int | None = None
+    """The test-time-training adapter version this node's tokens ran under (see
+    `verifiers.v1.ttt`): 0 = the base model, k = after the k-th per-rollout update; None =
+    the rollout ran without TTT. Stamped at commit time on every node of the turn, so a
+    branch is verifiably sampled under exactly one version (`Branch.ttt_version`) and an RL
+    trainer can replay it with the exact adapter checkpoint."""
+    ttt_qa: bool = False
+    """True for nodes of a TTT Q&A side-generation (see `verifiers.v1.ttt`): committed to
+    the trace as real branches (so RL trains the generation behavior), but excluded from
+    the trace's turn/token metrics and `RolloutLimits` accounting — they run on the QA
+    config's own budget."""
     multi_modal_data: MultiModalData | None = None
     """The renderer items for the images this message's content introduces (pixel tensors,
     grids, hashes, placeholders) — the only carrier of the pixels from the env server to the
@@ -134,9 +145,7 @@ class MessageNode(StrictBaseModel):
                 for modality, ranges in mmd.mm_placeholders.items()
             },
             "mm_items": {
-                modality: [
-                    {k: _encode_ndarray(v) for k, v in item.items()} for item in items
-                ]
+                modality: [{k: _encode_ndarray(v) for k, v in item.items()} for item in items]
                 for modality, items in mmd.mm_items.items()
             },
         }
@@ -151,16 +160,11 @@ class MessageNode(StrictBaseModel):
         return MultiModalData(
             mm_hashes={k: list(v) for k, v in (value.get("mm_hashes") or {}).items()},
             mm_placeholders={
-                modality: [
-                    PlaceholderRange(offset=p["offset"], length=p["length"])
-                    for p in ranges
-                ]
+                modality: [PlaceholderRange(offset=p["offset"], length=p["length"]) for p in ranges]
                 for modality, ranges in (value.get("mm_placeholders") or {}).items()
             },
             mm_items={
-                modality: [
-                    {k: _decode_ndarray(v) for k, v in item.items()} for item in items
-                ]
+                modality: [{k: _decode_ndarray(v) for k, v in item.items()} for item in items]
                 for modality, items in (value.get("mm_items") or {}).items()
             },
         )
@@ -235,10 +239,7 @@ def message_hash(message: Message) -> str:
 def _head_index(trace: Trace) -> dict[tuple[int | None, str], int]:
     """`(parent, msg_hash) -> node_id`, rebuilt lazily from `nodes` after deserialization."""
     if not trace._head_index and trace.nodes:
-        trace._head_index = {
-            (node.parent, message_hash(node.message)): nid
-            for nid, node in enumerate(trace.nodes)
-        }
+        trace._head_index = {(node.parent, message_hash(node.message)): nid for nid, node in enumerate(trace.nodes)}
     return trace._head_index
 
 
@@ -279,9 +280,7 @@ class PendingTurn:
         last = self.trace.nodes[self.prefix_node_ids[-1]]
         if not last.sampled:
             return None
-        first_sampled = next(
-            (i for i, sampled in enumerate(last.mask) if sampled), None
-        )
+        first_sampled = next((i for i, sampled in enumerate(last.mask) if sampled), None)
         if first_sampled is None:
             return None
         if any(not sampled for sampled in last.mask[first_sampled:]):
@@ -297,9 +296,7 @@ class PendingTurn:
             return None
         return prompt_ids, completion_ids
 
-    def prompt_message_spans(
-        self, tail_attribution: RenderedTokens
-    ) -> list[tuple[int, int] | None]:
+    def prompt_message_spans(self, tail_attribution: RenderedTokens) -> list[tuple[int, int] | None]:
         """Convert bridge-tail attribution into full-prompt message spans."""
         # Reused bridge tokens are unattributed, so scan only the newly rendered tail.
         tail_spans = RenderedTokens(
@@ -308,8 +305,7 @@ class PendingTurn:
         ).message_token_spans()
         # Tail spans are slice-relative; restore their full-prompt token offsets.
         return [None] * self.tail_start + [
-            None if span is None else (span[0] + self.path_len, span[1] + self.path_len)
-            for span in tail_spans
+            None if span is None else (span[0] + self.path_len, span[1] + self.path_len) for span in tail_spans
         ]
 
     def commit(self, response: Response) -> None:
@@ -324,16 +320,8 @@ def prepare_turn(trace: Trace, prompt: list[Message]) -> PendingTurn:
     prefix_node_ids: list[int] = []
     for msg in prompt:
         existing = None
-        if (
-            isinstance(msg.content, list)
-            and len(idx) <= 10
-            and any(part.type == "image_url" for part in msg.content)
-        ):
-            children = [
-                node_id
-                for (node_parent, _), node_id in idx.items()
-                if node_parent == parent
-            ]
+        if isinstance(msg.content, list) and len(idx) <= 10 and any(part.type == "image_url" for part in msg.content):
+            children = [node_id for (node_parent, _), node_id in idx.items() if node_parent == parent]
             # Repeated image URLs are cheaper to compare than to encode and hash again.
             # Only scan short, unambiguous parents; all other cases use the stable index.
             if len(children) == 1 and trace.nodes[children[0]].message == msg:
@@ -395,9 +383,7 @@ def _attribute_mm(
             if k < len(hashes):
                 node_hashes.setdefault(modality, []).append(hashes[k])
         if node_items:
-            trace.nodes[node_id].multi_modal_data = MultiModalData(
-                mm_items=node_items, mm_hashes=node_hashes
-            )
+            trace.nodes[node_id].multi_modal_data = MultiModalData(mm_items=node_items, mm_hashes=node_hashes)
 
 
 def _attribute_routed_experts(
@@ -428,9 +414,7 @@ def _attribute_routed_experts(
         elif n and arr.shape[0] and 0 <= off and end == needed == arr.shape[0] + 1:
             # The engine omits the turn's final position because no forward pass follows it.
             # Pad only the final node's suffix instead of copying the full-context array.
-            trace.nodes[nid].routed_experts = np.concatenate(
-                [arr[off:], arr[-1:]], axis=0
-            )
+            trace.nodes[nid].routed_experts = np.concatenate([arr[off:], arr[-1:]], axis=0)
         off = end
 
 
@@ -516,9 +500,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
             sampled=True,
             token_ids=[*gen_prompt, *comp_ids],
             mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
-            is_content=([False] * len(gen_prompt) + [True] * len(comp_ids))
-            if has_is_content
-            else [],
+            is_content=([False] * len(gen_prompt) + [True] * len(comp_ids)) if has_is_content else [],
             # TurnTokens is discarded after commit, so transfer its logprobs without copying.
             logprobs=tokens.completion_logprobs if tokens else [],
             finish_reason=response.finish_reason,
@@ -536,16 +518,19 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
 
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.
-    _attribute_routed_experts(
-        trace, new_node_ids, path_len, tokens.routed_experts if tokens else None
-    )
+    _attribute_routed_experts(trace, new_node_ids, path_len, tokens.routed_experts if tokens else None)
 
 
 # --- walking the graph (views) ---------------------------------------------------------
 
 
-def leaves(trace: Trace) -> list[int]:
+def leaves(trace: Trace, *, include_qa: bool = True) -> list[int]:
     """Node ids that are no node's parent — one per branch (the last node of each). The
-    `Trace.branches` view walks each leaf's parents back to its root to build the branch."""
-    has_child = {n.parent for n in trace.nodes if n.parent is not None}
-    return [i for i in range(len(trace.nodes)) if i not in has_child]
+    `Trace.branches` view walks each leaf's parents back to its root to build the branch.
+
+    ``include_qa=False`` computes leaves on the subgraph without TTT Q&A nodes (they are
+    always leaf-side — a QA node never has a non-QA child), re-exposing the branch a QA
+    generation forked from: the trace's turn/token metrics and `RolloutLimits` use this
+    view, so QA side-generations don't count against the rollout's budgets."""
+    has_child = {n.parent for n in trace.nodes if n.parent is not None and (include_qa or not n.ttt_qa)}
+    return [i for i, n in enumerate(trace.nodes) if i not in has_child and (include_qa or not n.ttt_qa)]

@@ -15,8 +15,8 @@ from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
 from verifiers.v1.env import (
     ElasticPoolConfig,
     EnvConfig,
-    EnvServerConfig,
     Environment,
+    EnvServerConfig,
     StaticPoolConfig,
     TimeoutConfig,
     pool_serve_kwargs,
@@ -30,9 +30,11 @@ from verifiers.v1.errors import (
     SandboxError,
     TaskError,
     ToolsetError,
+    TTTError,
     TunnelError,
     UserError,
 )
+from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.judge import (
     Judge,
@@ -43,9 +45,9 @@ from verifiers.v1.judge import (
     JudgeView,
 )
 from verifiers.v1.judges import (
+    Criterion,
     ReferenceJudge,
     ReferenceJudgeConfig,
-    Criterion,
     RubricJudge,
     RubricJudgeConfig,
 )
@@ -62,13 +64,12 @@ from verifiers.v1.loaders import (
     task_type,
     taskset_config_type,
 )
-from verifiers.v1.scoring import (
-    compare_stdout_results as compare_stdout_results,
-    extract_boxed_answer as extract_boxed_answer,
-    parse_judge_choice as parse_judge_choice,
-    parse_pytest_outcomes as parse_pytest_outcomes,
-    read_answer_file_or_last_reply as read_answer_file_or_last_reply,
-    verify_boxed_math_answer as verify_boxed_math_answer,
+from verifiers.v1.mcp import (
+    SharedToolsetConfig,
+    Toolset,
+    ToolsetConfig,
+    User,
+    UserConfig,
 )
 from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
 from verifiers.v1.rollout import Rollout
@@ -81,6 +82,24 @@ from verifiers.v1.runtimes import (
     RuntimeInfo,
     SubprocessConfig,
 )
+from verifiers.v1.scoring import (
+    compare_stdout_results as compare_stdout_results,
+)
+from verifiers.v1.scoring import (
+    extract_boxed_answer as extract_boxed_answer,
+)
+from verifiers.v1.scoring import (
+    parse_judge_choice as parse_judge_choice,
+)
+from verifiers.v1.scoring import (
+    parse_pytest_outcomes as parse_pytest_outcomes,
+)
+from verifiers.v1.scoring import (
+    read_answer_file_or_last_reply as read_answer_file_or_last_reply,
+)
+from verifiers.v1.scoring import (
+    verify_boxed_math_answer as verify_boxed_math_answer,
+)
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import (
     Task,
@@ -91,14 +110,6 @@ from verifiers.v1.task import (
     WireTaskData,
 )
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.mcp import (
-    Toolset,
-    SharedToolsetConfig,
-    ToolsetConfig,
-    User,
-    UserConfig,
-)
-from verifiers.v1.graph import MessageNode
 from verifiers.v1.trace import (
     Branch,
     Error,
@@ -108,10 +119,11 @@ from verifiers.v1.trace import (
     TraceTask,
     WireTrace,
 )
+from verifiers.v1.ttt import QAConfig, TTTConfig, TTTRolloutHook
 from verifiers.v1.types import (
+    ID,
     AssistantMessage,
     ContentPart,
-    ID,
     ImageUrlContentPart,
     ImageUrlSource,
     Message,
@@ -125,8 +137,8 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolCall,
-    TurnTokens,
     ToolMessage,
+    TurnTokens,
     Usage,
     UserMessage,
 )
@@ -184,6 +196,7 @@ __all__ = [
     "SandboxError",
     "TaskError",
     "InterceptionError",
+    "TTTError",
     "TunnelError",
     # clients
     "Client",
@@ -214,6 +227,9 @@ __all__ = [
     "RetryConfig",
     "RolloutRetryConfig",
     "TimeoutConfig",
+    "QAConfig",
+    "TTTConfig",
+    "TTTRolloutHook",
     "Episode",
     "Rollout",
     # loaders

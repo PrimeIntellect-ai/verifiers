@@ -2,9 +2,9 @@ import json
 import os
 from pathlib import Path
 
-from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
@@ -12,12 +12,8 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 # Frames the model as a coding agent and names its local tools (a pure-text chat loop gets no
 # harness-injected prompt). The edit clause is appended only when the `edit` tool is enabled.
-BASH_SYSTEM_PROMPT = (
-    "You are a coding agent. You have access to a bash tool for running shell commands."
-)
-EDIT_SYSTEM_PROMPT = (
-    "You also have an edit tool for single-occurrence string replacement in a file."
-)
+BASH_SYSTEM_PROMPT = "You are a coding agent. You have access to a bash tool for running shell commands."
+EDIT_SYSTEM_PROMPT = "You also have an edit tool for single-occurrence string replacement in a file."
 # Appended when search is enabled, so the model knows the extra tool exists.
 SEARCH_PROMPT = (
     "You also have a search tool that returns Google results (title, URL, snippet) for a query; "
@@ -60,9 +56,7 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             fragments.append(EDIT_SYSTEM_PROMPT)
         if self.config.search:
             fragments.append(SEARCH_PROMPT)
-        system_prompt = "\n\n".join(
-            p for p in (" ".join(fragments), system_prompt) if p
-        )
+        system_prompt = "\n\n".join(p for p in (" ".join(fragments), system_prompt) if p)
         env = {**self.config.resolved_env}
         args = [
             f"--base-url={endpoint}",
@@ -94,14 +88,7 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             # The program connects to the tool servers over HTTP; hand it a standard
             # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).
             args.append(
-                "--mcp-config="
-                + json.dumps(
-                    {
-                        "mcpServers": {
-                            name: {"url": url} for name, url in mcp_urls.items()
-                        }
-                    }
-                )
+                "--mcp-config=" + json.dumps({"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}})
             )
         # A Messages prompt (e.g. an image-bearing prompt) seeds the chat loop directly via env
         # (it can be large multimodal content that overflows argv); a plain string is the single
@@ -110,7 +97,11 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
             args.append(f"--prompt={prompt}")
         elif prompt is not None:
             env["INITIAL_MESSAGES"] = json.dumps([message_to_wire(m) for m in prompt])
-        program = await runtime.prepare_uv_script(
-            PROGRAM_SOURCE, self.config.resolved_env
-        )
+        args += self.extra_program_args()
+        program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
         return await runtime.run_program([*program, *args], env)
+
+    def extra_program_args(self) -> list[str]:
+        """Extra argv a subclass appends to the program invocation (e.g. the compacting
+        harness's `--compact-at-tokens`). The base harness appends nothing."""
+        return []

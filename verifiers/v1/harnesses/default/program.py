@@ -169,13 +169,77 @@ def run_edit(path: str, old_str: str, new_str: str) -> str:
     return f"Edited {path}"
 
 
+# Compaction prompts (mirroring rlm's): the checkpoint prompt asks for a handoff summary with
+# the full conversation still in context; the framing wraps that summary as the sole context of
+# the post-compaction conversation. Both are overridable via argv (the compacting harness's
+# config), so nothing about them is baked in.
+CHECKPOINT_COMPACTION_PROMPT = (
+    "You are performing a CONTEXT CHECKPOINT COMPACTION. "
+    "Create a handoff summary for another LLM that will resume the task.\n"
+    "\n"
+    "Include:\n"
+    "- Current progress and key decisions made\n"
+    "- Important context, constraints, or user preferences\n"
+    "- What remains to be done (clear next steps)\n"
+    "- Any critical data, examples, or references needed to continue\n"
+    "\n"
+    "Be concise, structured, and focused on helping the next LLM "
+    "seamlessly continue the work."
+)
+
+POST_COMPACTION_FRAMING = (
+    "Another language model started to solve this problem and produced "
+    "a summary of its thinking process. Use this to build on the work "
+    "that has already been done and avoid duplicating work. Here is "
+    "the summary produced by the other language model, use the "
+    "information in this summary to assist with your own analysis:"
+)
+
+
 async def chat(
-    client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    tool_choice: str | None = None,
 ):
-    completion = await client.chat.completions.create(
-        model=model, messages=messages, tools=tools or None
-    )
-    return completion.choices[0].message
+    """One chat turn — returns the full completion (the loop reads `.choices[0].message`;
+    the compaction path also reads `.usage.prompt_tokens`)."""
+    kwargs: dict = {"model": model, "messages": messages, "tools": tools or None}
+    if tools and tool_choice is not None:
+        kwargs["tool_choice"] = tool_choice
+    return await client.chat.completions.create(**kwargs)
+
+
+def prompt_tokens(completion) -> int:
+    """The turn's prompt token count from the response usage; 0 when the provider reports none."""
+    usage = getattr(completion, "usage", None)
+    return getattr(usage, "prompt_tokens", None) or 0
+
+
+async def compact(
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    checkpoint_prompt: str,
+    framing: str,
+) -> None:
+    """Compact `messages` in place: ask the model for a handoff summary with the full
+    conversation still in context, then rebuild the conversation as `[system?, user(framing +
+    summary)]`. The original task prompt is dropped — the summary carries the goal forward.
+
+    Generating the summary before dropping anything is deliberate: the summary turn is the last
+    turn of the old context, produced while everything it summarizes is still visible. The
+    summary request advertises the same `tools` with `tool_choice="none"` so the rendered
+    system prompt matches regular turns (chat templates inject the tools block only when
+    `tools=` is set) — the trace then branches exactly at the rewrite, not one turn early."""
+    messages.append({"role": "user", "content": checkpoint_prompt})
+    completion = await chat(client, model, messages, tools, tool_choice="none")
+    message = completion.choices[0].message
+    summary = message.content or ""
+    head = [messages[0]] if messages and messages[0].get("role") == "system" else []
+    messages[:] = [*head, {"role": "user", "content": f"{framing}\n\n{summary}"}]
 
 
 async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], dict]:
@@ -248,6 +312,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--serper-key", default="")
+    parser.add_argument("--compact-at-tokens", type=int, default=0)
+    parser.add_argument("--checkpoint-prompt", default=CHECKPOINT_COMPACTION_PROMPT)
+    parser.add_argument("--compaction-framing", default=POST_COMPACTION_FRAMING)
     return parser.parse_args()
 
 
@@ -285,7 +352,8 @@ async def main() -> None:
         elif args.prompt:
             messages.append({"role": "user", "content": args.prompt})
         while True:
-            message = await chat(client, args.model, messages, tools)
+            completion = await chat(client, args.model, messages, tools)
+            message = completion.choices[0].message
             messages.append(message.model_dump(exclude_none=True))
             if not message.tool_calls:
                 break
@@ -337,6 +405,19 @@ async def main() -> None:
                     content = f"error: unknown tool {name!r}"
                 messages.append(
                     {"role": "tool", "tool_call_id": call.id, "content": content}
+                )
+            # Auto-compaction: once this turn's prompt token count crossed the threshold,
+            # summarize and rebuild the conversation (mirrors rlm's engine: the check uses the
+            # usage the model just reported, fires at most once per loop turn, and runs after
+            # the tool results are appended so they're part of what gets summarized).
+            if 0 < args.compact_at_tokens <= prompt_tokens(completion):
+                await compact(
+                    client,
+                    args.model,
+                    messages,
+                    tools,
+                    args.checkpoint_prompt,
+                    args.compaction_framing,
                 )
 
 
