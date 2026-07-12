@@ -598,29 +598,43 @@ async def test_agentic_judge_task_uploads_the_trace():
     assert json.loads(written[TRACE_PATH]) == payload
 
 
-async def test_writer_editors_fan_in_and_shared_verdict(monkeypatch, stub_agent_run):
+async def test_writer_editors_fan_in_and_shared_verdict(monkeypatch):
     """The rounds + fan-in example, stubbed: editors fan out over the draft, the revision
-    is linked under the draft AND every editor trace, and one (stubbed) judge call puts the
-    same `improvement` reward on every trace of the instance."""
-    from writer_editors_v1.topology import ImprovementJudge
+    is linked under the draft AND every editor trace, and the deterministic first→final
+    band score puts the same `improvement` reward on every trace of the instance."""
+    from writer_editors_v1.topology import CritiqueTask, DraftTask, ReviseTask
 
     config = EvalConfig(
         topology={"id": "writer-editors-v1", "num_editors": 2}, rich=False
     )
     env = TopologyRunner(config.topology, config)
 
-    async def stub_evaluate(self, *, trace=None, **fields):
-        assert {"brief", "first", "final"} <= fields.keys()
-        return vf.JudgeResponse(text="SCORE: 8", parsed=0.8)
+    async def fake_agent_run(self, task, *, parents=(), runtime=None, retry=None):
+        # Short first draft, in-band revision — improvement = 1.0 - short/120 > 0.
+        if isinstance(task, DraftTask):
+            reply = "short draft"
+        elif isinstance(task, ReviseTask):
+            reply = " ".join(["word"] * 150)
+        elif isinstance(task, CritiqueTask):
+            reply = "tighten the opening sentence"
+        else:
+            reply = "ok"
+        trace = echoing_trace(task, reply)
+        self.stamp(
+            trace, parents=parents, runtime=runtime, borrowed=runtime is not None
+        )
+        return trace
 
-    monkeypatch.setattr(ImprovementJudge, "evaluate", stub_evaluate)
+    monkeypatch.setattr(vf.Agent, "run", fake_agent_run)
     graph = await run_stubbed_instance(env, env.topology.load_tasks()[0])
     assert graph.error is None
     draft, edit_a, edit_b, revision = graph.traces
     assert [t.agent for t in graph.traces] == ["writer", "editor", "editor", "writer"]
     assert edit_a.parents == edit_b.parents == [draft.id]
     assert revision.parents == [draft.id, edit_a.id, edit_b.id]  # the fan-in
-    assert all(t.rewards["improvement"] == 0.8 for t in graph.traces)
+    score = draft.rewards["improvement"]
+    assert score > 0.0
+    assert all(t.rewards["improvement"] == score for t in graph.traces)
 
 
 def test_instance_record_roundtrips():

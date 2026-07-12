@@ -1,7 +1,7 @@
 [project]
 name = "writer-editors-v1"
 version = "0.1.0"
-description = "writer-editors-v1 — a writer drafts, n editors critique, the writer revises; rounds + fan-in (example topology)."
+description = "writer-editors-v1 — a writer drafts, n editors critique, the writer revises; rounds + fan-in with a deterministic shared reward (example topology)."
 requires-python = ">=3.10"
 dependencies = ["verifiers"]
 

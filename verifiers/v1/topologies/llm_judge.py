@@ -63,7 +63,7 @@ def parse_score(text: str) -> float | None:
     (markdown `**`/backtick emphasis and a `/10` suffix tolerated), clamped to the 0-10
     scale. None when no verdict was committed (the caller decides what that means).
     The one verdict grammar shared by everything that asks for a 0-10 score line
-    (`JudgeTask`, `agentic-judge`, `writer-editors-v1`'s improvement judge)."""
+    (`JudgeTask`, `agentic-judge`)."""
     for line in reversed(text.splitlines()):
         stripped = line.strip().strip("*`").strip()
         if not stripped.upper().startswith("SCORE:"):

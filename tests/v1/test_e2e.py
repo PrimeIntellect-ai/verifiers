@@ -300,8 +300,8 @@ async def test_agentic_judge_topology(tmp_path):
 @pytest.mark.e2e
 async def test_writer_editors_topology(tmp_path):
     """The `writer-editors-v1` example, live: draft -> editor critique (fan-out of 1) ->
-    revision (fan-in), then one `vf.Judge` call puts the same `improvement` reward on
-    every trace."""
+    revision (fan-in), then a deterministic first→final score puts the same
+    `improvement` reward on every trace."""
     from verifiers.v1.cli.eval.runner import graph_traces, run_eval
     from verifiers.v1.configs.eval import EvalConfig
 
@@ -320,8 +320,8 @@ async def test_writer_editors_topology(tmp_path):
     assert all(t.errors == [] for t in (draft, edit, revision))
     assert revision.parents == [draft.id, edit.id]  # the fan-in
     improvements = {t.rewards["improvement"] for t in (draft, edit, revision)}
-    assert len(improvements) == 1  # one verdict, every trace
-    assert revision.info.get("judge")  # the judge call was recorded on the final draft
+    assert len(improvements) == 1  # one graph-level score, every trace
+    assert 0.0 <= next(iter(improvements)) <= 1.0
 
 
 @pytest.mark.e2e

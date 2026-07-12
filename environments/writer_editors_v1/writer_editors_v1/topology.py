@@ -8,19 +8,16 @@ The rounds + fan-in shape, one self-contained package:
     for _ in range(num_editors)))` — every editor critiques the same draft, concurrently.
   - **Fan-in**: the revision task is built from *all* the editors' traces at once, and the
     revised trace is linked under every one of them (`parents=[draft, *edits]`).
-  - **One verdict, every trace**: a single `vf.Judge` call per instance compares the first
-    draft to the final draft (memoized per graph), and the same `improvement` reward lands
-    on writer and editor traces alike — the whole team is rewarded for how much the piece
-    improved, which is only measurable after the instance completes.
+  - **One shared reward, every trace**: a deterministic comparison of the writer's first
+    draft to its final draft (closer to the brief's 120–180 word band is better). The same
+    `improvement` value lands on writer and editor traces alike — the whole team is
+    rewarded for a measurable graph-level fact, with no judge agent and no Topology-side
+    memoization (pure function of the finished graph; cheap to recompute).
 """
 
 import asyncio
-import logging
 
 import verifiers.v1 as vf
-from verifiers.v1.topologies.llm_judge import parse_score
-
-logger = logging.getLogger(__name__)
 
 BRIEFS = [
     "Write the opening paragraph (120-180 words) of a short story about a lighthouse "
@@ -72,35 +69,36 @@ REVISE_PROMPT = """You wrote the draft below for this brief. Your editors have w
 Rewrite the draft, taking the feedback that improves the piece and ignoring what doesn't. \
 Stay within the brief. Reply with the revised piece alone — no preamble, no commentary."""
 
-JUDGE_PROMPT = """An editing team revised a piece of writing. Compare the first draft to \
-the final draft, for this brief.
-
-<brief>
-{brief}
-</brief>
-
-<first_draft>
-{first}
-</first_draft>
-
-<final_draft>
-{final}
-</final_draft>
-
-Judge how much the final draft improved on the first: quality of prose, fit to the brief, \
-and whether the changes are real improvements rather than churn. Think it through, then \
-end your reply with a final line of exactly `SCORE: <n>`, where <n> is an integer from 0 \
-(worse or unchanged) to 10 (a dramatic, unambiguous improvement)."""
+# Briefs ask for 120–180 words; the toy reward scores how close a draft sits to that band.
+_TARGET_LO, _TARGET_HI = 120, 180
+_TARGET_MID = (_TARGET_LO + _TARGET_HI) / 2
 
 
-class ImprovementJudge(vf.Judge[float]):
-    """One call comparing first draft to final draft — the cheap `vf.Judge` utility tier
-    (the judge-as-agent tier is the `llm-judge`/`agentic-judge` topologies)."""
+def _band_score(text: str) -> float:
+    """1.0 inside the brief's word band; linear falloff outside it."""
+    n = len(text.split())
+    if _TARGET_LO <= n <= _TARGET_HI:
+        return 1.0
+    if n < _TARGET_LO:
+        return max(0.0, n / _TARGET_LO)
+    return max(0.0, 1.0 - (n - _TARGET_HI) / _TARGET_MID)
 
-    prompt = JUDGE_PROMPT
 
-    def parse(self, response: vf.JudgeResponse[float]) -> float | None:
-        return parse_score(response.text)
+def improvement(graph: vf.AgentGraph) -> float:
+    """How much the final draft improved on the first toward the brief's word band.
+
+    0 when there was no revision (or empty text). Pure graph read — safe to call from
+    every agent-scoped reward without caching.
+    """
+    writers = graph.by_agent("writer")
+    if len(writers) < 2:
+        return 0.0
+    first, final = writers[0], writers[-1]
+    if not first.last_reply or not final.last_reply:
+        return 0.0
+    if first.last_reply.strip() == final.last_reply.strip():
+        return 0.0
+    return max(0.0, _band_score(final.last_reply) - _band_score(first.last_reply))
 
 
 class DraftData(vf.TaskData):
@@ -132,18 +130,9 @@ class WriterEditorsConfig(vf.TopologyConfig):
     num_rounds: int = 1
     """Critique→revise cycles (each round: every editor reads the current draft, the
     writer revises off all their feedback)."""
-    judge: vf.JudgeConfig = vf.JudgeConfig()
-    """The improvement judge's endpoint/model/sampling (`--topology.judge.model ...`)."""
 
 
 class WriterEditorsTopology(vf.Topology[WriterEditorsConfig]):
-    def __init__(self, config: WriterEditorsConfig) -> None:
-        super().__init__(config)
-        self.judge = ImprovementJudge(config.judge)
-        self._verdicts: dict[str, float] = {}
-        """Instance verdicts by graph id: the judge compares first draft to final draft
-        once per instance, and every trace's `improvement` reward reads the same value."""
-
     def load_tasks(self) -> list[vf.Task]:
         """Self-seeding: the briefs are baked in, so no `--topology.taskset.id` needed."""
         return [
@@ -201,36 +190,11 @@ class WriterEditorsTopology(vf.Topology[WriterEditorsConfig]):
 
     @vf.reward(agent="writer")
     async def writer_improvement(self, graph: vf.AgentGraph) -> dict[str, float]:
-        return {"improvement": await self.verdict(graph)}
+        return {"improvement": improvement(graph)}
 
     @vf.reward(agent="editor")
     async def editor_improvement(self, graph: vf.AgentGraph) -> dict[str, float]:
-        return {"improvement": await self.verdict(graph)}
-
-    async def verdict(self, graph: vf.AgentGraph) -> float:
-        """The instance's improvement score: one judge call comparing the writer's first
-        draft to its final draft, memoized per graph — instance scoring runs sequentially
-        per graph, so the first reward computes it and the rest read it. An instance that
-        never produced a revision (or whose judge commits to no verdict) scores 0."""
-        if graph.id not in self._verdicts:
-            writers = graph.by_agent("writer")
-            first, final = writers[0], writers[-1]
-            score = None
-            if first is not final and first.last_reply and final.last_reply:
-                result = await self.judge.evaluate(
-                    trace=final,  # the judge call's usage lands on the final draft's trace
-                    brief=first.task.data.brief,
-                    first=first.last_reply,
-                    final=final.last_reply,
-                )
-                score = result.parsed
-                if score is None:
-                    logger.warning(
-                        "improvement judge returned no verdict for instance %s",
-                        graph.id,
-                    )
-            self._verdicts[graph.id] = score or 0.0
-        return self._verdicts[graph.id]
+        return {"improvement": improvement(graph)}
 
 
 __all__ = ["WriterEditorsTopology"]
