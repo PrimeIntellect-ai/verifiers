@@ -25,7 +25,7 @@ Candidate = dict[str, str]
 
 
 @dataclass
-class GEPAv1Adapter:
+class GEPAAdapter:
     """Bridges GEPA's optimization loop with a native v1 `Environment`. `tasks` covers only the
     trainset + valset tasks GEPA was given (not the whole taskset), keyed by `task.data.idx` —
     GEPA's `batch` is a list of those idxs, and injecting the candidate rebuilds each `Task`
@@ -41,7 +41,7 @@ class GEPAv1Adapter:
     on_complete: Callable[[Trace], Awaitable[None]] | None = None
     """Called with each rollout's trace as it finalizes — the runner's persist hook that
     streams traces to `traces.jsonl`, exactly as `run_eval` does."""
-    state_columns: list[str] = field(default_factory=list)
+    reflection_columns: list[str] = field(default_factory=list)
     propose_new_texts: Callable[..., Candidate] | None = None
     """Part of GEPA's adapter protocol — its proposer reads this attribute on every reflection
     step. None = use GEPA's default reflection-LM proposer (the AttributeError from leaving it
@@ -101,10 +101,12 @@ class GEPAv1Adapter:
                 record["error"] = str(trace.error)
             if trace.stop_condition:
                 record["stop_condition"] = trace.stop_condition
-            for col in self.state_columns:
-                if col in trace.info:
-                    record[col] = to_jsonable_python(trace.info[col])
-                elif hasattr(trace.task.data, col):
-                    record[col] = to_jsonable_python(getattr(trace.task.data, col))
+            for column in self.reflection_columns:
+                if column in trace.info:
+                    record[column] = to_jsonable_python(trace.info[column])
+                elif hasattr(trace.task.data, column):
+                    record[column] = to_jsonable_python(
+                        getattr(trace.task.data, column)
+                    )
             records.append(record)
         return {comp: records for comp in components_to_update}

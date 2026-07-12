@@ -1,7 +1,7 @@
-"""The GEPA runner: split tasks, drive `gepa.api.optimize` against a `GEPAv1Adapter`, save
+"""The GEPA runner: split tasks, drive `gepa.api.optimize` against a `GEPAAdapter`, save
 results. Unlike the async sibling runners, `optimize()` is synchronous and blocking, so it runs
 on the main thread and the runner manages one event loop by hand: `env.serving()` is entered on
-it once, each rollout batch runs via `loop.run_until_complete` (see `GEPAv1Adapter.evaluate`),
+it once, each rollout batch runs via `loop.run_until_complete` (see `GEPAAdapter.evaluate`),
 and everything is torn down in `finally`. Mirrors how v0 vf-gepa bridged sync GEPA to async
 rollouts — a Ctrl-C raises on the main thread inside `optimize()` and unwinds through teardown."""
 
@@ -14,7 +14,7 @@ from gepa.core.result import GEPAResult
 from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.env import Environment
-from verifiers.v1.gepa.adapter import GEPAv1Adapter
+from verifiers.v1.gepa.adapter import GEPAAdapter
 from verifiers.v1.gepa.config import GEPAConfig
 from verifiers.v1.gepa.dataset import (
     reject_group_reward_tasksets,
@@ -61,7 +61,7 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     # optimize() is synchronous and blocking, so it drives the run from this (main) thread. We
     # own one event loop: `env.serving()` (shared tool servers + interception pool, built once
     # like run_eval) is entered on it, each rollout batch runs on it via `loop.run_until_complete`
-    # (GEPAv1Adapter.evaluate), and it's all torn down in `finally`. Keeping optimize() on the
+    # (GEPAAdapter.evaluate), and it's all torn down in `finally`. Keeping optimize() on the
     # main thread means a Ctrl-C raises straight through it into this teardown.
     loop = asyncio.new_event_loop()
     semaphore = (
@@ -88,14 +88,14 @@ def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
         # serving is up, so a startup failure propagates as-is instead of being masked by
         # tearing down a context that never entered.
         try:
-            adapter = GEPAv1Adapter(
+            adapter = GEPAAdapter(
                 env=env,
                 ctx=ctx,
                 tasks=tasks_by_idx,
                 loop=loop,
                 semaphore=semaphore,
                 on_complete=on_complete,
-                state_columns=config.state_columns,
+                reflection_columns=config.reflection_columns,
             )
             optimize_kwargs: dict = dict(
                 seed_candidate={"system_prompt": seed_prompt},
