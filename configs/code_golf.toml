@@ -1,8 +1,0 @@
-# code-golf-v1 — correctness reward plus per-trace latency and length metrics.
-#
-#   uv run eval code-golf-v1 @ configs/code_golf.toml
-num_tasks = 1
-num_rollouts = 1
-
-[taskset]
-id = "code-golf-v1"

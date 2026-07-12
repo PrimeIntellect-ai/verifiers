@@ -85,17 +85,15 @@ a graph record alone.
 ### Recover relative signals as a built-in best-of-N topology
 
 Deleting `@group_reward` removed the only native home for pairwise/relative eval signals
-(code-golf's "shortest of the group wins", preference comparisons); they were demoted to
-per-trace metrics with the comparison left to "the training algorithm". For *training*
-that is the right owner, but eval-mode relative signals have a clean replacement the
-framework should ship rather than describe: a built-in best-of-N topology — one seed,
-`go` fans out N runs of the same agent, a `@reward(agent=...)` compares
-`graph.children(...)`. That recovers everything group rewards did, explicitly, on the
-canonical path, and doubles as the documented migration story for the removal.
+(shortest-of-group, preference comparisons); they were demoted to per-trace metrics with
+the comparison left to "the training algorithm". For *training* that is the right owner,
+but eval-mode relative signals have a clean replacement the framework should ship rather
+than describe: a built-in best-of-N topology — one seed, `go` fans out N runs of the same
+agent, a `@reward(agent=...)` compares `graph.children(...)`. That recovers everything
+group rewards did, explicitly, on the canonical path, and doubles as the documented
+migration story for the removal.
 
-Done when a `best-of-n` built-in exists, code-golf's relative signals are expressed
-through it (or its docstring points at it), and the docs name it as the group-reward
-successor.
+Done when a `best-of-n` built-in exists and the docs name it as the group-reward successor.
 
 ## Replay, presentation, and platform upload
 

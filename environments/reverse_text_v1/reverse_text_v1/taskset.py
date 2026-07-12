@@ -21,18 +21,6 @@ class ReverseTextData(vf.TaskData):
     answer: str
     """The ground-truth reversal of the prompt text."""
 
-    @vf.stop
-    async def single_turn(self, trace: vf.Trace) -> bool:
-        # Reverse-text is single-turn: refuse a second turn so the model answers once.
-        return trace.num_turns >= 1
-
-    @vf.reward(weight=1.0)
-    async def lcs(self, trace: vf.Trace) -> float:
-        completion = trace.last_reply
-        match = _TAG.search(completion or "")
-        response = match.group(1).strip() if match else ""
-        return SequenceMatcher(None, response, self.answer).ratio()
-
 
 class ReverseTextTask(vf.Task[ReverseTextData]):
     @vf.stop

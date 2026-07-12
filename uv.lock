@@ -689,17 +689,6 @@ wheels = [
 ]
 
 [[package]]
-name = "code-golf-v1"
-version = "0.1.0"
-source = { editable = "environments/code_golf_v1" }
-dependencies = [
-    { name = "verifiers" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "verifiers" }]
-
-[[package]]
 name = "color-codeword-v1"
 version = "0.1.0"
 source = { editable = "environments/color_codeword_v1" }
@@ -6303,7 +6292,6 @@ dev = [
 examples = [
     { name = "alphabet-sort-v1" },
     { name = "chess-v1" },
-    { name = "code-golf-v1" },
     { name = "color-codeword-v1" },
     { name = "compact" },
     { name = "debate-v1" },
@@ -6393,7 +6381,6 @@ dev = [
 examples = [
     { name = "alphabet-sort-v1", editable = "environments/alphabet_sort_v1" },
     { name = "chess-v1", editable = "environments/chess_v1" },
-    { name = "code-golf-v1", editable = "environments/code_golf_v1" },
     { name = "color-codeword-v1", editable = "environments/color_codeword_v1" },
     { name = "compact", editable = "environments/compact" },
     { name = "debate-v1", editable = "environments/debate_v1" },
