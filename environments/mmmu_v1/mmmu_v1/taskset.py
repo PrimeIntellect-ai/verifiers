@@ -1,9 +1,11 @@
 """mmmu-v1 — MMMU multimodal multiple-choice benchmark (the v1 port of `mmmu`).
 
-Each row shows one image plus a four-option multiple-choice question; the model
-reasons and answers with the option letter inside \\boxed{}. The prompt (question
-text + options + the image as a base64 PNG data URL) and the boxed-letter
-exact-match scoring mirror the v0 environment one-to-one.
+Each row shows one or more images plus a multiple-choice question; the model
+reasons and answers with the option letter inside \\boxed{}. The prompt carries
+the question text (with its `<image N>` markers) plus every non-null
+`image_1`..`image_7` as base64 PNG data-URL parts, in marker order. Options are
+lettered A.. dynamically (MMMU rows range from 2 to 9 choices); open-ended rows
+(no options) are skipped — this environment scores multiple choice only.
 """
 
 import ast
@@ -47,7 +49,7 @@ ALL_SUBSETS = [
     "Sociology",
 ]
 
-LETTERS = "ABCD"
+LETTERS = "ABCDEFGHI"
 
 
 def image_data_url(pil_image) -> str:
@@ -77,7 +79,7 @@ def parse_letter(text: str) -> str:
 
 class MMMUData(vf.TaskData):
     answer: str
-    """The ground-truth option letter (A-D)."""
+    """The ground-truth option letter (A-I)."""
 
 
 class MMMUTask(vf.Task[MMMUData]):
@@ -109,12 +111,16 @@ class MMMUTaskset(vf.Taskset[MMMUTask, MMMUConfig]):
         for subset in subsets:
             for row in load_dataset("MMMU/MMMU", subset, split=c.split):
                 options = ast.literal_eval(row["options"])
-                assert len(options) == 4  # v0 supports exactly A-D rows
+                if not options:  # open-ended row; only multiple choice is scored
+                    continue
                 parts = [
-                    vf.TextContentPart(text=question_text(row["question"], options)),
+                    vf.TextContentPart(text=question_text(row["question"], options))
+                ] + [
                     vf.ImageUrlContentPart(
-                        image_url=vf.ImageUrlSource(url=image_data_url(row["image_1"]))
-                    ),
+                        image_url=vf.ImageUrlSource(url=image_data_url(image))
+                    )
+                    for image in (row[f"image_{i}"] for i in range(1, 8))
+                    if image is not None
                 ]
                 tasks.append(
                     MMMUTask(
