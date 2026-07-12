@@ -118,6 +118,7 @@ class Rollout:
         trace.runtime = runtime.info
         ctx = self.ctx
         stops = discover_decorated(self.task, "stop")
+        intercepts = discover_decorated(self.task, "intercept")
         logger.info(
             "rollout start: id=%s task=%s harness=%s runtime=%s",
             trace.id,
@@ -126,7 +127,13 @@ class Rollout:
             self.runtime_config.type,
         )
         try:
-            session = RolloutSession(ctx, trace, stops, self.limits)
+            session = RolloutSession(
+                ctx=ctx,
+                trace=trace,
+                stops=stops,
+                limits=self.limits,
+                intercepts=intercepts,
+            )
             await runtime.start()
             now = time.time()
             trace.timing.boot.end = now

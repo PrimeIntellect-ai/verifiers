@@ -8,16 +8,23 @@ read them in the same precedence (`reasoning` / `reasoning_content` / `reasoning
 
 import time
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
 from typing import Any
 
 from openai.types.chat import ChatCompletion
 
-from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
+from verifiers.v1.dialects.base import (
+    Dialect,
+    StreamParser,
+    parse_sse_event,
+    sse_event,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     Message,
+    MessageContent,
     Messages,
     Response,
     SamplingConfig,
@@ -90,11 +97,11 @@ def parse_message(raw: dict) -> Message:
         details = raw.get("reasoning_details")
         calls = [
             ToolCall(
-                id=c["id"],
-                name=c["function"]["name"],
-                arguments=c["function"]["arguments"],
+                id=call["id"],
+                name=call["function"]["name"],
+                arguments=call["function"]["arguments"],
             )
-            for c in (raw.get("tool_calls") or [])
+            for call in raw.get("tool_calls") or []
         ] or None
         return AssistantMessage(
             content=_content_text(content) or None,
@@ -124,9 +131,8 @@ def parse_tools(raw: list[dict] | None) -> list[Tool] | None:
 
 
 # --- vf -> chat wire ----------------------------------------------------------
-# `message_to_wire` (chat-only): used by `extend` (user-sim turn injection), the default harness
-# (a Messages prompt), and the train client (its generate request). The proxy preserves its parsed
-# native JSON independently and does not use this serializer.
+# `message_to_wire` (chat-only): used by interception rewrites, `extend` (user-sim turn injection),
+# the default harness (a Messages prompt), and the train client (its generate request).
 
 
 def _content_to_wire(content):
@@ -170,13 +176,8 @@ def response_from_wire(completion: ChatCompletion) -> Response:
     """An OpenAI chat.completion -> a vf `Response` (the one place raw provider objects cross
     into our typed `Response`). No token ids: training tokens come from the renderer client."""
     choice = completion.choices[0]
-    message = choice.message
-    data = message.model_dump()
-    details = data.get("reasoning_details")
-    tool_calls = [
-        ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
-        for tc in (message.tool_calls or [])
-    ] or None
+    message = parse_message(choice.message.model_dump())
+    assert isinstance(message, AssistantMessage)
     finish: FinishReason = (
         choice.finish_reason if choice.finish_reason in FINISH_REASONS else None
     )
@@ -185,12 +186,7 @@ def response_from_wire(completion: ChatCompletion) -> Response:
         id=completion.id,
         created=completion.created,
         model=completion.model,
-        message=AssistantMessage(
-            content=message.content,
-            reasoning_content=reasoning_text(data),
-            tool_calls=tool_calls,
-            provider_state=details if isinstance(details, list) and details else None,
-        ),
+        message=message,
         finish_reason=finish,
         usage=usage,
     )
@@ -271,24 +267,23 @@ class ChatStreamParser(StreamParser):
         if self.reasoning_details:
             self.message["reasoning_details"] = self.reasoning_details
         head = self.head or {}
-        return response_from_wire(
-            ModdedChatCompletion.model_validate(
+        raw = {
+            "id": head.get("id", "vf-intercept"),
+            "object": "chat.completion",
+            "created": head.get("created", int(time.time())),
+            "model": head.get("model", ""),
+            "choices": [
                 {
-                    "id": head.get("id", "vf-intercept"),
-                    "object": "chat.completion",
-                    "created": head.get("created", int(time.time())),
-                    "model": head.get("model", ""),
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": self.message,
-                            "finish_reason": self.finish_reason or "stop",
-                        }
-                    ],
-                    "usage": self.usage,
+                    "index": 0,
+                    "message": self.message,
+                    "finish_reason": self.finish_reason or "stop",
                 }
-            )
-        )
+            ],
+            "usage": self.usage,
+        }
+        response = response_from_wire(ModdedChatCompletion.model_validate(raw))
+        response.raw = raw
+        return response
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
@@ -313,6 +308,46 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)
+
+    def rewrite_response(self, raw: dict, message: AssistantMessage) -> dict:
+        rewritten = deepcopy(raw)
+        choice = rewritten["choices"][0]
+        choice["message"] = message_to_wire(message)
+        choice["finish_reason"] = "tool_calls" if message.tool_calls else "stop"
+        choice.pop("logprobs", None)
+        return rewritten
+
+    def serialize_stream(self, raw: dict) -> list[bytes]:
+        choice = raw["choices"][0]
+        delta = {k: v for k, v in choice["message"].items() if v is not None}
+        if delta.get("tool_calls"):
+            delta["tool_calls"] = [
+                {"index": i, **call} for i, call in enumerate(delta["tool_calls"])
+            ]
+        chunk = {
+            "id": raw.get("id", ""),
+            "object": "chat.completion.chunk",
+            "created": raw.get("created", 0),
+            "model": raw.get("model", ""),
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": delta,
+                    "finish_reason": choice.get("finish_reason"),
+                }
+            ],
+            "usage": raw.get("usage"),
+        }
+        return [sse_event(chunk), b"data: [DONE]\n\n"]
+
+    def rewrite_tool_results(
+        self, body: dict, replacements: dict[str, MessageContent]
+    ) -> dict:
+        rewritten = deepcopy(body)
+        for raw in rewritten.get("messages", []):
+            if raw.get("role") == "tool" and raw.get("tool_call_id") in replacements:
+                raw["content"] = _content_to_wire(replacements[raw["tool_call_id"]])
+        return rewritten
 
     def stream_parser(self) -> StreamParser:
         return ChatStreamParser()

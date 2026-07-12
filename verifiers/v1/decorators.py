@@ -69,6 +69,35 @@ def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
 
 
 @overload
+def intercept(func: F, priority: int = 0) -> F: ...
+@overload
+def intercept(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
+def intercept(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
+    """Mark a `Task` method as a message interceptor.
+
+    Interceptors may declare `message` and `trace`. They see tool messages before the model
+    does and assistant messages before the harness does; the `message` annotation selects
+    which (`vf.AssistantMessage`, `vf.ToolMessage`, or unannotated for both). Return None to
+    pass through the native message untouched, a string to replace an assistant turn (its tool
+    calls never run) or a tool result's content, or a typed replacement message. The first
+    replacement wins.
+
+        @vf.intercept
+        async def block_rm(self, message: vf.AssistantMessage) -> str | None:
+            if any("rm -rf" in call.arguments for call in message.tool_calls or []):
+                return "Blocked by policy."
+
+    A replacement is what the harness sees and what the trace records: it carries no sampled
+    tokens, provider state, or reasoning (inspect server-tool items on
+    `message.provider_state` before ruling). Tool-message interceptors re-run on the same
+    message every turn — the harness replays the original history — so they must be
+    deterministic. Streamed responses are withheld until the interceptors have ruled.
+    """
+    decorator = mark("intercept", intercept_priority=priority)
+    return decorator if func is None else decorator(func)
+
+
+@overload
 def metric(func: F, priority: int = 0) -> F: ...
 @overload
 def metric(func: None = None, priority: int = 0) -> Callable[[F], F]: ...

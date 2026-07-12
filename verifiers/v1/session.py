@@ -11,14 +11,15 @@ turns.
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args, get_type_hints
 
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.decorators import invoke
+from verifiers.v1.errors import RolloutError, TaskError
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.types import AssistantMessage, Message, Messages
 
 if TYPE_CHECKING:
-    from verifiers.v1.errors import RolloutError
     from verifiers.v1.mcp import Respond
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,8 @@ class RolloutSession:
     trace: Trace
     stops: list[Callable[[Trace], Awaitable[bool]]] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    intercepts: list[Callable[..., Awaitable[object]]] = field(default_factory=list)
+    rewritten_response_ids: set[str] = field(default_factory=set)
     user: "Respond | None" = None
     """A user simulator the rollout sets before the harness runs (see `verifiers.v1.mcp.user`).
     When set, each model turn with no tool call is followed by the simulator's reply,
@@ -81,6 +84,41 @@ class RolloutSession:
     (and may swallow it, or exit non-zero), so the rollout re-raises this original error once the
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
+
+    async def intercept(self, message: Message) -> Message | None:
+        """Return the first interceptor replacement, or None for native pass-through."""
+        try:
+            for interceptor in self.intercepts:
+                hint = get_type_hints(interceptor).get("message")
+                if hint is not None and not isinstance(message, get_args(hint) or hint):
+                    continue
+                replacement = await invoke(
+                    interceptor,
+                    {"message": message.model_copy(deep=True), "trace": self.trace},
+                )
+                if replacement is None:
+                    continue
+                if isinstance(replacement, str):
+                    replacement = (
+                        AssistantMessage(content=replacement)
+                        if isinstance(message, AssistantMessage)
+                        else message.model_copy(update={"content": replacement})
+                    )
+                if type(replacement) is not type(message):
+                    raise TaskError(
+                        f"@intercept for {type(message).__name__} returned "
+                        f"{type(replacement).__name__}"
+                    )
+                if isinstance(replacement, AssistantMessage):
+                    replacement = replacement.model_copy(
+                        update={"provider_state": None, "reasoning_content": None}
+                    )
+                return replacement
+        except RolloutError:
+            raise
+        except Exception as e:
+            raise TaskError(f"@intercept failed: {type(e).__name__}: {e}") from e
+        return None
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each

@@ -9,6 +9,7 @@ endpoint and this dialect parses a copy for the trace. Server-side statefulness
 
 import json
 from collections import deque
+from copy import deepcopy
 from typing import Any, cast
 
 from openai.types.responses import (
@@ -27,13 +28,19 @@ from openai.types.responses.response_usage import (
 )
 from pydantic import BaseModel, ConfigDict
 
-from verifiers.v1.dialects.base import Dialect, StreamParser, iter_sse_reverse
+from verifiers.v1.dialects.base import (
+    Dialect,
+    StreamParser,
+    iter_sse_reverse,
+    sse_event,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
     FinishReason,
     ImageUrlContentPart,
     ImageUrlSource,
+    MessageContent,
     Messages,
     Response,
     SamplingConfig,
@@ -142,59 +149,15 @@ def messages_to_wire(messages: Messages) -> ResponseInputParam:
     return items
 
 
-def fold_assistant(items: list[dict]) -> AssistantMessage:
-    """One run of assistant-side items (reasoning / message / function_call) -> one typed
-    assistant message."""
+def assistant_from_items(items: list[dict]) -> AssistantMessage:
+    """Fold one run of native assistant output items into a typed message."""
     content = ""
     reasoning: list[str] = []
     calls: list[ToolCall] = []
+    state: list[dict] = []
     for item in items:
-        if item.get("type") == "reasoning":
-            reasoning += [s.get("text", "") for s in item.get("summary") or []]
-            reasoning += [c.get("text", "") for c in item.get("content") or []]
-        elif item.get("type") == "function_call":
-            calls.append(
-                ToolCall(
-                    id=item.get("call_id", ""),
-                    name=item.get("name", ""),
-                    arguments=item.get("arguments", ""),
-                )
-            )
-        else:  # an assistant message item
-            raw = item.get("content")
-            content += (
-                raw
-                if isinstance(raw, str)
-                else "".join(
-                    p.get("text", "")
-                    for p in raw or []
-                    if p.get("type") in ("input_text", "output_text")
-                )
-            )
-    return AssistantMessage(
-        content=content or None,
-        reasoning_content="\n".join(r for r in reasoning if r) or None,
-        tool_calls=calls or None,
-        provider_state=items,
-    )
-
-
-def response_from_wire(response: OpenAIResponse) -> Response:
-    """An OpenAI Responses object -> a vf `Response` (its `output` items folded into one
-    assistant message)."""
-    data = response.model_dump()
-    content = ""
-    reasoning: list[str] = []
-    calls: list[ToolCall] = []
-    for item in data.get("output") or []:
         kind = item.get("type")
-        if kind == "message":
-            content += "".join(
-                p.get("text", "")
-                for p in item.get("content") or []
-                if p.get("type") == "output_text"
-            )
-        elif kind == "reasoning":
+        if kind == "reasoning":
             reasoning += [s.get("text", "") for s in item.get("summary") or []]
             reasoning += [c.get("text", "") for c in item.get("content") or []]
         elif kind == "function_call":
@@ -205,11 +168,45 @@ def response_from_wire(response: OpenAIResponse) -> Response:
                     arguments=item.get("arguments", ""),
                 )
             )
-    tool_calls = calls or None
+        elif kind == "message" or item.get("role") == "assistant":
+            raw = item.get("content")
+            content += (
+                raw
+                if isinstance(raw, str)
+                else "".join(
+                    p.get("text", "")
+                    for p in raw or []
+                    if p.get("type") in ("input_text", "output_text")
+                )
+            )
+        state_item = item.copy()
+        if kind in ("message", "function_call"):
+            # Response item ids/status are optional when the item is replayed as input. Drop them
+            # so a client's minimal replay hashes to the same graph node as the sampled response.
+            # Reasoning items are exempt: their ids pair with `encrypted_content` on replay.
+            state_item.pop("id", None)
+            state_item.pop("status", None)
+        state.append(state_item)
+    return AssistantMessage(
+        content=content or None,
+        reasoning_content="\n".join(r for r in reasoning if r) or None,
+        tool_calls=calls or None,
+        provider_state=state or None,
+    )
+
+
+def response_from_wire(response: OpenAIResponse) -> Response:
+    """An OpenAI Responses object -> a vf `Response` (its `output` items folded into one
+    assistant message).
+
+    `exclude_unset` reproduces the wire output items exactly — no schema-default None fields —
+    so the committed `provider_state` hashes like a client's verbatim replay of those items."""
+    data = response.model_dump(exclude_unset=True)
+    message = assistant_from_items(data.get("output") or [])
     finish: FinishReason = (
         "length"
         if data.get("status") == "incomplete"
-        else ("tool_calls" if tool_calls else "stop")
+        else ("tool_calls" if message.tool_calls else "stop")
     )
     usage = None
     if response.usage:
@@ -231,12 +228,7 @@ def response_from_wire(response: OpenAIResponse) -> Response:
         id=data.get("id", ""),
         created=data.get("created_at", 0),
         model=data.get("model", ""),
-        message=AssistantMessage(
-            content=content or None,
-            reasoning_content="\n".join(r for r in reasoning if r) or None,
-            tool_calls=tool_calls,
-            provider_state=data.get("output"),
-        ),
+        message=message,
         finish_reason=finish,
         usage=usage,
     )
@@ -258,9 +250,10 @@ class ResponsesStreamParser(StreamParser):
         events = self.terminal_events or self.events
         for event in iter_sse_reverse(b"".join(events)):
             if event.get("type") in FINAL_EVENTS:
-                return response_from_wire(
-                    OpenAIResponse.model_validate(event["response"])
-                )
+                raw = event["response"]
+                response = response_from_wire(OpenAIResponse.model_validate(raw))
+                response.raw = raw
+                return response
         raise ValueError("Responses stream ended without a terminal event")
 
 
@@ -283,15 +276,24 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             [{"role": "user", "content": raw}] if isinstance(raw, str) else raw or []
         )
         run: list[dict] = []  # the current run of assistant-side items
+        tool_names: dict[str, str] = {}
         for item in items:
             role = item.get("role")
+            # Any client-produced output item (function/computer/shell/custom call outputs)
+            # ends an assistant run; only function outputs become typed tool messages.
+            client_output = (item.get("type") or "").endswith("_output")
             assistant = (
                 role == "assistant"
                 or role is None
-                and not (item.get("type") or "").endswith(("_output", "_response"))
+                and not client_output
+                and not (item.get("type") or "").endswith("_response")
             )
             if run and not assistant:
-                prompt.append(fold_assistant(run))
+                message = assistant_from_items(run)
+                prompt.append(message)
+                tool_names.update(
+                    {call.id: call.name for call in message.tool_calls or []}
+                )
                 run = []
             if assistant:
                 run.append(item)
@@ -302,10 +304,12 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
                     if isinstance(output, (str, list))
                     else json.dumps(output)
                 )
+                call_id = item.get("call_id", "")
                 prompt.append(
                     ToolMessage(
-                        tool_call_id=item.get("call_id", ""),
+                        tool_call_id=call_id,
                         content=content,
+                        name=tool_names.get(call_id),
                     )
                 )
             elif item.get("role") in ("system", "developer"):
@@ -313,7 +317,7 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             else:
                 prompt.append(UserMessage(content=parse_content(item.get("content"))))
         if run:
-            prompt.append(fold_assistant(run))
+            prompt.append(assistant_from_items(run))
         tools = [
             Tool(
                 name=t["name"],
@@ -328,6 +332,143 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
 
     def parse_response(self, response: OpenAIResponse) -> Response:
         return response_from_wire(response)
+
+    def rewrite_response(self, raw: dict, message: AssistantMessage) -> dict:
+        rewritten = deepcopy(raw)
+        output = []
+        if message.content:
+            output.append(
+                {
+                    "type": "message",
+                    "id": f"msg_{raw.get('id') or 'vf_intercept'}",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": message.content,
+                            "annotations": [],
+                        }
+                    ],
+                }
+            )
+        output.extend(
+            {
+                "type": "function_call",
+                "id": f"fc_{call.id}",
+                "call_id": call.id,
+                "name": call.name,
+                "arguments": call.arguments,
+                "status": "completed",
+            }
+            for call in message.tool_calls or []
+        )
+        rewritten["output"] = output
+        rewritten["status"] = "completed"
+        rewritten.pop("incomplete_details", None)
+        if "error" in rewritten:
+            rewritten["error"] = None
+        return rewritten
+
+    def serialize_stream(self, raw: dict) -> list[bytes]:
+        opening = {**raw, "status": "in_progress", "output": []}
+        events: list[bytes] = []
+        sequence = 0
+
+        def emit(kind: str, **payload) -> None:
+            nonlocal sequence
+            events.append(
+                sse_event({"type": kind, "sequence_number": sequence, **payload}, kind)
+            )
+            sequence += 1
+
+        emit("response.created", response=opening)
+        for output_index, item in enumerate(raw.get("output") or []):
+            item_id = item.get("id", "")
+            is_message = item.get("type") == "message"
+            if is_message:
+                added = {**item, "status": "in_progress", "content": []}
+            else:
+                added = {**item, "status": "in_progress", "arguments": ""}
+            emit(
+                "response.output_item.added",
+                output_index=output_index,
+                item=added,
+            )
+            if is_message:
+                part = item["content"][0]
+                empty_part = {**part, "text": ""}
+                emit(
+                    "response.content_part.added",
+                    item_id=item_id,
+                    output_index=output_index,
+                    content_index=0,
+                    part=empty_part,
+                )
+                emit(
+                    "response.output_text.delta",
+                    item_id=item_id,
+                    output_index=output_index,
+                    content_index=0,
+                    delta=part["text"],
+                    logprobs=[],
+                )
+                emit(
+                    "response.output_text.done",
+                    item_id=item_id,
+                    output_index=output_index,
+                    content_index=0,
+                    text=part["text"],
+                    logprobs=[],
+                )
+                emit(
+                    "response.content_part.done",
+                    item_id=item_id,
+                    output_index=output_index,
+                    content_index=0,
+                    part=part,
+                )
+            else:
+                emit(
+                    "response.function_call_arguments.delta",
+                    item_id=item_id,
+                    output_index=output_index,
+                    delta=item["arguments"],
+                )
+                emit(
+                    "response.function_call_arguments.done",
+                    item_id=item_id,
+                    output_index=output_index,
+                    arguments=item["arguments"],
+                )
+            emit(
+                "response.output_item.done",
+                output_index=output_index,
+                item=item,
+            )
+        emit("response.completed", response=raw)
+        return events
+
+    def rewrite_tool_results(
+        self, body: dict, replacements: dict[str, MessageContent]
+    ) -> dict:
+        rewritten = deepcopy(body)
+        items = rewritten.get("input")
+        if not isinstance(items, list):
+            return rewritten
+        for item in items:
+            call_id = item.get("call_id")
+            if (
+                item.get("type") != "function_call_output"
+                or call_id not in replacements
+            ):
+                continue
+            content = replacements[call_id]
+            wire = messages_to_wire(
+                [ToolMessage(tool_call_id=call_id, content=content)]
+            )[0]
+            item["output"] = wire["output"]
+        return rewritten
 
     def stream_parser(self) -> StreamParser:
         return ResponsesStreamParser()
