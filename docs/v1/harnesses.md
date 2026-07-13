@@ -2,6 +2,32 @@
 
 verifiers supports a range of harnesses out of the box, including Claude Code, Codex, the tool-enabled default harness, and the minimal tool-less `null` harness. However, you may want to build a custom one or extend the selection of third‑party harnesses.
 
+## Packaging an external harness
+
+An external harness must be installed in the same Python environment as verifiers. Its
+`harness.id` determines the import module: the package name is lowercased and hyphens are
+replaced with underscores. For example, `external-harness-v1` resolves to
+`external_harness_v1`. A Hub ID such as `acme/external-harness@1.2.0` installs through the
+Environment Hub and resolves to `external_harness`. The loader checks the built-in
+`verifiers.v1.harnesses.<module>` namespace first, then the top-level `<module>` supplied by
+an external distribution.
+
+The top-level module must use `__all__` to export exactly one `Harness` subclass:
+
+```python
+# external_harness_v1/__init__.py
+from external_harness_v1.harness import ExternalHarness
+
+__all__ = ["ExternalHarness"]
+```
+
+`__all__` may contain config classes or other public objects, but only one exported class
+may inherit from `Harness`. Declare the config specialization on the harness, for example
+`class ExternalHarness(Harness[ExternalHarnessConfig])`. This lets the eval config loader
+validate plugin-specific fields from TOML or CLI arguments before constructing the harness.
+Missing imports inside an installed plugin are reported directly rather than being treated
+as a missing plugin.
+
 ## A minimal harness implementation
 
 
