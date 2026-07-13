@@ -1,6 +1,9 @@
 import json
 import os
+import random
 from pathlib import Path
+
+from pydantic import model_validator
 
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.clients import ModelContext
@@ -35,6 +38,30 @@ class DefaultHarnessConfig(HarnessConfig):
     eval environment; the key is handed to the program over argv (like the interception secret) so
     the agent's `bash` subprocesses don't inherit it."""
 
+    summarize_at_tokens: int | tuple[int, int] | None = None
+    """Auto-compaction threshold: once the context grows past this many tokens, the program asks
+    the model to summarize its progress and restarts the message list from the initial prompt plus
+    that summary. An int is a fixed threshold; a `(lo, hi)` pair draws a per-group threshold
+    (seeded by the task index, so a task's rollouts share one draw and tasks vary). `None`
+    disables auto-compaction; ints must be positive."""
+
+    @model_validator(mode="after")
+    def validate_limits(self) -> "DefaultHarnessConfig":
+        value = self.summarize_at_tokens
+        if isinstance(value, tuple):
+            lo, hi = value
+            if lo <= 0 or hi <= 0:
+                raise ValueError("`summarize_at_tokens` range bounds must be positive.")
+            if lo > hi:
+                raise ValueError(
+                    "`summarize_at_tokens` range must be (lo, hi) with lo <= hi."
+                )
+        elif value is not None and value <= 0:
+            raise ValueError(
+                "`summarize_at_tokens` must be positive, or None to disable."
+            )
+        return self
+
 
 class DefaultHarness(Harness[DefaultHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
@@ -44,6 +71,17 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
+
+    def summarize_threshold(self, task_idx: int) -> int:
+        """The resolved auto-compaction threshold: a range draws per-group (seeded by task index,
+        so a task's rollouts share one threshold). 0 when disabled."""
+        value = self.config.summarize_at_tokens
+        if value is None:
+            return 0
+        if isinstance(value, tuple):
+            lo, hi = value
+            return random.Random(task_idx).randint(lo, hi)
+        return value
 
     async def launch(
         self,
@@ -72,6 +110,9 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
         ]
         if self.config.edit:
             args.append("--edit")
+        threshold = self.summarize_threshold(trace.task.idx)
+        if threshold:
+            args.append(f"--summarize-at-tokens={threshold}")
         if self.config.search:
             # Resolve the key and keep it OUT of the program env: it's handed to the program over
             # argv (--serper-key), so popping it here stops the agent's `bash` subprocesses from
