@@ -89,7 +89,7 @@ class EnvServer:
 
     def serving(self):
         """Context for the server's eval-level serving resources (shared tool servers +
-        interception pool), entered for the server's lifetime so they're reused across
+        interception), entered for the server's lifetime so they're reused across
         requests; episodes built inside it inherit them (see `Environment.serving`). The
         legacy v0 bridge overrides this (it runs its own rollouts, with no v1 serving)."""
         return self.env.serving()
@@ -160,7 +160,7 @@ class EnvServer:
         poller = zmq.asyncio.Poller()
         poller.register(self.frontend, zmq.POLLIN)
         tasks: set[asyncio.Task] = set()
-        # Shared servers and the interception pool live across requests in this worker.
+        # Shared servers and the interception live across requests in this worker.
         async with self.serving():
             try:
                 while True:

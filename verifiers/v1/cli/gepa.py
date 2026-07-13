@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out run still
-    # runs the runner's `serving()` teardown (interception pool / tool-server runtimes); further
+    # runs the runner's `serving()` teardown (interception / tool-server runtimes); further
     # signals during that cleanup are swallowed so an impatient second Ctrl-C can't orphan them.
     install_interrupt()
 
