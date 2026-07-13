@@ -30,7 +30,7 @@ import os
 from pathlib import Path
 
 import pytest
-from verifiers.v1.cli.eval.runner import graph_traces, run_eval
+from verifiers.v1.cli.eval.runner import run_eval
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.trace import Trace
 
@@ -207,7 +207,7 @@ def run_v1():
 
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         config = _eval_config(taskset, **kwargs)
-        return graph_traces(await run_eval(config))
+        return await run_eval(config)
 
     return _run
 
@@ -224,7 +224,7 @@ def run_v1_server():
     async def _run(taskset: str, **kwargs) -> list[Trace]:
         kwargs.setdefault("pool", {"type": "static", "num_workers": 1})
         config = _eval_config(taskset, **kwargs)
-        return graph_traces(await run_eval_server(config))
+        return await run_eval_server(config)
 
     return _run
 

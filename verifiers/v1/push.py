@@ -146,11 +146,7 @@ def push_traces(
             "avg_error": sum(t.has_error for t in traces) / n if n else 0.0,
         }
 
-    env_name = (
-        config.topology.id
-        if config.topology is not None
-        else config.taskset.id or config.id
-    )
+    env_name = config.taskset.id or config.id
     metrics = compute_metrics()
     counts: dict[int, int] = {}
     samples = []

@@ -7,6 +7,7 @@ surface — forward trace→task arrows, fan-out, parent links, declared instanc
 """
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -520,8 +521,17 @@ def test_eval_config_rejects_topology_with_taskset():
         )
 
 
-def test_eval_config_accepts_topology_with_server():
-    config = EvalConfig(topology={"id": "echo-chain-v1"}, server=True, rich=False)
+def test_eval_config_rejects_topology_with_server_or_resume():
+    """Explicit topologies are local-eval only."""
+    with pytest.raises(ValueError, match="local-eval only"):
+        EvalConfig(topology={"id": "echo-chain-v1"}, server=True, rich=False)
+    with pytest.raises(ValueError, match="does not support `--resume`"):
+        EvalConfig(topology={"id": "echo-chain-v1"}, resume=Path("."), rich=False)
+
+
+def test_eval_config_forces_no_push_for_topology():
+    config = EvalConfig(topology={"id": "echo-chain-v1"}, rich=False)
+    assert config.push is False
     assert config.topology.id == "echo-chain-v1"
 
 
@@ -684,9 +694,8 @@ def test_instance_wire_preserves_training_tensors():
 @pytest.mark.null
 async def test_echo_chain_live(tmp_path):
     """The echo-chain fixture topology end to end via `run_eval` (live model, null
-    harness in-subprocess): two linked reward-1.0 traces per instance, persisted as one
-    instance record."""
-    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
+    harness in-subprocess): two linked reward-1.0 traces per instance, persisted flat."""
+    from verifiers.v1.cli.eval.runner import run_eval
 
     config = EvalConfig(
         topology={"id": "echo-chain-v1"},
@@ -698,13 +707,16 @@ async def test_echo_chain_live(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    traces = graph_traces(await run_eval(config))
+    traces = await run_eval(config)
     first, second = traces
     assert first.errors == [] and second.errors == []
     assert second.parents == [first.id]
     assert first.rewards == {"echoed": 1.0, "relay": 1.0}
     assert second.reward == 1.0
-    (line,) = (tmp_path / "traces.jsonl").read_text().splitlines()
-    graph = AgentGraph.load(json.loads(line))
-    assert [t.agent for t in graph.traces] == ["first", "second"]
-    assert graph.error is None
+    lines = [
+        json.loads(line)
+        for line in (tmp_path / "traces.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert [row["agent"] for row in lines] == ["first", "second"]
+    assert lines[1]["parents"] == [first.id]

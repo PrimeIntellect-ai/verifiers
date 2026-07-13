@@ -1,4 +1,9 @@
-"""Native v1 evaluation: each independent invocation produces one agent graph."""
+"""Native v1 evaluation: topologies run in memory; traces are what get persisted.
+
+Taskset × harness syntax lowers to the built-in single-agent topology. Explicit
+topologies are the same runner, but local-eval only (see `EvalConfig`): results are
+dug out of each finished `AgentGraph` and written as ordinary traces.
+"""
 
 import asyncio
 import contextlib
@@ -8,10 +13,11 @@ import time
 
 from verifiers.v1.cli.dashboard import dashboard
 from verifiers.v1.cli.eval import resume
-from verifiers.v1.cli.output import append_graph, output_path, save_config
+from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.clients import ModelContext, resolve_client
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.topology import AgentGraph, resolve_topology_runner
+from verifiers.v1.topology import resolve_topology_runner
+from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
@@ -24,31 +30,24 @@ def _selected(items: list, config: EvalConfig) -> list:
     return items if config.num_tasks is None else items[: config.num_tasks]
 
 
-def graph_traces(graphs: list[AgentGraph]) -> list:
-    return [trace for graph in graphs for trace in graph.traces]
-
-
-async def run_eval(config: EvalConfig) -> list[AgentGraph]:
-    """Run taskset syntax or an explicit topology through the same in-process runner."""
+async def run_eval(config: EvalConfig) -> list[Trace]:
+    """Run taskset syntax or an explicit topology; persist and return flat traces."""
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     runner = resolve_topology_runner(config)
     tasks = _selected(list(runner.tasks), config)
     out = output_path(config)
-    finished: list[AgentGraph] = []
+    finished: list[Trace] = []
     owed: dict[int, int] | None = None
     if config.resume is not None:
         finished, owed = resume.load(
-            out,
-            [task.data.idx for task in tasks],
-            config.num_rollouts,
-            complete=runner.topology.complete,
+            out, [task.data.idx for task in tasks], config.num_rollouts
         )
         if not owed:
             print(resume.nothing_to_resume_msg(out, len(tasks), config.num_rollouts))
             raise SystemExit(0)
         tasks = [task for task in tasks if owed.get(task.data.idx)]
         logger.info(
-            "resuming %s: %d task(s), %d invocation(s) owed",
+            "resuming %s: %d task(s), %d rollout(s) owed",
             out,
             len(tasks),
             sum(owed.values()),
@@ -56,7 +55,7 @@ async def run_eval(config: EvalConfig) -> list[AgentGraph]:
     else:
         save_config(config, out)
         logger.info(
-            "running %dx%d topology invocation(s) on %s",
+            "running %dx%d rollout(s) on %s",
             len(tasks),
             config.num_rollouts,
             config.model,
@@ -69,17 +68,18 @@ async def run_eval(config: EvalConfig) -> list[AgentGraph]:
     )
     start = time.time()
     write_lock = asyncio.Lock()
-    rollouts = [resume.Finished(trace) for trace in graph_traces(finished)]
+    rollouts = [resume.Finished(trace) for trace in finished]
 
-    async def run_instance(task) -> AgentGraph:
+    async def run_instance(task) -> list[Trace]:
         graph = await runner.run_instance(
             task,
             ctx,
             semaphore,
             on_rollout=rollouts.append if config.rich else None,
         )
-        await append_graph(out, graph, write_lock)
-        return graph
+        for trace in graph.traces:
+            await append_trace(out, trace, write_lock)
+        return list(graph.traces)
 
     push_state = None
     if config.push and config.rich:
@@ -99,21 +99,23 @@ async def run_eval(config: EvalConfig) -> list[AgentGraph]:
                 for _ in range(owed[task.data.idx] if owed else config.num_rollouts)
             ]
             completed = await asyncio.gather(*instances)
-            graphs = finished + completed
+            traces = finished + [trace for batch in completed for trace in batch]
             if push_state is not None:
                 from verifiers.v1.push import push_traces
 
                 push_state.started = True
-                await asyncio.to_thread(
-                    push_traces, graph_traces(graphs), config, push_state
-                )
-        return graphs
+                await asyncio.to_thread(push_traces, traces, config, push_state)
+        return traces
     finally:
         await client.close()
 
 
-async def run_eval_server(config: EvalConfig) -> list[AgentGraph]:
-    """Run independent graph invocations through the existing env-server worker pool."""
+async def run_eval_server(config: EvalConfig) -> list[Trace]:
+    """Run independent invocations through the env-server worker pool; persist flat traces.
+
+    Explicit topologies are rejected at config validation — this path is for the
+    taskset × harness (single-agent) supported contract.
+    """
     import multiprocessing as mp
     from functools import partial
 
@@ -151,7 +153,7 @@ async def run_eval_server(config: EvalConfig) -> list[AgentGraph]:
         positions = _selected(list(range(info.num_tasks)), config)
         task_ids = [info.task_ids[position] for position in positions]
         out = output_path(config)
-        finished: list[AgentGraph] = []
+        finished: list[Trace] = []
         if config.resume is not None:
             finished, owed = resume.load(out, task_ids, config.num_rollouts)
             if not owed:
@@ -167,7 +169,7 @@ async def run_eval_server(config: EvalConfig) -> list[AgentGraph]:
                 if owed.get(task_id)
             ]
             logger.info(
-                "resuming %s: %d task(s), %d invocation(s) owed",
+                "resuming %s: %d task(s), %d rollout(s) owed",
                 out,
                 len(selected),
                 sum(owed.values()),
@@ -177,7 +179,7 @@ async def run_eval_server(config: EvalConfig) -> list[AgentGraph]:
             owed = {task_id: config.num_rollouts for task_id in task_ids}
             save_config(config, out)
             logger.info(
-                "running %dx%d topology invocation(s) via the env-server %s pool on %s",
+                "running %dx%d rollout(s) via the env-server %s pool on %s",
                 len(selected),
                 config.num_rollouts,
                 config.pool.type,
@@ -189,7 +191,7 @@ async def run_eval_server(config: EvalConfig) -> list[AgentGraph]:
         )
         write_lock = asyncio.Lock()
 
-        async def run_unit(position: int) -> AgentGraph:
+        async def run_unit(position: int) -> list[Trace]:
             async with semaphore or contextlib.nullcontext():
                 graph = await client.run(
                     task_idx=position,
@@ -197,8 +199,9 @@ async def run_eval_server(config: EvalConfig) -> list[AgentGraph]:
                     model=config.model,
                     sampling=config.sampling,
                 )
-            await append_graph(out, graph, write_lock)
-            return graph
+            for trace in graph.traces:
+                await append_trace(out, trace, write_lock)
+            return list(graph.traces)
 
         units = [
             run_unit(position)
@@ -206,7 +209,7 @@ async def run_eval_server(config: EvalConfig) -> list[AgentGraph]:
             for _ in range(owed[task_id])
         ]
         completed = await asyncio.gather(*units)
-        return finished + completed
+        return finished + [trace for batch in completed for trace in batch]
     finally:
         if client is not None:
             await client.close()

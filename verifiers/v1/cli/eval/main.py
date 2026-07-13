@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import signal
 import sys
 
 from pydantic_config import cli
@@ -17,13 +16,15 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.eval import EvalConfig
+from verifiers.v1.utils.interrupt import install as install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
 
 USAGE = (
     "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
-    "       uv run eval --topology.id <id> [--topology.taskset.id <id>] [options]   (multi-agent topology)\n"
+    "       uv run eval --topology.id <id> [--topology.taskset.id <id>] [options]\n"
+    "           (local multi-agent topology eval; no --server / --resume / platform push)\n"
     "       uv run eval --resume <output-dir>   (re-run a previous run's missing/errored rollouts)"
 )
 
@@ -81,29 +82,33 @@ def main(argv: list[str] | None = None) -> None:
         logging.lastResort = None
     else:
         setup_logging(level, log_file=log_file, console=True)
-    # Make SIGTERM behave like Ctrl-C (SIGINT) so a killed/timed-out eval still runs each
-    # rollout's `finally` (tears down containers/sandboxes) and any worker pool it spawned.
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out eval still
+    # runs each rollout's `finally` (tears down containers/sandboxes) and any worker pool it
+    # spawned; further signals during that cleanup are swallowed so an impatient second Ctrl-C
+    # can't orphan those resources.
+    install_interrupt()
 
-    if config.is_legacy:  # v0 backwards-compat: run the classic env, bridged to Traces
-        from verifiers.v1.legacy import run_legacy_eval
+    try:
+        if (
+            config.is_legacy
+        ):  # v0 backwards-compat: run the classic env, bridged to Traces
+            from verifiers.v1.legacy import run_legacy_eval
 
-        traces = asyncio.run(run_legacy_eval(config))
-        artifacts = traces
-    elif config.server:  # opt-in: drive rollouts through the env-server worker pool
-        from verifiers.v1.cli.eval.runner import run_eval_server
+            traces = asyncio.run(run_legacy_eval(config))
+        elif config.server:  # opt-in: drive rollouts through the env-server worker pool
+            from verifiers.v1.cli.eval.runner import run_eval_server
 
-        graphs = asyncio.run(run_eval_server(config))
-        traces = [trace for graph in graphs for trace in graph.traces]
-        artifacts = graphs
-    else:  # taskset syntax and explicit topologies share the in-process graph runner
-        graphs = asyncio.run(run_eval(config))
-        traces = [trace for graph in graphs for trace in graph.traces]
-        artifacts = graphs
+            traces = asyncio.run(run_eval_server(config))
+        else:  # taskset syntax and explicit topologies share the in-process runner
+            traces = asyncio.run(run_eval(config))
+    except KeyboardInterrupt:
+        # Graceful cleanup has already run (each rollout's `finally`); partial results are on
+        # disk. Exit on the conventional Ctrl-C code without a traceback.
+        raise SystemExit(130)
     if config.push and not rich:
         from verifiers.v1.push import push_traces
 
         push_traces(traces, config)
-    if not rich:  # --rich is the whole output; otherwise dump each artifact as JSON
-        for artifact in artifacts:
-            print(artifact.model_dump_json(indent=2, exclude_none=True))
+    if not rich:  # --rich is the whole output; otherwise dump each trace as JSON
+        for trace in traces:
+            print(trace.model_dump_json(indent=2, exclude_none=True))

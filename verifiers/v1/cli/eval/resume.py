@@ -1,9 +1,19 @@
-"""Resume an interrupted eval by rerunning missing or incomplete graph invocations."""
+"""Resume an interrupted eval: reload its finished rollouts and run only the rest.
+
+A run writes `config.toml` + `traces.jsonl` into its output dir. `--resume <dir>` reloads
+that config verbatim (so it takes no other flags) and writes back into the same dir. `load`
+brings the good saved rollouts back into memory and re-runs only what's still owed: the
+*missing* rollouts (never written — the run was interrupted) and the *errored* ones (written
+with an error; dropped and redone). The loaded traces rejoin the run everywhere — counted,
+displayed, pushed, and printed alongside this session's — so a resumed run picks up exactly
+where the interrupted one stopped.
+
+Explicit topologies are local-eval only and do not support `--resume` (see `EvalConfig`).
+"""
 
 import json
 import tomllib
 from collections import defaultdict
-from collections.abc import Callable
 from pathlib import Path
 
 from pydantic_core import from_json
@@ -12,11 +22,12 @@ from verifiers.v1.cli.output import CONFIG_FILE, TRACES_FILE
 from verifiers.v1.configs.eval import EvalConfig
 from verifiers.v1.rollout import Phase, Rollout
 from verifiers.v1.task import Task
-from verifiers.v1.topology import AgentGraph, graph_complete
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import Trace, WireTrace
 
 
 def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
+    """Pull `--resume <dir>` / `--resume=<dir>` out of argv, returning (dir, the other args).
+    The caller rejects any leftover args, since resume re-runs the saved config verbatim."""
     for i, arg in enumerate(argv):
         if arg == "--resume":
             if i + 1 >= len(argv):
@@ -30,6 +41,8 @@ def split_resume(argv: list[str]) -> tuple[Path | None, list[str]]:
 
 
 def load_resume_config(resume_dir: Path) -> EvalConfig:
+    """Rebuild the run's `EvalConfig` from its saved `config.toml`, pointed back at its own
+    output dir so the resumed rollouts append to the same `traces.jsonl`."""
     config_path = resume_dir / CONFIG_FILE
     if not config_path.exists():
         raise SystemExit(
@@ -50,20 +63,17 @@ class Finished(Rollout):
 
 
 def load(
-    resume_dir: Path,
-    selected_idxs: list[int],
-    num_rollouts: int,
-    complete: Callable[[AgentGraph], bool] = graph_complete,
-) -> tuple[list[AgentGraph], dict[int, int]]:
-    """Keep the graph records the topology considers complete and return invocations
-    still owed per seed task. `complete` is the topology's instance-validity verdict
-    (`Topology.complete`) — an incomplete record is dropped and its invocation re-run;
-    the default is the conservative rule, applied when no live topology is at hand
-    (server-mode eval). Kept lines are rewritten verbatim (temp file + atomic rename),
-    so an interrupted resume can't corrupt the prior good results."""
+    resume_dir: Path, selected_idxs: list[int], num_rollouts: int
+) -> tuple[list[Trace], dict[int, int]]:
+    """Load the good saved rollouts back into memory as finished traces and diff them against
+    the run's target (`num_rollouts` per selected task): returns (the kept traces, rollouts
+    owed per task idx). An errored trace is dropped and re-run. Rewrites `traces.jsonl` to
+    just the kept rows — verbatim, via a temp file + atomic rename, so an interrupted resume
+    can't corrupt the prior good results — and the resumed rollouts then append. `WireTrace`
+    reads any taskset's saved traces without importing it."""
     path = resume_dir / TRACES_FILE
     selected = set(selected_idxs)
-    good: dict[int, list[tuple[bytes, AgentGraph]]] = defaultdict(list)
+    good: dict[int, list[bytes]] = defaultdict(list)
     if path.exists():
         with path.open("rb") as results:
             for line in results:
@@ -74,14 +84,13 @@ def load(
                 except ValueError:
                     row = json.loads(line)
                 idx = row["task"]["data"]["idx"]
-                if idx not in selected or len(good[idx]) >= num_rollouts:
-                    continue
-                graph = AgentGraph.load(row)
-                if complete(graph):
-                    good[idx].append(
-                        (line if line.endswith(b"\n") else line + b"\n", graph)
-                    )
-    keep: list[tuple[bytes, AgentGraph]] = []
+                if (
+                    idx in selected
+                    and not row.get("errors")
+                    and len(good[idx]) < num_rollouts
+                ):
+                    good[idx].append(line if line.endswith(b"\n") else line + b"\n")
+    keep: list[bytes] = []
     owed: dict[int, int] = {}
     for idx in selected_idxs:
         rows = good.get(idx, [])
@@ -89,10 +98,15 @@ def load(
         if missing := num_rollouts - len(rows):
             owed[idx] = missing
     tmp = path.with_suffix(".jsonl.tmp")
-    tmp.write_bytes(b"".join(line for line, _ in keep))
+    tmp.write_bytes(b"".join(keep))
     tmp.replace(path)
-    return [graph for _, graph in keep], owed
+    return [WireTrace.model_validate_json(line) for line in keep], owed
 
 
 def nothing_to_resume_msg(resume_dir: Path, num_tasks: int, num_rollouts: int) -> str:
-    return f"nothing to resume in {resume_dir}: all {num_tasks}x{num_rollouts} invocations already complete"
+    """The message shown (and then exit 0 - the run is already complete) when every selected
+    rollout already completed without error."""
+    return (
+        f"nothing to resume in {resume_dir}: all {num_tasks}x{num_rollouts} rollouts "
+        f"already completed without error"
+    )

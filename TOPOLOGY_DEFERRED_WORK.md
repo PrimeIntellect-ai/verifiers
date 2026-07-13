@@ -71,16 +71,10 @@ mutation.
 ### Persist the topology completion verdict
 
 `Topology.complete(graph)` lets a topology accept a graph whose child traces include handled
-failures. In-process resume can call the live topology and respects this policy. Server-backed
-resume and other consumers without the topology object fall back to conservative
-`graph_complete()`, so they can redo a graph the topology already considered valid.
-
-Stamp the topology's final completion verdict onto the returned and persisted `AgentGraph` after
-topology scoring. Consumers should read that self-contained verdict; older records without it
-can retain the conservative fallback.
-
-Done when resume produces the same decision in process, through an environment server, and from
-a graph record alone.
+failures. Eval resume is trace-flat and does not consume this verdict today; in-process
+callers and future graph-native resume should. Stamp the topology's final completion verdict
+onto the returned `AgentGraph` after topology scoring so consumers can read a self-contained
+verdict without loading topology code.
 
 ### Recover relative signals as a built-in best-of-N topology
 
@@ -120,13 +114,10 @@ as a single taskset-harness rollout.
 
 ### Make platform push graph-native
 
-`push_traces()` receives flattened graph traces and uploads each as an independent rollout. This
-loses graph identity, topology id, agent and parent structure, graph completion semantics, and
-correct replica numbering. Multi-agent topologies are consequently misrepresented on the
-platform.
-
-Prefer a graph-native upload contract. Until the platform can accept it, explicit-topology push
-should fail or warn clearly instead of silently flattening graphs.
+`push_traces()` receives flattened graph traces and uploads each as an independent rollout.
+Explicit topologies are local-eval only today (`EvalConfig` forces `--no-push` and rejects
+`--server` / `--resume`), so multi-agent graphs are not pushed. Prefer a graph-native upload
+contract before re-enabling push for `--topology.id`.
 
 ## Configuration boundaries
 

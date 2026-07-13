@@ -1,13 +1,15 @@
-"""On-disk output: traces.jsonl + config.toml.
+"""On-disk output: traces.jsonl (one full trace per line) + config.toml.
 
-Native v1 writes one completed `AgentGraph` per line, including graphs produced by the
-built-in single-agent topology. Legacy and replay utilities retain flat trace helpers.
-`config.toml` is the run's resolved EvalConfig,
-written in the same format the CLI reads (`@ config.toml`), so a run is re-runnable from
-its own output. Aggregates (avg reward, etc.) are cheap to recompute from results, so
-they aren't stored.
+The trace is the full data dump — written verbatim, consumed by the platform
+(visualization) and prime-rl (training). Eval runs topologies in memory and digs
+traces out of each finished `AgentGraph` before persisting, so the on-disk contract
+stays trace-shaped for taskset × harness and for local topology inspection alike.
+`config.toml` is the run's resolved EvalConfig, written in the same format the CLI
+reads (`@ config.toml`), so a run is re-runnable from its own output.
 
-The runner writes `config.toml` once and appends each graph as soon as it completes.
+The runner writes `config.toml` once up front (`save_config`) and then appends each
+trace to `traces.jsonl` as it completes (`append_trace`), so a long run's results are
+durable as they land rather than only at the end.
 """
 
 import asyncio
@@ -18,12 +20,11 @@ import tomli_w
 from pydantic import BaseModel, TypeAdapter
 
 from verifiers.v1.configs.eval import EvalConfig
-from verifiers.v1.topology import AgentGraph
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.aio import run_shielded
 
 TRACES_FILE = "traces.jsonl"
-"""Native graph records, or flat traces for isolated legacy/replay commands."""
+"""Filename each run's full per-rollout traces are written to (one JSON trace per line)."""
 
 CONFIG_FILE = "config.toml"
 """Filename a run's resolved config is written to (re-runnable via `@ config.toml`)."""
@@ -76,37 +77,17 @@ def write_trace(results_dir: Path, trace: Trace) -> None:
         f.write(data + b"\n")
 
 
-def write_graph(results_dir: Path, graph: AgentGraph) -> None:
-    """Serialize and append one invocation record in the worker thread."""
-    with (results_dir / TRACES_FILE).open("ab") as f:
-        f.write(json.dumps(graph.to_record()).encode() + b"\n")
-
-
 def read_traces(results_dir: Path, trace_type: type) -> list[Trace]:
-    """Load typed traces from native graph records or isolated flat-trace outputs."""
+    """Load a run's saved traces from `traces.jsonl`, typed as `trace_type` — the inverse of
+    `write_trace`. Used by `replay` to re-score finished rollouts (pass the task's typed
+    `Trace[...]`, or `Trace[WireTaskData, ...]` to read any taskset's traces without importing it)."""
     adapter = TypeAdapter(trace_type)
     traces: list[Trace] = []
     with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:
         for line in f:
             if line.strip():
-                record = json.loads(line)
-                rows = record.get("traces", [record])
-                traces.extend(adapter.validate_python(row) for row in rows)
+                traces.append(adapter.validate_python(json.loads(line)))
     return traces
-
-
-async def append_graph(
-    results_dir: Path, graph: AgentGraph, lock: asyncio.Lock
-) -> None:
-    """Append one fully scored invocation without blocking the event loop."""
-
-    async def persist() -> None:
-        async with lock:
-            await asyncio.to_thread(write_graph, results_dir, graph)
-
-    # Run lock acquisition and the worker to completion even under cancellation, so
-    # finalized graphs are never lost mid-write (`run_shielded` re-raises the cancellation).
-    await run_shielded(persist())
 
 
 async def append_trace(results_dir: Path, trace: Trace, lock: asyncio.Lock) -> None:

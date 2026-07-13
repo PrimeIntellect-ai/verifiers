@@ -27,8 +27,10 @@ Validate the config by using `uv run eval @ config.toml --dry-run`. To run the e
 Use dotted arguments to set values using the CLI, e.g. `--sampling.temperature 0.5`. CLI arguments overwrite toml arguments when both are present.
 
 Evaluation output is written under `outputs/<taskset>--<model>--<harness>/<uuid>/` by
-default. The directory contains `config.toml`, one completed `AgentGraph` per line in
-`traces.jsonl`, and logs in `eval.log`.
+default. The directory contains `config.toml`, one completed trace per line in
+`traces.jsonl`, and logs in `eval.log`. Explicit `--topology.id` runs are local-eval
+only (no `--server` / `--resume` / platform push); they still write flat traces dug out
+of each finished graph.
 
 ## Common config values
 
@@ -36,7 +38,7 @@ default. The directory contains `config.toml`, one completed `AgentGraph` per li
 - `sampling` — generation params passed to the model, e.g. `sampling.temperature`
 - `taskset.id` / `harness.id` — pick the taskset and harness
 - `num_tasks` — how many tasks to evaluate. Not setting a value means all tasks
-- `num_rollouts` — independent graph invocations per seed task
+- `num_rollouts` — independent invocations per seed task
 - `max_concurrent` — caps agent runs in-process or graph requests through the server
 - `verbose` — log at debug instead of info
 - `shuffle` — randomizes the order of tasks (fixed seed)

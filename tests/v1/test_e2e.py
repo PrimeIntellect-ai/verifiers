@@ -249,7 +249,7 @@ async def test_llm_judge_topology(tmp_path):
     message against the task and its ground truth, and the verdict lands on the solver's
     trace as a deferred reward. Asserts the plumbing (seed factory -> solver episode ->
     judge episode -> declared instance scoring), not judge quality."""
-    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
+    from verifiers.v1.cli.eval.runner import run_eval
     from verifiers.v1.configs.eval import EvalConfig
 
     config = EvalConfig(
@@ -262,7 +262,7 @@ async def test_llm_judge_topology(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    solver, judge = graph_traces(await run_eval(config))
+    solver, judge = await run_eval(config)
     assert solver.errors == [] and judge.errors == []
     assert (solver.agent, judge.agent) == ("solver", "judge")
     assert judge.parents == [solver.id] and judge.trainable is False
@@ -276,7 +276,7 @@ async def test_agentic_judge_topology(tmp_path):
     """The built-in `agentic-judge` topology, live: the solver's entire serialized trace
     is uploaded into the judge's runtime, and the judge — a real agent on the bash+edit
     `default` harness — reads the file with its tools before committing to a score."""
-    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
+    from verifiers.v1.cli.eval.runner import run_eval
     from verifiers.v1.configs.eval import EvalConfig
 
     config = EvalConfig(
@@ -289,7 +289,7 @@ async def test_agentic_judge_topology(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    solver, judge = graph_traces(await run_eval(config))
+    solver, judge = await run_eval(config)
     assert solver.errors == [] and judge.errors == []
     assert judge.parents == [solver.id] and judge.trainable is False
     assert judge.num_turns >= 2  # it actually investigated (read the file, then scored)
@@ -302,7 +302,7 @@ async def test_writer_editors_topology(tmp_path):
     """The `writer-editors-v1` example, live: draft -> editor critique (fan-out of 1) ->
     revision (fan-in), then a deterministic first→final score puts the same
     `improvement` reward on every trace."""
-    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
+    from verifiers.v1.cli.eval.runner import run_eval
     from verifiers.v1.configs.eval import EvalConfig
 
     config = EvalConfig(
@@ -315,7 +315,7 @@ async def test_writer_editors_topology(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    draft, edit, revision = graph_traces(await run_eval(config))
+    draft, edit, revision = await run_eval(config)
     assert [t.agent for t in (draft, edit, revision)] == ["writer", "editor", "writer"]
     assert all(t.errors == [] for t in (draft, edit, revision))
     assert revision.parents == [draft.id, edit.id]  # the fan-in
@@ -330,7 +330,7 @@ async def test_shared_runtime_topology(tmp_path):
     """The `shared-runtime-v1` example, live: `go` provisions one box, the writer's
     `finalize` writes its reply into it, and the reader — borrowed into the SAME box —
     verifies the artifact in `setup`. The borrowed-runtime plumbing end to end."""
-    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
+    from verifiers.v1.cli.eval.runner import run_eval
     from verifiers.v1.configs.eval import EvalConfig
 
     config = EvalConfig(
@@ -343,7 +343,7 @@ async def test_shared_runtime_topology(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    written, read = graph_traces(await run_eval(config))
+    written, read = await run_eval(config)
     assert written.errors == [] and read.errors == []
     assert (written.agent, read.agent) == ("writer", "reader")
     assert read.parents == [written.id]
@@ -362,7 +362,7 @@ async def test_chess_topology(tmp_path):
     """The `chess-v1` example, live: two direct-harness seats play one game through
     live sessions — each seat ONE multi-turn trace with the opponent's moves as its
     user turns, the host-side board adjudicating."""
-    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
+    from verifiers.v1.cli.eval.runner import run_eval
     from verifiers.v1.configs.eval import EvalConfig
 
     config = EvalConfig(
@@ -376,7 +376,7 @@ async def test_chess_topology(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    traces = graph_traces(await run_eval(config))
+    traces = await run_eval(config)
     seats = {t.agent: t for t in traces}
     assert set(seats) == {"white", "black"}
     assert all(t.errors == [] for t in traces)
@@ -389,7 +389,7 @@ async def test_chess_topology(tmp_path):
 async def test_debate_topology(tmp_path):
     """The `debate-v1` example, live: three concurrent seats of one agent config give
     openings, rebuttals, and peer votes through suspended sessions."""
-    from verifiers.v1.cli.eval.runner import graph_traces, run_eval
+    from verifiers.v1.cli.eval.runner import run_eval
     from verifiers.v1.configs.eval import EvalConfig
 
     config = EvalConfig(
@@ -401,7 +401,7 @@ async def test_debate_topology(tmp_path):
         rich=False,
         output_dir=tmp_path,
     )
-    traces = graph_traces(await run_eval(config))
+    traces = await run_eval(config)
     assert [t.agent for t in traces] == ["debater"] * 3
     assert all(t.errors == [] for t in traces)
     assert all(t.num_turns == 3 for t in traces)  # opening + rebuttal + vote

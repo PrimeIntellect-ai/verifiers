@@ -1,9 +1,4 @@
-"""Resume keeps the graph records the topology calls complete and re-runs the rest.
-
-The keep/re-run verdict is `Topology.complete` — conservative by default (any error,
-instance-level or nested, means redo; exact for the single-agent lowering, where the one
-trace IS the invocation), overridable by topologies whose `go` tolerates child failures.
-"""
+"""Resume keeps good flat traces and re-runs missing or errored rollouts."""
 
 import json
 from pathlib import Path
@@ -17,7 +12,8 @@ from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 
-def make_trace(task: vf.Task, errored: bool = False) -> Trace:
+def make_trace(idx: int, errored: bool = False) -> Trace:
+    task = vf.Task(vf.TaskData(idx=idx, prompt="hi"))
     trace = Trace(task=TraceTask(type=type(task).__name__, data=task.data))
     trace.nodes.append(
         MessageNode(parent=None, message=UserMessage(content=str(task.data.prompt)))
@@ -31,80 +27,48 @@ def make_trace(task: vf.Task, errored: bool = False) -> Trace:
     return trace
 
 
-def make_graph(
-    idx: int, trace_errored: bool = False, go_crashed: bool = False
-) -> AgentGraph:
-    task = vf.Task(vf.TaskData(idx=idx, prompt="hi"))
-    graph = AgentGraph(
-        topology="single-agent",
-        task=TraceTask(type=type(task).__name__, data=task.data),
-    )
-    graph.add(make_trace(task, errored=trace_errored))
-    if go_crashed:
-        graph.error = Error(type="TopologyError", message="go crashed")
-    return graph
-
-
-def write_records(path: Path, graphs: list[AgentGraph]) -> None:
-    lines = [json.dumps(g.to_record()) for g in graphs]
+def write_traces(path: Path, traces: list[Trace]) -> None:
+    lines = [t.model_dump_json(exclude_none=True) for t in traces]
     (path / TRACES_FILE).write_text("\n".join(lines) + "\n")
 
 
-def test_default_rule_redoes_any_error(tmp_path):
-    """The conservative default: a clean graph is kept; a nested trace error or an
-    instance-level error means the invocation is owed again — the single-agent lowering's
-    old flat-trace resume behavior, graph-shaped."""
-    write_records(
+def test_resume_keeps_clean_traces_and_redoes_errors(tmp_path):
+    write_traces(
         tmp_path,
-        [
-            make_graph(0),
-            make_graph(1, trace_errored=True),
-            make_graph(2, go_crashed=True),
-        ],
+        [make_trace(0), make_trace(1, errored=True), make_trace(2)],
     )
     finished, owed = resume.load(tmp_path, [0, 1, 2], num_rollouts=1)
-    assert [g.task.data.idx for g in finished] == [0]
-    assert owed == {1: 1, 2: 1}
-    # The kept lines were rewritten verbatim; the dropped records are gone from disk.
+    assert [t.task.data.idx for t in finished] == [0, 2]
+    assert owed == {1: 1}
     kept = [
         json.loads(line)
         for line in (tmp_path / TRACES_FILE).read_text().splitlines()
         if line.strip()
     ]
-    assert [row["task"]["data"]["idx"] for row in kept] == [0]
+    assert [row["task"]["data"]["idx"] for row in kept] == [0, 2]
 
 
-def test_tolerant_topology_keeps_scored_instances(tmp_path):
-    """A topology whose `go` tolerates child failures overrides `complete` (typically
-    `graph.error is None`): its trace-errored-but-finished instances are kept, not redone."""
-    write_records(
-        tmp_path,
-        [
-            make_graph(0),
-            make_graph(1, trace_errored=True),
-            make_graph(2, go_crashed=True),
-        ],
-    )
-    finished, owed = resume.load(
-        tmp_path, [0, 1, 2], num_rollouts=1, complete=lambda g: g.error is None
-    )
-    assert [g.task.data.idx for g in finished] == [0, 1]
-    assert owed == {2: 1}
-
-
-def test_owed_counts_missing_invocations(tmp_path):
-    """`num_rollouts` is the per-seed target: kept records count toward it, the rest is
-    owed — including seeds with no record at all."""
-    write_records(tmp_path, [make_graph(0), make_graph(0)])
+def test_owed_counts_missing_rollouts(tmp_path):
+    write_traces(tmp_path, [make_trace(0), make_trace(0)])
     finished, owed = resume.load(tmp_path, [0, 1], num_rollouts=2)
     assert len(finished) == 2
-    assert owed == {1: 2}  # a fully-covered seed owes nothing
+    assert owed == {1: 2}
 
 
 def test_topology_complete_defaults_and_overrides():
-    """`Topology.complete` defaults to the conservative module-level rule; a subclass
-    override is what resume consumes."""
-    clean, errored = make_graph(0), make_graph(1, trace_errored=True)
+    """`Topology.complete` is still the instance-validity hook for topologies; eval
+    resume no longer consumes it (flat traces), but the contract remains for callers."""
+    task = vf.Task(vf.TaskData(idx=0, prompt="hi"))
+    clean = AgentGraph(
+        topology="single-agent",
+        task=TraceTask(type=type(task).__name__, data=task.data),
+    )
+    clean.add(make_trace(0))
+    errored = AgentGraph(
+        topology="single-agent",
+        task=TraceTask(type=type(task).__name__, data=task.data),
+    )
+    errored.add(make_trace(1, errored=True))
     assert graph_complete(clean) and not graph_complete(errored)
 
     topology = vf.SingleAgentTopology(vf.SingleAgentTopologyConfig())
