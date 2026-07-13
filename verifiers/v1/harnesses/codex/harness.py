@@ -86,9 +86,9 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             texts = [system_prompt] if system_prompt else []
             image_index = 0
             for message in prompt:
-                if message.role != "user":
+                if message.role not in ("system", "user"):
                     raise ValueError(
-                        "codex exec only supports user messages in the initial prompt"
+                        "codex exec only supports system and user initial messages"
                     )
                 parts = (
                     [TextContentPart(text=message.content)]
