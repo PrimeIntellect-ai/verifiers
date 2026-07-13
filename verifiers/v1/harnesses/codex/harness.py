@@ -93,8 +93,9 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "plugins",
             "--disable",
             "multi_agent",
-            "--enable" if self.config.multi_agent else "--disable",
-            "multi_agent_v2",
+            # Preserve any user-supplied multi-agent v2 tool and limit settings.
+            "-c",
+            f"features.multi_agent_v2.enabled={str(self.config.multi_agent).lower()}",
             "-m",
             ctx.model,
             "-c",
