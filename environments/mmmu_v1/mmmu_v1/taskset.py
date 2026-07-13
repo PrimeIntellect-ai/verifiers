@@ -113,15 +113,20 @@ class MMMUTaskset(vf.Taskset[MMMUTask, MMMUConfig]):
                 options = ast.literal_eval(row["options"])
                 if not options:  # open-ended row; only multiple choice is scored
                     continue
-                parts = [
-                    vf.TextContentPart(text=question_text(row["question"], options))
-                ] + [
-                    vf.ImageUrlContentPart(
-                        image_url=vf.ImageUrlSource(url=image_data_url(image))
-                    )
-                    for image in (row[f"image_{i}"] for i in range(1, 8))
-                    if image is not None
-                ]
+                segments = re.split(
+                    r"<image ([1-7])>", question_text(row["question"], options)
+                )
+                parts: list[vf.ContentPart] = []
+                for i, segment in enumerate(segments):
+                    if i % 2:
+                        image = row[f"image_{segment}"]
+                        parts.append(
+                            vf.ImageUrlContentPart(
+                                image_url=vf.ImageUrlSource(url=image_data_url(image))
+                            )
+                        )
+                    elif segment:
+                        parts.append(vf.TextContentPart(text=segment))
                 tasks.append(
                     MMMUTask(
                         MMMUData(
