@@ -35,6 +35,8 @@ chmod +x {bin}
 class CodexHarnessConfig(HarnessConfig):
     version: str = "0.137.0"
     """Codex release to install (the `rust-v<version>` GitHub release); pinned for reproducibility."""
+    multi_agent: bool = False
+    """Enable Codex's native multi-agent v2 tools."""
 
 
 class CodexHarness(Harness[CodexHarnessConfig]):
@@ -84,16 +86,16 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "exec",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
-            # Server-driven feature tools (codex apps, plugins, multi-agent) land in the
-            # Responses `tools` array with definitions non-OpenAI providers reject
-            # (upstream 400 on every call) — and they can flip on remotely under a pinned
-            # CLI. The agent's own tools (exec_command, plan, view_image) stay.
+            # Apps/plugins can flip on remotely and advertise definitions custom providers reject.
             "--disable",
             "apps",
             "--disable",
             "plugins",
             "--disable",
             "multi_agent",
+            # Preserve any user-supplied multi-agent v2 tool and limit settings.
+            "-c",
+            f"features.multi_agent_v2.enabled={str(self.config.multi_agent).lower()}",
             "-m",
             ctx.model,
             "-c",
