@@ -56,7 +56,7 @@ class StaticInterceptionPool(Interception):
 
     async def start(self) -> None:
         for server in self.servers:
-            await self._stack.enter_async_context(server)
+            await self.stack.enter_async_context(server)
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
@@ -98,17 +98,17 @@ class ElasticInterceptionPool(Interception):
         self._lock = asyncio.Lock()
 
     async def start(self) -> None:
-        pass  # servers are brought up lazily in `acquire`, on `_stack`
+        pass  # servers are brought up lazily in `acquire`, on `stack`
 
     async def _server(self) -> InterceptionServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new
-        one (its own tunnel, on `_stack`, torn down with the pool). The caller holds
+        one (its own tunnel, on `stack`, torn down with the pool). The caller holds
         `_lock`."""
         for server in self.servers:
             if server.load < self.config.multiplex:
                 return server
         server = InterceptionServer(requires_tunnel=self.requires_tunnel)
-        await self._stack.enter_async_context(server)
+        await self.stack.enter_async_context(server)
         self.servers.append(server)
         logger.info(
             "interception pool: %d server(s), multiplex=%d",

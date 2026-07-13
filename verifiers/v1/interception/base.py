@@ -36,19 +36,19 @@ Slot = tuple[str, str]
 
 class Interception(ABC):
     """How rollouts reach the host interception server. `start` brings the servers up (or
-    arms lazy growth), `stop` tears every server (+ its tunnel) down via `_stack` — LIFO,
+    arms lazy growth), `stop` tears every server (+ its tunnel) down via `stack` — LIFO,
     even if one teardown fails; `async with` wraps the two. Each rollout `acquire`s a slot
     and frees it on exit."""
 
     def __init__(self) -> None:
-        self._stack = AsyncExitStack()
+        self.stack = AsyncExitStack()
 
     @abstractmethod
     async def start(self) -> None:
-        """Bring the interception up; resources land on `_stack` so `stop` frees them."""
+        """Bring the interception up; resources land on `stack` so `stop` frees them."""
 
     async def stop(self) -> None:
-        await self._stack.aclose()
+        await self.stack.aclose()
 
     async def __aenter__(self) -> Self:
         try:

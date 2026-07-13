@@ -175,7 +175,7 @@ class InterceptionServer(Interception):
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        self._stack.push_async_callback(self.runner.cleanup)
+        self.stack.push_async_callback(self.runner.cleanup)
         # No tunnel → every consumer shares the host network: bind loopback on any ephemeral
         # port. Otherwise the tunnel says where to bind for it to reach the port, and
         # `expose` publishes it.
@@ -187,13 +187,13 @@ class InterceptionServer(Interception):
         await site.start()
         self.port = site._server.sockets[0].getsockname()[1]  # actual bound port
         logger.info("interception up: url=http://%s:%d", self.host, self.port)
-        self._stack.callback(
+        self.stack.callback(
             logger.info, "interception down: url=http://%s:%d", self.host, self.port
         )
         if self.tunnel is None:
             self.base_url = f"http://127.0.0.1:{self.port}"
         else:
-            self.base_url = await self._stack.enter_async_context(
+            self.base_url = await self.stack.enter_async_context(
                 self.tunnel.expose(self.port)
             )
 
