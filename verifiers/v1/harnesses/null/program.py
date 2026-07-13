@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = ["openai", "mcp"]
 # ///
 """The interception endpoint and secret arrive through argv rather than the environment."""
@@ -92,10 +92,14 @@ async def main() -> None:
         # Bounded: the streamable-HTTP handshake can wedge (an intermittent mcp-SDK
         # race), and an unbounded initialize would silently eat the whole rollout
         # budget as a 0-turn harness_timeout. Failing loudly makes it a classified,
-        # retryable program error instead.
-        tools, dispatch = (
-            await asyncio.wait_for(connect_mcp(stack, config), timeout=60) if config.get("mcpServers") else ([], {})
-        )
+        # retryable program error instead. Use `asyncio.timeout` (same task) — not
+        # `wait_for` — so MCP/httpx cancel scopes entered onto `stack` are exited
+        # by this task, not a child task.
+        if config.get("mcpServers"):
+            async with asyncio.timeout(60):
+                tools, dispatch = await connect_mcp(stack, config)
+        else:
+            tools, dispatch = [], {}
         messages = [{"role": "system", "content": args.system_prompt}] if args.system_prompt else []
         # A Messages prompt (e.g. an image-bearing prompt) arrives pre-built as OpenAI wire dicts
         # via INITIAL_MESSAGES (kept in env: it can be large multimodal content that overflows
