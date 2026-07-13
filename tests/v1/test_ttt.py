@@ -517,6 +517,21 @@ def qa_hook(trace, service, client, **qa_overrides):
     return hook
 
 
+async def test_qa_max_tokens_none_leaves_completion_engine_bounded():
+    """qa.max_tokens=None removes the cap entirely (no inherit from the rollout's
+    sampling): the engine bounds the completion by the remaining context window."""
+    trace = make_trace()
+    service = FakeService()
+    client = QAClient()
+    hook = qa_hook(trace, service, client, max_tokens=None)
+    # rollout budget must NOT leak into the QA call (ModelContext is frozen — rebuild)
+    hook.ctx = vf.ModelContext(model="base", client=client, sampling=SamplingConfig(temperature=0.9, max_tokens=64))
+    commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1, 2], [3]))
+    await hook.on_turn_prepared(graph.prepare_turn(trace, [UserMessage(content="summary")]))
+    (_, _, sampling), *_ = client.requests
+    assert "max_tokens" not in sampling
+
+
 async def test_qa_generated_with_branch_in_context_and_shipped():
     trace = make_trace()
     service = FakeService()
@@ -543,7 +558,7 @@ async def test_qa_generated_with_branch_in_context_and_shipped():
         assert "<item>" in instruction  # the load-bearing output format
         assert "SELF-CONTAINED" in instruction
         assert model == "base"  # version 0 at generation time — the branch's own model
-        assert sampling["max_tokens"] == 2048  # the QA budget, not the rollout's
+        assert sampling["max_tokens"] == 4096  # the QA cap replaces the rollout's budget
 
     # The update shipped the extracted items (2 per generation, deduped to 2 distinct).
     (update,) = service.updates

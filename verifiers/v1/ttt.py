@@ -117,7 +117,8 @@ teach what is worth remembering from it.
 
 Write as few or as many items as the conversation warrants (at least one): concrete facts
 and values, what worked, what failed and why, how the tools behave, open questions —
-whatever someone continuing this work would need.
+whatever would help someone repeating this or similar work in the future, from the exact
+values and commands established here to the general lessons that would transfer.
 
 Rules:
 - SELF-CONTAINED: the question must be fully understandable by someone who never saw this
@@ -270,8 +271,11 @@ class QAConfig(BaseConfig):
     study-set branches (dedup collapses overlap)."""
     generation_prompt: str = QA_GENERATION_PROMPT
     """The instruction (no placeholders; must keep the `<item>` output format)."""
-    max_tokens: int | None = 2048
-    """Completion budget per QA generation (None = the rollout sampling's own value)."""
+    max_tokens: int | None = 4096
+    """Hard cap on completion tokens per QA generation (thinking included) — a wall-clock
+    circuit-breaker while the update blocks the rollout, not an item budget; generous vs
+    the 16k-compaction branches it studies. None = unset: the engine bounds the completion
+    by the remaining context window (max_model_len - prompt)."""
     temperature: float | None = None
     """Sampling temperature for QA generations (None = the rollout sampling's own)."""
     dedup_threshold: float | None = 0.85
@@ -504,6 +508,10 @@ class TTTRolloutHook:
         branch_messages = [self.trace.nodes[nid].message for nid in path]
         branch_wire = [message_to_wire(m) for m in branch_messages]
         sampling_data = self.ctx.sampling.model_dump(exclude_none=True)
+        # qa.max_tokens replaces the rollout's own budget entirely: an int caps the
+        # generation (thinking included); None removes the cap so the engine bounds the
+        # completion by the remaining context window.
+        sampling_data.pop("max_tokens", None)
         if qa.max_tokens is not None:
             sampling_data["max_tokens"] = qa.max_tokens
         if qa.temperature is not None:
