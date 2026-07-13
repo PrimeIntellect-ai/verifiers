@@ -13,12 +13,8 @@ from contextlib import AsyncExitStack
 from openai import AsyncOpenAI
 
 
-async def chat(
-    client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]
-):
-    completion = await client.chat.completions.create(
-        model=model, messages=messages, tools=tools or None
-    )
+async def chat(client: AsyncOpenAI, model: str, messages: list[dict], tools: list[dict]):
+    completion = await client.chat.completions.create(model=model, messages=messages, tools=tools or None)
     return completion.choices[0].message
 
 
@@ -34,12 +30,8 @@ async def connect_mcp(stack: AsyncExitStack, config: dict) -> tuple[list[dict], 
     tool_schemas: list[dict] = []
     dispatch: dict[str, tuple] = {}
     for name, spec in config.get("mcpServers", {}).items():
-        http_client = await stack.enter_async_context(
-            create_mcp_http_client(headers=spec.get("headers") or None)
-        )
-        read, write, *_ = await stack.enter_async_context(
-            streamable_http_client(spec["url"], http_client=http_client)
-        )
+        http_client = await stack.enter_async_context(create_mcp_http_client(headers=spec.get("headers") or None))
+        read, write, *_ = await stack.enter_async_context(streamable_http_client(spec["url"], http_client=http_client))
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         for tool in (await session.list_tools()).tools:
@@ -97,14 +89,14 @@ async def main() -> None:
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
+        # Bounded: the streamable-HTTP handshake can wedge (an intermittent mcp-SDK
+        # race), and an unbounded initialize would silently eat the whole rollout
+        # budget as a 0-turn harness_timeout. Failing loudly makes it a classified,
+        # retryable program error instead.
         tools, dispatch = (
-            await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
+            await asyncio.wait_for(connect_mcp(stack, config), timeout=60) if config.get("mcpServers") else ([], {})
         )
-        messages = (
-            [{"role": "system", "content": args.system_prompt}]
-            if args.system_prompt
-            else []
-        )
+        messages = [{"role": "system", "content": args.system_prompt}] if args.system_prompt else []
         # A Messages prompt (e.g. an image-bearing prompt) arrives pre-built as OpenAI wire dicts
         # via INITIAL_MESSAGES (kept in env: it can be large multimodal content that overflows
         # argv, and it's prompt content, not a credential); otherwise --prompt is the opening
@@ -147,9 +139,7 @@ async def main() -> None:
                     content = await call_mcp(dispatch, name, tool_args)
                 else:
                     content = f"error: unknown tool {name!r}"
-                messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": content}
-                )
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
 
 
 if __name__ == "__main__":
