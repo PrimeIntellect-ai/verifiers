@@ -8,28 +8,35 @@ from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
-CLAUDE_VERSION = "2.1.207"
-CLAUDE_HOME = f"/tmp/vf-claude-code-{CLAUDE_VERSION}"
+CLAUDE_HOME = "/tmp/vf-claude-code-{version}"
 CLAUDE_BIN = f"{CLAUDE_HOME}/.local/bin/claude"
-INSTALL = f"""
+INSTALL = """
 set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
-curl -fsSL https://claude.ai/install.sh | HOME={CLAUDE_HOME} bash -s {CLAUDE_VERSION}
+curl -fsSL https://claude.ai/install.sh | HOME={home} bash -s {version}
 """
 
 
-class ClaudeCodeHarness(Harness[HarnessConfig]):
+class ClaudeCodeHarnessConfig(HarnessConfig):
+    version: str = "2.1.207"
+    """Claude Code release to install; pinned for reproducibility."""
+
+
+class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     # images would require streaming inputs
     SUPPORTS_MESSAGE_PROMPT = False
 
     async def setup(self, runtime: Runtime) -> None:
+        home = CLAUDE_HOME.format(version=self.config.version)
+        binary = CLAUDE_BIN.format(version=self.config.version)
+        script = INSTALL.format(version=self.config.version, home=home)
         # Cache the pinned binary across local rollouts; Linux has flock, macOS has lockf.
-        install = shlex.quote(f"[ -x {CLAUDE_BIN} ] || ({INSTALL})")
+        install = shlex.quote(f"[ -x {binary} ] || ({script})")
         guarded = (
-            f"mkdir -p {CLAUDE_HOME} && "
-            f'"$(command -v flock || command -v lockf)" {CLAUDE_HOME}/install.lock '
+            f"mkdir -p {home} && "
+            f'"$(command -v flock || command -v lockf)" {home}/install.lock '
             f"bash -o pipefail -c {install}"
         )
         result = await runtime.run(["sh", "-c", guarded], {})
@@ -56,7 +63,7 @@ class ClaudeCodeHarness(Harness[HarnessConfig]):
             "IS_SANDBOX": "1",
         }
         argv = [
-            CLAUDE_BIN,
+            CLAUDE_BIN.format(version=self.config.version),
             "--print",
             "--bare",
             "--dangerously-skip-permissions",
