@@ -29,6 +29,7 @@ from verifiers.v1.state import State, StateT
 from verifiers.v1.task import TaskT, WireTask
 from verifiers.v1.types import (
     AssistantMessage,
+    KeptTokens,
     Messages,
     StrictBaseModel,
     ToolMessage,
@@ -166,30 +167,30 @@ class Branch(StrictBaseModel):
         return merged if merged.shape[0] == total else None
 
     @property
-    def kept_tokens(self) -> tuple[np.ndarray, np.ndarray] | None:
-        """The branch's kept-set sampling masks as `(ids, counts)`: `counts` is int32
-        aligned 1:1 with `token_ids` (0 = no mask, safe under partial coverage — unlike
-        `routed_experts` this is not all-or-nothing), `ids` the flat int32 concatenation
-        of the kept sets in position order. None when no node carries kept-set data."""
-        if all(n.kept_token_counts is None for n in self.nodes):
+    def kept_tokens(self) -> KeptTokens | None:
+        """The branch's kept-set sampling masks: `counts` is int32 aligned 1:1 with
+        `token_ids` (0 = no mask, safe under partial coverage — unlike `routed_experts`
+        this is not all-or-nothing), `ids` the flat int32 concatenation of the kept
+        sets in position order. None when no node carries kept-set data."""
+        if all(n.kept_tokens is None for n in self.nodes):
             return None
         # `_attribute_kept_tokens` validates counts/ids against the node's sampled
-        # tokens before setting the fields, so this is a straight scatter+concat
+        # tokens before setting the field, so this is a straight scatter+concat
         # (a corrupted node would fail loudly on the scatter shape mismatch).
         ids_parts: list[np.ndarray] = []
         counts_parts: list[np.ndarray] = []
         for node in self.nodes:
             counts = np.zeros(len(node.mask), dtype=np.int32)
-            if node.kept_token_counts is not None and len(node.kept_token_counts):
-                counts[np.nonzero(node.mask)[0]] = node.kept_token_counts
-                ids_parts.append(node.kept_token_ids)
+            if node.kept_tokens is not None and len(node.kept_tokens.counts):
+                counts[np.nonzero(node.mask)[0]] = node.kept_tokens.counts
+                ids_parts.append(node.kept_tokens.ids)
             counts_parts.append(counts)
         ids = (
             np.concatenate(ids_parts).astype(np.int32, copy=False)
             if ids_parts
             else np.zeros(0, dtype=np.int32)
         )
-        return ids, np.concatenate(counts_parts)
+        return KeptTokens(ids=ids, counts=np.concatenate(counts_parts))
 
     @property
     def num_total_tokens(self) -> int:
@@ -234,8 +235,7 @@ _NODE_DUMP_EXCLUDE: dict = {
         "__all__": {
             "multi_modal_data",
             "routed_experts",
-            "kept_token_ids",
-            "kept_token_counts",
+            "kept_tokens",
         }
     }
 }

@@ -30,6 +30,7 @@ from renderers.base import MultiModalData, PlaceholderRange, RenderedTokens
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
+    KeptTokens,
     Message,
     Response,
     StrictBaseModel,
@@ -111,13 +112,12 @@ class MessageNode(StrictBaseModel):
     the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
-    kept_token_ids: np.ndarray | None = None
-    """Kept-set sampling masks for this node's sampled tokens, flat int32 in position
-    order (row boundaries in `kept_token_counts`). Assistant nodes only; consumed via
-    `Branch.kept_tokens` for sampling-replay training. Rides the wire as a
-    raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
-    kept_token_counts: np.ndarray | None = None
-    """Kept-set size per sampled token (int32, aligned with `logprobs`); 0 = no mask."""
+    kept_tokens: KeptTokens | None = None
+    """Kept-set sampling masks for this node's sampled tokens, decoded: `ids` flat int32
+    in position order, `counts` the per-token kept-set sizes (aligned with `logprobs`;
+    0 = no mask). Assistant nodes only; consumed via `Branch.kept_tokens` for
+    sampling-replay training. Rides the wire as raw-bytes `__nd__` dicts; kept off disk
+    by the dump-site `exclude` in prime-rl."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
@@ -165,14 +165,12 @@ class MessageNode(StrictBaseModel):
             },
         )
 
-    @field_serializer("routed_experts", "kept_token_ids", "kept_token_counts")
+    @field_serializer("routed_experts")
     def serialize_ndarray_field(self, arr: np.ndarray | None) -> dict | None:
         """Integer array -> raw-bytes `__nd__` dict so it rides the wire (numpy can't JSON)."""
         return None if arr is None else _encode_ndarray(arr)
 
-    @field_validator(
-        "routed_experts", "kept_token_ids", "kept_token_counts", mode="before"
-    )
+    @field_validator("routed_experts", mode="before")
     @classmethod
     def deserialize_ndarray_field(cls, value: Any) -> np.ndarray | None:
         if value is None or isinstance(value, np.ndarray):
@@ -180,6 +178,28 @@ class MessageNode(StrictBaseModel):
         if isinstance(value, dict) and value.get("__nd__"):
             return _decode_ndarray(value)
         raise TypeError(f"cannot build ndarray field from {type(value).__name__}")
+
+    @field_serializer("kept_tokens")
+    def serialize_kept_tokens(self, kept: KeptTokens | None) -> dict | None:
+        """`KeptTokens` -> dict of raw-bytes `__nd__` entries so the arrays ride the wire."""
+        if kept is None:
+            return None
+        return {
+            "ids": _encode_ndarray(kept.ids),
+            "counts": _encode_ndarray(kept.counts),
+        }
+
+    @field_validator("kept_tokens", mode="before")
+    @classmethod
+    def deserialize_kept_tokens(cls, value: Any) -> KeptTokens | None:
+        if value is None or isinstance(value, KeptTokens):
+            return value
+        if isinstance(value, dict):
+            return KeptTokens(
+                ids=_decode_ndarray(value["ids"]),
+                counts=_decode_ndarray(value["counts"]),
+            )
+        raise TypeError(f"cannot build KeptTokens from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -435,20 +455,21 @@ def _attribute_routed_experts(
         off = end
 
 
-def _attribute_kept_tokens(trace: Trace, assistant_id: int, payload: Any) -> None:
+def _attribute_kept_tokens(
+    trace: Trace, assistant_id: int, payload: KeptTokens | None
+) -> None:
     """Attach this turn's kept-set sampling masks to the assistant node (the payload
     covers exactly the turn's completion tokens, so no path arithmetic). A payload
     that doesn't line up with the node's sampled tokens is dropped, not misaligned."""
     if payload is None:
         return
-    counts = np.frombuffer(binascii.a2b_base64(payload["counts"]), dtype=np.int32)
-    ids = np.frombuffer(binascii.a2b_base64(payload["ids"]), dtype=np.int32)
+    counts = np.frombuffer(binascii.a2b_base64(payload.counts), dtype=np.int32)
+    ids = np.frombuffer(binascii.a2b_base64(payload.ids), dtype=np.int32)
     node = trace.nodes[assistant_id]
     if len(counts) != sum(node.mask) or int(counts.sum()) != len(ids):
         return
     # Own the buffers — the payload views reference the turn's response bytes.
-    node.kept_token_ids = ids.copy()
-    node.kept_token_counts = counts.copy()
+    node.kept_tokens = KeptTokens(ids=ids.copy(), counts=counts.copy())
 
 
 def _commit_turn(turn: PendingTurn, response: Response) -> None:

@@ -7,6 +7,7 @@ them into these models explicitly.
 """
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field
@@ -234,11 +235,13 @@ class RoutedExperts(TypedDict):
     start: int
 
 
-class KeptTokens(TypedDict):
-    """The raw kept-set sampling masks a `generate` response carries for sampling
-    replay: base64 `ids` (int32, every kept-set concatenated) and base64 `counts` (int32,
-    kept-set size per completion token; 0 = no usable mask). Kept opaque (`Any`) so
-    pydantic never validates the encoded blobs."""
+@dataclass
+class KeptTokens:
+    """Kept-set sampling masks for sampling replay: `ids` (every kept set concatenated
+    in position order) and `counts` (kept-set size per completion token; 0 = no usable
+    mask). Base64 blobs straight off the `generate` response on the `TurnTokens`
+    carrier; decoded to flat int32 arrays on `MessageNode` (`len(ids) == sum(counts)`,
+    row boundaries recovered from `counts`)."""
 
     ids: Any
     counts: Any
