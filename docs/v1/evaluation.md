@@ -28,9 +28,9 @@ Use dotted arguments to set values using the CLI, e.g. `--sampling.temperature 0
 
 Evaluation output is written under `outputs/<taskset>--<model>--<harness>/<uuid>/` by
 default. The directory contains `config.toml`, one completed trace per line in
-`traces.jsonl`, and logs in `eval.log`. Explicit `--topology.id` runs are local-eval
-only (no `--server` / `--resume` / platform push); they still write flat traces dug out
-of each finished graph.
+`traces.jsonl`, and logs in `eval.log`. Explicit `--topology.id` runs share the
+in-process and `--server` runners (no `--resume` / platform push yet); they write flat
+traces dug out of each finished graph.
 
 ## Common config values
 

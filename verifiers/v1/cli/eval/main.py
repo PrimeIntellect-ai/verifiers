@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 USAGE = (
     "usage: uv run eval [<taskset-id>] [--harness.id <id>] [--id <env-id> (legacy)] [options] [@ file.toml]\n"
     "       uv run eval --topology.id <id> [--topology.taskset.id <id>] [options]\n"
-    "           (local multi-agent topology eval; no --server / --resume / platform push)\n"
+    "           (multi-agent topology eval; --server ok; no --resume / platform push)\n"
     "       uv run eval --resume <output-dir>   (re-run a previous run's missing/errored rollouts)"
 )
 

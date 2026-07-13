@@ -8,7 +8,7 @@ with an error; dropped and redone). The loaded traces rejoin the run everywhere 
 displayed, pushed, and printed alongside this session's — so a resumed run picks up exactly
 where the interrupted one stopped.
 
-Explicit topologies are local-eval only and do not support `--resume` (see `EvalConfig`).
+Explicit topologies do not support `--resume` yet (see `EvalConfig`).
 """
 
 import json

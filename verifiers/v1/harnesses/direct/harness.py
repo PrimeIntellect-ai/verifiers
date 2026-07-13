@@ -48,7 +48,9 @@ class DirectHarness(Harness[DirectHarnessConfig]):
             messages.append({"role": "user", "content": prompt})
         elif prompt is not None:
             messages.extend(message_to_wire(m) for m in prompt)
-        client = AsyncOpenAI(base_url=endpoint, api_key=secret)
+        # No SDK retries: a re-sent request whose turn interception already committed
+        # re-samples and forks the trace (same contract as the default harness).
+        client = AsyncOpenAI(base_url=endpoint, api_key=secret, max_retries=0)
         bounced = False
         try:
             while True:

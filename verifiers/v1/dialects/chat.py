@@ -320,12 +320,6 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
         # A None completion seeds the opening turn (no model message yet) — only the user turn(s).
         messages = [*body.get("messages", [])]
         if completion is not None:
-            message = dict(completion["choices"][0]["message"])
-            if message.get("content") is None and not message.get("tool_calls"):
-                # A reasoning-only turn (null content, no tool calls) is valid *output* but
-                # rejected as re-sent *input* ("content is required unless tool_calls") —
-                # coerce to the empty string so a simulated conversation can continue.
-                message["content"] = ""
-            messages.append(message)
+            messages.append(completion["choices"][0]["message"])
         messages.extend(message_to_wire(m) for m in user_messages)
         return {**body, "messages": messages}

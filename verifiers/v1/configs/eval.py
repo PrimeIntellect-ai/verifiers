@@ -48,8 +48,8 @@ class EvalConfig(EnvServerConfig):
     """Show a live dashboard instead of per-rollout logs (in-process only)."""
     server: bool = False
     """Drive rollouts through the env-server worker pool (sized by `--pool.*`) instead of
-    in-process — the path prime-rl trains through. Incompatible with `--rich` and with
-    explicit `--topology.id` (topologies are local-eval only)."""
+    in-process — the same ZMQ path prime-rl trains through. Works for taskset × harness
+    and for explicit `--topology.id`. Incompatible with `--rich`."""
     push: bool = True
     """Upload the finished run to the Prime Intellect platform (the private Evaluations
     tab) at the end of the eval. On by default; disable with `--no-push`. Needs
@@ -74,16 +74,12 @@ class EvalConfig(EnvServerConfig):
         return self
 
     @model_validator(mode="after")
-    def topology_local_eval_only(self):
-        """Explicit topologies are for local inspection: same runner, flat traces on
-        disk, no platform/server/resume surface yet."""
+    def topology_eval_surface(self):
+        """Explicit topologies share the in-process and `--server` runners (flat traces
+        on disk). Platform push and `--resume` stay off until those surfaces are
+        topology-aware."""
         if self.topology is None:
             return self
-        if self.server:
-            raise ValueError(
-                "explicit `--topology.id` is local-eval only; drop `--server` "
-                "(taskset × harness is the supported server-backed path)"
-            )
         if self.resume is not None:
             raise ValueError(
                 "explicit `--topology.id` does not support `--resume`; "

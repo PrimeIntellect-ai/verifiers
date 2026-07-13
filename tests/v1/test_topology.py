@@ -521,10 +521,14 @@ def test_eval_config_rejects_topology_with_taskset():
         )
 
 
-def test_eval_config_rejects_topology_with_server_or_resume():
-    """Explicit topologies are local-eval only."""
-    with pytest.raises(ValueError, match="local-eval only"):
-        EvalConfig(topology={"id": "echo-chain-v1"}, server=True, rich=False)
+def test_eval_config_allows_topology_with_server():
+    """`--server` is the same ZMQ pool path prime-rl trains through; topologies use it."""
+    config = EvalConfig(topology={"id": "echo-chain-v1"}, server=True, rich=False)
+    assert config.server is True
+    assert config.push is False  # push still forced off for explicit topologies
+
+
+def test_eval_config_rejects_topology_with_resume():
     with pytest.raises(ValueError, match="does not support `--resume`"):
         EvalConfig(topology={"id": "echo-chain-v1"}, resume=Path("."), rich=False)
 

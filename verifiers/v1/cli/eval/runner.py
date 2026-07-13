@@ -1,8 +1,8 @@
 """Native v1 evaluation: topologies run in memory; traces are what get persisted.
 
 Taskset × harness syntax lowers to the built-in single-agent topology. Explicit
-topologies are the same runner, but local-eval only (see `EvalConfig`): results are
-dug out of each finished `AgentGraph` and written as ordinary traces.
+topologies share the same runners (in-process and `--server`); results are dug out
+of each finished `AgentGraph` and written as ordinary traces.
 """
 
 import asyncio
@@ -113,8 +113,7 @@ async def run_eval(config: EvalConfig) -> list[Trace]:
 async def run_eval_server(config: EvalConfig) -> list[Trace]:
     """Run independent invocations through the env-server worker pool; persist flat traces.
 
-    Explicit topologies are rejected at config validation — this path is for the
-    taskset × harness (single-agent) supported contract.
+    Same ZMQ path prime-rl trains through — taskset × harness or explicit `--topology.id`.
     """
     import multiprocessing as mp
     from functools import partial

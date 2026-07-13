@@ -115,9 +115,9 @@ as a single taskset-harness rollout.
 ### Make platform push graph-native
 
 `push_traces()` receives flattened graph traces and uploads each as an independent rollout.
-Explicit topologies are local-eval only today (`EvalConfig` forces `--no-push` and rejects
-`--server` / `--resume`), so multi-agent graphs are not pushed. Prefer a graph-native upload
-contract before re-enabling push for `--topology.id`.
+Explicit topologies force `--no-push` today (and still reject `--resume`), so multi-agent
+graphs are not pushed. Prefer a graph-native upload contract before re-enabling push for
+`--topology.id`.
 
 ## Configuration boundaries
 

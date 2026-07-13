@@ -97,14 +97,8 @@ async def main() -> None:
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
-        # Bounded: the streamable-HTTP handshake can wedge (an intermittent mcp-SDK
-        # race), and an unbounded initialize would silently eat the whole rollout
-        # budget as a 0-turn harness_timeout. Failing loudly makes it a classified,
-        # retryable program error instead.
         tools, dispatch = (
-            await asyncio.wait_for(connect_mcp(stack, config), timeout=60)
-            if config.get("mcpServers")
-            else ([], {})
+            await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
         )
         messages = (
             [{"role": "system", "content": args.system_prompt}]
