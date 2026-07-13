@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field as dataclass_field
 from typing import Any
 
-from openai.types.chat import ChatCompletion as OpenAIChatCompletion
+from openai.types.chat import ChatCompletion
 
 from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
 from verifiers.v1.types import (
@@ -31,7 +31,7 @@ from verifiers.v1.types import (
 )
 
 
-class ChatCompletion(OpenAIChatCompletion):
+class ModdedChatCompletion(ChatCompletion):
     """The OpenAI SDK closes `service_tier` to a fixed `Literal`, but providers return tiers
     outside it (e.g. Prime's `provisioned`), which makes `model_validate` reject an otherwise
     valid completion. Widen the field to a plain string — we don't consume it — so parsing stays
@@ -272,7 +272,7 @@ class ChatStreamParser(StreamParser):
             self.message["reasoning_details"] = self.reasoning_details
         head = self.head or {}
         return response_from_wire(
-            ChatCompletion.model_validate(
+            ModdedChatCompletion.model_validate(
                 {
                     "id": head.get("id", "vf-intercept"),
                     "object": "chat.completion",
@@ -294,7 +294,7 @@ class ChatStreamParser(StreamParser):
 class ChatDialect(Dialect[dict, ChatCompletion]):
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
-    response_type = ChatCompletion
+    response_type = ModdedChatCompletion
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:
         messages: Messages = []
