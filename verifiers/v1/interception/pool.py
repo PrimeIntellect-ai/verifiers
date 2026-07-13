@@ -24,9 +24,9 @@ from verifiers.v1.interception.base import BaseInterceptionConfig, Interception,
 from verifiers.v1.interception.server import (
     InterceptionServer,
     InterceptionServerConfig,
-    RolloutSession,
 )
 from verifiers.v1.interception.tunnel import PrimeTunnel
+from verifiers.v1.session import RolloutSession
 
 logger = logging.getLogger(__name__)
 

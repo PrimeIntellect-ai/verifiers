@@ -16,10 +16,10 @@ from verifiers.v1.interception import (
     ElasticInterceptionPoolConfig,
     Interception,
     InterceptionConfig,
-    RolloutLimits,
     make_interception,
     requires_tunnel,
 )
+from verifiers.v1.session import RolloutLimits
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (

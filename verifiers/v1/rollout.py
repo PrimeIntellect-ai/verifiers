@@ -18,12 +18,11 @@ from verifiers.v1.errors import (
 from verifiers.v1.interception import (
     Interception,
     InterceptionServer,
-    RolloutLimits,
-    RolloutSession,
     Slot,
     requires_tunnel,
 )
 from verifiers.v1.interception.tunnel import PrimeTunnel
+from verifiers.v1.session import RolloutLimits, RolloutSession
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,

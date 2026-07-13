@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Self
 from pydantic_config import BaseConfig
 
 if TYPE_CHECKING:
-    from verifiers.v1.interception.server import RolloutSession
+    from verifiers.v1.session import RolloutSession
 
 
 class BaseInterceptionConfig(BaseConfig):

@@ -24,8 +24,6 @@ from verifiers.v1.interception.pool import (
 from verifiers.v1.interception.server import (
     InterceptionServer,
     InterceptionServerConfig,
-    RolloutLimits,
-    RolloutSession,
 )
 from verifiers.v1.interception.tunnel import make_tunnel
 from verifiers.v1.runtimes import runtime_is_local
@@ -100,8 +98,6 @@ __all__ = [
     "InterceptionServer",
     "StaticInterceptionPool",
     "ElasticInterceptionPool",
-    "RolloutLimits",
-    "RolloutSession",
     "BaseInterceptionConfig",
     "InterceptionConfig",
     "InterceptionServerConfig",
