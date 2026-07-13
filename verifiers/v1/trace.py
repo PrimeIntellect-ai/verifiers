@@ -25,6 +25,7 @@ from verifiers.v1.types import (
     Messages,
     SamplingConfig,
     StrictBaseModel,
+    Tool,
     ToolMessage,
     Usage,
     content_text,
@@ -216,6 +217,11 @@ class Trace(StrictBaseModel, Generic[DataT, StateT]):
     """The runtime's full config plus its provisioned resource ID."""
     nodes: list[MessageNode] = Field(default_factory=list)
     """The message graph; branches are derived views and storage stays linear in turns."""
+    tools: list[Tool] | None = None
+    """The tools advertised to the model, recorded when an intercepted turn commits (last
+    committed turn wins) — never from a refused/failed request the model never saw. The full
+    advertised list (not just tools called), so tool-use SFT can re-render the exact prompt;
+    a trace-level snapshot: mid-rollout changes collapse to the last set the model saw."""
 
     rewards: dict[str, float] = Field(default_factory=dict)
     """Weighted contributions from task rewards, topology rewards, and judges."""

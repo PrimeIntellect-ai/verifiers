@@ -74,6 +74,11 @@ async def test_tool(run_v1, harness_runtime, tool_runtime, tmp_path):
     assert trace.errors == []
     assert trace.num_turns >= 2  # tool call + answer
     assert trace.reward == 1.0
+    # The interception server captured the advertised tools onto the trace (for tool-use SFT):
+    # the null harness offered the task's MCP tool as `echo_back`, schema included.
+    assert trace.tools is not None
+    (echo_tool,) = [t for t in trace.tools if t.name == "echo_back"]
+    assert "message" in echo_tool.parameters.get("properties", {})
 
 
 @pytest.mark.e2e

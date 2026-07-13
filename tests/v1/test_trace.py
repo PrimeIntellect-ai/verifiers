@@ -60,6 +60,7 @@ def test_wire_trace_round_trip():
     # carry node `parent` links for `num_branches` to survive.
     tr = vf.Trace[MyTask, vf.State](
         task=vf.TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="a")),
+        tools=[vf.Tool(name="echo", description="", parameters={"type": "object"})],
         nodes=[
             MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
             MessageNode(parent=0, message=AssistantMessage(content="a1"), sampled=True),
@@ -80,6 +81,9 @@ def test_wire_trace_round_trip():
     assert rt.reward == 1.0  # property recomputed from `rewards`
     assert rt.stop_condition == "done"
     assert rt.info == {"build": "ok"}
+    assert (
+        rt.tools == tr.tools
+    )  # the advertised tools persist (tool-use SFT reads them)
     assert rt.task.data.model_extra == {
         "answer": "a"
     }  # taskset extras preserved on WireTaskData

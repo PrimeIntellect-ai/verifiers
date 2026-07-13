@@ -20,6 +20,7 @@ from typing import Any
 
 import zmq
 import zmq.asyncio
+from pydantic import ValidationError
 
 from verifiers.v1 import graph
 from verifiers.v1.clients.config import ClientConfig, TrainClientConfig
@@ -39,6 +40,7 @@ from verifiers.v1.types import (
     Response,
     SamplingConfig,
     SystemMessage,
+    Tool,
     ToolCall,
     ToolMessage,
     TurnTokens,
@@ -61,6 +63,22 @@ def _as_dict(obj: Any) -> Any:
     if hasattr(obj, "model_dump"):
         return obj.model_dump()
     return obj
+
+
+def _to_v1_tools(raw: Any) -> list[Tool] | None:
+    """Map v0 ``RolloutOutput.tool_defs`` onto ``Trace.tools``. The v0 and v1 ``Tool``
+    shapes are identical (name/description/parameters/strict), so this is a re-validation;
+    malformed entries are dropped rather than failing the whole trace mapping."""
+    defs: list[Tool] = []
+    for t in raw or []:
+        t = _as_dict(t)
+        if not isinstance(t, dict):
+            continue
+        try:
+            defs.append(Tool.model_validate(t))
+        except ValidationError:
+            continue
+    return defs or None
 
 
 def _text(content: Any) -> str:
@@ -236,6 +254,7 @@ def rollout_output_to_trace(out: dict, task_idx: int) -> Trace:
             type="Task",
             data=_to_wire_task(task_idx, out.get("prompt"), out.get("answer")),
         ),
+        tools=_to_v1_tools(out.get("tool_defs")),
         rewards={"reward": float(out.get("reward") or 0.0)},
         metrics={k: float(v) for k, v in (out.get("metrics") or {}).items()},
         is_completed=bool(out.get("is_completed", True)),

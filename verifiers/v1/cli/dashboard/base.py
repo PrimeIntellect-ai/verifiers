@@ -9,6 +9,8 @@ from collections.abc import Callable, Iterator
 from rich.console import Group
 from rich.live import Live
 
+from verifiers.v1.utils.interrupt import cleaning_up
+
 try:  # POSIX-only terminal control; absent on Windows, where key reading is skipped.
     import termios
     import tty
@@ -82,10 +84,17 @@ async def live_view(
     """Refresh `render()` every 0.25s until the block exits, then draw one final frame. When
     `on_key` is given, left/right arrow presses are dispatched to it (and redraw at once)."""
     with Live(render(), auto_refresh=False) as live:
+        stopping = False
 
         async def loop() -> None:
             while True:
-                await asyncio.sleep(0.25)
+                try:
+                    await asyncio.sleep(0.25)
+                except asyncio.CancelledError:
+                    # Ctrl-C cancels every task at once; keep refreshing so the cleanup notice
+                    # stays live through teardown, stopping only when live_view tears down.
+                    if stopping or not cleaning_up():
+                        raise
                 live.update(render(), refresh=True)
 
         task = asyncio.create_task(loop())
@@ -93,6 +102,7 @@ async def live_view(
             try:
                 yield
             finally:
+                stopping = True
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
