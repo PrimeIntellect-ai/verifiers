@@ -112,6 +112,12 @@ class EnvConfig(BaseConfig):
     default — servers grown on demand, `multiplex` rollouts each), `server` (one server,
     with a tunnel choice incl. a bring-your-own endpoint), or `static` (a fixed list of
     such servers)."""
+    system_prompt_path: Path | None = None
+    """Override every task system prompt with this file contents (None keeps each task
+    prompt). Read once at construction and applied where episodes are built, so it holds
+    across the in-process and env-server paths. This is the file seam external prompt
+    optimizers drive — e.g. `weco run` rewrites the file between evals (see
+    `verifiers.v1.cli.weco_eval`)."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
