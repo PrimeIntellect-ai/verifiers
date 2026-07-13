@@ -52,6 +52,7 @@ class ClaudeCodeHarness(Harness[HarnessConfig]):
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
             "ANTHROPIC_API_KEY": secret,
             "CLAUDE_CONFIG_DIR": ".vf-claude",
+            "DISABLE_AUTOUPDATER": "1",
             "IS_SANDBOX": "1",
         }
         argv = [
