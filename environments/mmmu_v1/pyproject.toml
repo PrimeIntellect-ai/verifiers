@@ -3,7 +3,7 @@ name = "mmmu-v1"
 version = "0.1.0"
 description = "mmmu-v1 — MMMU multimodal multiple-choice benchmark (single-turn, boxed-letter exact match)."
 requires-python = ">=3.10"
-dependencies = ["verifiers>=0.2.0", "datasets", "pillow"]
+dependencies = ["verifiers", "datasets", "pillow"]
 
 [build-system]
 requires = ["hatchling"]
