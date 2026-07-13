@@ -12,7 +12,13 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.types import ID
-from verifiers.v1.interception import InterceptionPool, RolloutLimits
+from verifiers.v1.interception import (
+    ElasticInterceptionConfig,
+    Interception,
+    InterceptionConfig,
+    RolloutLimits,
+    make_interception,
+)
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
@@ -20,7 +26,7 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
     runtime_is_local,
 )
-from verifiers.v1.task import Task
+from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.utils.generic import generic_type
 from verifiers.v1.mcp import SharedToolServer, serve_shared
@@ -100,10 +106,11 @@ class EnvConfig(BaseConfig):
     max_total_tokens: int | None = None
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
     trace's `num_total_tokens`; framework-enforced between turns."""
-    multiplex: int = Field(32, ge=1)
-    """Rollouts that share one interception server (and, behind a remote runtime, one
-    tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels instead of one each —
-    key past the per-token tunnel cap. 1 = a server (+ tunnel) per rollout."""
+    interception: InterceptionConfig = ElasticInterceptionConfig()
+    """The interception shape (see `verifiers.v1.interception.config`): `elastic` (the
+    default — servers grown on demand, `multiplex` rollouts each), `server` (one server,
+    with a tunnel choice incl. a bring-your-own endpoint), or `static` (a fixed list of
+    such servers)."""
     # --- legacy (v0) backwards-compat -----------------------------------------
     id: ID | None = None
     """Classic (v0) env id (`name`, `org/name`, or `org/name@version` — installed from the
@@ -274,9 +281,9 @@ class Environment:
         )
         self._warned_resources: set[tuple[str, str]] = set()
         self._shared_tools: dict[str, SharedToolServer] = {}
-        self._interception: InterceptionPool | None = None
+        self._interception: Interception | None = None
         """Eval-level serving resources, live only inside `serving()`: shared tool servers
-        ({name: SharedToolServer}) and the interception pool. `episode()` injects them into every rollout
+        ({name: SharedToolServer}) and the interception. `episode()` injects them into every rollout
         so neither runner has to thread them through `Episode.run`/`Rollout.run`."""
 
     def runtime_for(self, task: Task) -> RuntimeConfig:
@@ -358,24 +365,59 @@ class Environment:
     @contextlib.asynccontextmanager
     async def serving(self):
         """Hold the env-level serving resources for the duration of an eval: the shared tool
-        servers (built once, see `shared_tools`) and the interception pool. Stash them so
+        servers (built once, see `shared_tools`) and the interception. Stash them so
         every `episode()` built inside this context injects them into its rollouts — that's
         what keeps both eval runners (in-process and env-server) on one serving path. Build
         episodes inside this context; the resources are torn down on exit."""
-        async with (
-            self.shared_tools() as shared,
-            self.interception_pool() as interception,
-        ):
-            self._shared_tools = shared
-            self._interception = interception
-            try:
-                yield
-            finally:
-                self._shared_tools = {}
-                self._interception = None
+        async with self.shared_tools() as shared:
+            async with self.interception(shared) as interception:
+                self._shared_tools = shared
+                self._interception = interception
+                try:
+                    yield
+                finally:
+                    self._shared_tools = {}
+                    self._interception = None
 
-    def interception_pool(self) -> InterceptionPool:
-        return InterceptionPool(self.harness.config.runtime, self.config.multiplex)
+    def interception(self, shared: dict[str, SharedToolServer]) -> Interception:
+        """The interception for this env's rollouts, picked by `interception.type` (see
+        `make_interception`). Reachability is decided from ALL its consumers — the harness
+        AND the tool/user servers, each of which reaches the `/state` channel from its own
+        runtime: localhost only when every consumer is local, else exposed via the
+        configured tunnels (a public URL all of them can reach)."""
+        is_local = runtime_is_local(
+            self.harness.config.runtime
+        ) and not self._has_remote_server(shared)
+        return make_interception(self.config.interception, is_local=is_local)
+
+    def _has_remote_server(self, shared: dict[str, SharedToolServer]) -> bool:
+        """Whether any tool/user server runs in a remote runtime — so the interception must
+        be exposed (a public tunnel) even when the harness is local. `shared` servers are
+        already live, so their locality is read directly; the per-rollout servers are read
+        class-level off the task type (like `validate_pairing`) with their configs resolved
+        the way `Task.server_config` resolves them — a task that *overrides* that pairing
+        isn't statically knowable, so it conservatively counts as remote (the tunnel then
+        reaches everything; a wrongly-assumed localhost would reach nothing remote). A
+        colocated server shares the harness's runtime (already covered by the harness
+        check); a config-`url` server is external (it connects out, not a consumer)."""
+        if any(not s.external and not s.local for s in shared.values()):
+            return True
+        task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
+        server_classes = [*task_cls.tools, *([task_cls.user] if task_cls.user else [])]
+        if not server_classes:
+            return False
+        if task_cls.server_config is not Task.server_config:
+            return True
+        sole = len({*task_cls.tools} | ({task_cls.user} - {None})) == 1
+        for server_cls in server_classes:
+            cfg = resolve_server_config(
+                task_cls.__name__, self.taskset.config.task, server_cls, sole=sole
+            )
+            if getattr(cfg, "url", None) or cfg.colocated:
+                continue
+            if not runtime_is_local(cfg.runtime):
+                return True
+        return False
 
     @contextlib.asynccontextmanager
     async def shared_tools(self):

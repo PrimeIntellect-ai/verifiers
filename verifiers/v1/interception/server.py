@@ -25,6 +25,7 @@ import json
 import logging
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,8 @@ from verifiers.v1.errors import (
     TaskError,
     UserError,
 )
+from verifiers.v1.interception.base import Interception, Slot
+from verifiers.v1.interception.tunnel import PrimeTunnel, Tunnel
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages, Tool
 
@@ -58,8 +61,6 @@ logger = logging.getLogger(__name__)
 _MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 _KEEPALIVE_INTERVAL_SECONDS = 3
 _STREAM_QUEUE_MAXSIZE = 16
-# The server binds loopback; callers reach it via localhost or a host tunnel (see `reachable_url`).
-_HOST = "127.0.0.1"
 
 
 def _completion_response(completion: dict | None) -> web.Response:
@@ -161,11 +162,27 @@ class RolloutSession:
         return None
 
 
-class InterceptionServer:
-    def __init__(self) -> None:
+class InterceptionServer(Interception):
+    """A server that proxies model calls for one or more rollouts — and is itself the
+    single-server `Interception` (the pools compose several of these). On `start` it binds
+    where its `tunnel` says (`bind_host`/`bind_port`) and sets `base_url`, the one URL every
+    consumer reaches it at: localhost when all consumers are local (`is_local`, tunnel
+    untouched), else the tunnel's public URL."""
+
+    def __init__(self, tunnel: Tunnel | None = None, *, is_local: bool = True) -> None:
+        super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
+        self.tunnel = tunnel or PrimeTunnel()
+        self.is_local = is_local
+        self.host = "127.0.0.1"
         self.port = 0
+        self.base_url = ""  # set by `start`
         self.runner: web.AppRunner | None = None
+
+    @property
+    def load(self) -> int:
+        """Rollouts currently registered — what the pools balance on."""
+        return len(self.sessions)
 
     def register(self, session: RolloutSession) -> str:
         """Add a session under a fresh secret (the bearer token the harness must send) and
@@ -176,6 +193,14 @@ class InterceptionServer:
 
     def unregister(self, secret: str) -> None:
         self.sessions.pop(secret, None)
+
+    @asynccontextmanager
+    async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
+        secret = self.register(session)
+        try:
+            yield self.base_url, secret
+        finally:
+            self.unregister(secret)
 
     def _handler_for(self, dialect: Dialect):
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
@@ -192,7 +217,7 @@ class InterceptionServer:
 
         return handler
 
-    async def __aenter__(self) -> "InterceptionServer":
+    async def start(self) -> None:
         app = web.Application(client_max_size=_MAX_REQUEST_BODY)
         for dialect in DIALECTS:
             for route in dialect.routes:
@@ -208,16 +233,26 @@ class InterceptionServer:
         app.router.add_get("/task", self.handle_task_get)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        site = web.TCPSite(self.runner, _HOST, 0)
+        self._stack.push_async_callback(self.runner.cleanup)
+        # All consumers local → bind loopback on any ephemeral port, no tunnel. Otherwise the
+        # tunnel says where to bind for it to reach the port, and `expose` publishes it.
+        if self.is_local:
+            self.host, bind_port = "127.0.0.1", 0
+        else:
+            self.host, bind_port = self.tunnel.bind_host, self.tunnel.bind_port
+        site = web.TCPSite(self.runner, self.host, bind_port)
         await site.start()
-        self.port = site._server.sockets[0].getsockname()[1]  # actual ephemeral port
-        logger.info("interception up: url=http://%s:%d", _HOST, self.port)
-        return self
-
-    async def __aexit__(self, *exc) -> None:
-        logger.info("interception down: url=http://%s:%d", _HOST, self.port)
-        if self.runner is not None:
-            await self.runner.cleanup()
+        self.port = site._server.sockets[0].getsockname()[1]  # actual bound port
+        logger.info("interception up: url=http://%s:%d", self.host, self.port)
+        self._stack.callback(
+            logger.info, "interception down: url=http://%s:%d", self.host, self.port
+        )
+        if self.is_local:
+            self.base_url = f"http://127.0.0.1:{self.port}"
+        else:
+            self.base_url = await self._stack.enter_async_context(
+                self.tunnel.expose(self.port)
+            )
 
     def _fail(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError

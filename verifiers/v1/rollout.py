@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from enum import StrEnum
 
@@ -15,17 +16,17 @@ from verifiers.v1.errors import (
     boundary,
 )
 from verifiers.v1.interception import (
-    InterceptionPool,
+    Interception,
     InterceptionServer,
     RolloutLimits,
     RolloutSession,
+    Slot,
 )
 from verifiers.v1.runtimes import (
-    HOST,
     Runtime,
     RuntimeConfig,
     make_runtime,
-    reachable_url,
+    runtime_is_local,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.state import state_cls
@@ -57,7 +58,7 @@ class Rollout:
         scoring_timeout: float | None = None,
         limits: RolloutLimits | None = None,
         shared_tools: dict[str, SharedToolServer] | None = None,
-        interception: InterceptionPool | None = None,
+        interception: Interception | None = None,
     ) -> None:
         self.task = task
         self.harness = harness
@@ -74,33 +75,51 @@ class Rollout:
         self.runtime: Runtime | None = None
         self.trace: Trace | None = None
 
+    def _interception_is_local(self, runtime: Runtime, servers: list) -> bool:
+        """Whether every consumer of a per-rollout interception server is on the host
+        network — the harness `runtime`, this rollout's tool/user `servers` (each reaches
+        the `/state` channel from its own runtime unless colocated or external), and the
+        eval-level shared servers. Local means the server stays on loopback; one remote
+        consumer means it must be exposed via its tunnel."""
+        if not runtime.is_local:
+            return False
+        for shared in self.shared_tools.values():
+            if not shared.external and not shared.local:
+                return False
+        for server in servers:
+            cfg = server.config
+            if getattr(cfg, "url", None) or cfg.colocated:
+                continue
+            if not runtime_is_local(cfg.runtime):
+                return False
+        return True
+
     @asynccontextmanager
     async def _serve_interception(
         self,
-        pool: InterceptionPool | None,
         runtime: Runtime,
         session: RolloutSession,
-    ):
-        if pool is not None:
-            async with pool.acquire(session) as (
-                endpoint,
-                secret,
-                state_port,
-                state_base,
-            ):
-                yield endpoint, secret, state_port, state_base
-        else:
-            async with InterceptionServer() as server:
-                secret = server.register(session)
-                # The runtime reaches this host service through localhost or a tunnel.
-                async with reachable_url(HOST, server.port, consumer=runtime) as url:
-                    yield f"{url}/v1", secret, server.port, url
+        servers: list,
+    ) -> AsyncIterator[Slot]:
+        """A slot on the shared interception when one was injected (its owner keeps the
+        lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
+        down — by this rollout."""
+        if self.interception is not None:
+            async with self.interception.acquire(session) as slot:
+                yield slot
+            return
+        server = InterceptionServer(
+            is_local=self._interception_is_local(runtime, servers)
+        )
+        async with server:
+            async with server.acquire(session) as slot:
+                yield slot
 
     async def run(self) -> Trace:
         """Run the rollout and return its trace. Captures expected `RolloutError`s onto
         the trace (a bad rollout is data, not a crash), runs per-rollout scoring while
         the runtime is live, then tears the runtime down in a `finally`. Reuses the
-        eval-level shared tool servers / interception pool injected at construction (see
+        eval-level shared tool servers / interception injected at construction (see
         `self.shared_tools` / `self.interception`)."""
         # The trace carries the DATA (the wire half); behavior stays on `self.task`.
         trace: Trace = Trace(
@@ -141,31 +160,30 @@ class Rollout:
                 asyncio.timeout_at(setup_deadline),
             ):
                 await self.harness.setup(runtime)
+            async with boundary(ToolsetError, "building tool servers"):
+                tool_servers = self.task.tool_servers()
+            user = self.task.user_server()
+            # `base_url` is the interception server's reachable URL for this rollout. The
+            # harness reaches the model at `{base_url}/v1`; tool/user servers reach this
+            # rollout's `/state` + `/task` at `base_url` — it's universally reachable (the
+            # interception is exposed whenever any consumer is remote).
             async with self._serve_interception(
-                self.interception, runtime, session
-            ) as (
-                endpoint,
-                secret,
-                state_port,
-                state_base,
-            ):
-                async with boundary(ToolsetError, "building tool servers"):
-                    tool_servers = self.task.tool_servers()
+                runtime, session, [*tool_servers, *([user] if user else [])]
+            ) as (base_url, secret):
+                endpoint = f"{base_url}/v1"
                 async with (
                     serve_tools(
                         tool_servers,
                         runtime,
                         shared=self.shared_tools,
-                        state_port=state_port,
                         state_secret=secret,
-                        state_base=state_base,
+                        state_base=base_url,
                     ) as urls,
                     serve_user(
-                        self.task.user_server(),
+                        user,
                         harness_runtime=runtime,
-                        state_port=state_port,
                         state_secret=secret,
-                        state_base=state_base,
+                        state_base=base_url,
                     ) as session.user,
                 ):
                     if self.task.data.prompt is None and session.user is None:
