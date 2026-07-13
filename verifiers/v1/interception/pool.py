@@ -16,12 +16,29 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Literal
 
-from verifiers.v1.interception.base import Interception, Slot
-from verifiers.v1.interception.server import InterceptionServer, RolloutSession
+from pydantic import Field
+
+from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
+from verifiers.v1.interception.server import (
+    InterceptionServer,
+    InterceptionServerConfig,
+    RolloutSession,
+)
 from verifiers.v1.interception.tunnel import PrimeTunnel
 
 logger = logging.getLogger(__name__)
+
+
+class StaticInterceptionPoolConfig(BaseInterceptionConfig):
+    """A fixed set of interception servers, each configured like a `server` type; rollouts
+    land on the least-loaded one. The shape for multiple bring-your-own endpoints (one
+    `custom` tunnel per server)."""
+
+    type: Literal["static"] = "static"
+    servers: list[InterceptionServerConfig] = Field(min_length=1)
+    """One entry per server, each with its own `tunnel` choice."""
 
 
 class StaticInterceptionPool(Interception):
@@ -51,15 +68,26 @@ class StaticInterceptionPool(Interception):
             server.unregister(secret)
 
 
+class ElasticInterceptionPoolConfig(BaseInterceptionConfig):
+    """Interception servers grown on demand: `multiplex` rollouts share one server (and,
+    behind a remote consumer, one prime tunnel). The default."""
+
+    type: Literal["elastic"] = "elastic"
+    multiplex: int = Field(32, ge=1)
+    """Rollouts that share one interception server (and tunnel). N concurrent rollouts use
+    ~N/multiplex servers + tunnels instead of one each — key past the per-token tunnel cap.
+    1 = a server (+ tunnel) per rollout."""
+
+
 class ElasticInterceptionPool(Interception):
     """Interception servers grown on demand: `multiplex` rollouts share one server (one
     prime tunnel behind a remote consumer); `acquire` hands a rollout a slot on one,
     bringing up a new server when all are at capacity."""
 
-    def __init__(self, *, multiplex: int = 32, is_local: bool = True) -> None:
+    def __init__(self, *, multiplex: int = 32, requires_tunnel: bool = False) -> None:
         super().__init__()
         self.multiplex = max(1, multiplex)
-        self.is_local = is_local
+        self.requires_tunnel = requires_tunnel
         self.servers: list[InterceptionServer] = []
         self._lock = asyncio.Lock()
 
@@ -73,7 +101,7 @@ class ElasticInterceptionPool(Interception):
         for server in self.servers:
             if server.load < self.multiplex:
                 return server
-        server = InterceptionServer(None if self.is_local else PrimeTunnel())
+        server = InterceptionServer(PrimeTunnel() if self.requires_tunnel else None)
         await self._stack.enter_async_context(server)
         self.servers.append(server)
         logger.info(

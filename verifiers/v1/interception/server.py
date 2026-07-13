@@ -27,7 +27,7 @@ import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
@@ -43,8 +43,8 @@ from verifiers.v1.errors import (
     TaskError,
     UserError,
 )
-from verifiers.v1.interception.base import Interception, Slot
-from verifiers.v1.interception.tunnel import Tunnel
+from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
+from verifiers.v1.interception.tunnel import PrimeTunnelConfig, Tunnel, TunnelConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages, Tool
 
@@ -160,6 +160,17 @@ class RolloutSession:
                 logger.debug("stop %r fired: id=%s", stop.__name__, self.trace.id)
                 return stop.__name__
         return None
+
+
+class InterceptionServerConfig(BaseInterceptionConfig):
+    """A single interception server shared by every rollout, reached (when any consumer is
+    remote) via its `tunnel` — the shape that supports a bring-your-own endpoint
+    (`tunnel.type custom`)."""
+
+    type: Literal["server"] = "server"
+    tunnel: TunnelConfig = PrimeTunnelConfig()
+    """How remote consumers reach the server: `prime` (a framework-minted prime_tunnel) or
+    `custom` (a pre-started tunnel / reverse proxy / direct bind you provide)."""
 
 
 class InterceptionServer(Interception):

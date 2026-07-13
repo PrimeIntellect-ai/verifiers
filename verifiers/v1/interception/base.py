@@ -14,8 +14,17 @@ from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from typing import TYPE_CHECKING, Self
 
+from pydantic_config import BaseConfig
+
 if TYPE_CHECKING:
     from verifiers.v1.interception.server import RolloutSession
+
+
+class BaseInterceptionConfig(BaseConfig):
+    """Base for the interception types — the discriminated union's common type. Per-type
+    fields live on the subclasses (server's `tunnel`, static's `servers`, elastic's
+    `multiplex`)."""
+
 
 # (base_url, secret): the interception server's reachable base URL for this rollout, and the
 # bearer the harness/tool/user servers authenticate with. The harness reaches the model at

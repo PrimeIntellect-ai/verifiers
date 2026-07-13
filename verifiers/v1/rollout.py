@@ -21,13 +21,13 @@ from verifiers.v1.interception import (
     RolloutLimits,
     RolloutSession,
     Slot,
+    requires_tunnel,
 )
 from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     make_runtime,
-    runtime_is_local,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_tools, serve_user
 from verifiers.v1.state import state_cls
@@ -76,25 +76,6 @@ class Rollout:
         self.runtime: Runtime | None = None
         self.trace: Trace | None = None
 
-    def _interception_is_local(self, runtime: Runtime, servers: list) -> bool:
-        """Whether every consumer of a per-rollout interception server is on the host
-        network — the harness `runtime`, this rollout's tool/user `servers` (each reaches
-        the `/state` channel from its own runtime unless colocated or external), and the
-        eval-level shared servers. Local means the server stays on loopback; one remote
-        consumer means it must be exposed via its tunnel."""
-        if not runtime.is_local:
-            return False
-        for shared in self.shared_tools.values():
-            if not shared.external and not shared.local:
-                return False
-        for server in servers:
-            cfg = server.config
-            if getattr(cfg, "url", None) or cfg.colocated:
-                continue
-            if not runtime_is_local(cfg.runtime):
-                return False
-        return True
-
     @asynccontextmanager
     async def _serve_interception(
         self,
@@ -109,8 +90,12 @@ class Rollout:
             async with self.interception.acquire(session) as slot:
                 yield slot
             return
-        local = self._interception_is_local(runtime, servers)
-        server = InterceptionServer(None if local else PrimeTunnel())
+        tunneled = requires_tunnel(
+            runtime.is_local,
+            [server.config for server in servers],
+            self.shared_tools.values(),
+        )
+        server = InterceptionServer(PrimeTunnel() if tunneled else None)
         async with server:
             async with server.acquire(session) as slot:
                 yield slot

@@ -18,6 +18,7 @@ from verifiers.v1.interception import (
     InterceptionConfig,
     RolloutLimits,
     make_interception,
+    requires_tunnel,
 )
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
@@ -107,7 +108,7 @@ class EnvConfig(BaseConfig):
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
     trace's `num_total_tokens`; framework-enforced between turns."""
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
-    """The interception shape (see `verifiers.v1.interception.config`): `elastic` (the
+    """The interception shape (see `verifiers.v1.interception`): `elastic` (the
     default — servers grown on demand, `multiplex` rollouts each), `server` (one server,
     with a tunnel choice incl. a bring-your-own endpoint), or `static` (a fixed list of
     such servers)."""
@@ -385,39 +386,31 @@ class Environment:
         AND the tool/user servers, each of which reaches the `/state` channel from its own
         runtime: localhost only when every consumer is local, else exposed via the
         configured tunnels (a public URL all of them can reach)."""
-        is_local = runtime_is_local(
-            self.harness.config.runtime
-        ) and not self._has_remote_server(shared)
-        return make_interception(self.config.interception, is_local=is_local)
+        return make_interception(
+            self.config.interception, requires_tunnel=self._requires_tunnel(shared)
+        )
 
-    def _has_remote_server(self, shared: dict[str, SharedToolServer]) -> bool:
-        """Whether any tool/user server runs in a remote runtime — so the interception must
-        be exposed (a public tunnel) even when the harness is local. `shared` servers are
-        already live, so their locality is read directly; the per-rollout servers are read
-        class-level off the task type (like `validate_pairing`) with their configs resolved
-        the way `Task.server_config` resolves them — a task that *overrides* that pairing
+    def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
+        """`requires_tunnel` over the consumers known before any rollout: the harness
+        runtime (by config), the live `shared` servers, and the task class's tool/user
+        servers — read class-level (like `validate_pairing`) with their configs resolved
+        the way `Task.server_config` resolves them. A task that *overrides* that pairing
         isn't statically knowable, so it conservatively counts as remote (the tunnel then
-        reaches everything; a wrongly-assumed localhost would reach nothing remote). A
-        colocated server shares the harness's runtime (already covered by the harness
-        check); a config-`url` server is external (it connects out, not a consumer)."""
-        if any(not s.external and not s.local for s in shared.values()):
-            return True
+        reaches everything; a wrongly-assumed localhost would reach nothing remote)."""
         task_cls = generic_type(type(self.taskset), Task, origin=Taskset) or Task
         server_classes = [*task_cls.tools, *([task_cls.user] if task_cls.user else [])]
-        if not server_classes:
-            return False
-        if task_cls.server_config is not Task.server_config:
+        if server_classes and task_cls.server_config is not Task.server_config:
             return True
         sole = len({*task_cls.tools} | ({task_cls.user} - {None})) == 1
-        for server_cls in server_classes:
-            cfg = resolve_server_config(
+        configs = [
+            resolve_server_config(
                 task_cls.__name__, self.taskset.config.task, server_cls, sole=sole
             )
-            if getattr(cfg, "url", None) or cfg.colocated:
-                continue
-            if not runtime_is_local(cfg.runtime):
-                return True
-        return False
+            for server_cls in server_classes
+        ]
+        return requires_tunnel(
+            runtime_is_local(self.harness.config.runtime), configs, shared.values()
+        )
 
     @contextlib.asynccontextmanager
     async def shared_tools(self):
