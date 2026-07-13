@@ -25,7 +25,6 @@ from verifiers.v1.interception.server import (
     InterceptionServer,
     InterceptionServerConfig,
 )
-from verifiers.v1.interception.tunnel import make_tunnel
 from verifiers.v1.runtimes import runtime_is_local
 
 if TYPE_CHECKING:
