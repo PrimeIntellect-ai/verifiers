@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import logging
-import signal
 import sys
 import time
 from typing import Any
@@ -25,6 +24,7 @@ from verifiers.v1.runtimes import make_runtime
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, TraceTask
+from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -268,9 +268,9 @@ def main(argv: list[str] | None = None) -> None:
     setup_logging("DEBUG" if config.verbose else "INFO", console=not config.rich)
     if config.rich:
         logging.lastResort = None  # drop stdlib records that bypass loguru
-    # Make SIGTERM behave like Ctrl-C so a killed run still runs each task's `finally`
-    # (tears down containers/sandboxes) — and the atexit backstop catches the rest.
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    # Graceful shutdown: first Ctrl-C/SIGTERM unwinds each task's teardown `finally`
+    # (containers/sandboxes); a second is swallowed so it can't orphan them mid-cleanup.
+    install_interrupt()
     asyncio.run(run_validate(config))
 
 

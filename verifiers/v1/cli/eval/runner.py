@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import logging
-import random
 import time
 
 from verifiers.v1.clients import ModelContext, resolve_client
@@ -14,16 +13,15 @@ from verifiers.v1.cli.output import append_trace, output_path, save_config
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.env import Environment
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
-
-SEED = 0  # fixed so `--shuffle` samples the same tasks every run (reproducible)
 
 
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
-    tasks = env.taskset.select(config.num_tasks, config.shuffle, seed=SEED)
+    tasks = env.taskset.select(config.num_tasks, config.shuffle)
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.
@@ -177,11 +175,7 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
                 )
             idxs = list(range(config.num_tasks))
         else:
-            idxs = list(range(info.num_tasks))
-            if config.shuffle:
-                random.Random(SEED).shuffle(idxs)
-            if config.num_tasks is not None:
-                idxs = idxs[: config.num_tasks]
+            idxs = sample(list(range(info.num_tasks)), config.shuffle, config.num_tasks)
         out = output_path(config)
         finished: list[Trace] = []
         if config.resume is not None:

@@ -2,12 +2,12 @@
 
 import asyncio
 import logging
-import signal
 import sys
 
 from pydantic_config import cli
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
@@ -80,21 +80,30 @@ def main(argv: list[str] | None = None) -> None:
         logging.lastResort = None
     else:
         setup_logging(level, log_file=log_file, console=True)
-    # Make SIGTERM behave like Ctrl-C (SIGINT) so a killed/timed-out eval still runs each
-    # rollout's `finally` (tears down containers/sandboxes) and any worker pool it spawned.
-    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    # First Ctrl-C / SIGTERM warns and raises KeyboardInterrupt so a killed/timed-out eval still
+    # runs each rollout's `finally` (tears down containers/sandboxes) and any worker pool it
+    # spawned; further signals during that cleanup are swallowed so an impatient second Ctrl-C
+    # can't orphan those resources.
+    install_interrupt()
 
-    if config.is_legacy:  # v0 backwards-compat: run the classic env, bridged to Traces
-        from verifiers.v1.legacy import run_legacy_eval
+    try:
+        if (
+            config.is_legacy
+        ):  # v0 backwards-compat: run the classic env, bridged to Traces
+            from verifiers.v1.legacy import run_legacy_eval
 
-        traces = asyncio.run(run_legacy_eval(config))
-    elif config.server:  # opt-in: drive rollouts through the env-server worker pool
-        from verifiers.v1.cli.eval.runner import run_eval_server
+            traces = asyncio.run(run_legacy_eval(config))
+        elif config.server:  # opt-in: drive rollouts through the env-server worker pool
+            from verifiers.v1.cli.eval.runner import run_eval_server
 
-        traces = asyncio.run(run_eval_server(config))
-    else:  # in-process (default), with or without the live dashboard
-        env = vf.Environment(config)
-        traces = asyncio.run(run_eval(env, config))
+            traces = asyncio.run(run_eval_server(config))
+        else:  # in-process (default), with or without the live dashboard
+            env = vf.Environment(config)
+            traces = asyncio.run(run_eval(env, config))
+    except KeyboardInterrupt:
+        # Graceful cleanup has already run (each rollout's `finally`); partial results are on
+        # disk. Exit on the conventional Ctrl-C code without a traceback.
+        raise SystemExit(130)
     if config.push and not rich:
         from verifiers.v1.push import push_traces
 

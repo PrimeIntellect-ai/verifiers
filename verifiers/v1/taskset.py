@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import itertools
 import logging
-import random
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, ClassVar, Generic
 
@@ -40,6 +39,7 @@ from typing_extensions import TypeVar
 from verifiers.v1.task import TaskConfig, TaskT, resolve_server_config
 from verifiers.v1.types import ID
 from verifiers.v1.utils.install import env_name
+from verifiers.v1.utils.sampling import sample
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset
@@ -77,13 +77,14 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
         raise NotImplementedError
 
     def select(
-        self, num_tasks: int | None = None, shuffle: bool = False, seed: int = 0
+        self, num_tasks: int | None = None, shuffle: bool = False
     ) -> list[TaskT]:
         """Materialize the tasks a run needs: the first `num_tasks` off `load` (all of
         them when `None`), pulled lazily — a generator `load` only builds what the run
-        takes. `shuffle` samples the subset from the whole taskset instead, which
-        materializes everything first; on an `INFINITE` taskset it's a no-op (warned) —
-        the first `num_tasks` generated tasks are already an arbitrary sample."""
+        takes. `shuffle` samples the subset from the whole taskset instead (the shared
+        fixed-seed shuffle, `verifiers.v1.utils.sampling`), which materializes everything
+        first; on an `INFINITE` taskset it's a no-op (warned) — the first `num_tasks`
+        generated tasks are already an arbitrary sample."""
         if type(self).INFINITE:
             if num_tasks is None:
                 raise ValueError(
@@ -98,9 +99,7 @@ class Taskset(Generic[TaskT, TasksetConfigT]):
                 )
             return list(itertools.islice(self.load(), num_tasks))
         if shuffle:
-            tasks = list(self.load())
-            random.Random(seed).shuffle(tasks)
-            return tasks[:num_tasks]
+            return sample(self.load(), shuffle=True, limit=num_tasks)
         return list(itertools.islice(self.load(), num_tasks))
 
     def server_config(self, server_cls: type) -> BaseConfig:
