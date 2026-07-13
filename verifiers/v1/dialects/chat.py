@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field as dataclass_field
 from typing import Any
 
-from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletion as OpenAIChatCompletion
 
 from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
 from verifiers.v1.types import (
@@ -29,6 +29,16 @@ from verifiers.v1.types import (
     UserMessage,
     content_to_parts,
 )
+
+
+class ChatCompletion(OpenAIChatCompletion):
+    """The OpenAI SDK closes `service_tier` to a fixed `Literal`, but providers return tiers
+    outside it (e.g. Prime's `provisioned`), which makes `model_validate` reject an otherwise
+    valid completion. Widen the field to a plain string — we don't consume it — so parsing stays
+    lenient about the label instead of dropping it."""
+
+    service_tier: str | None = None
+
 
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 
