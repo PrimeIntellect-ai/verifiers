@@ -67,7 +67,7 @@ class AgenticJudgeTask(JudgeTask[AgenticJudgeData]):
         return cls(
             AgenticJudgeData(
                 idx=trace.task.data.idx,
-                prompt=prompt.format(path=TRACE_PATH),
+                prompt=prompt.replace("{path}", TRACE_PATH),
                 trace_json=json.dumps(trace.to_record()),
             )
         )

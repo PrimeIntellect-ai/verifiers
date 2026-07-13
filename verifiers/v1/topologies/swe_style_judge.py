@@ -76,7 +76,7 @@ class StyleJudgeTask(JudgeTask):
             TaskData(
                 idx=trace.task.data.idx,
                 name=trace.task.data.name,
-                prompt=prompt.format(task=trace.task.data.prompt_text),
+                prompt=prompt.replace("{task}", trace.task.data.prompt_text),
             )
         )
 
