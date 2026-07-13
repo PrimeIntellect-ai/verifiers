@@ -247,17 +247,11 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
 
     routes = ("/v1/messages",)
     aux_routes = ("/v1/messages/count_tokens",)
-    upstream_path = "/v1/messages"
+    upstream_path = "/messages"
     response_type = AnthropicMessage
 
     def auth_headers(self, api_key: str) -> dict[str, str]:
         return {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
-
-    def upstream_route(self, base_url: str, route: str | None = None) -> str:
-        upstream = route or self.upstream_path
-        if "pinference.ai" in base_url and base_url.rstrip("/").endswith("/v1"):
-            return upstream.removeprefix("/v1")
-        return upstream
 
     def secret(self, headers: Mapping[str, str]) -> str:
         # The SDK sends the key as `x-api-key`; an ANTHROPIC_AUTH_TOKEN arrives as Bearer.

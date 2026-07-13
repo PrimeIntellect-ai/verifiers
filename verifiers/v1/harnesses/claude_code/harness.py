@@ -1,7 +1,6 @@
-"""The Claude Code harness: installs the CLI and runs it headlessly."""
+"""Install Claude Code and run it headlessly."""
 
 import json
-import logging
 import shlex
 
 from verifiers.v1.clients import RolloutContext
@@ -9,51 +8,34 @@ from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
-logger = logging.getLogger(__name__)
-
-CLAUDE_DIR = "/tmp/vf-claude-code"
-CLAUDE_BIN = f"{CLAUDE_DIR}/.local/bin/claude"
-CLAUDE_HOME = ".vf-claude"
-INSTALL = r"""
+CLAUDE_VERSION = "2.1.207"
+CLAUDE_HOME = f"/tmp/vf-claude-code-{CLAUDE_VERSION}"
+CLAUDE_BIN = f"{CLAUDE_HOME}/.local/bin/claude"
+INSTALL = f"""
 set -e
-bin="{bin}"
-if [ -x "$bin" ] && "$bin" --version 2>/dev/null | grep -F "{version}" >/dev/null; then
-    exit 0
-fi
-command -v curl >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq curl >/dev/null; }
-curl -fsSL https://claude.ai/install.sh | HOME={dir} bash -s {version}
+command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
+curl -fsSL https://claude.ai/install.sh | HOME={CLAUDE_HOME} bash -s {CLAUDE_VERSION}
 """
 
 
-class ClaudeCodeHarnessConfig(HarnessConfig):
-    """The Claude Code CLI harness."""
-
-    version: str = "2.1.177"
-    """Claude Code release to install, pinned for reproducibility."""
-
-
-class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
+class ClaudeCodeHarness(Harness[HarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
+    # images would require streaming inputs
+    SUPPORTS_MESSAGE_PROMPT = False
 
     async def setup(self, runtime: Runtime) -> None:
-        logger.info(
-            "claude-code: ensuring Claude Code %s is installed", self.config.version
-        )
-        script = (
-            INSTALL.replace("{version}", self.config.version)
-            .replace("{dir}", CLAUDE_DIR)
-            .replace("{bin}", CLAUDE_BIN)
-        )
+        # Cache the pinned binary across local rollouts; Linux has flock, macOS has lockf.
+        install = shlex.quote(f"[ -x {CLAUDE_BIN} ] || ({INSTALL})")
         guarded = (
-            f"mkdir -p {CLAUDE_DIR} && "
-            f"flock {CLAUDE_DIR}/install.lock sh -c {shlex.quote(script)}"
+            f"mkdir -p {CLAUDE_HOME} && "
+            f'"$(command -v flock || command -v lockf)" {CLAUDE_HOME}/install.lock '
+            f"bash -o pipefail -c {install}"
         )
-        install = await runtime.run(["sh", "-c", guarded], {})
-        if install.exit_code != 0:
-            raise RuntimeError(
-                f"Claude Code install failed: {install.stderr.strip()[-500:]}"
-            )
+        result = await runtime.run(["sh", "-c", guarded], {})
+        if result.exit_code != 0:
+            detail = (result.stderr or result.stdout).strip()[-500:]
+            raise RuntimeError(f"Claude Code install failed: {detail}")
 
     async def launch(
         self,
@@ -69,12 +51,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
             **self.config.resolved_env,
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
             "ANTHROPIC_API_KEY": secret,
-            "ANTHROPIC_CUSTOM_MODEL_OPTION": ctx.model,
-            "API_FORCE_IDLE_TIMEOUT": "0",
-            "CLAUDE_CONFIG_DIR": CLAUDE_HOME,
-            "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-            "DISABLE_UPDATES": "1",
+            "CLAUDE_CONFIG_DIR": ".vf-claude",
             "IS_SANDBOX": "1",
         }
         argv = [
@@ -88,14 +65,12 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         ]
         if system_prompt:
             argv += ["--append-system-prompt", system_prompt]
-        if mcp_urls:
-            mcp = {
-                "mcpServers": {
-                    name: {"type": "http", "url": url} for name, url in mcp_urls.items()
-                }
-            }
-            argv += ["--mcp-config", json.dumps(mcp)]
         if self.config.disabled_tools:
             argv += ["--disallowedTools", ",".join(self.config.disabled_tools)]
-        argv += ["--strict-mcp-config", instruction]
+        mcp = {
+            "mcpServers": {
+                name: {"type": "http", "url": url} for name, url in mcp_urls.items()
+            }
+        }
+        argv += ["--mcp-config", json.dumps(mcp), "--strict-mcp-config", instruction]
         return await runtime.run_program(argv, env)

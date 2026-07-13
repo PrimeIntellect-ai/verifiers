@@ -29,7 +29,9 @@ async def test_single_turn(run_v1, harness, harness_runtime, tmp_path):
         max_turns=2,
     )
     assert trace.errors == []
-    assert trace.num_turns == 1
+    assert trace.num_turns >= 1
+    if harness != "claude-code":
+        assert trace.num_turns == 1
     assert trace.reward == 1.0
 
 

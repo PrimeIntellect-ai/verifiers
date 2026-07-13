@@ -147,17 +147,7 @@ class Harness(ABC, Generic[ConfigT]):
             return  # a @stop refused a turn mid-rollout; the harness's exit is expected
         if result.exit_code != 0:
             # The real cause is at the END of a traceback, so keep the tail.
-            detail = (
-                "\n".join(
-                    f"{name}: {stream.strip()[-2000:]}"
-                    for name, stream in (
-                        ("stdout", result.stdout),
-                        ("stderr", result.stderr),
-                    )
-                    if stream.strip()
-                )
-                or "<no output>"
-            )
+            detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
             raise HarnessError(
                 f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
             )

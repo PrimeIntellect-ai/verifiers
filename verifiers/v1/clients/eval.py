@@ -91,7 +91,7 @@ class EvalClient(Client):
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         resp = await self._request(
-            self.base_url + dialect.upstream_route(self.base_url),
+            self.base_url + dialect.upstream_path,
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
         )
@@ -179,7 +179,7 @@ class EvalClient(Client):
         # Relay complete SSE events so the interception server can safely insert keepalives
         # between them. Error responses are mapped before any event is handed back.
         resp = await self._request(
-            self.base_url + dialect.upstream_route(self.base_url),
+            self.base_url + dialect.upstream_path,
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
             stream=True,
@@ -208,7 +208,7 @@ class EvalClient(Client):
     async def relay_aux(self, dialect: Dialect, route: str, body: dict) -> dict:
         # A side request (e.g. count_tokens): relay its native JSON and return the provider JSON.
         resp = await self._request(
-            self.base_url + dialect.upstream_route(self.base_url, route),
+            self.base_url + route.removeprefix("/v1"),
             body,
             self._headers(dialect, None, None),
         )

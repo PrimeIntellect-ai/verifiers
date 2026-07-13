@@ -136,10 +136,6 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     response_type: type[RespT]
     """The native response model — used to validate the provider's raw JSON before parsing."""
 
-    def upstream_route(self, base_url: str, route: str | None = None) -> str:
-        """Provider route to append to `base_url`. `route` is set for aux endpoints."""
-        return route or self.upstream_path
-
     def auth_headers(self, api_key: str) -> dict[str, str]:
         """The provider auth headers for this format. Defaults to OAuth2 Bearer (every
         OpenAI-compatible provider); override for a different scheme (e.g. Anthropic's
