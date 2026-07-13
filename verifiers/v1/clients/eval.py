@@ -73,8 +73,7 @@ class EvalClient(Client):
         # the dialect's provider authentication is applied.
         self.headers = dict(headers or {})
         # No timeout: agentic completions are slow and the rollout timeout is the real backstop.
-        # Build full URLs ourselves because httpx base-url joining drops the base path for a
-        # leading-slash request path.
+        # Dialect routes include /v1; provider bases may already end in /v1.
         # Match V1's default concurrency while retaining HTTPX's 20-idle keepalive bound.
         self.http = httpx.AsyncClient(
             timeout=None,
@@ -92,7 +91,7 @@ class EvalClient(Client):
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         resp = await self._request(
-            self.base_url + dialect.route.removeprefix(dialect.base_path),
+            self.base_url.removesuffix("/v1") + dialect.route,
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
         )
@@ -193,7 +192,7 @@ class EvalClient(Client):
         # Relay complete SSE events so the interception server can safely insert keepalives
         # between them. Error responses are mapped before any event is handed back.
         resp = await self._request(
-            self.base_url + dialect.route.removeprefix(dialect.base_path),
+            self.base_url.removesuffix("/v1") + dialect.route,
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
             stream=True,
@@ -228,7 +227,7 @@ class EvalClient(Client):
     ) -> dict:
         # A side request (e.g. count_tokens): relay its native JSON and return the provider JSON.
         resp = await self._request(
-            self.base_url + route.removeprefix(dialect.base_path),
+            self.base_url.removesuffix("/v1") + route,
             body,
             self._headers(dialect, headers, None),
         )

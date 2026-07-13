@@ -2,10 +2,8 @@
 
 import json
 import shlex
-from urllib.parse import urlparse
 
-from verifiers.v1.clients import EvalClient, ModelContext
-from verifiers.v1.clients.config import PRIME_INFERENCE_HOST
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -56,13 +54,6 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, instruction = self.resolve_prompt(trace.task.data)
-        if isinstance(ctx.client, EvalClient):
-            host = urlparse(ctx.client.base_url).hostname or ""
-            if host == PRIME_INFERENCE_HOST or host.endswith(
-                f".{PRIME_INFERENCE_HOST}"
-            ):
-                # Pinference's base already ends in /v1; Anthropic routes include their own /v1.
-                ctx.client.base_url = ctx.client.base_url.removesuffix("/v1")
         env = {
             **self.config.resolved_env,
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),

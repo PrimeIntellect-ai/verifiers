@@ -107,7 +107,7 @@ def tool_runtime(request) -> dict:
 # Built-ins are bundled in the `harnesses` package; the agent CLIs (`rlm` / `kimi-code` / `codex` /
 # `claude-code`) install their dependencies at rollout. `compact` (an example harness) and
 # `terminus-2` (drives the host tmux) are excluded. `test_agentic` skips `null` (a chat loop with no
-# shell); `test_single_turn` skips `codex` (a coding agent, unreliable on a no-op echo).
+# shell); `test_single_turn` skips the coding agents, which are unreliable on a no-op echo.
 @pytest.fixture(
     params=[
         pytest.param("null", marks=pytest.mark.null, id="null"),
