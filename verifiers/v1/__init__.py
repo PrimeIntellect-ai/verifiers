@@ -1,8 +1,4 @@
-"""verifiers v1 — a clean-slate, heavily-typed reimplementation.
-
-Public surface is re-exported here so environments can `import verifiers.v1 as vf`
-and reach everything they need. Built up milestone by milestone.
-"""
+"""Public v1 API."""
 
 import logging as _logging
 
@@ -12,7 +8,7 @@ from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
-    RolloutContext,
+    ModelContext,
     resolve_client,
 )
 from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
@@ -32,7 +28,7 @@ from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
     SandboxError,
-    TasksetError,
+    TaskError,
     ToolsetError,
     TunnelError,
     UserError,
@@ -82,13 +78,22 @@ from verifiers.v1.runtimes import (
     ProgramResult,
     Runtime,
     RuntimeConfig,
+    RuntimeInfo,
     SubprocessConfig,
 )
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
+from verifiers.v1.task import (
+    Task,
+    TaskConfig,
+    TaskData,
+    TaskResources,
+    TaskTimeout,
+    WireTaskData,
+)
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.mcp import (
     Toolset,
+    SharedToolsetConfig,
     ToolsetConfig,
     User,
     UserConfig,
@@ -100,6 +105,7 @@ from verifiers.v1.trace import (
     TimeSpan,
     Timing,
     Trace,
+    TraceTask,
     WireTrace,
 )
 from verifiers.v1.types import (
@@ -148,10 +154,12 @@ __all__ = [
     "UserMessage",
     # task / trace / state
     "Task",
-    "WireTask",
+    "TaskData",
+    "WireTaskData",
     "TaskResources",
     "TaskTimeout",
     "Trace",
+    "TraceTask",
     "WireTrace",
     "State",
     "StateT",
@@ -174,7 +182,7 @@ __all__ = [
     "ToolsetError",
     "UserError",
     "SandboxError",
-    "TasksetError",
+    "TaskError",
     "InterceptionError",
     "TunnelError",
     # clients
@@ -184,13 +192,15 @@ __all__ = [
     "resolve_client",
     # taskset / harness / runtime / environment
     "Taskset",
+    "TaskConfig",
     "TasksetConfig",
     "BaseConfig",
     "Harness",
     "HarnessConfig",
-    "RolloutContext",
+    "ModelContext",
     "Runtime",
     "RuntimeConfig",
+    "RuntimeInfo",
     "ProgramResult",
     "SubprocessConfig",
     "DockerConfig",
@@ -239,6 +249,7 @@ __all__ = [
     "verify_boxed_math_answer",
     # mcp
     "Toolset",
+    "SharedToolsetConfig",
     "ToolsetConfig",
     # user simulator
     "User",

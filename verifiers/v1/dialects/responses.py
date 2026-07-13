@@ -217,6 +217,7 @@ def response_from_wire(response: OpenAIResponse) -> Response:
         input_details = provider_usage.input_tokens_details
         output_details = provider_usage.output_tokens_details
         cached = input_details.cached_tokens if input_details else None
+        # Responses input_tokens includes cache hits; vf keeps the buckets disjoint.
         usage = Usage(
             prompt_tokens=provider_usage.input_tokens - (cached or 0),
             completion_tokens=provider_usage.output_tokens,
@@ -264,8 +265,6 @@ class ResponsesStreamParser(StreamParser):
 
 
 class ResponsesDialect(Dialect[dict, OpenAIResponse]):
-    """The OpenAI Responses wire format."""
-
     routes = ("/v1/responses",)
     upstream_path = "/responses"
     response_type = OpenAIResponse
@@ -334,7 +333,7 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         return ResponsesStreamParser()
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
-        # Forward verbatim except the eval's model + sampling, mapped to the Responses shape
+        # Preserve native fields except the eval's model + sampling, mapped to the Responses shape
         # (`max_tokens` -> `max_output_tokens`); sampling is authoritative.
         s = sampling.model_dump(exclude_none=True)
         name = model.rsplit("/", 1)[-1]
@@ -345,6 +344,7 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         )
         overrides: dict = {"model": model}
         if reasoning_model:
+            # Preserve opaque reasoning state so it can be replayed on the next turn.
             include = list(body.get("include") or [])
             if "reasoning.encrypted_content" not in include:
                 include.append("reasoning.encrypted_content")
@@ -357,6 +357,7 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
             overrides["max_output_tokens"] = s["max_tokens"]
         reasoning = dict(body.get("reasoning") or {})
         if reasoning_model:
+            # Summaries provide the trace's readable reasoning text.
             reasoning = {"summary": "auto", **reasoning}
         if "reasoning_effort" in s:
             reasoning["effort"] = s["reasoning_effort"]
@@ -372,7 +373,6 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
     def extend(
         self, body: dict, completion: dict | None, user_messages: Messages
     ) -> dict:
-        """Append raw model output and the user simulator's reply for the next turn."""
         raw = body.get("input")
         items: ResponseInputParam = (
             [EasyInputMessageParam(role="user", content=raw)]

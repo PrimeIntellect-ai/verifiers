@@ -166,6 +166,8 @@ flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 vf-eval = "verifiers.scripts.eval:main"
 eval = "verifiers.v1.cli.eval.main:main"
 validate = "verifiers.v1.cli.validate:main"
+debug = "verifiers.v1.cli.debug:main"
+replay = "verifiers.v1.cli.replay:main"
 serve = "verifiers.v1.cli.serve:main"
 init = "verifiers.v1.cli.init:main"
 vf-gepa = "verifiers.scripts.gepa:main"
@@ -173,10 +175,7 @@ vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
 vf-setup = "verifiers.scripts.setup:main"
 vf-build = "verifiers.scripts.build:main"
-vf-rl = "verifiers.scripts.rl:main"
-vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"
-vf-vllm = "verifiers.scripts.vllm:main"
 
 # hatchling configuration
 [tool.hatch.version]
@@ -248,7 +247,6 @@ markers = [
     "prime: v1 e2e cases touching the prime runtime (real sandbox + tunnel; local-only, excluded in CI)",
     "modal: v1 e2e cases touching the modal runtime (local-only setup; excluded in CI)",
     "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
-    "shared: v1 e2e cases with a shared (one-per-eval) tool server",
     "null: v1 e2e cases on the null harness",
     "default: v1 e2e cases on the default harness",
     "rlm: v1 e2e cases on the rlm harness",

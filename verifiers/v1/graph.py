@@ -20,6 +20,7 @@ from __future__ import annotations
 import binascii
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -73,6 +74,12 @@ class MessageNode(StrictBaseModel):
     """True iff a model call produced this message (the response passed to `commit`); False for
     every prompt-supplied message — including assistant/tool messages fabricated as context
     the model never generated, which role alone can't tell apart from real turns."""
+    timestamp: float = Field(default_factory=time.time)
+    """Wall-clock epoch seconds when this node was created. Nodes materialize at turn commit,
+    so a turn's new input nodes and its assistant node carry (near-)identical stamps and the
+    delta between consecutive sampled nodes is that turn's harness + inference wall-clock.
+    Reused prefix nodes keep the stamp from the turn that first created them. Serialized, so
+    a dump re-validated from wire/disk keeps the original times."""
     token_ids: list[int] = Field(default_factory=list)
     """This message's delta contribution to the cumulative token sequence: its leading
     template scaffold + its own tokens — for an assistant, the generation-prompt scaffold
@@ -174,6 +181,7 @@ class MessageNode(StrictBaseModel):
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
+    # Ignore JSON key order and whitespace when hashing equivalent tool calls.
     try:
         return json.dumps(json.loads(arguments), sort_keys=True, separators=(",", ":"))
     except (json.JSONDecodeError, ValueError):
@@ -427,15 +435,6 @@ def _attribute_routed_experts(
 
 
 def _commit_turn(turn: PendingTurn, response: Response) -> None:
-    """Insert one prepared model turn into the graph.
-
-    Token attribution anchors new tokens to the cumulative *stored* length of the reused
-    prefix (`path_len`), not message spans — the previous assistant's closing scaffold lives
-    in its later input-form span but not its stored generation form, so anchoring on spans
-    would drop it. The new tokens (`prompt_ids[path_len:]`) are split among the new input
-    messages by span (leading template scaffold folds into the following message), and the
-    trailing generation prompt goes on the assistant node before its sampled completion. By
-    construction `concat(node.token_ids along the path) == prompt_ids + completion_ids`."""
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens

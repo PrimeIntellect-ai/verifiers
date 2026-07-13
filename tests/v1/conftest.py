@@ -19,7 +19,7 @@ Every matrix value carries a pytest mark, so subsets select with `-m`:
     uv run pytest tests/v1 -n auto -m prime                       # only prime (real sandboxes; local)
     uv run pytest tests/v1 -n auto -m modal                       # only modal (needs local setup)
 
-Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placements `colocated` / `shared`,
+Marks: runtimes `subprocess` / `docker` / `prime` / `modal`, placement `colocated`,
 harnesses `null` / `default` / `rlm` / `kimi_code` / `codex`. A mark is applied per axis, so it
 selects every case touching that value on ANY axis; for one exact combination use `-k` on the test
 id (e.g. `-k "harness-in-docker-with-tool-in-subprocess"`). prime/modal provision real remote
@@ -75,19 +75,16 @@ USER_RUNTIMES = [
 
 @pytest.fixture(params=USER_RUNTIMES)
 def user_runtime(request) -> dict:
-    """A `taskset.user` override placing the user simulator: `colocated` (inside the harness's
+    """A `taskset.task.user` override placing the user simulator: `colocated` (inside the harness's
     runtime) or its own runtime, by type."""
     if request.param == "colocated":
         return {"colocated": True}
     return {"colocated": False, "runtime": {"type": request.param}}
 
 
-# The tool server's runtime: inside the harness's runtime (`colocated`), shared once per eval, or its
-# own runtime per rollout; this fans the tool test across all of them, each carrying its
-# placement/runtime mark (colocated/shared use the host subprocess runtime).
+# Task-scoped and shared tool tests both use these runtime placements.
 TOOL_RUNTIMES = [
     pytest.param("colocated", marks=pytest.mark.colocated, id="with-tool-colocated"),
-    pytest.param("shared", marks=pytest.mark.shared, id="with-tool-shared"),
     pytest.param(
         "subprocess", marks=pytest.mark.subprocess, id="with-tool-in-subprocess"
     ),
@@ -99,12 +96,10 @@ TOOL_RUNTIMES = [
 
 @pytest.fixture(params=TOOL_RUNTIMES)
 def tool_runtime(request) -> dict:
-    """A `taskset.tools` override placing the tool server: `colocated` (inside the harness's
-    runtime), `shared` (one instance for the whole eval), or its own runtime, by type."""
+    """A `taskset.task.tools` override placing the tool server: `colocated` (inside the harness's
+    runtime) or its own runtime, by type."""
     if request.param == "colocated":
         return {"colocated": True}
-    if request.param == "shared":
-        return {"shared": True}
     return {"runtime": {"type": request.param}}
 
 
@@ -178,6 +173,7 @@ def _eval_config(
     harness_overrides: dict | None = None,
     pool: dict | None = None,
     model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, shared by the in-process
     (`run_v1`) and env-server (`run_v1_server`) fixtures. `taskset_overrides` / `harness_overrides`
@@ -198,7 +194,11 @@ def _eval_config(
         num_rollouts=n,
         max_turns=max_turns,
         max_output_tokens=max_tokens,
-        sampling={"max_tokens": max_tokens, "temperature": 0},
+        sampling={
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "reasoning_effort": reasoning_effort,
+        },
         timeout={"rollout": rollout_timeout, "scoring": 60},
         retries={"rollout": {"max_retries": 2, "include": ["ProviderError"]}},
         rich=False,

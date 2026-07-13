@@ -1,9 +1,4 @@
-"""The runtime contract: provision execution, run the program, tear down.
-
-A runtime decides WHERE the program runs and HOW it reaches the host interception
-server. Concrete runtimes live alongside this base; harnesses and the Environment
-depend only on this contract, so they stay runtime-agnostic.
-"""
+"""Execution runtime contract."""
 
 import asyncio
 import atexit
@@ -19,7 +14,10 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar, TypeVar
 
+from pydantic_config import BaseConfig
+
 from verifiers.v1.retries import retrying
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +74,12 @@ def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
     return head, 1
 
 
-# `stop()` frees a runtime's external resource on the normal path (the rollout's `finally`).
-# A Ctrl-C / SIGTERM can cancel that `finally` mid-teardown, so runtimes are tracked in
-# `_LIVE` and freed by a *synchronous* `atexit` hook (`cleanup`) — sync because the event
-# loop is gone at interpreter shutdown. SIGKILL runs none of this.
+# `stop()` frees a runtime's external resource on the normal path (the rollout's `finally`),
+# shielded so a Ctrl-C / SIGTERM task cancellation can't cut it short. A second Ctrl-C
+# raises KeyboardInterrupt out of the event loop itself — no task-level shield survives
+# that — so runtimes are also tracked in `_LIVE` and freed by a *synchronous* `atexit`
+# hook (`cleanup`), sync because the loop is gone at interpreter shutdown. SIGKILL runs
+# none of this.
 _LIVE: "weakref.WeakSet[Runtime]" = weakref.WeakSet()
 _atexit_armed = False
 
@@ -103,6 +103,10 @@ def cleanup_at_exit() -> None:
             runtime.cleanup()
 
 
+class BaseRuntimeInfo(BaseConfig):
+    id: str | None = None
+
+
 class Runtime(ABC):
     is_local: ClassVar[bool] = True
     """Whether this runtime shares the host network — a program inside it reaches a host service
@@ -110,38 +114,39 @@ class Runtime(ABC):
     subprocess / docker(--network host); remote runtimes (modal/prime) override to False (they
     need a tunnel each way: `host_endpoint` inward, `expose` outward)."""
 
+    info: BaseRuntimeInfo
+
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
-        """Resource name — the subprocess workdir, docker `--name`, prime sandbox name.
-        The rollout passes its trace id, so the provisioned resource is greppable back to
-        the rollout it serves; falls back to a unique `vf-` name (standalone / tool
-        runtimes, where there's no single owning rollout)."""
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
 
-    # --- identity / display ---
-
     @property
     def type(self) -> str:
-        """The runtime's config discriminator ("subprocess" / "docker" / "prime" / "modal")."""
         return self.config.type
 
     @property
     def descriptor(self) -> str | None:
-        """A short resolved id for display (None until provisioned). Overridden per
-        runtime: subprocess workdir, docker image, prime sandbox id."""
-        return None
-
-    # --- lifecycle ---
+        return self.info.id
 
     @abstractmethod
     async def start(self) -> None:
-        """Provision execution (workspace / container / sandbox). Use `expose` to turn a
-        host port into a URL the program can reach."""
+        pass
 
     async def stop(self) -> None:
-        """Free the provisioned resource on the normal path, off the event loop. Override
-        only for teardown that must be async (e.g. a remote API call)."""
+        """Free the provisioned resource on the normal path (the owner's `finally`),
+        shielded from cancellation: a Ctrl-C / SIGTERM cancels that `finally` mid-await,
+        and an interrupted teardown leaks the container / paid sandbox. Runs `teardown`
+        to completion, then re-raises the cancellation. Framework method — override
+        `teardown`, not this."""
+        await run_shielded(self.teardown())
+
+    async def teardown(self) -> None:
+        """Free the provisioned resource, off the event loop. Override only for teardown
+        that must be async (e.g. a remote API call); `stop` shields it from cancellation.
+        Best-effort and idempotent, like `cleanup`. An override must not consume state
+        `cleanup` keys off before its first await: if the event loop dies mid-teardown
+        (second Ctrl-C), the atexit backstop must still find the resource."""
         await asyncio.to_thread(self.cleanup)
 
     def cleanup(self) -> None:
@@ -149,11 +154,9 @@ class Runtime(ABC):
         source of truth for teardown: usable from the atexit backstop where async machinery
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
 
-    # --- execution ---
-
     @abstractmethod
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        """Run `argv` (with the interception env vars `env`) to completion."""
+        pass
 
     async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
@@ -178,7 +181,6 @@ class Runtime(ABC):
         script: str | bytes,
         env: dict[str, str] | None = None,
     ) -> list[str]:
-        """Stage a PEP 723 script and resolve its dependencies, returning its executable argv."""
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         path = f"/tmp/vf-scripts/{digest}.py"
@@ -227,38 +229,22 @@ class Runtime(ABC):
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
     ) -> ProgramResult:
-        """Run a self-contained uv script (PEP 723 inline deps) in this runtime, with
-        `args` as its positional arguments (the script's `sys.argv[1:]`).
-
-        `prepare_uv_script` stages the script and resolves its dependencies once; this method
-        then runs it directly with the prepared interpreter. Built on `write`/`run`, so it
-        works the same on every runtime. `args` are passed as separate argv entries, so
-        spaces, quotes, and newlines in them are safe; pass structured data as a JSON string
-        if you need to.
-
-        The script is written to a stable, content-addressed path (NOT the per-rollout
-        workspace): uv keys its per-script environment by the script's full path, so a
+        """The script is written to a stable, content-addressed path rather than the per-rollout
+        workspace: uv keys its per-script environment by the script's full path, so a
         unique path per call would mint a fresh env every rollout. A path derived from the
         content means identical scripts share one path → uv reuses one env, bounded by the
         number of distinct scripts. Published via a unique temp + atomic `mv`, so
-        concurrent rollouts writing the same content never race a half-written read. This is
-        the general-purpose script path; stateful harness programs use the prepared argv with
-        `run_program` instead."""
+        concurrent rollouts writing the same content never race a half-written read."""
         argv = await self.prepare_uv_script(script, env)
         return await self.run([*argv, *(args or [])], env or {})
 
-    # --- filesystem ---
-
     @abstractmethod
     async def read(self, path: str) -> bytes:
-        """Read a file from the runtime's workspace. The caller need not know
-        whether that's the host fs or across a container/sandbox boundary."""
+        pass
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None:
-        """Write a file into the runtime's workspace, creating parent dirs."""
-
-    # --- networking ---
+        pass
 
     @property
     def published_port(self) -> int | None:
@@ -325,30 +311,17 @@ async def host_endpoint(port: int, is_local: bool, labels: list[str] | None = No
     try:
         yield url
     finally:
-        # Delay cancellation until the synchronous stop has finished.
-        cancelled = None
-        stop_task = asyncio.create_task(asyncio.to_thread(tunnel.sync_stop))
+        # Run the synchronous stop to completion even under cancellation (`run_shielded`
+        # re-raises the cancellation after); tunnel-stop failures are best-effort.
         with contextlib.suppress(Exception):
-            while not stop_task.done():
-                try:
-                    await asyncio.shield(stop_task)
-                except asyncio.CancelledError as e:
-                    cancelled = e
-            stop_task.result()
-        if cancelled is not None:
-            raise cancelled
+            await run_shielded(asyncio.to_thread(tunnel.sync_stop))
 
 
 class _Host:
-    """The host network as a `reachable_url` location: shares the host network (so it's `is_local`)
-    and publishes nothing itself (it's reached *into* via `host_endpoint`, not via `expose`)."""
-
     is_local = True
 
 
 HOST = _Host()
-"""The host network, as a service location (e.g. the interception server) or a consumer (the
-framework driving a user sim) — see `reachable_url`."""
 
 
 @contextlib.asynccontextmanager
@@ -361,8 +334,8 @@ async def reachable_url(
 
     `service` is the `Runtime` the service runs in, or `HOST` (a host-network service). `consumer` is
     the consuming `Runtime` (used for the colocated check and its locality); leave it `None` for a
-    host consumer or an eval-level consumer with no single instance (a shared tool reused by every
-    rollout's harness) and pass its locality as `consumer_is_local`:
+    host consumer or a worker-shared tool with no single harness instance, and pass its locality as
+    `consumer_is_local`:
 
     - same location (a colocated tool in the consumer's own runtime, or host -> host): localhost;
     - the service runs in a sandbox (a remote runtime): its own published URL (`expose`), reachable

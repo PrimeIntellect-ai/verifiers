@@ -1,4 +1,4 @@
-"""Rich live dashboards for the eval and validate runs (one frame, refreshed on a tick)."""
+"""Rich live dashboards."""
 
 from verifiers.v1.cli.dashboard.eval import dashboard
 from verifiers.v1.cli.dashboard.validate import TaskProgress, validate_dashboard

@@ -2,17 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["openai", "mcp"]
 # ///
-"""The null harness's program: a chat loop with the taskset's MCP tools (and none of its own).
-
-A growing-message-list chat loop. When the harness sets MCP_CONFIG (a standard `mcpServers` URL
-map) it connects to those servers over streamable HTTP, exposes their tools to the model as
-`<server>_<tool>`, and routes those calls to the server. The loop runs until the model answers
-without a tool call (immediately, when no tools are offered).
-
-It runs as a uv script (deps: openai, mcp), so the chat + tool plumbing is just the
-SDKs — the harness bootstraps `uv` in the runtime. The interception endpoint, per-rollout
-secret, and model arrive as argv (not env), so nothing the program spawns inherits them.
-"""
+"""The interception endpoint and secret arrive through argv rather than the environment."""
 
 import argparse
 import asyncio

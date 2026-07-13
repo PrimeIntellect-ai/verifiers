@@ -1,9 +1,4 @@
-"""The shared dashboard engine: a rich `Live` view on a fixed refresh tick.
-
-The eval and validate dashboards each build their own frame; `live_view` just drives whichever
-`render` it's given — refreshing on a timer and drawing a final frame on exit. When given an
-`on_key` handler it also reads left/right arrow presses from the terminal (see `_key_reader`).
-"""
+"""Shared live-dashboard rendering."""
 
 import asyncio
 import contextlib
@@ -13,6 +8,8 @@ from collections.abc import Callable, Iterator
 
 from rich.console import Group
 from rich.live import Live
+
+from verifiers.v1.utils.interrupt import cleaning_up
 
 try:  # POSIX-only terminal control; absent on Windows, where key reading is skipped.
     import termios
@@ -36,11 +33,7 @@ _ARROWS = {
 def _key_reader(
     on_key: Callable[[str], None] | None, refresh: Callable[[], None]
 ) -> Iterator[None]:
-    """Dispatch left/right arrow presses to `on_key`, redrawing immediately after each so the
-    view feels instant rather than waiting for the next refresh tick. A no-op unless `on_key` is
-    given and stdin is a real terminal. Puts stdin in cbreak mode (char-at-a-time, no echo, Ctrl+C
-    still interrupts) and reads it via the event loop — no extra thread — restoring the terminal on
-    exit."""
+    """Read arrow keys and restore terminal state on exit."""
     if on_key is None or not _HAS_TTY or not sys.stdin.isatty():
         yield
         return
@@ -91,10 +84,17 @@ async def live_view(
     """Refresh `render()` every 0.25s until the block exits, then draw one final frame. When
     `on_key` is given, left/right arrow presses are dispatched to it (and redraw at once)."""
     with Live(render(), auto_refresh=False) as live:
+        stopping = False
 
         async def loop() -> None:
             while True:
-                await asyncio.sleep(0.25)
+                try:
+                    await asyncio.sleep(0.25)
+                except asyncio.CancelledError:
+                    # Ctrl-C cancels every task at once; keep refreshing so the cleanup notice
+                    # stays live through teardown, stopping only when live_view tears down.
+                    if stopping or not cleaning_up():
+                        raise
                 live.update(render(), refresh=True)
 
         task = asyncio.create_task(loop())
@@ -102,6 +102,7 @@ async def live_view(
             try:
                 yield
             finally:
+                stopping = True
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task

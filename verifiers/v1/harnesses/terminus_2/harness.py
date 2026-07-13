@@ -1,9 +1,7 @@
-"""The Terminus 2 harness: runs Harbor's tmux agent through LiteLLM."""
-
 import logging
 from pathlib import Path
 
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -13,8 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 class Terminus2HarnessConfig(HarnessConfig):
-    """The Harbor Terminus 2 harness."""
-
     version: str = "0.14.0"
     """Harbor release to install, pinned for reproducibility."""
 
@@ -39,7 +35,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
 
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
@@ -48,7 +44,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
     ) -> ProgramResult:
         if self.config.disabled_tools:
             raise ValueError("Terminus 2 does not support disabling tools")
-        system_prompt, prompt = self.resolve_prompt(trace.task)
+        system_prompt, prompt = self.resolve_prompt(trace.task.data)
         if prompt is None:
             raise ValueError(
                 "Terminus 2 requires a task prompt (it has no user simulator)"

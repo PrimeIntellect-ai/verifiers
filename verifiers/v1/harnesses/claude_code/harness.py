@@ -3,7 +3,7 @@
 import json
 import shlex
 
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -39,14 +39,14 @@ class ClaudeCodeHarness(Harness[HarnessConfig]):
 
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        system_prompt, instruction = self.resolve_prompt(trace.task)
+        system_prompt, instruction = self.resolve_prompt(trace.task.data)
         env = {
             **self.config.resolved_env,
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),

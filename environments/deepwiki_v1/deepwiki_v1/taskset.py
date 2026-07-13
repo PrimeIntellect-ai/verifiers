@@ -1,57 +1,59 @@
-"""deepwiki: an EXISTING (remote) tool server.
+"""Remote-tool example backed by the public DeepWiki MCP server.
 
-The other tool examples ship a server the harness runs (`glossary` host-side, `wikispeedia`
-its own runtime, `wiki_search` shared); this one points at a live, public streamable-HTTP MCP
-server — DeepWiki, which answers questions about GitHub repos. The `DeepWikiToolset` in
-`servers/deepwiki.py` has no `@tool` methods: setting `url` on its config makes the framework
-connect to the remote directly. Each task asks the model to use `deepwiki_ask_question` for a
-repo's primary language; the reward checks the answer.
-
-Runs in docker (the harness installs the mcp client there and needs outbound net).
+Unlike the locally authored `glossary` and worker-shared `wiki_search` examples,
+`DeepWikiToolset` declares no local `@tool` methods. Its config supplies an existing
+streamable-HTTP URL, so verifiers connects the harness directly to that remote server.
+The harness runtime therefore needs outbound network access.
 """
 
 import verifiers.v1 as vf
 
 from deepwiki_v1.servers.deepwiki import DEEPWIKI_URL, DeepWikiToolset
 
-# (repo, expected language) — unambiguous, well-indexed repos.
+# (repository, expected primary language) pairs chosen for unambiguous answers.
 TASKS = [
     ("modelcontextprotocol/python-sdk", "python"),
     ("tokio-rs/tokio", "rust"),
 ]
 
 
-class DeepWikiTask(vf.Task):
+class DeepWikiTaskConfig(vf.TaskConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig(url=DEEPWIKI_URL)
+
+
+class DeepWikiTaskData(vf.TaskData):
     answer: str
     """The language the repo is written in (must appear in the model's reply)."""
 
 
+class DeepWikiTask(vf.Task[DeepWikiTaskData, vf.State, DeepWikiTaskConfig]):
+    tools = (DeepWikiToolset,)
+
+    @vf.reward(weight=1.0)
+    async def answered(self, trace: vf.Trace) -> float:
+        last = trace.last_reply
+        return float(self.data.answer.lower() in (last or "").lower())
+
+
 class DeepWikiConfig(vf.TasksetConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig(url=DEEPWIKI_URL)
+    task: DeepWikiTaskConfig = DeepWikiTaskConfig()
 
 
 class DeepWikiTaskset(vf.Taskset[DeepWikiTask, DeepWikiConfig]):
-    def load_tasks(self) -> list[DeepWikiTask]:
+    def load(self) -> list[DeepWikiTask]:
         return [
             DeepWikiTask(
-                idx=i,
-                name=repo,
-                prompt=(
-                    f"Use the `deepwiki_ask_question` tool to ask what programming "
-                    f'language the "{repo}" GitHub repository is primarily written in. '
-                    "Then reply with just the language name."
+                DeepWikiTaskData(
+                    idx=i,
+                    name=repo,
+                    prompt=(
+                        f"Use the `deepwiki_ask_question` tool to ask what programming "
+                        f'language the "{repo}" GitHub repository is primarily written in. '
+                        "Then reply with just the language name."
+                    ),
+                    answer=language,
                 ),
-                answer=language,
+                self.config.task,
             )
             for i, (repo, language) in enumerate(TASKS)
         ]
-
-    def tools(self, task: DeepWikiTask) -> list[vf.Toolset]:
-        return [DeepWikiToolset(self.config.tools)]
-
-    @vf.reward(weight=1.0)
-    async def answered(
-        self, task: DeepWikiTask, trace: vf.Trace, runtime: vf.Runtime
-    ) -> float:
-        last = trace.last_reply
-        return float(task.answer.lower() in (last or "").lower())

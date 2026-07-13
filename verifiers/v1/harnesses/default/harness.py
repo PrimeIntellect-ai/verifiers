@@ -1,20 +1,9 @@
-"""The built-in default harness: a chat loop with a local `bash` tool, plus optional `edit`/`search`.
-
-A growing-message-list chat loop with a local `bash` tool that runs shell commands in the runtime,
-the taskset's MCP tools, and two optional local tools: `edit` (single-occurrence string replacement
-in a file, ported from the rlm `edit` skill; on by default — a model handles it more reliably than
-hand-built `sed`/heredoc shell) and `search` (Google results via serper.dev; off by default, needs
-`SERPER_API_KEY`). This is the fallback harness when no `--harness.id` is given. Its uv script
-(deps: openai, mcp) is prepared during setup, then launched as the harness program. For a pure chat
-loop with no local tools, use the `null` harness.
-"""
-
 import json
 import os
 from pathlib import Path
 
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.clients import RolloutContext
+from verifiers.v1.clients import ModelContext
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -37,9 +26,6 @@ SEARCH_PROMPT = (
 
 
 class DefaultHarnessConfig(HarnessConfig):
-    """The built-in default harness. A uv script (deps: openai, mcp), so it runs in any runtime
-    that has `uv` (the harness bootstraps it) with no other setup."""
-
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
     `bash`. On by default; set `--harness.edit false` for a bash-only agent."""
@@ -61,14 +47,14 @@ class DefaultHarness(Harness[DefaultHarnessConfig]):
 
     async def launch(
         self,
-        ctx: RolloutContext,
+        ctx: ModelContext,
         trace: Trace,
         runtime: Runtime,
         endpoint: str,
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        system_prompt, prompt = self.resolve_prompt(trace.task)
+        system_prompt, prompt = self.resolve_prompt(trace.task.data)
         fragments = [BASH_SYSTEM_PROMPT]
         if self.config.edit:
             fragments.append(EDIT_SYSTEM_PROMPT)
