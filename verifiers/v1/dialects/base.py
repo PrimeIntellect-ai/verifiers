@@ -125,6 +125,9 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     """The `/v1` endpoint a program's SDK posts model turns to. The wire format is resolved from
     the route the SDK chose rather than declared by the harness."""
 
+    base_path: ClassVar[str] = "/v1"
+    """The route prefix already present in the provider's configured base URL."""
+
     aux_routes: ClassVar[tuple[str, ...]] = ()
     """Side endpoints the SDK may call that aren't model turns (e.g. Anthropic's
     `count_tokens`): relayed as native JSON by the eval client, never recorded on the trace."""
