@@ -25,6 +25,23 @@ def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
     return methods
 
 
+def reject_agent_scope(fns: list[Callable[..., Any]], *, owner: str) -> None:
+    """Refuse `@reward`/`@metric` methods that set `agent=` outside a Topology.
+
+    `agent=` scopes topology instance judgement to named agents' traces. On a Task or
+    Harness it would be silently ignored — fail loud instead."""
+    for fn in fns:
+        scope = getattr(fn, "_vf_agent", None)
+        if scope is not None:
+            kind = next(
+                (k for k in ("reward", "metric") if getattr(fn, k, False)), "signal"
+            )
+            raise ValueError(
+                f"{owner} @{kind} {fn.__name__!r} sets agent={scope!r}; "
+                f"agent= is only valid on Topology judgement methods"
+            )
+
+
 def invoke(fn: Callable[..., Any], available: dict[str, Any]) -> Any:
     params = inspect.signature(fn).parameters
     return fn(**{name: value for name, value in available.items() if name in params})
@@ -78,7 +95,8 @@ def metric(
     func: F | None = None, priority: int = 0, agent: str | None = None
 ) -> F | Callable[[F], F]:
     """Mark a metric `(self, trace) -> float` (recorded, not summed). On a `Topology`,
-    `agent=` scopes it to the named agent's traces (see `Topology.score`)."""
+    `agent=` scopes it to the named agent's traces (see `Topology.score`); on a `Task`
+    or harness it is refused."""
     decorator = mark("metric", metric_priority=priority, _vf_agent=agent)
     return decorator if func is None else decorator(func)
 
@@ -98,7 +116,8 @@ def reward(
     agent: str | None = None,
 ) -> F | Callable[[F], F]:
     """Mark a weighted per-rollout reward returning a float or keyed scores. On a
-    `Topology`, `agent=` scopes it to the named agent's traces (see `Topology.score`)."""
+    `Topology`, `agent=` scopes it to the named agent's traces (see `Topology.score`);
+    on a `Task` or harness it is refused."""
     decorator = mark(
         "reward", reward_priority=priority, _vf_weight=weight, _vf_agent=agent
     )

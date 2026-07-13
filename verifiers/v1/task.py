@@ -44,7 +44,7 @@ from pydantic import ConfigDict, model_validator
 from pydantic_config import BaseConfig
 from typing_extensions import TypeVar
 
-from verifiers.v1.decorators import discover_decorated, invoke_all
+from verifiers.v1.decorators import discover_decorated, invoke_all, reject_agent_scope
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.judge import Judges, check_judges, resolve_judges
 from verifiers.v1.state import StateT
@@ -269,9 +269,13 @@ class Task(Generic[DataT, StateT, ConfigT]):
         if runtime is not None:
             available["runtime"] = runtime
 
+        metrics = discover_decorated(self, "metric")
+        rewards = discover_decorated(self, "reward")
+        # Before the TaskError boundary: a mis-scoped decorator is an authoring error,
+        # not a scoring failure to capture on the trace.
+        reject_agent_scope([*metrics, *rewards], owner=f"task {type(self).__name__}")
+
         async with boundary(TaskError, f"task {type(self).__name__} scoring"):
-            metrics = discover_decorated(self, "metric")
-            rewards = discover_decorated(self, "reward")
             if runtime is None:
                 skipped = [
                     fn.__name__ for fn in (*metrics, *rewards) if _requires_runtime(fn)

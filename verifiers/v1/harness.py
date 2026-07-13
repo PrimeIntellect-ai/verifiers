@@ -8,7 +8,7 @@ from pydantic import Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.decorators import discover_decorated, invoke_all
+from verifiers.v1.decorators import discover_decorated, invoke_all, reject_agent_scope
 from verifiers.v1.errors import HarnessError, boundary
 from verifiers.v1.utils.install import env_name
 from verifiers.v1.runtimes import (
@@ -119,6 +119,8 @@ class Harness(ABC, Generic[ConfigT]):
         No-op for an harness with no `@metric`s."""
         available = {"task": trace.task.data, "trace": trace, "runtime": runtime}
         fns = discover_decorated(self, "metric")
+        # Before the HarnessError boundary: mis-scoped agent= is an authoring error.
+        reject_agent_scope(fns, owner=f"harness {self.config.id!r}")
         async with boundary(HarnessError, f"harness {self.config.id!r} metric"):
             results = await invoke_all(fns, available)
         for fn, result in zip(fns, results):

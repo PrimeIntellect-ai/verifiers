@@ -637,3 +637,16 @@ async def test_task_without_judges_scores_as_before():
     trace = make_trace()
     await JudgedTask(trace.task.data).score(trace, runtime=None)
     assert trace.rewards == {"own": 0.25}
+
+
+async def test_task_rejects_agent_scoped_reward():
+    """`agent=` is topology-only; on a Task it must fail loud, not be silently ignored."""
+
+    class Scoped(vf.Task[QAData]):
+        @vf.reward(agent="solver")
+        def nope(self, trace) -> float:
+            return 1.0
+
+    trace = make_trace()
+    with pytest.raises(ValueError, match="only valid on Topology"):
+        await Scoped(trace.task.data).score(trace, runtime=None)
