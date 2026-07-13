@@ -184,7 +184,11 @@ class Branch(StrictBaseModel):
                 counts[np.nonzero(node.mask)[0]] = node.kept_token_counts
                 ids_parts.append(node.kept_token_ids)
             counts_parts.append(counts)
-        ids = np.concatenate(ids_parts).astype(np.int32, copy=False) if ids_parts else np.zeros(0, dtype=np.int32)
+        ids = (
+            np.concatenate(ids_parts).astype(np.int32, copy=False)
+            if ids_parts
+            else np.zeros(0, dtype=np.int32)
+        )
         return ids, np.concatenate(counts_parts)
 
     @property

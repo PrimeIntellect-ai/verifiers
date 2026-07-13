@@ -170,7 +170,9 @@ class MessageNode(StrictBaseModel):
         """Integer array -> raw-bytes `__nd__` dict so it rides the wire (numpy can't JSON)."""
         return None if arr is None else _encode_ndarray(arr)
 
-    @field_validator("routed_experts", "kept_token_ids", "kept_token_counts", mode="before")
+    @field_validator(
+        "routed_experts", "kept_token_ids", "kept_token_counts", mode="before"
+    )
     @classmethod
     def deserialize_ndarray_field(cls, value: Any) -> np.ndarray | None:
         if value is None or isinstance(value, np.ndarray):
@@ -566,9 +568,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> None:
 
     # Attribute this turn's kept-set sampling masks onto the assistant node (they are
     # completion-aligned, so only the sampled node carries them).
-    _attribute_kept_tokens(
-        trace, assistant_id, tokens.kept_tokens if tokens else None
-    )
+    _attribute_kept_tokens(trace, assistant_id, tokens.kept_tokens if tokens else None)
 
 
 # --- walking the graph (views) ---------------------------------------------------------
