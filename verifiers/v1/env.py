@@ -304,7 +304,7 @@ def validate_task_pairing(
 
 def validate_pairing(harness: Harness, taskset: Taskset) -> None:
     """Reject an impossible harness/taskset pairing at construction — before any dataset
-    load, shared-server launch, or first episode (see `validate_task_pairing`; one task
+    load, shared-server launch, or first agent run (see `validate_task_pairing`; one task
     type per taskset, read off the `Taskset[TaskT, ...]` generic). On the env server this
     fails worker startup instead of every request."""
     task_cls = generic_type(type(taskset), Task, origin=Taskset) or Task
