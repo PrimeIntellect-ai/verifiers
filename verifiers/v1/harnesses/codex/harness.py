@@ -3,13 +3,16 @@
 The static musl binary runs in Linux containers without additional runtime dependencies.
 """
 
+import base64
 import logging
+import re
 import shlex
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import TextContentPart
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,7 @@ class CodexHarnessConfig(HarnessConfig):
 class CodexHarness(Harness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = False  # TODO
+    SUPPORTS_MESSAGE_PROMPT = True
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info("codex: ensuring codex %s is installed", self.config.version)
@@ -68,7 +72,53 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
-        _, prompt = self.resolve_prompt(trace.task.data)
+        task = trace.task.data
+        if (
+            task.system_prompt is not None
+            and task.prompt is not None
+            and not isinstance(task.prompt, str)
+        ):
+            system_prompt, prompt = task.system_prompt, task.prompt
+        else:
+            system_prompt, prompt = self.resolve_prompt(task)
+        image_args: list[str] = []
+        image_dir = f".vf-codex-images-{trace.id}"
+        if prompt is not None and not isinstance(prompt, str):
+            # Codex seeds one initial turn, so Messages system text joins its prompt.
+            texts = [system_prompt] if system_prompt else []
+            image_index = 0
+            for message in prompt:
+                if message.role not in ("system", "user"):
+                    raise ValueError(
+                        "codex exec only supports system and user initial messages"
+                    )
+                parts = (
+                    [TextContentPart(text=message.content)]
+                    if isinstance(message.content, str)
+                    else message.content
+                )
+                for part in parts:
+                    if isinstance(part, TextContentPart):
+                        texts.append(part.text)
+                        continue
+                    metadata, separator, encoded = part.image_url.url.partition(",")
+                    media_type, *parameters = metadata.removeprefix("data:").split(";")
+                    if (
+                        not separator
+                        or not metadata.startswith("data:image/")
+                        or not any(p.lower() == "base64" for p in parameters)
+                    ):
+                        raise ValueError(
+                            "codex image prompts require base64 data:image URLs"
+                        )
+                    extension = re.sub(
+                        r"[^a-zA-Z0-9]+", "_", media_type.removeprefix("image/")
+                    ).strip("_")
+                    path = f"{image_dir}/image_{image_index}.{extension or 'image'}"
+                    await runtime.write(path, base64.b64decode(encoded))
+                    image_args += ["-i", path]
+                    image_index += 1
+            prompt = "\n\n".join(texts)
         # codex authenticates to the interception server with the session secret (its provider
         # api key) and posts Responses calls to `{endpoint}/responses`.
         env = {**self.config.resolved_env, KEY_VAR: secret}
@@ -111,7 +161,18 @@ class CodexHarness(Harness[CodexHarnessConfig]):
             "-c",
             f"model_providers.{PROVIDER}.requires_openai_auth=false",
             *tool_config,
+            *image_args,
             "--",
             prompt,
         ]
-        return await runtime.run_program(argv, env)
+        try:
+            return await runtime.run_program(argv, env)
+        finally:
+            if image_args:
+                try:
+                    await runtime.run(["rm", "-rf", image_dir], {})
+                except Exception:
+                    # Runtime teardown is the fallback; preserve the rollout result.
+                    logger.warning(
+                        "failed to clean up Codex prompt images", exc_info=True
+                    )
