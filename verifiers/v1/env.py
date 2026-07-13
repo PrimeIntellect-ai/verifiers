@@ -13,7 +13,7 @@ from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.episode import Episode
 from verifiers.v1.types import ID
 from verifiers.v1.interception import (
-    ElasticInterceptionConfig,
+    ElasticInterceptionPoolConfig,
     Interception,
     InterceptionConfig,
     RolloutLimits,
@@ -106,7 +106,7 @@ class EnvConfig(BaseConfig):
     max_total_tokens: int | None = None
     """Max total (prompt + completion) tokens per rollout (None = no limit). Caps the
     trace's `num_total_tokens`; framework-enforced between turns."""
-    interception: InterceptionConfig = ElasticInterceptionConfig()
+    interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape (see `verifiers.v1.interception.config`): `elastic` (the
     default — servers grown on demand, `multiplex` rollouts each), `server` (one server,
     with a tunnel choice incl. a bring-your-own endpoint), or `static` (a fixed list of

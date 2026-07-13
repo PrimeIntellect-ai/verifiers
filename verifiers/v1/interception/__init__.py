@@ -10,10 +10,10 @@ consumers. `make_interception` picks the shape from the `InterceptionConfig` typ
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.config import (
     BaseInterceptionConfig,
-    ElasticInterceptionConfig,
+    ElasticInterceptionPoolConfig,
     InterceptionConfig,
-    ServerInterceptionConfig,
-    StaticInterceptionConfig,
+    InterceptionServerConfig,
+    StaticInterceptionPoolConfig,
 )
 from verifiers.v1.interception.pool import (
     ElasticInterceptionPool,
@@ -32,9 +32,9 @@ def make_interception(config: InterceptionConfig, *, is_local: bool) -> Intercep
     `make_runtime`). `is_local` (no consumer — harness or tool/user server — runs in a
     remote runtime) decides whether the servers are reached at localhost or exposed via
     their tunnels; the caller computes it (see `Environment.interception`)."""
-    if isinstance(config, ServerInterceptionConfig):
+    if isinstance(config, InterceptionServerConfig):
         return InterceptionServer(make_tunnel(config.tunnel), is_local=is_local)
-    if isinstance(config, StaticInterceptionConfig):
+    if isinstance(config, StaticInterceptionPoolConfig):
         return StaticInterceptionPool(
             [
                 InterceptionServer(make_tunnel(server.tunnel), is_local=is_local)
@@ -55,7 +55,7 @@ __all__ = [
     "RolloutSession",
     "BaseInterceptionConfig",
     "InterceptionConfig",
-    "ServerInterceptionConfig",
-    "StaticInterceptionConfig",
-    "ElasticInterceptionConfig",
+    "InterceptionServerConfig",
+    "StaticInterceptionPoolConfig",
+    "ElasticInterceptionPoolConfig",
 ]

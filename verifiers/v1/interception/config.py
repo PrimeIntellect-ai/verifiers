@@ -26,7 +26,7 @@ class BaseInterceptionConfig(BaseConfig):
     `multiplex`)."""
 
 
-class ServerInterceptionConfig(BaseInterceptionConfig):
+class InterceptionServerConfig(BaseInterceptionConfig):
     """A single interception server shared by every rollout, reached (when any consumer is
     remote) via its `tunnel` — the shape that supports a bring-your-own endpoint
     (`tunnel.type custom`)."""
@@ -37,17 +37,17 @@ class ServerInterceptionConfig(BaseInterceptionConfig):
     `custom` (a pre-started tunnel / reverse proxy / direct bind you provide)."""
 
 
-class StaticInterceptionConfig(BaseInterceptionConfig):
+class StaticInterceptionPoolConfig(BaseInterceptionConfig):
     """A fixed set of interception servers, each configured like a `server` type; rollouts
     land on the least-loaded one. The shape for multiple bring-your-own endpoints (one
     `custom` tunnel per server)."""
 
     type: Literal["static"] = "static"
-    servers: list[ServerInterceptionConfig] = Field(min_length=1)
+    servers: list[InterceptionServerConfig] = Field(min_length=1)
     """One entry per server, each with its own `tunnel` choice."""
 
 
-class ElasticInterceptionConfig(BaseInterceptionConfig):
+class ElasticInterceptionPoolConfig(BaseInterceptionConfig):
     """Interception servers grown on demand: `multiplex` rollouts share one server (and,
     behind a remote consumer, one prime tunnel). The default."""
 
@@ -60,6 +60,8 @@ class ElasticInterceptionConfig(BaseInterceptionConfig):
 
 # Discriminated on `type` so the CLI selects with `--interception.type server|static|elastic`.
 InterceptionConfig = Annotated[
-    ServerInterceptionConfig | StaticInterceptionConfig | ElasticInterceptionConfig,
+    InterceptionServerConfig
+    | StaticInterceptionPoolConfig
+    | ElasticInterceptionPoolConfig,
     Field(discriminator="type"),
 ]
