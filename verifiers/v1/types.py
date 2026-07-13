@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field
@@ -178,6 +179,18 @@ class RoutedExperts(TypedDict):
     start: int
 
 
+@dataclass
+class KeptTokens:
+    """Kept-set sampling masks for sampling replay: `ids` (every kept set concatenated
+    in position order) and `counts` (kept-set size per completion token; 0 = no usable
+    mask). Base64 blobs straight off the `generate` response on the `TurnTokens`
+    carrier; decoded to flat int32 arrays on `MessageNode` (`len(ids) == sum(counts)`,
+    row boundaries recovered from `counts`)."""
+
+    ids: Any
+    counts: Any
+
+
 class TurnTokens(StrictBaseModel):
     """Training tokens from renderer tokenization or provider-returned token IDs."""
 
@@ -200,6 +213,11 @@ class TurnTokens(StrictBaseModel):
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
     routed_experts: RoutedExperts | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): the kept-set sampling masks from `generate` (token ids
+    # surviving top-p/top-k truncation, per completion token), attributed to the assistant
+    # node by the turn's `commit`, then dropped. None unless the engine ran with
+    # `enable_return_kept_tokens`.
+    kept_tokens: KeptTokens | None = Field(default=None, exclude=True)
 
 
 class Response(StrictBaseModel):
