@@ -114,7 +114,7 @@ class MessageNode(StrictBaseModel):
     kept_token_ids: np.ndarray | None = None
     """Kept-set sampling masks for this node's sampled tokens, flat int32 in position
     order (row boundaries in `kept_token_counts`). Assistant nodes only; consumed via
-    `Branch.kept_tokens` for sampling-mask-replay training. Rides the wire as a
+    `Branch.kept_tokens` for sampling-replay training. Rides the wire as a
     raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
     kept_token_counts: np.ndarray | None = None
     """Kept-set size per sampled token (int32, aligned with `logprobs`); 0 = no mask."""

@@ -235,7 +235,7 @@ class RoutedExperts(TypedDict):
 
 
 class KeptTokens(TypedDict):
-    """The raw kept-set sampling masks a `generate` response carries for sampling-mask
+    """The raw kept-set sampling masks a `generate` response carries for sampling
     replay: base64 `ids` (int32, every kept-set concatenated) and base64 `counts` (int32,
     kept-set size per completion token; 0 = no usable mask). Kept opaque (`Any`) so
     pydantic never validates the encoded blobs."""
