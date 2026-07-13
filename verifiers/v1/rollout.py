@@ -21,7 +21,6 @@ from verifiers.v1.interception import (
     Slot,
     requires_tunnel,
 )
-from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.session import RolloutLimits, RolloutSession
 from verifiers.v1.runtimes import (
     Runtime,
@@ -94,7 +93,7 @@ class Rollout:
             [server.config for server in servers],
             self.shared_tools.values(),
         )
-        server = InterceptionServer(PrimeTunnel() if tunneled else None)
+        server = InterceptionServer(requires_tunnel=tunneled)
         async with server:
             async with server.acquire(session) as slot:
                 yield slot

@@ -25,7 +25,6 @@ from verifiers.v1.interception.server import (
     InterceptionServer,
     InterceptionServerConfig,
 )
-from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.session import RolloutSession
 
 logger = logging.getLogger(__name__)
@@ -46,11 +45,14 @@ class StaticInterceptionPool(Interception):
     a slot on the least-loaded one. No capacity cap — sizing the set to the load is the
     operator's call (it's the shape for pre-provisioned/bring-your-own endpoints)."""
 
-    def __init__(self, servers: list[InterceptionServer]) -> None:
+    def __init__(
+        self, config: StaticInterceptionPoolConfig, requires_tunnel: bool = False
+    ) -> None:
         super().__init__()
-        if not servers:
-            raise ValueError("a static interception pool needs at least one server")
-        self.servers = servers
+        self.config = config
+        self.servers = [
+            InterceptionServer(server, requires_tunnel) for server in config.servers
+        ]
 
     async def start(self) -> None:
         for server in self.servers:
@@ -84,9 +86,13 @@ class ElasticInterceptionPool(Interception):
     prime tunnel behind a remote consumer); `acquire` hands a rollout a slot on one,
     bringing up a new server when all are at capacity."""
 
-    def __init__(self, *, multiplex: int = 32, requires_tunnel: bool = False) -> None:
+    def __init__(
+        self,
+        config: ElasticInterceptionPoolConfig | None = None,
+        requires_tunnel: bool = False,
+    ) -> None:
         super().__init__()
-        self.multiplex = max(1, multiplex)
+        self.config = config or ElasticInterceptionPoolConfig()
         self.requires_tunnel = requires_tunnel
         self.servers: list[InterceptionServer] = []
         self._lock = asyncio.Lock()
@@ -99,15 +105,15 @@ class ElasticInterceptionPool(Interception):
         one (its own tunnel, on `_stack`, torn down with the pool). The caller holds
         `_lock`."""
         for server in self.servers:
-            if server.load < self.multiplex:
+            if server.load < self.config.multiplex:
                 return server
-        server = InterceptionServer(PrimeTunnel() if self.requires_tunnel else None)
+        server = InterceptionServer(requires_tunnel=self.requires_tunnel)
         await self._stack.enter_async_context(server)
         self.servers.append(server)
         logger.info(
             "interception pool: %d server(s), multiplex=%d",
             len(self.servers),
-            self.multiplex,
+            self.config.multiplex,
         )
         return server
 

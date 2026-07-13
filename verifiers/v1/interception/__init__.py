@@ -73,21 +73,10 @@ def make_interception(
     it they get none and are reached at localhost. The caller computes it (see
     `Environment.interception`)."""
     if isinstance(config, InterceptionServerConfig):
-        return InterceptionServer(
-            make_tunnel(config.tunnel) if requires_tunnel else None
-        )
+        return InterceptionServer(config, requires_tunnel)
     if isinstance(config, StaticInterceptionPoolConfig):
-        return StaticInterceptionPool(
-            [
-                InterceptionServer(
-                    make_tunnel(server.tunnel) if requires_tunnel else None
-                )
-                for server in config.servers
-            ]
-        )
-    return ElasticInterceptionPool(
-        multiplex=config.multiplex, requires_tunnel=requires_tunnel
-    )
+        return StaticInterceptionPool(config, requires_tunnel)
+    return ElasticInterceptionPool(config, requires_tunnel)
 
 
 __all__ = [

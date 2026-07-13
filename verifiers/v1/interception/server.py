@@ -42,7 +42,12 @@ from verifiers.v1.errors import (
     UserError,
 )
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
-from verifiers.v1.interception.tunnel import PrimeTunnelConfig, Tunnel, TunnelConfig
+from verifiers.v1.interception.tunnel import (
+    PrimeTunnelConfig,
+    Tunnel,
+    TunnelConfig,
+    make_tunnel,
+)
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.types import Messages, Tool
 
@@ -94,15 +99,23 @@ class InterceptionServerConfig(BaseInterceptionConfig):
 
 class InterceptionServer(Interception):
     """A server that proxies model calls for one or more rollouts — and is itself the
-    single-server `Interception` (the pools compose several of these). On `start` it binds
-    where its `tunnel` says (`bind_host`/`bind_port`) and sets `base_url`, the one URL every
-    consumer reaches it at: the tunnel's public URL — or, with no tunnel (every consumer is
-    on the host network), loopback."""
+    single-server `Interception` (the pools compose several of these). With
+    `requires_tunnel` (some consumer is off the host network) it mints its configured
+    tunnel; on `start` it then binds where the tunnel says (`bind_host`/`bind_port`) and
+    sets `base_url` — the one URL every consumer reaches it at — to the tunnel's public
+    URL. Without, every consumer is on the host network: it binds loopback, tunnel-free."""
 
-    def __init__(self, tunnel: Tunnel | None = None) -> None:
+    def __init__(
+        self,
+        config: InterceptionServerConfig | None = None,
+        requires_tunnel: bool = False,
+    ) -> None:
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
-        self.tunnel = tunnel
+        self.config = config or InterceptionServerConfig()
+        self.tunnel: Tunnel | None = (
+            make_tunnel(self.config.tunnel) if requires_tunnel else None
+        )
         self.host = "127.0.0.1"
         self.port = 0
         self.base_url = ""  # set by `start`
