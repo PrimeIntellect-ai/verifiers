@@ -7,8 +7,8 @@ framing, and connection headers are replaced. The provider response is parsed in
 `Response` for the trace, while its full JSON object stays on `Response.raw` for the interception
 server to return.
 
-The transport is provider-agnostic: the dialect supplies the upstream path + auth headers, so a
-new wire format (incl. non-OpenAI providers like Anthropic) is just a new `Dialect` — no client
+The transport is provider-agnostic: the dialect supplies the canonical route + auth headers, so
+a new wire format (incl. non-OpenAI providers like Anthropic) is just a new `Dialect` — no client
 change. Endpoint config (base url, api key, billing headers) comes from the client config.
 """
 
@@ -73,8 +73,8 @@ class EvalClient(Client):
         # the dialect's provider authentication is applied.
         self.headers = dict(headers or {})
         # No timeout: agentic completions are slow and the rollout timeout is the real backstop.
-        # Build full URLs ourselves (base_url + dialect.upstream_path) rather than relying on
-        # httpx base-url joining, which drops the base path for a leading-slash request path.
+        # base_url includes the provider's /v1 prefix. Build full URLs ourselves because httpx
+        # base-url joining drops the base path for a leading-slash request path.
         # Match V1's default concurrency while retaining HTTPX's 20-idle keepalive bound.
         self.http = httpx.AsyncClient(
             timeout=None,
@@ -92,7 +92,7 @@ class EvalClient(Client):
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         resp = await self._request(
-            self.base_url + dialect.upstream_path,
+            self.base_url + dialect.route.removeprefix("/v1"),
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
         )
@@ -193,7 +193,7 @@ class EvalClient(Client):
         # Relay complete SSE events so the interception server can safely insert keepalives
         # between them. Error responses are mapped before any event is handed back.
         resp = await self._request(
-            self.base_url + dialect.upstream_path,
+            self.base_url + dialect.route.removeprefix("/v1"),
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
             stream=True,

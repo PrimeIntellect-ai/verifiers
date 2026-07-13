@@ -63,7 +63,7 @@ PROVIDER_CONFIGS: dict[str, dict[str, str]] = {
         "key": "OPENAI_API_KEY",
     },
     "anthropic": {
-        "url": "https://api.anthropic.com",
+        "url": "https://api.anthropic.com/v1",
         "key": "ANTHROPIC_API_KEY",
         "client_type": "anthropic_messages",
     },

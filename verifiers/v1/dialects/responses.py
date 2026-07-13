@@ -265,8 +265,7 @@ class ResponsesStreamParser(StreamParser):
 
 
 class ResponsesDialect(Dialect[dict, OpenAIResponse]):
-    routes = ("/v1/responses",)
-    upstream_path = "/responses"
+    route = "/v1/responses"
     response_type = OpenAIResponse
 
     def is_terminal_event(self, chunk: bytes) -> bool:

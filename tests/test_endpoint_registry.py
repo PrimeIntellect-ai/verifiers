@@ -26,7 +26,7 @@ def test_load_endpoints_rejects_deprecated_client_type_field(tmp_path: Path):
         "[[endpoint]]\n"
         'endpoint_id = "haiku"\n'
         'model = "claude-haiku-4-5"\n'
-        'url = "https://api.anthropic.com"\n'
+        'url = "https://api.anthropic.com/v1"\n'
         'key = "ANTHROPIC_API_KEY"\n'
         'client_type = "anthropic_messages"\n',
         encoding="utf-8",
@@ -177,7 +177,7 @@ def test_load_endpoints_toml_accepts_type_shorthand(tmp_path: Path):
         "[[endpoint]]\n"
         'endpoint_id = "haiku"\n'
         'model = "claude-haiku-4-5"\n'
-        'url = "https://api.anthropic.com"\n'
+        'url = "https://api.anthropic.com/v1"\n'
         'key = "ANTHROPIC_API_KEY"\n'
         'type = "anthropic_messages"\n',
         encoding="utf-8",
