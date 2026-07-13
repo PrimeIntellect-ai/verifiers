@@ -29,14 +29,6 @@ class EchoAgenticData(vf.TaskData):
     answer: str
     """The phrase the model should write into the file."""
 
-    @vf.reward(weight=1.0)
-    async def wrote_phrase(self, trace: vf.Trace, runtime: Runtime) -> float:
-        try:
-            content = (await runtime.read(TARGET)).decode(errors="replace")
-        except (SandboxError, OSError, ValueError):
-            return 0.0  # the model never wrote the file
-        return float(lenient_match(self.answer, content))
-
 
 class EchoAgenticTask(vf.Task[EchoAgenticData]):
     @vf.reward(weight=1.0)
