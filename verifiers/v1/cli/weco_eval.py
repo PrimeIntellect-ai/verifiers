@@ -99,6 +99,7 @@ def write_seed_prompt(config: WecoEvalConfig) -> None:
             "into `prompt` instead and can't be optimized this way; write the seed file "
             "yourself to override anyway"
         )
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(seed)
     print(f"wrote the taskset's baseline system prompt to {path}")
 
