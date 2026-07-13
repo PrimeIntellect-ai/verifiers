@@ -22,6 +22,7 @@ from verifiers.v1.interception import (
     RolloutSession,
     Slot,
 )
+from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -108,9 +109,8 @@ class Rollout:
             async with self.interception.acquire(session) as slot:
                 yield slot
             return
-        server = InterceptionServer(
-            is_local=self._interception_is_local(runtime, servers)
-        )
+        local = self._interception_is_local(runtime, servers)
+        server = InterceptionServer(None if local else PrimeTunnel())
         async with server:
             async with server.acquire(session) as slot:
                 yield slot

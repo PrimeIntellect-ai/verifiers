@@ -30,14 +30,15 @@ from verifiers.v1.interception.tunnel import make_tunnel
 def make_interception(config: InterceptionConfig, *, is_local: bool) -> Interception:
     """The interception for a config, picked by type (the host-side counterpart to
     `make_runtime`). `is_local` (no consumer — harness or tool/user server — runs in a
-    remote runtime) decides whether the servers are reached at localhost or exposed via
-    their tunnels; the caller computes it (see `Environment.interception`)."""
+    remote runtime) means the servers get no tunnel and are reached at localhost;
+    otherwise each is exposed via its configured tunnel. The caller computes it (see
+    `Environment.interception`)."""
     if isinstance(config, InterceptionServerConfig):
-        return InterceptionServer(make_tunnel(config.tunnel), is_local=is_local)
+        return InterceptionServer(None if is_local else make_tunnel(config.tunnel))
     if isinstance(config, StaticInterceptionPoolConfig):
         return StaticInterceptionPool(
             [
-                InterceptionServer(make_tunnel(server.tunnel), is_local=is_local)
+                InterceptionServer(None if is_local else make_tunnel(server.tunnel))
                 for server in config.servers
             ]
         )

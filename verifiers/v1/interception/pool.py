@@ -73,7 +73,7 @@ class ElasticInterceptionPool(Interception):
         for server in self.servers:
             if server.load < self.multiplex:
                 return server
-        server = InterceptionServer(PrimeTunnel(), is_local=self.is_local)
+        server = InterceptionServer(None if self.is_local else PrimeTunnel())
         await self._stack.enter_async_context(server)
         self.servers.append(server)
         logger.info(

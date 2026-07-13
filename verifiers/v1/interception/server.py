@@ -44,7 +44,7 @@ from verifiers.v1.errors import (
     UserError,
 )
 from verifiers.v1.interception.base import Interception, Slot
-from verifiers.v1.interception.tunnel import PrimeTunnel, Tunnel
+from verifiers.v1.interception.tunnel import Tunnel
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages, Tool
 
@@ -166,14 +166,13 @@ class InterceptionServer(Interception):
     """A server that proxies model calls for one or more rollouts — and is itself the
     single-server `Interception` (the pools compose several of these). On `start` it binds
     where its `tunnel` says (`bind_host`/`bind_port`) and sets `base_url`, the one URL every
-    consumer reaches it at: localhost when all consumers are local (`is_local`, tunnel
-    untouched), else the tunnel's public URL."""
+    consumer reaches it at: the tunnel's public URL — or, with no tunnel (every consumer is
+    on the host network), loopback."""
 
-    def __init__(self, tunnel: Tunnel | None = None, *, is_local: bool = True) -> None:
+    def __init__(self, tunnel: Tunnel | None = None) -> None:
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
-        self.tunnel = tunnel or PrimeTunnel()
-        self.is_local = is_local
+        self.tunnel = tunnel
         self.host = "127.0.0.1"
         self.port = 0
         self.base_url = ""  # set by `start`
@@ -234,9 +233,10 @@ class InterceptionServer(Interception):
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         self._stack.push_async_callback(self.runner.cleanup)
-        # All consumers local → bind loopback on any ephemeral port, no tunnel. Otherwise the
-        # tunnel says where to bind for it to reach the port, and `expose` publishes it.
-        if self.is_local:
+        # No tunnel → every consumer shares the host network: bind loopback on any ephemeral
+        # port. Otherwise the tunnel says where to bind for it to reach the port, and
+        # `expose` publishes it.
+        if self.tunnel is None:
             self.host, bind_port = "127.0.0.1", 0
         else:
             self.host, bind_port = self.tunnel.bind_host, self.tunnel.bind_port
@@ -247,7 +247,7 @@ class InterceptionServer(Interception):
         self._stack.callback(
             logger.info, "interception down: url=http://%s:%d", self.host, self.port
         )
-        if self.is_local:
+        if self.tunnel is None:
             self.base_url = f"http://127.0.0.1:{self.port}"
         else:
             self.base_url = await self._stack.enter_async_context(
