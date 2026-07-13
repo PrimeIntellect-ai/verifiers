@@ -136,7 +136,6 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
-verifiers = { path = ".", editable = true }
 compact = { path = "environments/compact", editable = true }
 glossary-v1 = { path = "environments/glossary_v1", editable = true }
 deepwiki-v1 = { path = "environments/deepwiki_v1", editable = true }
