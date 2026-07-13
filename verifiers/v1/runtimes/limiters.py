@@ -9,11 +9,14 @@ host). Keyed by name: one bucket file per name, shared by every process (and run
 
 import asyncio
 import fcntl
+import getpass
 import os
 import tempfile
 import time
 
-_LIMITER_DIR = os.path.join(tempfile.gettempdir(), "vf-rate-limiters")
+# User-scoped: a fixed shared path breaks on multi-user hosts (another user's bucket
+# file -> Permission denied on every tunnel).
+_LIMITER_DIR = os.path.join(tempfile.gettempdir(), f"vf-rate-limiters-{getpass.getuser()}")
 
 
 class CreationLimiter:
