@@ -102,17 +102,9 @@ class TTTConfig(BaseConfig):
     train the adapter on those pairs instead of (or in addition to) the raw branch."""
 
 
-DEFAULT_QA_SEEDS = [
-    "the concrete facts, data, names, numbers, paths, and exact values established so far",
-    "the approaches, commands, or strategies that worked, and why",
-    "the approaches that failed or turned out to be dead ends, and why",
-    "theories, hypotheses, or open questions about the problem, and the evidence for or against each",
-    "the setup of the task: the goal, the constraints, the tools available, and the current state of progress",
-    "lessons about how the available tools behave: quirks, failure modes, and how to use them effectively",
-]
-
-# The generation instruction: one seed focuses one call; the model writes BOTH the questions
-# and the answers, several per call, in a tagged structure we can extract robustly (JSON
+# The generation instruction: one general prompt, open-ended item count — RL shapes what
+# to focus on and how much to write. The model writes BOTH the questions and the answers,
+# several per call, in a tagged structure we can extract robustly (JSON
 # breaks on long free text with quotes/newlines; tag scanning salvages well-formed items
 # from a partially malformed generation). The self-containment contract is the key quality
 # lever: pairs are later trained WITHOUT this conversation in context, so a question that
@@ -120,10 +112,12 @@ DEFAULT_QA_SEEDS = [
 # question/answer shape with the *trigger condition* as the question — the future context
 # matching the trigger is what cues the memory.
 QA_GENERATION_PROMPT = """\
-You are creating a study set about the conversation above, focused on: {seed}.
+You are creating a study set about the conversation above — question-answer items that
+teach what is worth remembering from it.
 
-Write {num_items} question-answer items. Each item must teach something from the
-conversation that is worth remembering.
+Write as few or as many items as the conversation warrants (at least one): concrete facts
+and values, what worked, what failed and why, how the tools behave, open questions —
+whatever someone continuing this work would need.
 
 Rules:
 - SELF-CONTAINED: the question must be fully understandable by someone who never saw this
@@ -247,7 +241,7 @@ def parse_qa_items(text: str) -> list[dict]:
 
 def dedup_items(items: list[dict], threshold: float = 0.85) -> list[dict]:
     """Drop near-duplicate questions (normalized token-overlap Jaccard >= threshold),
-    keeping the first occurrence — repeated seeds and overlapping foci produce them."""
+    keeping the first occurrence — overlapping generations produce near-duplicates."""
     kept: list[dict] = []
     kept_tokens: list[set[str]] = []
     for item in items:
@@ -263,24 +257,19 @@ def dedup_items(items: list[dict], threshold: float = 0.85) -> list[dict]:
 
 class QAConfig(BaseConfig):
     """Q&A generation + training at compaction. Each compaction runs `num_generations`
-    parallel generations (one seed focus each) against the full abandoned branch; the model
-    writes both the questions and the answers (plus trigger-phrased lessons), several per
-    call, extracted structurally. The exchanges are committed to the trace as `ttt_qa`
+    parallel generations against the full abandoned branch; the model writes both the
+    questions and the answers (plus trigger-phrased lessons), as many per call as it deems
+    warranted, extracted structurally. The exchanges are committed to the trace as `ttt_qa`
     branches — real sampled tokens, so RL trains the generation behavior itself (good
     lessons get reinforced through the rollout's advantage) — but stay outside
     `RolloutLimits` and the trace's turn/token metrics; `max_tokens` below is their own
     budget. The extracted pairs are what the adapter trains on."""
 
-    num_generations: int = 4
-    """Parallel QA generations per compaction (one seed each, cycled from `seeds`)."""
-    items_per_generation: int = 4
-    """Q&A items requested per generation (`{num_items}` in the prompt)."""
-    seeds: list[str] = DEFAULT_QA_SEEDS
-    """Focus seeds — `{seed}` in `QA_GENERATION_PROMPT`. Diversity comes from the seed
-    (focus) times the model's own question choices within each focus."""
+    num_generations: int = 1
+    """Parallel QA generations per compaction; >1 gives the trace multiple independent
+    study-set branches (dedup collapses overlap)."""
     generation_prompt: str = QA_GENERATION_PROMPT
-    """The instruction template (must keep the `{seed}` / `{num_items}` placeholders and
-    the `<item>` output format)."""
+    """The instruction (no placeholders; must keep the `<item>` output format)."""
     max_tokens: int | None = 2048
     """Completion budget per QA generation (None = the rollout sampling's own value)."""
     temperature: float | None = None
@@ -486,7 +475,7 @@ class TTTRolloutHook:
 
     async def _generate_qa(self, path: list[int]) -> list[dict]:
         """Generate the Q&A items for an abandoned branch: `num_generations` parallel
-        calls, each with the FULL branch in context plus one seeded generation instruction
+        calls, each with the FULL branch in context plus the generation instruction
         (the model writes both the questions and the answers, several per call), through
         the same client the rollout uses, under the current pre-update adapter.
 
@@ -566,10 +555,8 @@ class TTTRolloutHook:
                 raise e.unwrap()  # surface the real fault once retries are exhausted
             raise AssertionError("unreachable: retrying() returns or reraises")
 
-        prompts = [
-            qa.generation_prompt.format(seed=qa.seeds[i % len(qa.seeds)], num_items=qa.items_per_generation)
-            for i in range(qa.num_generations)
-        ]
+        # No .format: the prompt is a plain instruction, custom templates need no placeholders.
+        prompts = [qa.generation_prompt] * qa.num_generations
         results = await asyncio.gather(*(ask_retrying(p, "ttt qa generation") for p in prompts), return_exceptions=True)
         generations = [r for r in results if not isinstance(r, BaseException)]
         failures = [r for r in results if isinstance(r, BaseException)]

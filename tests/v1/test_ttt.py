@@ -1,6 +1,8 @@
 """The TTT hook: fork detection, update payloads, version stamping, cache salting, and
 branch version uniformity — all against a stubbed TTT service (httpx transport), no GPU."""
 
+import asyncio
+
 import httpx
 import pytest
 import verifiers.v1 as vf
@@ -507,7 +509,7 @@ class QAClient:
 def qa_hook(trace, service, client, **qa_overrides):
     config = TTTConfig(
         base_url="http://ttt",
-        qa={"num_generations": 2, "items_per_generation": 2, "seeds": ["facts", "lessons"], **qa_overrides},
+        qa={"num_generations": 2, **qa_overrides},
     )
     ctx = vf.ModelContext(model="base", client=client, sampling=SamplingConfig(temperature=0.9))
     hook = TTTRolloutHook(config, trace, ctx=ctx)
@@ -529,16 +531,16 @@ async def test_qa_generated_with_branch_in_context_and_shipped():
     turn = graph.prepare_turn(trace, [UserMessage(content="summary")])
     await hook.on_turn_prepared(turn)
 
-    # 2 seeded generations, each with the FULL abandoned branch in context + the seeded
+    # 2 parallel generations, each with the FULL abandoned branch in context + the
     # generation instruction as the final user message.
     assert len(client.requests) == 2
-    for i, (body, model, sampling) in enumerate(client.requests):
+    for body, model, sampling in client.requests:
         roles = [m["role"] for m in body["messages"]]
         assert roles == ["user", "assistant", "user"]  # u1, a1, instruction
         assert body["messages"][0]["content"] == "u1"
         instruction = body["messages"][-1]["content"]
-        assert ["facts", "lessons"][i] in instruction  # the seed
-        assert "2 question-answer items" in instruction  # items_per_generation
+        assert "at least one" in instruction  # open-ended item count
+        assert "<item>" in instruction  # the load-bearing output format
         assert "SELF-CONTAINED" in instruction
         assert model == "base"  # version 0 at generation time — the branch's own model
         assert sampling["max_tokens"] == 2048  # the QA budget, not the rollout's
@@ -822,19 +824,26 @@ async def test_update_persistent_503_fails_after_all_attempts(fast_retries):
 
 class FlakyQAClient(QAClient):
     """Raises a transient ProviderError the first `fail_first` times a prompt containing
-    `fail_on` is asked; other prompts (and later retries) answer normally."""
+    `fail_on` is asked; other prompts (and later retries) answer normally. With
+    `first_task_only`, failures stick to the first asyncio task that matches — generations
+    now share one prompt, so task identity is what tells them apart (retries stay in-task)."""
 
-    def __init__(self, items, fail_on: str, fail_first: int):
+    def __init__(self, items, fail_on: str, fail_first: int, first_task_only: bool = False):
         super().__init__(items)
         self.fail_on = fail_on
         self.fails_left = fail_first
         self.failed_calls = 0
+        self.first_task_only = first_task_only
+        self._fail_task = None
 
     async def get_response(self, dialect, body, model, sampling, headers=None, session_id=None, turn=None):
         if self.fail_on in body["messages"][-1]["content"] and self.fails_left > 0:
-            self.fails_left -= 1
-            self.failed_calls += 1
-            raise ProviderError("work loop busy", status_code=503)
+            if self.first_task_only and self._fail_task is None:
+                self._fail_task = asyncio.current_task()
+            if not self.first_task_only or asyncio.current_task() is self._fail_task:
+                self.fails_left -= 1
+                self.failed_calls += 1
+                raise ProviderError("work loop busy", status_code=503)
         return await super().get_response(dialect, body, model, sampling, headers, session_id, turn)
 
 
@@ -844,10 +853,11 @@ async def test_qa_generation_transient_failure_retried(fast_retries):
     service = FakeService()
     client = FlakyQAClient(
         [{"type": "qa", "question": "What is x for task T?", "answer": "42"}],
-        fail_on="beta-seed",
+        fail_on="creating a study set",
         fail_first=1,
+        first_task_only=True,  # only one of the two identical generations fails
     )
-    hook = qa_hook(trace, service, client, seeds=["alpha-seed", "beta-seed"])
+    hook = qa_hook(trace, service, client)
     commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
     turn = graph.prepare_turn(trace, [UserMessage(content="s")])
     await hook.on_turn_prepared(turn)
@@ -863,10 +873,11 @@ async def test_qa_generation_persistent_failure_degrades(fast_retries, caplog):
     service = FakeService()
     client = FlakyQAClient(
         [{"type": "qa", "question": "What is x for task T?", "answer": "42"}],
-        fail_on="beta-seed",
+        fail_on="creating a study set",
         fail_first=99,
+        first_task_only=True,  # only one of the two identical generations fails
     )
-    hook = qa_hook(trace, service, client, seeds=["alpha-seed", "beta-seed"])
+    hook = qa_hook(trace, service, client)
     commit_turn(trace, hook, [UserMessage(content="u1")], response("a1", [1], [2]))
     turn = graph.prepare_turn(trace, [UserMessage(content="s")])
     with caplog.at_level("WARNING", logger="verifiers.v1.ttt"):
