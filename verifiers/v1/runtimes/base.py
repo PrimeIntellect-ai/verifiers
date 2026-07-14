@@ -180,12 +180,10 @@ class Runtime(ABC):
                 if digest not in self._uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
-                    await self.run(
-                        ["sh", "-c", f"mv -f {shlex.quote(tmp)} {shlex.quote(path)}"],
-                        {},
-                    )
                     command = (
-                        f"{_ENSURE_UV}; uv sync --script {shlex.quote(path)} -q --no-config "
+                        f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
+                        f"&& {{ {_ENSURE_UV}; }} "
+                        f"&& uv sync --script {shlex.quote(path)} -q --no-config "
                         f"&& uv python find --script {shlex.quote(path)} --no-config"
                     )
                     result = await self.run(["sh", "-c", command], env or {})
