@@ -91,11 +91,13 @@ class Rollout:
                 yield slot
             return
         tunneled = requires_tunnel(
-            runtime.reaches_host_locally,
+            runtime.is_local,
             [server.config for server in servers],
             self.shared_tools.values(),
         )
-        server = InterceptionServer(requires_tunnel=tunneled)
+        server = InterceptionServer(
+            requires_tunnel=tunneled, extra_host=runtime.interception_host
+        )
         async with server:
             async with server.acquire(session) as slot:
                 yield slot

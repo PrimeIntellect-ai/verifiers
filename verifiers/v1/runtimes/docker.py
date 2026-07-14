@@ -6,6 +6,7 @@ import logging
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import PurePosixPath
 from typing import Literal, cast
 from urllib.parse import urlsplit, urlunsplit
@@ -74,6 +75,22 @@ async def docker_checked(*args: str, error: str) -> ProgramResult:
     raise SandboxError(f"{error}: {detail}")
 
 
+async def docker_interception_host() -> str | None:
+    """Return the host address used by native Linux containers."""
+    if sys.platform != "linux":
+        return None
+    result = await docker(
+        "network", "inspect", "--format", "{{(index .IPAM.Config 0).Gateway}}", "bridge"
+    )
+    gateway = result.stdout.strip()
+    if result.exit_code != 0 or not gateway:
+        raise SandboxError(
+            "could not resolve the Docker host gateway: "
+            f"{(result.stderr or result.stdout).strip()}"
+        )
+    return gateway
+
+
 class DockerRuntime(Runtime):
     def __init__(self, config: DockerConfig, name: str | None = None) -> None:
         super().__init__(name)
@@ -83,6 +100,7 @@ class DockerRuntime(Runtime):
         self._egress: str | None = None
         self._setup_network: str | None = None
         self._execution_network: str | None = None
+        self._interception_host: str | None = None
         self._stopped = False
 
     @classmethod
@@ -92,6 +110,10 @@ class DockerRuntime(Runtime):
     @property
     def reachable_from_host_locally(self) -> bool:
         return self.config.network_access
+
+    @property
+    def interception_host(self) -> str | None:
+        return self._interception_host
 
     @property
     def network_policy(self) -> NetworkPolicy:
@@ -134,6 +156,7 @@ class DockerRuntime(Runtime):
         if gpu_count:
             limits += ["--gpus", str(gpu_count)]
         if self.network_policy.restricted:
+            self._interception_host = await docker_interception_host()
             self._setup_network = f"{self.name}-setup"
             await docker_checked(
                 "network",
@@ -218,15 +241,21 @@ class DockerRuntime(Runtime):
             ):
                 raise SandboxError(f"invalid required network route {url!r}")
             authority = f"{host}:{port}" if port is not None else host
+            upstream_host = (
+                "host.docker.internal" if host in {"127.0.0.1", "localhost"} else host
+            )
+            upstream_authority = (
+                f"{upstream_host}:{port}" if port is not None else upstream_host
+            )
             relay_port = _EGRESS_PORT + offset
             parsed_routes[name] = parsed, relay_port
             locations = (
-                f"location / {{ proxy_pass {parsed.scheme}://{authority}; }}"
+                f"location / {{ proxy_pass {parsed.scheme}://{upstream_authority}; }}"
                 if path == "/"
                 else f"""
-        location = {json.dumps(path)} {{ proxy_pass {parsed.scheme}://{authority}; }}
+        location = {json.dumps(path)} {{ proxy_pass {parsed.scheme}://{upstream_authority}; }}
         location ^~ {json.dumps(f"{path.rstrip('/')}/")} {{
-            proxy_pass {parsed.scheme}://{authority};
+            proxy_pass {parsed.scheme}://{upstream_authority};
         }}
         location / {{ return 403; }}"""
             )
@@ -285,6 +314,8 @@ http {{
             self._egress,
             "--network",
             self._setup_network,
+            "--add-host",
+            f"host.docker.internal:{self._interception_host or 'host-gateway'}",
             "--label",
             f"verifiers.runtime={self.name}",
             "--user",

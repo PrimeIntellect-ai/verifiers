@@ -23,11 +23,13 @@ from verifiers.v1.session import RolloutLimits
 from verifiers.v1.retries import RetryConfig
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
+    DockerConfig,
     RuntimeConfig,
     SubprocessConfig,
     runtime_is_local,
     runtime_reaches_host_locally,
 )
+from verifiers.v1.runtimes.docker import docker_interception_host
 from verifiers.v1.task import Task, resolve_server_config
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.utils.generic import generic_type
@@ -372,8 +374,19 @@ class Environment:
         what keeps both eval runners (in-process and env-server) on one serving path. Build
         episodes inside this context; the resources are torn down on exit."""
         async with self.shared_tools() as shared:
+            tunneled = self._requires_tunnel(shared)
+            runtime = self.harness.config.runtime
+            extra_host = (
+                await docker_interception_host()
+                if isinstance(runtime, DockerConfig)
+                and not runtime.network_access
+                and not tunneled
+                else None
+            )
             interception = make_interception(
-                self.config.interception, requires_tunnel=self._requires_tunnel(shared)
+                self.config.interception,
+                requires_tunnel=tunneled,
+                extra_host=extra_host,
             )
             async with interception:
                 self._shared_tools = shared
@@ -403,7 +416,7 @@ class Environment:
             for server_cls in server_classes
         ]
         return requires_tunnel(
-            runtime_reaches_host_locally(self.harness.config.runtime),
+            runtime_is_local(self.harness.config.runtime),
             configs,
             shared.values(),
         )

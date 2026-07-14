@@ -98,17 +98,14 @@ class InterceptionServerConfig(BaseInterceptionConfig):
 
 
 class InterceptionServer(Interception):
-    """A server that proxies model calls for one or more rollouts — and is itself the
-    single-server `Interception` (the pools compose several of these). With
-    `requires_tunnel` (some consumer is off the host network) it mints its configured
-    tunnel; on `start` it then binds where the tunnel says (`bind_host`/`bind_port`) and
-    sets `base_url` — the one URL every consumer reaches it at — to the tunnel's public
-    URL. Without, every consumer is on the host network: it binds loopback, tunnel-free."""
+    """A model proxy for one or more rollouts, optionally exposed through a tunnel."""
 
     def __init__(
         self,
         config: InterceptionServerConfig | None = None,
         requires_tunnel: bool = False,
+        *,
+        extra_host: str | None = None,
     ) -> None:
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
@@ -116,7 +113,7 @@ class InterceptionServer(Interception):
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
-        self.host = "127.0.0.1"
+        self.hosts = ("127.0.0.1",) + ((extra_host,) if extra_host else ())
         self.port = 0
         self.base_url = ""  # set by `start`
         self.runner: web.AppRunner | None = None
@@ -176,19 +173,19 @@ class InterceptionServer(Interception):
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         self.stack.push_async_callback(self.runner.cleanup)
-        # No tunnel → every consumer shares the host network: bind loopback on any ephemeral
-        # port. Otherwise the tunnel says where to bind for it to reach the port, and
-        # `expose` publishes it.
+        # Local Docker also listens on its bridge gateway while localhost stays canonical.
         if self.tunnel is None:
-            self.host, bind_port = "127.0.0.1", 0
+            hosts, bind_port = self.hosts, 0
         else:
-            self.host, bind_port = self.tunnel.bind_host, self.tunnel.bind_port
-        site = web.TCPSite(self.runner, self.host, bind_port)
+            hosts, bind_port = (self.tunnel.bind_host,), self.tunnel.bind_port
+        site = web.TCPSite(self.runner, hosts[0], bind_port)
         await site.start()
         self.port = site._server.sockets[0].getsockname()[1]  # actual bound port
-        logger.info("interception up: url=http://%s:%d", self.host, self.port)
+        for host in hosts[1:]:
+            await web.TCPSite(self.runner, host, self.port).start()
+        logger.info("interception up: hosts=%s port=%d", hosts, self.port)
         self.stack.callback(
-            logger.info, "interception down: url=http://%s:%d", self.host, self.port
+            logger.info, "interception down: hosts=%s port=%d", hosts, self.port
         )
         if self.tunnel is None:
             self.base_url = f"http://127.0.0.1:{self.port}"

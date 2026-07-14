@@ -142,6 +142,11 @@ class Runtime(ABC):
         return self.is_local
 
     @property
+    def interception_host(self) -> str | None:
+        """Additional host address where local interception must listen."""
+        return None
+
+    @property
     def network_policy(self) -> NetworkPolicy:
         """Egress policy applied at the trusted setup-to-execution boundary."""
         return NetworkPolicy()
