@@ -70,7 +70,7 @@ class OpenEnvConfig(vf.TasksetConfig):
             and launch_options & self.model_dump(exclude_defaults=True).keys()
         ):
             raise ValueError("`base_url` cannot be combined with local launch options")
-        if self.use_docker and self.task.user.colocated:
+        if not self.base_url and self.use_docker and self.task.user.colocated:
             raise ValueError("OpenEnv Docker requires its own user runtime")
 
         runtime = self.task.user.runtime
