@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = ["openai", "mcp"]
 # ///
 """The interception endpoint and secret arrive through argv rather than the environment."""
@@ -104,9 +104,13 @@ async def main() -> None:
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
-        tools, dispatch = (
-            await connect_mcp(stack, config) if config.get("mcpServers") else ([], {})
-        )
+        # asyncio.timeout, not wait_for: the MCP/httpx cancel scopes entered onto
+        # `stack` must be exited by this task, not a wait_for-spawned child task.
+        if config.get("mcpServers"):
+            async with asyncio.timeout(60):
+                tools, dispatch = await connect_mcp(stack, config)
+        else:
+            tools, dispatch = [], {}
         messages = (
             [{"role": "system", "content": args.system_prompt}]
             if args.system_prompt
