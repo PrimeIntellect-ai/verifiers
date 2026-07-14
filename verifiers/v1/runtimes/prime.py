@@ -138,7 +138,7 @@ class PrimeRuntime(Runtime):
             logger.info(
                 "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
-            await self._client.run_background_job(
+            await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
         except (
