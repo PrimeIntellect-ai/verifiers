@@ -69,6 +69,14 @@ def main(argv: list[str] | None = None) -> None:
             "--system-prompt-path overrides native v1 task prompts and is not supported "
             "for legacy (v0) evals"
         )
+    if (
+        config.system_prompt_path is not None
+        and not config.system_prompt_path.is_file()
+    ):
+        raise SystemExit(
+            f"--system-prompt-path {config.system_prompt_path} does not exist or is "
+            "not a file; it must hold the system prompt to override every task with"
+        )
     if config.dry_run:  # resolved + validated; write it to the output dir and exit
         setup_logging("DEBUG" if config.verbose else "INFO")
         logger.info("wrote config to %s", write_config(config, output_path(config)))
