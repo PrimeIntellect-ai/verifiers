@@ -1,8 +1,10 @@
 """Process lifecycle utilities."""
 
+import contextlib
 import logging
 import os
 import signal
+import subprocess
 import threading
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
@@ -81,6 +83,65 @@ def terminate_processes(
         t.start()
     for t in threads:
         t.join()
+
+
+def _session_processes(session: int) -> set[int]:
+    """Return the current members of a POSIX session."""
+    try:
+        listing = subprocess.run(
+            ["ps", "-A", "-o", "pid=,sid="],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
+        return {
+            pid
+            for line in listing.splitlines()
+            for pid, sid in [map(int, line.split())]
+            if sid == session
+        }
+    except (OSError, subprocess.SubprocessError, ValueError):
+        logger.warning("Could not read POSIX session %d", session)
+        return set()
+
+
+def kill_process_session(process: BaseProcess, timeout: float = 10.0) -> None:
+    """Kill a worker-owned POSIX session, including its separate process groups.
+
+    Pool workers are session leaders, and framework subprocess runtimes create their own
+    process groups inside that session.  Session membership therefore survives worker
+    exit and does not rely on a stale parent-PID snapshot.  Members are stopped until the
+    session is stable, preventing new forks between discovery and ``SIGKILL``.
+
+    Call this only after giving the process a chance to terminate gracefully.  It is a
+    POSIX helper; if the process did not become its own session leader, only its PID is
+    killed so an unrelated caller session is never targeted.
+    """
+    root = process.pid
+    assert root is not None
+    # The caller waits on the process sentinel without joining first.  An exited worker
+    # therefore remains a zombie and keeps its PID/SID reserved until this cleanup joins it.
+    members = _session_processes(root)
+    if root not in members:
+        with contextlib.suppress(Exception):
+            process.kill()
+        process.join(timeout=timeout)
+        return
+
+    while members:
+        for pid in members:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGSTOP)
+        discovered = _session_processes(root)
+        if discovered <= members:
+            break
+        members.update(discovered)
+
+    for pid in members:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGKILL)
+    process.join(timeout=timeout)
 
 
 def use_threading_tqdm_lock() -> None:
