@@ -7,6 +7,7 @@
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -130,8 +131,24 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
 
 def run_bash(command: str) -> str:
     try:
+        # The harness bootstraps itself in a uv-managed venv (VIRTUAL_ENV set, its bin prepended
+        # to PATH). Don't leak that bootstrap env into the agent's shell — otherwise `python`/
+        # `python3` resolve to the harness venv (openai/mcp deps, no project deps) instead of the
+        # container's real interpreter. Strip it so the agent sees the runtime's actual default
+        # env (extends the existing "agent bash doesn't inherit harness-private state" intent from
+        # secrets to the bootstrap venv).
+        env = dict(os.environ)
+        venv = env.pop("VIRTUAL_ENV", None)
+        if venv:
+            env["PATH"] = ":".join(
+                p for p in env.get("PATH", "").split(":") if p and p != f"{venv}/bin"
+            )
         result = subprocess.run(
-            ["bash", "-c", command], capture_output=True, text=True, timeout=3600
+            ["bash", "-c", command],
+            capture_output=True,
+            text=True,
+            timeout=3600,
+            env=env,
         )
         return result.stdout + result.stderr
     except Exception as e:
