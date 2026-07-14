@@ -125,13 +125,15 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     # build, silently running the server against a released (older) API. Pretend the
     # local version so the floor is satisfied by the build we uploaded.
     vf_version = importlib.metadata.version("verifiers")
+    extras = ",".join(type(server).EXTRAS)
     setup = (
         f"{_ENSURE_UV}; set -e; "
         f'for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
         f"uv venv {venv} && "
         f"SETUPTOOLS_SCM_PRETEND_VERSION={shlex.quote(vf_version)} "
         f"uv pip install --python {venv} {root}/{shlex.quote(vf.name)} && "
-        f"uv pip install --python {venv} {root}/{shlex.quote(env.name)}"
+        f"uv pip install --python {venv} "
+        f"{shlex.quote(f'{root}/{env.name}' + (f'[{extras}]' if extras else ''))}"
     )
     result = await runtime.run(["sh", "-c", setup], {})
     if result.exit_code != 0:
