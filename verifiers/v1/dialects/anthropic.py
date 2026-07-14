@@ -246,6 +246,7 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     routes = ("/v1/messages",)
     aux_routes = ("/v1/messages/count_tokens",)
     upstream_path = "/v1/messages"
+    strip_base_suffix = "/v1"
     response_type = AnthropicMessage
 
     def auth_headers(self, api_key: str) -> dict[str, str]:

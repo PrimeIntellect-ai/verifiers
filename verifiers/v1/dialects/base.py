@@ -133,6 +133,8 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     upstream_path: ClassVar[str]
     """The provider endpoint the proxy forwards to for this format (e.g. `/chat/completions`)."""
 
+    strip_base_suffix: ClassVar[str] = ""  # removed before adding upstream_path
+
     response_type: type[RespT]
     """The native response model — used to validate the provider's raw JSON before parsing."""
 
