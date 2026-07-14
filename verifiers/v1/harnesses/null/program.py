@@ -104,12 +104,8 @@ async def main() -> None:
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     async with AsyncExitStack() as stack:
-        # Bounded: the streamable-HTTP handshake can wedge (an intermittent mcp-SDK
-        # race), and an unbounded initialize would silently eat the whole rollout
-        # budget as a 0-turn harness_timeout. Failing loudly makes it a classified,
-        # retryable program error instead. Use `asyncio.timeout` (same task) — not
-        # `wait_for` — so MCP/httpx cancel scopes entered onto `stack` are exited
-        # by this task, not a child task.
+        # asyncio.timeout, not wait_for: the MCP/httpx cancel scopes entered onto
+        # `stack` must be exited by this task, not a wait_for-spawned child task.
         if config.get("mcpServers"):
             async with asyncio.timeout(60):
                 tools, dispatch = await connect_mcp(stack, config)
