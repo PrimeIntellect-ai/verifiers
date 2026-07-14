@@ -38,10 +38,8 @@ class _GEPALog:
 
 def run_gepa(env: Environment, config: GEPAConfig) -> GEPAResult:
     logger.info("gepa config:\n%s", config.model_dump_json(indent=2))
-    all_tasks = env.taskset.load()
-    train_tasks, val_tasks = split_tasks(
-        all_tasks, config.num_train, config.num_val, config.shuffle
-    )
+    all_tasks = env.taskset.select(config.num_train + config.num_val, config.shuffle)
+    train_tasks, val_tasks = split_tasks(all_tasks, config.num_train, config.num_val)
     selected_tasks = [*train_tasks, *val_tasks]
     reject_group_reward_tasksets(
         selected_tasks

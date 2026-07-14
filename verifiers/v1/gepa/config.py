@@ -42,7 +42,7 @@ class GEPAConfig(EnvConfig):
     """Tasks held out to score each candidate system prompt for the pareto frontier."""
     shuffle: bool = Field(True, validation_alias=AliasChoices("shuffle", "s"))
     """Shuffle tasks before splitting into train/val — v1 tasksets have no generic train/val
-    split, so GEPA carves one out of `taskset.load()` the way `run_eval` samples (fixed
+    split, so GEPA carves one out of `Taskset.select` the way `run_eval` samples (fixed
     seed, so the split is reproducible across runs)."""
     seed: int = 0
     """Seed for GEPA's optimizer (candidate selection / minibatch sampling). Task shuffling

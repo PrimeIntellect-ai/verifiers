@@ -1,14 +1,13 @@
 """Train/val split and upfront validation for a GEPA run.
 
 v1 tasksets have no generic train/val split concept (`TasksetConfig` has no `split` field;
-individual tasksets define ad hoc ones inconsistently), so GEPA carves one out of
-`taskset.load()` itself: the shared fixed-seed shuffle (`verifiers.v1.utils.sampling.sample`,
-reproducible across runs like every other entrypoint), then two disjoint slices.
+individual tasksets define ad hoc ones inconsistently), so GEPA carves one out of the tasks
+`Taskset.select` hands it (the shared fixed-seed shuffle, reproducible across runs like every
+other entrypoint): two disjoint slices.
 """
 
 from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.task import Task
-from verifiers.v1.utils.sampling import sample
 
 
 def reject_group_reward_tasksets(tasks: list[Task]) -> None:
@@ -26,19 +25,16 @@ def reject_group_reward_tasksets(tasks: list[Task]) -> None:
 
 
 def split_tasks(
-    tasks: list[Task], num_train: int, num_val: int, shuffle: bool
+    tasks: list[Task], num_train: int, num_val: int
 ) -> tuple[list[Task], list[Task]]:
-    """The taskset's tasks, split into disjoint `(train, val)` slices (`train` feeds reflection
+    """The selected tasks, split into disjoint `(train, val)` slices (`train` feeds reflection
     minibatches; `val` scores each candidate for the pareto frontier)."""
-    pool = sample(
-        tasks, shuffle
-    )  # shared fixed-seed shuffle; GEPA does its own slicing below
-    if num_train + num_val > len(pool):
+    if num_train + num_val > len(tasks):
         raise ValueError(
             f"requested {num_train} train + {num_val} val tasks, but the taskset only "
-            f"loaded {len(pool)}"
+            f"loaded {len(tasks)}"
         )
-    return pool[:num_train], pool[num_train : num_train + num_val]
+    return tasks[:num_train], tasks[num_train : num_train + num_val]
 
 
 def resolve_gepa_seed_prompt(tasks: list[Task], initial_prompt: str | None) -> str:

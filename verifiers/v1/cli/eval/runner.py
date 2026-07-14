@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     logger.info("eval config:\n%s", config.model_dump_json(indent=2))
     client = resolve_client(config.client)
-    tasks = sample(env.taskset.load(), config.shuffle, config.num_tasks)
+    tasks = env.taskset.select(config.num_tasks, config.shuffle)
     ctx = ModelContext(client=client, model=config.model, sampling=config.sampling)
     # One episode of `num_rollouts` rollouts per task; the shared semaphore bounds total
     # concurrent rollouts (across episodes), so group rewards still see their whole episode.
@@ -162,7 +162,20 @@ async def run_eval_server(config: EvalConfig) -> list[Trace]:
         await client.wait_for_server_startup(timeout=600)
         info = await client.info()
         group_scored = info.requires_group_scoring
-        idxs = sample(list(range(info.num_tasks)), config.shuffle, config.num_tasks)
+        if info.num_tasks is None:  # infinite taskset - the run must be bounded
+            if config.num_tasks is None:
+                raise ValueError(
+                    f"{config.env_id} is infinite - bound the run with -n/--num-tasks"
+                )
+            if config.shuffle:
+                logger.warning(
+                    "shuffle is a no-op on an infinite taskset - "
+                    "taking the first %d generated tasks",
+                    config.num_tasks,
+                )
+            idxs = list(range(config.num_tasks))
+        else:
+            idxs = sample(list(range(info.num_tasks)), config.shuffle, config.num_tasks)
         out = output_path(config)
         finished: list[Trace] = []
         if config.resume is not None:

@@ -26,7 +26,6 @@ from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, TraceTask
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.logging import setup_logging
-from verifiers.v1.utils.sampling import sample
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +197,7 @@ async def _validate_task(task: Task, config: ValidateConfig) -> ResultRow:
 
 async def run_validate(config: ValidateConfig) -> list[dict]:
     taskset = vf.load_taskset(config.taskset)
-    tasks = sample(taskset.load(), config.shuffle, config.num_tasks)
+    tasks = taskset.select(config.num_tasks, config.shuffle)
     if isinstance(config.runtime, vf.SubprocessConfig) and any(
         type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):
