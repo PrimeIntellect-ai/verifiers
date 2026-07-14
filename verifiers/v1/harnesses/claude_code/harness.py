@@ -29,9 +29,10 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
     SUPPORTS_MESSAGE_PROMPT = False
 
     async def setup(self, runtime: Runtime) -> None:
-        home = CLAUDE_HOME.format(version=self.config.version)
-        binary = CLAUDE_BIN.format(version=self.config.version)
-        script = INSTALL.format(version=self.config.version, home=home)
+        version = shlex.quote(self.config.version)
+        home = CLAUDE_HOME.format(version=version)
+        binary = CLAUDE_BIN.format(version=version)
+        script = INSTALL.format(version=version, home=home)
         # Cache the pinned binary across local rollouts; Linux has flock, macOS has lockf.
         install = shlex.quote(f"[ -x {binary} ] || ({script})")
         guarded = (
@@ -78,11 +79,17 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         if system_prompt:
             argv += ["--append-system-prompt", system_prompt]
         if self.config.disabled_tools:
-            argv += ["--disallowedTools", ",".join(self.config.disabled_tools)]
+            argv += ["--disallowedTools", *self.config.disabled_tools]
         mcp = {
             "mcpServers": {
                 name: {"type": "http", "url": url} for name, url in mcp_urls.items()
             }
         }
-        argv += ["--mcp-config", json.dumps(mcp), "--strict-mcp-config", instruction]
+        argv += [
+            "--mcp-config",
+            json.dumps(mcp),
+            "--strict-mcp-config",
+            "--",
+            instruction or "",
+        ]
         return await runtime.run_program(argv, env)
