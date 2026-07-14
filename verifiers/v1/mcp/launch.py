@@ -403,7 +403,11 @@ async def serve_tools(
                 urls[name] = server.url
                 logger.info("tool server '%s' (shared, external): %s", name, server.url)
                 continue
-            url = harness_runtime.host_url(server.url) if server.local else server.url
+            url = (
+                harness_runtime.host_url(server.url)
+                if server.reaches_host
+                else server.url
+            )
             urls[name] = _shared_url_for_rollout(url, state_base, state_secret)
             # The tagged URL contains the bearer secret; log only the untagged base URL.
             logger.info("tool server '%s' (shared): %s", name, server.url)
