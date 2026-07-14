@@ -8,7 +8,7 @@ class AlphabetSortState(vf.State):
 class AlphabetSortUser(vf.User[vf.UserConfig, AlphabetSortState]):
     """Drives the whole conversation by replaying the episode's pre-generated user turns: each
     `respond` delivers the next queued turn as a user message, until the queue is exhausted (then it
-    flags `user_finished`, which the taskset's `@vf.stop` ends the trajectory on). The task carries no
+    flags `user_finished`, which the task's `@vf.stop` ends the trajectory on). The task carries no
     prompt, so the first turn (the opening `respond("")`) delivers the initial sort prompt; the rest
     are the follow-ups."""
 

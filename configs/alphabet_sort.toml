@@ -11,4 +11,4 @@ min_turns = 2
 max_turns = 2
 
 [harness]
-id = "default"
+id = "null"

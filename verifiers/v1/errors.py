@@ -3,14 +3,14 @@
 Four mechanisms, each in one place:
 
 1. Vocabulary (this module): `RolloutError` and the flat boundary types below. Each names the
-   boundary a failure crossed — provider, harness, toolset, user, sandbox, taskset, or
+   boundary a failure crossed — provider, harness, toolset, user, sandbox, task, or
    interception — so a recorded `trace.error.type` says where the rollout broke.
 2. Classification (`boundary`): the one helper that runs a framework→code boundary and attributes
-   any escaping error to that boundary's type. Extension code (taskset hooks, harness subclasses)
+   any escaping error to that boundary's type. Extension code (task hooks, harness subclasses)
    raises plain Python errors — it never constructs a `vf` error type; `boundary` classifies them.
    Infra that fails raises its type at the source (`runtimes` → `SandboxError`, `clients` →
    `ProviderError`, tunnels → `TunnelError`); an already-typed `RolloutError` passes through unchanged.
-3. Surfacing (`interception.RolloutSession.error`): a model/tool/user call fails behind the harness
+3. Surfacing (`session.RolloutSession.error`): a model/tool/user call fails behind the harness
    subprocess and comes back as HTTP, so the interception server stashes the real error there and
    the rollout re-raises it once the harness returns — not a secondary `HarnessError`.
 4. Capture (`Rollout.run`, mirrored by the env-server): the one place that records a failure (typed
@@ -63,8 +63,8 @@ class SandboxError(RolloutError):
     """A runtime/sandbox operation failed (provisioning, exec, or file I/O)."""
 
 
-class TasksetError(RolloutError):
-    """Taskset-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`/`@group_reward`."""
+class TaskError(RolloutError):
+    """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`/`@group_reward`."""
 
 
 class InterceptionError(RolloutError):

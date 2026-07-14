@@ -1,8 +1,4 @@
-"""verifiers v1 — a clean-slate, heavily-typed reimplementation.
-
-Public surface is re-exported here so environments can `import verifiers.v1 as vf`
-and reach everything they need. Built up milestone by milestone.
-"""
+"""Public v1 API."""
 
 import logging as _logging
 
@@ -12,7 +8,7 @@ from verifiers.v1.clients import (
     BaseClientConfig,
     Client,
     ClientConfig,
-    RolloutContext,
+    ModelContext,
     resolve_client,
 )
 from verifiers.v1.decorators import group_reward, metric, reward, stop, tool
@@ -32,21 +28,47 @@ from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
     SandboxError,
-    TasksetError,
+    TaskError,
     ToolsetError,
     TunnelError,
     UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.judge import (
+    Judge,
+    JudgeConfig,
+    JudgeResponse,
+    Judges,
+    JudgeSamplingConfig,
+    JudgeView,
+)
+from verifiers.v1.judges import (
+    ReferenceJudge,
+    ReferenceJudgeConfig,
+    Criterion,
+    RubricJudge,
+    RubricJudgeConfig,
+)
 from verifiers.v1.loaders import (
     default_harness_id,
     harness_config_type,
     import_harness,
+    import_judge,
     import_taskset,
+    judge_config_type,
     load_harness,
+    load_judge,
     load_taskset,
     task_type,
     taskset_config_type,
+)
+from verifiers.v1.scoring import (
+    compare_stdout_results as compare_stdout_results,
+    extract_boxed_answer as extract_boxed_answer,
+    parse_judge_choice as parse_judge_choice,
+    parse_pytest_outcomes as parse_pytest_outcomes,
+    read_answer_file_or_last_reply as read_answer_file_or_last_reply,
+    verify_boxed_math_answer as verify_boxed_math_answer,
 )
 from verifiers.v1.retries import RetryConfig, RolloutRetryConfig
 from verifiers.v1.rollout import Rollout
@@ -56,13 +78,22 @@ from verifiers.v1.runtimes import (
     ProgramResult,
     Runtime,
     RuntimeConfig,
+    RuntimeInfo,
     SubprocessConfig,
 )
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import Task, TaskResources, TaskTimeout, WireTask
+from verifiers.v1.task import (
+    Task,
+    TaskConfig,
+    TaskData,
+    TaskResources,
+    TaskTimeout,
+    WireTaskData,
+)
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.mcp import (
     Toolset,
+    SharedToolsetConfig,
     ToolsetConfig,
     User,
     UserConfig,
@@ -74,14 +105,16 @@ from verifiers.v1.trace import (
     TimeSpan,
     Timing,
     Trace,
+    TraceTask,
     WireTrace,
 )
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
-    EnvId,
+    ID,
     ImageUrlContentPart,
     ImageUrlSource,
+    KeptTokens,
     Message,
     MessageContent,
     Messages,
@@ -101,7 +134,7 @@ from verifiers.v1.types import (
 
 __all__ = [
     # types
-    "EnvId",
+    "ID",
     "AssistantMessage",
     "ContentPart",
     "ImageUrlContentPart",
@@ -122,16 +155,19 @@ __all__ = [
     "UserMessage",
     # task / trace / state
     "Task",
-    "WireTask",
+    "TaskData",
+    "WireTaskData",
     "TaskResources",
     "TaskTimeout",
     "Trace",
+    "TraceTask",
     "WireTrace",
     "State",
     "StateT",
     "MessageNode",
     "Branch",
     "TurnTokens",
+    "KeptTokens",
     "Timing",
     "TimeSpan",
     "Error",
@@ -148,7 +184,7 @@ __all__ = [
     "ToolsetError",
     "UserError",
     "SandboxError",
-    "TasksetError",
+    "TaskError",
     "InterceptionError",
     "TunnelError",
     # clients
@@ -158,13 +194,15 @@ __all__ = [
     "resolve_client",
     # taskset / harness / runtime / environment
     "Taskset",
+    "TaskConfig",
     "TasksetConfig",
     "BaseConfig",
     "Harness",
     "HarnessConfig",
-    "RolloutContext",
+    "ModelContext",
     "Runtime",
     "RuntimeConfig",
+    "RuntimeInfo",
     "ProgramResult",
     "SubprocessConfig",
     "DockerConfig",
@@ -183,14 +221,37 @@ __all__ = [
     # loaders
     "import_taskset",
     "import_harness",
+    "import_judge",
     "load_taskset",
     "load_harness",
+    "load_judge",
     "task_type",
     "taskset_config_type",
     "harness_config_type",
+    "judge_config_type",
     "default_harness_id",
+    # judge
+    "Judge",
+    "JudgeConfig",
+    "Judges",
+    "JudgeSamplingConfig",
+    "JudgeResponse",
+    "JudgeView",
+    "ReferenceJudge",
+    "ReferenceJudgeConfig",
+    "RubricJudge",
+    "RubricJudgeConfig",
+    "Criterion",
+    # scoring
+    "compare_stdout_results",
+    "extract_boxed_answer",
+    "parse_judge_choice",
+    "parse_pytest_outcomes",
+    "read_answer_file_or_last_reply",
+    "verify_boxed_math_answer",
     # mcp
     "Toolset",
+    "SharedToolsetConfig",
     "ToolsetConfig",
     # user simulator
     "User",

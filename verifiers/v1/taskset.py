@@ -1,164 +1,116 @@
-"""The taskset: produces typed tasks and owns scoring.
+"""The taskset: a thin loader that yields typed tasks.
 
-A `Taskset` is the data + judgement half of an environment. It yields typed
-`Task`s, may expose tools via `tools`, and defines rewards/metrics as
-decorated methods. All task framing lives in each task's user prompt (baked in by
-`load_tasks`); the harness drives control flow.
+A `Taskset` is the data half of an environment: config in, tasks out. `load()` — the one
+subclass hook — builds each row's `TaskData` and wraps it in the task type with the
+config's task-facing subtree:
 
-It is the single judgement authority, scored at two granularities (execution lives in
-the Rollout — per-rollout — and the Episode — group — which call these):
-  - `score` runs `@reward`/`@metric` over one trace (in its live runtime).
-  - `score_group` runs `@group_reward` over all the rollouts of one task at once —
-    pairwise/preference rewards that compare samples.
+    def load(self) -> Iterable[MyTask]:
+        return [MyTask(MyData(idx=i, ...), self.config.task) for i in ...]
 
-For a heterogeneous taskset (different verification per task), have a single
-`@reward` branch on a typed task field.
+`load` may also be a generator — yielding each task as it's built, possibly forever (a
+procedural taskset; declare `INFINITE = True`). Runs materialize the tasks they need
+through `select`, which pulls only that many off a generator; the env server instead
+pulls `load` on demand, task by task.
+
+Load-time knobs (dataset, split, seed) live on the taskset config; the task-facing knobs
+under its `task` subtree (`TasksetConfig.task`, a `TaskConfig`, everything under
+`--taskset.task.*`); a worker-scoped shared tool server is declared on `tools` with its knobs
+at the taskset level (`--taskset.tools.*`). All per-task behavior — runtime prep, tools,
+user simulation, `@reward`/`@metric` scoring — lives on the `Task` (see
+`verifiers.v1.task`).
+
+The class stays generic over its task and config types (`Taskset[TaskT, TasksetConfigT]`)
+so the loaders can read them: `taskset_config_type` narrows `--taskset.*` CLI/toml flags
+to the real config, and `task_type` types the wire trace — one task type per taskset, so
+replay can rebuild every saved row as the declared type's data and re-wrap it.
 """
 
-import asyncio
-from collections.abc import Mapping
-from typing import ClassVar, Generic, TypeVar
+from __future__ import annotations
 
+import itertools
+import logging
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, ClassVar, Generic
+
+from pydantic import SerializeAsAny
 from pydantic_config import BaseConfig
+from typing_extensions import TypeVar
 
-from verifiers.v1.decorators import discover_decorated, invoke
-from verifiers.v1.errors import TasksetError, boundary
-from verifiers.v1.types import EnvId
+from verifiers.v1.task import TaskConfig, TaskT, resolve_server_config
+from verifiers.v1.types import ID
 from verifiers.v1.utils.install import env_name
-from verifiers.v1.runtimes import Runtime
-from verifiers.v1.mcp import Toolset, User
-from verifiers.v1.state import StateT
-from verifiers.v1.task import TaskT
-from verifiers.v1.trace import Trace
+from verifiers.v1.utils.sampling import sample
+
+if TYPE_CHECKING:
+    from verifiers.v1.mcp import Toolset
+
+logger = logging.getLogger(__name__)
 
 
 class TasksetConfig(BaseConfig):
-    """Base taskset config. Subclass to add task-generation knobs."""
-
-    id: EnvId = ""
-    """The taskset id, which selects this taskset: a local package, or an
-    `org/name[@version]` package installed on demand from the Environments Hub (see
-    `EnvId`). Set via `--taskset.id`."""
+    id: ID = ""
+    """Local package or Hub `org/name[@version]`, set with `--taskset.id`."""
+    task: SerializeAsAny[TaskConfig] = TaskConfig()
+    """Config passed to each task, under `--taskset.task.*`."""
 
     @property
     def name(self) -> str:
-        """The taskset's package name (the id with any org / version stripped)."""
         return env_name(self.id)
 
 
-ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
+TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetConfig)
 
 
-class Taskset(Generic[TaskT, ConfigT, StateT]):
-    """Generic over its task, config, and (optional) per-rollout `State` types, so `self.config`,
-    `load_tasks`, and the trace's `state` are fully typed. `StateT` defaults to the base `State`, so a
-    taskset that doesn't customize state writes just `Taskset[MyTask, MyConfig]`. Subclass: implement
-    `load_tasks`, add @reward/@metric."""
+class Taskset(Generic[TaskT, TasksetConfigT]):
+    INFINITE: ClassVar[bool] = False
+    """Whether `load` yields tasks forever (a procedural generator). Infinity is inherent
+    to the taskset, not a config knob: consumers bound a run with `select(num_tasks)`
+    (`-n` on the CLI), and shuffle is impossible."""
 
-    NEEDS_CONTAINER: ClassVar[bool] = False
-    """Whether this taskset only runs in a container runtime (docker/prime). When True the
-    Environment refuses the subprocess runtime — for tasksets whose work only makes sense
-    inside a per-task image (e.g. a SWE repo sandbox)."""
+    tools: ClassVar[tuple[type[Toolset], ...]] = ()
+    """Tool server classes shared by one environment worker's rollouts."""
 
-    def __init__(self, config: ConfigT) -> None:
+    def __init__(self, config: TasksetConfigT) -> None:
         self.config = config
 
-    def load_tasks(self) -> list[TaskT]:
+    def load(self) -> Iterable[TaskT]:
         raise NotImplementedError
 
-    def tools(self, task: TaskT) -> list[Toolset]:
-        """Tool servers exposing this task's tools to the model — `vf.Toolset`s (classes with
-        `@vf.tool` methods), each carrying its `config` (placement / runtime; a remote `url`
-        for an already-running server). Empty by default; override to give a task tools."""
-        return []
+    def select(
+        self, num_tasks: int | None = None, shuffle: bool = False
+    ) -> list[TaskT]:
+        """Materialize the tasks a run needs: the first `num_tasks` off `load` (all of
+        them when `None`), pulled lazily — a generator `load` only builds what the run
+        takes. `shuffle` samples the subset from the whole taskset instead (the shared
+        fixed-seed shuffle, `verifiers.v1.utils.sampling`), which materializes everything
+        first; on an `INFINITE` taskset it's a no-op (warned) — the first `num_tasks`
+        generated tasks are already an arbitrary sample."""
+        if type(self).INFINITE:
+            if num_tasks is None:
+                raise ValueError(
+                    f"{type(self).__name__} is infinite - select a bounded subset "
+                    "with num_tasks (-n on the CLI)"
+                )
+            if shuffle:
+                logger.warning(
+                    "shuffle is a no-op on an infinite taskset - "
+                    "taking the first %d generated tasks",
+                    num_tasks,
+                )
+            return list(itertools.islice(self.load(), num_tasks))
+        if shuffle:
+            return sample(self.load(), shuffle=True, limit=num_tasks)
+        return list(itertools.islice(self.load(), num_tasks))
 
-    def user(self, task: TaskT) -> User | None:
-        """A user simulator for this task — structurally a tool server (an MCP server
-        with a runtime), but driven by the framework, not exposed to the model. After
-        each model turn the interception server calls its `respond` tool and injects the
-        reply as a user turn. None by default; override to make a task a simulated
-        multi-turn conversation (e.g. a TextArena game)."""
-        return None
+    def server_config(self, server_cls: type) -> BaseConfig:
+        """The config a `tools` entry is built with, resolved off `self.config` (the
+        taskset config; see `resolve_server_config`). Override to pair explicitly."""
+        return resolve_server_config(
+            type(self).__name__,
+            self.config,
+            server_cls,
+            sole=len(set(type(self).tools)) == 1,
+        )
 
-    async def setup(self, task: TaskT, runtime: Runtime) -> None:
-        """Prepare the live runtime for this task, after `runtime.start()` and before the
-        harness runs. No-op by default; override to run per-task setup in the runtime (e.g.
-        a SWE row checking out its base commit). Errors propagate and fail the rollout."""
-        return None
-
-    async def finalize(self, task: TaskT, trace: Trace, runtime: Runtime) -> None:
-        """Post-process the live runtime after the harness finishes, before scoring. No-op
-        by default; override to do per-rollout work the rewards depend on — apply/commit the
-        agent's diff, run a build, snapshot state, scrape runtime artifacts into `trace.info`.
-        Runs while the runtime is still live (after generation, before `@reward`/`@metric`); the
-        symmetric counterpart to `setup`. Errors propagate and fail the rollout."""
-        return None
-
-    async def validate(self, task: TaskT, runtime: Runtime) -> bool:
-        """Check a task is well-formed and solvable, independent of any model rollout — run
-        by the `validate` entrypoint, never during a rollout. Valid (True) by default;
-        override to assert the ground truth holds (e.g. a SWE row applying its gold patch and
-        running its tests, or gsm8k confirming the verifier accepts the gold answer). Runs in
-        a live runtime started for the task with `setup` already applied (a pure-data check
-        can ignore it). Return False — or raise — to mark the task invalid; the entrypoint
-        records the reason (the raised error's message)."""
-        return True
-
-    async def score(self, trace: Trace, runtime: Runtime) -> None:
-        """Score one rollout: run all `@metric` then `@reward` over its trace,
-        concurrently within each phase. Each metric is recorded in `trace.metrics`
-        (a number, or a mapping merged in); each reward (weighted — likewise a number or a
-        mapping merged in) in `trace.rewards`, which `trace.reward` sums. Signals declare
-        what they need — `task`, `trace`,
-        `runtime` — so a reward is either a pure function of the trace or runs
-        read/write/exec in that (still-live) runtime, e.g. a verifier script."""
-        available = {"task": trace.task, "trace": trace, "runtime": runtime}
-        async with boundary(TasksetError, f"taskset {type(self).__name__} scoring"):
-            metrics = discover_decorated(self, "metric")
-            metric_results = (
-                [await invoke(fn, available) for fn in metrics]
-                if len(metrics) < 2
-                else await asyncio.gather(*(invoke(fn, available) for fn in metrics))
-            )
-            for fn, result in zip(metrics, metric_results):
-                if isinstance(result, Mapping):
-                    trace.record_metrics(result)
-                else:
-                    trace.record_metric(fn.__name__, result)
-            rewards = discover_decorated(self, "reward")
-            reward_results = (
-                [await invoke(fn, available) for fn in rewards]
-                if len(rewards) < 2
-                else await asyncio.gather(*(invoke(fn, available) for fn in rewards))
-            )
-            for fn, result in zip(rewards, reward_results):
-                weight = getattr(fn, "_vf_weight", 1.0)
-                if isinstance(result, Mapping):
-                    for name, value in result.items():
-                        trace.record_reward(name, value, weight)
-                else:
-                    trace.record_reward(fn.__name__, result, weight)
-
-    async def score_group(self, traces: list[Trace]) -> None:
-        """Score a group of rollouts of one task: run every `@group_reward` over all
-        the traces at once (pairwise/preference rewards), each returning one score per
-        trace, aligned to `traces`. A group reward declares what it needs — `task` (the
-        shared task) and `traces` — and compares trace metadata (anything from the
-        runtime is recorded per rollout as a `@metric` first). Scores are weighted into
-        each trace's reward, alongside the per-rollout rewards. No-op without `@group_reward`s."""
-        rewards = discover_decorated(self, "group_reward")
-        if not rewards:
-            return
-        available = {"task": traces[0].task, "traces": traces}
-        async with boundary(
-            TasksetError, f"taskset {type(self).__name__} group scoring"
-        ):
-            reward_results = (
-                [await invoke(fn, available) for fn in rewards]
-                if len(rewards) < 2
-                else await asyncio.gather(*(invoke(fn, available) for fn in rewards))
-            )
-            for fn, scores in zip(rewards, reward_results):
-                weight = getattr(fn, "_vf_weight", 1.0)
-                for trace, score in zip(traces, scores):
-                    trace.record_reward(fn.__name__, score, weight)
+    def tool_servers(self) -> list[Toolset]:
+        return [cls(self.server_config(cls)) for cls in type(self).tools]

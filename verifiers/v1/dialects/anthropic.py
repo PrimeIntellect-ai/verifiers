@@ -1,17 +1,18 @@
 """The Anthropic Messages dialect (claude-code and friends).
 
 Request parsing maps Anthropic content blocks onto the typed messages; response parsing reads
-the content blocks of a `Message`. Relay-only: the eval client forwards the program's bytes to a
+the content blocks of a `Message`. Relay-only: the eval client forwards the program's native JSON to a
 `/v1/messages` endpoint (auth is `x-api-key`, not Bearer) and this dialect parses a copy for the
-trace. `count_tokens` is relayed verbatim (an `aux_route`), never recorded.
+trace. `count_tokens` is relayed as native JSON (an `aux_route`), never recorded.
 """
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 
 from anthropic.types import Message as AnthropicMessage
 
-from verifiers.v1.dialects.base import Dialect, iter_sse
+from verifiers.v1.dialects.base import Dialect, StreamParser, parse_sse_event
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -171,9 +172,77 @@ def response_from_wire(message: AnthropicMessage) -> Response:
     )
 
 
-class AnthropicDialect(Dialect[dict, AnthropicMessage]):
-    """The Anthropic Messages wire format."""
+@dataclass
+class AnthropicStreamParser(StreamParser):
+    """Incrementally assemble Anthropic message events without retaining SSE bytes."""
 
+    validate_response: Callable[[dict], AnthropicMessage]
+    message: dict = field(default_factory=dict)
+    blocks: dict[int, dict] = field(default_factory=dict)
+    block_parts: dict[int, dict[str, list[str]]] = field(default_factory=dict)
+    partial_json: dict[int, list[str]] = field(default_factory=dict)
+
+    def feed(self, raw: bytes) -> None:
+        event = parse_sse_event(raw)
+        if event is None:
+            return
+        kind = event.get("type")
+        if kind == "message_start":
+            self.message = event.get("message") or {}
+        elif kind == "content_block_start":
+            index = event["index"]
+            self.blocks[index] = dict(event.get("content_block") or {})
+            self.block_parts.pop(index, None)
+        elif kind == "content_block_delta":
+            index = event["index"]
+            block = self.blocks.setdefault(index, {"type": "text", "text": ""})
+            delta = event.get("delta") or {}
+            delta_type = delta.get("type")
+            if delta_type in (
+                "text_delta",
+                "thinking_delta",
+                "signature_delta",
+            ):
+                field_name = delta_type.removesuffix("_delta")
+                fields = self.block_parts.get(index)
+                if fields is None:
+                    fields = {}
+                    self.block_parts[index] = fields
+                parts = fields.get(field_name)
+                if parts is None:
+                    parts = [block.get(field_name, "")]
+                    fields[field_name] = parts
+                parts.append(delta.get(field_name, ""))
+            elif delta_type == "input_json_delta":
+                parts = self.partial_json.get(index)
+                if parts is None:
+                    parts = []
+                    self.partial_json[index] = parts
+                parts.append(delta.get("partial_json", ""))
+        elif kind == "message_delta":
+            self.message.update(
+                {
+                    key: value
+                    for key, value in (event.get("delta") or {}).items()
+                    if value is not None
+                }
+            )
+            self.message["usage"] = {
+                **(self.message.get("usage") or {}),
+                **(event.get("usage") or {}),
+            }
+
+    def finish(self) -> Response:
+        for index, fields in self.block_parts.items():
+            for field_name, parts in fields.items():
+                self.blocks[index][field_name] = "".join(parts)
+        for index, parts in self.partial_json.items():
+            self.blocks[index]["input"] = json.loads("".join(parts) or "{}")
+        self.message["content"] = [self.blocks[index] for index in sorted(self.blocks)]
+        return response_from_wire(self.validate_response(self.message))
+
+
+class AnthropicDialect(Dialect[dict, AnthropicMessage]):
     routes = ("/v1/messages",)
     aux_routes = ("/v1/messages/count_tokens",)
     upstream_path = "/v1/messages"
@@ -215,65 +284,11 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
             raw["usage"].pop("service_tier")
         return super().validate_response(raw)
 
-    def parse_stream(self, raw: bytes) -> Response:
-        """Assemble message_start / content_block_* / message_delta events into the complete
-        message, then parse it."""
-        message: dict = {}
-        blocks: dict[int, dict] = {}
-        block_parts: dict[int, dict[str, list[str]]] = {}
-        partial_json: dict[int, list[str]] = {}
-        for event in iter_sse(raw):
-            kind = event.get("type")
-            if kind == "message_start":
-                message = event.get("message") or {}
-            elif kind == "content_block_start":
-                index = event["index"]
-                blocks[index] = dict(event.get("content_block") or {})
-                block_parts.pop(index, None)
-            elif kind == "content_block_delta":
-                index = event["index"]
-                block = blocks.setdefault(index, {"type": "text", "text": ""})
-                delta = event.get("delta") or {}
-                delta_type = delta.get("type")
-                if delta_type in ("text_delta", "thinking_delta", "signature_delta"):
-                    field = delta_type.removesuffix("_delta")
-                    fields = block_parts.get(index)
-                    if fields is None:
-                        fields = {}
-                        block_parts[index] = fields
-                    parts = fields.get(field)
-                    if parts is None:
-                        parts = [block.get(field, "")]
-                        fields[field] = parts
-                    parts.append(delta.get(field, ""))
-                elif delta_type == "input_json_delta":
-                    parts = partial_json.get(index)
-                    if parts is None:
-                        parts = []
-                        partial_json[index] = parts
-                    parts.append(delta.get("partial_json", ""))
-            elif kind == "message_delta":
-                message.update(
-                    {
-                        k: v
-                        for k, v in (event.get("delta") or {}).items()
-                        if v is not None
-                    }
-                )
-                message["usage"] = {
-                    **(message.get("usage") or {}),
-                    **(event.get("usage") or {}),
-                }
-        for index, fields in block_parts.items():
-            for field, parts in fields.items():
-                blocks[index][field] = "".join(parts)
-        for index, parts in partial_json.items():
-            blocks[index]["input"] = json.loads("".join(parts) or "{}")
-        message["content"] = [blocks[i] for i in sorted(blocks)]
-        return response_from_wire(self.validate_response(message))
+    def stream_parser(self) -> StreamParser:
+        return AnthropicStreamParser(self.validate_response)
 
     def apply_overrides(self, body: dict, model: str, sampling: SamplingConfig) -> dict:
-        # Forward verbatim except the eval's model + sampling. `temperature`/`top_p` are
+        # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
         # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
         # the API, so the program's is kept unless the eval sets one.
         s = sampling.model_dump(exclude_none=True)

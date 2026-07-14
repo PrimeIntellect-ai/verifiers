@@ -10,8 +10,10 @@ for training.
 """
 
 import base64
+import itertools
 import random
 import re
+from collections.abc import Iterator
 from io import BytesIO
 
 from PIL import Image
@@ -82,36 +84,60 @@ def extract_codeword(text: str) -> str:
     )
 
 
-class ColorCodewordConfig(vf.TasksetConfig):
-    num_examples: int = 1000
-    """Number of synthetic episodes to generate."""
-    images_per_turn: int = Field(2, ge=1)
-    """Colored squares shown per turn."""
+class ColorCodewordTaskConfig(vf.TaskConfig):
     user: vf.UserConfig = vf.UserConfig()
 
 
-class ColorCodewordTask(vf.Task):
+class ColorCodewordConfig(vf.TasksetConfig):
+    images_per_turn: int = Field(2, ge=1)
+    """Colored squares shown per turn."""
+    task: ColorCodewordTaskConfig = ColorCodewordTaskConfig()
+
+
+class ColorCodewordTaskData(vf.TaskData):
     answer: str
     """The full expected codeword (one letter per square shown, in order)."""
     info: dict
     """The episode the user simulator replays: `colors_per_turn` and `max_turns`."""
 
 
-class ColorCodewordTaskset(
-    vf.Taskset[ColorCodewordTask, ColorCodewordConfig, ColorCodewordState]
+class ColorCodewordTask(
+    vf.Task[ColorCodewordTaskData, ColorCodewordState, ColorCodewordTaskConfig]
 ):
+    user = ColorCodewordUser
+
     @vf.stop
     async def user_finished(self, trace: vf.Trace) -> bool:
         return trace.state.user_finished
 
-    def load_tasks(self) -> list[ColorCodewordTask]:
+    @vf.reward(weight=1.0)
+    async def exact_match(self, trace: vf.Trace) -> float:
+        responses = trace.assistant_messages
+        last = (responses[-1].content if responses else "") or ""
+        return 1.0 if extract_codeword(last) == self.data.answer else 0.0
+
+    @vf.metric
+    async def partial_match(self, trace: vf.Trace) -> float:
+        if not self.data.answer:
+            return 0.0
+        responses = trace.assistant_messages
+        last = (responses[-1].content if responses else "") or ""
+        extracted = extract_codeword(last)
+        return sum(1 for a, b in zip(self.data.answer, extracted) if a == b) / len(
+            self.data.answer
+        )
+
+
+class ColorCodewordTaskset(vf.Taskset[ColorCodewordTask, ColorCodewordConfig]):
+    INFINITE = True
+
+    def load(self) -> Iterator[ColorCodewordTask]:
         c = self.config
         rng = random.Random(SEED)
         colors = list(COLOR_MAP)
         color_urls = {color: color_data_url(color) for color in colors}
         length = c.images_per_turn * MAX_TURNS
-        tasks: list[ColorCodewordTask] = []
-        for idx in range(c.num_examples):
+        for idx in itertools.count():
             sequence = [rng.choice(colors) for _ in range(length)]
             answer = "".join(COLOR_MAP[col] for col in sequence)
             colors_per_turn = [
@@ -124,33 +150,16 @@ class ColorCodewordTaskset(
                 vf.ImageUrlContentPart(image_url=vf.ImageUrlSource(url=color_urls[col]))
                 for col in turn0
             ] + [vf.TextContentPart(text=text)]
-            tasks.append(
-                ColorCodewordTask(
+            yield ColorCodewordTask(
+                ColorCodewordTaskData(
                     idx=idx,
                     prompt=[vf.UserMessage(content=parts)],
                     system_prompt=SYSTEM_PROMPT,
                     answer=answer,
-                    info={"colors_per_turn": colors_per_turn, "max_turns": MAX_TURNS},
-                )
+                    info={
+                        "colors_per_turn": colors_per_turn,
+                        "max_turns": MAX_TURNS,
+                    },
+                ),
+                c.task,
             )
-        return tasks
-
-    def user(self, task: ColorCodewordTask) -> vf.User:
-        return ColorCodewordUser(self.config.user)
-
-    @vf.reward(weight=1.0)
-    async def exact_match(self, task: ColorCodewordTask, trace: vf.Trace) -> float:
-        responses = trace.assistant_messages
-        last = (responses[-1].content if responses else "") or ""
-        return 1.0 if extract_codeword(last) == task.answer else 0.0
-
-    @vf.metric
-    async def partial_match(self, task: ColorCodewordTask, trace: vf.Trace) -> float:
-        if not task.answer:
-            return 0.0
-        responses = trace.assistant_messages
-        last = (responses[-1].content if responses else "") or ""
-        extracted = extract_codeword(last)
-        return sum(1 for a, b in zip(task.answer, extracted) if a == b) / len(
-            task.answer
-        )
