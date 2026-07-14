@@ -377,8 +377,12 @@ async def main() -> None:
             # renders like a regular turn; tool calls in the reply are ignored; the rebuilt
             # list is system + framed summary, dropping the original prompt).
             if args.summarize_at_tokens and context_tokens >= args.summarize_at_tokens:
-                messages.append({"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT})
-                summary, _ = await chat(client, args.model, messages, tools, tool_choice="none")
+                messages.append(
+                    {"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT}
+                )
+                summary, _ = await chat(
+                    client, args.model, messages, tools, tool_choice="none"
+                )
                 framed = POST_COMPACTION_FRAMING + "\n\n" + (summary.content or "")
                 messages = system_messages + [{"role": "user", "content": framed}]
 
