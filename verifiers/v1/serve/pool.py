@@ -16,9 +16,8 @@ worker.
 Scaling is elastic but upscale-only: a new worker is spawned when in-flight requests
 reach 90% of current capacity (`workers * multiplex`). Workers are spawned `spawn`-style
 (own env, own loop) and monitor a death pipe so an orphaned worker self-exits if the
-broker dies. TODO: downscale idle workers, per-worker restart-on-death, stats/lag
-monitors (v0 had them; omitted here — rollout errors are returned as data, not crashes,
-so worker death is rare).
+broker dies. The broker monitors each process sentinel, fails requests owned by a dead
+worker, and replaces it. TODO: downscale idle workers and stats/lag monitors.
 """
 
 import asyncio
@@ -37,7 +36,7 @@ import zmq.asyncio
 
 from verifiers.v1.env import EnvConfig
 from verifiers.v1.serve.server import EnvServer
-from verifiers.v1.serve.types import HealthResponse, RunGroupRequest
+from verifiers.v1.serve.types import BaseResponse, HealthResponse, RunGroupRequest
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +111,8 @@ class EnvServerPool:
     def _worker_path(self, i: int) -> str:
         return f"/tmp/vf-pool-{self.session}-{i}"
 
-    def _spawn_worker(self) -> None:
-        i = len(self.workers)  # upscale-only, so the next index is the current count
+    def _spawn_worker(self, index: int | None = None) -> None:
+        i = len(self.workers) if index is None else index
         address = f"ipc://{self._worker_path(i)}"
         parent_conn, child_conn = self._mpctx.Pipe()
         proc = self._mpctx.Process(
@@ -136,6 +135,7 @@ class EnvServerPool:
         self.workers.append(
             {
                 "process": proc,
+                "sentinel": proc.sentinel,
                 "dealer": dealer,
                 "pipe": parent_conn,
                 "active": 0,
@@ -144,6 +144,78 @@ class EnvServerPool:
         )
         if self._poller is not None:
             self._poller.register(dealer, zmq.POLLIN)
+            self._poller.register(proc.sentinel, zmq.POLLIN)
+
+    async def _drain_worker_replies(
+        self, worker: dict, pending: dict[bytes, dict]
+    ) -> int:
+        """Relay every queued reply and return the rollout slots it completed."""
+        released = 0
+        while True:
+            try:
+                request_id, data = await worker["dealer"].recv_multipart(
+                    flags=zmq.NOBLOCK, copy=False
+                )
+            except zmq.Again:
+                return released
+            # Copy only the routing key; relay the response Frames unchanged.
+            entry = pending.pop(request_id.bytes, None)
+            if entry is None:
+                continue
+            entry["worker"]["active"] -= entry["rollout_slots"]
+            released += entry["rollout_slots"]
+            with contextlib.suppress(zmq.ZMQError):
+                await self.frontend.send_multipart(
+                    [entry["client_id"], request_id, data], copy=False
+                )
+
+    async def _worker_died(self, worker: dict, pending: dict[bytes, dict]) -> int:
+        """Remove a dead worker, fail its requests, and start its replacement.
+
+        Returns the rollout slots released from the pool's in-flight count.
+        """
+        process = worker["process"]
+        process.join()
+        logger.error(
+            "EnvServerPool worker %d (pid=%s) exited with code %s; restarting",
+            worker["index"],
+            process.pid,
+            process.exitcode,
+        )
+        if self._poller is not None:
+            self._poller.unregister(worker["dealer"])
+            self._poller.unregister(worker["sentinel"])
+        self.workers.remove(worker)
+
+        # The process sentinel and its final DEALER reply can become readable in
+        # adjacent loop iterations. Honor every reply already queued before failing
+        # requests that the dead worker can no longer complete.
+        released = await self._drain_worker_replies(worker, pending)
+        data = msgpack.packb(
+            BaseResponse(
+                success=False,
+                error=f"env server worker exited unexpectedly (exit code {process.exitcode})",
+            ).model_dump(mode="python"),
+            use_bin_type=True,
+        )
+        for request_id, entry in list(pending.items()):
+            if entry["worker"] is not worker:
+                continue
+            pending.pop(request_id)
+            released += entry["rollout_slots"]
+            with contextlib.suppress(zmq.ZMQError):
+                await self.frontend.send_multipart(
+                    [entry["client_id"], request_id, data]
+                )
+
+        with contextlib.suppress(Exception):
+            worker["pipe"].close()
+        worker["dealer"].close()
+        with contextlib.suppress(OSError):
+            os.unlink(self._worker_path(worker["index"]))
+        process.close()
+        self._spawn_worker(worker["index"])
+        return released
 
     def _maybe_scale_up(self, in_flight: int) -> None:
         """Spawn one more worker when in-flight rollout slots reach 90% of capacity.
@@ -187,6 +259,16 @@ class EnvServerPool:
             in_flight = 0
             while True:
                 events = dict(await self._poller.poll())
+                # Drain replies before handling a simultaneous process exit: data already
+                # handed to ZMQ is a completed request, not a worker failure.
+                for w in list(self.workers):
+                    if w["dealer"] in events:
+                        in_flight -= await self._drain_worker_replies(w, pending)
+
+                for w in list(self.workers):
+                    if w["sentinel"] in events:
+                        in_flight -= await self._worker_died(w, pending)
+
                 if self.frontend in events:
                     (
                         client_id,
@@ -222,19 +304,6 @@ class EnvServerPool:
                         )
                         if self.elastic:
                             self._maybe_scale_up(in_flight)
-                for w in self.workers:
-                    if w["dealer"] in events:
-                        request_id, data = await w["dealer"].recv_multipart(copy=False)
-                        # Copy only the routing key; relay the response Frames unchanged.
-                        entry = pending.pop(request_id.bytes, None)
-                        if entry is None:
-                            continue
-                        entry["worker"]["active"] -= entry["rollout_slots"]
-                        in_flight -= entry["rollout_slots"]
-                        with contextlib.suppress(zmq.ZMQError):
-                            await self.frontend.send_multipart(
-                                [entry["client_id"], request_id, data], copy=False
-                            )
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:
