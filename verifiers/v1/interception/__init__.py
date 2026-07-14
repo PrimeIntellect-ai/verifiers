@@ -40,7 +40,7 @@ InterceptionConfig = Annotated[
 
 
 def requires_tunnel(
-    harness_is_local: bool,
+    harness_reaches_host: bool,
     server_configs: Iterable[BaseConfig] = (),
     shared: "Iterable[SharedToolServer]" = (),
 ) -> bool:
@@ -48,12 +48,12 @@ def requires_tunnel(
     host network: the harness itself, a live `shared` server in a remote runtime, or a
     tool/user server config placing one there (each reaches the `/state` channel from
     its own runtime). Skipped as non-consumers: a `colocated` server (shares the
-    harness's runtime, covered by `harness_is_local`), a config-`url` server (external —
+    harness's runtime, covered by `harness_reaches_host`), a config-`url` server (external —
     it connects out), and an `external` shared server (outside the state machinery
     entirely). False means every consumer reaches the server at localhost."""
-    if not harness_is_local:
+    if not harness_reaches_host:
         return True
-    if any(not s.external and not s.local for s in shared):
+    if any(not s.external and not s.reaches_host for s in shared):
         return True
     for config in server_configs:
         if getattr(config, "url", None) or config.colocated:

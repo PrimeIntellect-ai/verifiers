@@ -53,7 +53,7 @@ def runtime_is_local(config: RuntimeConfig) -> bool:
 
 def runtime_reaches_host_locally(config: RuntimeConfig) -> bool:
     """Whether this config reaches host services at localhost rather than through a tunnel."""
-    return runtime_is_local(config) and getattr(config, "network_access", True)
+    return _runtime_cls(config).config_reaches_host_locally(config)
 
 
 __all__ = [

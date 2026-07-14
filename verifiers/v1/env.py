@@ -414,6 +414,8 @@ class Environment:
         if not servers:
             yield {}
             return
-        harness_is_local = runtime_reaches_host_locally(self.harness.config.runtime)
-        async with serve_shared(servers, harness_is_local=harness_is_local) as shared:
+        harness_reaches_host = runtime_reaches_host_locally(self.harness.config.runtime)
+        async with serve_shared(
+            servers, harness_reaches_host=harness_reaches_host
+        ) as shared:
             yield shared

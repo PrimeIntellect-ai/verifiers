@@ -151,14 +151,21 @@ class Rollout:
                 await self.harness.setup(runtime)
             async with boundary(ToolsetError, "building tool servers"):
                 tool_servers = self.task.tool_servers()
-                if runtime.interception_only and (tool_servers or self.shared_tools):
+                if not runtime.supports_colocated_tools and any(
+                    server.config.colocated and not server.config.url
+                    for server in tool_servers
+                ):
                     raise ToolsetError(
-                        "Docker network_access=false does not support MCP tool servers"
+                        "this harness network policy does not support colocated MCP servers"
                     )
             user = self.task.user_server()
-            if runtime.interception_only and user is not None and user.config.colocated:
+            if (
+                not runtime.supports_colocated_user
+                and user is not None
+                and user.config.colocated
+            ):
                 raise UserError(
-                    "Docker network_access=false does not support a colocated user server"
+                    "this harness network policy does not support a colocated user server"
                 )
             # `base_url` is the interception server's reachable URL for this rollout. The
             # harness reaches the model at `{base_url}/v1`; tool/user servers reach this
@@ -189,7 +196,14 @@ class Rollout:
                             "conversation; set task.prompt or declare a simulator "
                             "class on Task.user"
                         )
-                    endpoint = await runtime.seal_agent_network(endpoint)
+                    routes = await runtime.apply_network_policy(
+                        {
+                            "model": endpoint,
+                            **{f"mcp:{name}": url for name, url in urls.items()},
+                        }
+                    )
+                    endpoint = routes["model"]
+                    urls = {name: routes[f"mcp:{name}"] for name in urls}
                     now = time.time()
                     trace.timing.setup.end = now
                     trace.timing.generation.start = now

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from verifiers.v1.errors import RolloutError, ToolsetError, UserError
+from verifiers.v1.errors import RolloutError, SandboxError, ToolsetError, UserError
 from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp.server import STATE_SECRET_PARAM, STATE_URL_PARAM, ServerBase
 from verifiers.v1.runtimes import (
@@ -217,21 +217,24 @@ async def serve_in_runtime(
 
 @contextlib.asynccontextmanager
 async def reachable_url(
-    service: Runtime, port: int, *, colocated: bool, consumer_is_local: bool
+    service: Runtime, port: int, *, colocated: bool, consumer_reaches_host: bool
 ) -> AsyncIterator[str]:
     """Yield the URL a consumer uses to reach the server at (`service`, `port`), over two
     primitives: `Runtime.expose` (publish a port out of a sandbox) and a host `Tunnel` (reach
     into the host from a remote runtime). `colocated` = the server shares the consumer's
-    runtime; `consumer_is_local` = the consumer is on the host network.
+    runtime; `consumer_reaches_host` = the consumer reaches the host network directly.
 
     - `colocated` -> localhost (same runtime, in-sandbox or host loopback);
-    - the server runs in a remote sandbox -> its own published URL (`expose`), reachable anywhere;
+    - the server is not host-reachable -> its published URL (`expose`), reachable anywhere;
     - else it's on the host network -> localhost to a local consumer, a host tunnel to a remote one."""
     if colocated:
         yield f"http://127.0.0.1:{port}"
-    elif not service.is_local:  # in a remote sandbox → it publishes its own port
-        yield await service.expose(port)
-    elif consumer_is_local:  # host network, local consumer → localhost, no tunnel
+    elif not service.reachable_from_host_locally:
+        url = await service.expose(port)
+        if url is None:
+            raise SandboxError(f"{service.type} runtime cannot expose port {port}")
+        yield url
+    elif consumer_reaches_host:  # host network, direct consumer → localhost, no tunnel
         yield f"http://127.0.0.1:{port}"
     else:  # host network, remote consumer → a host tunnel publishes the port outward
         async with PrimeTunnel().expose(port) as url:
@@ -243,7 +246,7 @@ async def serve(
     server: ServerBase,
     harness_runtime: Runtime | None = None,
     for_host: bool = False,
-    harness_is_local: bool = True,
+    harness_reaches_host: bool = True,
     *,
     state_secret: str = "",
     state_base: str | None = None,
@@ -254,11 +257,9 @@ async def serve(
             runtime = harness_runtime
         else:
             runtime = make_runtime(cfg.runtime)
-            if runtime.interception_only:
+            if runtime.network_policy.restricted:
                 error = UserError if for_host else ToolsetError
-                raise error(
-                    "Docker network_access=false is only supported for harness runtimes"
-                )
+                raise error("network policies are only applied to harness runtimes")
             await runtime.start()
             stack.push_async_callback(runtime.stop)
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
@@ -279,19 +280,22 @@ async def serve(
         # Who consumes the server decides reachability: a user sim is reached by the HOST
         # (`for_host`, always local, never colocated with it); a tool by the harness — colocated
         # when it shares the harness's runtime, reached with the harness's locality (read off the
-        # harness runtime when there is one, else `harness_is_local` for an eval-level shared tool).
+        # harness runtime when there is one, else `harness_reaches_host` for a shared tool).
         if for_host:
-            colocated, consumer_is_local = False, True
+            colocated, consumer_reaches_host = False, True
         else:
             colocated = runtime is harness_runtime
-            consumer_is_local = (
+            consumer_reaches_host = (
                 harness_runtime.reaches_host_locally
                 if harness_runtime is not None
-                else harness_is_local
+                else harness_reaches_host
             )
         base = await stack.enter_async_context(
             reachable_url(
-                runtime, port, colocated=colocated, consumer_is_local=consumer_is_local
+                runtime,
+                port,
+                colocated=colocated,
+                consumer_reaches_host=consumer_reaches_host,
             )
         )
         yield f"{base.rstrip('/')}/mcp"
@@ -300,7 +304,7 @@ async def serve(
 @dataclass(frozen=True)
 class SharedToolServer:
     """One live taskset-scoped (shared) server, as the rollouts see it: its eval-level
-    `url` plus whether its runtime is `local` (host-reachable) — a remote one is an
+    `url` plus whether its runtime reaches the host directly — otherwise it is an
     interception consumer, so the interception must be exposed for it to reach the
     `/state` channel (see `Environment._requires_tunnel`). An `external` server (a
     config-`url` endpoint) was not launched by the framework and sits outside its state
@@ -308,17 +312,17 @@ class SharedToolServer:
     secret sent to a third party)."""
 
     url: str
-    local: bool
+    reaches_host: bool
     external: bool = False
 
 
 @contextlib.asynccontextmanager
-async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
+async def serve_shared(toolsets: list[Toolset], harness_reaches_host: bool = True):
     """Start the taskset-scoped (shared) tool servers ONCE for a whole eval, each in its OWN
     `runtime`, and yield `{name: SharedToolServer}` reachable by every rollout's harness.
     Reachability mirrors a per-rollout tool, but there's no single harness runtime to read
     locality off — the caller (`Environment.shared_tools`) passes the harness runtime's
-    `harness_is_local`, so a host tool gets one host bridge (tunnel) when the harness runs
+    `harness_reaches_host`, so a host tool gets one host bridge when the harness runs
     remotely, and a remote tool runtime publishes its own URL. Torn down when the eval ends.
     A shared server is task-agnostic — the taskset carries no per-row data — so its `setup`
     gets no task (its `setup_task` is never called; the per-rollout servers fetch
@@ -343,14 +347,15 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                 )
             if cfg.url:  # already running remotely; nothing launched, nothing to bridge
                 servers[name] = SharedToolServer(
-                    url=cfg.url, local=False, external=True
+                    url=cfg.url, reaches_host=False, external=True
                 )
             else:
                 url = await stack.enter_async_context(
-                    serve(toolset, harness_is_local=harness_is_local)
+                    serve(toolset, harness_reaches_host=harness_reaches_host)
                 )
                 servers[name] = SharedToolServer(
-                    url=url, local=runtime_reaches_host_locally(cfg.runtime)
+                    url=url,
+                    reaches_host=runtime_reaches_host_locally(cfg.runtime),
                 )
             logger.info("shared tool server '%s': %s", name, servers[name].url)
         yield servers

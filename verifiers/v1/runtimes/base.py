@@ -15,6 +15,8 @@ from typing import ClassVar
 
 from pydantic_config import BaseConfig
 
+from verifiers.v1.errors import SandboxError
+from verifiers.v1.runtimes.network import NetworkPolicy
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -107,12 +109,14 @@ class BaseRuntimeInfo(BaseConfig):
 
 class Runtime(ABC):
     is_local: ClassVar[bool] = True
-    """Whether this runtime shares the host network — a program inside it reaches a host service
-    at localhost (no tunnel) and a service inside it is reachable at localhost. True for
-    subprocess / docker(--network host); remote runtimes (modal/prime) override to False (they
-    need a tunnel each way: a host `Tunnel` (interception.tunnel) inward, `expose` outward)."""
+    """Whether this runtime is provisioned on the local machine rather than by a provider."""
 
     info: BaseRuntimeInfo
+
+    @classmethod
+    def config_reaches_host_locally(cls, _config: BaseConfig) -> bool:
+        """Whether this runtime config reaches host services without a tunnel."""
+        return cls.is_local
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
@@ -129,13 +133,28 @@ class Runtime(ABC):
 
     @property
     def reaches_host_locally(self) -> bool:
-        """Whether this runtime reaches host services at localhost."""
+        """Whether programs here reach host services at localhost, without a tunnel."""
+        return type(self).config_reaches_host_locally(self.config)
+
+    @property
+    def reachable_from_host_locally(self) -> bool:
+        """Whether the host reaches services here at localhost, without exposure."""
         return self.is_local
 
     @property
-    def interception_only(self) -> bool:
-        """Whether agent execution is limited to the interception endpoint."""
-        return self.is_local and not self.reaches_host_locally
+    def network_policy(self) -> NetworkPolicy:
+        """Egress policy applied at the trusted setup-to-execution boundary."""
+        return NetworkPolicy()
+
+    @property
+    def supports_colocated_tools(self) -> bool:
+        """Whether colocated MCP servers work under this runtime policy."""
+        return True
+
+    @property
+    def supports_colocated_user(self) -> bool:
+        """Whether a colocated user server is host-reachable under this policy."""
+        return True
 
     @abstractmethod
     async def start(self) -> None:
@@ -174,9 +193,14 @@ class Runtime(ABC):
         still retry individual safe transport operations underneath `run`."""
         return await self.run(argv, env)
 
-    async def seal_agent_network(self, endpoint: str) -> str:
-        """Apply the runtime's execution network policy after trusted setup."""
-        return endpoint
+    async def apply_network_policy(self, routes: dict[str, str]) -> dict[str, str]:
+        """Apply the policy once after setup and map required framework route URLs.
+
+        The policy remains active until `stop()` tears down the runtime.
+        """
+        if self.network_policy.restricted:
+            raise SandboxError(f"{self.type} runtime does not support network policies")
+        return routes
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
@@ -263,14 +287,13 @@ class Runtime(ABC):
         """A fixed port this runtime exposes to the outside at startup, declared up front to the
         provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
         here binds it instead of a host-chosen free port, and `expose` returns its public URL.
-        `None` for host-networked runtimes (subprocess/docker), which pick a free port and are
-        reached over the shared host network."""
+        `None` for runtimes reached directly from the host, which pick a free port."""
         return None
 
     async def expose(self, port: int) -> str | None:
         """Publish a port running *inside this runtime* to a URL reachable from the host/outside,
-        or None when local (it's on the host network — reach it at localhost). A remote runtime
-        overrides this with the provider's native port exposure (modal `tunnels()`, prime
-        `client.expose`), torn down with the sandbox in `stop()`. The reverse of a host `Tunnel`
+        or None when `reachable_from_host_locally` is true. A remote runtime overrides this
+        with the provider's native port exposure (modal `tunnels()`, prime `client.expose`),
+        torn down with the sandbox in `stop()`. The reverse of a host `Tunnel`
         (interception.tunnel, which reaches a host port from inside a runtime)."""
         return None

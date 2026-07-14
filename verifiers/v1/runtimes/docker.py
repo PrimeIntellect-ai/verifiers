@@ -1,13 +1,13 @@
-"""Local Docker runtime with optional interception-only agent networking."""
+"""Local Docker runtime with policy-controlled agent networking."""
 
 import asyncio
-import contextlib
+import json
 import logging
 import re
 import shlex
 import subprocess
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic_config import BaseConfig
@@ -19,12 +19,13 @@ from verifiers.v1.runtimes.base import (
     Runtime,
     parse_gpu,
 )
+from verifiers.v1.runtimes.network import NetworkPolicy
 
 logger = logging.getLogger(__name__)
 
-_RELAY_IMAGE = "nginx:1.28.3-alpine"
-_RELAY_HOST = "interception"
-_RELAY_PORT = 8080
+_EGRESS_IMAGE = "nginx:1.28.3-alpine"
+_EGRESS_HOST = "egress"
+_EGRESS_PORT = 8080
 
 
 class DockerConfig(BaseConfig):
@@ -32,7 +33,7 @@ class DockerConfig(BaseConfig):
     image: str = "python:3.11-slim"
     workdir: str = "/app"
     network_access: bool = True
-    """Allow agent web access. Setup always has access; false seals execution to interception."""
+    """Allow arbitrary agent egress. Setup has access; false then allows framework routes only."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float | None = None
     """Pin the container to this many CPU cores (docker `--cpus`). None = unlimited."""
@@ -79,12 +80,29 @@ class DockerRuntime(Runtime):
         self.config = config
         self.info = DockerRuntimeInfo(**config.model_dump())
         self._container: str | None = None  # our `--name` (used for exec/rm)
-        self._relay: str | None = None
-        self._network: str | None = None
+        self._egress: str | None = None
+        self._setup_network: str | None = None
+        self._execution_network: str | None = None
         self._stopped = False
 
+    @classmethod
+    def config_reaches_host_locally(cls, config: BaseConfig) -> bool:
+        return cast(DockerConfig, config).network_access
+
     @property
-    def reaches_host_locally(self) -> bool:
+    def reachable_from_host_locally(self) -> bool:
+        return self.config.network_access
+
+    @property
+    def network_policy(self) -> NetworkPolicy:
+        return NetworkPolicy(allow=None if self.config.network_access else [])
+
+    @property
+    def supports_colocated_tools(self) -> bool:
+        return self.config.network_access
+
+    @property
+    def supports_colocated_user(self) -> bool:
         return self.config.network_access
 
     async def start(self) -> None:
@@ -115,7 +133,17 @@ class DockerRuntime(Runtime):
         _, gpu_count = parse_gpu(self.config.gpu)
         if gpu_count:
             limits += ["--gpus", str(gpu_count)]
-        network = "host" if self.config.network_access else "bridge"
+        if self.network_policy.restricted:
+            self._setup_network = f"{self.name}-setup"
+            await docker_checked(
+                "network",
+                "create",
+                "--label",
+                f"verifiers.runtime={self.name}",
+                self._setup_network,
+                error="docker setup network creation failed",
+            )
+        network = self._setup_network or "host"
         restrictions = (
             []
             if self.config.network_access
@@ -154,31 +182,75 @@ class DockerRuntime(Runtime):
             network,
         )
 
-    async def seal_agent_network(self, endpoint: str) -> str:
-        if not self.interception_only:
-            return endpoint
-        if self._container is None:
+    async def apply_network_policy(self, routes: dict[str, str]) -> dict[str, str]:
+        if not self.network_policy.restricted:
+            return routes
+        if self._container is None or self._setup_network is None:
             raise SandboxError("docker container is not running")
 
-        parsed = urlsplit(endpoint)
-        host = parsed.hostname
-        try:
-            port = parsed.port
-        except ValueError as e:
-            raise SandboxError(
-                f"invalid interception endpoint {endpoint!r}: {e}"
-            ) from e
-        if (
-            parsed.scheme not in {"http", "https"}
-            or host is None
-            or parsed.username is not None
-            or parsed.password is not None
-            or re.fullmatch(r"[A-Za-z0-9.-]+", host) is None
-        ):
-            raise SandboxError(f"invalid interception endpoint {endpoint!r}")
-
-        authority = f"{host}:{port}" if port is not None else host
-        upstream = f"{parsed.scheme}://{authority}"
+        parsed_routes = {}
+        servers = []
+        for offset, (name, url) in enumerate(routes.items()):
+            parsed = urlsplit(url)
+            host = parsed.hostname
+            try:
+                port = parsed.port
+            except ValueError as e:
+                raise SandboxError(
+                    f"invalid required network route {url!r}: {e}"
+                ) from e
+            if (
+                parsed.scheme not in {"http", "https"}
+                or host is None
+                or parsed.username is not None
+                or parsed.password is not None
+                or re.fullmatch(r"[A-Za-z0-9.-]+", host) is None
+            ):
+                raise SandboxError(f"invalid required network route {url!r}")
+            path = parsed.path or "/"
+            if (
+                not path.isascii()
+                or (path != "/" and not path.strip("/"))
+                or any(
+                    not char.isprintable() or char.isspace() or char == "$"
+                    for char in path
+                )
+            ):
+                raise SandboxError(f"invalid required network route {url!r}")
+            authority = f"{host}:{port}" if port is not None else host
+            relay_port = _EGRESS_PORT + offset
+            parsed_routes[name] = parsed, relay_port
+            locations = (
+                f"location / {{ proxy_pass {parsed.scheme}://{authority}; }}"
+                if path == "/"
+                else f"""
+        location = {json.dumps(path)} {{ proxy_pass {parsed.scheme}://{authority}; }}
+        location ^~ {json.dumps(f"{path.rstrip('/')}/")} {{
+            proxy_pass {parsed.scheme}://{authority};
+        }}
+        location / {{ return 403; }}"""
+            )
+            servers.append(
+                f"""
+    server {{
+        listen {relay_port};
+        client_max_body_size 0;
+        proxy_set_header Host {authority};
+        proxy_ssl_server_name on;
+        proxy_ssl_name {host};
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_next_upstream off;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+        {locations}
+    }}
+"""
+            )
         config = f"""
 worker_processes 1;
 pid /tmp/nginx.pid;
@@ -191,51 +263,36 @@ http {{
     fastcgi_temp_path /tmp/fastcgi;
     uwsgi_temp_path /tmp/uwsgi;
     scgi_temp_path /tmp/scgi;
-    server {{
-        listen {_RELAY_PORT};
-        client_max_body_size 0;
-        location / {{
-            proxy_pass {upstream};
-            proxy_set_header Host {authority};
-            proxy_ssl_server_name on;
-            proxy_ssl_name {host};
-            proxy_ssl_verify on;
-            proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
-            proxy_http_version 1.1;
-            proxy_set_header Connection "";
-            proxy_request_buffering off;
-            proxy_buffering off;
-            proxy_next_upstream off;
-            proxy_read_timeout 86400s;
-            proxy_send_timeout 86400s;
-        }}
-    }}
-}}
+{"".join(servers)}}}
 """
 
-        self._relay = f"{self.name}-relay"
-        self._network = f"{self.name}-network"
+        self._egress = f"{self.name}-egress"
+        self._execution_network = f"{self.name}-execution"
         await docker_checked(
             "network",
             "create",
             "--internal",
+            "--opt",
+            "com.docker.network.bridge.gateway_mode_ipv4=isolated",
             "--label",
             f"verifiers.runtime={self.name}",
-            self._network,
-            error="docker internal network creation failed",
+            self._execution_network,
+            error="docker execution network creation failed",
         )
         await docker_checked(
             "create",
             "--name",
-            self._relay,
+            self._egress,
             "--network",
-            "bridge",
+            self._setup_network,
             "--label",
             f"verifiers.runtime={self.name}",
             "--user",
             "101:101",
             "--cap-drop",
             "ALL",
+            "--sysctl",
+            "net.ipv4.ip_forward=0",
             "--security-opt",
             "no-new-privileges",
             "--read-only",
@@ -243,67 +300,68 @@ http {{
             "/tmp:rw,noexec,nosuid,size=16m,uid=101,gid=101",
             "--entrypoint",
             "sh",
-            _RELAY_IMAGE,
+            _EGRESS_IMAGE,
             "-c",
             'printf "%s" "$1" > /tmp/nginx.conf && '
             'exec nginx -c /tmp/nginx.conf -g "daemon off;"',
-            "vf-relay",
+            "vf-egress",
             config,
-            error="docker interception relay creation failed",
+            error="docker egress creation failed",
         )
         await docker_checked(
             "network",
             "connect",
             "--alias",
-            _RELAY_HOST,
-            self._network,
-            self._relay,
-            error="docker interception relay connection failed",
+            _EGRESS_HOST,
+            self._execution_network,
+            self._egress,
+            error="docker egress network connection failed",
         )
-        await docker_checked(
-            "start", self._relay, error="docker interception relay start failed"
-        )
+        await docker_checked("start", self._egress, error="docker egress start failed")
         for _ in range(20):
             ready = await docker(
-                "exec", self._relay, "nginx", "-t", "-c", "/tmp/nginx.conf"
+                "exec", self._egress, "nginx", "-t", "-c", "/tmp/nginx.conf"
             )
             if ready.exit_code == 0:
                 break
             await asyncio.sleep(0.05)
         else:
-            logs = await docker("logs", self._relay)
+            logs = await docker("logs", self._egress)
             raise SandboxError(
-                "docker interception relay did not become ready: "
+                "docker egress did not become ready: "
                 f"{(logs.stderr or logs.stdout).strip()[-2000:]}"
             )
         await docker_checked(
             "network",
             "connect",
-            self._network,
+            self._execution_network,
             self._container,
-            error="docker agent network connection failed",
+            error="docker execution network connection failed",
         )
         await docker_checked(
             "network",
             "disconnect",
-            "bridge",
+            self._setup_network,
             self._container,
-            error="docker agent network isolation failed",
+            error="docker setup network disconnection failed",
         )
         logger.info(
-            "docker: sealed container %s to interception relay %s",
+            "docker: applied network policy to %s via %s",
             self._container,
-            self._relay,
+            self._egress,
         )
-        return urlunsplit(
-            (
-                "http",
-                f"{_RELAY_HOST}:{_RELAY_PORT}",
-                parsed.path,
-                parsed.query,
-                "",
+        return {
+            name: urlunsplit(
+                (
+                    "http",
+                    f"{_EGRESS_HOST}:{port}",
+                    parsed.path,
+                    parsed.query,
+                    "",
+                )
             )
-        )
+            for name, (parsed, port) in parsed_routes.items()
+        }
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         env_args = [arg for k, v in env.items() for arg in ("--env", f"{k}={v}")]
@@ -371,28 +429,51 @@ http {{
             )
 
     def cleanup(self) -> None:
-        if self._stopped or not any((self._container, self._relay, self._network)):
-            return
-        self._stopped = (
-            True  # keep names and ids so descriptors and logs survive teardown
+        resources = (
+            self._container,
+            self._egress,
+            self._setup_network,
+            self._execution_network,
         )
-        for container in (self._relay, self._container):
+        if self._stopped or not any(resources):
+            return
+        for attr in ("_egress", "_container"):
+            container = getattr(self, attr)
             if container is None:
                 continue
             logger.debug("docker: removing container %s", container)
-            with contextlib.suppress(Exception):
-                subprocess.run(
+            try:
+                result = subprocess.run(
                     ["docker", "rm", "--force", container],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=30,
                 )
-        if self._network is not None:
-            logger.debug("docker: removing network %s", self._network)
-            with contextlib.suppress(Exception):
-                subprocess.run(
-                    ["docker", "network", "rm", self._network],
+            except Exception:
+                continue
+            if result.returncode == 0:
+                setattr(self, attr, None)
+        for attr in ("_execution_network", "_setup_network"):
+            network = getattr(self, attr)
+            if network is None:
+                continue
+            logger.debug("docker: removing network %s", network)
+            try:
+                result = subprocess.run(
+                    ["docker", "network", "rm", network],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=30,
                 )
+            except Exception:
+                continue
+            if result.returncode == 0:
+                setattr(self, attr, None)
+        self._stopped = not any(
+            (
+                self._container,
+                self._egress,
+                self._setup_network,
+                self._execution_network,
+            )
+        )
