@@ -32,8 +32,9 @@ _DOWNLOAD_UV = (
     "{ command -v curl >/dev/null 2>&1 && curl -LsSf https://astral.sh/uv/install.sh | sh; } "
     "|| { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh | sh; }"
 )
+_UV_ENV = 'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"'
 _ENSURE_UV = (
-    'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
+    f"{_UV_ENV}; "
     "pip install -q -U --user uv 2>/dev/null "
     f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
 )
@@ -109,6 +110,8 @@ class Runtime(ABC):
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
+        self._uv_ready = False
+        self._uv_lock = asyncio.Lock()
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
 
@@ -180,13 +183,21 @@ class Runtime(ABC):
                 if digest not in self._uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
-                    command = (
-                        f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
-                        f"&& {{ {_ENSURE_UV}; }} "
-                        f"&& uv sync --script {shlex.quote(path)} -q --no-config "
-                        f"&& uv python find --script {shlex.quote(path)} --no-config"
-                    )
-                    result = await self.run(["sh", "-c", command], env or {})
+                    async with (
+                        self._uv_lock
+                        if not self._uv_ready
+                        else contextlib.nullcontext()
+                    ):
+                        setup = _UV_ENV if self._uv_ready else _ENSURE_UV
+                        command = (
+                            f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
+                            f"&& {{ {setup}; }} "
+                            f"&& uv sync --script {shlex.quote(path)} -q --no-config "
+                            f"&& uv python find --script {shlex.quote(path)} --no-config"
+                        )
+                        result = await self.run(["sh", "-c", command], env or {})
+                        if result.exit_code == 0:
+                            self._uv_ready = True
                     if result.exit_code != 0:
                         raise RuntimeError(
                             "failed to prepare uv script: "

@@ -25,7 +25,7 @@ from verifiers.v1.runtimes import (
     make_runtime,
     runtime_is_local,
 )
-from verifiers.v1.runtimes.base import _ENSURE_UV
+from verifiers.v1.runtimes.base import _ENSURE_UV, _UV_ENV
 from verifiers.v1.types import Messages
 
 if TYPE_CHECKING:
@@ -125,15 +125,18 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     # build, silently running the server against a released (older) API. Pretend the
     # local version so the floor is satisfied by the build we uploaded.
     vf_version = importlib.metadata.version("verifiers")
-    setup = (
-        f"{_ENSURE_UV}; set -e; "
-        f'for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
-        f"uv venv {venv} && "
-        f"SETUPTOOLS_SCM_PRETEND_VERSION={shlex.quote(vf_version)} "
-        f"uv pip install --python {venv} {root}/{shlex.quote(vf.name)} && "
-        f"uv pip install --python {venv} {root}/{shlex.quote(env.name)}"
-    )
-    result = await runtime.run(["sh", "-c", setup], {})
+    async with runtime._uv_lock if not runtime._uv_ready else contextlib.nullcontext():
+        ensure_uv = _UV_ENV if runtime._uv_ready else _ENSURE_UV
+        setup = (
+            f'{ensure_uv}; set -e; for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
+            f"uv venv {venv} && "
+            f"SETUPTOOLS_SCM_PRETEND_VERSION={shlex.quote(vf_version)} "
+            f"uv pip install --python {venv} {root}/{shlex.quote(vf.name)} && "
+            f"uv pip install --python {venv} {root}/{shlex.quote(env.name)}"
+        )
+        result = await runtime.run(["sh", "-c", setup], {})
+        if result.exit_code == 0:
+            runtime._uv_ready = True
     if result.exit_code != 0:
         raise ToolsetError(
             f"server {server.server_name!r} install failed in runtime: "
