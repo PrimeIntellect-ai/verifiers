@@ -268,24 +268,31 @@ class ServerBase(Generic[ConfigT, StateT]):
         )
         self._register(mcp)
         app = mcp.streamable_http_app()
+        mcp_lifespan = app.router.lifespan_context
 
-        server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
-
-        async def serve() -> None:
+        @contextlib.asynccontextmanager
+        async def lifespan(starlette_app):
             import httpx
 
             try:
                 # Setup and serving share one event loop, so setup may retain async resources.
                 await self.setup()
                 await self._setup_task_from_channel(*self._state_channel())
-                async with httpx.AsyncClient(timeout=STATE_TIMEOUT) as client:
+                async with (
+                    httpx.AsyncClient(timeout=STATE_TIMEOUT) as client,
+                    mcp_lifespan(starlette_app),
+                ):
                     self._state_client = client
-                    await server.serve(sockets=[sock])
+                    yield
             finally:
                 await self.teardown()
                 self._state_client = None
 
-        asyncio.run(serve())
+        # ASGI shutdown runs before Uvicorn re-raises SIGTERM, so teardown cannot live
+        # outside `server.serve()`.
+        app.router.lifespan_context = lifespan
+        server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
+        asyncio.run(server.serve(sockets=[sock]))
 
     @classmethod
     def _config_cls(cls) -> type[BaseConfig]:

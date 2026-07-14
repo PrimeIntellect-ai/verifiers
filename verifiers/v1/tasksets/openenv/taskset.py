@@ -45,7 +45,7 @@ class OpenEnvConfig(vf.TasksetConfig):
     """Environment id passed to OpenEnv. Required unless `base_url` is set."""
     base_url: str | None = None
     """Connect to an existing OpenEnv server instead of starting `env`. Docker and
-    provider options only apply when `env` is set."""
+    provider options only apply when starting `env`."""
     use_docker: bool = False
     """Use OpenEnv's Docker provider instead of its UV provider. Under Prime this
     defaults the outer runtime to a VM, allowing Docker to start inside it. Docker-backed
@@ -64,10 +64,11 @@ class OpenEnvConfig(vf.TasksetConfig):
         if not self.env and not self.base_url:
             raise ValueError("pass `env` or `base_url`")
         # Thin wrappers set launch defaults; base_url only conflicts with overrides.
+        overrides = self.model_dump(exclude_defaults=True)
         launch_options = {"env", "use_docker", "provider_kwargs"}
-        if (
-            self.base_url
-            and launch_options & self.model_dump(exclude_defaults=True).keys()
+        user_options = overrides.get("task", {}).get("user", {})
+        if self.base_url and (
+            launch_options & overrides.keys() or "provider_kwargs" in user_options
         ):
             raise ValueError("`base_url` cannot be combined with local launch options")
         if not self.base_url and self.use_docker and self.task.user.colocated:
