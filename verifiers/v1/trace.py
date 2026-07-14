@@ -47,6 +47,7 @@ class TimeSpan(StrictBaseModel):
 
 class Timing(StrictBaseModel):
     start: float = Field(default_factory=time.time)
+    boot: TimeSpan = Field(default_factory=TimeSpan)
     setup: TimeSpan = Field(default_factory=TimeSpan)
     generation: TimeSpan = Field(default_factory=TimeSpan)
     finalize: TimeSpan = Field(default_factory=TimeSpan)
