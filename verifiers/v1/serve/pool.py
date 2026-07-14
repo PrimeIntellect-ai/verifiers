@@ -244,29 +244,37 @@ class EnvServerPool:
             self._shutdown()
 
     def _shutdown(self) -> None:
-        for w in self.workers:
-            with contextlib.suppress(Exception):
-                w["pipe"].close()
-            with contextlib.suppress(Exception):
-                w["process"].terminate()
+        old_handlers = {
+            sig: signal.signal(sig, signal.SIG_IGN)
+            for sig in (signal.SIGINT, signal.SIGTERM)
+        }
+        try:
+            for w in self.workers:
+                with contextlib.suppress(Exception):
+                    w["pipe"].close()
+                with contextlib.suppress(Exception):
+                    w["process"].terminate()
 
-        # Wait on sentinels rather than join/is_alive: an exited worker remains a zombie,
-        # reserving the PID that identifies its cleanup session until that session is reaped.
-        pending = {w["process"].sentinel for w in self.workers}
-        deadline = time.monotonic() + 10
-        while pending and (remaining := deadline - time.monotonic()) > 0:
-            pending.difference_update(wait(pending, timeout=remaining))
+            # Wait on sentinels rather than join/is_alive: an exited worker remains a zombie,
+            # reserving the PID that identifies its cleanup session until that session is reaped.
+            pending = {w["process"].sentinel for w in self.workers}
+            deadline = time.monotonic() + 10
+            while pending and (remaining := deadline - time.monotonic()) > 0:
+                pending.difference_update(wait(pending, timeout=remaining))
 
-        for w in self.workers:
-            with contextlib.suppress(Exception):
-                kill_process_session(w["process"])
-            with contextlib.suppress(Exception):
-                w["dealer"].close()
-            with contextlib.suppress(OSError):
-                os.unlink(self._worker_path(w["index"]))
-        self.frontend.close()
-        self.ctx.term()
-        logger.info("EnvServerPool down")
+            for w in self.workers:
+                with contextlib.suppress(Exception):
+                    kill_process_session(w["process"])
+                with contextlib.suppress(Exception):
+                    w["dealer"].close()
+                with contextlib.suppress(OSError):
+                    os.unlink(self._worker_path(w["index"]))
+            self.frontend.close()
+            self.ctx.term()
+            logger.info("EnvServerPool down")
+        finally:
+            for sig, handler in old_handlers.items():
+                signal.signal(sig, handler)
 
 
 def _serve_pool_worker(**kwargs) -> None:
