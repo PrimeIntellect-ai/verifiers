@@ -15,8 +15,13 @@ import tempfile
 import time
 
 # User-scoped: a fixed shared path breaks on multi-user hosts (another user's bucket
-# file -> Permission denied on every tunnel).
-_LIMITER_DIR = os.path.join(tempfile.gettempdir(), f"vf-rate-limiters-{getpass.getuser()}")
+# file -> Permission denied on every tunnel). getuser() can raise in containers running
+# under an arbitrary UID with no passwd entry — fall back to the numeric UID.
+try:
+    _user = getpass.getuser()
+except Exception:
+    _user = str(os.getuid())
+_LIMITER_DIR = os.path.join(tempfile.gettempdir(), f"vf-rate-limiters-{_user}")
 
 
 class CreationLimiter:
