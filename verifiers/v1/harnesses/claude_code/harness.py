@@ -1,4 +1,4 @@
-"""Install Claude Code and run it headlessly."""
+"""Run Claude Code against interception as an Anthropic Messages client."""
 
 import json
 import shlex
@@ -56,6 +56,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         system_prompt, instruction = self.resolve_prompt(trace.task.data)
         env = {
             **self.config.resolved_env,
+            # Claude appends /v1/messages; give it the interception root, not the model endpoint.
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
             "ANTHROPIC_API_KEY": secret,
             "CLAUDE_CONFIG_DIR": ".vf-claude",
