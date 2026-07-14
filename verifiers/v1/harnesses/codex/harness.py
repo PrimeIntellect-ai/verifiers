@@ -135,10 +135,10 @@ class CodexHarness(Harness[CodexHarnessConfig]):
         # come through literally); `requires_openai_auth=false` parses as a bool.
         argv = [
             CODEX_BIN,
-            *(["--search"] if self.config.search else []),
             "exec",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            *(["-c", 'web_search="live"'] if self.config.search else []),
             # Apps/plugins can flip on remotely and advertise definitions custom providers reject.
             "--disable",
             "apps",

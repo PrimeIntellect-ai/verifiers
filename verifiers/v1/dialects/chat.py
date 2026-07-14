@@ -310,10 +310,16 @@ class ChatDialect(Dialect[dict, ChatCompletion]):
         return response_from_wire(response)
 
     def rewrite_response(self, raw: dict, message: AssistantMessage) -> dict:
-        rewritten = deepcopy(raw)
-        choice = rewritten["choices"][0]
-        choice["message"] = message_to_wire(message)
-        choice["finish_reason"] = "tool_calls" if message.tool_calls else "stop"
+        rewritten = raw.copy()
+        choice = raw["choices"][0].copy()
+        rewritten["choices"] = [choice]
+        original = choice["message"]
+        replacement = message_to_wire(message)
+        if message.tool_calls and original.get("reasoning_details"):
+            replacement["reasoning_details"] = original["reasoning_details"]
+        choice["message"] = replacement
+        if choice.get("finish_reason") != "length":
+            choice["finish_reason"] = "tool_calls" if message.tool_calls else "stop"
         choice.pop("logprobs", None)
         return rewritten
 

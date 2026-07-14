@@ -19,10 +19,12 @@ def discover_decorated(obj: object, attr: str) -> list[Callable[..., Any]]:
         if callable(fn) and hasattr(fn, attr)
     }
     # An undecorated override suppresses a decorated base method.
-    methods = [method for name in names if hasattr(method := getattr(obj, name), attr)]
+    methods = [
+        (name, method) for name in names if hasattr(method := getattr(obj, name), attr)
+    ]
     priority_attr = f"{attr}_priority"
-    methods.sort(key=lambda m: (-getattr(m, priority_attr, 0), m.__name__))
-    return methods
+    methods.sort(key=lambda item: (-getattr(item[1], priority_attr, 0), item[0]))
+    return [method for _, method in methods]
 
 
 def invoke(fn: Callable[..., Any], available: dict[str, Any]) -> Any:
@@ -82,16 +84,13 @@ def intercept(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
     calls never run) or a tool result's content, or a typed replacement message. The first
     replacement wins.
 
-        @vf.intercept
-        async def block_rm(self, message: vf.AssistantMessage) -> str | None:
-            if any("rm -rf" in call.arguments for call in message.tool_calls or []):
-                return "Blocked by policy."
+        block_rm = vf.block_shell_commands("rm")
 
-    A replacement is what the harness sees and what the trace records: it carries no sampled
-    tokens, provider state, or reasoning (inspect server-tool items on
-    `message.provider_state` before ruling). Tool-message interceptors re-run on the same
-    message every turn — the harness replays the original history — so they must be
-    deterministic. Streamed responses are withheld until the interceptors have ruled.
+    A replacement is what the harness sees and what the trace records. Its own provider state and
+    reasoning are discarded; dialects may retain original continuation state required by a
+    rewritten tool call. Tool-message interceptors re-run on the same message every turn — the
+    harness replays the original history — so they must be deterministic. Streamed responses are
+    withheld until the interceptors have ruled.
     """
     decorator = mark("intercept", intercept_priority=priority)
     return decorator if func is None else decorator(func)

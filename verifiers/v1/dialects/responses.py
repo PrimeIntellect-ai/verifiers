@@ -334,15 +334,22 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         return response_from_wire(response)
 
     def rewrite_response(self, raw: dict, message: AssistantMessage) -> dict:
-        rewritten = deepcopy(raw)
-        output = []
-        if message.content:
+        rewritten = raw.copy()
+        incomplete = raw.get("status") == "incomplete"
+        # Stateless reasoning models need their encrypted reasoning item replayed with a
+        # rewritten tool call, just as Anthropic needs its signed thinking block.
+        output = [
+            item
+            for item in raw.get("output") or []
+            if message.tool_calls and item.get("type") == "reasoning"
+        ]
+        if message.content is not None:
             output.append(
                 {
                     "type": "message",
                     "id": f"msg_{raw.get('id') or 'vf_intercept'}",
                     "role": "assistant",
-                    "status": "completed",
+                    "status": "incomplete" if incomplete else "completed",
                     "content": [
                         {
                             "type": "output_text",
@@ -359,13 +366,14 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
                 "call_id": call.id,
                 "name": call.name,
                 "arguments": call.arguments,
-                "status": "completed",
+                "status": "incomplete" if incomplete else "completed",
             }
             for call in message.tool_calls or []
         )
         rewritten["output"] = output
-        rewritten["status"] = "completed"
-        rewritten.pop("incomplete_details", None)
+        if not incomplete:
+            rewritten["status"] = "completed"
+            rewritten.pop("incomplete_details", None)
         if "error" in rewritten:
             rewritten["error"] = None
         return rewritten
@@ -385,17 +393,22 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
         emit("response.created", response=opening)
         for output_index, item in enumerate(raw.get("output") or []):
             item_id = item.get("id", "")
-            is_message = item.get("type") == "message"
-            if is_message:
+            kind = item.get("type")
+            if kind == "message":
                 added = {**item, "status": "in_progress", "content": []}
-            else:
+            elif kind == "function_call":
                 added = {**item, "status": "in_progress", "arguments": ""}
+            else:
+                added = {
+                    **item,
+                    **({"status": "in_progress"} if "status" in item else {}),
+                }
             emit(
                 "response.output_item.added",
                 output_index=output_index,
                 item=added,
             )
-            if is_message:
+            if kind == "message":
                 part = item["content"][0]
                 empty_part = {**part, "text": ""}
                 emit(
@@ -428,7 +441,7 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
                     content_index=0,
                     part=part,
                 )
-            else:
+            elif kind == "function_call":
                 emit(
                     "response.function_call_arguments.delta",
                     item_id=item_id,
@@ -446,7 +459,12 @@ class ResponsesDialect(Dialect[dict, OpenAIResponse]):
                 output_index=output_index,
                 item=item,
             )
-        emit("response.completed", response=raw)
+        terminal = (
+            "response.incomplete"
+            if raw.get("status") == "incomplete"
+            else "response.completed"
+        )
+        emit(terminal, response=raw)
         return events
 
     def rewrite_tool_results(

@@ -70,6 +70,7 @@ def parse_messages(body: dict) -> Messages:
     their blocks into one message (thinking -> reasoning, tool_use -> tool calls); a user turn's
     tool_result blocks become individual tool messages, its rest one user message."""
     prompt: Messages = []
+    tool_names: dict[str, str] = {}
     if system := body.get("system"):
         prompt.append(SystemMessage(content=parse_content(system)))
     for message in body.get("messages", []):
@@ -109,14 +110,17 @@ def parse_messages(body: dict) -> Messages:
                     provider_state=state or None,
                 )
             )
+            tool_names.update({call.id: call.name for call in calls})
             continue
         rest = []
         for block in [] if isinstance(content, str) else content or []:
             if block.get("type") == "tool_result":
+                tool_id = block.get("tool_use_id", "")
                 prompt.append(
                     ToolMessage(
-                        tool_call_id=block.get("tool_use_id", ""),
+                        tool_call_id=tool_id,
                         content=parse_content(block.get("content")),
+                        name=tool_names.get(tool_id),
                     )
                 )
             else:
@@ -280,7 +284,7 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
         return response_from_wire(response)
 
     def rewrite_response(self, raw: dict, message: AssistantMessage) -> dict:
-        rewritten = deepcopy(raw)
+        rewritten = raw.copy()
         # With extended thinking, the API only accepts a replayed tool-use turn that still
         # opens with its signed thinking blocks — keep them for tool-call rewrites only.
         blocks: list[dict] = [
@@ -289,7 +293,7 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
             if message.tool_calls
             and block.get("type") in ("thinking", "redacted_thinking")
         ]
-        if message.content:
+        if message.content is not None:
             blocks.append({"type": "text", "text": message.content})
         blocks.extend(
             {
@@ -301,7 +305,8 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
             for call in message.tool_calls or []
         )
         rewritten["content"] = blocks
-        rewritten["stop_reason"] = "tool_use" if message.tool_calls else "end_turn"
+        if rewritten.get("stop_reason") != "max_tokens":
+            rewritten["stop_reason"] = "tool_use" if message.tool_calls else "end_turn"
         rewritten["stop_sequence"] = None
         return rewritten
 
@@ -318,7 +323,7 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
         for index, item in enumerate(raw.get("content") or []):
             deltas = []
             if item["type"] == "text":
-                block = {"type": "text", "text": ""}
+                block = {**item, "text": ""}
                 deltas = [{"type": "text_delta", "text": item.get("text", "")}]
             elif item["type"] == "tool_use":
                 block = {**item, "input": {}}
@@ -370,7 +375,11 @@ class AnthropicDialect(Dialect[dict, AnthropicMessage]):
                         continue
                     url = part.image_url.url
                     if url.startswith("data:"):
-                        media_type, data = url[5:].split(";base64,", 1)
+                        media_type, separator, data = url[5:].partition(";base64,")
+                        if not separator:
+                            raise ValueError(
+                                "Anthropic tool-result images require base64 data URLs"
+                            )
                         source = {
                             "type": "base64",
                             "media_type": media_type,

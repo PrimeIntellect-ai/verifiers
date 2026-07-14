@@ -34,6 +34,13 @@ from verifiers.v1.errors import (
     UserError,
 )
 from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.interceptors import (
+    block_code_search,
+    block_shell_commands,
+    block_tool_calls,
+    block_web_search,
+    find_tool_calls,
+)
 from verifiers.v1.judge import (
     Judge,
     JudgeConfig,
@@ -173,6 +180,11 @@ __all__ = [
     "Error",
     # decorators
     "intercept",
+    "block_code_search",
+    "block_shell_commands",
+    "block_tool_calls",
+    "block_web_search",
+    "find_tool_calls",
     "stop",
     "tool",
     "metric",

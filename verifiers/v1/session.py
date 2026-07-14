@@ -11,7 +11,7 @@ turns.
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, get_args, get_type_hints
+from typing import TYPE_CHECKING, Any, get_args, get_type_hints
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.decorators import invoke
@@ -90,7 +90,8 @@ class RolloutSession:
         try:
             for interceptor in self.intercepts:
                 hint = get_type_hints(interceptor).get("message")
-                if hint is not None and not isinstance(message, get_args(hint) or hint):
+                allowed = tuple(t for t in get_args(hint) if isinstance(t, type))
+                if hint not in (None, Any) and not isinstance(message, allowed or hint):
                     continue
                 replacement = await invoke(
                     interceptor,
