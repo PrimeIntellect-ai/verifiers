@@ -54,7 +54,7 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, instruction = self.resolve_prompt(trace.task.data)
-        if ctx.client.base_url.startswith("https://api.pinference.ai/"):
+        if ctx.client.base_url == "https://api.pinference.ai/api/v1":
             # remove the /v1 from pinference
             ctx.client.base_url = ctx.client.base_url.removesuffix("/v1")
         env = {
