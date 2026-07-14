@@ -62,6 +62,13 @@ class OpenEnvConfig(vf.TasksetConfig):
     def validate_config(self) -> Self:
         if not self.env and not self.base_url:
             raise ValueError("pass `env` or `base_url`")
+        # Thin wrappers set launch defaults; base_url only conflicts with overrides.
+        launch_options = {"env", "use_docker", "provider_kwargs"}
+        if (
+            self.base_url
+            and launch_options & self.model_dump(exclude_defaults=True).keys()
+        ):
+            raise ValueError("`base_url` cannot be combined with local launch options")
 
         runtime = self.task.user.runtime
         # OpenEnv Docker starts inside the user runtime. Prime therefore defaults the
