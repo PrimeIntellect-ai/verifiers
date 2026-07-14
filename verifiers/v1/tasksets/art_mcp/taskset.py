@@ -24,9 +24,7 @@ class ArtMCPTaskData(vf.TaskData):
 
 
 class ArtMCPTask(vf.Task[ArtMCPTaskData]):
-    @vf.stop
-    async def single_turn(self, trace: vf.Trace) -> bool:
-        return trace.num_turns >= 1
+    pass
 
 
 class ArtMCPTasksetConfig(vf.TasksetConfig):
