@@ -205,6 +205,14 @@ class DockerRuntime(Runtime):
             network,
         )
 
+    def host_url(self, url: str) -> str:
+        # Docker Desktop runs containers in a VM, so host networking does not reach
+        # the host's loopback; host.docker.internal does.
+        host = urlsplit(url).hostname
+        if sys.platform != "linux" and host in ("127.0.0.1", "localhost"):
+            return url.replace(host, "host.docker.internal", 1)
+        return url
+
     async def apply_network_policy(self, routes: dict[str, str]) -> dict[str, str]:
         if not self.network_policy.restricted:
             return routes
