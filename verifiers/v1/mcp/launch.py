@@ -297,7 +297,7 @@ class SharedToolServer:
     """One live taskset-scoped (shared) server, as the rollouts see it: its eval-level
     `url` plus whether its runtime is `local` (host-reachable) — a remote one is an
     interception consumer, so the interception must be exposed for it to reach the
-    `/state` channel (see `Environment.interception`). An `external` server (a
+    `/state` channel (see `Environment._requires_tunnel`). An `external` server (a
     config-`url` endpoint) was not launched by the framework and sits outside its state
     machinery entirely: rollouts get its URL bare — no state tag (and no per-rollout
     secret sent to a third party)."""

@@ -70,7 +70,7 @@ def make_interception(
     `make_runtime`). With `requires_tunnel` (some consumer is off the host network — see
     the `requires_tunnel` util) each server is exposed via its configured tunnel; without
     it they get none and are reached at localhost. The caller computes it (see
-    `Environment.interception`)."""
+    `Environment._requires_tunnel`)."""
     if isinstance(config, InterceptionServerConfig):
         return InterceptionServer(config, requires_tunnel)
     if isinstance(config, StaticInterceptionPoolConfig):

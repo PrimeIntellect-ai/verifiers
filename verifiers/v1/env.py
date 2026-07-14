@@ -371,7 +371,10 @@ class Environment:
         what keeps both eval runners (in-process and env-server) on one serving path. Build
         episodes inside this context; the resources are torn down on exit."""
         async with self.shared_tools() as shared:
-            async with self.interception(shared) as interception:
+            interception = make_interception(
+                self.config.interception, requires_tunnel=self._requires_tunnel(shared)
+            )
+            async with interception:
                 self._shared_tools = shared
                 self._interception = interception
                 try:
@@ -379,16 +382,6 @@ class Environment:
                 finally:
                     self._shared_tools = {}
                     self._interception = None
-
-    def interception(self, shared: dict[str, SharedToolServer]) -> Interception:
-        """The interception for this env's rollouts, picked by `interception.type` (see
-        `make_interception`). Reachability is decided from ALL its consumers — the harness
-        AND the tool/user servers, each of which reaches the `/state` channel from its own
-        runtime: localhost only when every consumer is local, else exposed via the
-        configured tunnels (a public URL all of them can reach)."""
-        return make_interception(
-            self.config.interception, requires_tunnel=self._requires_tunnel(shared)
-        )
 
     def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
         """`requires_tunnel` over the consumers known before any rollout: the harness
