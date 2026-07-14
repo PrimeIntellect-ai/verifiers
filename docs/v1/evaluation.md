@@ -57,13 +57,11 @@ Then use `weco-eval` as the parseable scalar evaluator for Weco:
 weco run --source prompt.txt \
   --eval-command "uv run weco-eval <taskset-id> --system-prompt-path prompt.txt -n 20" \
   --metric reward --goal maximize --apply-change \
-  --additional-instructions "This is the task's baseline system prompt: $(cat prompt.txt)"
+  --additional-instructions "$(cat prompt.txt)"
 ```
 
-Passing the seeded baseline as `--additional-instructions` anchors the task's intent: the
-optimizer only ever sees the current candidate file, so without it the original task
-description (and any output format the reward parses) is one bad rewrite away from being
-lost.
+`--additional-instructions` carries the seeded baseline prompt, so the optimizer keeps the
+task's intent even after it has rewritten `prompt.txt`.
 
 `--system-prompt-path` overrides native v1 task prompts. Legacy v0 evals reject it. Errored
 rollouts score 0 in the reported mean, so flaky candidates can't win on their surviving

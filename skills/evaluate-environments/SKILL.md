@@ -52,7 +52,7 @@ uv run weco-eval <MY_ENV> --system-prompt-path prompt.txt --init-prompt -n 20
 weco run --source prompt.txt \
   --eval-command "uv run weco-eval <MY_ENV> --system-prompt-path prompt.txt -n 20" \
   --metric reward --goal maximize --apply-change \
-  --additional-instructions "This is the task's baseline system prompt: $(cat prompt.txt)"
+  --additional-instructions "$(cat prompt.txt)"
 ```
 
 Each optimizer step rewrites `prompt.txt`; `weco-eval` runs the taskset with that
