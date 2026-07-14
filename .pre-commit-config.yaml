@@ -19,7 +19,7 @@ repos:
         name: Check generated AGENTS.md / CLAUDE.md
         entry: uv run python scripts/sync.py --check
         language: system
-        files: ^(AGENTS\.md|CLAUDE\.md|assets/lab/(AGENTS|CLAUDE)\.md|environments/AGENTS\.md|assets/lab/environments/AGENTS\.md|docs/environments\.md|assets/agents/.*\.md|scripts/sync\.py)$
+        files: ^(AGENTS\.md|CLAUDE\.md|assets/lab/(AGENTS|CLAUDE)\.md|environments/AGENTS\.md|assets/lab/environments/AGENTS\.md|docs/v1/tasksets\.md|assets/agents/.*\.md|scripts/sync\.py)$
         pass_filenames: false
       - id: ty
         name: ty (ci parity)

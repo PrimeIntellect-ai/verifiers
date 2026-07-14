@@ -1,6 +1,6 @@
 # REFERENCE.md
 
-A complete reference of every settable config field for **evaluating environments in `verifiers.v1`**. The config tree is parsed from CLI flags (dotted, e.g. `--harness.runtime.type docker`) and/or `@ file.toml` by `prime-pydantic-config`; every field below is settable either way unless noted.
+A complete reference of every settable config field for **evaluating tasksets in `verifiers.v1`**. The config tree is parsed from CLI flags (dotted, e.g. `--harness.runtime.type docker`) and/or `@ file.toml` by `prime-pydantic-config`; every field below is settable either way unless noted.
 
 The root config the eval CLI parses is [`EvalConfig`](#evalconfig--the-run). It inherits the full environment config (taskset + harness + timeouts + token limits + worker pool), then adds the run knobs (model, sampling, counts). The tree:
 
@@ -269,7 +269,7 @@ A growing-message-list chat loop with a local `bash` tool, plus optional `edit`/
 A growing-message-list chat loop with the task- and taskset-scoped MCP tools, and **no built-in
 tools of its own**. It runs as a uv script whose dependencies are `openai` and `mcp`, so setup
 bootstraps everything it needs in the selected runtime. `NullHarnessConfig` adds no fields beyond
-the base `HarnessConfig` fields. Use it for pure chat or environments whose entire tool surface is
+the base `HarnessConfig` fields. Use it for pure chat or tasksets whose entire tool surface is
 provided through MCP; use an agentic harness for shell/edit capabilities.
 
 #### `CodexHarnessConfig` — `id: "codex"`
@@ -388,7 +388,7 @@ base config.
 ## Task resources & timeouts
 
 `verifiers/v1/task.py`. `TaskData` is the frozen, serializable row stored on `trace.task` and sent
-across worker/runtime boundaries. Environment packages subclass it for typed row-specific fields
+across worker/runtime boundaries. Taskset packages subclass it for typed row-specific fields
 such as reference answers, repository metadata, or judge inputs. Those fields are not CLI flags;
 they are produced by `Taskset.load()`.
 
@@ -455,10 +455,10 @@ A task-scoped server is launched per rollout. Its matching config field normally
 `TaskConfig`, under `--taskset.task.*`.
 
 The default placement is the toolset's own subprocess runtime on the host, where verifiers and the
-environment package are already installed. The harness reaches that server over the host network
+taskset package are already installed. The harness reaches that server over the host network
 when local or through a tunnel when remote. `colocated` instead runs the server inside the harness
 runtime; this is useful when both must see the same filesystem or processes, but a remote sandbox
-must then upload and install verifiers plus the environment package for every rollout.
+must then upload and install verifiers plus the taskset package for every rollout.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|

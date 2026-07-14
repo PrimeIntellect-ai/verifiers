@@ -1,6 +1,6 @@
 # Harbor
 
-verifiers offers built-in support for Harbor via the `HarborTaskset` class. Creating a harbor-based environment is straightforward in most cases:
+verifiers offers built-in support for Harbor via the `HarborTaskset` class. Creating a Harbor-based taskset is straightforward in most cases:
 
 
 ```python
@@ -17,7 +17,7 @@ class TerminalBench2Taskset(HarborTaskset, vf.Taskset[HarborTask, TerminalBench2
     pass
 ```
 
-You can also write custom code for your environments. A common functionality is to set custom images for tasks that don’t come with an image in their `task.toml`:
+You can also write custom code for your tasksets. A common customization is to set images for tasks that don’t come with one in their `task.toml`:
 
 ```python
 from pathlib import Path
@@ -50,7 +50,7 @@ class OpenThoughtsTBLiteTaskset(HarborTaskset, vf.Taskset[HarborTask, OpenThough
         ]
 ```
 
-To create & re-use images for your environments, build the Dockerfile with Docker and push it to a registry, then set the resulting image reference as the task's `image` field.
+To create and reuse images for your tasksets, build the Dockerfile with Docker and push it to a registry, then set the resulting image reference as the task's `image` field.
 
 ## Additional features
 

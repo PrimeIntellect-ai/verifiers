@@ -6,7 +6,7 @@ A server-backed evaluation or prime-rl **orchestrator** creates worker processes
 
 The orchestrator and workers are managed by verifiers and prime-rl themselves and thus offer few configurable knobs.
 
-The **rollout** is the executable combination of one loaded task, the harness, and any tools. Each rollout has an independent trace and runtime state. verifiers has three different runtimes which you can use for most environments:
+The **rollout** is the executable combination of one loaded task, the harness, and any tools. Each rollout has an independent trace and runtime state. verifiers has three different runtimes which you can use for most tasksets:
 - The `subprocess` runtime runs the rollouts in Python subprocesses locally. Thus, it is meant for debugging purposes, as there might be side effects during runtime, such as one subprocess altering the config files of the harness, which then affects the other subprocesses.
 - The `docker` runtime runs the rollouts in docker containers on your local machine.
 - Sandbox runtimes, such as `prime` or `modal`, are meant for production, especially for training or higher concurrency evaluation. These runtimes run remotely.
