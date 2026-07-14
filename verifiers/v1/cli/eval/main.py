@@ -66,6 +66,11 @@ def main(argv: list[str] | None = None) -> None:
             return
     if config.is_legacy and config.resume is not None:
         raise SystemExit("--resume is not supported for legacy (v0) evals")
+    if config.is_legacy and config.system_prompt_path is not None:
+        raise SystemExit(
+            "--system-prompt-path overrides native v1 task prompts and is not supported "
+            "for legacy (v0) evals"
+        )
     # Execution path: in-process by default; `--server` opts into the env-server worker pool
     # (the path prime-rl trains through). The `--rich` dashboard reads live in-process Rollout
     # state, so it's in-process only (`server + rich` is rejected at config validation). Legacy

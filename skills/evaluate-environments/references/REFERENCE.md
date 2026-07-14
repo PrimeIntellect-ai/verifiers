@@ -108,6 +108,7 @@ behavior, tools, user simulator, and scoring; only its `TaskData` is stored on t
 | `max_input_tokens` | `int \| None` | `None` | Max input (prompt) tokens per rollout. Caps `trace.num_input_tokens`. |
 | `max_output_tokens` | `int \| None` | `None` | Max output (completion) tokens per rollout. Caps `trace.num_output_tokens`. |
 | `max_total_tokens` | `int \| None` | `None` | Max total (prompt + completion) tokens per rollout. Caps `trace.num_total_tokens`. |
+| `system_prompt_path` | `Path \| None` | `None` | Read once and override every native v1 task system prompt with the file contents. Unsupported for legacy v0 evals. |
 | `multiplex` | `int` | `32` (≥1) | Rollouts that share one interception server (and, behind a remote runtime, one tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels. 1 = a server per rollout. |
 
 The four `max_*` limits map onto [`RolloutLimits`](#rollout-limits) (interception server); each caps a trace computed property, checked between turns (soft by one turn).

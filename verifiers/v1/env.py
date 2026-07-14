@@ -2,6 +2,7 @@
 
 import contextlib
 import logging
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import Field, SerializeAsAny, model_validator
@@ -262,6 +263,19 @@ class Environment:
         self.taskset = load_taskset(config.taskset)
         self.harness = load_harness(config.harness)
         validate_pairing(self.harness, self.taskset)
+        if (
+            config.system_prompt_path is not None
+            and not config.system_prompt_path.is_file()
+        ):
+            raise ValueError(
+                f"--system-prompt-path {config.system_prompt_path} does not exist or is "
+                "not a file; it must hold the system prompt to override every task with"
+            )
+        self._system_prompt_override = (
+            config.system_prompt_path.read_text()
+            if config.system_prompt_path is not None
+            else None
+        )
         # The warning is about the *agent* running arbitrary code on the host: every harness hands
         # it local execution (bash/edit, or a CLI agent) except the tool-less `null` chat loop,
         # whose program only relays the model and remote MCP tools — so exempt `null`, warn for the
@@ -311,6 +325,15 @@ class Environment:
         them — refuse `n < 2` there (rather than silently scoring a group of one).
         Harness capability (tools / user sim / container) is class-level and already
         checked at construction (`validate_pairing`)."""
+        if self._system_prompt_override is not None:
+            # Rebuild the task around a data row carrying the override (TaskData is frozen;
+            # behavior/config carry over) — the same injection GEPA uses.
+            task = type(task)(
+                task.data.model_copy(
+                    update={"system_prompt": self._system_prompt_override}
+                ),
+                task.config,
+            )
         if n < 2 and discover_decorated(task, "group_reward"):
             raise ValueError(
                 f"task {task.data.idx!r} defines @group_reward(s), which compare a task's rollouts "

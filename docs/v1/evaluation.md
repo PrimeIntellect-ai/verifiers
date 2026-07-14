@@ -40,6 +40,24 @@ The output from evaluations are written into `outputs/<taskset>--<model>--<harne
 - `verbose` — log at debug instead of info
 - `shuffle` — randomizes the order of tasks (fixed seed); a no-op on an infinite taskset
 
+## Optimizing a system prompt
+
+For a native v1 taskset, seed a prompt file from its first task system prompt:
+
+```bash
+uv run weco-eval <taskset-id> --system-prompt-path prompt.txt --init-prompt
+```
+
+Then use `weco-eval` as the parseable scalar evaluator for Weco:
+
+```bash
+weco run --source prompt.txt \
+  --eval-command "uv run weco-eval <taskset-id> --system-prompt-path prompt.txt -n 20" \
+  --metric reward --goal maximize
+```
+
+`--system-prompt-path` overrides native v1 task prompts. Legacy v0 evals reject it.
+
 ## Resuming evaluations
 
 `--resume <output-dir>` re-runs only the rollouts a previous run left missing or errored, appending to that run's own `results.jsonl`. It reloads the run's saved `config.toml` verbatim, so it takes no other arguments. Good rollouts are kept, while errored ones are dropped and redone.

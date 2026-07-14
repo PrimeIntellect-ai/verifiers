@@ -42,6 +42,23 @@ prime eval run <MY_ENV> -m deepseek/deepseek-v4-flash -n 3 -r 1
 
 When the user requests a full run, do not restrict the number of tasks. Ask for the appropriate harness to use (if not specified)
 
+## External prompt optimization
+
+For a native v1 taskset, initialize a prompt file and use `weco-eval` as the scalar
+evaluation command:
+
+```bash
+uv run weco-eval <MY_ENV> --system-prompt-path prompt.txt --init-prompt
+weco run --source prompt.txt \
+  --eval-command "uv run weco-eval <MY_ENV> --system-prompt-path prompt.txt -n 20" \
+  --metric reward --goal maximize
+```
+
+Each optimizer step rewrites `prompt.txt`; `weco-eval` runs the taskset with that override
+and ends stdout with a parseable `reward: <mean>` line. Keep the taskset, harness, sampling,
+task selection, and correctness gates fixed across candidates. The command supports native
+v1 tasksets only; use the existing legacy workflow for v0 environments.
+
 ## IDs and plugin resolution
 
 - `my-environment` resolves an importable local package.
