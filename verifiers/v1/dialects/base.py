@@ -121,13 +121,17 @@ class Dialect(ABC, Generic[ReqT, RespT]):
     `dialects.DIALECTS` and a harness speaking that format works end-to-end (the eval client and
     interception server are generic over this interface)."""
 
-    route: ClassVar[str]
-    """The `/v1` endpoint a program's SDK posts model turns to. The wire format is resolved from
-    the route the SDK chose rather than declared by the harness."""
+    routes: ClassVar[tuple[str, ...]]
+    """The endpoint path(s) a program's SDK posts model turns to. The interception server serves
+    one handler per route, so the wire format is resolved from the route the SDK chose (it
+    commits to one when the client is picked) rather than declared by the harness."""
 
     aux_routes: ClassVar[tuple[str, ...]] = ()
     """Side endpoints the SDK may call that aren't model turns (e.g. Anthropic's
     `count_tokens`): relayed as native JSON by the eval client, never recorded on the trace."""
+
+    upstream_path: ClassVar[str]
+    """The provider endpoint the proxy forwards to for this format (e.g. `/chat/completions`)."""
 
     response_type: type[RespT]
     """The native response model — used to validate the provider's raw JSON before parsing."""

@@ -282,7 +282,8 @@ class ChatStreamParser(StreamParser):
 
 
 class ChatDialect(Dialect[dict, ChatCompletion]):
-    route = "/v1/chat/completions"
+    routes = ("/v1/chat/completions",)
+    upstream_path = "/chat/completions"
     response_type = ChatCompletion
 
     def parse_request(self, body: dict) -> tuple[Messages, list[Tool] | None]:

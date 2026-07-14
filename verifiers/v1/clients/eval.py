@@ -7,8 +7,8 @@ framing, and connection headers are replaced. The provider response is parsed in
 `Response` for the trace, while its full JSON object stays on `Response.raw` for the interception
 server to return.
 
-The transport is provider-agnostic: the dialect supplies the canonical route + auth headers, so
-a new wire format (incl. non-OpenAI providers like Anthropic) is just a new `Dialect` — no client
+The transport is provider-agnostic: the dialect supplies the upstream path + auth headers, so a
+new wire format (incl. non-OpenAI providers like Anthropic) is just a new `Dialect` — no client
 change. Endpoint config (base url, api key, billing headers) comes from the client config.
 """
 
@@ -73,7 +73,8 @@ class EvalClient(Client):
         # the dialect's provider authentication is applied.
         self.headers = dict(headers or {})
         # No timeout: agentic completions are slow and the rollout timeout is the real backstop.
-        # Dialect routes include /v1; provider bases may already end in /v1.
+        # Build full URLs ourselves (base_url + dialect.upstream_path) rather than relying on
+        # httpx base-url joining, which drops the base path for a leading-slash request path.
         # Match V1's default concurrency while retaining HTTPX's 20-idle keepalive bound.
         self.http = httpx.AsyncClient(
             timeout=None,
@@ -91,7 +92,7 @@ class EvalClient(Client):
         headers: Mapping[str, str] | None = None,
     ) -> Response:
         resp = await self._request(
-            self.base_url.removesuffix("/v1") + dialect.route,
+            self.base_url + dialect.upstream_path,
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
         )
@@ -192,7 +193,7 @@ class EvalClient(Client):
         # Relay complete SSE events so the interception server can safely insert keepalives
         # between them. Error responses are mapped before any event is handed back.
         resp = await self._request(
-            self.base_url.removesuffix("/v1") + dialect.route,
+            self.base_url + dialect.upstream_path,
             dialect.apply_overrides(body, model, sampling_args),
             self._headers(dialect, headers, session_id),
             stream=True,
@@ -227,7 +228,7 @@ class EvalClient(Client):
     ) -> dict:
         # A side request (e.g. count_tokens): relay its native JSON and return the provider JSON.
         resp = await self._request(
-            self.base_url.removesuffix("/v1") + route,
+            self.base_url + route,
             body,
             self._headers(dialect, headers, None),
         )

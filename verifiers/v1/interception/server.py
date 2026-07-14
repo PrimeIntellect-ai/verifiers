@@ -195,7 +195,8 @@ class InterceptionServer:
     async def __aenter__(self) -> "InterceptionServer":
         app = web.Application(client_max_size=_MAX_REQUEST_BODY)
         for dialect in DIALECTS:
-            app.router.add_post(dialect.route, self._handler_for(dialect))
+            for route in dialect.routes:
+                app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
         # The shared-state back-channel (see `verifiers.v1.state`): a rollout's tool/user servers

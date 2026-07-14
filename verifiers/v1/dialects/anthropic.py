@@ -243,8 +243,9 @@ class AnthropicStreamParser(StreamParser):
 
 
 class AnthropicDialect(Dialect[dict, AnthropicMessage]):
-    route = "/v1/messages"
+    routes = ("/v1/messages",)
     aux_routes = ("/v1/messages/count_tokens",)
+    upstream_path = "/v1/messages"
     response_type = AnthropicMessage
 
     def auth_headers(self, api_key: str) -> dict[str, str]:

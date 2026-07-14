@@ -3,7 +3,7 @@
 import json
 import shlex
 
-from verifiers.v1.clients import ModelContext
+from verifiers.v1.clients import EvalClient, ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
@@ -54,6 +54,9 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> ProgramResult:
         system_prompt, instruction = self.resolve_prompt(trace.task.data)
+        if isinstance(ctx.client, EvalClient):
+            # Anthropic's upstream path includes /v1; versioned provider bases already do too.
+            ctx.client.base_url = ctx.client.base_url.removesuffix("/v1")
         env = {
             **self.config.resolved_env,
             # Claude appends /v1/messages; give it the interception root, not the model endpoint.
