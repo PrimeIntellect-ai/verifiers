@@ -159,7 +159,7 @@ dataset knobs.
 For remote runtimes:
 
 - set explicit timeouts and resource limits;
-- use `multiplex` to control interception tunnel count;
+- use `--interception.multiplex` (elastic interception pool) to control interception tunnel count;
 - cap pool workers and sandbox creation rate;
 - ensure tools/user placement is reachable and correctly isolated;
 - make teardown observable before scaling.

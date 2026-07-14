@@ -15,7 +15,7 @@ EvalConfig                       (the run + the env)
 ├─ retries: RetryConfig
 │  └─ rollout: RolloutRetryConfig
 ├─ max_turns / max_input_tokens / max_output_tokens / max_total_tokens
-├─ multiplex
+├─ interception: InterceptionConfig  (elastic | server | static)
 └─ pool: PoolConfig              (static | elastic) — env-server only
 ```
 
@@ -47,7 +47,7 @@ Sibling entrypoints reuse the same tree: [`ServeConfig`](#serveconfig--the-env-s
 
 Validator: `--rich` + `--server` together is rejected (the dashboard is in-process only).
 
-Inherited from `EnvConfig`: [`taskset`](#taskset-config), [`harness`](#harness-config), [`timeout`](#timeout-config), [`retries`](#retry-config), `max_turns`, `max_input_tokens`, `max_output_tokens`, `max_total_tokens`, [`multiplex`](#envconfig--the-environment), the legacy `id` / `args` / `extra_env_kwargs`.
+Inherited from `EnvConfig`: [`taskset`](#taskset-config), [`harness`](#harness-config), [`timeout`](#timeout-config), [`retries`](#retry-config), `max_turns`, `max_input_tokens`, `max_output_tokens`, `max_total_tokens`, [`interception`](#envconfig--the-environment), the legacy `id` / `args` / `extra_env_kwargs`.
 Inherited from `EnvServerConfig`: [`pool`](#pool-config).
 
 ---
@@ -108,7 +108,7 @@ behavior, tools, user simulator, and scoring; only its `TaskData` is stored on t
 | `max_input_tokens` | `int \| None` | `None` | Max input (prompt) tokens per rollout. Caps `trace.num_input_tokens`. |
 | `max_output_tokens` | `int \| None` | `None` | Max output (completion) tokens per rollout. Caps `trace.num_output_tokens`. |
 | `max_total_tokens` | `int \| None` | `None` | Max total (prompt + completion) tokens per rollout. Caps `trace.num_total_tokens`. |
-| `multiplex` | `int` | `32` (≥1) | Rollouts that share one interception server (and, behind a remote runtime, one tunnel). N concurrent rollouts use ~N/multiplex servers + tunnels. 1 = a server per rollout. |
+| `interception` | `InterceptionConfig` | `ElasticInterceptionPoolConfig()` | The interception shape, discriminated on `--interception.type`: `elastic` (default — servers grown on demand, `--interception.multiplex` rollouts each), `server` (one shared server, tunnel choice incl. bring-your-own via `--interception.tunnel.type custom`), or `static` (a fixed server list). |
 
 The four `max_*` limits map onto [`RolloutLimits`](#rollout-limits) (interception server); each caps a trace computed property, checked between turns (soft by one turn).
 
