@@ -1,5 +1,5 @@
 ---
-title: "Agent Programs"
+title: "Agent"
 description: "Program over agents: one executable arrow, placement as a parameter, chaining as plain functions"
 ---
 
@@ -41,9 +41,12 @@ Everything beyond the arrow is a parameter, not a concept:
 - **`ctx=`** replaces the agent's model context per run
   (`dataclasses.replace(agent.ctx, model=...)` for a judge sweeping models).
 
-Entered as an async context manager, an Agent owns an interception pool so concurrent
-runs share servers and tunnels (`async with agent: ...`); un-entered, each run brings up
-its own — fine for scripts.
+Interception follows the same borrowing story as runtimes: pass a live, already-entered
+`Interception` at construction (`vf.Agent(..., interception=pool)`) and several agents
+share one pool of servers and tunnels — its owner keeps the lifecycle, the agent only
+acquires slots. Without one, an Agent entered as an async context manager owns an
+elastic pool so concurrent runs share servers (`async with agent: ...`); un-entered,
+each run brings up its own per-rollout server — fine for scripts.
 
 Chaining needs no framework: mint the next task's `TaskData` from earlier traces with a
 plain function, stamping `sources` (trace ids) and `relation` so lineage survives into

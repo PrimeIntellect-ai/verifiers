@@ -117,6 +117,7 @@ from verifiers.v1.types import (
     ID,
     ImageUrlContentPart,
     ImageUrlSource,
+    KeptTokens,
     Message,
     MessageContent,
     Messages,
@@ -169,6 +170,7 @@ __all__ = [
     "MessageNode",
     "Branch",
     "TurnTokens",
+    "KeptTokens",
     "Timing",
     "TimeSpan",
     "Error",
@@ -221,7 +223,7 @@ __all__ = [
     "TimeoutConfig",
     "Episode",
     "Rollout",
-    # agent programs
+    # agent
     "Agent",
     # loaders
     "import_taskset",

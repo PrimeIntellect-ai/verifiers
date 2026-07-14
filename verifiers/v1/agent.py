@@ -14,10 +14,12 @@ rollout and returns its `Trace`. Everything else is a parameter, not a concept:
   - chaining: plain functions. Mint the next task's `TaskData` from earlier traces
     (stamp `sources`/`relation` for lineage) and hand it to the next agent.
 
-The Agent is an async context manager: entered, it owns an `InterceptionPool` so N
-concurrent runs share interception servers (and tunnels, behind remote runtimes) like an
-eval does. Un-entered, each run brings up its own per-rollout interception server — fine
-for scripts and small programs.
+Interception follows the runtime story: a live `Interception` can be injected at
+construction (borrowed — whoever entered it owns its lifecycle; that's how several
+agents share one pool of servers and tunnels). Without one, entering the agent
+(`async with`) owns an elastic pool sized to its runtime policy, so N concurrent runs
+share interception servers like an eval does. Un-entered, each run brings up its own
+per-rollout interception server — fine for scripts and small programs.
 
 The execution machinery is unchanged: every run is a standard `Rollout` (staged lifecycle,
 typed error attribution, token-true trace capture). The Agent only decides what goes into
@@ -38,7 +40,7 @@ from verifiers.v1.env import (
     validate_pairing,
 )
 from verifiers.v1.harness import Harness
-from verifiers.v1.interception import InterceptionPool, RolloutLimits
+from verifiers.v1.interception import ElasticInterceptionPool, Interception
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     Runtime,
@@ -46,6 +48,7 @@ from verifiers.v1.runtimes import (
     make_runtime,
     runtime_is_local,
 )
+from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 
@@ -75,7 +78,13 @@ class Agent:
     from it, resolved per task (image / workdir / resources); it defaults to the harness
     config's own `runtime`. To place a run into an existing box instead, pass a live
     `Runtime` to `run(runtime=...)` — borrowed boxes are never started or torn down by
-    the run; their creator owns their lifecycle."""
+    the run; their creator owns their lifecycle.
+
+    `interception` is the same story for the model boundary: a live, already-entered
+    `Interception` to borrow — whoever entered it owns its lifecycle, this agent only
+    acquires slots. Pass one pool to several agents so they share servers (and tunnels,
+    behind remote runtimes). Without it, an entered agent owns an elastic pool; an
+    un-entered agent's runs each bring up their own per-rollout server."""
 
     def __init__(
         self,
@@ -83,41 +92,56 @@ class Agent:
         ctx: ModelContext,
         runtime: RuntimeConfig | None = None,
         *,
+        interception: Interception | None = None,
         limits: RolloutLimits | None = None,
         timeout: TimeoutConfig | None = None,
-        multiplex: int = 32,
     ) -> None:
         self.harness = harness
         self.ctx = ctx
         self.runtime_config: RuntimeConfig = (
             runtime if runtime is not None else harness.config.runtime
         )
-        self.limits = limits or RolloutLimits()
-        self.timeout = timeout or TimeoutConfig()
-        self.multiplex = multiplex
-        self._pool: InterceptionPool | None = None
+        self.interception = interception
+        self.limits = RolloutLimits() if limits is None else limits
+        self.timeout = TimeoutConfig() if timeout is None else timeout
+        self._entered = False
+        self._pool: ElasticInterceptionPool | None = None
         self._warned_resources: set[tuple[str, str]] = set()
 
     async def __aenter__(self) -> "Agent":
-        if self._pool is not None:
+        if self._entered:
             raise RuntimeError("Agent is already entered; enter it once and share it")
-        self._pool = InterceptionPool(self.runtime_config, self.multiplex)
-        await self._pool.__aenter__()
+        self._entered = True
+        if self.interception is None:
+            # Sized to the runtime policy: a remote policy needs the tunnel. Runs the
+            # pool can't serve fall back per run (`_interception_for`).
+            self._pool = ElasticInterceptionPool(
+                requires_tunnel=not runtime_is_local(self.runtime_config)
+            )
+            await self._pool.__aenter__()
         return self
 
     async def __aexit__(self, *exc) -> None:
+        self._entered = False
         pool, self._pool = self._pool, None
         if pool is not None:
             await pool.__aexit__(*exc)
 
-    def _interception_for(self, run_is_local: bool) -> InterceptionPool | None:
-        """The shared pool, when its endpoint is reachable from this run's box: always for a
-        local run (a tunnel URL works from anywhere, localhost works locally), and for a
-        remote run only if the pool tunnels (was built for a remote runtime). Otherwise the
-        rollout brings up its own per-run interception server."""
+    def _interception_for(self, run_is_local: bool, task: Task) -> Interception | None:
+        """Which interception this run rides. An injected one always — its owner sized
+        its reach over its consumers, like an eval injecting into every rollout. The
+        owned pool only when provably reachable from all of this run's consumers: always
+        when it tunnels (a tunnel URL works from anywhere), else for a local run whose
+        task brings no tool/user servers (a task-owned server may sit in its own remote
+        runtime and must reach `/state`). Otherwise `None` — the rollout brings up a
+        per-run server sized to the task."""
+        if self.interception is not None:
+            return self.interception
         if self._pool is None:
             return None
-        if run_is_local or not self._pool.is_local:
+        if self._pool.requires_tunnel or (
+            run_is_local and not type(task).tools and type(task).user is None
+        ):
             return self._pool
         return None
 
@@ -160,7 +184,7 @@ class Agent:
             finalize_timeout=_merge(self.timeout.finalize, task.data.timeout.finalize),
             scoring_timeout=_merge(self.timeout.scoring, task.data.timeout.scoring),
             limits=self.limits,
-            interception=self._interception_for(run_is_local),
+            interception=self._interception_for(run_is_local, task),
             runtime=runtime,
         )
         trace = await rollout.run()

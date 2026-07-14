@@ -44,7 +44,7 @@ class MyHarness(Harness[MyHarnessConfig]):
         _, prompt = self.resolve_prompt(trace.task.data)
 
         # Example: Use the harness, but overwrite the endpoint to use the interception server and the custom model name
-        ENVIRONMENT_VARS = {
+        env = {
             **self.config.env,
             "HARNESS_BASE_URL": endpoint,
             "HARNESS_API_KEY": secret,

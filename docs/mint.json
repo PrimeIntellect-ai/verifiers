@@ -14,7 +14,7 @@
             "v1/environments",
             "v1/evaluation",
             "v1/harnesses",
-            "v1/agent-programs",
+            "v1/agent",
             "v1/harbor"
           ]
         },

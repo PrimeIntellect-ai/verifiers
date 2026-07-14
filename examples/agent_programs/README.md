@@ -1,6 +1,6 @@
 # Agent programs
 
-Live-tested example programs for the `vf.Agent` facade (see `docs/v1/agent-programs.md`).
+Live-tested example programs for the `vf.Agent` facade (see `docs/v1/agent.md`).
 Each is a plain script: `PRIME_API_KEY` in the environment, then
 
 ```bash
