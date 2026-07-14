@@ -55,9 +55,6 @@ def parse_judge_choice(
         return None
 
     text = content.rsplit("</think>", 1)[-1].strip()
-    text = extract_boxed_answer(text, strict=True).strip() or text
-
-    text_upper = text.upper()
     choices_by_upper = {choice.upper(): choice for choice in choices}
     allowed = "|".join(re.escape(choice) for choice in choices_by_upper)
     choice_re = rf"(?<!\w)({allowed})(?!\w)"
@@ -66,12 +63,18 @@ def parse_judge_choice(
         r"JUDGMENT|VERDICT|ANSWER)\s*(?:IS\s*)?[:\-]?\s*"
     )
 
+    # Prefer an explicit verdict marker on the full reply so a draft \boxed{...}
+    # cannot shadow a later Final Judgment / Final Answer line.
+    text_upper = text.upper()
     verdict = re.search(verdict_re, text_upper)
     if verdict:
         match = re.search(choice_re, text_upper[verdict.end() :])
         return choices_by_upper.get(match.group(1)) if match else None
 
-    matches = re.findall(choice_re, text_upper)
+    # No marker: keep boxed answers preferred over CoT mentions, then last match.
+    boxed = extract_boxed_answer(text, strict=True).strip()
+    search_upper = (boxed or text).upper()
+    matches = re.findall(choice_re, search_upper)
     return choices_by_upper.get(matches[-1]) if matches else None
 
 
