@@ -140,16 +140,15 @@ Format each item exactly like this:
 
 
 QA_META_PROMPT = """\
-Below are {num_attempts} independent attempts at the same task, each with the study-set
-items that attempt produced about its own experience, and the reward the attempt earned
-(higher is better).
+Below are the study sets written by {num_attempts} independent attempts at the SAME task
+— one Q&A set per attempt, each about its own experience, with the reward that attempt
+earned (higher is better).
 
 {attempts}
 
-Extract the most valuable GENERAL lessons from comparing these attempts. Focus on:
-- what the high-reward attempts did that the low-reward ones did not (and vice versa);
-- pitfalls several attempts hit;
-- lessons that would transfer to similar tasks, not just this exact one.
+Write one more general study set from these: question-answer items that would help
+someone perform better on different tasks of this kind, not just this one. Write as few
+or as many items as the evidence warrants (at least one).
 
 Rules:
 - SELF-CONTAINED: each question must be fully understandable without these attempts.
@@ -162,7 +161,7 @@ Rules:
 Format each item exactly like this:
 
 <item>
-<type>lesson</type>
+<type>qa or lesson</type>
 <question>...</question>
 <answer>...</answer>
 </item>"""
@@ -310,8 +309,9 @@ class QAConfig(BaseConfig):
     meta_prompt: str = QA_META_PROMPT
     """The meta-extraction instruction template (must keep the `{attempts}` placeholder
     and the `<item>` output format)."""
-    meta_max_tokens: int = 2048
-    """Completion budget for the meta-extraction call."""
+    meta_max_tokens: int = 4096
+    """Hard cap on the meta-extraction completion (thinking included) — same wall-clock
+    circuit-breaker role as `max_tokens` on the per-rollout generations."""
 
 
 class TTTRolloutHook:
