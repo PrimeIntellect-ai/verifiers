@@ -3,6 +3,8 @@
 import json
 import shlex
 
+from pydantic import Field
+
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.runtimes import ProgramResult, Runtime
@@ -18,7 +20,7 @@ curl -fsSL https://claude.ai/install.sh | HOME={home} bash -s {version}
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
-    version: str = "2.1.207"
+    version: str = Field(default="2.1.207", pattern=r"^[A-Za-z0-9._+-]+$")
     """Claude Code release to install; pinned for reproducibility."""
 
 
@@ -29,10 +31,9 @@ class ClaudeCodeHarness(Harness[ClaudeCodeHarnessConfig]):
     SUPPORTS_MESSAGE_PROMPT = False
 
     async def setup(self, runtime: Runtime) -> None:
-        version = shlex.quote(self.config.version)
-        home = CLAUDE_HOME.format(version=version)
-        binary = CLAUDE_BIN.format(version=version)
-        script = INSTALL.format(version=version, home=home)
+        home = CLAUDE_HOME.format(version=self.config.version)
+        binary = CLAUDE_BIN.format(version=self.config.version)
+        script = INSTALL.format(version=self.config.version, home=home)
         # Cache the pinned binary across local rollouts; Linux has flock, macOS has lockf.
         install = shlex.quote(f"[ -x {binary} ] || ({script})")
         guarded = (
