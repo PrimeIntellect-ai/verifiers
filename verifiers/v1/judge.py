@@ -157,9 +157,16 @@ def judge_response(trace: "Trace", view: JudgeView) -> str:
     return trace.transcript if view == "full_trace" else trace.last_reply
 
 
-def judge_verdict(text: str, choices: Sequence[str]) -> str:
-    """Parse a verdict, raising so judge failures are not scored against the model."""
-    verdict = parse_judge_choice(text, choices)
+def judge_verdict(text: str, choices: Sequence[str], *, strict: bool = False) -> str:
+    """Parse a verdict, raising so judge failures are not scored against the model.
+
+    With `strict`, the answer after any closed thinking block must be exactly one choice.
+    """
+    if strict:
+        answer = text.rsplit("</think>", 1)[-1].strip().upper()
+        verdict = next((choice for choice in choices if answer == choice.upper()), None)
+    else:
+        verdict = parse_judge_choice(text, choices)
     if verdict is None:
         raise ValueError(f"judge returned no {'/'.join(choices)} verdict: {text!r}")
     return verdict

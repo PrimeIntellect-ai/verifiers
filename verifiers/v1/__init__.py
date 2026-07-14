@@ -39,6 +39,7 @@ from verifiers.v1.interceptors import (
     block_shell_commands,
     block_tool_calls,
     block_web_search,
+    block_with_judge,
     find_tool_calls,
 )
 from verifiers.v1.judge import (
@@ -184,6 +185,7 @@ __all__ = [
     "block_shell_commands",
     "block_tool_calls",
     "block_web_search",
+    "block_with_judge",
     "find_tool_calls",
     "stop",
     "tool",

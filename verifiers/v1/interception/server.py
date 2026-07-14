@@ -293,7 +293,7 @@ class InterceptionServer(Interception):
                 for message in graph.prepare_turn(session.trace, prompt).tail:
                     if not isinstance(message, ToolMessage):
                         continue
-                    replacement = await session.intercept(message)
+                    replacement = await session.intercept(message, prompt)
                     if replacement is not None:
                         assert isinstance(replacement, ToolMessage)
                         replacements[message.tool_call_id] = replacement.content
@@ -382,7 +382,7 @@ class InterceptionServer(Interception):
                 )
                 return web.json_response(dialect.error_body(str(e)), status=502)
             try:
-                replacement = await session.intercept(response.message)
+                replacement = await session.intercept(response.message, prompt)
                 if replacement is not None:
                     raw = dialect.rewrite_response(response.raw, replacement)
                     response = dialect.parse_response(dialect.validate_response(raw))
@@ -600,7 +600,7 @@ class InterceptionServer(Interception):
                 raise
             if buffer is not None:
                 intercept_task = asyncio.create_task(
-                    session.intercept(response.message)
+                    session.intercept(response.message, prompt)
                 )
                 try:
                     while not intercept_task.done():

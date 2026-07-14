@@ -85,7 +85,9 @@ class RolloutSession:
     harness returns — recording the real `ProviderError` instead of a secondary `HarnessError`.
     Reset before each model turn, so a successful retry clears it."""
 
-    async def intercept(self, message: Message) -> Message | None:
+    async def intercept(
+        self, message: Message, prompt: Messages | None = None
+    ) -> Message | None:
         """Return the first interceptor replacement, or None for native pass-through."""
         try:
             for interceptor in self.intercepts:
@@ -95,7 +97,11 @@ class RolloutSession:
                     continue
                 replacement = await invoke(
                     interceptor,
-                    {"message": message.model_copy(deep=True), "trace": self.trace},
+                    {
+                        "message": message.model_copy(deep=True),
+                        "trace": self.trace,
+                        "prompt": prompt,
+                    },
                 )
                 if replacement is None:
                     continue

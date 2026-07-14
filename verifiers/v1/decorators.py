@@ -77,12 +77,12 @@ def intercept(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
 def intercept(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
     """Mark a `Task` method as a message interceptor.
 
-    Interceptors may declare `message` and `trace`. They see tool messages before the model
-    does and assistant messages before the harness does; the `message` annotation selects
-    which (`vf.AssistantMessage`, `vf.ToolMessage`, or unannotated for both). Return None to
-    pass through the native message untouched, a string to replace an assistant turn (its tool
-    calls never run) or a tool result's content, or a typed replacement message. The first
-    replacement wins.
+    Interceptors may declare `message`, `trace`, and `prompt` (the current typed model request).
+    They see tool messages before the model does and assistant messages before the harness does;
+    the `message` annotation selects which (`vf.AssistantMessage`, `vf.ToolMessage`, or
+    unannotated for both). Return None to pass through the native message untouched, a string to
+    replace an assistant turn (its tool calls never run) or a tool result's content, or a typed
+    replacement message. The first replacement wins.
 
         block_rm = vf.block_shell_commands("rm")
 
