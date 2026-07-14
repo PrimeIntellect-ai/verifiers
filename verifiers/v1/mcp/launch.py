@@ -132,7 +132,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     ):
         ensure_uv = _UV_ENV if None in runtime._uv_ready_homes else _ENSURE_UV
         setup = (
-            f'{ensure_uv}; set -e; for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
+            f'{{ {ensure_uv}; }} && set -e; for t in {root}/*.tar.gz; do tar -xzf "$t" -C {root}; done && '
             f"uv venv {venv} && "
             f"SETUPTOOLS_SCM_PRETEND_VERSION={shlex.quote(vf_version)} "
             f"uv pip install --python {venv} {root}/{shlex.quote(vf.name)} && "
