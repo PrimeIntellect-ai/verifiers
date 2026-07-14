@@ -364,7 +364,7 @@ class Environment:
         return Episode(rollouts, retry=retries.rollout)
 
     @contextlib.asynccontextmanager
-    async def serving(self):
+    async def serving(self, *, warm_interception: bool = False):
         """Hold the env-level serving resources for the duration of an eval: the shared tool
         servers (built once, see `shared_tools`) and the interception. Stash them so
         every `episode()` built inside this context injects them into its rollouts — that's
@@ -372,7 +372,9 @@ class Environment:
         episodes inside this context; the resources are torn down on exit."""
         async with self.shared_tools() as shared:
             interception = make_interception(
-                self.config.interception, requires_tunnel=self._requires_tunnel(shared)
+                self.config.interception,
+                requires_tunnel=self._requires_tunnel(shared),
+                warm=warm_interception,
             )
             async with interception:
                 self._shared_tools = shared

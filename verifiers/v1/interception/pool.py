@@ -13,6 +13,7 @@ least-loaded.
 """
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -91,15 +92,26 @@ class ElasticInterceptionPool(Interception):
         self,
         config: ElasticInterceptionPoolConfig | None = None,
         requires_tunnel: bool = False,
+        warm: bool = False,
     ) -> None:
         super().__init__()
         self.config = config or ElasticInterceptionPoolConfig()
         self.requires_tunnel = requires_tunnel
+        self.warm = warm and requires_tunnel
         self.servers: list[InterceptionServer] = []
         self._lock = asyncio.Lock()
+        self._warm_task: asyncio.Task[InterceptionServer] | None = None
 
     async def start(self) -> None:
-        pass  # servers are brought up lazily in `acquire`, on `stack`
+        if self.warm:
+            self._warm_task = asyncio.create_task(self._server())
+
+    async def stop(self) -> None:
+        if self._warm_task is not None:
+            self._warm_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._warm_task
+        await super().stop()
 
     async def _server(self) -> InterceptionServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new
@@ -123,6 +135,8 @@ class ElasticInterceptionPool(Interception):
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
+        if self._warm_task is not None:
+            await asyncio.shield(self._warm_task)
         # Register under the lock so concurrent acquires see each other's load.
         async with self._lock:
             server = await self._server()

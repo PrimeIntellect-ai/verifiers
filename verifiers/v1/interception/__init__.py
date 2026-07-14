@@ -64,7 +64,7 @@ def requires_tunnel(
 
 
 def make_interception(
-    config: InterceptionConfig, *, requires_tunnel: bool
+    config: InterceptionConfig, *, requires_tunnel: bool, warm: bool = False
 ) -> Interception:
     """The interception for a config, picked by type (the host-side counterpart to
     `make_runtime`). With `requires_tunnel` (some consumer is off the host network — see
@@ -75,7 +75,7 @@ def make_interception(
         return InterceptionServer(config, requires_tunnel)
     if isinstance(config, StaticInterceptionPoolConfig):
         return StaticInterceptionPool(config, requires_tunnel)
-    return ElasticInterceptionPool(config, requires_tunnel)
+    return ElasticInterceptionPool(config, requires_tunnel, warm)
 
 
 __all__ = [

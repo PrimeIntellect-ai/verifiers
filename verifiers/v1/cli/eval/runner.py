@@ -73,7 +73,7 @@ async def run_eval(env: Environment, config: EvalConfig) -> list[Trace]:
     # (non-shared ones start per rollout inside the episodes); the interception comes up
     # here too, so concurrent rollouts share its servers + tunnels rather than one each. Build
     # episodes inside `serving` so each rollout is wired to those resources at construction.
-    async with env.serving():
+    async with env.serving(warm_interception=bool(tasks)):
         episodes = [
             env.episode(
                 task, ctx, n=owed[task.data.idx] if owed else config.num_rollouts
