@@ -124,14 +124,16 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig, OpenEnvState]):
         if isinstance(action, dict):
             return action
         # Single-field environments such as Wordle also accept the raw field value.
-        [field] = self.action_schema["required"]
-        return {field: action}
+        required = self.action_schema.get("required", [])
+        if len(required) != 1:
+            raise ValueError("non-object actions require exactly one required field")
+        return {required[0]: action}
 
     async def respond(self, message: str) -> vf.Messages:
         if message:
             self.result = await self.client.step(self.parse_action(message))
-        # OpenEnv reports per-step rewards; v1 scores their total over the trace.
-        self.state.reward += self.result.reward or 0.0
+            # OpenEnv reports per-step rewards; v1 scores their total over the trace.
+            self.state.reward += self.result.reward or 0.0
         self.state.done = self.result.done
         payload = {
             "observation": self.result.observation,
